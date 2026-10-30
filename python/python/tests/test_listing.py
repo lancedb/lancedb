@@ -84,7 +84,7 @@ async def advance(items, asynchronous):
     return await items.__anext__() if asynchronous else next(items)
 
 
-KINDS = ["views", "jobs"]
+KINDS = ["jobs"]
 
 
 @pytest.mark.asyncio

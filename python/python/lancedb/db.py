@@ -1178,10 +1178,11 @@ class DBConnection(EnforceOverrides):
     def drop_view(
         self, name: str, *, namespace_path: Optional[List[str]] = None
     ) -> None:
-        """Drop a view and wait for its definition to be deleted.
+        """Drop a view and wait for catalog removal.
 
         The tables it reads are untouched: a view holds no rows of its own. Use
-        :meth:`drop_view_async` to get the cleanup job instead of waiting on it.
+        :meth:`drop_view_async` to retain its SQL query job. Completion confirms
+        catalog removal; physical cleanup continues in the background.
         LanceDB Embedded connections raise ``NotImplementedError``.
         """
         raise NotImplementedError(
@@ -1191,12 +1192,11 @@ class DBConnection(EnforceOverrides):
     def drop_view_async(
         self, name: str, *, namespace_path: Optional[List[str]] = None
     ) -> "Job[None]":
-        """Start dropping a view and return the job deleting its definition.
+        """Drop a view and return its SQL query job.
 
-        The name is free before this returns. Call :meth:`Job.wait` to wait for
-        the definition dataset to be deleted. When nothing was bound to the
-        name, the returned job is already finished and has no id. Local
-        connections raise ``NotImplementedError``.
+        The job has type ``query`` and its ID is the SQL query UUID. Call
+        :meth:`Job.wait` to confirm catalog removal. Physical cleanup continues
+        in the background. Local connections raise ``NotImplementedError``.
         """
         raise NotImplementedError(
             "View operations are not supported for this connection type"
@@ -3549,10 +3549,11 @@ class AsyncConnection(object):
     async def drop_view(
         self, name: str, *, namespace_path: Optional[List[str]] = None
     ) -> None:
-        """Drop a view and wait for its definition to be deleted.
+        """Drop a view and wait for catalog removal.
 
         The tables it reads are untouched. Use :meth:`drop_view_async` to get
-        the cleanup job instead of waiting on it.
+        its SQL query job. Completion confirms catalog removal; physical cleanup
+        continues in the background.
         """
         await self._inner.drop_view(name, list(namespace_path or []))
 
@@ -3562,10 +3563,11 @@ class AsyncConnection(object):
         *,
         namespace_path: Optional[List[str]] = None,
     ) -> AsyncJob[None]:
-        """Start dropping a view and return the job deleting its definition.
+        """Drop a view and return its SQL query job.
 
-        The name is free before this returns. Await :meth:`AsyncJob.wait` before
-        assuming the definition dataset is gone.
+        The job has type ``query`` and its ID is the SQL query UUID. Await
+        :meth:`AsyncJob.wait` to confirm catalog removal. Physical cleanup
+        continues in the background.
         """
         if namespace_path is None:
             namespace_path = []

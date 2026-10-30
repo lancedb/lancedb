@@ -14,6 +14,7 @@ use arrow_flight::{
     FlightInfo, HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
 };
 use arrow_schema::{DataType, Field, Schema};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures::stream::BoxStream;
 use futures::{StreamExt, TryStreamExt};
 use tonic::metadata::MetadataMap;
@@ -21,6 +22,7 @@ use tonic::{Request, Response, Status, Streaming};
 
 use super::stream::{PROTOCOL_HEADER, PROTOCOL_VERSION, QueryResponse};
 use super::*;
+use crate::Connection;
 use crate::database::Database;
 use crate::materialized_view::CreateMaterializedViewRequest;
 use crate::remote::RemoteCatalogOptions;
@@ -2673,4 +2675,215 @@ async fn function_listing_uses_bounded_sql_and_scoped_version_cursors() {
     assert!(seen[0].contains("limit = 2"));
     assert!(seen[1].contains("after_version = '1'"));
     shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
+async fn view_create_and_describe_return_metadata_through_sql() {
+    let definition = r#"{"name":"adults","namespace":["team"],"query":"SELECT name FROM people","default_database":"db","default_namespace":["team"],"schema":{"fields":[{"name":"name","nullable":true,"type":{"type":"utf8"}}]}}"#;
+    for defer in [false, true] {
+        let result = RecordBatch::try_from_iter(vec![(
+            "definition",
+            Arc::new(StringArray::from(vec![definition])) as ArrayRef,
+        )])
+        .unwrap();
+        let service = TestSqlService {
+            adaptive: true,
+            defer,
+            result,
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
+            panic!("unexpected REST request");
+        })
+        .with_sql_client(client);
+        let created = db
+            .create_view("adults", "SELECT name FROM people", &["team".into()])
+            .await
+            .unwrap();
+        let described = db.describe_view("adults", &["team".into()]).await.unwrap();
+        assert_eq!(created, described);
+        assert_eq!(created.schema.fields()[0].name(), "name");
+        assert_eq!(created.default_namespace_path, ["team"]);
+        assert_eq!(
+            statements.lock().unwrap().as_slice(),
+            [
+                "CREATE VIEW \"adults\" AS SELECT name FROM people",
+                "DESCRIBE VIEW \"adults\""
+            ]
+        );
+        shutdown.send(()).unwrap();
+    }
+}
+#[tokio::test]
+async fn view_drop_uses_a_repeatable_query_job() {
+    let service = TestSqlService {
+        adaptive: true,
+        defer: true,
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
+        panic!("unexpected REST request");
+    })
+    .with_sql_client(client.clone());
+    let job = db
+        .drop_view_async("adults", &["team".into()])
+        .await
+        .unwrap();
+    assert_eq!(job.job_type().as_deref(), Some("query"));
+    let id = Uuid::parse_str(job.id().unwrap()).unwrap();
+    job.wait().await.unwrap();
+    job.wait().await.unwrap();
+    assert_eq!(
+        client.describe(id).await.unwrap().status,
+        QueryStatus::Finished
+    );
+    assert_eq!(
+        statements.lock().unwrap().as_slice(),
+        ["DROP VIEW \"adults\""]
+    );
+    shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
+async fn view_listing_uses_bounded_sql_and_scoped_cursors() {
+    for defer in [false, true] {
+        let first_result = RecordBatch::try_from_iter(vec![(
+            "name",
+            Arc::new(StringArray::from(vec!["adults", "hf'prod", "openai-prod"])) as ArrayRef,
+        )])
+        .unwrap();
+        let second_result = RecordBatch::try_from_iter(vec![(
+            "name",
+            Arc::new(StringArray::from(vec!["openai-prod"])) as ArrayRef,
+        )])
+        .unwrap();
+        let result_overrides = Arc::new(std::sync::Mutex::new(HashMap::from([
+            ("SHOW VIEWS LIMIT 3".to_string(), first_result),
+            (
+                "SHOW VIEWS WHERE name > 'hf''prod' LIMIT 3".to_string(),
+                second_result,
+            ),
+        ])));
+        let service = TestSqlService {
+            adaptive: true,
+            defer,
+            result_overrides,
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let headers = service.headers.clone();
+        let (client, shutdown) = start_sql_service_with_prefix(
+            service,
+            ClientConfig::default(),
+            Some("tenant/production"),
+        )
+        .await;
+        let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
+            panic!("unexpected REST request");
+        })
+        .with_sql_client(client);
+        let connection = Connection::new(
+            Arc::new(db),
+            Arc::new(crate::embeddings::MemoryRegistry::new()),
+        );
+        let namespace = vec!["team".to_owned(), "reports".to_owned()];
+
+        let first = connection
+            .list_views(
+                &namespace,
+                crate::listing::ListingOptions::default().page_limit(2),
+            )
+            .next_page()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.items, ["adults", "hf'prod"]);
+        let token = first.page_token.expect("a third row must produce a token");
+
+        let second = connection
+            .list_views(
+                &namespace,
+                crate::listing::ListingOptions::default()
+                    .page_limit(2)
+                    .page_token(&token),
+            )
+            .next_page()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(second.items, ["openai-prod"]);
+        assert!(second.page_token.is_none());
+
+        assert_eq!(
+            *statements.lock().unwrap(),
+            [
+                "SHOW VIEWS LIMIT 3",
+                "SHOW VIEWS WHERE name > 'hf''prod' LIMIT 3"
+            ]
+        );
+        {
+            let headers = headers.lock().unwrap();
+            assert!(!headers.is_empty());
+            for header in headers.iter() {
+                assert_eq!(header.database, "analytics");
+                assert_eq!(header.database_prefix, "tenant/production");
+                assert_eq!(header.namespace_path, "team$reports");
+            }
+        }
+
+        let encode_token =
+            |kind: &str, database: &str, prefix: Option<&str>, path: &[String], last: &str| {
+                URL_SAFE_NO_PAD.encode(
+                    serde_json::to_vec(&(kind, database, prefix, path.to_vec(), last)).unwrap(),
+                )
+            };
+        for forged in [
+            encode_token(
+                "secret",
+                "analytics",
+                Some("tenant/production"),
+                &namespace,
+                "hf'prod",
+            ),
+            encode_token(
+                "view",
+                "billing",
+                Some("tenant/production"),
+                &namespace,
+                "hf'prod",
+            ),
+            encode_token("view", "analytics", Some("other"), &namespace, "hf'prod"),
+            encode_token(
+                "view",
+                "analytics",
+                Some("tenant/production"),
+                &["other".to_owned()],
+                "hf'prod",
+            ),
+            "not-a-json-token".to_string(),
+        ] {
+            let mut listing = connection.list_views(
+                &namespace,
+                crate::listing::ListingOptions::default().page_token(forged),
+            );
+            assert!(matches!(
+                listing.next_page().await,
+                Err(Error::InvalidInput { .. })
+            ));
+        }
+        let mut listing = connection.list_views(
+            &["other".to_owned()],
+            crate::listing::ListingOptions::default().page_token(&token),
+        );
+        assert!(matches!(
+            listing.next_page().await,
+            Err(Error::InvalidInput { .. })
+        ));
+        assert_eq!(statements.lock().unwrap().len(), 2);
+        shutdown.send(()).unwrap();
+    }
 }

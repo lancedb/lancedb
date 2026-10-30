@@ -40,6 +40,7 @@ pub(super) mod materialized_view;
 mod objects;
 mod secret;
 mod stream;
+mod view;
 
 use stream::{StreamingQuery, StreamingQueryHandle, Submission};
 
