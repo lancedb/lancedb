@@ -71,6 +71,7 @@ from .index import (
     IvfRq,
     LabelList,
     Fm,
+    NGram,
     HnswPq,
     HnswSq,
     HnswFlat,
@@ -284,6 +285,7 @@ IndexConfigType = Union[
     Bitmap,
     LabelList,
     Fm,
+    NGram,
     FTS,
 ]
 
@@ -1883,7 +1885,7 @@ class Table(ABC):
         config : IndexConfigType, optional
             The index configuration object. If provided, uses the new unified API.
             Can be one of: IvfFlat, IvfPq, IvfSq, IvfRq, HnswPq, HnswSq,
-            BTree, Bitmap, LabelList, Fm, FTS.
+            BTree, Bitmap, LabelList, Fm, NGram, FTS.
         replace : bool, default True
             Whether to replace an existing index on this column.
         wait_timeout : timedelta, optional
@@ -3984,7 +3986,7 @@ class LanceTable(Table):
         config : IndexConfigType, optional
             The index configuration object. If provided, uses the new unified API.
             Can be one of: IvfFlat, IvfPq, IvfSq, IvfRq, HnswPq, HnswSq,
-            BTree, Bitmap, LabelList, Fm, FTS.
+            BTree, Bitmap, LabelList, Fm, NGram, FTS.
         replace : bool, default True
             Whether to replace an existing index on this column.
         wait_timeout : timedelta, optional
@@ -6215,6 +6217,7 @@ class AsyncTable:
                 Bitmap,
                 LabelList,
                 Fm,
+                NGram,
                 FTS,
             ]
         ] = None,
@@ -6268,12 +6271,13 @@ class AsyncTable:
                     Bitmap,
                     LabelList,
                     Fm,
+                    NGram,
                     FTS,
                 ),
             ):
                 raise TypeError(
                     "config must be an instance of IvfSq, IvfPq, IvfRq, HnswPq, HnswSq,"
-                    " BTree, Bitmap, LabelList, Fm, or FTS, but got "
+                    " BTree, Bitmap, LabelList, Fm, NGram, or FTS, but got "
                     + str(type(config))
                 )
         try:
@@ -6311,6 +6315,7 @@ class AsyncTable:
                 Bitmap,
                 LabelList,
                 Fm,
+                NGram,
                 FTS,
             ]
         ] = None,
@@ -7965,6 +7970,7 @@ class IndexStatistics:
         "BTREE",
         "BITMAP",
         "LABEL_LIST",
+        "NGRAM",
     ]
     distance_type: Optional[Literal["l2", "cosine", "dot"]] = None
     num_indices: Optional[int] = None

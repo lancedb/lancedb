@@ -21,6 +21,7 @@ from lancedb.index import (
     Bitmap,
     LabelList,
     Fm,
+    NGram,
     HnswPq,
     HnswSq,
     HnswFlat,
@@ -246,6 +247,33 @@ async def test_create_fm_index(some_table: AsyncTable):
     assert len(indices) == 1
     assert indices[0].index_type == "Fm"
     assert indices[0].columns == ["data"]
+
+
+@pytest.mark.asyncio
+async def test_create_ngram_index(db_async):
+    # NGram indexes accelerate substring filters on UTF-8 string columns.
+    data = pa.table(
+        {
+            "id": list(range(5)),
+            "text": ["cat", "category", "concatenate", "dog", "cathedral"],
+        }
+    )
+    table = await db_async.create_table("ngram_table", data)
+    await table.create_index("text", config=NGram())
+
+    indices = await table.list_indices()
+    assert len(indices) == 1
+    assert indices[0].index_type == "NGram"
+    assert indices[0].columns == ["text"]
+
+    stats = await table.index_stats(indices[0].name)
+    assert stats.index_type == "NGRAM"
+    assert stats.num_indexed_rows == await table.count_rows()
+    assert stats.num_unindexed_rows == 0
+
+    # The index accelerates substring predicates.
+    plan = await table.query().where("contains(text, 'cat')").explain_plan()
+    assert "ScalarIndexQuery" in plan
 
 
 @pytest.mark.asyncio
