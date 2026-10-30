@@ -104,9 +104,11 @@ with `Illegal instruction`.
 Install `lancedb-compat` instead. It exposes the same API (`import lancedb` still works), is built at the
 `x86-64-v2` baseline, and uses runtime SIMD dispatch to still use AVX2, FMA, or AVX-512 when available:
 
+<CodeGroup>
 ```bash Python (pip) icon="terminal"
 pip install lancedb-compat
 ```
+</CodeGroup>
 
 The two packages share the same `lancedb/` namespace and conflict at install time, so pick one. To switch,
 uninstall the other first (`pip uninstall lancedb && pip install lancedb-compat`).

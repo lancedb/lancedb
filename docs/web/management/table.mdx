@@ -228,7 +228,8 @@ has no `tableExists`.
 
 ## Rename and clone tables {#rename-clone}
 
-```python
+<CodeGroup>
+```python Python icon="python"
 db.rename_table("documents", "docs")
 
 db.clone_table(
@@ -238,6 +239,7 @@ db.clone_table(
     is_shallow=True,
 )
 ```
+</CodeGroup>
 
 Renaming is not supported on a local directory connection. In LanceDB Enterprise,
 whether a table can be renamed or cloned at all depends on how the deployment
@@ -649,7 +651,8 @@ clients cannot safely maintain a table containing Managed blobs.
 This example uses a local connection. The same schema, `add`, query, and
 `fetch_blobs` calls work with an Enterprise database connection:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 import lancedb
 import pyarrow as pa
 
@@ -680,6 +683,7 @@ by_id = dict(zip(hits["id"].to_pylist(), images, strict=True))
 assert by_id[1] == b""
 assert len(by_id[2]) == 102400
 ```
+</CodeGroup>
 
 `fetch_blobs` materializes the selected payloads in memory, so fetch bounded
 batches when blobs are large. Row IDs belong to their table and snapshot. Keep

@@ -54,10 +54,12 @@ NVIDIA's containers.
 
 From the [recipe directory](https://github.com/lancedb/vectordb-recipes/tree/main/examples/nvidia-rag-blueprint-lancedb):
 
-```bash
+<CodeGroup>
+```bash Bash icon="terminal"
 uv sync
 uv run prepare_lancedb.py --embedder demo-keyword --reranker mrr
 ```
+</CodeGroup>
 
 That script creates:
 
@@ -85,13 +87,16 @@ NVIDIA's [RAG blueprint documentation](https://docs.nvidia.com/rag/latest/readme
 
 Set the absolute path to the recipe directory:
 
-```bash
+<CodeGroup>
+```bash Bash icon="terminal"
 export LANCEDB_RECIPE_DIR=/absolute/path/to/vectordb-recipes/examples/nvidia-rag-blueprint-lancedb
 ```
+</CodeGroup>
 
 Then from the NVIDIA repo root:
 
-```bash
+<CodeGroup>
+```bash Bash icon="terminal"
 docker compose \
   -f deploy/compose/docker-compose-rag-server.yaml \
   -f "$LANCEDB_RECIPE_DIR"/docker-compose.override.yml \
@@ -102,6 +107,7 @@ docker compose \
   -f "$LANCEDB_RECIPE_DIR"/docker-compose.override.yml \
   up -d --build
 ```
+</CodeGroup>
 
 The key environment values are:
 
@@ -115,7 +121,8 @@ The key environment values are:
 
 ### Search {#search}
 
-```bash
+<CodeGroup>
+```bash Bash icon="terminal"
 curl -X POST http://localhost:8081/v1/search \
   -H 'Content-Type: application/json' \
   -d '{
@@ -126,10 +133,12 @@ curl -X POST http://localhost:8081/v1/search \
     "reranker_top_k": 0
   }'
 ```
+</CodeGroup>
 
 ### Generate {#generate}
 
-```bash
+<CodeGroup>
+```bash Bash icon="terminal"
 curl -N -X POST http://localhost:8081/v1/generate \
   -H 'Content-Type: application/json' \
   -d '{
@@ -140,6 +149,7 @@ curl -N -X POST http://localhost:8081/v1/generate \
     "reranker_top_k": 0
   }'
 ```
+</CodeGroup>
 
 ## Hybrid retrieval and rerankers {#hybrid-retrieval-and-rerankers}
 

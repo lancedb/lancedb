@@ -109,7 +109,8 @@ separately, use `execute_query_async()`.
 Pass a `parameters` argument to bind values into a query, instead of
 formatting them into the SQL string:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 import numpy as np
 
 reader = db.execute_query(
@@ -117,6 +118,7 @@ reader = db.execute_query(
     parameters=[np.array([0.1, 0.2, 0.3], dtype=np.float32), 10],
 )
 ```
+</CodeGroup>
 
 Values travel as Arrow, not interpolated SQL text, so a vector binds as a
 fixed-size list with no manual formatting and no injection risk. Reference a

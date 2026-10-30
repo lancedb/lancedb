@@ -39,9 +39,11 @@ partitions.
 
 ## Optimize a table {#what-it-does}
 
-```python
+<CodeGroup>
+```python Python icon="python"
 table.optimize()
 ```
+</CodeGroup>
 
 Three operations, in one call:
 
@@ -111,11 +113,13 @@ Two things accumulate on a long-lived table as more and more data gets added to 
 
 In LanceDB Embedded, you run them yourself via `optimize()`, which bundles both into a single call:
 
+<CodeGroup>
 ```python Python icon="python"
 from datetime import timedelta
 table.optimize()                                       # 7-day default retention
 table.optimize(cleanup_older_than=timedelta(days=1))   # reclaim space sooner
 ```
+</CodeGroup>
 
 The best practice is to run `optimize()` after large writes or on a schedule. It also bundles incremental index updates. See [Build & Repair](/indexing/reindexing) for the breakdown. Updates also move rows out of the vector index, so they remain searchable but unindexed. Update or rebuild the index after large update batches.
 

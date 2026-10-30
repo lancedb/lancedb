@@ -9,10 +9,12 @@ availability:
   enterprise: available
 ---
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 EXPLAIN SELECT * FROM documents WHERE identifier < 1000
 EXPLAIN ANALYZE SELECT * FROM documents WHERE identifier < 1000
 ```
+</CodeGroup>
 
 | Statement | What it returns |
 | --- | --- |

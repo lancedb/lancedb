@@ -66,14 +66,11 @@ three dog photos (30, 40, 50) group together, and the three increasingly
 distant photos (60, 70, 80) are more likely to each keep their own partition:
 
 <CodeGroup>
-```python Python icon="python"
-reader = db.execute_query("""
-    SELECT ivf_partition(embedding) AS cluster, array_agg(id) AS ids, count(*) AS n
-    FROM curation_embeddings
-    GROUP BY cluster
-    ORDER BY cluster
-""")
-print(reader.read_all().to_pylist())
+```sql SQL icon="database"
+SELECT ivf_partition(embedding) AS cluster, array_agg(id) AS ids, count(*) AS n
+FROM curation_embeddings
+GROUP BY cluster
+ORDER BY cluster
 ```
 </CodeGroup>
 
@@ -89,20 +86,16 @@ Pass a selection mode to group by only a subset of the index's partitions,
 instead of all of them:
 
 <CodeGroup>
-```python Python icon="python"
-# The first 2 partitions, deterministically
-db.execute_query("""
-    SELECT ivf_partition(embedding, 'first', 2) AS cluster, array_agg(id) AS ids
-    FROM curation_embeddings
-    GROUP BY cluster
-""")
+```sql SQL icon="database"
+-- The first 2 partitions, deterministically
+SELECT ivf_partition(embedding, 'first', 2) AS cluster, array_agg(id) AS ids
+FROM curation_embeddings
+GROUP BY cluster;
 
-# 2 partitions chosen at random, reproducible via the seed
-db.execute_query("""
-    SELECT ivf_partition(embedding, 'random', 2, 42) AS cluster, array_agg(id) AS ids
-    FROM curation_embeddings
-    GROUP BY cluster
-""")
+-- 2 partitions chosen at random, reproducible via the seed
+SELECT ivf_partition(embedding, 'random', 2, 42) AS cluster, array_agg(id) AS ids
+FROM curation_embeddings
+GROUP BY cluster;
 ```
 </CodeGroup>
 
@@ -121,13 +114,11 @@ Wrap a `GROUP BY ivf_partition(...)` query in a
 current as new records arrive:
 
 <CodeGroup>
-```python Python icon="python"
-db.execute_query("""
-    CREATE MATERIALIZED VIEW curation_embeddings_clustered AS
-    SELECT ivf_partition(embedding) AS cluster, array_agg(id) AS ids
-    FROM curation_embeddings
-    GROUP BY cluster
-""")
+```sql SQL icon="database"
+CREATE MATERIALIZED VIEW curation_embeddings_clustered AS
+SELECT ivf_partition(embedding) AS cluster, array_agg(id) AS ids
+FROM curation_embeddings
+GROUP BY cluster
 ```
 </CodeGroup>
 

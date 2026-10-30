@@ -7,14 +7,18 @@ import { PyEmbeddingAwsUsage } from '/snippets/integrations.mdx';
 
 AWS Bedrock supports multiple base models for generating text embeddings. You need to setup the AWS credentials to use this embedding function.
 You can do so by using `awscli` and also add your session_token:
-```shell
+<CodeGroup>
+```bash Bash icon="terminal"
 aws configure
 aws configure set aws_session_token "<your_session_token>"
 ```
+</CodeGroup>
 to ensure that the credentials are set up correctly, you can run the following command:
-```shell
+<CodeGroup>
+```bash Bash icon="terminal"
 aws sts get-caller-identity
 ```
+</CodeGroup>
 
 Supported Embedding modelIDs are:
 * `amazon.titan-embed-text-v1`

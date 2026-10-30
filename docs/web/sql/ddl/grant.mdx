@@ -8,17 +8,21 @@ keywords: ["grant", "revoke", "privileges", "authorization", "sql", "ownership"]
 
 <Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 GRANT <privilege>[, ...] ON { SECRET | FUNCTION } <name> TO <grantee>[, ...]
 GRANT <privilege>[, ...] ON SCHEMA <namespace> TO <grantee>[, ...]
 REVOKE <privilege>[, ...] ON ... FROM <grantee>[, ...]
 ```
+</CodeGroup>
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 GRANT USAGE, UPDATE ON SECRET api_key TO ROLE readers, writers
 GRANT CREATE FUNCTION ON SCHEMA analytics TO ROLE data_science
 REVOKE USAGE ON FUNCTION embed FROM ROLE readers
 ```
+</CodeGroup>
 
 ## Privileges {#privileges}
 
@@ -42,13 +46,17 @@ tables, views and namespaces, which this statement does not grant.
 
 ## Grantees {#grantees}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 <grantee> ::= [ ROLE ] <role> | [ { USER | GROUP } ] { <name> | ID '<id>' }
 ```
+</CodeGroup>
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 GRANT USAGE ON SECRET api_key TO ROLE readers, USER alice, GROUP ID 'g1'
 ```
+</CodeGroup>
 
 A grantee is a role, or a user or group named by its identity-directory name
 or its directory ID. A grantee with no leading `ROLE`/`USER`/`GROUP` keyword
