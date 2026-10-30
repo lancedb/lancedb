@@ -36,6 +36,7 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
     embedding_function = openai.create(
         name="<ollama-embedding-model-name>",
         base_url="http://localhost:11434",
+        dim=768,  # the model's embedding dimension; required for unlisted names
         )
     ```
 
@@ -78,7 +79,8 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
         elif self.name == "text-embedding-3-small":
             return self.dim or 1536
         elif self.dim:
-            # A model served behind an OpenAI-compatible `base_url`
+            # A name not listed above, e.g. a model served behind an
+            # OpenAI-compatible `base_url`: `dim` is its embedding size
             return self.dim
         else:
             raise ValueError(
