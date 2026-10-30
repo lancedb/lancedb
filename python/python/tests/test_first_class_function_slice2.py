@@ -246,50 +246,44 @@ def test_bindings_may_not_collide_with_plain_configuration():
 
 
 _SECRET_DEBUG_LOG_SOURCE = """
-import http.server
-import json
-import threading
+import pyarrow as pa
+import pyarrow.flight as flight
 
 import lancedb
 
 
-class Handler(http.server.BaseHTTPRequestHandler):
-    def log_message(self, *args):
-        pass
+class SecretServer(flight.FlightServerBase):
+    def __init__(self):
+        super().__init__("grpc://127.0.0.1:0")
 
-    def do_POST(self):
-        self.rfile.read(int(self.headers.get("Content-Length", "0")))
-        payload = json.dumps({}).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
+    def do_exchange(self, context, descriptor, reader, writer):
+        assert b"SECRET_VALUE_SENTINEL" not in descriptor.command
+        parameters = reader.read_all()
+        assert parameters.column(0).to_pylist() == ["SECRET_VALUE_SENTINEL"]
+        result = pa.table({"status": ["created"]})
+        writer.begin(result.schema)
+        writer.write_table(result)
+        writer.close()
 
 
-server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-threading.Thread(
-    target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
-).start()
-try:
+with SecretServer() as server:
     db = lancedb.connect(
         "db://dev",
         api_key="API_KEY_SENTINEL",
-        host_override="http://127.0.0.1:%d" % server.server_address[1],
-        client_config={"retry_config": {"retries": 0}},
+        host_override="http://localhost:10024",
+        sql_host_override=f"grpc://127.0.0.1:{server.port}",
     )
     db.create_secret("openai-prod", "SECRET_VALUE_SENTINEL")
-finally:
-    server.shutdown()
 """
 
 
 def test_a_credential_never_reaches_a_debug_log(tmp_path):
-    """The logger sees the serialized body, so no value-side redaction reaches it.
+    """Credential parameters and authentication stay out of Flight debug logs.
 
     Runs in a subprocess because the Rust logger reads ``LANCEDB_LOG`` once, at
     import.
     """
+    pytest.importorskip("pyarrow.flight")
     script = tmp_path / "write_secret.py"
     script.write_text(_SECRET_DEBUG_LOG_SOURCE)
 
@@ -303,7 +297,7 @@ def test_a_credential_never_reaches_a_debug_log(tmp_path):
     output = result.stdout + result.stderr
 
     # Without this the test passes when debug logging is simply off.
-    assert "Sending request_id=" in output, output
+    assert "Created client for host:" in output, output
     assert "SECRET_VALUE_SENTINEL" not in output
     assert "API_KEY_SENTINEL" not in output
 
@@ -1814,35 +1808,6 @@ def _mock_remote_function_catalog():
         finally:
             server.shutdown()
             thread.join()
-
-
-def test_remote_secret_verbs_round_trip():
-    with _mock_remote_function_catalog() as (host, state):
-        db = lancedb.connect(
-            "db://dev",
-            api_key="fake",
-            host_override=host,
-            client_config={"retry_config": {"retries": 0}},
-        )
-        assert db.create_secret("openai-prod", "sk-live-0001") is None
-        assert db.alter_secret("openai-prod", "sk-live-0002") is None
-        assert list(db.list_secrets()) == ["openai-prod", "hf-prod"]
-        assert db.drop_secret("openai-prod") is None
-
-    routes = [path for path, _ in state["requests"]]
-    assert routes == [
-        "/v1/secret/openai-prod/create",
-        "/v1/secret/openai-prod/alter",
-        "/v1/namespace/$/secret/list",
-        "/v1/namespace/$/secret/list",
-        "/v1/secret/openai-prod/drop",
-    ]
-    # The Secret is the path identifier, so the body is the value alone.
-    assert state["requests"][0][1] == {"value": "sk-live-0001"}
-    # Listing is a GET: the first page asks for nothing, the second resumes on
-    # the token the server handed back, and neither carries a body.
-    assert state["requests"][2][1] == {}
-    assert state["requests"][3][1] == {"page_token": "next"}
 
 
 def test_building_a_binding_contacts_no_server():
