@@ -2,6 +2,8 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 from concurrent.futures import ThreadPoolExecutor
 import contextlib
+import copy
+from dataclasses import replace
 from datetime import timedelta
 import http.server
 import io
@@ -24,6 +26,14 @@ import lancedb
 import numpy as np
 from lancedb.conftest import MockNonNormTextEmbeddingFunction, MockTextEmbeddingFunction
 from lancedb.embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
+from lancedb.graph import (
+    AsyncPropertyGraph,
+    EdgeTable,
+    Endpoint,
+    NodeTable,
+    PropertyGraph,
+    PropertyGraphDescription,
+)
 from lancedb.query import (
     AsyncQuery,
     ColumnOrdering,
