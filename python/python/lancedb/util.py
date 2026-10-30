@@ -5,6 +5,7 @@
 import binascii
 import functools
 import importlib
+import json
 import math
 import os
 import pathlib
@@ -327,6 +328,17 @@ def _query_vector_dim(query: Optional[Any]) -> Optional[int]:
     return None
 
 
+def _embedding_vector_columns(schema: pa.Schema) -> List[str]:
+    """Vector columns that have an embedding function, from the schema metadata."""
+    metadata = schema.metadata or {}
+    serialized = metadata.get(
+        b"embedding_functions", metadata.get("embedding_functions")
+    )
+    if serialized is None:
+        return []
+    return [obj["vector_column"] for obj in json.loads(serialized)]
+
+
 def infer_vector_column_name(
     schema: pa.Schema,
     query_type: str,
@@ -347,6 +359,20 @@ def infer_vector_column_name(
         # No vector search was requested (e.g. a plain scan), so there's
         # nothing to infer.
         return None
+
+    if query_type == "auto" and isinstance(query, str):
+        # A string query is only a vector query when a vector column has an
+        # embedding function to embed it; otherwise it runs as full text
+        # search, which needs no vector column at all.
+        try:
+            return inf_vector_column_query(schema)
+        except ValueError:
+            embedded = _embedding_vector_columns(schema)
+            if len(embedded) == 1:
+                return embedded[0]
+            if embedded:
+                raise
+            return None
 
     vector_column_name = inf_vector_column_query(schema, dim=_query_vector_dim(query))
 
