@@ -13,7 +13,7 @@ use lance::dataset::refs::MAIN_BRANCH;
 use lance_namespace::models::{
     CreateNamespaceRequest, CreateNamespaceResponse, DescribeNamespaceRequest,
     DescribeNamespaceResponse, DropNamespaceRequest, DropNamespaceResponse, ListNamespacesRequest,
-    ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
+    ListTablesRequest,
 };
 #[cfg(feature = "aws")]
 use object_store::aws::AwsCredential;
@@ -23,11 +23,12 @@ use crate::connection::create_table::CreateTableBuilder;
 use crate::data::scannable::Scannable;
 use crate::database::listing::ListingDatabase;
 use crate::database::{
-    CloneTableRequest, Database, DatabaseOptions, JobInfo, OpenTableRequest, PauseJobStatus,
-    ReadConsistency, ResumeJobStatus, TableNamesRequest,
+    CloneTableRequest, Database, DatabaseOptions, ExecuteQueryRequest, JobInfo, OpenTableRequest,
+    PauseJobStatus, ReadConsistency, ResumeJobStatus, TableNamesRequest,
 };
 use crate::embeddings::{EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
+use crate::listing::{Listing, ListingOptions, ListingPage};
 #[cfg(feature = "remote")]
 use crate::remote::{
     client::ClientConfig,
@@ -37,10 +38,7 @@ use crate::remote::{
     },
 };
 use crate::secrets::SecretInfo;
-use crate::utils::{
-    validate_namespace, validate_secret_component, validate_secret_reference,
-    validate_view_reference,
-};
+use crate::utils::{validate_namespace, validate_secret_reference, validate_view_reference};
 use crate::view::ViewDescription;
 use lance::io::ObjectStoreParams;
 pub use lance_file::version::LanceFileVersion;
@@ -105,7 +103,9 @@ impl TableNamesBuilder {
         self
     }
 
-    /// The maximum number of table names to return
+    /// The maximum number of table names to return.
+    ///
+    /// Without a limit, all names are returned. Zero returns an empty list.
     pub fn limit(mut self, limit: u32) -> Self {
         self.request.limit = Some(limit);
         self
@@ -173,6 +173,8 @@ impl OpenTableBuilder {
     }
 
     /// Advanced parameters that can be used to customize table reads
+    ///
+    /// LanceDB Distributed connections reject these parameters with [`Error::NotSupported`].
     ///
     /// If set, these will take precedence over any overlapping `OpenTableOptions` options
     pub fn lance_read_params(mut self, params: ReadParams) -> Self {
@@ -331,19 +333,17 @@ pub struct CloneTableBuilder {
     request: CloneTableRequest,
 }
 
-/// Builder for asynchronously executing a SQL statement on a remote database.
+/// Builder for asynchronously executing a SQL statement on a LanceDB Distributed database.
 pub struct ExecuteQueryAsyncBuilder {
     parent: Arc<dyn Database>,
-    query: String,
-    default_namespace_path: Vec<String>,
+    request: ExecuteQueryRequest,
 }
 
 impl ExecuteQueryAsyncBuilder {
     fn new(parent: Arc<dyn Database>, query: String) -> Self {
         Self {
             parent,
-            query,
-            default_namespace_path: vec!["public".to_string()],
+            request: ExecuteQueryRequest::new(query),
         }
     }
 
@@ -356,15 +356,61 @@ impl ExecuteQueryAsyncBuilder {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        self.default_namespace_path = path.into_iter().map(Into::into).collect();
+        self.request.default_namespace_path = path.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Bind values to the statement's placeholders.
+    ///
+    /// `parameters` is a single-row batch. Column `i` binds `$<i + 1>`, and a
+    /// column whose name is not a number also binds `$<name>`, so
+    /// `WHERE id = $1` and `WHERE id = $id` both work. The values travel as
+    /// Arrow rather than as SQL text, so a float keeps its exact bits and type
+    /// and a vector stays a compact `FixedSizeList`.
+    ///
+    /// Every placeholder needs a value and every parameter must be used by a
+    /// placeholder. Parameters are supported in queries (`SELECT`, and
+    /// `EXPLAIN` of one), not in DDL or DML, nor in table-function arguments.
+    /// Do not follow a named placeholder directly with `$`: `$a$` starts a
+    /// dollar-quoted string.
+    ///
+    /// With or without parameters, the server may stream rows on the initial
+    /// call or return a polling continuation. The reader follows either path
+    /// transparently. Open it directly instead of waiting for `Finished`:
+    /// directly streamed queries need their reader to make progress.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use std::sync::Arc;
+    /// # use arrow_array::{ArrayRef, FixedSizeListArray, Int64Array, RecordBatch};
+    /// # use arrow_array::types::Float32Type;
+    /// # async fn query(db: &lancedb::Connection) -> lancedb::Result<()> {
+    /// let vector = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+    ///     [Some([0.1_f32, 0.2, 0.3].map(Some))],
+    ///     3,
+    /// );
+    /// let parameters = RecordBatch::try_from_iter([
+    ///     ("vector", Arc::new(vector) as ArrayRef),
+    ///     ("k", Arc::new(Int64Array::from(vec![10])) as ArrayRef),
+    /// ])?;
+    /// let query = db
+    ///     .execute_query_async("SELECT id FROM docs ORDER BY distance(vector, $vector) LIMIT $k")
+    ///     .parameters(parameters)
+    ///     .execute()
+    ///     .await?;
+    /// let rows = query.reader().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn parameters(mut self, parameters: RecordBatch) -> Self {
+        self.request.parameters = Some(parameters);
         self
     }
 
     /// Start the statement and return its asynchronous query handle.
     pub async fn execute(self) -> Result<crate::sql::Query> {
-        self.parent
-            .execute_query_async(&self.query, &self.default_namespace_path)
-            .await
+        self.parent.execute_query_async(self.request).await
     }
 }
 
@@ -451,12 +497,13 @@ impl Connection {
         &self.internal
     }
 
-    /// Start executing SQL on a remote LanceDB database.
+    /// Start executing SQL on a LanceDB Distributed database.
     ///
     /// The query can reference tables in other databases with SQL dot notation.
     /// Use [`ExecuteQueryAsyncBuilder::default_namespace_path`] to avoid qualifying
-    /// tables in the default namespace. Local connections return
-    /// [`Error::NotSupported`].
+    /// tables in the default namespace, and [`ExecuteQueryAsyncBuilder::parameters`]
+    /// to bind Arrow values to `$1` / `$name` placeholders instead of writing them
+    /// into the SQL text. LanceDB Embedded connections return [`Error::NotSupported`].
     ///
     /// # Example
     ///
@@ -481,14 +528,20 @@ impl Connection {
         ExecuteQueryAsyncBuilder::new(self.internal.clone(), query.into())
     }
 
+    /// Establish the remote SQL transport without executing a statement.
+    /// This checks connectivity and TLS; authentication is checked by subsequent requests.
+    pub async fn check_sql_connection(&self) -> Result<()> {
+        self.internal.check_sql_connection().await
+    }
+
     /// Describe a submitted SQL query by its connection-scoped id.
     ///
     /// This performs one bounded status poll using state retained by this
     /// connection. Running state with a live query handle is not evicted;
     /// abandoned state has bounded retention, and server expiration is
     /// honored. Terminal state is retained briefly.
-    /// Query ids are not portable to another connection. Local connections
-    /// return [`Error::NotSupported`].
+    /// Query ids are not portable to another connection. LanceDB Embedded
+    /// connections return [`Error::NotSupported`].
     pub async fn describe_query(
         &self,
         query_id: uuid::Uuid,
@@ -505,7 +558,8 @@ impl Connection {
     /// under creation, may contain only uncommitted storage, or may be concurrently
     /// dropped before it is opened.
     ///
-    /// The parameters `page_token` and `limit` can be used to paginate the results
+    /// Without a limit, all names are returned. The parameters `start_after` and
+    /// `limit` can be used to paginate the results.
     pub fn table_names(&self) -> TableNamesBuilder {
         TableNamesBuilder::new(self.internal.clone())
     }
@@ -592,7 +646,8 @@ impl Connection {
     /// in `namespace_path`, which is empty for the root namespace.
     ///
     /// The server-side job builds the OCI image, then registers the completed
-    /// artifact. Waiting on the returned typed job yields the durable
+    /// artifact. The returned job has type `query` and the SQL query UUID as its
+    /// ID. Waiting on the returned typed job yields the durable
     /// [`crate::function::FunctionVersion`]. Creation is remote-only.
     /// Local databases return [`Error::NotSupported`].
     ///
@@ -610,7 +665,7 @@ impl Connection {
     ///
     /// Both the logical name and server-assigned version id are required;
     /// mutable aliases and latest-version lookup are intentionally absent.
-    /// Local databases return [`Error::NotSupported`].
+    /// LanceDB Embedded databases return [`Error::NotSupported`].
     pub async fn get_function(
         &self,
         name: impl AsRef<str>,
@@ -625,8 +680,7 @@ impl Connection {
     /// List every published immutable Function version in `namespace_path` of
     /// the remote catalog. Functions in child namespaces are not included.
     ///
-    /// Results are ordered by Function name then version. The client walks all
-    /// server pages before returning. Local databases return
+    /// Results are ordered by Function name then version. LanceDB Embedded databases return
     /// [`Error::NotSupported`].
     ///
     /// # Example
@@ -635,23 +689,36 @@ impl Connection {
     /// # async fn list_functions(
     /// #     connection: &lancedb::Connection,
     /// # ) -> Result<(), Box<dyn std::error::Error>> {
-    /// for function in connection.list_functions(&[]).await? {
+    /// use futures::TryStreamExt;
+    /// let mut functions = connection.list_functions(&[], Default::default());
+    /// while let Some(function) = functions.try_next().await? {
     ///     println!("{} {}", function.name(), function.version());
     /// }
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn list_functions(
+    ///
+    /// Results are fetched lazily, one page at a time. See [`Listing`]
+    /// for cached-result and continuation-token semantics. Errors terminate iteration.
+    ///
+    pub fn list_functions(
         &self,
         namespace_path: &[String],
-    ) -> Result<Vec<crate::function::FunctionVersion>> {
-        self.internal.list_functions(namespace_path).await
+        options: ListingOptions,
+    ) -> Listing<crate::function::FunctionVersion> {
+        let database = self.database().clone();
+        let namespace_path = namespace_path.to_vec();
+        Listing::new(options, move |options| {
+            let database = database.clone();
+            let namespace_path = namespace_path.clone();
+            async move { database.list_functions(&namespace_path, options).await }
+        })
     }
 
     /// Remove the current Function name binding, retaining the object history.
     ///
     /// Returns `true` when the server appended a Dropped transition and
-    /// `false` for an idempotent replay. Local databases return
+    /// `false` for an idempotent replay. LanceDB Embedded databases return
     /// [`Error::NotSupported`].
     pub async fn drop_function(
         &self,
@@ -664,12 +731,11 @@ impl Connection {
             .await
     }
 
-    /// Start dropping a Function and return its cleanup job.
+    /// Drop a Function binding and return its SQL query handle.
     ///
-    /// The name is unbound before this returns; the object's content may still be being
-    /// deleted. Await [`Job::wait`][crate::job::Job::wait] to wait for that to finish. When
-    /// the server deletes inline, or when nothing was bound, the returned job is already
-    /// finished and has no id. Local databases return [`Error::NotSupported`].
+    /// The boolean reports catalog removal. The query job retains its query ID,
+    /// and repeated waits confirm completion. Physical cleanup continues in the
+    /// background. Local databases return [`Error::NotSupported`].
     pub async fn drop_function_async(
         &self,
         name: impl AsRef<str>,
@@ -681,11 +747,74 @@ impl Connection {
             .await
     }
 
+    /// Register storage access in this database. Names follow Secret namespace rules.
+    ///
+    /// ```
+    /// # async fn example(db: &lancedb::Connection) -> lancedb::Result<()> {
+    /// use lancedb::storage_integration::CreateStorageIntegrationRequest;
+    /// let info = db.create_storage_integration("raw", CreateStorageIntegrationRequest::s3("s3://customer-bucket/raw/", "arn:aws:iam::123456789012:role/access"), &[]).await?;
+    /// println!("{}", info.configuration_instructions);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn create_storage_integration(
+        &self,
+        name: impl AsRef<str>,
+        request: crate::storage_integration::CreateStorageIntegrationRequest,
+        namespace_path: &[String],
+    ) -> Result<crate::storage_integration::StorageIntegrationInfo> {
+        validate_secret_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .create_storage_integration(name.as_ref(), request, namespace_path)
+            .await
+    }
+    /// Describe a storage integration, returning secret references without credential values.
+    pub async fn describe_storage_integration(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<crate::storage_integration::StorageIntegrationInfo> {
+        validate_secret_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .describe_storage_integration(name.as_ref(), namespace_path)
+            .await
+    }
+    /// Lazily list storage integrations in a namespace of this database.
+    pub fn list_storage_integrations(
+        &self,
+        namespace_path: &[String],
+        options: ListingOptions,
+    ) -> Listing<String> {
+        let database = self.database().clone();
+        let namespace_path = namespace_path.to_vec();
+        Listing::new(options, move |options| {
+            let database = database.clone();
+            let namespace_path = namespace_path.clone();
+            async move {
+                validate_namespace(&namespace_path)?;
+                database
+                    .list_storage_integrations(&namespace_path, options)
+                    .await
+            }
+        })
+    }
+    /// Drop an integration with ownership permission; integrations in use cannot be dropped.
+    pub async fn drop_storage_integration(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<()> {
+        validate_secret_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .drop_storage_integration(name.as_ref(), namespace_path)
+            .await
+    }
+
     /// Create a named Secret in this database.
     ///
     /// Fails if the name is taken, so a create can never silently become a
     /// rotation. There is no API that reads a stored credential back; the only
-    /// consumer is a Function that binds the Secret by name. Local databases
+    /// consumer is a Function that binds the Secret by name. LanceDB Embedded databases
     /// return [`Error::NotSupported`].
     pub async fn create_secret(
         &self,
@@ -704,7 +833,7 @@ impl Connection {
     /// Fails if it does not exist. Every Function bound to the Secret resolves
     /// the new value from its next execution, and no new Function version is
     /// minted -- which is what lets a rotation reach columns pinned to a
-    /// version registered before it. Local databases return
+    /// version registered before it. LanceDB Embedded databases return
     /// [`Error::NotSupported`].
     pub async fn alter_secret(
         &self,
@@ -721,13 +850,37 @@ impl Connection {
     /// The names of every Secret in this database.
     ///
     /// Names only. No path in this API returns a stored credential, by
-    /// construction rather than by policy. Local databases return
+    /// construction rather than by policy. LanceDB Embedded databases return
     /// [`Error::NotSupported`].
-    pub async fn list_secrets(&self, namespace_path: &[String]) -> Result<Vec<String>> {
-        for segment in namespace_path {
-            validate_secret_component("Secret namespace path segment", segment)?;
-        }
-        self.internal.list_secrets(namespace_path).await
+    ///
+    /// Results are fetched lazily, one page at a time. See [`Listing`]
+    /// for cached-result and continuation-token semantics. Errors terminate iteration.
+    ///
+    /// ```
+    /// # async fn example(connection: &lancedb::Connection) -> lancedb::Result<()> {
+    /// use futures::TryStreamExt;
+    /// let mut items = connection.list_secrets(&[], Default::default());
+    /// while let Some(item) = items.try_next().await? {
+    ///     println!("{item:?}");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn list_secrets(
+        &self,
+        namespace_path: &[String],
+        options: ListingOptions,
+    ) -> Listing<String> {
+        let database = self.database().clone();
+        let namespace_path = namespace_path.to_vec();
+        Listing::new(options, move |options| {
+            let database = database.clone();
+            let namespace_path = namespace_path.clone();
+            async move {
+                validate_namespace(&namespace_path)?;
+                database.list_secrets(&namespace_path, options).await
+            }
+        })
     }
 
     /// Drop a Secret.
@@ -735,7 +888,7 @@ impl Connection {
     /// Functions bound to it fail at their next job, naming the Secret; that
     /// is the revocation path. The name becomes free to reuse, and a new
     /// Secret under it is picked up by everything still bound to that name.
-    /// Local databases return [`Error::NotSupported`].
+    /// LanceDB Embedded databases return [`Error::NotSupported`].
     pub async fn drop_secret(
         &self,
         name: impl AsRef<str>,
@@ -751,7 +904,7 @@ impl Connection {
     ///
     /// Never the value. The type it returns has no field for one, so this is a
     /// property of the API rather than of what the caller chooses to read.
-    /// Local databases return [`Error::NotSupported`].
+    /// LanceDB Embedded databases return [`Error::NotSupported`].
     pub async fn describe_secret(
         &self,
         name: impl AsRef<str>,
@@ -771,7 +924,7 @@ impl Connection {
     ///
     /// There is no replace: a name already taken is an error, and changing a
     /// view is a drop followed by a create, each authorized against what it
-    /// actually touches. Local databases return [`Error::NotSupported`].
+    /// actually touches. LanceDB Embedded databases return [`Error::NotSupported`].
     ///
     /// # Example
     ///
@@ -795,7 +948,8 @@ impl Connection {
     /// let described = connection.describe_view("recent_orders", &namespace).await?;
     /// println!("{} in {:?}", described.query, described.default_namespace_path);
     ///
-    /// let names = connection.list_views(&namespace).await?;
+    /// use futures::TryStreamExt;
+    /// let names: Vec<_> = connection.list_views(&namespace, Default::default()).try_collect().await?;
     /// assert!(names.iter().any(|name| name == "recent_orders"));
     ///
     /// // Dropping the view leaves `orders` untouched.
@@ -819,7 +973,7 @@ impl Connection {
     /// schema that query resolved to.
     ///
     /// The schema is the one recorded at creation. A source altered since then
-    /// shows up when the view is read, not here. Local databases return
+    /// shows up when the view is read, not here. LanceDB Embedded databases return
     /// [`Error::NotSupported`].
     pub async fn describe_view(
         &self,
@@ -832,31 +986,23 @@ impl Connection {
             .await
     }
 
-    /// Drop a view and wait for its definition to be deleted.
+    /// Drop a view and wait for catalog removal.
     ///
     /// The tables it reads are untouched: a view holds no rows of its own.
-    /// Use [`Connection::drop_view_async`] to get the cleanup job instead of
-    /// waiting on it. Local databases return [`Error::NotSupported`].
+    /// Use [`Connection::drop_view_async`] to retain its SQL query job.
+    /// Completion confirms catalog removal; physical cleanup continues
+    /// separately. LanceDB Embedded databases return [`Error::NotSupported`].
     pub async fn drop_view(&self, name: impl AsRef<str>, namespace_path: &[String]) -> Result<()> {
         validate_view_reference(name.as_ref(), namespace_path)?;
         self.internal.drop_view(name.as_ref(), namespace_path).await
     }
 
-    /// Start dropping a view and return the job deleting its definition.
+    /// Drop a view and return its SQL query job.
     ///
-    /// The name is free before this returns; the definition dataset may still
-    /// be being deleted. Await [`Job::wait`][crate::job::Job::wait] to wait for
-    /// that. When nothing was bound to the name, the returned job is already
-    /// finished and has no id. Local databases return [`Error::NotSupported`].
-    ///
-    /// ```no_run
-    /// # use lancedb::Connection;
-    /// # async fn drop(conn: &Connection) -> lancedb::Result<()> {
-    /// let job = conn.drop_view_async("recent_orders", &[]).await?;
-    /// job.wait().await?;
-    /// # Ok(())
-    /// # }
-    /// ```
+    /// The job has type `query` and its ID is the SQL query UUID. Await
+    /// [`Job::wait`][crate::job::Job::wait] to confirm catalog removal; physical
+    /// cleanup continues separately. LanceDB Embedded databases return
+    /// [`Error::NotSupported`].
     pub async fn drop_view_async(
         &self,
         name: impl AsRef<str>,
@@ -871,16 +1017,41 @@ impl Connection {
     /// The names of the views in one namespace.
     ///
     /// Names only; a definition is query metadata and comes from
-    /// [`Self::describe_view`]. The client walks all server pages before
-    /// returning. Local databases return [`Error::NotSupported`].
-    pub async fn list_views(&self, namespace_path: &[String]) -> Result<Vec<String>> {
-        validate_namespace(namespace_path)?;
-        self.internal.list_views(namespace_path).await
+    /// [`Self::describe_view`]. LanceDB Embedded databases return [`Error::NotSupported`].
+    ///
+    /// Results are fetched lazily, one page at a time. See [`Listing`]
+    /// for cached-result and continuation-token semantics. Errors terminate iteration.
+    ///
+    /// ```
+    /// # async fn example(connection: &lancedb::Connection) -> lancedb::Result<()> {
+    /// use futures::TryStreamExt;
+    /// let mut items = connection.list_views(&[], Default::default());
+    /// while let Some(item) = items.try_next().await? {
+    ///     println!("{item:?}");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn list_views(
+        &self,
+        namespace_path: &[String],
+        options: ListingOptions,
+    ) -> Listing<String> {
+        let database = self.database().clone();
+        let namespace_path = namespace_path.to_vec();
+        Listing::new(options, move |options| {
+            let database = database.clone();
+            let namespace_path = namespace_path.clone();
+            async move {
+                validate_namespace(&namespace_path)?;
+                database.list_views(&namespace_path, options).await
+            }
+        })
     }
 
     /// Rename a table in the database.
     ///
-    /// This is only supported in LanceDB Cloud.
+    /// This is only supported in LanceDB Distributed.
     pub async fn rename_table(
         &self,
         old_name: impl AsRef<str>,
@@ -934,8 +1105,26 @@ impl Connection {
     }
 
     /// List server-side jobs across the database's tables.
-    pub async fn list_jobs(&self) -> Result<Vec<JobInfo>> {
-        self.internal.list_jobs().await
+    ///
+    /// Results are fetched lazily, one page at a time. See [`Listing`]
+    /// for cached-result and continuation-token semantics. Errors terminate iteration.
+    ///
+    /// ```
+    /// # async fn example(connection: &lancedb::Connection) -> lancedb::Result<()> {
+    /// use futures::TryStreamExt;
+    /// let mut items = connection.list_jobs(Default::default());
+    /// while let Some(item) = items.try_next().await? {
+    ///     println!("{item:?}");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn list_jobs(&self, options: ListingOptions) -> Listing<JobInfo> {
+        let database = self.database().clone();
+        Listing::new(options, move |options| {
+            let database = database.clone();
+            async move { database.list_jobs(options).await }
+        })
     }
 
     /// Request cancellation of a server-side job by id. Returns true if the
@@ -998,12 +1187,43 @@ impl Connection {
         self.internal.drop_all_tables(namespace_path).await
     }
 
-    /// List immediate child namespace names in the given namespace
-    pub async fn list_namespaces(
+    /// Lazily list immediate child namespace names. Each request asks for at
+    /// most 100 names unless `options.page_limit` is set.
+    ///
+    /// ```
+    /// # async fn example(connection: &lancedb::Connection) -> lancedb::Result<()> {
+    /// use futures::TryStreamExt;
+    /// let names: Vec<String> = connection.list_namespaces(&[], Default::default())
+    ///     .try_collect().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn list_namespaces(
         &self,
-        request: ListNamespacesRequest,
-    ) -> Result<ListNamespacesResponse> {
-        self.internal.list_namespaces(request).await
+        namespace_path: &[String],
+        options: ListingOptions,
+    ) -> Listing<String> {
+        let database = self.database().clone();
+        let namespace_path = namespace_path.to_vec();
+        Listing::new(options, move |options| {
+            let database = database.clone();
+            let namespace_path = namespace_path.clone();
+            async move {
+                validate_namespace(&namespace_path)?;
+                let response = database
+                    .list_namespaces(ListNamespacesRequest {
+                        id: Some(namespace_path),
+                        page_token: options.page_token,
+                        limit: Some(options.page_limit.unwrap_or(100) as i32),
+                        ..Default::default()
+                    })
+                    .await?;
+                Ok(ListingPage {
+                    items: response.namespaces,
+                    page_token: response.page_token,
+                })
+            }
+        })
     }
 
     /// Create a new namespace
@@ -1035,7 +1255,7 @@ impl Connection {
     /// For ListingDatabase, it is the equivalent DirectoryNamespace.
     /// For RemoteDatabase, it is the equivalent RestNamespace.
     ///
-    /// Remote connections using dynamic headers forward them through the
+    /// LanceDB Distributed connections using dynamic headers forward them through the
     /// namespace client's per-request context provider.
     pub async fn namespace_client(&self) -> Result<Arc<dyn lance_namespace::LanceNamespace>> {
         self.internal.namespace_client().await
@@ -1046,7 +1266,7 @@ impl Connection {
     /// - impl_type: "dir" for DirectoryNamespace, "rest" for RestNamespace
     /// - properties: configuration properties for the namespace
     ///
-    /// Remote connections using dynamic headers cannot be exported because the
+    /// LanceDB Distributed connections using dynamic headers cannot be exported because the
     /// namespace client config only carries static headers.
     pub async fn namespace_client_config(
         &self,
@@ -1054,9 +1274,43 @@ impl Connection {
         self.internal.namespace_client_config().await
     }
 
-    /// List tables with pagination support
-    pub async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
-        self.internal.list_tables(request).await
+    /// Lazily list tables. Each request asks for at most 100 names unless
+    /// `options.page_limit` is set.
+    ///
+    /// ```
+    /// # async fn example(connection: &lancedb::Connection) -> lancedb::Result<()> {
+    /// use futures::TryStreamExt;
+    /// let names: Vec<String> = connection.list_tables(&[], Default::default())
+    ///     .try_collect().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn list_tables(
+        &self,
+        namespace_path: &[String],
+        options: ListingOptions,
+    ) -> Listing<String> {
+        let database = self.database().clone();
+        let namespace_path = namespace_path.to_vec();
+        Listing::new(options, move |options| {
+            let database = database.clone();
+            let namespace_path = namespace_path.clone();
+            async move {
+                validate_namespace(&namespace_path)?;
+                let response = database
+                    .list_tables(ListTablesRequest {
+                        id: Some(namespace_path),
+                        page_token: options.page_token,
+                        limit: Some(options.page_limit.unwrap_or(100) as i32),
+                        ..Default::default()
+                    })
+                    .await?;
+                Ok(ListingPage {
+                    items: response.tables,
+                    page_token: response.page_token,
+                })
+            }
+        })
     }
 
     /// Get the in-memory embedding registry.
@@ -1074,9 +1328,10 @@ pub struct ConnectRequest {
     ///
     /// ### Accepted URI formats
     ///
-    /// - `/path/to/database` - local database on file system.
+    /// - `/path/to/database` - database on the local file system.
     /// - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud object store
-    /// - `db://dbname` - LanceDB Cloud
+    /// - `db://dbname` - LanceDB Enterprise or LanceDB Cloud (legacy)
+    /// - `db://` with a host override - LanceDB Enterprise tables in the storage root
     pub uri: String,
 
     #[cfg(feature = "remote")]
@@ -1153,9 +1408,9 @@ impl ConnectBuilder {
         }
     }
 
-    /// Set the LanceDB Cloud API key.
+    /// Set the API key for LanceDB Enterprise or LanceDB Cloud (legacy).
     ///
-    /// This option is only used when connecting to LanceDB Cloud (db:// URIs)
+    /// This option is only used for `db://` URIs
     /// and will be ignored for other URIs.
     ///
     /// # Arguments
@@ -1169,9 +1424,9 @@ impl ConnectBuilder {
         self
     }
 
-    /// Set the LanceDB Cloud region.
+    /// Set the LanceDB Cloud (legacy) region.
     ///
-    /// This option is only used when connecting to LanceDB Cloud (db:// URIs)
+    /// This option is only used when connecting to LanceDB Cloud (`db://` URIs)
     /// and will be ignored for other URIs.
     ///
     /// # Arguments
@@ -1185,10 +1440,12 @@ impl ConnectBuilder {
         self
     }
 
-    /// Set the LanceDB Cloud host override.
+    /// Set the host override, used to connect to LanceDB Enterprise.
     ///
-    /// This option is only used when connecting to LanceDB Cloud (db:// URIs)
+    /// This option is only used for `db://` URIs
     /// and will be ignored for other URIs.
+    /// Use the URI `db://` together with a host override to connect to
+    /// LanceDB Enterprise tables stored directly in the storage root.
     ///
     /// # Arguments
     ///
@@ -1202,7 +1459,7 @@ impl ConnectBuilder {
         self
     }
 
-    /// Set the SQL service host override for a remote connection.
+    /// Set the SQL service host override for a LanceDB Enterprise connection.
     ///
     /// The SQL client is initialized lazily when the connection first executes
     /// SQL and is retained for the connection's lifetime.
@@ -1221,13 +1478,13 @@ impl ConnectBuilder {
     /// native LanceDB databases.
     ///
     /// See [crate::remote::db::RemoteDatabaseOptions] for the options available for
-    /// LanceDB Cloud and LanceDB Enterprise.
+    /// LanceDB Enterprise and LanceDB Cloud (legacy).
     pub fn database_options(mut self, database_options: &dyn DatabaseOptions) -> Self {
         database_options.serialize_into_map(&mut self.request.options);
         self
     }
 
-    /// Set the LanceDB Cloud client configuration.
+    /// Set the HTTP client configuration for LanceDB Enterprise or LanceDB Cloud (legacy).
     ///
     /// ```no_run
     /// # use lancedb::connect;
@@ -1251,7 +1508,7 @@ impl ConnectBuilder {
         self
     }
 
-    /// Configure OAuth authentication for LanceDB Cloud/Enterprise.
+    /// Configure OAuth authentication for LanceDB Enterprise.
     ///
     /// This creates an [`OAuthHeaderProvider`](crate::remote::OAuthHeaderProvider)
     /// from the given config and sets it as the header provider. OAuth cannot
@@ -1336,6 +1593,7 @@ impl ConnectBuilder {
 
     /// Enable or disable manifest-backed directory namespace mode for local
     /// native connections.
+    /// LanceDB Distributed connections reject enabling this option with [`Error::NotSupported`].
     ///
     /// When enabled, the connection uses the directory namespace database
     /// directly for all table operations and forces
@@ -1371,6 +1629,7 @@ impl ConnectBuilder {
     }
 
     /// Set a custom session for object stores and caching.
+    /// LanceDB Distributed connections reject this option with [`Error::NotSupported`].
     ///
     /// By default, a new session with default configuration will be created.
     /// This method allows you to provide a custom session with your own
@@ -1402,20 +1661,37 @@ impl ConnectBuilder {
     fn execute_remote(self) -> Result<Connection> {
         use crate::remote::db::RemoteDatabaseOptions;
 
+        for (option, provided) in [
+            ("session", self.request.session.is_some()),
+            ("manifest_enabled", self.request.manifest_enabled),
+            (
+                "namespace_client_properties",
+                !self.request.namespace_client_properties.is_empty(),
+            ),
+        ] {
+            if provided {
+                return Err(Error::NotSupported {
+                    message: format!(
+                        "{option} is not supported for LanceDB Distributed connections"
+                    ),
+                });
+            }
+        }
+
         let mut merged_options = self.request.options.clone();
         Self::apply_env_defaults(&ENV_VARS_TO_STORAGE_OPTS, &mut merged_options);
         let sql_host_override = merged_options.get(OPT_REMOTE_SQL_HOST_OVERRIDE).cloned();
         let options = RemoteDatabaseOptions::parse_from_map(&merged_options)?;
 
         let region = options.region.ok_or_else(|| Error::InvalidInput {
-            message: "A region is required when connecting to LanceDb Cloud".to_string(),
+            message: "A region is required when connecting to LanceDB Cloud".to_string(),
         })?;
         let api_key = match (&self.oauth_config, &options.api_key) {
             (Some(_), None) => String::new(),
             (Some(_), Some(_)) => {
                 return Err(Error::InvalidInput {
                     message:
-                        "api_key and oauth_config cannot both be set when connecting to LanceDb Cloud"
+                        "api_key and oauth_config cannot both be set when connecting to LanceDB Enterprise or LanceDB Cloud"
                             .to_string(),
                 });
             }
@@ -1423,7 +1699,7 @@ impl ConnectBuilder {
             (None, None) => {
                 return Err(Error::InvalidInput {
                     message:
-                        "An api_key or oauth_config is required when connecting to LanceDb Cloud"
+                        "An api_key or oauth_config is required when connecting to LanceDB Enterprise or LanceDB Cloud"
                             .to_string(),
                 });
             }
@@ -1432,7 +1708,7 @@ impl ConnectBuilder {
         if self.oauth_config.is_some() && self.request.client_config.header_provider.is_some() {
             return Err(Error::InvalidInput {
                 message:
-                    "oauth_config and client_config.header_provider cannot both be set when connecting to LanceDb Cloud"
+                    "oauth_config and client_config.header_provider cannot both be set when connecting to LanceDB Enterprise or LanceDB Cloud"
                         .to_string(),
             });
         }
@@ -1470,7 +1746,7 @@ impl ConnectBuilder {
     #[cfg(not(feature = "remote"))]
     fn execute_remote(self) -> Result<Connection> {
         Err(Error::Runtime {
-            message: "cannot connect to LanceDb Cloud unless the 'remote' feature is enabled"
+            message: "cannot connect to LanceDB Enterprise or LanceDB Cloud unless the 'remote' feature is enabled"
                 .to_string(),
         })
     }
@@ -1506,7 +1782,7 @@ impl ConnectBuilder {
 /// # Arguments
 ///
 /// * `uri` - URI where the database is located, can be a local directory, supported remote cloud storage,
-///   or a LanceDB Cloud database.  See [ConnectOptions::uri] for a list of accepted formats
+///   or a LanceDB Enterprise or LanceDB Cloud (legacy) database.  See [ConnectOptions::uri] for a list of accepted formats
 pub fn connect(uri: &str) -> ConnectBuilder {
     ConnectBuilder::new(uri)
 }
@@ -1807,11 +2083,42 @@ mod tests {
         match result {
             Err(Error::InvalidInput { message })
                 if message
-                    == "api_key and oauth_config cannot both be set when connecting to LanceDb Cloud" =>
+                    == "api_key and oauth_config cannot both be set when connecting to LanceDB Enterprise or LanceDB Cloud" =>
                 {}
             Err(err) => panic!("expected InvalidInput, got {err:?}"),
             Ok(_) => panic!("expected api_key and oauth_config to be rejected"),
         }
+    }
+
+    #[cfg(feature = "remote")]
+    #[tokio::test]
+    async fn test_connect_remote_storage_root() {
+        let conn = ConnectBuilder::new("db://")
+            .region("us-east-1")
+            .api_key("my-api-key")
+            .host_override("https://example.com")
+            .execute()
+            .await
+            .unwrap();
+
+        let (impl_name, properties) = conn.namespace_client_config().await.unwrap();
+        assert_eq!(impl_name, "rest");
+        assert_eq!(properties["uri"], "https://example.com");
+        assert!(
+            !properties.contains_key("header.x-lancedb-database"),
+            "storage-root connections must not send the x-lancedb-database header"
+        );
+
+        let result = ConnectBuilder::new("db://")
+            .region("us-east-1")
+            .api_key("my-api-key")
+            .execute()
+            .await;
+        assert!(matches!(
+            result,
+            Err(Error::InvalidInput { message })
+                if message.contains("A host override is required")
+        ));
     }
 
     #[cfg(feature = "remote")]
@@ -1859,7 +2166,7 @@ mod tests {
         match result {
             Err(Error::InvalidInput { message })
                 if message
-                    == "oauth_config and client_config.header_provider cannot both be set when connecting to LanceDb Cloud" =>
+                    == "oauth_config and client_config.header_provider cannot both be set when connecting to LanceDB Enterprise or LanceDB Cloud" =>
                 {}
             Err(err) => panic!("expected InvalidInput, got {err:?}"),
             Ok(_) => panic!("expected header_provider and oauth_config to be rejected"),
@@ -2118,27 +2425,50 @@ mod tests {
         }
         names.sort();
 
-        // Walking in pages has to reach every table exactly once, with nothing lost at a
-        // page boundary.
-        let mut seen = Vec::with_capacity(names.len());
-        let mut page_token = None;
-        loop {
-            let page = db
-                .list_tables(ListTablesRequest {
-                    id: Some(Vec::new()),
-                    limit: Some(2),
-                    page_token,
-                    ..Default::default()
-                })
-                .await
-                .unwrap();
-            seen.extend(page.tables);
-            page_token = page.page_token.filter(|token| !token.is_empty());
-            if page_token.is_none() {
-                break;
-            }
-        }
+        let seen = futures::TryStreamExt::try_collect::<Vec<_>>(
+            db.list_tables(&[], ListingOptions::default().page_limit(2)),
+        )
+        .await
+        .unwrap();
         assert_eq!(seen, names);
+    }
+
+    #[tokio::test]
+    async fn test_table_listing_defaults_and_zero_limit() {
+        let tempdir = tempfile::tempdir().unwrap();
+        // Listing discovers physical entries without opening the datasets.
+        let names: Vec<_> = (0..130).map(|i| format!("t{i:03}")).collect();
+        for name in &names {
+            std::fs::create_dir(tempdir.path().join(format!("{name}.lance"))).unwrap();
+        }
+        let db = connect(tempdir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(db.table_names().execute().await.unwrap(), names);
+        assert!(
+            db.table_names()
+                .limit(0)
+                .execute()
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        let mut listing = db.list_tables(&[], ListingOptions::default());
+        assert_eq!(listing.num_page_results(), 0);
+        let first = listing.next_page().await.unwrap().unwrap();
+        assert_eq!(first.items, names[..100]);
+        assert!(first.page_token.is_some());
+        let second = listing.next_page().await.unwrap().unwrap();
+        assert_eq!(second.items, names[100..]);
+        assert!(second.page_token.is_none());
+        assert!(listing.next_page().await.unwrap().is_none());
+
+        let mut all = db.list_tables(&[], ListingOptions::default().page_limit(200));
+        assert_eq!(all.next_page().await.unwrap().unwrap().items, names);
+        let mut invalid = db.list_tables(&[], ListingOptions::default().page_limit(0));
+        assert!(invalid.next_page().await.is_err());
     }
 
     #[tokio::test]

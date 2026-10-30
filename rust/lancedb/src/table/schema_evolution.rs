@@ -13,6 +13,7 @@ use lance::dataset::transaction::{Operation, Transaction, UpdateMap, UpdateMapEn
 use lance::dataset::{ColumnAlteration, CommitBuilder, Dataset, NewColumnTransform};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use super::computed_columns;
 use super::{BaseTable, NativeTable};
@@ -104,6 +105,7 @@ pub(crate) async fn execute_add_columns(
     transforms: NewColumnTransform,
     read_columns: Option<Vec<String>>,
 ) -> Result<AddColumnsResult> {
+    table.ensure_not_a_view("add columns to").await?;
     computed_columns::ensure_not_function_bound(
         table.schema().await?.as_ref(),
         "schema evolution",
@@ -127,10 +129,13 @@ pub(crate) async fn execute_add_columns(
 pub(crate) async fn execute_declare(
     table: &NativeTable,
     columns: &[(String, String)],
+    options: computed_columns::ComputedColumnOptions,
 ) -> Result<AddColumnsResult> {
     use lance::dataset::mem_wal::DatasetMemWalExt;
 
-    // An LSM write spec keeps visible rows in tiers refresh cannot reach;
+    crate::require_experimental_functions()?;
+
+    // An RTE write spec keeps visible rows in tiers refresh cannot reach;
     // checked against latest committed state, not this handle's snapshot.
     table.checkout_latest().await?;
     computed_columns::ensure_not_function_bound(
@@ -148,7 +153,7 @@ pub(crate) async fn execute_declare(
         .list_mem_wal_latest_shard_ids()
         .await?
         .is_empty();
-    if retained_sstables || table.get_lsm_write_spec().await?.is_some() {
+    if retained_sstables || table.get_rte_spec().await?.is_some() {
         return Err(Error::NotSupported {
             message: "computed columns are not supported on a table with an LSM write \
                       spec: rows in un-compacted tiers are invisible to refresh"
@@ -156,6 +161,10 @@ pub(crate) async fn execute_declare(
         });
     }
     let transform = computed_columns::declare(table.schema().await?, columns)?;
+    let NewColumnTransform::AllNulls(schema) = transform else {
+        unreachable!("declarations are all-null")
+    };
+    let transform = NewColumnTransform::AllNulls(Arc::new(options.apply_to_schema(&schema)?));
     commit_add_columns(table, transform, None).await
 }
 
@@ -202,6 +211,15 @@ pub(crate) async fn execute_alter_columns(
     table.dataset.ensure_mutable()?;
     let mut dataset = (*table.dataset.get().await?).clone();
     let schema = std::sync::Arc::new(ArrowSchema::from(dataset.schema()));
+    ensure_only_computed_columns_of_a_view(
+        table,
+        &dataset,
+        &schema,
+        "alter columns of",
+        alterations
+            .iter()
+            .map(|alteration| alteration.path.as_str()),
+    )?;
     // A Function binding stores its columns' exact fields, nullability
     // included, so every alteration of one counts, and a rename's target too.
     computed_columns::ensure_not_function_bound(
@@ -241,6 +259,13 @@ pub(crate) async fn execute_drop_columns(
     table.dataset.ensure_mutable()?;
     let mut dataset = (*table.dataset.get().await?).clone();
     let schema = std::sync::Arc::new(ArrowSchema::from(dataset.schema()));
+    ensure_only_computed_columns_of_a_view(
+        table,
+        &dataset,
+        &schema,
+        "drop columns of",
+        columns.iter().copied(),
+    )?;
     let unbinding = computed_columns::plan_function_unbinding(schema.as_ref(), columns)?;
 
     let mut names = columns.iter().map(|c| c.to_string()).collect::<Vec<_>>();
@@ -264,6 +289,30 @@ pub(crate) async fn execute_drop_columns(
     let version = dataset.version().version;
     table.dataset.update(dataset);
     Ok(DropColumnsResult { version })
+}
+
+/// A view's stored columns are the definition's output, which refresh checks
+/// against the view's schema; only its computed columns may be altered or
+/// dropped.
+fn ensure_only_computed_columns_of_a_view<'a>(
+    table: &NativeTable,
+    dataset: &Dataset,
+    schema: &ArrowSchema,
+    operation: &str,
+    paths: impl IntoIterator<Item = &'a str>,
+) -> Result<()> {
+    let metadata = &dataset.schema().metadata;
+    if !metadata.contains_key(crate::materialized_view::DEFINITION_META_KEY) {
+        return Ok(());
+    }
+    let computed = computed_columns::computed_columns(schema);
+    if paths
+        .into_iter()
+        .all(|path| computed.iter().any(|column| column.name == path))
+    {
+        return Ok(());
+    }
+    crate::materialized_view::ensure_not_a_view(&table.name, metadata, operation)
 }
 
 /// Retire the bindings a drop covers, in the commit before it.
@@ -412,95 +461,15 @@ mod tests {
     use crate::function::FunctionBinding;
     use crate::query::{ExecutableQuery, QueryBase, Select};
     use crate::table::NewColumnTransform;
+    use crate::table::computed_columns::test_support::{
+        bound_table, stamp_bindings, text_features_binding,
+    };
     use crate::table::computed_columns::{
-        FUNCTION_ASSIGNMENT_OUTPUT_ORDINAL, FUNCTION_BINDINGS_META_KEY,
-        ensure_supported_function_metadata, function_bindings, function_bindings_metadata,
-        function_computed_column_metadata, is_declaration_key,
+        FUNCTION_BINDINGS_META_KEY, ensure_supported_function_metadata, function_bindings,
+        is_declaration_key,
     };
     use crate::{Error, Table};
     use std::collections::HashMap;
-
-    /// A table carrying the fixture binding: `title` and `body` are its
-    /// inputs, `search_text` and `search_token_count` its outputs, `spare`
-    /// nobody's. Stamped the way the server does it, since no local path
-    /// declares a binding.
-    async fn bound_table() -> Table {
-        let conn = connect("memory://").execute().await.unwrap();
-        let batch = record_batch!(
-            ("title", Utf8, ["a"]),
-            ("body", Utf8, ["b"]),
-            ("search_text", Utf8, ["a b"]),
-            ("search_token_count", Int64, [2]),
-            ("spare", Int32, [1])
-        )
-        .unwrap();
-        let table = conn.create_table("bound", batch).execute().await.unwrap();
-        stamp_bindings(&table, &[text_features_binding("")]).await;
-        table
-    }
-
-    /// The fixture binding, its id and output names suffixed so a table can
-    /// carry more than one.
-    fn text_features_binding(suffix: &str) -> FunctionBinding {
-        let raw = include_str!(
-            "../../tests/fixtures/first_class_functions/v1/remote_function_binding.json"
-        );
-        if suffix.is_empty() {
-            return FunctionBinding::from_json(raw).unwrap();
-        }
-        FunctionBinding::from_json(
-            &raw.replace("fb_01K3TEXT", &format!("fb_01K3TEXT{suffix}"))
-                .replace("search_text", &format!("search_text{suffix}"))
-                .replace("search_token_count", &format!("search_token_count{suffix}")),
-        )
-        .unwrap()
-    }
-
-    /// Stamp bindings the way the server does it, since no local path
-    /// declares one: the envelope on the schema, a declaration marker on
-    /// every output field.
-    async fn stamp_bindings(table: &Table, bindings: &[FunctionBinding]) {
-        let native = table.as_native().unwrap();
-        let mut dataset = native.dataset.get().await.unwrap().as_ref().clone();
-        dataset
-            .update_schema_metadata(vec![(
-                FUNCTION_BINDINGS_META_KEY.to_string(),
-                Some(function_bindings_metadata(bindings).unwrap()),
-            )])
-            .await
-            .unwrap();
-        let inputs = ["title".to_string(), "body".to_string()];
-        let outputs = bindings
-            .iter()
-            .flat_map(|binding| {
-                let assignment = binding.assignment().map(|assignment| {
-                    (
-                        assignment.output_name.clone(),
-                        FUNCTION_ASSIGNMENT_OUTPUT_ORDINAL,
-                    )
-                });
-                binding
-                    .outputs()
-                    .iter()
-                    .map(|output| (output.output_name.clone(), output.output_ordinal))
-                    .chain(assignment)
-                    .map(|(name, ordinal)| {
-                        (
-                            dataset.schema().field(&name).unwrap().id as u32,
-                            function_computed_column_metadata(
-                                binding.binding_id(),
-                                ordinal,
-                                &inputs,
-                            ),
-                        )
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
-        dataset.replace_field_metadata(outputs).await.unwrap();
-        native.dataset.update(dataset);
-        ensure_supported_function_metadata(&table.schema().await.unwrap()).unwrap();
-    }
 
     fn metadata_update(path: &str) -> FieldMetadataUpdate {
         FieldMetadataUpdate {
@@ -524,12 +493,14 @@ mod tests {
             .execute()
             .await
             .unwrap();
-        table
-            .add_columns()
-            .computed("derived", "spare * 2")
-            .execute()
-            .await
-            .unwrap();
+        if cfg!(feature = "experimental-functions") {
+            table
+                .add_columns()
+                .computed("derived", "spare * 2")
+                .execute()
+                .await
+                .unwrap();
+        }
         table
             .update_field_metadata(&[metadata_update("eager")])
             .await
@@ -543,7 +514,10 @@ mod tests {
         let schema = table.schema().await.unwrap();
         ensure_supported_function_metadata(&schema).unwrap();
         assert_eq!(function_bindings(&schema).unwrap().len(), 1);
-        assert!(schema.field_with_name("derived").is_ok());
+        assert_eq!(
+            schema.field_with_name("derived").is_ok(),
+            cfg!(feature = "experimental-functions")
+        );
         assert!(schema.field_with_name("moved").is_err());
     }
 
@@ -611,14 +585,16 @@ mod tests {
                     .await
                     .unwrap_err(),
             );
-            bound(
-                table
-                    .add_columns()
-                    .computed(column, "1")
-                    .execute()
-                    .await
-                    .unwrap_err(),
-            );
+            if cfg!(feature = "experimental-functions") {
+                bound(
+                    table
+                        .add_columns()
+                        .computed(column, "1")
+                        .execute()
+                        .await
+                        .unwrap_err(),
+                );
+            }
         }
         bound(
             table

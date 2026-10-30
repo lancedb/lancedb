@@ -7,7 +7,13 @@
 //! one source table and maintained by refresh rather than by writes. Creation
 //! commits an empty table carrying the defining query in schema metadata; a
 //! query this version cannot maintain reads back as unrefreshable, not as a
-//! plain table. Queries, indexes and search work on the view unchanged.
+//! plain table. Queries, indexes and search work on the view unchanged;
+//! writes to its rows or stored columns are refused.
+//!
+//! Local creation and refresh require the `experimental-functions` Cargo
+//! feature. Opening, reading, listing and dropping existing views, remote
+//! client operations, and shared server commit primitives remain available
+//! without it.
 
 mod grouped;
 pub use grouped::IVF_PARTITION;
@@ -27,6 +33,7 @@ use crate::database::{CreateTableRequest, Database, OpenTableRequest};
 use crate::embeddings::EmbeddingDefinition;
 use crate::function::FunctionBinding;
 use crate::job::Job;
+use crate::listing::{Listing, ListingOptions};
 use crate::table::Table;
 use crate::table::computed_columns::{
     FUNCTION_BINDINGS_META_KEY, computed_column_from_field, computed_columns,
@@ -39,6 +46,9 @@ pub use refresh::{RefreshMaterializedViewResult, RefreshMode};
 
 /// Schema metadata key holding the view definition; see [`DEFINITION_FORMAT`].
 pub const DEFINITION_META_KEY: &str = "mv.definition";
+
+/// How many views may stand between a view and a plain table.
+const MAX_SOURCE_DEPTH: usize = 32;
 
 /// Field metadata namespace for declarations about schema structure, such as
 /// an unenforced primary key.
@@ -161,7 +171,7 @@ pub(crate) fn physical_unnest(
             return Err(Error::NotSupported {
                 message: format!(
                     "'{name}' in FROM position is a Function; views over Function rows are \
-                     supported only on LanceDB Cloud and Enterprise"
+                     supported only in LanceDB Distributed"
                 ),
             });
         }
@@ -275,7 +285,7 @@ pub struct MaterializedViewInfo {
 
 /// The backend-independent request used to create a remote materialized view.
 #[doc(hidden)]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CreateMaterializedViewRequest {
     /// Name of the new view.
     pub name: String,
@@ -285,6 +295,10 @@ pub struct CreateMaterializedViewRequest {
     pub query: String,
     /// Whether to skip the initial population job.
     pub with_no_data: bool,
+    /// Whether the server should refresh the view automatically.
+    pub auto_refresh_enabled: Option<bool>,
+    /// Refresh interval in seconds. When absent, the server determines when to refresh.
+    pub auto_refresh_interval_seconds: Option<f64>,
 }
 
 /// Prefix of the internal columns holding source columns a computed column
@@ -449,6 +463,24 @@ pub fn read_definition(metadata: &HashMap<String, String>) -> Result<Option<Stor
         group_by: Vec::new(),
         limit: legacy.limit,
     })))
+}
+
+/// Refuse a user write to `name` when it is a materialized view, whose rows
+/// only refresh writes. Any stored definition counts, even one this version
+/// cannot read.
+pub(crate) fn ensure_not_a_view(
+    name: &str,
+    metadata: &HashMap<String, String>,
+    operation: &str,
+) -> Result<()> {
+    if metadata.contains_key(DEFINITION_META_KEY) {
+        return Err(Error::NotSupported {
+            message: format!(
+                "cannot {operation} '{name}': it is a materialized view, which only refresh writes"
+            ),
+        });
+    }
+    Ok(())
 }
 
 pub(crate) fn materialized_view_info_from_metadata(
@@ -1218,6 +1250,8 @@ impl PreparedDeclaration {
         namespace_path: &[String],
         name: &str,
     ) -> Result<MaterializedView> {
+        crate::require_experimental_functions()?;
+        ensure_no_source_cycle(&self.database, namespace_path, name, &self.definition).await?;
         let empty: Vec<std::result::Result<arrow_array::RecordBatch, arrow_schema::ArrowError>> =
             vec![];
         let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
@@ -1232,6 +1266,65 @@ impl PreparedDeclaration {
             parsed_definition: Some(self.definition),
         })
     }
+}
+
+/// Refuse to create `name` when following its source through each view's
+/// stored definition leads back to `name`: with no plain table beneath it,
+/// such a view would only ever refresh from itself. The walk follows the
+/// coordinates the views already record, so it opens one table per level.
+async fn ensure_no_source_cycle(
+    database: &Arc<dyn Database>,
+    namespace_path: &[String],
+    name: &str,
+    definition: &MaterializedViewDefinition,
+) -> Result<()> {
+    let mut path = vec![name.to_string()];
+    let mut next = (
+        definition.source_namespace.clone(),
+        definition.source_table.clone(),
+    );
+    for _ in 0..MAX_SOURCE_DEPTH {
+        let (namespace, source) = next;
+        path.push(source.clone());
+        if namespace == namespace_path && source == name {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "materialized view '{name}' would read itself: {}",
+                    path.join(" -> ")
+                ),
+            });
+        }
+        let table = match database
+            .open_table(OpenTableRequest {
+                name: source,
+                namespace_path: namespace,
+                index_cache_size: None,
+                lance_read_params: None,
+                location: None,
+                namespace_client: None,
+                managed_versioning: None,
+            })
+            .await
+        {
+            Ok(table) => table,
+            // A missing source ends the chain, so it cannot lead back here.
+            Err(Error::TableNotFound { .. }) => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        let schema = table.schema().await?;
+        // Only a definition this version reads can be followed.
+        match read_definition(schema.metadata()) {
+            Ok(Some(StoredDefinition::Query(upstream))) => {
+                next = (upstream.source_namespace, upstream.source_table);
+            }
+            _ => return Ok(()),
+        }
+    }
+    Err(Error::InvalidInput {
+        message: format!(
+            "materialized view '{name}' would nest deeper than {MAX_SOURCE_DEPTH} views"
+        ),
+    })
 }
 
 /// Column definitions are positional over the view schema: carry each
@@ -1371,7 +1464,7 @@ async fn prepare_with(
 ) -> Result<PreparedDeclaration> {
     let Some(caller_native) = source.as_native() else {
         return Err(Error::NotSupported {
-            message: "materialized views are supported only on local databases".into(),
+            message: "this operation is only supported on LanceDB Embedded".into(),
         });
     };
     let source_namespace = source.namespace().to_vec();
@@ -1399,7 +1492,7 @@ async fn prepare_with(
     let resolved = Table::new(resolved, database.clone());
     let Some(native) = resolved.as_native() else {
         return Err(Error::NotSupported {
-            message: "materialized views are supported only on local databases".into(),
+            message: "this operation is only supported on LanceDB Embedded".into(),
         });
     };
     let caller_uri = caller_native.dataset.get().await?.uri().to_string();
@@ -1487,6 +1580,8 @@ pub struct CreateMaterializedViewBuilder {
     filter: Option<String>,
     limit: Option<u64>,
     with_no_data: bool,
+    auto_refresh_enabled: Option<bool>,
+    auto_refresh_interval_seconds: Option<f64>,
 }
 
 fn source_sql_identifier(
@@ -1520,6 +1615,8 @@ impl CreateMaterializedViewBuilder {
             filter: None,
             limit: None,
             with_no_data: false,
+            auto_refresh_enabled: None,
+            auto_refresh_interval_seconds: None,
         }
     }
 
@@ -1568,6 +1665,32 @@ impl CreateMaterializedViewBuilder {
         self
     }
 
+    /// Enable or disable automatic refresh in LanceDB Distributed.
+    /// When omitted, the server determines whether automatic refresh is enabled.
+    /// LanceDB Embedded does not support automatic refresh.
+    pub fn auto_refresh_enabled(mut self, enabled: bool) -> Self {
+        self.auto_refresh_enabled = Some(enabled);
+        self
+    }
+
+    /// Set a positive, finite refresh interval in seconds in LanceDB Distributed.
+    /// When omitted, the server determines when to refresh.
+    ///
+    /// ```no_run
+    /// # #![recursion_limit = "256"]
+    /// # async fn example(db: &lancedb::Connection) -> lancedb::Result<()> {
+    /// db.create_materialized_view("recent_orders", "orders")
+    ///     .auto_refresh_enabled(true)
+    ///     .auto_refresh_interval_seconds(300.0)
+    ///     .execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn auto_refresh_interval_seconds(mut self, seconds: f64) -> Self {
+        self.auto_refresh_interval_seconds = Some(seconds);
+        self
+    }
+
     fn query(&self) -> Result<String> {
         fn quote(name: &str) -> String {
             format!("\"{}\"", name.replace('"', "\"\""))
@@ -1599,7 +1722,8 @@ impl CreateMaterializedViewBuilder {
     }
 
     /// Submit creation and initial population, returning a [`Job`] that
-    /// settles when the view is ready.
+    /// settles when the view is ready. Remote creation submits SQL; the handle's
+    /// [`Job::job_type`] is `"query"` and its ID identifies that query.
     pub async fn execute_async(self) -> Result<Job> {
         if self.connection.uri().starts_with("db://") {
             return self
@@ -1610,9 +1734,12 @@ impl CreateMaterializedViewBuilder {
                     namespace_path: self.namespace.clone(),
                     query: self.query()?,
                     with_no_data: self.with_no_data,
+                    auto_refresh_enabled: self.auto_refresh_enabled,
+                    auto_refresh_interval_seconds: self.auto_refresh_interval_seconds,
                 })
                 .await;
         }
+        crate::require_experimental_functions()?;
         Ok(Job::spawned(tokio::spawn(async move {
             self.execute_native().await.map(|_| ())
         })))
@@ -1636,6 +1763,13 @@ impl CreateMaterializedViewBuilder {
     }
 
     async fn execute_native(self) -> Result<MaterializedView> {
+        crate::require_experimental_functions()?;
+        if self.auto_refresh_enabled == Some(true) || self.auto_refresh_interval_seconds.is_some() {
+            return Err(Error::NotSupported {
+                message: "automatic materialized-view refresh requires LanceDB Distributed"
+                    .to_string(),
+            });
+        }
         let source = self
             .connection
             .open_table(&self.source)
@@ -1678,7 +1812,8 @@ impl MaterializedView {
         })
     }
 
-    /// The view, as the table it is. Queries, indexes and search all apply.
+    /// The view, as the table it is. Queries, indexes and search all apply;
+    /// writes such as `add`, `update`, `delete` and `merge_insert` do not.
     pub fn table(&self) -> &Table {
         &self.table
     }
@@ -1690,7 +1825,7 @@ impl MaterializedView {
 
     /// The query parsed into the local refresh grammar.
     ///
-    /// Sophon may store SQL broader than the local grammar; use
+    /// LanceDB Enterprise may store SQL broader than the local grammar; use
     /// [`Self::definition_sql`] when the original SQL is sufficient.
     pub fn definition(&self) -> Result<&MaterializedViewDefinition> {
         self.parsed_definition
@@ -1709,14 +1844,17 @@ impl MaterializedView {
 
     /// Recompute the view from its source.
     ///
-    /// Every refresh rebuilds the view from the selected source version.
+    /// Local refreshes rebuild the view from the selected source version.
+    /// Remote refreshes let the server select a mode unless
+    /// [`RefreshMaterializedViewBuilder::full`] requests a rebuild. Their
+    /// result leaves unavailable refresh metrics as `None`.
     ///
     /// ```no_run
     /// # #![recursion_limit = "256"]
     /// # use lancedb::materialized_view::MaterializedView;
     /// # async fn refresh(view: &MaterializedView) -> Result<(), Box<dyn std::error::Error>> {
     /// let result = view.refresh().execute().await?;
-    /// println!("{:?}: {} rows", result.mode, result.rows_written);
+    /// println!("{:?}: {:?} rows", result.mode, result.rows_written);
     /// # Ok(())
     /// # }
     /// ```
@@ -1724,6 +1862,7 @@ impl MaterializedView {
         RefreshMaterializedViewBuilder {
             view: self.clone(),
             source_version: None,
+            full: false,
         }
     }
 }
@@ -1732,9 +1871,26 @@ impl MaterializedView {
 pub struct RefreshMaterializedViewBuilder {
     view: MaterializedView,
     source_version: Option<u64>,
+    full: bool,
 }
 
 impl RefreshMaterializedViewBuilder {
+    /// Force a complete rebuild instead of letting the server choose
+    /// the refresh mode. Defaults to `false`. LanceDB Embedded views always rebuild.
+    ///
+    /// ```no_run
+    /// # #![recursion_limit = "256"]
+    /// # use lancedb::materialized_view::MaterializedView;
+    /// # async fn refresh(view: &MaterializedView) -> lancedb::Result<()> {
+    /// view.refresh().full(true).execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn full(mut self, full: bool) -> Self {
+        self.full = full;
+        self
+    }
+
     /// Refresh a local view to this source table version instead of the latest.
     /// Remote SQL refreshes do not support source-version pinning.
     pub fn source_version(mut self, version: u64) -> Self {
@@ -1749,9 +1905,10 @@ impl RefreshMaterializedViewBuilder {
                 .view
                 .table
                 .base_table()
-                .refresh_materialized_view_async(self.source_version)
+                .refresh_materialized_view_async(self.source_version, self.full)
                 .await;
         }
+        crate::require_experimental_functions()?;
         Ok(Job::spawned(tokio::spawn(async move {
             refresh::execute_refresh(&self.view.table, self.source_version).await
         })))
@@ -1805,15 +1962,33 @@ impl Connection {
     }
 
     /// The names of materialized views in the root namespace.
-    pub async fn list_materialized_views(&self) -> Result<Vec<String>> {
-        self.database().list_materialized_views(&[]).await
+    ///
+    /// Results are fetched lazily, one page at a time. See [`Listing`]
+    /// for cached-result and continuation-token semantics. Errors terminate iteration.
+    ///
+    /// ```
+    /// # async fn example(connection: &lancedb::Connection) -> lancedb::Result<()> {
+    /// use futures::TryStreamExt;
+    /// let mut items = connection.list_materialized_views(Default::default());
+    /// while let Some(item) = items.try_next().await? {
+    ///     println!("{item:?}");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn list_materialized_views(&self, options: ListingOptions) -> Listing<String> {
+        let database = self.database().clone();
+        Listing::new(options, move |options| {
+            let database = database.clone();
+            async move { database.list_materialized_views(&[], options).await }
+        })
     }
 
     /// Drop a materialized view.
     ///
     /// The view may become unavailable before its physical data is removed.
-    /// Use [`Connection::drop_materialized_view_async`] to retain the cleanup
-    /// job and wait for it explicitly.
+    /// Remote drops wait for the SQL command to remove the catalog binding;
+    /// physical cleanup proceeds in the background.
     pub async fn drop_materialized_view(
         &self,
         name: impl AsRef<str>,
@@ -1824,8 +1999,9 @@ impl Connection {
             return self
                 .database()
                 .drop_materialized_view_async(name, namespace_path)
-                .await
-                .map(|_| ());
+                .await?
+                .wait()
+                .await;
         }
         let table = self
             .open_table(name)
@@ -1836,12 +2012,12 @@ impl Connection {
         self.drop_table(name, namespace_path).await
     }
 
-    /// Start dropping a materialized view and return its cleanup job.
+    /// Start dropping a materialized view and return its job.
     ///
     /// This validates that the named resource is a materialized view rather
-    /// than an ordinary table. Call [`Job::wait`] before assuming physical
-    /// cleanup has finished. When the backend performs cleanup inline, the
-    /// returned job is already finished and has no job ID.
+    /// than an ordinary table. In LanceDB Distributed the job has type `query`
+    /// and its ID identifies the SQL query. Waiting completes once the catalog
+    /// binding is removed; physical cleanup continues in the background.
     ///
     /// ```no_run
     /// # use lancedb::Connection;
@@ -1875,7 +2051,7 @@ impl Connection {
 
 #[cfg(test)]
 mod tests {
-    use arrow_array::record_batch;
+    use arrow_array::{RecordBatch, record_batch};
 
     use super::*;
     use crate::connect;
@@ -1916,6 +2092,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn refresh_always_rebuilds_without_source_row_ids() {
         let conn = connect("memory://").execute().await.unwrap();
         let source = conn
@@ -1944,19 +2124,327 @@ mod tests {
             .execute()
             .await
             .unwrap();
-        let refreshed = view.refresh().execute().await.unwrap();
-        assert_eq!(refreshed.mode, RefreshMode::Rebuild);
-        assert_eq!(refreshed.rows_written, 3);
+        let refreshed = view.refresh().full(true).execute().await.unwrap();
+        assert_eq!(refreshed.mode, Some(RefreshMode::Rebuild));
+        assert_eq!(refreshed.rows_written, Some(3));
+        assert_eq!(
+            refreshed.source_version,
+            Some(source.version().await.unwrap())
+        );
         assert_eq!(view.table().count_rows(None).await.unwrap(), 3);
 
         let unchanged = view.refresh().execute().await.unwrap();
-        assert_eq!(unchanged.mode, RefreshMode::Rebuild);
-        assert_eq!(unchanged.rows_written, 3);
+        assert_eq!(unchanged.mode, Some(RefreshMode::Rebuild));
+        assert_eq!(unchanged.rows_written, Some(3));
 
         source.delete("true").await.unwrap();
         let emptied = view.refresh().execute().await.unwrap();
-        assert_eq!(emptied.mode, RefreshMode::Rebuild);
-        assert_eq!(emptied.rows_written, 0);
+        assert_eq!(emptied.mode, Some(RefreshMode::Rebuild));
+        assert_eq!(emptied.rows_written, Some(0));
         assert_eq!(view.table().count_rows(None).await.unwrap(), 0);
+    }
+
+    fn reader(batch: RecordBatch) -> Box<dyn arrow_array::RecordBatchReader + Send> {
+        let schema = batch.schema();
+        Box::new(arrow_array::RecordBatchIterator::new(
+            vec![Ok(batch)],
+            schema,
+        ))
+    }
+
+    fn assert_refused<T: std::fmt::Debug>(result: Result<T>, operation: &str) {
+        match result {
+            Err(Error::NotSupported { message }) => assert!(
+                message.contains("is a materialized view, which only refresh writes"),
+                "{operation}: {message}"
+            ),
+            other => panic!("{operation} on a view was not refused: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
+    async fn a_view_cannot_lead_back_to_itself() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let rows = || record_batch!(("x", Int32, [1, 2])).unwrap();
+        conn.create_table("src", rows()).execute().await.unwrap();
+        conn.create_materialized_view("m", "src")
+            .execute()
+            .await
+            .unwrap();
+        conn.create_materialized_view("m2", "m")
+            .execute()
+            .await
+            .unwrap();
+        conn.drop_table("src", &[]).await.unwrap();
+
+        let err = conn
+            .create_materialized_view("src", "m2")
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("materialized view 'src' would read itself: src -> m2 -> m -> src"),
+            "{err}"
+        );
+        assert!(conn.open_table("src").execute().await.is_err());
+
+        // Back under a plain table, the same chain is fine to extend.
+        conn.create_table("src", rows()).execute().await.unwrap();
+        conn.create_materialized_view("m3", "m2")
+            .execute()
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
+    async fn direct_writes_to_a_view_are_refused() {
+        use arrow_schema::Schema;
+        use datafusion::prelude::SessionContext;
+        use lance::dataset::{ColumnAlteration, NewColumnTransform};
+
+        use crate::table::AddDataMode;
+        use crate::table::datafusion::BaseTableAdapter;
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = conn
+            .create_table("src", record_batch!(("x", Int32, [1, 2])).unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let view = conn
+            .create_materialized_view("m", "src")
+            .execute()
+            .await
+            .unwrap();
+        let downstream = conn
+            .create_materialized_view("m2", "m")
+            .execute()
+            .await
+            .unwrap();
+        let table = view.table();
+        let row = || record_batch!(("x", Int32, [99])).unwrap();
+
+        assert_refused(table.add(row()).execute().await, "add");
+        assert_refused(
+            table
+                .add(row())
+                .mode(AddDataMode::Overwrite)
+                .execute()
+                .await,
+            "overwrite",
+        );
+        assert_refused(
+            table.update().column("x", "x + 1").execute().await,
+            "update",
+        );
+        assert_refused(table.delete("x = 1").await, "delete");
+        let mut merge = table.merge_insert(&["x"]);
+        merge.when_not_matched_insert_all();
+        assert_refused(merge.execute(reader(row())).await, "merge_insert");
+        assert_refused(
+            table
+                .add_columns()
+                .transform(NewColumnTransform::SqlExpressions(vec![(
+                    "y".into(),
+                    "x * 2".into(),
+                )]))
+                .execute()
+                .await,
+            "add_columns",
+        );
+        assert_refused(
+            table
+                .add_columns()
+                .transform(NewColumnTransform::AllNulls(Arc::new(Schema::new(vec![
+                    ArrowField::new("y", DataType::Int32, true),
+                ]))))
+                .execute()
+                .await,
+            "add_columns (nulls)",
+        );
+        assert_refused(
+            table
+                .alter_columns(&[ColumnAlteration::new("x".into()).rename("z".into())])
+                .await,
+            "alter_columns",
+        );
+        assert_refused(table.drop_columns(&["x"]).await, "drop_columns");
+        assert_refused(
+            downstream.table().add(row()).execute().await,
+            "add to a chained view",
+        );
+
+        let ctx = SessionContext::new();
+        let adapter = BaseTableAdapter::try_new(table.base_table().clone())
+            .await
+            .unwrap();
+        ctx.register_table("m", Arc::new(adapter)).unwrap();
+        let insert = match ctx.sql("INSERT INTO m VALUES (99)").await {
+            Ok(frame) => frame.collect().await.map(|_| ()),
+            Err(error) => Err(error),
+        };
+        let message = insert.unwrap_err().to_string();
+        assert!(message.contains("is a materialized view"), "{message}");
+
+        assert_eq!(table.count_rows(None).await.unwrap(), 2);
+        assert_eq!(table.schema().await.unwrap().fields().len(), 1);
+
+        // Refresh, chained, is the writer.
+        source.add(row()).execute().await.unwrap();
+        assert_eq!(
+            view.refresh().execute().await.unwrap().rows_written,
+            Some(3)
+        );
+        assert_eq!(
+            downstream.refresh().execute().await.unwrap().rows_written,
+            Some(3)
+        );
+        assert_eq!(
+            downstream
+                .table()
+                .count_rows(Some("x = 99".into()))
+                .await
+                .unwrap(),
+            1
+        );
+
+        // The source is a plain table and still takes every write.
+        source
+            .update()
+            .column("x", "x + 1")
+            .execute()
+            .await
+            .unwrap();
+        source.delete("x = 2").await.unwrap();
+        let mut merge = source.merge_insert(&["x"]);
+        merge.when_not_matched_insert_all();
+        merge
+            .execute(reader(record_batch!(("x", Int32, [7])).unwrap()))
+            .await
+            .unwrap();
+        source
+            .add_columns()
+            .transform(NewColumnTransform::SqlExpressions(vec![(
+                "y".into(),
+                "x * 2".into(),
+            )]))
+            .execute()
+            .await
+            .unwrap();
+        source.drop_columns(&["y"]).await.unwrap();
+        assert_eq!(
+            view.refresh().execute().await.unwrap().rows_written,
+            Some(3)
+        );
+    }
+
+    #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
+    async fn indexes_and_optimize_still_apply_to_a_view() {
+        use crate::index::Index;
+        use crate::table::{CompactionOptions, OptimizeAction};
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = conn
+            .create_table("src", record_batch!(("x", Int32, [1, 2, 3])).unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let view = conn
+            .create_materialized_view("m", "src")
+            .execute()
+            .await
+            .unwrap();
+        view.table()
+            .create_index(&["x"], Index::Auto)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(view.table().list_indices().await.unwrap().len(), 1);
+        view.table()
+            .optimize(OptimizeAction::Compact {
+                options: CompactionOptions::default(),
+                remap_options: None,
+            })
+            .await
+            .unwrap();
+        view.table().optimize(OptimizeAction::All).await.unwrap();
+
+        source
+            .add(record_batch!(("x", Int32, [4])).unwrap())
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(
+            view.refresh().execute().await.unwrap().rows_written,
+            Some(4)
+        );
+        view.table().optimize(OptimizeAction::All).await.unwrap();
+        assert_eq!(
+            view.table().count_rows(Some("x > 2".into())).await.unwrap(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
+    async fn computed_columns_of_a_view_are_still_filled_and_dropped() {
+        use crate::table::computed_columns::{
+            COMPUTED_COLUMN_META_KEY, EXPRESSION_META_KEY, INPUTS_META_KEY, KIND_META_KEY, SQL_KIND,
+        };
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = conn
+            .create_table("src", record_batch!(("x", Int32, [1, 2])).unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let prepared = prepare_declaration(&source, Some(&[("x".into(), "x".into())]), None, None)
+            .await
+            .unwrap();
+        let doubled =
+            ArrowField::new("doubled", DataType::Int32, true).with_metadata(HashMap::from([
+                (COMPUTED_COLUMN_META_KEY.into(), "true".into()),
+                (KIND_META_KEY.into(), SQL_KIND.into()),
+                (EXPRESSION_META_KEY.into(), "x * 2".into()),
+                (INPUTS_META_KEY.into(), "[\"x\"]".into()),
+            ]));
+        let view = prepared
+            .with_computed_columns(vec![(1, doubled)], &[])
+            .unwrap()
+            .create("m")
+            .await
+            .unwrap();
+        view.refresh().execute().await.unwrap();
+        view.table().refresh_column("doubled").await.unwrap();
+        assert_eq!(
+            view.table()
+                .count_rows(Some("doubled = x * 2".into()))
+                .await
+                .unwrap(),
+            2
+        );
+        assert_refused(
+            view.table().drop_columns(&["x", "doubled"]).await,
+            "drop_columns of a stored and a computed column",
+        );
+        view.table().drop_columns(&["doubled"]).await.unwrap();
+        view.refresh().execute().await.unwrap();
+        assert_eq!(view.table().count_rows(None).await.unwrap(), 2);
     }
 }

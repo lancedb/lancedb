@@ -29,6 +29,7 @@ pub(crate) async fn execute_delete(
     predicate: Predicate<'_>,
 ) -> Result<DeleteResult> {
     table.dataset.ensure_mutable()?;
+    table.ensure_not_a_view("delete from").await?;
     match predicate {
         Predicate::String(s) => {
             let predicate = crate::expr::canonicalize_sql_predicate(s)?;

@@ -14,10 +14,11 @@
 //!  * Tables may be managed by a database system (e.g. Postgres)
 //!  * A custom table implementation (e.g. remote table, etc.) may be used
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use arrow_array::RecordBatch;
 use lance::dataset::ReadParams;
 use lance_namespace::LanceNamespace;
 use lance_namespace::models::{
@@ -29,6 +30,7 @@ use lance_namespace::models::{
 use crate::data::scannable::Scannable;
 use crate::error::Result;
 use crate::job::Job;
+use crate::listing::{ListingOptions, ListingPage};
 use crate::materialized_view::CreateMaterializedViewRequest;
 use crate::secrets::SecretInfo;
 use crate::table::{BaseTable, WriteOptions};
@@ -186,6 +188,32 @@ impl CloneTableRequest {
             source_tag: None,
             is_shallow: true,
             namespace_client: None,
+        }
+    }
+}
+
+/// A request to start a SQL statement on a LanceDB Distributed database.
+#[derive(Clone, Debug)]
+pub struct ExecuteQueryRequest {
+    /// The SQL text.
+    pub query: String,
+    /// The namespace unqualified table names resolve in. Empty is `public`,
+    /// the SQL name of the root namespace.
+    pub default_namespace_path: Vec<String>,
+    /// Values for the statement's placeholders, as a single-row batch.
+    ///
+    /// Column `i` binds `$<i + 1>`, and a column whose name is not a number
+    /// also binds `$<name>`. See
+    /// [`ExecuteQueryAsyncBuilder::parameters`](crate::connection::ExecuteQueryAsyncBuilder::parameters).
+    pub parameters: Option<RecordBatch>,
+}
+
+impl ExecuteQueryRequest {
+    pub fn new(query: impl Into<String>) -> Self {
+        Self {
+            query: query.into(),
+            default_namespace_path: vec!["public".to_string()],
+            parameters: None,
         }
     }
 }
@@ -362,52 +390,49 @@ pub trait Database:
     ) -> Result<Job> {
         job_op_not_supported("remote materialized-view drop")
     }
-    /// List materialized-view names in a namespace.
+    /// Fetch one page of materialized-view names in a namespace.
+    /// Local backends filter a page of table names, so an empty result may
+    /// still have a continuation token.
     #[doc(hidden)]
-    async fn list_materialized_views(&self, namespace_path: &[String]) -> Result<Vec<String>> {
+    async fn list_materialized_views(
+        &self,
+        namespace_path: &[String],
+        options: ListingOptions,
+    ) -> Result<ListingPage<String>> {
+        let response = self
+            .list_tables(ListTablesRequest {
+                id: Some(namespace_path.to_vec()),
+                page_token: options.page_token,
+                limit: options.page_limit.map(|limit| limit as i32),
+                ..Default::default()
+            })
+            .await?;
         let mut names = Vec::new();
-        let mut page_token = None;
-        let mut seen_page_tokens = HashSet::new();
-        loop {
-            let response = self
-                .list_tables(ListTablesRequest {
-                    id: Some(namespace_path.to_vec()),
-                    page_token: page_token.clone(),
-                    ..Default::default()
+        for name in response.tables {
+            let Ok(table) = self
+                .open_table(OpenTableRequest {
+                    name: name.clone(),
+                    namespace_path: namespace_path.to_vec(),
+                    index_cache_size: None,
+                    lance_read_params: None,
+                    location: None,
+                    namespace_client: None,
+                    managed_versioning: None,
                 })
-                .await?;
-            for name in response.tables {
-                let Ok(table) = self
-                    .open_table(OpenTableRequest {
-                        name: name.clone(),
-                        namespace_path: namespace_path.to_vec(),
-                        index_cache_size: None,
-                        lance_read_params: None,
-                        location: None,
-                        namespace_client: None,
-                        managed_versioning: None,
-                    })
-                    .await
-                else {
-                    continue;
-                };
-                let schema = table.schema().await?;
-                if crate::materialized_view::read_definition(schema.metadata())?.is_some() {
-                    names.push(name);
-                }
-            }
-            let Some(next_page_token) = response.page_token.filter(|token| !token.is_empty())
+                .await
             else {
-                break;
+                continue;
             };
-            if !seen_page_tokens.insert(next_page_token.clone()) {
-                return Err(crate::Error::Runtime {
-                    message: "materialized-view listing repeated a page token".into(),
-                });
+            let schema = table.schema().await?;
+            if crate::materialized_view::read_definition(schema.metadata())?.is_some() {
+                names.push(name);
             }
-            page_token = Some(next_page_token);
         }
-        Ok(names)
+
+        Ok(ListingPage {
+            items: names,
+            page_token: response.page_token,
+        })
     }
     /// Look up one exact immutable Function version.
     async fn get_function(
@@ -418,12 +443,12 @@ pub trait Database:
     ) -> Result<crate::function::FunctionVersion> {
         function_catalog_not_supported()
     }
-    /// List every published immutable Function version in one namespace of the
-    /// remote catalog.
+    /// Fetch one page of published immutable Function versions in one namespace.
     async fn list_functions(
         &self,
         _namespace_path: &[String],
-    ) -> Result<Vec<crate::function::FunctionVersion>> {
+        _options: ListingOptions,
+    ) -> Result<ListingPage<crate::function::FunctionVersion>> {
         function_catalog_not_supported()
     }
     /// Remove the current Function name binding, retaining the object history.
@@ -435,10 +460,9 @@ pub trait Database:
     ) -> Result<bool> {
         function_catalog_not_supported()
     }
-    /// Start dropping a Function and return a handle to the cleanup job.
-    ///
-    /// Backends without asynchronous cleanup complete the drop before returning an
-    /// already-finished job.
+    /// Drop a Function binding and return its completion handle.
+    /// SQL backends return a query job confirming catalog removal; physical
+    /// cleanup continues separately.
     async fn drop_function_async(
         &self,
         name: &str,
@@ -448,6 +472,40 @@ pub trait Database:
         let dropped = self.drop_function(name, version, namespace_path).await?;
         Ok((dropped, crate::job::Job::new_done()))
     }
+    /// Create a database-owned storage integration in a namespace.
+    async fn create_storage_integration(
+        &self,
+        _name: &str,
+        _request: crate::storage_integration::CreateStorageIntegrationRequest,
+        _namespace_path: &[String],
+    ) -> Result<crate::storage_integration::StorageIntegrationInfo> {
+        secret_catalog_not_supported()
+    }
+    /// Describe a database-owned storage integration.
+    async fn describe_storage_integration(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<crate::storage_integration::StorageIntegrationInfo> {
+        secret_catalog_not_supported()
+    }
+    /// List one namespace of storage integrations.
+    async fn list_storage_integrations(
+        &self,
+        _namespace_path: &[String],
+        _options: ListingOptions,
+    ) -> Result<ListingPage<String>> {
+        secret_catalog_not_supported()
+    }
+    /// Drop a database-owned storage integration.
+    async fn drop_storage_integration(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<()> {
+        secret_catalog_not_supported()
+    }
+
     /// Create a named Secret in this database. Fails if the name is taken, so
     /// a create can never silently become a rotation.
     async fn create_secret(
@@ -469,11 +527,15 @@ pub trait Database:
     ) -> Result<()> {
         secret_catalog_not_supported()
     }
-    /// The names of every Secret in this database.
+    /// Fetch one page of Secret names in this database.
     ///
     /// Names only. No API path returns a stored credential, by construction
     /// rather than by policy.
-    async fn list_secrets(&self, _namespace_path: &[String]) -> Result<Vec<String>> {
+    async fn list_secrets(
+        &self,
+        _namespace_path: &[String],
+        _options: ListingOptions,
+    ) -> Result<ListingPage<String>> {
         secret_catalog_not_supported()
     }
     /// Drop a Secret. Functions bound to it fail at their next job, which is
@@ -516,8 +578,12 @@ pub trait Database:
     async fn drop_view_async(&self, _name: &str, _namespace_path: &[String]) -> Result<Job> {
         view_ops_not_supported()
     }
-    /// The names of the views in one namespace.
-    async fn list_views(&self, _namespace_path: &[String]) -> Result<Vec<String>> {
+    /// Fetch one page of view names in one namespace.
+    async fn list_views(
+        &self,
+        _namespace_path: &[String],
+        _options: ListingOptions,
+    ) -> Result<ListingPage<String>> {
         view_ops_not_supported()
     }
     /// Open a job by id, returning a handle with its record already
@@ -526,8 +592,8 @@ pub trait Database:
     async fn open_job(&self, _job_id: &str) -> Result<crate::job::Job> {
         job_op_not_supported("open_job")
     }
-    /// List server-side jobs across the database's tables.
-    async fn list_jobs(&self) -> Result<Vec<JobInfo>> {
+    /// Fetch one page of server-side jobs across the database's tables.
+    async fn list_jobs(&self, _options: ListingOptions) -> Result<ListingPage<JobInfo>> {
         job_op_not_supported("list_jobs")
     }
     /// Request cancellation of a job by id. Returns true if the server
@@ -546,11 +612,16 @@ pub trait Database:
     async fn resume_job(&self, _job_id: &str) -> Result<ResumeJobStatus> {
         job_op_not_supported("resume_job")
     }
-    /// Start executing a SQL statement on a remote database.
+    /// Establish the SQL transport without executing a statement.
+    async fn check_sql_connection(&self) -> Result<()> {
+        Err(crate::Error::NotSupported {
+            message: "SQL is not supported by this database".into(),
+        })
+    }
+    /// Start executing a SQL statement on a LanceDB Distributed database.
     async fn execute_query_async(
         &self,
-        _query: &str,
-        _default_namespace_path: &[String],
+        _request: ExecuteQueryRequest,
     ) -> Result<crate::sql::Query> {
         Err(crate::error::Error::NotSupported {
             message: "SQL is not supported by this database".to_string(),

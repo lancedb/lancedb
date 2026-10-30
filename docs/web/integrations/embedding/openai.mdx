@@ -1,0 +1,26 @@
+---
+title: OpenAI
+sidebarTitle: OpenAI
+---
+
+import { PyEmbeddingOpenaiBasic } from '/snippets/integrations.mdx';
+
+LanceDB registers the OpenAI embeddings function in the registry by default, as `openai`. Below are the parameters that you can customize when creating the instances:
+
+| Parameter | Type | Default Value | Description |
+|---|---|---|---|
+| `name` | `str` | `"text-embedding-ada-002"` | The name of the model. |
+| `dim` | `int` |  Model default   | Requested output dimensions for models that support shortening embeddings. Use `func.ndims()` when defining the vector field. |
+| `use_azure` | bool | `False` | Set true to use Azure OpenAI SDK |
+
+Set your OpenAI API key before running the example:
+
+```shell
+export OPENAI_API_KEY="your-api-key"
+```
+
+<CodeGroup>
+  <CodeBlock filename="Python" language="Python" icon="python">
+    {PyEmbeddingOpenaiBasic}
+  </CodeBlock>
+</CodeGroup>

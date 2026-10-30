@@ -19,6 +19,7 @@ use crate::catalog::{
     ListDatabasesResponse,
 };
 use crate::database::Database;
+use crate::utils::validate_database_name;
 use crate::{Error, Result};
 
 /// Authentication and client settings shared by a catalog and its databases.
@@ -154,29 +155,6 @@ impl RemoteCatalog {
         })
     }
 
-    fn validate_name(&self, name: &str) -> Result<()> {
-        let delimiter = self
-            .options
-            .client_config
-            .id_delimiter
-            .as_deref()
-            .unwrap_or("$");
-        if name.is_empty()
-            || name.trim() != name
-            || !name.is_ascii()
-            || name.chars().any(char::is_control)
-            || name.contains(delimiter)
-            || matches!(name, "." | "..")
-        {
-            return Err(Error::InvalidInput {
-                message: format!(
-                    "Invalid database name '{name}': expected a nonempty ASCII name without surrounding whitespace, control characters, or namespace delimiter '{delimiter}'"
-                ),
-            });
-        }
-        Ok(())
-    }
-
     fn database(&self, name: &str) -> Result<Arc<dyn Database>> {
         Ok(Arc::new(RemoteDatabase::for_catalog(
             &self.endpoint,
@@ -198,12 +176,16 @@ impl RemoteCatalog {
 
 #[async_trait]
 impl Catalog for RemoteCatalog {
+    fn authz(&self) -> Result<Arc<dyn crate::authz::Authorization>> {
+        Ok(self.root.authz())
+    }
+
     fn uri(&self) -> &str {
         &self.endpoint
     }
 
     async fn create_database(&self, request: CreateDatabaseRequest) -> Result<Arc<dyn Database>> {
-        self.validate_name(&request.name)?;
+        validate_database_name(&request.name)?;
         self.root
             .create_namespace(CreateNamespaceRequest {
                 id: Some(vec![request.name.clone()]),
@@ -231,7 +213,7 @@ impl Catalog for RemoteCatalog {
     }
 
     async fn drop_database(&self, request: DropDatabaseRequest) -> Result<()> {
-        self.validate_name(&request.name)?;
+        validate_database_name(&request.name)?;
         let result = self
             .root
             .drop_namespace(DropNamespaceRequest {
@@ -244,7 +226,14 @@ impl Catalog for RemoteCatalog {
                     }
                     .into(),
                 ),
-                behavior: Some("Restrict".into()),
+                behavior: Some(
+                    if request.cascade {
+                        "Cascade"
+                    } else {
+                        "Restrict"
+                    }
+                    .into(),
+                ),
                 ..Default::default()
             })
             .await;
@@ -286,7 +275,7 @@ impl Catalog for RemoteCatalog {
     }
 
     async fn connect_database(&self, name: &str) -> Result<Arc<dyn Database>> {
-        self.validate_name(name)?;
+        validate_database_name(name)?;
         self.root
             .describe_namespace(DescribeNamespaceRequest {
                 id: Some(vec![name.into()]),
@@ -492,7 +481,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn catalog_preserves_errors_and_never_cascades() {
+    async fn catalog_preserves_errors_and_restricts_drops_by_default() {
         let (endpoint, task) = server(vec![
             (404, json!({"error": "missing"})),
             (409, json!({"error": "exists"})),
@@ -537,6 +526,26 @@ mod tests {
         assert_eq!(
             requests[2].body,
             json!({"mode": "Fail", "behavior": "Restrict"})
+        );
+    }
+
+    #[tokio::test]
+    async fn drop_database_cascades_only_when_asked() {
+        let (endpoint, task) = server(vec![(200, json!({})), (200, json!({}))]).await;
+        let catalog = RemoteCatalog::try_new(endpoint, RemoteCatalogOptions::default()).unwrap();
+        catalog.drop_database("db".into()).await.unwrap();
+        catalog
+            .drop_database(DropDatabaseRequest::new("db").cascade(true))
+            .await
+            .unwrap();
+        let requests = task.await.unwrap();
+        assert_eq!(
+            requests[0].body,
+            json!({"mode": "Fail", "behavior": "Restrict"})
+        );
+        assert_eq!(
+            requests[1].body,
+            json!({"mode": "Fail", "behavior": "Cascade"})
         );
     }
 
@@ -676,7 +685,24 @@ mod tests {
         }
         let catalog =
             RemoteCatalog::try_new("http://127.0.0.1:1", RemoteCatalogOptions::default()).unwrap();
-        for name in ["", "a$b", "\r\ninjected", "..", "café", " padded "] {
+        for name in [
+            "",
+            "/",
+            "//",
+            "a$b",
+            "\r\ninjected",
+            "..",
+            "café",
+            " padded ",
+            "a b",
+            "a?b",
+            "/db",
+            "db/",
+            "a//b",
+            "a/../b",
+            "a/./b",
+            &"a".repeat(65),
+        ] {
             assert!(matches!(
                 catalog.create_database(name.into()).await,
                 Err(Error::InvalidInput { .. })

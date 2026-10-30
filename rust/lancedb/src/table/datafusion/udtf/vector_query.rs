@@ -373,6 +373,16 @@ impl DisplayAs for VectorDedupExec {
 }
 
 impl ExecutionPlan for VectorDedupExec {
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(
+            &Arc<dyn datafusion_physical_expr::PhysicalExpr>,
+        ) -> datafusion_common::Result<
+            datafusion_common::tree_node::TreeNodeRecursion,
+        >,
+    ) -> datafusion_common::Result<datafusion_common::tree_node::TreeNodeRecursion> {
+        Ok(datafusion_common::tree_node::TreeNodeRecursion::Continue)
+    }
     fn name(&self) -> &str {
         "VectorDedupExec"
     }
@@ -411,9 +421,7 @@ impl ExecutionPlan for VectorDedupExec {
                 .map_err(|e| datafusion_common::DataFusionError::External(Box::new(e)))?;
             let mut scanner = dataset.scan();
             scanner
-                .with_row_addr_prefilter(RowAddrMask::from_block(RowAddrTreeMap::from_iter(
-                    removed,
-                )))
+                .with_row_id_prefilter(RowAddrMask::from_block(RowAddrTreeMap::from_iter(removed)))
                 .blob_handling(BlobHandling::AllBinary)
                 .batch_size(MATERIALIZE_BATCH_ROWS)
                 .strict_batch_size(true);
