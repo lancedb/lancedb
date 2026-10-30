@@ -9,6 +9,9 @@ on:
       - python/pyproject.toml
       - ci/check_cargo_lock.py
       - ci/check_sdist.py
+      - ci/package_cli.py
+      - .bumpversion.toml
+      - rust/lancedb/cli/Cargo.toml
       - ci/set_lance_version.py
       - ci/tests/**
       - .github/workflows/ci-scripts.yml
@@ -18,6 +21,9 @@ on:
       - python/pyproject.toml
       - ci/check_cargo_lock.py
       - ci/check_sdist.py
+      - ci/package_cli.py
+      - .bumpversion.toml
+      - rust/lancedb/cli/Cargo.toml
       - ci/set_lance_version.py
       - ci/tests/**
       - .github/workflows/ci-scripts.yml

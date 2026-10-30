@@ -5981,7 +5981,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb-cli"
-version = "0.1.0"
+version = "0.41.0-beta.17"
 dependencies = [
  "anyhow",
  "arrow-array",
