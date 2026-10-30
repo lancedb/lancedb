@@ -9,6 +9,7 @@ on:
       - python/pyproject.toml
       - ci/check_cargo_lock.py
       - ci/check_sdist.py
+      - ci/build_cli_linux.sh
       - ci/package_cli.py
       - .bumpversion.toml
       - rust/lancedb/cli/Cargo.toml
@@ -21,6 +22,7 @@ on:
       - python/pyproject.toml
       - ci/check_cargo_lock.py
       - ci/check_sdist.py
+      - ci/build_cli_linux.sh
       - ci/package_cli.py
       - .bumpversion.toml
       - rust/lancedb/cli/Cargo.toml

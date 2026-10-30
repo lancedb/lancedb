@@ -4,7 +4,22 @@
 set -euo pipefail
 
 export PATH="/cargo/bin:$PATH"
+# The manylinux images provide GCC, but do not guarantee Clang or LLD. Native
+# dependencies use Clang, and the Arm linker wrapper below also requires LLD.
+dnf install -y clang lld
 export CC=clang CXX=clang++
+"$CC" --version
+"$CXX" --version
+ld.lld --version
+
+# Fail before Cargo downloads or compiles dependencies if either compiler or
+# the linker cannot produce a runnable binary in this container.
+printf 'int main(void) { return 0; }\n' > /tmp/cli-toolchain-probe.c
+"$CC" -fuse-ld=lld /tmp/cli-toolchain-probe.c -o /tmp/cli-toolchain-probe
+/tmp/cli-toolchain-probe
+"$CXX" -fuse-ld=lld -x c++ /tmp/cli-toolchain-probe.c -o /tmp/cli-toolchain-probe
+/tmp/cli-toolchain-probe
+
 git config --global --add safe.directory /workspace
 
 curl -fsSL "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-${PROTOC_PLATFORM}.zip" -o /tmp/protoc.zip
