@@ -5,7 +5,7 @@ description: "Populate a computed column and update it when its inputs change."
 icon: arrows-rotate
 keywords: ["refresh_column", "backfill", "job", "idempotent", "REFRESH COLUMN"]
 availability:
-  embedded: available
+  embedded: unavailable
   enterprise: available
 ---
 
@@ -14,10 +14,7 @@ new rows and recompute values whose inputs changed. The example below continues
 with the `doubled` column from the computed-column guide.
 
 <Note>
-In the 0.41 SDK release, declaration and refresh in LanceDB Embedded require a source build
-with the `experimental-functions` Cargo feature. Published Python and TypeScript
-packages leave it disabled. LanceDB Enterprise operations do not require
-this feature; existing computed-column data remains readable in default builds.
+Computed columns require LanceDB Enterprise.
 </Note>
 
 <CodeGroup>
@@ -78,9 +75,8 @@ table.add_columns(
 
 These options apply to every computed output declared in that call. Automatic
 refresh is enabled by default. When the interval is omitted, the server
-determines when to refresh. Local tables store the setting, but automatic
-execution requires a Cloud or Enterprise server with its separate
-`column_refresh.enabled` switch turned on. That server switch is disabled in
+determines when to refresh. Automatic execution requires the deployment's
+separate `column_refresh.enabled` switch turned on, which is disabled in
 the base configuration.
 
 The interval is a positive minimum delay after the last successful refresh
