@@ -72,49 +72,128 @@ are wrappers around the Rust library.
 * `node`: **Deprecated** Typescript package source code
 * `java`: Java package source code
 * `docs/src`: SDK reference, built with mkdocs
-* `docs/web`: the open-source pages of [docs.lancedb.com](https://docs.lancedb.com)
+* `docs/web`: website guides for LanceDB Embedded and the APIs used by both Embedded and Distributed
 * `docs/web-tests`: the tests the documentation's code examples are extracted from
 
 ## Documentation
 
-The open-source pages of [docs.lancedb.com](https://docs.lancedb.com) live in
-`docs/web`, so a change to behaviour and the change to the page describing it
-belong in the same pull request.
+Update the docs in the same pull request as the behavior they describe. You can
+merge docs before a feature launches; keep the unfinished material hidden until
+it is ready for readers.
 
-Preview them locally — this serves `docs/web` on its own, with no other checkout:
+### Choose the right place
+
+- `docs/web/` holds website guides for LanceDB Embedded and the APIs used by both
+  Embedded and Distributed.
+- `docs/src/` holds the SDK reference. See [docs/README.md](docs/README.md) for
+  its build and API-generation instructions.
+- `docs/web-tests/` and `rust/lancedb/tests/` hold tests used to generate the
+  website's code examples.
+
+Document SDK APIs here, and explain which operations work in Embedded and Distributed.
+Put Enterprise-specific deployment and operating instructions in the Enterprise
+documentation.
+
+Some pages are placeholders that the website build replaces with an Enterprise
+page. Changes to a placeholder won't appear on the combined site. Put
+instructions that both products need on a separate page and link to it.
+
+### Preview and check your change
+
+From the repository root:
 
 ```bash
-npm i -g mint      # https://mintlify.com/docs/installation
-cd docs/web && mint dev
+npm i -g mint@4.2.888
+(cd docs/web && mint dev)
 ```
 
-This repository holds a page at every path the site publishes, so the whole
-navigation resolves locally. Enterprise pages exist here as open-source pages --
-what the capability is, and what the embedded form does instead. A separate
-private repository supplies the fuller version of each, which replaces the page
-at the same path when the published site is assembled.
+This previews this checkout, including your uncommitted changes. It doesn't
+include the other documentation sources or render the availability labels.
+Use the [combined preview](https://github.com/lancedb/docs#development) when
+checking Enterprise replacements or links to pages from another source.
+Staging shows saved release editions, so it won't show a new source change
+just because that change merged.
 
-Two things to know before editing:
-
-**Code examples are not written into the pages.** They live in real tests under
-`docs/web-tests/{py,ts,rs}`, are extracted into `docs/web/snippets/`, and are
-imported by the pages. Edit the test, then regenerate from the repository root:
+Follow the [style guide](https://github.com/lancedb/docs/blob/main/STYLE.md).
+[Vale](https://vale.sh) checks wording, names and punctuation using the
+[bundled LanceDB rules](.github/vale/README.md). Pull requests show suggestions
+on the lines they change. With Vale 3.24.0 installed, check a page locally with:
 
 ```bash
-uv run docs/web-tests/mdx_snippets_gen.py -s docs/web-tests/py -s docs/web-tests/ts -s docs/web-tests/rs -o docs/web/snippets
+vale docs/web/indexing/vector-index.mdx
 ```
 
-Review the diff before committing: a few modules currently regenerate with
-unrelated changes, so commit only the snippets for the examples you changed.
+Keep existing `{#anchor}` values when changing headings, so links to those
+sections keep working. Give new headings stable anchors. For links in rendered
+components, write the path directly, such as `href="/quickstart"`, and spell out
+attributes rather than using property spreads. That lets versioned docs keep
+links inside the selected edition. Code examples aren't subject to this rule.
 
-Run the Python, TypeScript and Rust examples in `docs/web-tests/{py,ts,rs}`
-locally before submitting the change. These examples are not yet wired into
-pull-request CI; that integration remains follow-up work.
+### Code examples
 
-**Every heading carries an explicit `{#anchor}`.** Those anchors are how the
-Enterprise pages attach their additions to the right section, so they are
-assigned once and never regenerated. Leave an existing anchor alone even when
-you reword the heading above it; only new headings need a new one.
+Edit the test that produces an example, then regenerate its snippet. The
+sources are `docs/web-tests/{py,ts,rs}`, `docs/web-tests/blob-v2/{py,ts,rs}` and
+`rust/lancedb/tests`. Run this from the repository root:
+
+```bash
+uv run docs/web-tests/mdx_snippets_gen.py \
+  -s docs/web-tests/py -s docs/web-tests/ts -s docs/web-tests/rs \
+  -s docs/web-tests/blob-v2/py -s docs/web-tests/blob-v2/ts -s docs/web-tests/blob-v2/rs \
+  -s rust/lancedb/tests -o docs/web/snippets
+```
+
+Run the tests for the examples you changed; generating a snippet doesn't run
+its example. Review the generated diff and commit only the relevant snippets
+with their tests. Don't assume the PR checks execute every documentation
+example.
+
+### Say where a feature works
+
+Use `availability` in a page's frontmatter to describe the support covered by
+that page. Each product (`oss` for LanceDB Embedded, `enterprise` for LanceDB
+Enterprise) is either `available` or `unavailable`; use the summary
+and body for setup requirements, SDK differences and unsupported operations.
+For example, a page about signing in to Enterprise could declare:
+
+```yaml
+availability:
+  oss: unavailable
+  enterprise: available
+  summary: >-
+    These sign-in instructions apply to LanceDB Enterprise. LanceDB
+    Embedded has no server to sign in to.
+```
+
+Check these claims with the feature owner. Don't use `varies`, treat an API
+stub as working support, or mark a supported feature unavailable just because
+it needs configuration. If one label can't describe the whole page accurately,
+make the page's scope narrower and explain the differences.
+
+Assembly turns this declaration into a page label and, for a feature supported
+by only one product, a sidebar tag. Don't add those badges by hand. Availability
+labels do not hide unreleased content.
+
+### Write docs before launch
+
+You don't need to hold a documentation PR until launch. Use these controls:
+
+- For a whole page, add its path to `docs/web/.mintignore`. Leave it out of
+  `docs/web/docs.json`, redirects and links from published pages. Removing a
+  sidebar entry alone doesn't hide a page.
+- For a section, wrap it in an MDX comment, `{/* ... */}`, with a note such as
+  `Draft for the Feature X release.` Put draft table rows and list items in a
+  comment below the table or list, not between entries.
+
+Drafts remain in the source. Use them to avoid advertising an unfinished
+feature, not to keep information confidential. See
+[Writing docs before release](https://github.com/lancedb/docs#writing-docs-before-release)
+for examples and how to preview a draft.
+
+Before the intended release, remove the draft controls, restore the navigation
+and links, and check the result. Those changes must be in the source commit the
+edition uses. A later change to `main` doesn't update an edition already saved.
+For a mistake in an existing edition, fix the source and request a
+[recorded correction](https://github.com/lancedb/docs#correcting-a-saved-edition).
 
 ## Release process
 

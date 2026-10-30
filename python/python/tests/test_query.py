@@ -111,6 +111,26 @@ async def _create_blob_v2_query_table_async(db, name):
     return table
 
 
+def _nested_blob_v2_query_schema():
+    return pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("vector", pa.list_(pa.float32(), list_size=2)),
+            pa.field(
+                "info",
+                pa.struct([pa.field("label", pa.string()), lancedb.blob("blob")]),
+            ),
+        ]
+    )
+
+
+def _nested_blob_v2_query_rows():
+    return [
+        {"id": 1, "vector": [1.0, 0.0], "info": {"label": "one", "blob": b"one"}},
+        {"id": 2, "vector": [2.0, 0.0], "info": {"label": "two", "blob": b"two"}},
+    ]
+
+
 def _assert_lazy_blob(value, expected: bytes):
     assert hasattr(value, "readall")
     assert value.readall() == expected
@@ -503,24 +523,223 @@ def test_vector_query_to_pandas_blob_mode_requires_native_path(tmp_db):
         storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
     )
 
-    with pytest.raises(RuntimeError, match="Lance native pandas conversion"):
+    with pytest.raises(RuntimeError, match="no fetchable blob v2 source"):
         table.search([1.0, 0.0]).select(["blob", "vector"]).limit(1).to_pandas(
             blob_mode="lazy"
         )
 
 
-def test_vector_query_to_pandas_blob_descriptions_requires_plain_scan(tmp_db):
+def test_vector_query_to_pandas_legacy_blob_descriptions_and_bytes(tmp_db):
     pytest.importorskip("lance")
     table = tmp_db.create_table(
         "test_vector_query_blob_descriptions",
         _blob_query_data(),
         storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
     )
+    query = table.search([1.0, 0.0]).select(["blob", "vector"]).limit(1)
 
-    with pytest.raises(RuntimeError, match="plain scan query"):
-        table.search([1.0, 0.0]).select(["blob", "vector"]).limit(1).to_pandas(
-            blob_mode="descriptions"
+    df = query.to_pandas(blob_mode="descriptions")
+    assert df["blob"].tolist() == [{"position": 0, "size": 3}]
+
+    with pytest.raises(ValueError, match="legacy blob columns"):
+        query.to_pandas(blob_mode="bytes")
+    with pytest.raises(ValueError, match="legacy blob columns"):
+        query.to_arrow(blob_mode="bytes")
+    with pytest.raises(ValueError, match="legacy blob columns"):
+        table.to_arrow(blob_mode="bytes")
+    assert table.to_pandas(blob_mode="bytes")["blob"].tolist() == [
+        b"one",
+        b"two",
+        b"three",
+        b"four",
+    ]
+
+
+@pytest.mark.parametrize("blob_mode", ["default", "lazy", "bytes", "descriptions"])
+@pytest.mark.parametrize("with_row_id", [None, True, False])
+def test_vector_query_to_pandas_blob_v2_modes(tmp_db, blob_mode, with_row_id):
+    pytest.importorskip("lance")
+    table = _create_blob_v2_query_table(tmp_db, f"test_vector_blob_v2_{blob_mode}")
+
+    query = table.search([1.0, 0.0]).select(["id", "blob", "vector"]).limit(1)
+    if with_row_id is not None:
+        query = query.with_row_id(with_row_id)
+    df = (
+        query.to_pandas()
+        if blob_mode == "default"
+        else query.to_pandas(blob_mode=blob_mode)
+    )
+
+    assert df["id"].tolist() == [1]
+    assert ("_rowid" in df.columns) == (with_row_id is True)
+    if blob_mode == "bytes":
+        assert df["blob"].tolist() == [b"one"]
+    else:
+        descriptor = df["blob"].iloc[0]
+        assert descriptor != b"one"
+        assert not hasattr(descriptor, "readall")
+        assert "_lance_row_id" not in descriptor
+
+
+@pytest.mark.parametrize("blob_mode", ["lazy", "bytes", "descriptions"])
+def test_blob_v2_non_scan_query_shapes_to_pandas(tmp_db, blob_mode):
+    pytest.importorskip("lance")
+    table = _create_blob_v2_query_table(tmp_db, "test_blob_v2_query_shapes")
+    table.create_index("tag", config=FTS())
+
+    queries = [
+        table.search("keep", query_type="fts").limit(2),
+        table.search(query_type="hybrid").vector([1.0, 0.0]).text("keep").limit(2),
+        table.take_offsets([1, 2]).select(["id", "blob"]),
+    ]
+    for query in queries:
+        df = query.to_pandas(blob_mode=blob_mode)
+        assert len(df) == 2
+        if blob_mode == "bytes":
+            assert df["blob"].tolist() == [
+                {1: b"one", 2: b"two", 3: b"three", 4: b"four"}[row_id]
+                for row_id in df["id"]
+            ]
+        else:
+            assert all("_lance_row_id" not in blob for blob in df["blob"])
+        assert "_rowid" not in df.columns
+
+
+@pytest.mark.parametrize("rename_parent", [False, True])
+def test_vector_query_to_pandas_nested_blob_bytes(tmp_db, rename_parent):
+    pytest.importorskip("lance")
+    table = tmp_db.create_table(
+        f"test_vector_nested_blob_{rename_parent}",
+        schema=_nested_blob_v2_query_schema(),
+    )
+    table.add(_nested_blob_v2_query_rows())
+
+    projection = {"id": "id", "renamed": "info"} if rename_parent else ["id", "info"]
+    df = (
+        table.search([1.0, 0.0])
+        .select(projection)
+        .limit(2)
+        .to_pandas(blob_mode="bytes")
+    )
+
+    assert df["id"].tolist() == [1, 2]
+    parent = "renamed" if rename_parent else "info"
+    assert df[parent].tolist() == [
+        {"label": "one", "blob": b"one"},
+        {"label": "two", "blob": b"two"},
+    ]
+    for blob_mode in ("lazy", "descriptions"):
+        descriptors = (
+            table.search([1.0, 0.0])
+            .select(projection)
+            .limit(1)
+            .to_pandas(blob_mode=blob_mode)
         )
+        assert "_lance_row_id" not in descriptors[parent].iloc[0]["blob"]
+
+
+@pytest.mark.asyncio
+async def test_async_vector_query_to_pandas_nested_blob_bytes(tmp_db_async):
+    pytest.importorskip("lance")
+    table = await tmp_db_async.create_table(
+        "test_async_vector_nested_blob",
+        schema=_nested_blob_v2_query_schema(),
+    )
+    await table.add(_nested_blob_v2_query_rows())
+
+    df = await (
+        table.vector_search([1.0, 0.0])
+        .select(["id", "info"])
+        .limit(2)
+        .to_pandas(blob_mode="bytes")
+    )
+
+    assert df["id"].tolist() == [1, 2]
+    assert df["info"].tolist() == [
+        {"label": "one", "blob": b"one"},
+        {"label": "two", "blob": b"two"},
+    ]
+
+
+def test_blob_v2_vector_projection_and_plain_scan_options(tmp_db, monkeypatch):
+    pytest.importorskip("lance")
+    table = _create_blob_v2_query_table(tmp_db, "test_blob_v2_pandas_options")
+
+    df = (
+        table.search([1.0, 0.0])
+        .select({"payload": "blob", "id": "id"})
+        .limit(1)
+        .to_pandas(blob_mode="bytes")
+    )
+    assert df["payload"].tolist() == [b"one"]
+
+    query = table.search().where("id = 1")
+
+    def fail_to_lance(*args, **kwargs):
+        raise AssertionError("blob v2 bytes should not open a pylance dataset")
+
+    monkeypatch.setattr(table, "to_lance", fail_to_lance)
+    assert query.to_pandas(blob_mode="bytes", flatten=True)["blob"].tolist() == [b"one"]
+
+    flattened_lazy = table.search().where("id = 1").to_pandas(flatten=True)
+    assert flattened_lazy["id"].tolist() == [1]
+    assert not any("_lance_row_id" in col for col in flattened_lazy.columns)
+
+    timed = (
+        table.search()
+        .where("id = 1")
+        .to_pandas(blob_mode="bytes", timeout=timedelta(seconds=10))
+    )
+    assert timed["blob"].tolist() == [b"one"]
+
+    timed_lazy = table.search().where("id = 1").to_pandas(timeout=timedelta(seconds=10))
+    assert timed_lazy["id"].tolist() == [1]
+
+
+def test_blob_v2_pandas_preserves_fetch_error(tmp_db, monkeypatch):
+    pytest.importorskip("lance")
+    table = _create_blob_v2_query_table(tmp_db, "test_blob_v2_fetch_error")
+
+    def missing_blob(*args, **kwargs):
+        raise FileNotFoundError("missing obj.bin")
+
+    monkeypatch.setattr(table, "fetch_blobs", missing_blob)
+    with pytest.raises(FileNotFoundError, match="missing obj.bin"):
+        table.search().to_pandas(blob_mode="bytes")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blob_mode", ["lazy", "bytes", "descriptions"])
+@pytest.mark.parametrize("with_row_id", [False, True])
+async def test_async_vector_query_to_pandas_blob_v2_modes(
+    tmp_db_async, blob_mode, with_row_id
+):
+    pytest.importorskip("lance")
+    table = await _create_blob_v2_query_table_async(
+        tmp_db_async, f"test_async_vector_blob_v2_{blob_mode}"
+    )
+
+    query = table.vector_search([1.0, 0.0]).limit(1)
+    if with_row_id:
+        query = query.with_row_id()
+    df = await query.to_pandas(blob_mode=blob_mode)
+    assert df["id"].tolist() == [1]
+    assert ("_rowid" in df.columns) == with_row_id
+    if blob_mode == "bytes":
+        assert df["blob"].tolist() == [b"one"]
+    else:
+        assert "_lance_row_id" not in df["blob"].iloc[0]
+
+
+@pytest.mark.asyncio
+async def test_async_take_query_to_pandas_blob_v2_bytes(tmp_db_async):
+    pytest.importorskip("lance")
+    table = await _create_blob_v2_query_table_async(
+        tmp_db_async, "test_async_take_blob_v2"
+    )
+
+    df = await table.take_offsets([1, 2]).to_pandas(blob_mode="bytes")
+    assert set(df["blob"]) == {b"two", b"three"}
 
 
 def test_order_by_plain_query(mem_db):
@@ -612,6 +831,28 @@ def test_with_row_id(table: lancedb.table.Table):
     rs = table.search().with_row_id(True).to_arrow()
     assert "_rowid" in rs.column_names
     assert rs["_rowid"].to_pylist() == [0, 1]
+
+
+def test_filter_preserves_deeply_nested_struct_fields(tmp_db):
+    # Regression test for https://github.com/lancedb/lancedb/issues/2217.
+    data = [
+        {
+            "item": "test",
+            "sub_obj": {
+                "second_sub_obj": [
+                    {
+                        "third_sub_obj": {"int_val": 1},
+                        "str_val": "test",
+                    }
+                ]
+            },
+        }
+    ]
+    table = tmp_db.create_table("deeply_nested_struct", data=data)
+
+    result = table.search().where("item = 'test'").limit(1).to_arrow()
+
+    assert result.to_pylist() == data
 
 
 def test_blob_v2_query_omits_auto_row_id(tmp_db):
@@ -1737,6 +1978,56 @@ def test_query_serialization_sync(table: lancedb.table.Table):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("query_type", ["plain", "fts", "vector"])
+@pytest.mark.parametrize("fast_search", [False, True])
+@pytest.mark.parametrize("postfilter", [False, True])
+async def test_query_serialization_async_search_options(
+    table_async: AsyncTable, query_type, fast_search, postfilter
+):
+    query = table_async.query().where("id = 1")
+    if query_type == "fts":
+        query = query.nearest_to_text(MatchQuery("dog", "text"))
+    elif query_type == "vector":
+        query = query.nearest_to([1.0, 2.0])
+    if fast_search:
+        query = query.fast_search()
+    if postfilter:
+        query = query.postfilter()
+
+    serialized = query.to_query_object()
+    assert serialized.fast_search is (True if fast_search else None)
+    default_postfilter = False if query_type == "vector" else None
+    assert serialized.postfilter is (True if postfilter else default_postfilter)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fast_search", [False, True])
+async def test_query_serialization_async_fast_search_execution(
+    table_async, fast_search
+):
+    await table_async.create_index("text", config=FTS())
+    await table_async.add(
+        [
+            {
+                "id": 3,
+                "vector": [5.0, 6.0],
+                "str_field": "c",
+                "float_field": 3.0,
+                "text": "unindexed dog",
+            }
+        ]
+    )
+    query = table_async.query().nearest_to_text(MatchQuery("unindexed", "text"))
+    if fast_search:
+        query = query.fast_search()
+
+    expected_ids = [] if fast_search else [3]
+    assert [row["id"] for row in await query.to_list()] == expected_ids
+    restored = table_async._sync_query_to_async(query.to_query_object())
+    assert [row["id"] for row in await restored.to_list()] == expected_ids
+
+
+@pytest.mark.asyncio
 async def test_query_serialization_async(table_async: AsyncTable):
     # Simple queries
     q = table_async.query().where("id = 1").limit(500).offset(10).to_query_object()
@@ -2081,6 +2372,33 @@ def test_take_queries(tmp_path):
         5,
         17,
     ]
+
+
+def test_take_queries_with_row_id(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("test", pa.table({"idx": range(100)}))
+
+    by_row_id = table.take_row_ids([5, 2, 17], with_row_id=True).to_arrow()
+    assert "_rowid" in by_row_id.column_names
+    by_offset = table.take_offsets([5, 2, 17], with_row_id=True).to_arrow()
+    assert "_rowid" in by_offset.column_names
+
+    # The column is opt-in and must stay out of the default projection.
+    assert "_rowid" not in table.take_row_ids([5, 2, 17]).to_arrow().column_names
+
+
+@pytest.mark.asyncio
+async def test_take_queries_with_row_id_async(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("test", pa.table({"idx": range(100)}))
+
+    by_row_id = await table.take_row_ids([5, 2, 17], with_row_id=True).to_arrow()
+    assert "_rowid" in by_row_id.column_names
+    by_offset = await table.take_offsets([5, 2, 17], with_row_id=True).to_arrow()
+    assert "_rowid" in by_offset.column_names
+
+    default = await table.take_row_ids([5, 2, 17]).to_arrow()
+    assert "_rowid" not in default.column_names
 
 
 def test_take_queries_to_batches(tmp_path):

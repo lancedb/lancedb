@@ -141,6 +141,16 @@ impl DisplayAs for InsertExec {
 }
 
 impl ExecutionPlan for InsertExec {
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(
+            &Arc<dyn datafusion_physical_expr::PhysicalExpr>,
+        ) -> datafusion_common::Result<
+            datafusion_common::tree_node::TreeNodeRecursion,
+        >,
+    ) -> datafusion_common::Result<datafusion_common::tree_node::TreeNodeRecursion> {
+        Ok(datafusion_common::tree_node::TreeNodeRecursion::Continue)
+    }
     fn name(&self) -> &str {
         Self::static_name()
     }

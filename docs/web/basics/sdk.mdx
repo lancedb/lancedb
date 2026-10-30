@@ -1,99 +1,92 @@
 ---
 title: "SDKs"
 sidebarTitle: "SDKs"
-description: "The language clients — Python, TypeScript, Rust — and what stays true across all of them."
+description: "Choose a LanceDB SDK and find the API reference for your language."
 icon: code-compare
 keywords: ["python", "typescript", "rust", "java", "sdk", "rest", "api reference"]
 ---
 
-A language SDK is the primary way to work with LanceDB: create and manage
-tables, write and query data, build indexes, run feature engineering. The same
-table API works whether you're connected to an embedded database or an
-Enterprise deployment -- application code moves between the two by changing
-the connection URI.
+Use a LanceDB SDK to create tables, add data, build indexes and run searches
+from your application. Python, TypeScript and Rust work with both LanceDB
+Embedded and LanceDB Enterprise. LanceDB Embedded runs in your application's
+process; your data can live on local disk or in object storage. LanceDB
+Enterprise runs LanceDB Distributed: query execution, indexing and maintenance
+run on the Enterprise service, outside your application.
 
-## Officially supported SDKs {#supported-sdks}
+The [quickstart](/quickstart) includes installation instructions and complete
+examples in all three languages. For connection settings, see
+[Connect to LanceDB](/basics/catalog).
 
-Python, TypeScript and Rust are supported against both embedded and deployed
-LanceDB.
+## Official SDKs {#supported-sdks}
 
-| Reference | Description |
-|:--------------|-------------------|
-| <Icon icon="python" /> [Python](https://lancedb.github.io/lancedb/python/python/) | Full-featured Python client with pandas and numpy integration |
-| <Icon icon="square-js" /> [TypeScript](https://lancedb.github.io/lancedb/js/) | A TypeScript wrapper around the Rust library, built with `napi-rs` |
-| <Icon icon="rust" /> [Rust](https://docs.rs/lancedb/latest/lancedb/index.html) | Native Rust library with persistent storage and high performance |
+| SDK | API reference |
+| --- | --- |
+| Python | [Python reference](https://lancedb.github.io/lancedb/python/python/) |
+| TypeScript | [TypeScript reference](https://lancedb.github.io/lancedb/js/) |
+| Rust | [Rust reference](https://docs.rs/lancedb/latest/lancedb/index.html) |
 
-Not every SDK covers the same surface, though:
+Guides show the available language examples together. Use the API reference for
+method signatures and options; SDKs do not expose every feature through the same
+methods. In Rust, enable the `remote` feature to connect to Enterprise.
 
-| | Python | TypeScript |
-| --- | :---: | :---: |
-| Create and manage catalog objects | yes | yes |
-| Insert, merge, update, delete | yes | yes |
-| Filter, project, aggregate, join | yes | yes |
-| Vector search | yes | yes |
-| Full-text search | yes | yes |
-| Feature engineering, jobs | yes | partly |
-| Runs against a local database | yes | yes |
+For SQL joins, aggregations and window functions, use
+[SQL](/basics/sql). Python provides a SQL client, and applications in other
+languages can use a Flight SQL client. TypeScript's table query API does not
+provide a SQL execution method.
 
-TypeScript has no methods for [functions](/management/function). Reach the
-gap with SQL instead -- see [SQL](/basics/sql).
+## Lance Namespace SDKs {#lance-namespace-sdks}
 
-## REST API {#rest}
+LanceDB Enterprise's catalog and table operations follow
+[Lance Namespace](https://lance.org/format/namespace), an open specification
+for describing access to tables in a multimodal lakehouse, including its REST
+Namespace Spec. LanceDB Enterprise exposes this as an HTTP API for catalog and
+table operations -- the [REST API reference](/api-reference/rest) describes
+its endpoints and request formats. Use it when integrating a language or tool
+without a LanceDB SDK; for SQL queries, connect through
+[Flight SQL](/basics/sql) instead. Any client that implements a Lance
+Namespace REST client can integrate with LanceDB this way, not only the
+official SDKs above.
 
-<Badge color="red">Enterprise</Badge> A deployment implements the
-[Lance REST Namespace](/basics/lance#enterprise), so the catalog is reachable
-over HTTP by anything that speaks it -- see the
-[REST API reference](/api-reference/rest).
+| Language | Package | Used by |
+| --- | --- | --- |
+| Java | `org.lance:lance-namespace-core` | Spark, Flink, Kafka, Trino, Presto; also LanceDB's Java client |
+| Python | `lance-namespace` | Core interface and connect functionality |
+| Rust | `lance-namespace` | Core interface, in [lance-format/lance](https://github.com/lance-format/lance) |
 
-| Reference | Description |
-|:--------------|-------------------|
-| <Icon icon="java" /> [Java](https://lancedb.github.io/lancedb/java/java/) | REST API Enterprise SDK in Java |
+LanceDB's Java client builds on this Lance Namespace Java core: table creation,
+listing and most other catalog operations go through the generated
+`LanceNamespace` interface talking to Enterprise's REST Namespace endpoint.
+The [real time engine](/tables/realtime-engine) is the one area with its own,
+LanceDB-specific Java client on top, since RTE's LSM write path is not part of
+the Lance Namespace specification.
+
+See [lance.org/format/namespace](https://lance.org/format/namespace) for the
+full spec and its other catalog implementations (Directory, Apache Polaris,
+Unity Catalog, Apache Hive Metastore, Apache Iceberg REST Catalog, and more).
 
 ## Community SDKs {#community-sdks}
 
-Contributed by the community rather than supported by LanceDB, so feature parity
-and release cadence vary.
+These clients are maintained by the community. Check each project's supported
+features, installation instructions and releases before choosing one.
 
-| Reference | Description |
-|:--------------|-------------------|
-| <Icon icon="golang" /> [Go](https://pkg.go.dev/github.com/lancedb/lancedb-go/pkg/lancedb) | Community-contributed Go SDK |
-| <Icon icon="gem" /> [Ruby](https://github.com/scientist-labs/lancelot) | Community-contributed Ruby bindings |
-| <Icon icon="swift" /> [Swift](https://github.com/RyanLisse/LanceDbSwiftKit) | Community-contributed Swift SDK |
-| <Icon icon="R" /> [R](https://github.com/CathalByrneGit/lancedb) | Community-contributed R package |
-| <Icon icon="flutter" /> [Flutter](https://github.com/Alexcn/flutter_lancedb) | Community-contributed Flutter bindings |
+| Language | Project |
+| --- | --- |
+| Go | [lancedb-go](https://pkg.go.dev/github.com/lancedb/lancedb-go/pkg/lancedb) |
+| Ruby | [Lancelot](https://github.com/scientist-labs/lancelot) |
+| Swift | [LanceDbSwiftKit](https://github.com/RyanLisse/LanceDbSwiftKit) |
+| R | [lancedb](https://github.com/CathalByrneGit/lancedb) |
+| Flutter | [flutter_lancedb](https://github.com/Alexcn/flutter_lancedb) |
 
-For any other language, [SQL](/basics/sql) reaches the same tables without a
-LanceDB-specific SDK at all.
-
-## Python multiprocessing {#multiprocessing}
-
-<Warning>
-Do not use `fork` as the start method with Python's `multiprocessing` module.
-Lance is multi-threaded internally, and `fork` with alive threads is unsafe --
-use `spawn` instead. See
-[this discussion](https://discuss.python.org/t/concerns-regarding-deprecation-of-fork-with-alive-threads/33555)
-for why.
-</Warning>
-
-## What stays the same {#invariants}
-
-Whichever you pick:
-
-- **Types are Arrow types.** A vector column is a `FixedSizeList<Float32>`
-  everywhere, not a SQL type mapped onto storage. See
-  [Functions and types](/sql/functions).
-- **Reads are Arrow.** Nothing is serialized into language objects on the way out
-  unless you convert it.
-- **The catalog is one catalog.** A table created from TypeScript is visible to
-  Python and to SQL immediately -- there is no per-language namespace.
-
-## What to read next {#next}
+## Related guides {#next}
 
 <CardGroup cols={2}>
   <Card title="SQL" icon="table-list" href="/basics/sql">
-    The same tables, reached by any Flight SQL client -- and the one way in for a language with no SDK.
+    Query Enterprise tables with SQL from Python or a Flight SQL client.
+  </Card>
+  <Card title="PyTorch Data Loader" icon="fire" href="/training/data-loading">
+    Use LanceDB tables in a DataLoader, including multiple worker processes.
   </Card>
   <Card title="Agentic Skills" icon="robot" href="/basics/agentic-skills">
-    Give a coding agent a current reference to this same API surface.
+    Use the LanceDB plugin to help a coding agent work with your data.
   </Card>
 </CardGroup>

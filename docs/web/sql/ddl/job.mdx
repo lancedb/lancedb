@@ -4,12 +4,13 @@ sidebarTitle: "Job"
 description: "SHOW JOBS, SHOW ERRORS, and controlling a running job with PAUSE, RESUME and CANCEL."
 icon: hourglass-half
 keywords: ["show jobs", "show errors", "pause job", "resume job", "cancel job", "sql"]
+availability:
+  embedded: unavailable
+  enterprise: available
 ---
 
-<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
-
-A [job](/basics/jobs) is not a catalog object -- it has no schema and is not
-namespaced -- but it has its own SQL statements, grouped here the same way the
+A [job](/basics/jobs) is not a catalog object (it has no schema and is not
+namespaced), but it has its own SQL statements, grouped here the same way the
 catalog objects are.
 
 ## SHOW JOBS {#show}
@@ -18,7 +19,7 @@ catalog objects are.
 SHOW JOBS
 ```
 
-Every job the server knows about -- id, type, state, creation time. The SQL
+Every job the server knows about: id, type, state, creation time. The SQL
 counterpart of `list_jobs`.
 
 ## SHOW ERRORS {#errors}
@@ -32,10 +33,10 @@ SHOW ERRORS ON documents
 SHOW ERRORS ON documents FOR JOB 'job-abc' LIMIT 100
 ```
 
-Why rows failed. Reach for this when a [refresh](/sql/dml/refresh) reports
+Why rows failed. Reach for this when a [refresh](/sql/dml/refresh-column) reports
 fewer filled rows than you expected.
 
-**Errors and limits**
+### Errors and limits {#errors-and-limits}
 
 | | |
 | --- | --- |
@@ -44,7 +45,7 @@ fewer filled rows than you expected.
 | Tables the server does not open directly | not supported |
 
 Without `FOR JOB` this surveys recent failures and stops at 32 jobs. When the
-listing stops at your `LIMIT`, the message says so -- narrow with `FOR JOB`
+listing stops at your `LIMIT`, the message says so. Narrow with `FOR JOB`
 rather than raising the limit blindly.
 
 ## PAUSE JOB {#pause}
@@ -66,14 +67,14 @@ CANCEL JOB 'j-ci-abc-def'
 ```
 
 The job id is always a quoted string literal. All three take exactly one and
-nothing after it -- a second token on the line is a syntax error rather than
+nothing after it: a second token on the line is a syntax error rather than
 being ignored.
 
 <Note>
 Cancellation is a request, matching the SDK's
 [`cancel()`](/basics/jobs#managing): it does not guarantee the job stops before
 doing more work, and asking twice or cancelling a finished job does nothing.
-`CANCEL JOB` itself can be unavailable on a deployment with no job registry
+`CANCEL JOB` itself can be unavailable on an Enterprise cluster with no job registry
 configured, which is a deployment condition rather than something you can work
 around from SQL.
 </Note>

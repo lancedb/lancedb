@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Catalogs manage databases. A remote catalog is the root namespace of a server.
+//! Catalogs manage databases at the server root. Storage integrations belong to databases.
 //!
 //! ```
 //! # #[cfg(feature = "remote")]
@@ -59,7 +59,7 @@ impl<T: Into<String>> From<T> for CreateDatabaseRequest {
     }
 }
 
-/// Options for restricted database deletion. Tables must be removed first.
+/// Options for database deletion. The database must be empty unless `cascade` is set.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct DropDatabaseRequest {
@@ -67,6 +67,8 @@ pub struct DropDatabaseRequest {
     pub name: String,
     /// Succeed if the database is absent.
     pub ignore_missing: bool,
+    /// Drop everything in the database first.
+    pub cascade: bool,
 }
 
 impl DropDatabaseRequest {
@@ -75,12 +77,20 @@ impl DropDatabaseRequest {
         Self {
             name: name.into(),
             ignore_missing: false,
+            cascade: false,
         }
     }
 
     /// Succeed when the database does not exist.
     pub fn ignore_missing(mut self, value: bool) -> Self {
         self.ignore_missing = value;
+        self
+    }
+
+    /// Drop every table, view, function, secret and namespace in the database first. The
+    /// server cleans up their storage in the background, and the name stays taken until then.
+    pub fn cascade(mut self, value: bool) -> Self {
+        self.cascade = value;
         self
     }
 }
@@ -190,14 +200,21 @@ impl Stream for DatabaseNames {
     }
 }
 
-/// A backend that manages databases. Implementations own database lifecycle semantics.
+/// A backend that manages databases.
 #[async_trait::async_trait]
 pub trait Catalog: Send + Sync + std::fmt::Debug + 'static {
+    /// Obtain deployment-wide authorization, if supported by this backend.
+    fn authz(&self) -> Result<Arc<dyn crate::authz::Authorization>> {
+        Err(crate::Error::NotSupported {
+            message: "Authorization administration is not supported by this catalog".into(),
+        })
+    }
+
     /// Catalog endpoint or location.
     fn uri(&self) -> &str;
     /// Create a database, or open it when `exist_ok` permits.
     async fn create_database(&self, request: CreateDatabaseRequest) -> Result<Arc<dyn Database>>;
-    /// Drop an empty database. This must not cascade to tables.
+    /// Drop a database, which must be empty unless the request cascades.
     async fn drop_database(&self, request: DropDatabaseRequest) -> Result<()>;
     /// List a page of database names.
     async fn list_databases(&self, request: ListDatabasesRequest) -> Result<ListDatabasesResponse>;
@@ -239,11 +256,15 @@ impl CatalogConnection {
     pub fn uri(&self) -> &str {
         self.catalog.uri()
     }
+    /// Obtain a handle sharing this catalog's deployment scope and credentials.
+    pub fn authz(&self) -> Result<Arc<dyn crate::authz::Authorization>> {
+        self.catalog.authz()
+    }
+
     /// Access the underlying backend.
     pub fn catalog(&self) -> &Arc<dyn Catalog> {
         &self.catalog
     }
-
     /// Create a database; pass a name or [`CreateDatabaseRequest`] for additional options.
     pub async fn create_database(
         &self,
@@ -255,7 +276,7 @@ impl CatalogConnection {
         ))
     }
 
-    /// Drop an empty database; pass a name or [`DropDatabaseRequest`] for additional options.
+    /// Drop a database; pass a name or [`DropDatabaseRequest`] for options such as `cascade`.
     pub async fn drop_database(&self, request: impl Into<DropDatabaseRequest>) -> Result<()> {
         self.catalog.drop_database(request.into()).await
     }

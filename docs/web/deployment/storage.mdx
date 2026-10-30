@@ -1,10 +1,16 @@
 ---
-title: "Storage"
-sidebarTitle: "Storage"
-description: "Choosing and configuring where LanceDB stores its data -- how you deploy an embedded database."
+title: "Storage configuration"
+sidebarTitle: "Storage Configuration"
+description: "Choose and configure local disk or object storage for your tables."
 icon: database
 keywords: ["storage", "s3", "gcs", "azure", "object store", "configuration", "deploy"]
 ---
+
+This page is about LanceDB Embedded, where your connection chooses and
+configures the storage backend. A LanceDB Enterprise deployment sets up its own
+storage when it is deployed, so a `db://` connection passes none of these
+options except an Azure storage account name. See
+[LanceDB Enterprise](/enterprise) for how a deployment is set up.
 
 LanceDB's storage layer is built on modular, disk-first components. That design makes it flexible enough to run across local NVMe, EBS, EFS, and any object store that exposes an S3-compatible API. It also supports region-specific backends such as [Tencent COS](/storage/configuration#tencent-cos) and cache-acceleration layers such as [GooseFS](/storage/configuration#goosefs).
 
@@ -36,7 +42,7 @@ LanceDB separates storage and compute and writes immutable fragments, making it 
 <Note>
 **Concurrent writers on S3**
 
-S3 and S3 Express now support atomic writes natively, so LanceDB handles concurrent writers against the same table out-of-the-box — no external commit coordinator is required. Bucket-level [server-side encryption with KMS](/storage/configuration#server-side-encryption-with-kms) and [S3 Express One Zone](/storage/configuration#s3-express) are also supported on this tier.
+S3 and S3 Express now support atomic writes natively, so LanceDB handles concurrent writers against the same table out-of-the-box: no external commit coordinator is required. Bucket-level [server-side encryption with KMS](/storage/configuration#server-side-encryption-with-kms) and [S3 Express One Zone](/storage/configuration#s3-express) are also supported on this tier.
 </Note>
 
 ### 2\. File storage (EFS, GCS Filestore, Azure File) {#2-file-storage-efs-gcs-filestore-azure-file}
@@ -70,7 +76,7 @@ Use local disk only when you need extremely low latency and are comfortable owni
 
 ### File-format choices that interact with the backend {#file-format-choices}
 
-A few `storage_options` keys shape new tables in ways that depend on the backend you picked above. They are documented in full on [below](#new-table-configuration); the architecture-level summary is:
+A few `storage_options` keys shape new tables in ways that depend on the backend you picked above. They are documented in full [below](#new-table-configuration); the architecture-level summary is:
 
 - `new_table_enable_v2_manifest_paths` matters most on object stores, where opening a table with many versions is dominated by listing cost. Leave it off for backward compatibility with clients older than LanceDB 0.10.0.
 - `new_table_enable_stable_row_ids` keeps row IDs stable across compaction, delete, and merge. The choice is independent of the backend but affects any system that joins on row ID.
@@ -111,7 +117,7 @@ import {
 <Note>
 **LanceDB Enterprise storage configuration**
 
-In LanceDB Enterprise, you connect with `db://...` and the cluster owns the storage credentials, so `storage_options` are not passed at runtime. Cloud auth is set at deployment time. For federated databases, the namespace service vends per-request credentials automatically. See the [quickstart](/quickstart), [Enterprise overview](/enterprise/), and [Azure deployment guide](/enterprise/deployment/azure) for the Enterprise flow.
+In LanceDB Enterprise, you connect with `db://...` and the cluster owns the storage credentials, so `storage_options` are not passed at runtime. Cloud auth is set at deployment time. For federated databases, the namespace service vends per-request credentials automatically. See the [quickstart](/quickstart), [Enterprise overview](/enterprise/), and [Kubernetes deployment guide](/enterprise/deployment/kubernetes) for the Enterprise flow.
 </Note>
 
 ### Object stores {#object-stores}
@@ -176,9 +182,9 @@ Table-level `storage_options` inherit every key from the connection and override
 </CodeGroup>
 
 <Tip>
-**Inspect the effective options**
+**Inspect a table's own options**
 
-On `AsyncTable`, `await table.initial_storage_options()` returns the options the table was opened with, and `await table.latest_storage_options()` returns the current options after any provider-driven refresh. The deprecated `table.storage_options()` method will be removed in a future release.
+On `AsyncTable`, `await table.initial_storage_options()` returns the options passed when the table was opened, and `await table.latest_storage_options()` returns them after any provider-driven refresh. Neither includes what the table inherits from its connection's `storage_options`, which still apply. The deprecated `table.storage_options()` method will be removed in a future release.
 </Tip>
 
 #### General object store options {#general-object-store-options}

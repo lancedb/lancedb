@@ -1,196 +1,160 @@
 ---
 title: "Jobs"
 sidebarTitle: "Job"
-description: "Work that outlives the call that started it: submitting, waiting, inspecting, cancelling."
+description: "Track background work from submission to completion."
 icon: hourglass-half
-keywords: ["job", "async", "background", "events", "cancel", "refresh"]
+keywords: ["job", "background", "progress", "events", "cancel"]
+availability:
+  embedded: available
+  enterprise: available
 ---
 
-Some operations take longer than a request should. Building an index over a
-large table, refreshing a computed column, registering a function -- these run
-on the server after the call that started them has returned.
+## Job handles {#convention}
 
-Each is submitted the same way and returns the same handle.
+A job handle lets you track an operation, such as an index build or a computed
+column refresh. Use it to check progress, wait for completion and inspect
+failures.
 
-<Note>
-A [query](/basics/query) also has an `_async` form, but its handle streams rows
-rather than waiting for an outcome. Both answer the same four questions --
-which one is this, how is it going, give me the result, stop it -- and differ
-only in the third.
-</Note>
+Methods such as Python's `create_index_async` and TypeScript's
+`createIndexAsync` return job handles. In LanceDB Embedded, the work runs in your application
+process; in Enterprise, it runs on server workers or through the SQL query
+backend. A returned handle can represent an operation that has already finished,
+so check its status before
+waiting or requesting cancellation. See the operation's API reference for when
+the method returns.
 
-## The `_async` convention {#convention}
+```python
+job = tbl.create_index_async("vector", replace=True)
 
-An operation that can run in the background has two forms. The plain name blocks
-until the work is done. The `_async` / `Async` name submits the work and returns
-a **job** immediately.
-
-| Blocking | Returns a job | SQL |
-| --- | --- | --- |
-| `create_index` | `create_index_async` | `CREATE INDEX` |
-| `refresh_column` | `refresh_column_async` | `REFRESH COLUMN` |
-| `create_function` | `create_function_async` | `CREATE FUNCTION` |
-| `drop_table` | `drop_table_async` | `DROP TABLE` |
-
-<Note>
-The blocking form is not a different operation -- it submits the same job and
-waits. Reach for the `_async` form when you want to do something else meanwhile,
-run several at once, or survive the client going away.
-</Note>
-
-## Submitting and waiting {#waiting}
-
-<CodeGroup>
-```python Python icon="python"
-from lancedb.index import IvfPq
-
-job = table.create_index_async("vector", config=IvfPq())
-
-print(job.id)          # the server's id for this operation
-print(job.status())    # "running" | "finished" | "failed" | "cancelled"
-
-job.wait()             # blocks until terminal; raises if it failed
+print(job.id)
+print(job.job_type)
+print(job.status())
 ```
 
-```typescript TypeScript icon="square-js"
-const job = await table.createIndexAsync("vector");
+## Submit and wait for a job {#waiting}
 
-console.log(job.id);              // the server's id for this operation
-console.log(await job.status());  // "running" | "finished" | "failed" | "cancelled"
+1. **Submit the operation.** Keep the returned job handle. For an Enterprise
+    registry job, also keep its ID if another process needs to look it up later.
+2. **Check progress.** Read the current status while the operation runs.
+3. **Wait for completion.** Check that the job succeeded before using its
+    result. If it failed or was cancelled, inspect the failure details and any
+    results it committed before stopping.
 
-await job.wait();                 // resolves when terminal; rejects if it failed
-```
-</CodeGroup>
-
-`wait` is the one call that raises on failure. `status` is a point snapshot and
-returns the failed state rather than raising, which is what you want in a
-polling loop.
-
-In Python `wait` takes an optional timeout and returns the operation's typed
-result -- a `RefreshColumnJobResult`, a `FunctionVersion`, or `None` for an
-operation that has no result:
+In Python, `job.status()` reports the current state and `job.wait()` waits for
+completion, raising if the job fails or is cancelled. If `job.wait()` times out, the client stops waiting.
+The timeout does not cancel the server job.
 
 ```python
 from datetime import timedelta
+from lancedb.exceptions import JobFailedError, JobCancelledError
 
-result = table.refresh_column_async("embedding").wait(timeout=timedelta(minutes=30))
+job = tbl.create_index_async("vector", replace=True)
+
+try:
+    result = job.wait(timeout=timedelta(minutes=10))
+except JobFailedError:
+    print(f"job failed: {job.failure}")
+except JobCancelledError:
+    print("job was cancelled")
+except TimeoutError:
+    print(f"still running: {job.status()}")
 ```
 
-`TimeoutError` means the timeout elapsed, not that the job stopped. The job is
-still running; the handle just gave up watching.
+<span id="inspecting" />
+<span id="events" />
 
-<Note>
-The TypeScript `wait()` resolves to `void`. Read the outcome from `result` after
-it resolves.
-</Note>
+## Inspect and cancel jobs {#managing}
 
-## Inspecting a job {#inspecting}
+| Task | What to do |
+| --- | --- |
+| Inspect progress | Check status and refresh the handle to retrieve details. Enterprise job events can help explain ongoing work or failures. |
+| Reattach from another process | Open an existing server job with its ID, such as Python's `db.open_job(job_id)`. The server must still retain the job record. |
+| Diagnose a failure | Inspect failure details and relevant events. Enterprise SQL also provides `SHOW ERRORS`. |
+| Request cancellation | Call the job's cancellation method. Cancellation may take time, and work already committed is not rolled back. |
 
-Submitting an operation returns only an id, so the detail fields are empty until
-the handle fetches the record. `refresh()` does that; `status()` does it as a
-side effect.
+Reopening a job retrieves the existing operation; it does not restart failed
+work. Treat the ID as an opaque identifier and pass it unchanged to the jobs API.
 
-<CodeGroup>
-```python Python icon="python"
-job.refresh()
+```python
+job = db.open_job(job_id)  # raises JobNotFoundError if unknown
+job.refresh()              # pull the latest status from the server
+print(job.status())
 
-job.state        # last observed state, without another round trip
-job.job_type     # what kind of job, as the server names it
-job.creation_ms  # when it was created, epoch milliseconds
-job.spec         # what it was submitted with
-job.result       # its terminal result, once it succeeds
-job.failure      # why it failed, when it did
+events = job.events(limit=100)
+print(events.to_pylist())
+
+job.cancel()
 ```
 
-```typescript TypeScript icon="square-js"
-await job.refresh();
+List jobs on a connection, paging through the results:
 
-job.state;       // last observed state, without another round trip
-job.jobType;     // what kind of job, as the server names it
-job.creationMs;  // when it was created, epoch milliseconds
-job.spec;        // what it was submitted with
-job.result;      // its terminal result, once it succeeds
-job.failure;     // why it failed, when it did
-```
-</CodeGroup>
-
-Printing the handle renders every field it knows, which is usually faster than
-reading them one at a time.
-
-## Progress, from events {#events}
-
-`result` only tells you anything once the job has finished. Events are written
-as it runs, and they outlive the workers that produced them -- so a job that is
-still going, or one that never finished, can still account for what it did.
-
-<CodeGroup>
-```python Python icon="python"
-events = job.events(limit=5000, filter="state = 'claim_complete'")
+```python
+for info in db.list_jobs(page_limit=50):
+    print(info.job_id, info.job_type, info.state)
 ```
 
-```typescript TypeScript icon="square-js"
-const events = await job.events({ limit: 5000, filter: "state = 'claim_complete'" });
-```
+Event responses have [row limits](/basics/limits#jobs). An explicit limit can
+request more than the default, but it does not guarantee a complete event
+history.
 
-```sql SQL
-SHOW ERRORS ON my_table FOR JOB 'job-id' LIMIT 100
-```
-</CodeGroup>
+## Embedded and Distributed execution {#in-process}
 
-A distributed job records a `claim` / `claim_complete` pair per unit of work,
-each carrying `rows_processed`. Summing `rows_processed` over the completed
-claims is how you get progress on a job that has no percentage.
+The following table describes LanceDB Embedded operations and registry jobs on
+LanceDB Distributed (provided by LanceDB Enterprise).
+SQL-backed job handles follow the query lifecycle described below.
 
-`filter` is a SQL-like expression over `state`, `updated_by`, `emitted_from`,
-`emitted_by`, and `claim_entity`.
+| | Embedded | Enterprise registry job |
+| --- | --- | --- |
+| Execution | In your application process | On server workers |
+| Job identity | No server ID | A server ID for looking up the job |
+| Event history | No server event history | Available through the jobs API |
+| Reattaching after a client restart | No server job to reopen | Reopen by ID while the record is retained |
 
-<Warning>
-The server returns 1000 event rows by default and 10,000 at most, and
-**truncates without telling you**. A job that emits an event per fragment will
-silently lose its tail unless you pass `limit`.
-</Warning>
+### SQL-backed job handles
 
-Events are recorded server-side, so this raises for an operation that ran
-in-process.
+On Enterprise, materialized-view CREATE, REFRESH, and DROP use the SQL query backend.
+Python's `create_materialized_view_async()`, `mv.refresh_async()`, and
+`drop_materialized_view_async()` return job handles with `status()`, `wait()`,
+and `cancel()`. Synchronous creation, refresh, and drop wait on the same SQL
+execution before returning. A completed DROP means the catalog binding has been
+removed; physical cleanup continues in the background.
 
-## Finding and cancelling jobs {#managing}
+Remote function registration also returns a SQL query job. The SQL operation
+submits the durable image build and waits for catalog publication before returning
+the immutable FunctionVersion. `drop_function_async()` returns the catalog-removal
+boolean together with a query job; waiting on that handle confirms removal while
+physical cleanup continues separately.
 
-The connection lists and reopens jobs, so a handle lost to a restarted process
-is recoverable from its id.
+Remote Secret create, alter, list, describe, and drop use the SQL query backend.
+The synchronous APIs wait on query completion internally. Create and alter bind
+the credential as a parameter to `CREATE SECRET name AS $1` or
+`ALTER SECRET name AS $1`, keeping it out of SQL text. Results contain only
+completion status or Secret names and timestamps; they never return credential
+values. SQL `DESCRIBE SECRET` additionally exposes rotation history.
 
-<CodeGroup>
-```python Python icon="python"
-db.list_jobs()             # every job the server knows about
-job = db.open_job(job_id)  # reattach to one
-db.cancel_job(job_id)      # ask it to stop
-```
+Remote view creation, description, listing, and drop also use SQL. Creation
+returns the stored definition and schema from the same SQL execution.
+`drop_view_async()` returns a query job: waiting confirms catalog removal while
+physical cleanup continues in the background.
 
-```typescript TypeScript icon="square-js"
-await db.listJobs();
-const job = await db.openJob(jobId);
-await db.cancelJob(jobId);
-```
+The existing `job.job_type` identifies query-backed handles as `"query"` from
+submission, and `job.id` contains the connection-scoped SQL query UUID string.
+Use `describe_query(job.id)` on the submitting connection to inspect the query.
+Registry handles retain their server-reported job types (available after
+`status()` or `refresh()`) and registry IDs. Local handles have no ID or job type.
 
-```sql SQL
-SHOW JOBS
-```
-</CodeGroup>
+SQL-backed handles do not expose registry records or event history and cannot
+be reopened through `open_job()` or reattached after a client restart. Their IDs
+are not durable resume tokens. Cancellation follows the SQL server's
+capabilities and can be unsupported.
 
-Cancellation is a request, not a guarantee, and cancelling a job that already
-finished does nothing. `JobNotFoundError` means the id does not name a job the
-server still has.
+The server decides whether SQL executes on its serving fleet or starts SQL job
+workers. That placement does not change the handle's query-backed identity.
 
-<Warning>
-A job id is opaque. It correlates with server logs and the calls above, but
-parsing it or storing it to resume the job later is not supported.
-</Warning>
+## Learn more {#next}
 
-## In-process jobs {#in-process}
-
-A local database has no server to run anything, so its operations run in your
-process. They still return a handle, so the same code works against both -- but
-one with nothing behind it: `id` is `None`, `status()` reports `"finished"`,
-`wait()` returns immediately, `cancel()` does nothing, and `events()` raises.
-
-This is the difference to expect when moving between embedded and deployed --
-see [SDKs](/basics/sdk).
+- [Build and repair indexes](/indexing/reindexing): submit index work.
+- [Refresh a computed column](/feature-engineering/refresh-column): populate derived values.
+- [Background jobs](/maintenance/background-jobs): understand Enterprise maintenance.
+- [SQL job commands](/sql/ddl/job): list jobs and inspect errors.
+- [SDKs](/basics/sdk): find the job API for your client.

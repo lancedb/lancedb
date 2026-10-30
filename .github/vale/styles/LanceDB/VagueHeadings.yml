@@ -1,0 +1,19 @@
+extends: existence
+message: "'%s' doesn't say what the section covers. Name the task or topic instead."
+link: https://github.com/lancedb/docs/blob/main/STYLE.md#headings
+level: suggestion
+scope: heading
+ignorecase: true
+tokens:
+  - then what
+tests:
+  - name: flags a heading that names no topic
+    input: |
+      ## Then what {#next}
+
+      Choose the output according to how you will use it.
+    want: |
+      1:4:LanceDB.VagueHeadings:'Then what' doesn't say what the section covers. Name the task or topic instead.
+  - name: leaves the phrase alone in body text
+    input: Then what happens to the old fragments? Cleanup removes them.
+    want: ''
