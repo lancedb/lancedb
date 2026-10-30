@@ -271,7 +271,7 @@ jobs:
     timeout-minutes: 60
     strategy:
       matrix:
-        mac-runner: ["macos-14", "macos-15"]
+        mac-runner: ["macos-15", "macos-26"]
     runs-on: "${{ matrix.mac-runner }}"
     defaults:
       run:
