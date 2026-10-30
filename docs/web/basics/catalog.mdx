@@ -21,10 +21,15 @@ import {
 ## Catalog Hierarchy {#hierarchy}
 
 A catalog keeps track of named data objects, such as tables and views, so
-applications can discover and access them. In LanceDB, the catalog is the
-top-level entry point: it organizes databases, which in turn organize
-namespaces and tables -- similar to a catalog in Postgres, Snowflake, or other
-database systems.
+applications can discover and access them. In LanceDB Enterprise, the
+catalog is the top-level entry point: it organizes databases, which in turn
+organize namespaces and tables -- similar to a catalog in Postgres,
+Snowflake, or other database systems. The catalog itself has no name of its
+own -- it's just the root -- and an Enterprise deployment's catalog is
+identified by its endpoint, not a name like the objects beneath it.
+
+LanceDB Embedded has no catalog at all. Connect directly to a
+[database](#connecting-to-database) instead of going through a catalog.
 
 A database contains namespaces that group related tables and views.
 Namespaces can also contain other namespaces, letting teams organize data by
@@ -36,7 +41,7 @@ a nested `search` namespace:
 
 ```mermaid
 flowchart TD
-    catalog["my_catalog · catalog"] --> database["ai_data · database"]
+    catalog["catalog · root, unnamed"] --> database["ai_data · database"]
     database --> prod["prod · namespace"]
     database --> staging["staging · namespace"]
     prod --> search["search · namespace"]
@@ -46,7 +51,7 @@ flowchart TD
 
 | Object | What it represents |
 | --- | --- |
-| Catalog | The root entry point for an Enterprise deployment; lists, creates and drops databases. |
+| Catalog | The unnamed root of an Enterprise deployment, identified by its endpoint; lists, creates and drops databases. Not present in Embedded. |
 | [Database](/management/database) | A container for namespaces and their data objects. |
 | [Namespace](/management/namespace) | A named group of tables, views or nested namespaces, addressed by its namespace path. |
 | [Table](/management/table) | Data stored as rows and columns. |
