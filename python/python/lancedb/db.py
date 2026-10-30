@@ -1034,10 +1034,10 @@ class DBConnection(EnforceOverrides):
         """Drop a Function name and the object it was bound to.
 
         The requested version must exist in the currently named object. Returns
-        True when the name was removed and False when it was absent. The
-        object's content is deleted with it, which may finish after this
-        returns; use :meth:`drop_function_async` to wait for that. Local
-        connections raise NotImplementedError.
+        True when the catalog binding was removed and False when it was absent.
+        Physical cleanup continues in the background; use
+        :meth:`drop_function_async` to access the query job. Local connections
+        raise NotImplementedError.
         """
         raise NotImplementedError(
             "Function catalog operations are not supported for this connection type"
