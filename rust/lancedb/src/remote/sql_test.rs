@@ -2280,6 +2280,17 @@ async fn function_creation_and_description_use_sql_query_handles() {
         "../../tests/fixtures/first_class_functions/v1/remote_function_registration_request.json"
     );
     for defer in [false, true] {
+        let mut request_json: serde_json::Value = serde_json::from_str(REQUEST).unwrap();
+        request_json["secret_bindings"] = serde_json::json!([{
+            "kind": "env",
+            "variable": "HF_TOKEN",
+            "secret_ref": {"name": "hf-prod"},
+        }]);
+        let mut expected_request = request_json.clone();
+        expected_request.as_object_mut().unwrap().remove("name");
+        let request =
+            crate::function::FunctionRegistrationRequest::from_json(request_json.to_string())
+                .unwrap();
         let result = RecordBatch::try_from_iter(vec![(
             "definition",
             Arc::new(StringArray::from(vec![VERSION])) as ArrayRef,
@@ -2298,10 +2309,7 @@ async fn function_creation_and_description_use_sql_query_handles() {
         })
         .with_sql_client(client.clone());
         let job = db
-            .create_function_async(
-                crate::function::FunctionRegistrationRequest::from_json(REQUEST).unwrap(),
-                &["team".into()],
-            )
+            .create_function_async(request, &["team".into()])
             .await
             .unwrap();
         assert_eq!(job.job_type().as_deref(), Some("query"));
@@ -2320,7 +2328,13 @@ async fn function_creation_and_description_use_sql_query_handles() {
             "embed"
         );
         let seen = statements.lock().unwrap();
-        assert!(seen[0].starts_with("CREATE FUNCTION \"normalize_score\" FROM '"));
+        let encoded = seen[0]
+            .strip_prefix("CREATE FUNCTION \"normalize_score\" FROM '")
+            .unwrap()
+            .strip_suffix('\'')
+            .unwrap();
+        let sent: serde_json::Value = serde_json::from_str(&encoded.replace("''", "'")).unwrap();
+        assert_eq!(sent, expected_request);
         assert_eq!(seen[1], "DESCRIBE FUNCTION \"embed\" WITH (version = '1')");
         shutdown.send(()).unwrap();
     }
