@@ -511,6 +511,28 @@ def test_udf_apt_system_packages():
         udf(name="padded", apt=[" libsndfile1"])(lambda value: value)
 
 
+@pytest.mark.parametrize("packages", [{"pip": ["numpy"]}, {"conda": ["numpy"]}])
+def test_udf_image(packages):
+    image = "ghcr.io/acme/embedder@sha256:" + "a" * 64
+
+    @udf(image=image, **packages)
+    def embed(value: float) -> float:
+        return value
+
+    request = json.loads(embed.registration_request.to_canonical_json())
+    assert request["runtime"]["environment"]["image"] == image
+    pip_request = json.loads(normalize_score.registration_request.to_canonical_json())
+    assert "image" not in pip_request["runtime"]["environment"]
+
+
+@pytest.mark.parametrize(
+    "image", ["ghcr.io/acme/embedder:latest", "embedder@sha256:" + "a" * 64, ""]
+)
+def test_udf_image_requires_digest_reference(image):
+    with pytest.raises(ValueError, match="sha256"):
+        udf(name="pinned", image=image)(lambda value: value)
+
+
 def test_udf_gpu_marker_uses_gpu_runtime():
     @udf(pip=["cupy-cuda12x"], gpu=True)
     def double_on_gpu(value: int) -> int:

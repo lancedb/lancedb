@@ -683,6 +683,8 @@ class RefreshColumnResult(_RemoteValue):
 
 
 _FUNCTION_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# Digest-pinned only; the server checks the host and repository grammar.
+_IMAGE_REFERENCE = re.compile(r"^[^/@\s]+/[^@\s]+@sha256:[0-9a-f]{64}$")
 
 _FUNCTION_BLOB_V2_TYPE = "blob_v2"
 _ARROW_EXTENSION_NAME_KEY = "ARROW:extension:name"
@@ -1860,6 +1862,7 @@ class UdfDefinition:
         conda: tuple[str, ...] = (),
         conda_channels: tuple[str, ...] = (),
         apt: tuple[str, ...] = (),
+        image: Optional[str] = None,
         code: tuple[types.ModuleType, ...] = (),
     ):
         is_class = inspect.isclass(function)
@@ -1881,16 +1884,24 @@ class UdfDefinition:
             for package in packages + system_packages
         ):
             raise ValueError("package requirements must be non-empty and trimmed")
+        if image is not None and not _IMAGE_REFERENCE.fullmatch(image):
+            raise ValueError(
+                f"Function image {image!r} must be host/repository@sha256:<digest>"
+            )
         if conda:
             environment_spec = PythonEnvironmentSpec(
                 kind="conda",
                 packages=packages,
                 channels=tuple(conda_channels),
+                image=image,
                 system_packages=system_packages,
             )
         else:
             environment_spec = PythonEnvironmentSpec(
-                kind="pip", packages=packages, system_packages=system_packages
+                kind="pip",
+                packages=packages,
+                image=image,
+                system_packages=system_packages,
             )
         environment = dict(env)
         if any(
@@ -2061,6 +2072,7 @@ def udf(
     conda: tuple[str, ...] | list[str] = (),
     conda_channels: tuple[str, ...] | list[str] = (),
     apt: tuple[str, ...] | list[str] = (),
+    image: Optional[str] = None,
     code: Sequence[types.ModuleType] = (),
 ) -> Callable[[Callable[..., Any]], UdfDefinition]: ...
 
@@ -2078,6 +2090,7 @@ def udf(
     conda: tuple[str, ...] | list[str] = (),
     conda_channels: tuple[str, ...] | list[str] = (),
     apt: tuple[str, ...] | list[str] = (),
+    image: Optional[str] = None,
     code: Sequence[types.ModuleType] = (),
 ):
     """Prepare a Python function or class for remote Function registration.
@@ -2176,6 +2189,10 @@ def udf(
         conda cannot provide, such as FFmpeg's for ``torchcodec``. Packages
         are unpacked without running their maintainer scripts. Works with
         ``pip`` or ``conda``; requires image execution.
+    image : str, optional
+        A digest-pinned registry image (``"host/repository@sha256:<digest>"``)
+        the remote environment is built on instead of the default base. Pip
+        requirements install only what the image lacks.
     env : mapping of str to str, optional
         Environment variables included in the Function definition. Not for
         credentials -- these are ordinary configuration, stored with the
@@ -2258,6 +2275,7 @@ def udf(
             conda=tuple(conda),
             conda_channels=tuple(conda_channels),
             apt=tuple(apt),
+            image=image,
             code=tuple(code),
         )
 
