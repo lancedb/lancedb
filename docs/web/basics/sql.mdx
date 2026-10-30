@@ -11,12 +11,12 @@ aggregates, and prepare datasets. SQL queries work with the same Lance tables
 you create and update through the SDKs, without exporting the data to another
 system.
 
-This guide covers the two ways to run SQL, connection settings, a first query,
+This guide covers the three ways to run SQL, connection settings, a first query,
 parameterized queries, and how to read and manage the results.
 
 ## Access LanceDB with SQL {#access}
 
-There are two ways to run SQL against LanceDB Enterprise, both against the
+There are three ways to run SQL against LanceDB Enterprise, all against the
 same [Arrow Flight SQL](https://arrow.apache.org/docs/format/FlightSql.html)
 endpoint, returning results as Arrow record batches:
 
@@ -27,9 +27,8 @@ endpoint, returning results as Arrow record batches:
    languages, whose LanceDB SDKs do not expose a SQL execution method, or from
    any tool with its own Flight SQL integration. A LanceDB-specific SDK is not
    required to submit SQL.
-
-From the command line, use `lancedb` to open the [SQL shell](/tools/cli)
-or execute a statement or file.
+3. **The [LanceDB CLI](/tools/cli).** Open an interactive SQL shell, or run a
+   statement or file, directly from the command line with no code at all.
 
 The [SQL reference](/sql#connecting) shows a query from Python. See
 [SDKs](/basics/sdk) for the LanceDB language clients.
