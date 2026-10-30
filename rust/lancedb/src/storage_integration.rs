@@ -107,6 +107,15 @@ impl CreateStorageIntegrationRequest {
     }
 
     /// Register Azure Blob access using three Secret references and an explicit account.
+    ///
+    /// ```
+    /// use lancedb::storage_integration::{CreateStorageIntegrationRequest, SecretReference};
+    /// let config = CreateStorageIntegrationRequest::azure(
+    ///     "az://customer-data/raw/", "customeraccount",
+    ///     SecretReference::new("tenant"), SecretReference::new("client"),
+    ///     SecretReference::new("credential"),
+    /// );
+    /// ```
     pub fn azure(
         storage_prefix: impl Into<String>,
         storage_account: impl Into<String>,
