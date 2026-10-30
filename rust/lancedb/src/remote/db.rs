@@ -4593,14 +4593,6 @@ mod tests {
         }
     }
 
-    /// A Function's namespace is addressed in the path the way a Secret's is:
-    /// every route takes the joined identifier and no body carries the
-    /// namespace, so a namespaced request differs from a root one only in its
-    /// path.
-
-    /// Each namespace segment is checked before a request is built, so an
-    /// empty segment cannot collapse the identifier onto the parent namespace.
-
     #[tokio::test]
     async fn test_conn_job_waits_to_done() {
         let polls = Arc::new(AtomicUsize::new(0));
