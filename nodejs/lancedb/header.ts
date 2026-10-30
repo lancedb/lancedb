@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 /**
- * Header providers for LanceDB remote connections.
+ * Header providers for LanceDB Enterprise connections.
  *
  * This module provides a flexible header management framework for LanceDB remote
  * connections, allowing users to implement custom header strategies for

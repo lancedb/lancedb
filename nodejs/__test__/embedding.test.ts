@@ -187,6 +187,58 @@ describe("embedding functions", () => {
     const vector0 = JSON.parse(JSON.stringify(arr[0].vector));
     expect(vector0).toEqual([1, 2, 3]);
   });
+  it("should append multiple Python embeddings with the same alias", async () => {
+    @register("python-mock")
+    // biome-ignore lint/correctness/noUnusedVariables: the decorator registers this class
+    class MockEmbeddingFunction extends EmbeddingFunction<string> {
+      ndims() {
+        return 3;
+      }
+      embeddingDataType(): Float {
+        return new Float32();
+      }
+      async computeQueryEmbeddings(_data: string) {
+        return [1, 2, 3];
+      }
+      async computeSourceEmbeddings(data: string[]) {
+        return data.map((value) =>
+          value === "hello world" ? [1, 2, 3] : [4, 5, 6],
+        );
+      }
+    }
+
+    const metadata = new Map([
+      [
+        "embedding_functions",
+        '[{"source_column":"text1","vector_column":"vector1","name":"python-mock","model":{}},{"source_column":"text2","vector_column":"vector2","name":"python-mock","model":{}}]',
+      ],
+    ]);
+    const schema = new Schema(
+      [
+        new Field("text1", new Utf8(), true),
+        new Field("text2", new Utf8(), true),
+        new Field(
+          "vector1",
+          new FixedSizeList(3, new Field("item", new Float32(), true)),
+          true,
+        ),
+        new Field(
+          "vector2",
+          new FixedSizeList(3, new Field("item", new Float32(), true)),
+          true,
+        ),
+      ],
+      metadata,
+    );
+
+    const db = await connect(tmpDir.name);
+    const table = await db.createEmptyTable("test", schema);
+    await table.add([{ text1: "hello world", text2: "goodbye world" }]);
+
+    const rows = await table.query().toArray();
+    expect(JSON.parse(JSON.stringify(rows[0].vector1))).toEqual([1, 2, 3]);
+    expect(JSON.parse(JSON.stringify(rows[0].vector2))).toEqual([4, 5, 6]);
+  });
 
   it("should append generated vectors to a non-nullable schema", async () => {
     @register("non_nullable_schema_test")

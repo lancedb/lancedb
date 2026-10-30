@@ -129,3 +129,106 @@ def test_generator(tmp_path: Path):
 
     assert len(tbl) == 2
     assert tbl.schema == ds.features.arrow_schema
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("operation", ["create", "add"])
+@pytest.mark.parametrize(
+    "selection",
+    ["normal", "contiguous", "selected", "duplicates", "filtered", "shuffled", "empty"],
+)
+async def test_write_selected_hf_dataset(tmp_path, asynchronous, operation, selection):
+    source = datasets.Dataset.from_dict({"id": list(range(5)), "text": list("abcde")})
+    data = {
+        "normal": source,
+        "contiguous": source.select(range(1, 4)),
+        "selected": source.select([4, 1]),
+        "duplicates": source.select([2, 2, 0]),
+        "filtered": source.filter(lambda row: row["id"] % 2 == 1),
+        "shuffled": source.shuffle(seed=42),
+        "empty": source.select([]),
+    }[selection]
+    expected = data.to_list()
+    if asynchronous:
+        db = await lancedb.connect_async(tmp_path)
+        if operation == "create":
+            table = await db.create_table("selected", data)
+        else:
+            table = await db.create_table("selected", schema=data.features.arrow_schema)
+            await table.add(data)
+        actual = await table.to_arrow()
+    else:
+        db = lancedb.connect(tmp_path)
+        if operation == "create":
+            table = db.create_table("selected", data)
+        else:
+            table = db.create_table("selected", schema=data.features.arrow_schema)
+            table.add(data)
+        actual = table.to_arrow()
+    assert actual.to_pylist() == expected
+    assert actual.schema.equals(data.features.arrow_schema, check_metadata=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("operation", ["create", "add"])
+async def test_write_selected_hf_splits(tmp_path, asynchronous, operation):
+    source = datasets.Dataset.from_dict({"id": list(range(5)), "text": list("abcde")})
+    data = datasets.DatasetDict(
+        {
+            "train": source.select([4, 1]),
+            "test": source.select([3, 0, 2]),
+            "empty": source.select([]),
+        }
+    )
+    expected = [
+        dict(row, split=split)
+        for split, dataset in data.items()
+        for row in dataset.to_list()
+    ]
+    schema = source.features.arrow_schema.append(pa.field("split", pa.string()))
+    if asynchronous:
+        db = await lancedb.connect_async(tmp_path)
+        if operation == "create":
+            table = await db.create_table("splits", data)
+        else:
+            table = await db.create_table("splits", schema=schema)
+            await table.add(data)
+        actual = await table.to_arrow()
+    else:
+        db = lancedb.connect(tmp_path)
+        if operation == "create":
+            table = db.create_table("splits", data)
+        else:
+            table = db.create_table("splits", schema=schema)
+            table.add(data)
+        actual = table.to_arrow()
+    assert actual.to_pylist() == expected
+    assert actual.schema.equals(schema, check_metadata=True)
+
+
+@pytest.mark.parametrize("format_type", [None, "numpy", "pandas", "arrow"])
+@pytest.mark.parametrize("empty", [False, True])
+def test_selected_hf_reader_is_rescannable(format_type, empty):
+    from lancedb.scannable import _register_optional_converters, to_scannable
+
+    source = datasets.Dataset.from_dict(
+        {"id": list(range(2105)), "text": [str(i) for i in range(2105)]}
+    )
+    indices = [] if empty else list(reversed(range(2105))) + [1, 1]
+    data = source.select(indices).with_format(format_type, columns=["id"])
+    original_format = data.format
+    expected = source.select(indices).to_list()
+    _register_optional_converters()
+    scannable = to_scannable(data)
+    assert scannable.rescannable
+    assert scannable.num_rows == len(expected)
+    for _ in range(2):
+        batches = list(scannable.reader())
+        if not empty:
+            assert all(batch.num_rows <= 1000 for batch in batches)
+        actual = pa.Table.from_batches(batches, schema=scannable.schema)
+        assert actual.to_pylist() == expected
+        assert actual.schema.equals(data.features.arrow_schema, check_metadata=True)
+    assert data.format == original_format

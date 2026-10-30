@@ -5,18 +5,22 @@
 
 use std::time::Duration;
 
+use arrow_array::RecordBatch;
 use async_trait::async_trait;
 use tokio::time::sleep;
 
 use serde::Deserialize;
 
+use crate::database::JobDescription;
 use crate::error::{Error, JobFailure, Result};
-use crate::job::{JobHandle, TerminalResult};
+use crate::job::{JobEventsRequest, JobHandle, TerminalResult};
 use crate::remote::client::{HttpSend, RequestResultExt, RestfulLanceDbClient};
 
 /// Delay before the second job-state poll; doubles up to [`MAX_POLL_INTERVAL`].
 const INITIAL_POLL_INTERVAL: Duration = Duration::from_millis(200);
-const MAX_POLL_INTERVAL: Duration = Duration::from_secs(5);
+/// A job's completion is seen at most this long after it happens. A 5 s cap
+/// added 2.5 s on average to every short refresh, as much as the job itself.
+const MAX_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum JobState {
@@ -73,6 +77,28 @@ pub(super) struct ReportedFailure {
     retryable: Option<bool>,
 }
 
+/// Forward-compatible `/v1/jobs/pause` wire envelope.
+#[derive(Deserialize)]
+pub(super) struct PauseJobResponse {
+    /// False when the job was already paused, so a repeated pause changed
+    /// nothing.
+    #[serde(default)]
+    pub(super) paused: bool,
+    /// The job is finalizing its results and cannot be parked right now.
+    #[serde(default)]
+    pub(super) committing: bool,
+}
+
+/// Forward-compatible `/v1/jobs/resume` wire envelope.
+#[derive(Deserialize)]
+pub(super) struct ResumeJobResponse {
+    #[serde(default)]
+    pub(super) resumed: bool,
+    /// The pause's worker drain is not confirmed yet.
+    #[serde(default)]
+    pub(super) still_pausing: bool,
+}
+
 /// Forward-compatible `/v1/jobs/describe` wire envelope.
 #[derive(Deserialize)]
 pub(super) struct DescribeJobResponse {
@@ -86,7 +112,7 @@ pub(super) struct DescribeJobResponse {
     #[serde(default)]
     pub(super) spec: serde_json::Value,
     #[serde(default)]
-    result: Option<serde_json::Value>,
+    pub(super) result: Option<serde_json::Value>,
     #[serde(default)]
     pub(super) failure: Option<ReportedFailure>,
 }
@@ -110,6 +136,39 @@ impl DescribeJobResponse {
     fn into_terminal_result(self, request_id: String) -> TerminalResult {
         TerminalResult::remote(self.result, request_id)
     }
+
+    /// The public description this wire envelope stands for.
+    pub(super) fn into_description(self) -> JobDescription {
+        JobDescription {
+            job_id: self.job_id,
+            job_type: self.job_type,
+            state: JobState::from(self.job_state.as_str()).client_label(),
+            creation_ms: self.creation_ms,
+            spec: self.spec,
+            result: self.result,
+            failure: self.failure.map(ReportedFailure::into_job_failure),
+        }
+    }
+}
+
+/// One `/v1/jobs/query_events` round trip.
+pub(super) async fn fetch_job_events<S: HttpSend>(
+    client: &RestfulLanceDbClient<S>,
+    body: serde_json::Value,
+) -> Result<Vec<RecordBatch>> {
+    let request = client.post("/v1/jobs/query_events").json(&body);
+    let (request_id, response) = client.send(request).await?;
+    let response = client.check_response(&request_id, response).await?;
+    let bytes = response.bytes().await.err_to_http(request_id)?;
+    let reader = arrow_ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)?;
+    let schema = reader.schema();
+    let mut batches = reader.collect::<std::result::Result<Vec<_>, _>>()?;
+    // A query that matched nothing still describes the event columns.
+    // Keep that schema so callers can build a typed empty result.
+    if batches.is_empty() {
+        batches.push(RecordBatch::new_empty(schema));
+    }
+    Ok(batches)
 }
 
 pub struct RemoteJob<S: HttpSend> {
@@ -123,7 +182,7 @@ impl<S: HttpSend> RemoteJob<S> {
     }
 
     /// One `/v1/jobs/describe` round trip.
-    async fn describe(&self) -> Result<(String, DescribeJobResponse)> {
+    async fn fetch_description(&self) -> Result<(String, DescribeJobResponse)> {
         let request = self
             .client
             .post("/v1/jobs/describe")
@@ -148,13 +207,28 @@ impl<S: HttpSend> JobHandle for RemoteJob<S> {
     }
 
     async fn status(&self) -> Result<String> {
-        Ok(self.describe().await?.1.state().client_label())
+        Ok(self.fetch_description().await?.1.state().client_label())
+    }
+
+    async fn describe(&self) -> Result<JobDescription> {
+        Ok(self.fetch_description().await?.1.into_description())
+    }
+
+    async fn events(&self, request: JobEventsRequest) -> Result<Vec<RecordBatch>> {
+        let mut body = serde_json::json!({ "job_id": self.job_id });
+        if let Some(limit) = request.limit {
+            body["limit"] = serde_json::Value::from(limit);
+        }
+        if let Some(filter) = request.filter {
+            body["filter"] = serde_json::Value::String(filter);
+        }
+        fetch_job_events(&self.client, body).await
     }
 
     async fn wait(&self) -> Result<TerminalResult> {
         let mut interval = INITIAL_POLL_INTERVAL;
         loop {
-            let (request_id, description) = self.describe().await?;
+            let (request_id, description) = self.fetch_description().await?;
             match description.state() {
                 JobState::Done => return Ok(description.into_terminal_result(request_id)),
                 JobState::Failed => {
@@ -196,13 +270,18 @@ impl<S: HttpSend> JobHandle for RemoteJob<S> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
     use async_trait::async_trait;
 
     use crate::Result;
     use crate::function::{FunctionVersion, RefreshColumnResult};
     use crate::job::{Job, JobHandle, TerminalResult};
+    use crate::remote::client::test_utils::client_with_handler;
 
-    use super::DescribeJobResponse;
+    use super::{DescribeJobResponse, RemoteJob};
 
     const FUNCTION_JOB: &str =
         include_str!("../../tests/fixtures/first_class_functions/v1/remote_function_job.json");
@@ -235,7 +314,7 @@ mod tests {
     async fn typed_remote_job_fixtures_decode_terminal_results() {
         let function = Job::<FunctionVersion>::new_typed(Box::new(FixtureRemoteJob(FUNCTION_JOB)));
         let result = function.wait().await.expect("typed FunctionVersion result");
-        assert_eq!(result.version(), "fv_01K3EXACT");
+        assert_eq!(result.version(), "1");
 
         let refresh =
             Job::<RefreshColumnResult>::new_typed(Box::new(FixtureRemoteJob(REFRESH_JOB)));
@@ -259,6 +338,31 @@ mod tests {
                 .to_string()
                 .contains("successful typed job response did not contain a result")
         );
+    }
+
+    /// Five in-progress polls then done: 0.2 + 0.4 + 0.8 + 1 + 1 s of waiting.
+    /// Under the old 5 s cap the same job would have waited 10 s.
+    #[tokio::test(start_paused = true)]
+    async fn wait_polls_at_most_every_second() {
+        let describes = Arc::new(AtomicUsize::new(0));
+        let seen = describes.clone();
+        let client = client_with_handler(move |request| {
+            assert_eq!(request.url().path(), "/v1/jobs/describe");
+            let n = seen.fetch_add(1, Ordering::SeqCst);
+            let body = if n < 5 {
+                r#"{"job_state":"IN_PROGRESS"}"#.to_string()
+            } else {
+                UNIT_JOB.to_string()
+            };
+            http::Response::builder().status(200).body(body).unwrap()
+        });
+        let started = tokio::time::Instant::now();
+        RemoteJob::new(client, "job-1".to_string())
+            .wait()
+            .await
+            .expect("unit job completes");
+        assert_eq!(describes.load(Ordering::SeqCst), 6);
+        assert_eq!(started.elapsed(), Duration::from_millis(3400));
     }
 
     #[test]
