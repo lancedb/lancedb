@@ -717,12 +717,14 @@ _GRAMMAR_PRIMITIVES = (
 )
 
 
-def _canonical_arrow_type(data_type: pa.DataType) -> str:
+def _canonical_arrow_type(
+    data_type: pa.DataType, *, collection_blobs: bool = False
+) -> str:
     """The compact Function grammar, or canonical exact JSON for nested types."""
     grammar = _grammar_arrow_type(data_type)
     if grammar is not None:
         return grammar
-    exact = _exact_arrow_type(data_type)
+    exact = _exact_arrow_type(data_type, collection_blobs=collection_blobs)
     return json.dumps(exact, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
@@ -834,11 +836,12 @@ def _has_supported_blob_v2_layout(field: pa.Field) -> bool:
     )
 
 
-def _canonical_arrow_field(field: pa.Field) -> str:
+def _canonical_arrow_field(field: pa.Field, *, collection_blobs: bool = False) -> str:
+    """``collection_blobs`` admits Blob v2 under a list, which only outputs support."""
     _validate_exact_arrow_field(field)
     if _is_blob_v2_field(field):
         return _FUNCTION_BLOB_V2_TYPE
-    return _canonical_arrow_type(field.type)
+    return _canonical_arrow_type(field.type, collection_blobs=collection_blobs)
 
 
 def _blob_storage_type(field: pa.Field) -> pa.DataType:
@@ -890,11 +893,14 @@ def _data_type_has_blob_v2(data_type: pa.DataType) -> bool:
 
 
 def _exact_arrow_field(
-    field: pa.Field, *, inside_collection: bool = False
+    field: pa.Field,
+    *,
+    inside_collection: bool = False,
+    collection_blobs: bool = False,
 ) -> dict[str, Any]:
     _validate_exact_arrow_field(field)
     if _is_blob_v2_field(field):
-        if inside_collection:
+        if inside_collection and not collection_blobs:
             raise TypeError(_NESTED_BLOB_COLLECTION_ERROR)
         return {
             "name": field.name,
@@ -907,13 +913,20 @@ def _exact_arrow_field(
     value = {
         "name": field.name,
         "nullable": field.nullable,
-        "type": _exact_arrow_type(field.type, inside_collection=inside_collection),
+        "type": _exact_arrow_type(
+            field.type,
+            inside_collection=inside_collection,
+            collection_blobs=collection_blobs,
+        ),
     }
     return value
 
 
 def _exact_arrow_type(
-    data_type: pa.DataType, *, inside_collection: bool = False
+    data_type: pa.DataType,
+    *,
+    inside_collection: bool = False,
+    collection_blobs: bool = False,
 ) -> dict[str, Any]:
     for candidate, name in _GRAMMAR_PRIMITIVES:
         if data_type == candidate:
@@ -929,7 +942,11 @@ def _exact_arrow_type(
         return {
             "type": "struct",
             "fields": [
-                _exact_arrow_field(field, inside_collection=inside_collection)
+                _exact_arrow_field(
+                    field,
+                    inside_collection=inside_collection,
+                    collection_blobs=collection_blobs,
+                )
                 for field in fields
             ],
         }
@@ -957,7 +974,13 @@ def _exact_arrow_type(
                 else "fixed_size_list"
             ),
             "fields": [
-                _exact_arrow_field(data_type.value_field, inside_collection=True)
+                _exact_arrow_field(
+                    data_type.value_field,
+                    inside_collection=True,
+                    # Lance stores Blob v2 under list and large_list only.
+                    collection_blobs=collection_blobs
+                    and not pa.types.is_fixed_size_list(data_type),
+                )
             ],
         }
         if pa.types.is_fixed_size_list(data_type):
@@ -1078,7 +1101,7 @@ def _function_output(output: pa.DataType | pa.Field | pa.Schema) -> FunctionOutp
             raise ValueError("Function output must be non-nullable")
         return FunctionOutput(
             kind="scalar",
-            arrow_type=_canonical_arrow_field(field),
+            arrow_type=_canonical_arrow_field(field, collection_blobs=True),
             nullable=False,
         )
 
@@ -1094,7 +1117,7 @@ def _function_output(output: pa.DataType | pa.Field | pa.Schema) -> FunctionOutp
         fields=tuple(
             FunctionResultField(
                 name=field.name,
-                arrow_type=_canonical_arrow_field(field),
+                arrow_type=_canonical_arrow_field(field, collection_blobs=True),
                 nullable=field.nullable,
             )
             for field in fields
@@ -2260,6 +2283,11 @@ def udf(
     mode (and as ``bytes`` in row mode). Return a ``LargeBinaryArray`` with the
     declared nullability. Use :func:`lancedb.blob` in the explicit schemas;
     plain ``pyarrow.large_binary()`` does not carry Blob v2 semantics.
+
+    A Blob v2 field may sit at the top level or inside a struct in inputs and
+    outputs. Only outputs may nest it in a list or large list (for example
+    ``pa.list_(lancedb.blob("item"))``, returned as a list of ``bytes``);
+    fixed-size lists and maps are not supported.
     """
 
     def decorate(target: Any) -> UdfDefinition:

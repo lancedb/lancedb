@@ -1028,7 +1028,7 @@ fn canonical_input_arrow_type(field: &JsonArrowField) -> Result<String> {
     if is_blob_v2 || field.r#type.fields.is_some() {
         let arrow_field = lance_namespace::schema::convert_json_arrow_field(field)
             .map_err(|e| invalid_function(format!("invalid Function input field: {e}")))?;
-        validate_function_blob_nesting(&arrow_field, false)?;
+        validate_function_blob_nesting(&arrow_field, false, false)?;
         if is_blob_v2 {
             return Ok(FUNCTION_BLOB_V2_TYPE.to_string());
         }
@@ -1050,11 +1050,16 @@ fn has_supported_blob_v2_layout(field: &ArrowField) -> bool {
         )
 }
 
-fn validate_function_blob_nesting(field: &ArrowField, inside_collection: bool) -> Result<()> {
+/// Blob v2 under a collection is accepted only where `collection_blobs` is set (outputs).
+fn validate_function_blob_nesting(
+    field: &ArrowField,
+    inside_collection: bool,
+    collection_blobs: bool,
+) -> Result<()> {
     if field.is_blob_v2() {
-        if inside_collection {
+        if inside_collection && !collection_blobs {
             return Err(invalid_function(format!(
-                "Function field '{}' nests Blob v2 under a collection, which Function signatures do not support",
+                "Function field '{}' nests Blob v2 under a collection; only a Function output may, under a list or large_list",
                 field.name()
             )));
         }
@@ -1067,13 +1072,16 @@ fn validate_function_blob_nesting(field: &ArrowField, inside_collection: bool) -
         return Ok(());
     }
     match field.data_type() {
-        DataType::Struct(fields) => fields
-            .iter()
-            .try_for_each(|field| validate_function_blob_nesting(field, inside_collection)),
-        DataType::List(field)
-        | DataType::LargeList(field)
-        | DataType::FixedSizeList(field, _)
-        | DataType::Map(field, _) => validate_function_blob_nesting(field, true),
+        DataType::Struct(fields) => fields.iter().try_for_each(|field| {
+            validate_function_blob_nesting(field, inside_collection, collection_blobs)
+        }),
+        DataType::List(field) | DataType::LargeList(field) => {
+            validate_function_blob_nesting(field, true, collection_blobs)
+        }
+        // Lance stores Blob v2 under List and LargeList only.
+        DataType::FixedSizeList(field, _) | DataType::Map(field, _) => {
+            validate_function_blob_nesting(field, true, false)
+        }
         _ => Ok(()),
     }
 }
@@ -1172,7 +1180,7 @@ fn function_output_field(name: &str, nullable: bool, raw: &str) -> Result<JsonAr
     };
     let arrow_field = lance_namespace::schema::convert_json_arrow_field(&field)
         .map_err(|e| invalid_function(format!("invalid Function output field: {e}")))?;
-    validate_function_blob_nesting(&arrow_field, false)?;
+    validate_function_blob_nesting(&arrow_field, false, true)?;
     Ok(field)
 }
 
@@ -4493,6 +4501,37 @@ mod tests {
         };
         assert!(details[0].is_blob_v2());
         assert!(!fields.iter().any(|field| field.name() == "payload"));
+    }
+
+    #[test]
+    fn test_blob_children_under_lists_are_output_only() {
+        let frames = ArrowField::new(
+            "frames",
+            DataType::List(Arc::new(crate::blob("item", true))),
+            false,
+        );
+        let json =
+            lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(vec![frames])).unwrap();
+        let raw = serde_json::to_string(json.fields[0].r#type.as_ref()).unwrap();
+
+        let field = function_output_field("frames", false, &raw).unwrap();
+
+        let field = lance_namespace::schema::convert_json_arrow_field(&field).unwrap();
+        let DataType::List(item) = field.data_type() else {
+            panic!("expected a list output, got {}", field.data_type())
+        };
+        assert!(item.is_blob_v2());
+
+        let fixed = ArrowField::new(
+            "frames",
+            DataType::FixedSizeList(Arc::new(crate::blob("item", true)), 2),
+            false,
+        );
+        let json =
+            lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(vec![fixed])).unwrap();
+        let raw = serde_json::to_string(json.fields[0].r#type.as_ref()).unwrap();
+        let error = function_output_field("frames", false, &raw).unwrap_err();
+        assert!(error.to_string().contains("nests Blob v2"), "{error}");
     }
 
     #[test]
