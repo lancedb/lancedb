@@ -7,7 +7,6 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import timedelta
 import json
-import logging
 from concurrent.futures import ThreadPoolExecutor
 import sys
 from typing import (
@@ -36,7 +35,7 @@ from lancedb.remote import ClientConfig, RetryConfig, TimeoutConfig, TlsConfig
 import pyarrow as pa
 
 from ..common import DATA
-from lancedb.listing import Listing
+from lancedb.listing import Listing, NamespaceListing, TableListing
 from ..db import DBConnection, LOOP
 from ..functions import FunctionVersion, UdfDefinition
 from ..graph import EdgeTable, NodeTable, PropertyGraph
@@ -45,18 +44,17 @@ from ..sql import Query as SqlQuery
 from ..sql import QueryDescription, QueryParameters
 from ..materialized_view import MaterializedView, MaterializedViewSource, SelectArg
 from ..secrets import EnvVarSecret, SecretInfo
+from ..storage_integration import SecretReference, StorageIntegrationInfo
 from ..view import ViewDescription
 
 if TYPE_CHECKING:
-    from .._lancedb import JobInfo
+    from .._lancedb import JobInfo, Session
 from ..embeddings import EmbeddingFunctionConfig
 from lance_namespace import (
     LanceNamespace,
     CreateNamespaceResponse,
     DescribeNamespaceResponse,
     DropNamespaceResponse,
-    ListNamespacesResponse,
-    ListTablesResponse,
 )
 from ..pydantic import LanceModel
 from ..table import Table
@@ -105,7 +103,7 @@ def _tls_config_to_dict(config: Optional[TlsConfig]) -> Optional[dict[str, Any]]
 def _client_config_to_dict(config: ClientConfig) -> dict[str, Any]:
     if config.header_provider is not None:
         raise ValueError(
-            "Cannot serialize a remote connection with a header_provider. "
+            "Cannot serialize a LanceDB Distributed connection with a header_provider. "
             "Use static api_key/extra_headers or provide a worker-side "
             "connection factory instead."
         )
@@ -123,7 +121,7 @@ def _client_config_to_dict(config: ClientConfig) -> dict[str, Any]:
 
 
 class RemoteDBConnection(DBConnection):
-    """A connection to a remote LanceDB database."""
+    """A connection to a LanceDB Enterprise database."""
 
     def __init__(
         self,
@@ -139,7 +137,7 @@ class RemoteDBConnection(DBConnection):
         read_consistency_interval: Optional[timedelta] = None,
         sql_host_override: Optional[str] = None,
     ):
-        """Connect to a remote LanceDB database."""
+        """Connect to a LanceDB Enterprise database."""
         if isinstance(client_config, dict):
             client_config = ClientConfig(**client_config)
         elif client_config is None:
@@ -243,6 +241,26 @@ class RemoteDBConnection(DBConnection):
     def __repr__(self) -> str:
         return f"RemoteConnect(name={self.db_name})"
 
+    @property
+    @override
+    def uri(self) -> str:
+        return self._conn.uri
+
+    @property
+    def session(self) -> Optional["Session"]:
+        """LanceDB Distributed connections do not expose a local cache session."""
+        raise NotImplementedError(
+            "session is not supported by LanceDB Distributed connections"
+        )
+
+    @property
+    def read_consistency_interval(self) -> Optional[timedelta]:
+        """LanceDB Distributed connections do not expose a read consistency interval."""
+        raise NotImplementedError(
+            "read_consistency_interval is not supported by LanceDB Distributed "
+            "connections"
+        )
+
     @override
     def serialize(self) -> str:
         if getattr(self, "_catalog_oauth", False):
@@ -269,7 +287,7 @@ class RemoteDBConnection(DBConnection):
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListNamespacesResponse:
+    ) -> NamespaceListing:
         """List immediate child namespace names in the given namespace.
 
         Parameters
@@ -285,12 +303,12 @@ class RemoteDBConnection(DBConnection):
 
         Returns
         -------
-        ListNamespacesResponse
+        NamespaceListing
             Response containing namespace names and optional page_token for pagination.
         """
         if namespace_path is None:
             namespace_path = []
-        return LOOP.run(
+        return NamespaceListing(
             self._conn.list_namespaces(
                 namespace_path=namespace_path, page_token=page_token, limit=limit
             )
@@ -375,12 +393,42 @@ class RemoteDBConnection(DBConnection):
         return LOOP.run(self._conn.describe_namespace(namespace_path=namespace_path))
 
     @override
+    def namespace_exists(self, namespace_id: List[str]) -> bool:
+        """Check if a namespace exists.
+
+        ``namespace_id`` contains the namespace segments; an empty list represents
+        root. Returns False only if the namespace is not found. Other errors,
+        including permission errors, are propagated.
+
+        Examples
+        --------
+        >>> def check_namespace(conn):
+        ...     return conn.namespace_exists(["analytics"])
+        """
+        return LOOP.run(self._conn.namespace_exists(namespace_id))
+
+    @override
+    def table_exists(self, table_id: List[str]) -> bool:
+        """Check if a table exists.
+
+        ``table_id`` contains the namespace segments followed by the table name.
+        Returns False only if the table is not found. Other errors, including
+        permission errors, are propagated.
+
+        Examples
+        --------
+        >>> def check_table(conn):
+        ...     return conn.table_exists(["analytics", "events"])
+        """
+        return LOOP.run(self._conn.table_exists(table_id))
+
+    @override
     def list_tables(
         self,
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListTablesResponse:
+    ) -> TableListing:
         """List a page of tables in this database.
 
         Parameters
@@ -397,12 +445,12 @@ class RemoteDBConnection(DBConnection):
 
         Returns
         -------
-        ListTablesResponse
+        TableListing
             Response containing table names and optional page_token for pagination.
         """
         if namespace_path is None:
             namespace_path = []
-        return LOOP.run(
+        return TableListing(
             self._conn.list_tables(
                 namespace_path=namespace_path, page_token=page_token, limit=limit
             )
@@ -488,18 +536,14 @@ class RemoteDBConnection(DBConnection):
 
         if namespace_path is None:
             namespace_path = []
-        if storage_options is not None:
-            logging.info(
-                "storage_options is ignored for remote tables"
-                " (storage is managed; set storage_options on connect() instead)"
+        table = LOOP.run(
+            self._conn.open_table(
+                name,
+                namespace_path=namespace_path,
+                storage_options=storage_options,
+                index_cache_size=index_cache_size,
             )
-        if index_cache_size is not None:
-            logging.info(
-                "index_cache_size is ignored for remote tables"
-                " (there is no local cache to configure)"
-            )
-
-        table = LOOP.run(self._conn.open_table(name, namespace_path=namespace_path))
+        )
         tbl = RemoteTable(
             table,
             self.db_name,
@@ -572,13 +616,16 @@ class RemoteDBConnection(DBConnection):
         name: str,
         data: DATA = None,
         schema: Optional[Union[pa.Schema, LanceModel]] = None,
-        on_bad_vectors: str = "error",
-        fill_value: float = 0.0,
         mode: Optional[str] = None,
         exist_ok: bool = False,
+        on_bad_vectors: str = "error",
+        fill_value: float = 0.0,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         *,
         namespace_path: Optional[List[str]] = None,
+        storage_options: Optional[Dict[str, str]] = None,
+        data_storage_version: Optional[str] = None,
+        enable_v2_manifest_paths: Optional[bool] = None,
     ) -> Table:
         """Create a [Table][lancedb.table.Table] in the database.
 
@@ -618,6 +665,12 @@ class RemoteDBConnection(DBConnection):
         embedding_functions: list of EmbeddingFunctionConfig, optional
             The embedding functions to store in the table schema and use to
             generate vectors when creating the table or adding data.
+        storage_options: dict, optional
+            Not supported in LanceDB Distributed. Raises NotImplementedError.
+        data_storage_version: str, optional
+            Not supported in LanceDB Distributed. Raises NotImplementedError.
+        enable_v2_manifest_paths: bool, optional
+            Not supported in LanceDB Distributed. Raises NotImplementedError.
 
         Returns
         -------
@@ -684,6 +737,15 @@ class RemoteDBConnection(DBConnection):
         LanceTable(table4)
 
         """
+        for option, value in (
+            ("data_storage_version", data_storage_version),
+            ("enable_v2_manifest_paths", enable_v2_manifest_paths),
+        ):
+            if value is not None:
+                raise NotImplementedError(
+                    f"{option} is not supported for table creation in "
+                    "LanceDB Distributed"
+                )
         if exist_ok:
             if mode == "create":
                 mode = "exist_ok"
@@ -705,6 +767,7 @@ class RemoteDBConnection(DBConnection):
                 on_bad_vectors=on_bad_vectors,
                 fill_value=fill_value,
                 embedding_functions=embedding_functions,
+                storage_options=storage_options,
             )
         )
         return RemoteTable(
@@ -724,6 +787,8 @@ class RemoteDBConnection(DBConnection):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
     ) -> MaterializedView:
         from .table import RemoteTable
 
@@ -735,6 +800,8 @@ class RemoteDBConnection(DBConnection):
                 where=where,
                 limit=limit,
                 with_no_data=with_no_data,
+                auto_refresh_enabled=auto_refresh_enabled,
+                auto_refresh_interval_seconds=auto_refresh_interval_seconds,
             )
         )
         return MaterializedView(
@@ -756,6 +823,8 @@ class RemoteDBConnection(DBConnection):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
     ) -> Job[None]:
         job = LOOP.run(
             self._conn.create_materialized_view_async(
@@ -765,6 +834,8 @@ class RemoteDBConnection(DBConnection):
                 where=where,
                 limit=limit,
                 with_no_data=with_no_data,
+                auto_refresh_enabled=auto_refresh_enabled,
+                auto_refresh_interval_seconds=auto_refresh_interval_seconds,
             )
         )
         return Job(job)
@@ -835,6 +906,19 @@ class RemoteDBConnection(DBConnection):
             namespace_path = []
         job = LOOP.run(self._conn.drop_table_async(name, namespace_path=namespace_path))
         return Job(job if isinstance(job, AsyncJob) else AsyncJob(job))
+
+    @override
+    def drop_all_tables(self, namespace_path: Optional[List[str]] = None):
+        """Drop all tables from the database.
+
+        Lists the tables in the selected namespace and drops them one at a time.
+        """
+        LOOP.run(self._conn.drop_all_tables(namespace_path=namespace_path))
+
+    @override
+    def drop_database(self):
+        """Deprecated alias for ``drop_all_tables()``."""
+        LOOP.run(self._conn.drop_database())
 
     @override
     def rename_table(
@@ -952,6 +1036,62 @@ class RemoteDBConnection(DBConnection):
             )
         )
         return dropped, Job(job)
+
+    @override
+    def create_storage_integration(
+        self,
+        name: str,
+        storage_prefix: str,
+        *,
+        aws_role_arn: Optional[str] = None,
+        aws_access_key_id_secret: Optional[Union[str, SecretReference]] = None,
+        aws_secret_access_key_secret: Optional[Union[str, SecretReference]] = None,
+        aws_region: Optional[str] = None,
+        namespace_path: Optional[List[str]] = None,
+    ) -> StorageIntegrationInfo:
+        return LOOP.run(
+            self._conn.create_storage_integration(
+                name,
+                storage_prefix,
+                aws_role_arn=aws_role_arn,
+                aws_access_key_id_secret=aws_access_key_id_secret,
+                aws_secret_access_key_secret=aws_secret_access_key_secret,
+                aws_region=aws_region,
+                namespace_path=namespace_path,
+            )
+        )
+
+    @override
+    def describe_storage_integration(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> StorageIntegrationInfo:
+        return LOOP.run(
+            self._conn.describe_storage_integration(name, namespace_path=namespace_path)
+        )
+
+    @override
+    def list_storage_integrations(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> Listing[str]:
+        return Listing(
+            self._conn.list_storage_integrations(
+                namespace_path=namespace_path,
+                page_token=page_token,
+                page_limit=page_limit,
+            )
+        )
+
+    @override
+    def drop_storage_integration(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(
+            self._conn.drop_storage_integration(name, namespace_path=namespace_path)
+        )
 
     @override
     def create_secret(
@@ -1151,7 +1291,7 @@ class RemoteDBConnection(DBConnection):
         default_namespace_path: Optional[List[str]] = None,
         parameters: Optional[QueryParameters] = None,
     ) -> SqlQuery:
-        """Start executing SQL through this remote connection.
+        """Start executing SQL through this LanceDB Distributed connection.
 
         Unqualified tables use this connection's database and the
         ``["public"]`` namespace by default. Fully qualified table names may
@@ -1170,7 +1310,7 @@ class RemoteDBConnection(DBConnection):
         )
 
     @override
-    def describe_query(self, query_id: UUID) -> QueryDescription:
+    def describe_query(self, query_id: Union[UUID, str]) -> QueryDescription:
         """Describe a submitted SQL query by its connection-scoped id."""
         return LOOP.run(
             self._conn.describe_query(

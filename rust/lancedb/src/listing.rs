@@ -51,8 +51,9 @@ type FetchPage<T> =
 
 /// A lazy stream of resources with inspectable pagination state.
 ///
-/// No requests are made until the stream is polled. Empty pages with continuation
-/// tokens are skipped. Errors terminate the stream and retain the failed request's
+/// No requests are made until the stream is polled or [`Self::next_page`] is called.
+/// Item iteration skips empty pages with continuation tokens; `next_page` returns
+/// them. Errors terminate the listing and retain the failed request's
 /// token, allowing a new stream to retry it. Repeated tokens are rejected.
 ///
 /// A token advances when its page is fetched. Drain [`Self::num_page_results`]
@@ -100,6 +101,64 @@ impl<T> Listing<T> {
     pub fn page_token(&self) -> Option<&str> {
         self.options.page_token.as_deref()
     }
+
+    /// Return exactly one page without consuming a following page.
+    ///
+    /// If item iteration has started, this returns the remaining items in its
+    /// cached page. An empty page with a continuation token is returned as is.
+    pub async fn next_page(&mut self) -> Result<Option<ListingPage<T>>> {
+        if self.items.len() == 0 {
+            if self.done {
+                return Ok(None);
+            }
+            futures::future::poll_fn(|cx| self.poll_fetch_page(cx)).await?;
+        }
+        let items = std::mem::replace(&mut self.items, Vec::new().into_iter()).collect();
+        Ok(Some(ListingPage {
+            items,
+            page_token: self.options.page_token.clone(),
+        }))
+    }
+
+    fn poll_fetch_page(&mut self, cx: &mut Context<'_>) -> Poll<Result<()>> {
+        if self
+            .options
+            .page_limit
+            .is_some_and(|limit| limit == 0 || limit > i32::MAX as u32)
+        {
+            self.done = true;
+            return Poll::Ready(Err(Error::InvalidInput {
+                message: "Listing page limit must be between 1 and 2147483647".into(),
+            }));
+        }
+        let pending = self
+            .pending
+            .get_or_insert_with(|| (self.fetch)(self.options.clone()));
+        let response = futures::ready!(pending.as_mut().poll(cx));
+        self.pending = None;
+        match response {
+            Ok(response) => {
+                let token = response.page_token.filter(|token| !token.is_empty());
+                if token
+                    .as_ref()
+                    .is_some_and(|token| !self.seen_tokens.insert(token.clone()))
+                {
+                    self.done = true;
+                    return Poll::Ready(Err(Error::Runtime {
+                        message: "Listing response repeated a page_token".into(),
+                    }));
+                }
+                self.done = token.is_none();
+                self.options.page_token = token;
+                self.items = response.items.into_iter();
+                Poll::Ready(Ok(()))
+            }
+            Err(error) => {
+                self.done = true;
+                Poll::Ready(Err(error))
+            }
+        }
+    }
 }
 
 impl<T: Unpin> Stream for Listing<T> {
@@ -114,41 +173,8 @@ impl<T: Unpin> Stream for Listing<T> {
             if this.done {
                 return Poll::Ready(None);
             }
-            if this
-                .options
-                .page_limit
-                .is_some_and(|limit| limit == 0 || limit > i32::MAX as u32)
-            {
-                this.done = true;
-                return Poll::Ready(Some(Err(Error::InvalidInput {
-                    message: "Listing page limit must be between 1 and 2147483647".into(),
-                })));
-            }
-            let pending = this
-                .pending
-                .get_or_insert_with(|| (this.fetch)(this.options.clone()));
-            let response = futures::ready!(pending.as_mut().poll(cx));
-            this.pending = None;
-            match response {
-                Ok(response) => {
-                    let token = response.page_token.filter(|token| !token.is_empty());
-                    if token
-                        .as_ref()
-                        .is_some_and(|token| !this.seen_tokens.insert(token.clone()))
-                    {
-                        this.done = true;
-                        return Poll::Ready(Some(Err(Error::Runtime {
-                            message: "Listing response repeated a page_token".into(),
-                        })));
-                    }
-                    this.done = token.is_none();
-                    this.options.page_token = token;
-                    this.items = response.items.into_iter();
-                }
-                Err(error) => {
-                    this.done = true;
-                    return Poll::Ready(Some(Err(error)));
-                }
+            if let Err(error) = futures::ready!(this.poll_fetch_page(cx)) {
+                return Poll::Ready(Some(Err(error)));
             }
         }
     }
@@ -222,6 +248,36 @@ mod tests {
         assert_eq!(listing.page_token(), Some("retry"));
         assert_eq!(listing.num_page_results(), 0);
         assert!(listing.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn next_page_preserves_empty_pages_and_remaining_items() {
+        let requests = Arc::new(Mutex::new(0));
+        let count = requests.clone();
+        let mut listing = Listing::new(ListingOptions::default(), move |options| {
+            *count.lock().unwrap() += 1;
+            async move {
+                let (items, page_token) = match options.page_token.as_deref() {
+                    None => (vec![], Some("second".to_string())),
+                    Some("second") => (vec!["a", "b"], Some("last".to_string())),
+                    Some("last") => (vec!["c"], None),
+                    _ => unreachable!(),
+                };
+                Ok(ListingPage { items, page_token })
+            }
+        });
+        assert_eq!(*requests.lock().unwrap(), 0);
+        assert!(listing.next_page().await.unwrap().unwrap().items.is_empty());
+        assert_eq!(*requests.lock().unwrap(), 1);
+        assert_eq!(listing.try_next().await.unwrap(), Some("a"));
+        assert_eq!(*requests.lock().unwrap(), 2);
+        let remaining = listing.next_page().await.unwrap().unwrap();
+        assert_eq!(remaining.items, vec!["b"]);
+        assert_eq!(remaining.page_token.as_deref(), Some("last"));
+        assert_eq!(*requests.lock().unwrap(), 2);
+        assert_eq!(listing.next_page().await.unwrap().unwrap().items, vec!["c"]);
+        assert!(listing.next_page().await.unwrap().is_none());
+        assert_eq!(*requests.lock().unwrap(), 3);
     }
 
     #[tokio::test]

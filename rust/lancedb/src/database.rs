@@ -193,7 +193,7 @@ impl CloneTableRequest {
     }
 }
 
-/// A request to start a SQL statement on a remote database.
+/// A request to start a SQL statement on a LanceDB Distributed database.
 #[derive(Clone, Debug)]
 pub struct ExecuteQueryRequest {
     /// The SQL text.
@@ -467,10 +467,9 @@ pub trait Database:
     ) -> Result<bool> {
         function_catalog_not_supported()
     }
-    /// Start dropping a Function and return a handle to the cleanup job.
-    ///
-    /// Backends without asynchronous cleanup complete the drop before returning an
-    /// already-finished job.
+    /// Drop a Function binding and return its completion handle.
+    /// SQL backends return a query job confirming catalog removal; physical
+    /// cleanup continues separately.
     async fn drop_function_async(
         &self,
         name: &str,
@@ -480,6 +479,40 @@ pub trait Database:
         let dropped = self.drop_function(name, version, namespace_path).await?;
         Ok((dropped, crate::job::Job::new_done()))
     }
+    /// Create a database-owned storage integration in a namespace.
+    async fn create_storage_integration(
+        &self,
+        _name: &str,
+        _request: crate::storage_integration::CreateStorageIntegrationRequest,
+        _namespace_path: &[String],
+    ) -> Result<crate::storage_integration::StorageIntegrationInfo> {
+        secret_catalog_not_supported()
+    }
+    /// Describe a database-owned storage integration.
+    async fn describe_storage_integration(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<crate::storage_integration::StorageIntegrationInfo> {
+        secret_catalog_not_supported()
+    }
+    /// List one namespace of storage integrations.
+    async fn list_storage_integrations(
+        &self,
+        _namespace_path: &[String],
+        _options: ListingOptions,
+    ) -> Result<ListingPage<String>> {
+        secret_catalog_not_supported()
+    }
+    /// Drop a database-owned storage integration.
+    async fn drop_storage_integration(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<()> {
+        secret_catalog_not_supported()
+    }
+
     /// Create a named Secret in this database. Fails if the name is taken, so
     /// a create can never silently become a rotation.
     async fn create_secret(
@@ -630,7 +663,13 @@ pub trait Database:
     async fn resume_job(&self, _job_id: &str) -> Result<ResumeJobStatus> {
         job_op_not_supported("resume_job")
     }
-    /// Start executing a SQL statement on a remote database.
+    /// Establish the SQL transport without executing a statement.
+    async fn check_sql_connection(&self) -> Result<()> {
+        Err(crate::Error::NotSupported {
+            message: "SQL is not supported by this database".into(),
+        })
+    }
+    /// Start executing a SQL statement on a LanceDB Distributed database.
     async fn execute_query_async(
         &self,
         _request: ExecuteQueryRequest,

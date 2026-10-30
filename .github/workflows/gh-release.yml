@@ -1,8 +1,8 @@
 name: GitHub Release
 
 # All SDKs share one version, so a single `vX.Y.Z` tag produces a single GitHub
-# release covering all of them. The per-package publish workflows (PyPI, NPM,
-# Cargo, Maven) trigger off the same tag independently.
+# release covering all of them, including CLI binaries. The per-package publish
+# workflows (PyPI, NPM, Cargo, Maven) trigger off the same tag independently.
 
 on:
   push:
@@ -13,7 +13,11 @@ permissions:
   contents: read
 
 jobs:
+  cli:
+    uses: ./.github/workflows/cli-release.yml
+
   gh-release:
+    needs: cli
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -22,6 +26,15 @@ jobs:
         with:
           fetch-depth: 0
           lfs: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@v8
+        with:
+          name: cli-release
+          path: dist
+      - name: Verify CLI release assets
+        run: python ci/package_cli.py verify --output dist
       - name: Extract version
         id: extract_version
         env:
@@ -83,3 +96,22 @@ jobs:
           generate_release_notes: false
           name: LanceDB v${{ steps.extract_version.outputs.version }}
           body: ${{ steps.release_notes.outputs.changelog }}
+          files: |
+            dist/lancedb-*.tar.gz
+            dist/SHA256SUMS
+          fail_on_unmatched_files: true
+          overwrite_files: true
+
+  report-failure:
+    runs-on: ubuntu-24.04
+    needs: [cli, gh-release]
+    if: always() && failure()
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/create-failure-issue
+        with:
+          job-results: ${{ toJSON(needs) }}
+          workflow-name: ${{ github.workflow }}

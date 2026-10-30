@@ -35,23 +35,21 @@ Here is an example of the end-to-end workflow:
 
 1.  **Ingest Data into a LanceDB dataset**
 
-    This command takes a directory of source files and creates a LanceDB dataset from them.
+    This command reads a source document and creates a Lance dataset from it.
 
     ```bash
     synthetic-data-kit ingest docs/report.pdf --multimodal
     # This will create a Lance dataset at data/parsed/report.lance
     # with 'text' and 'image' columns.
-    
-    #Generate multimodal-qa pairs from the ingested data
-    synthetic-data-kit create data/parsed/report.lance --type multimodal-qa
     ```
 
 2.  **Create fine-tuning data**
 
-    This command uses the LanceDB dataset created in the previous step to generate synthetic data in the desired format.
+    This command uses the Lance dataset created in the previous step to generate multimodal question-answer pairs.
 
     ```bash
-    synthetic_data create data/parsed/report.lance
+    synthetic-data-kit create data/parsed/report.lance --type multimodal-qa
+    # This writes data/generated/report.json
     ```
 
 3.  **Curate the data**
@@ -59,15 +57,16 @@ Here is an example of the end-to-end workflow:
     This step uses a language model to curate the generated data and ensure its quality.
 
     ```bash
-    synthetic_data curate report.json
+    synthetic-data-kit curate data/generated/report.json
+    # This writes data/curated/report_cleaned.json
     ```
 
 4.  **Save the final dataset**
 
-    Finally, save the curated data to a file in the desired format.
+    Finally, save the curated data in the format you need: `jsonl`, `alpaca`, `ft` or `chatml`.
 
     ```bash
-    synthetic_data save-as  report.json --save_path ./my_finetuning_data.jsonl
+    synthetic-data-kit save-as data/curated/report_cleaned.json -f jsonl -o ./my_finetuning_data.jsonl
     ```
 
 This workflow allows you to go from a collection of documents to a high-quality, fine-tuning dataset with just a few commands. The use of LanceDB in the background makes the process efficient and scalable.

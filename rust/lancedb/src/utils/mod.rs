@@ -701,7 +701,9 @@ impl Stream for TimeoutStream {
         match &mut self.state {
             TimeoutState::NotStarted { timeout } => {
                 if timeout.is_zero() {
-                    return std::task::Poll::Ready(Some(Err(Self::timeout_error(timeout))));
+                    let err = Self::timeout_error(timeout);
+                    self.state = TimeoutState::Completed;
+                    return std::task::Poll::Ready(Some(Err(err)));
                 }
                 let deadline = Box::pin(tokio::time::sleep(*timeout));
                 self.state = TimeoutState::Started {
@@ -1174,6 +1176,8 @@ mod tests {
                 .to_string()
                 .contains("Query timeout")
         );
+        assert!(timeout_stream.next().await.is_none());
+        assert!(timeout_stream.next().await.is_none());
     }
 
     #[tokio::test]
@@ -1193,6 +1197,8 @@ mod tests {
         let result = timeout_stream.next().await.unwrap();
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Query timeout"));
+        assert!(timeout_stream.next().await.is_none());
+        assert!(timeout_stream.next().await.is_none());
     }
 
     #[tokio::test]

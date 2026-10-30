@@ -4,9 +4,10 @@ sidebarTitle: "Aggregation"
 description: "GROUP BY, HAVING, and the aggregate function set."
 icon: layer-group
 keywords: ["group by", "having", "count", "sum", "avg", "aggregate", "approximate"]
+availability:
+  embedded: unavailable
+  enterprise: available
 ---
-
-<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 Use SQL aggregates to summarize records, either across a whole table or
 within groups. Common examples include counts by category, totals and averages.
@@ -32,7 +33,7 @@ SELECT category, source, count(*) FROM documents GROUP BY category, source
 
 ## Aggregate without grouping {#whole-table}
 
-Omitting `GROUP BY` aggregates the whole table into one row -- the usual way to
+Omitting `GROUP BY` aggregates the whole table into one row, which is the usual way to
 ask how big something is:
 
 ```sql

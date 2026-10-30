@@ -50,6 +50,18 @@ impl Connection {
     }
 }
 
+fn parse_read_consistency_interval(interval: Option<f64>) -> PyResult<Option<Duration>> {
+    interval
+        .map(|seconds| {
+            Duration::try_from_secs_f64(seconds).map_err(|_| {
+                PyValueError::new_err(
+                    "read_consistency_interval must be finite, non-negative, and within the supported range",
+                )
+            })
+        })
+        .transpose()
+}
+
 fn parse_namespace_client_pushdown_operations(
     operations: Option<Vec<String>>,
 ) -> PyResult<HashSet<NamespaceClientPushdownOperation>> {
@@ -413,7 +425,8 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (name, source, projections=None, filter=None, limit=None, with_no_data=false))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (name, source, projections=None, filter=None, limit=None, with_no_data=false, auto_refresh_enabled=None, auto_refresh_interval_seconds=None))]
     pub fn create_materialized_view(
         self_: PyRef<'_, Self>,
         name: String,
@@ -422,10 +435,18 @@ impl Connection {
         filter: Option<String>,
         limit: Option<u64>,
         with_no_data: bool,
+        auto_refresh_enabled: Option<bool>,
+        auto_refresh_interval_seconds: Option<f64>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
             let mut builder = inner.create_materialized_view(name, source);
+            if let Some(enabled) = auto_refresh_enabled {
+                builder = builder.auto_refresh_enabled(enabled);
+            }
+            if let Some(seconds) = auto_refresh_interval_seconds {
+                builder = builder.auto_refresh_interval_seconds(seconds);
+            }
             if let Some(projections) = projections {
                 builder = builder.select(projections);
             }
@@ -441,7 +462,8 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (name, source, projections=None, filter=None, limit=None, with_no_data=false))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (name, source, projections=None, filter=None, limit=None, with_no_data=false, auto_refresh_enabled=None, auto_refresh_interval_seconds=None))]
     pub fn create_materialized_view_async(
         self_: PyRef<'_, Self>,
         name: String,
@@ -450,10 +472,18 @@ impl Connection {
         filter: Option<String>,
         limit: Option<u64>,
         with_no_data: bool,
+        auto_refresh_enabled: Option<bool>,
+        auto_refresh_interval_seconds: Option<f64>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
             let mut builder = inner.create_materialized_view(name, source);
+            if let Some(enabled) = auto_refresh_enabled {
+                builder = builder.auto_refresh_enabled(enabled);
+            }
+            if let Some(seconds) = auto_refresh_interval_seconds {
+                builder = builder.auto_refresh_interval_seconds(seconds);
+            }
             if let Some(projections) = projections {
                 builder = builder.select(projections);
             }
@@ -561,29 +591,17 @@ impl Connection {
 
     #[pyo3(signature = (namespace_path=None, page_token=None, limit=None))]
     pub fn list_namespaces(
-        self_: PyRef<'_, Self>,
+        &self,
         namespace_path: Option<Vec<String>>,
         page_token: Option<String>,
         limit: Option<u32>,
-    ) -> PyResult<Bound<'_, PyAny>> {
-        let inner = self_.get_inner()?.clone();
-        let py = self_.py();
-        future_into_py(py, async move {
-            use lance_namespace::models::ListNamespacesRequest;
-            let request = ListNamespacesRequest {
-                id: namespace_path,
-                page_token,
-                limit: limit.map(|l| l as i32),
-                ..Default::default()
-            };
-            let response = inner.list_namespaces(request).await.infer_error()?;
-            Python::attach(|py| -> PyResult<Py<PyDict>> {
-                let dict = PyDict::new(py);
-                dict.set_item("namespaces", response.namespaces)?;
-                dict.set_item("page_token", response.page_token)?;
-                Ok(dict.unbind())
-            })
-        })
+    ) -> PyResult<crate::listing::NameListing> {
+        Ok(crate::listing::NameListing::new(
+            self.get_inner()?.list_namespaces(
+                &namespace_path.unwrap_or_default(),
+                crate::listing::options(page_token, limit),
+            ),
+        ))
     }
 
     #[pyo3(signature = (namespace_path, mode=None, properties=None))]
@@ -694,31 +712,66 @@ impl Connection {
         })
     }
 
+    pub fn namespace_exists(
+        self_: PyRef<'_, Self>,
+        namespace_id: Vec<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let request = lance_namespace::models::DescribeNamespaceRequest {
+                id: Some(namespace_id),
+                ..Default::default()
+            };
+            match inner.describe_namespace(request).await {
+                Ok(_) => Ok(true),
+                Err(lancedb::Error::Http {
+                    status_code: Some(status),
+                    ..
+                }) if status.as_u16() == 404 => Ok(false),
+                Err(lancedb::Error::Lance {
+                    source: lance_core::Error::Namespace { ref source, .. },
+                }) if matches!(
+                    source.downcast_ref::<lance_namespace::NamespaceError>(),
+                    Some(lance_namespace::NamespaceError::NamespaceNotFound { .. })
+                ) =>
+                {
+                    Ok(false)
+                }
+                Err(err) => Err(err).infer_error(),
+            }
+        })
+    }
+
+    pub fn table_exists(
+        self_: PyRef<'_, Self>,
+        mut table_id: Vec<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let name = table_id
+            .pop()
+            .ok_or_else(|| PyValueError::new_err("table_id must include a table name"))?;
+        future_into_py(self_.py(), async move {
+            match inner.open_table(name).namespace(table_id).execute().await {
+                Ok(_) => Ok(true),
+                Err(lancedb::Error::TableNotFound { .. }) => Ok(false),
+                Err(err) => Err(err).infer_error(),
+            }
+        })
+    }
+
     #[pyo3(signature = (namespace_path=None, page_token=None, limit=None))]
     pub fn list_tables(
-        self_: PyRef<'_, Self>,
+        &self,
         namespace_path: Option<Vec<String>>,
         page_token: Option<String>,
         limit: Option<u32>,
-    ) -> PyResult<Bound<'_, PyAny>> {
-        let inner = self_.get_inner()?.clone();
-        let py = self_.py();
-        future_into_py(py, async move {
-            use lance_namespace::models::ListTablesRequest;
-            let request = ListTablesRequest {
-                id: namespace_path,
-                page_token,
-                limit: limit.map(|l| l as i32),
-                ..Default::default()
-            };
-            let response = inner.list_tables(request).await.infer_error()?;
-            Python::attach(|py| -> PyResult<Py<PyDict>> {
-                let dict = PyDict::new(py);
-                dict.set_item("tables", response.tables)?;
-                dict.set_item("page_token", response.page_token)?;
-                Ok(dict.unbind())
-            })
-        })
+    ) -> PyResult<crate::listing::NameListing> {
+        Ok(crate::listing::NameListing::new(
+            self.get_inner()?.list_tables(
+                &namespace_path.unwrap_or_default(),
+                crate::listing::options(page_token, limit),
+            ),
+        ))
     }
 
     /// Get the configuration for constructing an equivalent namespace client.
@@ -833,6 +886,72 @@ impl Connection {
                 .await
                 .infer_error()
                 .map(|(dropped, job)| (dropped, crate::job::Job::new(job)))
+        })
+    }
+
+    #[pyo3(signature = (name, request, namespace_path=None))]
+    pub fn create_storage_integration<'py>(
+        &self,
+        py: Python<'py>,
+        name: String,
+        request: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self.get_inner()?.clone();
+        let request: lancedb::storage_integration::CreateStorageIntegrationRequest =
+            serde_json::from_str(&request)
+                .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        future_into_py(py, async move {
+            let info = inner
+                .create_storage_integration(name, request, &namespace_path.unwrap_or_default())
+                .await
+                .infer_error()?;
+            serde_json::to_string(&info).map_err(|error| PyValueError::new_err(error.to_string()))
+        })
+    }
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn describe_storage_integration<'py>(
+        &self,
+        py: Python<'py>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self.get_inner()?.clone();
+        future_into_py(py, async move {
+            let info = inner
+                .describe_storage_integration(name, &namespace_path.unwrap_or_default())
+                .await
+                .infer_error()?;
+            serde_json::to_string(&info).map_err(|error| PyValueError::new_err(error.to_string()))
+        })
+    }
+    #[pyo3(signature = (*, namespace_path=None, page_token=None, page_limit=None))]
+    pub fn list_storage_integrations(
+        &self,
+        namespace_path: Option<Vec<String>>,
+        page_token: Option<String>,
+        page_limit: Option<u32>,
+    ) -> PyResult<crate::listing::NameListing> {
+        Ok(crate::listing::NameListing::new(
+            self.get_inner()?.list_storage_integrations(
+                &namespace_path.unwrap_or_default(),
+                crate::listing::options(page_token, page_limit),
+            ),
+        ))
+    }
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn drop_storage_integration<'py>(
+        &self,
+        py: Python<'py>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self.get_inner()?.clone();
+        future_into_py(py, async move {
+            inner
+                .drop_storage_integration(name, &namespace_path.unwrap_or_default())
+                .await
+                .infer_error()
         })
     }
 
@@ -1133,6 +1252,7 @@ pub fn connect(
     namespace_client_properties: Option<HashMap<String, String>>,
     oauth_config: Option<crate::oauth::PyOAuthConfig>,
 ) -> PyResult<Bound<'_, PyAny>> {
+    let read_consistency_interval = parse_read_consistency_interval(read_consistency_interval)?;
     future_into_py(py, async move {
         let mut builder = lancedb::connect(&uri);
         if let Some(api_key) = api_key {
@@ -1151,7 +1271,6 @@ pub fn connect(
         #[cfg(not(feature = "remote"))]
         let _ = sql_host_override;
         if let Some(read_consistency_interval) = read_consistency_interval {
-            let read_consistency_interval = Duration::from_secs_f64(read_consistency_interval);
             builder = builder.read_consistency_interval(read_consistency_interval);
         }
         if let Some(storage_options) = storage_options {
@@ -1200,7 +1319,7 @@ pub fn connect_namespace_client(
     namespace_client_impl: Option<String>,
     namespace_client_properties: Option<HashMap<String, String>>,
 ) -> PyResult<Connection> {
-    let read_consistency_interval = read_consistency_interval.map(Duration::from_secs_f64);
+    let read_consistency_interval = parse_read_consistency_interval(read_consistency_interval)?;
     let namespace_client_pushdown_operations =
         parse_namespace_client_pushdown_operations(namespace_client_pushdown_operations)?;
     let ns_properties = namespace_client_properties.unwrap_or_default();
@@ -1257,7 +1376,7 @@ pub fn connect_namespace(
     session: Option<crate::session::Session>,
     namespace_client_pushdown_operations: Option<Vec<String>>,
 ) -> PyResult<Connection> {
-    let read_consistency_interval = read_consistency_interval.map(Duration::from_secs_f64);
+    let read_consistency_interval = parse_read_consistency_interval(read_consistency_interval)?;
     let namespace_client_pushdown_operations =
         parse_namespace_client_pushdown_operations(namespace_client_pushdown_operations)?;
 
