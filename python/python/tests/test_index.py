@@ -587,6 +587,7 @@ def test_index_statistics_index_type_lists_all_supported_values():
         "BTREE",
         "BITMAP",
         "LABEL_LIST",
+        "NGRAM",
     }
 
     assert (
