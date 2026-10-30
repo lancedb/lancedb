@@ -90,6 +90,7 @@ struct TestSqlService {
     headers: Arc<std::sync::Mutex<Vec<CapturedHeaders>>>,
     gate_refresh_release: Arc<Notify>,
     exchanges: ReceivedExchanges,
+    result_overrides: Arc<std::sync::Mutex<HashMap<String, RecordBatch>>>,
     /// How many exchange responses have been dropped, finished or not.
     exchange_drops: Arc<AtomicUsize>,
     result: RecordBatch,
@@ -127,6 +128,22 @@ impl TestSqlService {
                 .unwrap_or_default(),
         });
     }
+
+    fn result_for_query(&self, query: &str) -> RecordBatch {
+        if query == "SELECT large message" {
+            self.large_result.clone()
+        } else if query == "SELECT dictionary" {
+            self.dictionary_result.clone()
+        } else {
+            self.result_overrides
+                .lock()
+                .unwrap()
+                .get(query)
+                .cloned()
+                .unwrap_or_else(|| self.result.clone())
+        }
+    }
+
     fn adaptive_response(
         &self,
         query: &str,
@@ -223,6 +240,7 @@ impl Default for TestSqlService {
             headers: Arc::new(std::sync::Mutex::new(Vec::new())),
             gate_refresh_release: Arc::new(Notify::new()),
             exchanges: Arc::new(std::sync::Mutex::new(Vec::new())),
+            result_overrides: Arc::new(std::sync::Mutex::new(HashMap::new())),
             exchange_drops: Arc::new(AtomicUsize::new(0)),
             result,
             large_result,
@@ -338,14 +356,8 @@ impl FlightService for TestSqlService {
             );
         }
         if query != "SELECT empty" {
-            let schema = if query == "SELECT large message" {
-                self.large_result.schema_ref()
-            } else if query == "SELECT dictionary" {
-                self.dictionary_result.schema_ref()
-            } else {
-                self.result.schema_ref()
-            };
-            info = info.try_with_schema(schema).unwrap();
+            let schema = self.result_for_query(&query).schema();
+            info = info.try_with_schema(&schema).unwrap();
         }
         Ok(Response::new(PollInfo {
             info: (query != "SELECT no info" || stage > 0).then_some(info),
@@ -393,13 +405,7 @@ impl FlightService for TestSqlService {
         let empty = ticket == b"SELECT empty";
         let slow = ticket == b"SELECT slow get";
         let large = ticket == b"SELECT large message";
-        let result = if large {
-            self.large_result.clone()
-        } else if ticket == b"SELECT dictionary" {
-            self.dictionary_result.clone()
-        } else {
-            self.result.clone()
-        };
+        let result = self.result_for_query(std::str::from_utf8(ticket).unwrap_or_default());
         let schema = result.schema();
         let gate_refresh_release = self.gate_refresh_release.clone();
         let input = futures::stream::once(async move {
@@ -599,6 +605,14 @@ async fn start_sql_service(
     service: TestSqlService,
     client_config: ClientConfig,
 ) -> (SqlClient, tokio::sync::oneshot::Sender<()>) {
+    start_sql_service_with_prefix(service, client_config, None).await
+}
+
+async fn start_sql_service_with_prefix(
+    service: TestSqlService,
+    client_config: ClientConfig,
+    database_prefix: Option<&str>,
+) -> (SqlClient, tokio::sync::oneshot::Sender<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let incoming = futures::stream::try_unfold(listener, |listener| async {
@@ -615,7 +629,7 @@ async fn start_sql_service(
     );
     let client = SqlClient::new(
         "analytics".to_string(),
-        None,
+        database_prefix.map(str::to_owned),
         "test-key".to_string(),
         None,
         Some(format!("grpc://{address}")),
@@ -2451,6 +2465,150 @@ async fn secret_description_uses_the_sql_metadata_projection() {
     let info = db.describe_secret("api-key", &[]).await.unwrap();
     assert_eq!(info.name, "api-key");
     assert_eq!(info.updated_at_millis, 2);
+    shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
+async fn secret_listing_uses_bounded_sql_and_scoped_cursors() {
+    for defer in [false, true] {
+        let first_result = RecordBatch::try_from_iter(vec![(
+            "name",
+            Arc::new(StringArray::from(vec!["api-key", "hf'prod", "openai-prod"])) as ArrayRef,
+        )])
+        .unwrap();
+        let second_result = RecordBatch::try_from_iter(vec![(
+            "name",
+            Arc::new(StringArray::from(vec!["openai-prod"])) as ArrayRef,
+        )])
+        .unwrap();
+        let result_overrides = Arc::new(std::sync::Mutex::new(HashMap::from([
+            ("SHOW SECRETS LIMIT 3".to_string(), first_result),
+            (
+                "SHOW SECRETS WHERE name > 'hf''prod' LIMIT 3".to_string(),
+                second_result,
+            ),
+        ])));
+        let service = TestSqlService {
+            adaptive: true,
+            defer,
+            result_overrides,
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let headers = service.headers.clone();
+        let (client, shutdown) = start_sql_service_with_prefix(
+            service,
+            ClientConfig::default(),
+            Some("tenant/production"),
+        )
+        .await;
+        let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
+            panic!("unexpected REST request");
+        })
+        .with_sql_client(client);
+        let namespace = vec!["team".to_owned(), "reports".to_owned()];
+
+        let first = db
+            .list_secrets(
+                &namespace,
+                crate::listing::ListingOptions::default().page_limit(2),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.items, ["api-key", "hf'prod"]);
+        let token = first.page_token.expect("a third row must produce a token");
+
+        let second = db
+            .list_secrets(
+                &namespace,
+                crate::listing::ListingOptions::default()
+                    .page_limit(2)
+                    .page_token(&token),
+            )
+            .await
+            .unwrap();
+        assert_eq!(second.items, ["openai-prod"]);
+        assert!(second.page_token.is_none());
+
+        assert_eq!(
+            *statements.lock().unwrap(),
+            [
+                "SHOW SECRETS LIMIT 3",
+                "SHOW SECRETS WHERE name > 'hf''prod' LIMIT 3"
+            ]
+        );
+        {
+            let headers = headers.lock().unwrap();
+            assert!(!headers.is_empty());
+            for header in headers.iter() {
+                assert_eq!(header.database, "analytics");
+                assert_eq!(header.database_prefix, "tenant/production");
+                assert_eq!(header.namespace_path, "team$reports");
+            }
+        }
+
+        for (path, token) in [
+            (vec!["other".to_owned()], token),
+            (namespace.clone(), "invalid".to_owned()),
+        ] {
+            assert!(matches!(
+                db.list_secrets(
+                    &path,
+                    crate::listing::ListingOptions::default().page_token(token)
+                )
+                .await,
+                Err(Error::InvalidInput { .. })
+            ));
+        }
+        assert_eq!(statements.lock().unwrap().len(), 2);
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn secret_listing_handles_empty_pages_and_rejects_invalid_limits() {
+    let empty = RecordBatch::try_from_iter(vec![(
+        "name",
+        Arc::new(StringArray::from(Vec::<String>::new())) as ArrayRef,
+    )])
+    .unwrap();
+    let service = TestSqlService {
+        adaptive: true,
+        defer: true,
+        result: empty,
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
+        panic!("unexpected REST request");
+    })
+    .with_sql_client(client);
+    let namespace = vec!["team".to_owned(), "reports".to_owned()];
+
+    let page = db
+        .list_secrets(
+            &namespace,
+            crate::listing::ListingOptions::default()
+                .page_limit(2)
+                .page_token(""),
+        )
+        .await
+        .unwrap();
+    assert!(page.items.is_empty());
+    assert!(page.page_token.is_none());
+
+    for limit in [0, i32::MAX as u32 + 1] {
+        assert!(matches!(
+            db.list_secrets(
+                &namespace,
+                crate::listing::ListingOptions::default().page_limit(limit)
+            )
+            .await,
+            Err(Error::InvalidInput { .. })
+        ));
+    }
+    assert_eq!(*statements.lock().unwrap(), ["SHOW SECRETS LIMIT 3"]);
     shutdown.send(()).unwrap();
 }
 
