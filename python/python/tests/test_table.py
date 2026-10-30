@@ -2774,6 +2774,137 @@ def test_update(mem_db: DBConnection):
     assert np.allclose(v, np.array([[1.2, 1.9], [1.1, 1.1]]))
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("async_api", [False, True])
+@pytest.mark.parametrize("use_sql", [False, True])
+@pytest.mark.parametrize("where", [None, "id = 1", col("id") == 1])
+@pytest.mark.parametrize("source_target", ["text", "`text`"])
+async def test_update_embedding_source_requires_vector(
+    tmp_path, async_api, use_sql, where, source_target
+):
+    func = MockTextEmbeddingFunction.create()
+
+    class Doc(LanceModel):
+        id: int
+        text: str = func.SourceField()
+        vector: Vector(func.ndims()) = func.VectorField()
+
+    data = [{"id": 1, "text": "hello world"}, {"id": 2, "text": "goodbye world"}]
+    if async_api:
+        db = await lancedb.connect_async(tmp_path)
+        table = await db.create_table("docs", data, schema=Doc)
+        before = await table.to_arrow()
+        version = await table.version()
+    else:
+        db = lancedb.connect(tmp_path)
+        table = db.create_table("docs", data, schema=Doc)
+        before = table.to_arrow()
+        version = table.version
+
+    # Rejection must happen before any rows or the table version change.
+    updates = {source_target: "text || ' updated'" if use_sql else "updated text"}
+    with pytest.raises(
+        ValueError, match="source column 'text'.*vector column 'vector'"
+    ):
+        if async_api:
+            if use_sql:
+                await table.update(where=where, updates_sql=updates)
+            else:
+                await table.update(updates, where=where)
+        elif use_sql:
+            table.update(where=where, values_sql=updates)
+        else:
+            table.update(where=where, values=updates)
+
+    if async_api:
+        assert (await table.to_arrow()).equals(before)
+        assert await table.version() == version
+    else:
+        assert table.to_arrow().equals(before)
+        assert table.version == version
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("async_api", [False, True])
+@pytest.mark.parametrize("use_sql", [False, True])
+@pytest.mark.parametrize(
+    "source_target,vector_target,other_vector_target",
+    [
+        ("text", "vector", "other_vector"),
+        ("`text`", "vector", "`other_vector`"),
+        ("text", "`vector`", "other_vector"),
+        ("`text`", "`vector`", "`other_vector`"),
+    ],
+)
+async def test_update_embedding_source_with_multiple_vectors(
+    tmp_path,
+    monkeypatch,
+    async_api,
+    use_sql,
+    source_target,
+    vector_target,
+    other_vector_target,
+):
+    func = MockTextEmbeddingFunction.create()
+
+    class Doc(LanceModel):
+        id: int
+        text: str
+        vector: Vector(func.ndims())
+        other_vector: Vector(func.ndims())
+
+    configs = [
+        EmbeddingFunctionConfig(
+            source_column="text", vector_column=column, function=func
+        )
+        for column in ["vector", "other_vector"]
+    ]
+    data = [{"id": 1, "text": "hello world"}, {"id": 2, "text": "goodbye world"}]
+    if async_api:
+        db = await lancedb.connect_async(tmp_path)
+        table = await db.create_table(
+            "docs", data, schema=Doc, embedding_functions=configs
+        )
+    else:
+        db = lancedb.connect(tmp_path)
+        table = db.create_table("docs", data, schema=Doc, embedding_functions=configs)
+
+    async def update(values):
+        if async_api:
+            if use_sql:
+                return await table.update(updates_sql=values, where=col("id") == 1)
+            return await table.update(values, where=col("id") == 1)
+        if use_sql:
+            return table.update(values_sql=values, where=col("id") == 1)
+        return table.update(values=values, where=col("id") == 1)
+
+    vector = func.compute_source_embeddings(["updated text"])[0]
+    updates = {source_target: "updated text", vector_target: vector}
+    if use_sql:
+        updates = {
+            key: table_module.value_to_sql(value) for key, value in updates.items()
+        }
+
+    # Checking column dependencies must not require loading an embedding model.
+    monkeypatch.delitem(EmbeddingFunctionRegistry.get_instance()._functions, "test")
+    with pytest.raises(ValueError, match="vector column 'other_vector'"):
+        await update(updates)
+
+    updates[other_vector_target] = updates[vector_target]
+    result = await update(updates)
+    assert result.rows_updated == 1
+    actual = await table.to_arrow() if async_api else table.to_arrow()
+    rows = actual.sort_by("id").to_pylist()
+    assert rows[0]["text"] == "updated text"
+    assert np.allclose(rows[0]["vector"], vector)
+    assert np.allclose(rows[0]["other_vector"], vector)
+    assert rows[1]["text"] == "goodbye world"
+
+    # Vector-only and unrelated updates are still allowed on embedding tables.
+    assert (await update({vector_target: updates[vector_target]})).rows_updated == 1
+    assert (await update({"id": "3" if use_sql else 3})).rows_updated == 1
+
+
 def test_update_expr_filter_literals(mem_db: DBConnection):
     values = ["5", "4.66e-84", "it's"]
     table = mem_db.create_table(

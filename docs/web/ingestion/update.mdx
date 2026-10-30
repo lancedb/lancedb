@@ -78,6 +78,13 @@ Read the selected rows again and inspect the changed fields. For another
 connection or table handle, account for its
 [read consistency](/tables/consistency) settings.
 
+Python's `update` does not compute embeddings. When changing a configured embedding
+source column, provide every associated vector column in the same call. This applies
+to both literal values and SQL expressions, and to synchronous and asynchronous
+tables. Otherwise, the call raises `ValueError` before writing any rows. Use
+[`merge_insert`](/ingestion/merge-insert) with the new source values to generate
+embeddings automatically.
+
 Nested-field updates are not supported by these operations. For schema changes,
 see [schema evolution](/management/table#schema). Treat derived values separately:
 changing an input field is not a guarantee that every stored feature has been
