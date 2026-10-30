@@ -80,6 +80,8 @@ func = get_registry().get("nvidia").create(
 )
 ```
 
+### Authenticated endpoints {#authenticated-endpoints}
+
 Custom endpoints may run without a key. `NVIDIA_API_KEY` is only sent to the
 hosted API, so for authenticated endpoints use
 `get_registry().set_var("nvidia-key", key)` with `api_key="$var:nvidia-key"`. Registry references, rather than secret values, are
@@ -87,20 +89,21 @@ stored in the schema. Restore registry variables in each process. Before using
 a custom endpoint restored from table metadata in a new process, call
 `get_registry().allow_endpoint("http://localhost:8000/v1")`.
 
+### Output dimensions {#output-dimensions}
+
 The NIM 2.4 support matrix lists `nvidia/Nemotron-3.5-Embed-8B-BF16` at 2048
 dimensions, whereas the hosted 8B reference specifies 4096. For self-hosted model
 IDs, this provider requires an explicit `dim` and checks the response instead of
 assuming the hosted defaults.
 
-SDK coverage: Python. TypeScript, Rust, and Java do not gain a NVIDIA provider
-from this integration. Automated tests use mocked NVIDIA and Enterprise HTTP
-responses plus real local tables. The opt-in hosted smoke test runs with
-`NVIDIA_API_KEY` and `pytest python/tests/test_nvidia_embeddings.py -m slow -k nvidia_live`
-from the repository's Python environment. It sends five small requests per model
-(ten total), with retries disabled, to check local ingestion, reopening, search,
-and reduced-dimensional embeddings.
+## SDK support {#sdk-support}
 
-NVIDIA references (checked October 23, 2026):
+The NVIDIA provider is available in the Python SDK only. TypeScript, Rust and Java
+don't have an NVIDIA embedding provider.
+
+## References {#references}
+
+NVIDIA documentation:
 [hosted 1B API](https://docs.api.nvidia.com/nim/reference/nvidia-nemotron-3_5-embed-1b-infer),
 [hosted 8B API](https://docs.api.nvidia.com/nim/reference/nvidia-nemotron-3_5-embed-8b-infer),
 [NIM request/response format](https://docs.nvidia.com/nim/nemo-retriever/embedding/2.4/use-the-api-openai.html),

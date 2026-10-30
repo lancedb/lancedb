@@ -45,7 +45,7 @@ In this example, we will be fetching movie information from the [Open Movie Data
     dlt's LanceDB integration also allows you to automatically embed the data during ingestion. Depending on the embedding model chosen, you may need to paste the necessary credentials inside `.dlt/secrets.toml`:
     ```toml
     [sources.rest_api]
-    api_key = "api_key" # Enter the API key for the OMDb API
+    api_token = "api_token" # Enter the API key for the OMDb API
 
     [destination.lancedb]
     embedding_model_provider = "sentence-transformers"
@@ -91,7 +91,7 @@ In this example, we will be fetching movie information from the [Open Movie Data
 6. **Run the pipeline:**
     Finally, running the following command will ingest the data into your LanceDB instance.
     ```sh
-    python custom_source.py
+    python rest_api_pipeline.py
     ```
 
 For more information and advanced usage of dlt's LanceDB integration, read [the dlt documentation](https://dlthub.com/docs/dlt-ecosystem/destinations/lancedb).

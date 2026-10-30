@@ -37,18 +37,13 @@ Supported parameters (to be passed in `create` method) are:
 
 Cohere supports following input types:
 
-| Input Type               | Description                          |
-|-------------------------|---------------------------------------|
-| "`search_document`"     | Used for embeddings stored in a vector|
-|                         | database for search use-cases.        |
-| "`search_query`"        | Used for embeddings of search queries |
-|                         | run against a vector DB               |
-| "`semantic_similarity`" | Specifies the given text will be used |
-|                         | for Semantic Textual Similarity (STS) |
-| "`classification`"      | Used for embeddings passed through a  |
-|                         | text classifier.                      |
-| "`clustering`"          | Used for the embeddings run through a |
-|                         | clustering algorithm                  |
+| Input type | Description |
+| --- | --- |
+| `search_document` | Used for embeddings stored in a vector database for search use cases. |
+| `search_query` | Used for embeddings of search queries run against a vector database. |
+| `semantic_similarity` | Specifies that the text will be used for semantic textual similarity (STS). |
+| `classification` | Used for embeddings passed through a text classifier. |
+| `clustering` | Used for embeddings run through a clustering algorithm. |
 
 Usage Example:
 
