@@ -851,8 +851,7 @@ class DBConnection(EnforceOverrides):
         """
         Drop all tables from the database
 
-        LanceDB Distributed does not currently support this operation. Use
-        ``list_tables()`` and ``drop_table()`` to drop tables individually.
+        Lists the tables in the selected namespace and drops them one at a time.
 
         Parameters
         ----------
@@ -3250,6 +3249,8 @@ class AsyncConnection(object):
 
     async def drop_all_tables(self, namespace_path: Optional[List[str]] = None):
         """Drop all tables from the database.
+
+        Lists the tables in the selected namespace and drops them one at a time.
 
         Parameters
         ----------
