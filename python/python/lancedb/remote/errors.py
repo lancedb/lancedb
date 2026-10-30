@@ -4,6 +4,8 @@
 
 from typing import Optional
 
+from lance_namespace.errors import TableNotFoundError as _NamespaceTableNotFoundError
+
 
 class LanceDBClientError(RuntimeError):
     """An error that occurred in the LanceDB client.
@@ -44,6 +46,26 @@ class HttpError(LanceDBClientError):
     status_code: int
         The HTTP status code of the response. May be None if the request
         failed before the response was received.
+    """
+
+    pass
+
+
+class TableNotFoundError(HttpError, ValueError, _NamespaceTableNotFoundError):
+    """A remote table was not found.
+
+    This is also a ``lance_namespace.errors.TableNotFoundError`` and a
+    ``ValueError``, so existing missing-table handlers continue to work.
+    Like [HttpError][lancedb.remote.errors.HttpError], it carries the
+    ``request_id`` and ``status_code`` of the failed request.
+
+    Examples
+    --------
+    >>> error = TableNotFoundError("Table 'missing' was not found", "req-123", 404)
+    >>> isinstance(error, ValueError)
+    True
+    >>> error.request_id
+    'req-123'
     """
 
     pass

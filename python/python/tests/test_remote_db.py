@@ -19,6 +19,7 @@ from unittest.mock import MagicMock, patch
 import uuid
 from urllib.parse import parse_qs, urlparse
 from packaging.version import Version
+from lance_namespace.errors import TableNotFoundError
 
 import lancedb
 import numpy as np
@@ -108,6 +109,72 @@ async def mock_lancedb_connection_async(handler, **client_config):
         finally:
             server.shutdown()
             handle.join()
+
+
+@pytest.fixture
+def missing_table_handler(cached, namespace_path):
+    request_ids = []
+
+    def handler(request):
+        identifier = "$".join(namespace_path + ["missing"])
+        assert request.path == f"/v1/table/{identifier}/describe/"
+        request_ids.append(request.headers["x-request-id"])
+        status = 200 if cached and len(request_ids) == 1 else 404
+        request.send_response(status)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(b"{}" if status == 200 else b"table does not exist")
+
+    return handler, request_ids
+
+
+@pytest.mark.parametrize("cached", [False, True])
+@pytest.mark.parametrize("namespace_path", [[], ["ns"]])
+def test_remote_open_missing_table(cached, namespace_path, missing_table_handler):
+    handler, request_ids = missing_table_handler
+    with mock_lancedb_connection(handler) as db:
+        if cached:
+            db.open_table("missing", namespace_path=namespace_path)
+        with pytest.raises(TableNotFoundError) as exc_info:
+            db.open_table("missing", namespace_path=namespace_path)
+
+    error = exc_info.value
+    assert isinstance(error, ValueError)
+    assert isinstance(error, HttpError)
+    assert str(error) == "Table 'missing' was not found"
+    assert error.status_code == 404
+    assert error.request_id == request_ids[-1]
+    assert error.request_id
+    assert isinstance(error.__cause__, HttpError)
+    assert error.__cause__.request_id == error.request_id
+    assert error.__cause__.status_code == 404
+    assert "table does not exist" in str(error.__cause__)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cached", [False, True])
+@pytest.mark.parametrize("namespace_path", [[], ["ns"]])
+async def test_async_remote_open_missing_table(
+    cached, namespace_path, missing_table_handler
+):
+    handler, request_ids = missing_table_handler
+    async with mock_lancedb_connection_async(handler) as db:
+        if cached:
+            await db.open_table("missing", namespace_path=namespace_path)
+        with pytest.raises(TableNotFoundError) as exc_info:
+            await db.open_table("missing", namespace_path=namespace_path)
+
+    error = exc_info.value
+    assert isinstance(error, ValueError)
+    assert isinstance(error, HttpError)
+    assert str(error) == "Table 'missing' was not found"
+    assert error.status_code == 404
+    assert error.request_id == request_ids[-1]
+    assert error.request_id
+    assert isinstance(error.__cause__, HttpError)
+    assert error.__cause__.request_id == error.request_id
+    assert error.__cause__.status_code == 404
+    assert "table does not exist" in str(error.__cause__)
 
 
 @pytest.fixture
