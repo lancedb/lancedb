@@ -16,7 +16,6 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import threading
 import typing
 import urllib.parse
 from typing import Optional
