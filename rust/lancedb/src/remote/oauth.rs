@@ -157,6 +157,41 @@ impl AuthorizationCodeOptions {
     }
 }
 
+/// Options for the OAuth Device Authorization flow.
+///
+/// PKCE is disabled by default because it is a provider extension to the device
+/// grant. Enable it only when the provider supports and requires S256 PKCE,
+/// such as a Keycloak client with a PKCE requirement. There is no automatic
+/// fallback to a device request without PKCE.
+///
+/// # Example
+///
+/// ```
+/// use lancedb::remote::{DeviceCodeOptions, OAuthFlow};
+///
+/// let flow = OAuthFlow::DeviceCode(DeviceCodeOptions::new().use_pkce(true));
+/// ```
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub struct DeviceCodeOptions {
+    /// Whether to protect the device authorization exchange with S256 PKCE.
+    /// Defaults to `false`.
+    pub use_pkce: bool,
+}
+
+impl DeviceCodeOptions {
+    /// Create device-code options with PKCE disabled.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Enable or disable the provider-specific S256 PKCE extension.
+    pub fn use_pkce(mut self, use_pkce: bool) -> Self {
+        self.use_pkce = use_pkce;
+        self
+    }
+}
+
 /// OAuth authentication flow configuration.
 #[derive(Debug, Clone)]
 pub enum OAuthFlow {
@@ -170,19 +205,9 @@ pub enum OAuthFlow {
     AuthorizationCode(AuthorizationCodeOptions),
 
     /// Device Authorization grant for CLI and headless environments. The
-    /// verification URI and user code are written to stderr.
-    /// Does not send PKCE parameters. Use [`Self::DeviceCodeWithPkce`] only
-    /// when the provider supports and requires PKCE for device grants.
-    DeviceCode,
-
-    /// Device Authorization grant with the S256 PKCE extension, required by
-    /// some Keycloak client policies. Not supported by every device provider.
-    ///
-    /// ```
-    /// use lancedb::remote::OAuthFlow;
-    /// let flow = OAuthFlow::DeviceCodeWithPkce;
-    /// ```
-    DeviceCodeWithPkce,
+    /// verification URI and user code are written to stderr. PKCE is disabled
+    /// by default; see [`DeviceCodeOptions`] for provider-specific options.
+    DeviceCode(DeviceCodeOptions),
 
     /// Azure Managed Identity via IMDS.
     /// Works on Azure VMs, AKS, App Service, and Azure Functions.
@@ -774,6 +799,7 @@ impl OidcClient {
     ) -> Result<Self> {
         Self::validate_issuer_transport(&issuer_url)?;
 
+        // Cargo embeds the package version at compile time; no runtime variable is needed.
         let http_client = Client::builder()
             .user_agent(concat!("LanceDB-Rust-Client/", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(30))
@@ -1652,7 +1678,7 @@ pub(crate) fn build_token_source(config: &OAuthConfig) -> Result<Box<dyn TokenSo
             config.audience.clone(),
             options.clone(),
         )?),
-        OAuthFlow::DeviceCode | OAuthFlow::DeviceCodeWithPkce => Box::new(
+        OAuthFlow::DeviceCode(options) => Box::new(
             DeviceCodeSource::new(
                 config.issuer_url.clone(),
                 config.client_id.clone(),
@@ -1662,7 +1688,7 @@ pub(crate) fn build_token_source(config: &OAuthConfig) -> Result<Box<dyn TokenSo
                 config.resource.clone(),
                 config.audience.clone(),
             )?
-            .with_pkce(matches!(config.flow, OAuthFlow::DeviceCodeWithPkce)),
+            .with_pkce(options.use_pkce),
         ),
         OAuthFlow::AzureManagedIdentity { client_id } => Box::new(AzureImdsSource::new(
             config.scopes.clone(),
@@ -2120,6 +2146,19 @@ mod tests {
         assert!(output.contains(authorization_url.as_str()));
         assert!(output.contains("https://idp.example.com/device"));
         assert!(output.contains("ABCD-EFGH"));
+    }
+
+    #[test]
+    fn test_device_code_options_default_and_pkce() {
+        assert!(!DeviceCodeOptions::default().use_pkce);
+        assert!(!DeviceCodeOptions::new().use_pkce);
+        assert!(DeviceCodeOptions::new().use_pkce(true).use_pkce);
+        assert!(
+            !DeviceCodeOptions::new()
+                .use_pkce(true)
+                .use_pkce(false)
+                .use_pkce
+        );
     }
 
     #[test]
