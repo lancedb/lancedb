@@ -1839,7 +1839,11 @@ class UdfDefinition:
     Instances are created with :func:`udf`. Calling an instance executes the
     original Python function, or constructs the original class, which keeps
     local unit testing ordinary. Remote execution adapts the callable to the
-    internal Arrow batch ABI described by the registration artifact.
+    internal Arrow batch ABI described by the registration artifact. By
+    default it invokes the callable once per row. A callable whose parameters
+    are all annotated as ``pyarrow.Array`` receives whole Arrow arrays and
+    returns a ``pyarrow.Array`` instead. This authoring choice is independent
+    of the internal artifact adapter in the registration request.
     """
 
     def __init__(
@@ -2144,7 +2148,10 @@ def udf(
     Parameters
     ----------
     function : function or class, optional
-        The synchronous callable, or the class whose instances are called.
+        The synchronous callable, or the class whose instances are called. For
+        a function, annotate every parameter as ``pyarrow.Array`` to opt into
+        vectorized execution; a matching return annotation documents that the
+        callable returns an Arrow array.
     name : str, optional
         The remote Function name. Defaults to the callable name.
         Must start with an ASCII letter or underscore and contain only ASCII
@@ -2224,6 +2231,18 @@ def udf(
     3.0
     >>> [field.name for field in scale.registration_request.signature.initialization]
     ['factor', 'offset']
+    >>> import lancedb
+    >>> @udf(
+    ...     input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
+    ...     output_schema=lancedb.blob("copy", nullable=False),
+    ... )
+    ... def copy_blobs(image: pa.Array) -> pa.Array:
+    ...     return image
+
+    Blob v2 input is exposed as ``pyarrow.LargeBinaryArray`` in vectorized
+    mode (and as ``bytes`` in row mode). Return a ``LargeBinaryArray`` with the
+    declared nullability. Use :func:`lancedb.blob` in the explicit schemas;
+    plain ``pyarrow.large_binary()`` does not carry Blob v2 semantics.
     """
 
     def decorate(target: Any) -> UdfDefinition:
