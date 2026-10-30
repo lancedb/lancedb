@@ -48,15 +48,19 @@ workspace and searches them by meaning, using a local embedding model, so no API
 <Step title="Scaffold a TypeScript extension">
 Use the official generator. Choose **New Extension (TypeScript)** and **esbuild** as the bundler.
 
-```bash
+<CodeGroup>
+```bash Bash icon="terminal"
 npx --package yo --package generator-code -- yo code
 ```
+</CodeGroup>
 </Step>
 
 <Step title="Install LanceDB">
-```bash
+<CodeGroup>
+```bash Bash icon="terminal"
 npm install @lancedb/lancedb apache-arrow@18.1.0
 ```
+</CodeGroup>
 
 Your code imports Arrow types directly, so add `apache-arrow` as a dependency, pinned inside
 LanceDB's peer dependency range (`>=15.0.0 <=18.1.0`). If the project already depends on a
@@ -215,7 +219,8 @@ bundle native binaries, so building with LanceDB fails with
 `No loader is configured for ".node" files`. Mark the packages that load native code as
 external so they're loaded from `node_modules` at runtime:
 
-```js esbuild.js icon="square-js"
+<CodeGroup>
+```javascript esbuild.js icon="square-js"
 external: [
   "vscode",
   "@lancedb/lancedb",
@@ -224,6 +229,7 @@ external: [
   "apache-arrow",
 ],
 ```
+</CodeGroup>
 
 External packages must be in the VSIX, but the template's `.vscodeignore` excludes
 `node_modules/**`. Delete that line. `vsce` then includes your production dependencies and
@@ -237,9 +243,11 @@ npm installs LanceDB's native binary only for the machine it runs on, such as
 `@lancedb/lancedb-win32-x64-msvc` on 64-bit Windows. Build one VSIX per platform, each on a
 matching machine or CI runner, and publish them all. The Marketplace serves each user the right one.
 
-```bash
+<CodeGroup>
+```bash Bash icon="terminal"
 npx @vscode/vsce package --target win32-x64
 ```
+</CodeGroup>
 
 | `vsce` target | LanceDB native package |
 |:--|:--|

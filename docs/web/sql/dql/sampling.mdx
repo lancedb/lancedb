@@ -13,10 +13,12 @@ Use `TABLESAMPLE` to explore a subset of a table or estimate aggregate
 statistics. The sampling method determines how much data is read and whether
 the table's physical layout influences the sample.
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT * FROM documents TABLESAMPLE (10)        -- 10 percent
 SELECT * FROM documents TABLESAMPLE (500 ROWS)  -- 500 rows
 ```
+</CodeGroup>
 
 A bare number is a **percentage**. Add `ROWS` for a count instead.
 
@@ -25,10 +27,12 @@ A bare number is a **percentage**. Add `ROWS` for a count instead.
 The standard calls these two methods of one clause. They are different
 operations, and the difference matters on Lance:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT * FROM documents TABLESAMPLE BERNOULLI (10)
 SELECT * FROM documents TABLESAMPLE SYSTEM (10)
 ```
+</CodeGroup>
 
 | Method | Aliases | What it picks |
 | --- | --- | --- |
@@ -50,9 +54,11 @@ independent row sampling. Omitting the method gives
 Without a seed, every execution resamples: running the same query twice gives
 different rows. `REPEATABLE` fixes the draw:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT * FROM documents TABLESAMPLE (10) REPEATABLE (42)
 ```
+</CodeGroup>
 
 Use the same seed and table snapshot to reproduce a sampling run. For a fixed
 evaluation set, save the selected row IDs or materialize the sample and retain
@@ -64,13 +70,15 @@ or changes to the physical layout.
 It attaches to a table in `FROM`, including inside a subquery, a CTE, or either
 side of a join:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT * FROM (SELECT * FROM documents TABLESAMPLE (10)) d
 
 SELECT * FROM a TABLESAMPLE (5 ROWS) JOIN b ON a.id = b.id
 
 SELECT * FROM t a TABLESAMPLE (10) JOIN t b TABLESAMPLE (10) ON a.id = b.id
 ```
+</CodeGroup>
 
 Each side of a join samples independently. Sampling both sides of a join
 shrinks the *result* far more than either fraction suggests, because a row only

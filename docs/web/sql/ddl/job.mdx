@@ -15,23 +15,29 @@ catalog objects are.
 
 ## SHOW JOBS {#show}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SHOW JOBS
 ```
+</CodeGroup>
 
 Every job the server knows about: id, type, state, creation time. The SQL
 counterpart of `list_jobs`.
 
 ## SHOW ERRORS {#errors}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SHOW ERRORS ON <table> [FOR JOB '<job-id>'] [LIMIT <n>]
 ```
+</CodeGroup>
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SHOW ERRORS ON documents
 SHOW ERRORS ON documents FOR JOB 'job-abc' LIMIT 100
 ```
+</CodeGroup>
 
 Why rows failed. Reach for this when a [refresh](/sql/dml/refresh-column) reports
 fewer filled rows than you expected.
@@ -50,21 +56,27 @@ rather than raising the limit blindly.
 
 ## PAUSE JOB {#pause}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 PAUSE JOB 'j-ci-abc-def'
 ```
+</CodeGroup>
 
 ## RESUME JOB {#resume}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 RESUME JOB 'j-ci-abc-def'
 ```
+</CodeGroup>
 
 ## CANCEL JOB {#cancel}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 CANCEL JOB 'j-ci-abc-def'
 ```
+</CodeGroup>
 
 The job id is always a quoted string literal. All three take exactly one and
 nothing after it: a second token on the line is a syntax error rather than

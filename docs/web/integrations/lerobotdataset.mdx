@@ -46,18 +46,22 @@ Same model, same loss, 33 minutes sooner, and no 384 GB download first. The diff
 
 ## Install
 
-```bash
+<CodeGroup>
+```bash Bash icon="terminal"
 pip install "lerobot[lancedb]"   # the reader, inside lerobot itself
 pip install lerobot-lancedb      # the converter
 ```
+</CodeGroup>
 
 ## Convert a dataset
 
 Any LeRobot v3.0 dataset, from the Hub or a local directory:
 
-```bash
+<CodeGroup>
+```bash Bash icon="terminal"
 lerobot-lance-convert --repo-id lerobot/pusht --out ./pusht-lance
 ```
+</CodeGroup>
 
 **Migration costs about as much as a file copy.** Videos are stored as blobs without re-encoding, so items are bit-identical to the source: 392,578 frames convert in 10 seconds, DROID's 27.6M in 34 minutes. Nothing about your recording or training code changes. The output keeps `meta/` as is and adds three Lance tables (`frames`, `videos`, `meta`). `lerobot-lance-doctor` audits the result and often finds problems in the source: DROID carries 44% orphaned rows, and three of eight public datasets we converted have frame-count defects that only random access exposes.
 
@@ -77,21 +81,25 @@ An explicit `root` works for any object store: `LeRobotDataset("lerobot/pusht", 
 
 Or from the CLI. Held-out evaluation on a remote dataset needs random access, so it only works on the Lance path:
 
-```bash
+<CodeGroup>
+```bash Bash icon="terminal"
 lerobot-train \
   --dataset.repo_id=my-org/my-bucket/pusht-lance \
   --dataset.repo_type=bucket \
   --dataset.eval_split=0.02 \
   --policy.type=act
 ```
+</CodeGroup>
 
 ## Visualize TB-scale datasets in Foxglove
 
 LeRobot's dataset viewer can serve an episode to [Foxglove](https://foxglove.dev) over its WebSocket protocol ([lerobot#4542](https://github.com/huggingface/lerobot/pull/4542)), and with a Lance dataset it works wherever the data lives:
 
-```bash
+<CodeGroup>
+```bash Bash icon="terminal"
 lerobot-dataset-viz --repo-id lance-format/pusht-lance --episode-index 3 --display-mode foxglove
 ```
+</CodeGroup>
 
 Open the Foxglove app, connect to `ws://localhost:8765`, and scrub. Cameras, joint state and actions show up as topics you can lay out however you like:
 
@@ -117,7 +125,8 @@ From here it is standard LanceDB. The examples below are from our DROID walkthro
 
 **Feature engineering costs nothing until you use it.** With [Geneva](/geneva/udfs/udfs), `add_columns` registers a `@udf` function and its input columns as a new column and computes nothing; `backfill` computes and stores the values later, in parallel. No copy of the dataset, and the videos are never touched:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 @udf(data_type=pa.float32(), input_columns=["action_joint_velocity"])
 def jerk_score(v):                      # per-frame motion roughness
     ...
@@ -125,10 +134,12 @@ def jerk_score(v):                      # per-frame motion roughness
 tbl.add_columns({"jerk_score": jerk_score})   # nothing computed yet
 tbl.backfill("jerk_score", concurrency=8)     # 610,403 rows in 16.7 s
 ```
+</CodeGroup>
 
 Embeddings work the same way, reading frames straight from the video blobs in the same table:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 @udf(data_type=pa.list_(pa.float32(), 768), num_gpus=1,
      input_columns=["episode_index", "frame_index"])
 class EmbedFromBlob:                    # SigLIP2 loads once per worker
@@ -137,6 +148,7 @@ class EmbedFromBlob:                    # SigLIP2 loads once per worker
         frame = VideoDecoder(blob).get_frames_at([pos]).data[0]
         ...
 ```
+</CodeGroup>
 
 **Deduplication** removes near-static runs before they skew curation or
 training. A stopped gripper holding one pose for a few seconds produces many
@@ -144,12 +156,14 @@ frames whose `emb_siglip2` vectors are nearly identical; LanceDB Enterprise's
 native [`dedupe`](/sql/dql/dedupe) collapses them into one
 representative per cluster, directly over the index, without a pairwise scan:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 db.execute_query("""
     CREATE MATERIALIZED VIEW frames_deduped AS
     SELECT * FROM dedupe('frames', 'emb_siglip2', distance_threshold => 0.01)
 """)
 ```
+</CodeGroup>
 
 Every column survives the dedup unchanged -- `jerk_score`, the episode and
 camera metadata, the video blob reference -- since `dedupe` returns full
@@ -161,7 +175,8 @@ to keep the deduplicated set current as new episodes land; see
 
 **Curation** is one query across all of it. Semantic search with a predicate on the derived score, no join, no second system:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 results = (
     tbl.search(vec("a gripper closing on an object"), vector_column_name="emb_siglip2")
     .where("jerk_score > 1.2875")  # the roughest 1% of frames
@@ -169,6 +184,7 @@ results = (
     .to_arrow()
 )
 ```
+</CodeGroup>
 
 **Mining** is the same query pointed at the rare cases. `tbl.search().where("jerk_score > 1.2875 AND success = false")` pulls the rough, failed frames out of 27.6M rows in milliseconds, ready to become a fine-tuning set or a labeling queue.
 

@@ -13,12 +13,15 @@ Image and combined text/image inputs are not supported by this integration.
 
 Install the optional client and set your NVIDIA API key:
 
-```shell
+<CodeGroup>
+```bash Bash icon="terminal"
 pip install openai
 export NVIDIA_API_KEY="your-api-key"
 ```
+</CodeGroup>
 
-```python
+<CodeGroup>
+```python Python icon="python"
 import lancedb
 from lancedb.embeddings import get_registry
 from lancedb.pydantic import LanceModel, Vector
@@ -36,6 +39,7 @@ table = db.create_table("documents", schema=Document)
 table.add([{"text": "Paris is the capital of France."}])
 results = table.search("What is the capital of France?").limit(3).to_list()
 ```
+</CodeGroup>
 
 For a LanceDB Enterprise table, connect as usual, for example
 `lancedb.connect("db://my-database", api_key=..., region=...)`. The same schema,
@@ -72,13 +76,15 @@ served profile. This provider batches by item count, not token count.
 Set `name` to the exact ID returned by your deployment's `GET /v1/models` and
 `dim` to an output dimension that deployment supports:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 func = get_registry().get("nvidia").create(
     name="nvidia/Nemotron-3.5-Embed-1B-BF16",
     base_url="http://localhost:8000/v1",
     dim=2048,
 )
 ```
+</CodeGroup>
 
 ### Authenticated endpoints {#authenticated-endpoints}
 

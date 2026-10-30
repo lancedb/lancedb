@@ -161,9 +161,11 @@ tbl.create_index(&["text"], Index::Fm(FmIndexBuilder::default()))
 
 After the index is built, substring filters use it automatically:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 table.search().where("contains(text, 'needle')").limit(10).to_pandas()
 ```
+</CodeGroup>
 
 `list_indices()` reports the index type as `"Fm"`.
 

@@ -9,11 +9,13 @@ availability:
   enterprise: available
 ---
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 INSERT INTO documents (id, title) VALUES (1, 'Merlin'), (2, 'Arthur')
 
 INSERT INTO archive SELECT * FROM documents WHERE created_at < '2026-01-01'
 ```
+</CodeGroup>
 
 `INSERT ... SELECT` is the form worth knowing: it moves rows between tables
 server-side, without a round trip through your process.

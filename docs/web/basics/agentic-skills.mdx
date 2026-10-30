@@ -74,9 +74,11 @@ The `npx plugins` installer defaults to the same user-wide scope. Pass
 everyone working in it gets the same plugin, or `-t <target>` to install for a
 single agent rather than every one it detects:
 
-```bash
+<CodeGroup>
+```bash Bash icon="terminal"
 npx plugins add lancedb/lancedb-agent-plugins --scope project -t cursor
 ```
+</CodeGroup>
 
 Not every agent supports project scope; `npx plugins targets` lists what it
 found and what each target supports.
@@ -93,7 +95,8 @@ remain in the same table.
 
 From a new project directory, download the JSON file and portraits:
 
-```bash
+<CodeGroup>
+```bash Bash icon="terminal"
 mkdir -p data/img
 
 BASE_URL="https://docs.lancedb.com/static/assets/tutorials/build-with-ai-agents/camelot/data"
@@ -112,6 +115,7 @@ do
   curl -fsSL "$BASE_URL/img/$image" -o "data/img/$image"
 done
 ```
+</CodeGroup>
 
 Each JSON record has this shape:
 
@@ -142,10 +146,12 @@ path rather than assuming it followed the plugin's guidance correctly.
 
 Install the Python packages used by the example:
 
-```bash icon="terminal"
+<CodeGroup>
+```bash Bash icon="terminal"
 uv init
 uv add lancedb pyarrow pydantic
 ```
+</CodeGroup>
 
 If you're using LanceDB Enterprise, ask the agent to ingest into an Enterprise table,
 provide the relevant environment variables for connecting to your Enterprise deployment
@@ -227,9 +233,11 @@ one call. Larger inputs should still avoid single-row write commits.
 
 ### 3\. Run the Embedded pipeline {#3-run-the-oss-pipeline}
 
-```bash
+<CodeGroup>
+```bash Bash icon="terminal"
 uv run python ingest_multimodal.py
 ```
+</CodeGroup>
 
 The table now contains the validated character records and their JPEG bytes.
 Here are the first three rows:

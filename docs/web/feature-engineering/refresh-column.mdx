@@ -31,7 +31,7 @@ table.to_arrow().sort_by("x").to_pandas()
 # 1  2        4
 ```
 
-```sql SQL
+```sql SQL icon="database"
 REFRESH COLUMN doubled ON my_table
 ```
 </CodeGroup>
@@ -66,13 +66,15 @@ column is stale between an update and the next refresh.
 
 Set scheduling options when declaring a computed column:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 table.add_columns(
     computed={"doubled": "x * 2"},
     auto_refresh_enabled=True,
     auto_refresh_interval_seconds=300,
 )
 ```
+</CodeGroup>
 
 These options apply to every computed output declared in that call. Automatic
 refresh is enabled by default. When the interval is omitted, the server
@@ -95,11 +97,13 @@ the base configuration; its default retention threshold is seven days.
 
 Change a stored setting through SQL:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 ALTER TABLE my_table ALTER COLUMN doubled SET auto_refresh_enabled = false;
 ALTER TABLE my_table ALTER COLUMN doubled SET auto_refresh_interval_seconds = 600;
 ALTER TABLE my_table ALTER COLUMN doubled SET auto_refresh_enabled = true;
 ```
+</CodeGroup>
 
 <Note>
 The current setting is in the column's own field metadata,
@@ -133,9 +137,11 @@ new rows from the moment it is re-enabled.
 predicate, which is useful for filling a slice first and checking it before
 committing to the whole table:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 REFRESH COLUMN embedding ON documents WHERE created_at > '2026-01-01'
 ```
+</CodeGroup>
 
 <Note>
 **Enterprise job type:** `computed_refresh` for a SQL-expression column.
@@ -151,7 +157,8 @@ cluster. `refresh_column` raises
 there; use `refresh_column_async`, which returns a [job](/basics/jobs) you can
 wait on or poll instead of holding a connection open:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 job = table.refresh_column_async("doubled")
 result = job.wait()
 result.rows_assigned
@@ -159,6 +166,7 @@ result.rows_assigned
 job.status()
 # 'finished'
 ```
+</CodeGroup>
 
 Poll with `status()`, resolve with `wait()`. `status()` is a point snapshot and
 does not raise, which is what makes it safe in a loop; `wait()` raises
@@ -172,10 +180,12 @@ process.
 SQL exposes the worker budget directly, which is the lever when a backfill is
 too slow or too expensive:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 REFRESH COLUMN embedding ON documents
   WITH (cpu_millis = 8000, memory_bytes = 17179869184, gpu_count = 2)
 ```
+</CodeGroup>
 
 `num_workers` sets the count instead of a per-worker budget; the two are
 alternatives rather than a pair. `batch_size` controls how many rows a worker
