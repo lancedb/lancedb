@@ -28,6 +28,7 @@ use crate::remote::client::HeaderProvider;
 use crate::remote::client::test_utils::client_with_handler;
 use crate::remote::db::RemoteDatabase;
 use crate::remote::table::RemoteTable;
+use crate::storage_integration::{CreateStorageIntegrationRequest, SecretReference};
 use crate::table::BaseTable;
 
 #[derive(Debug, Default)]
