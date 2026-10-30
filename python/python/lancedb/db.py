@@ -3407,7 +3407,8 @@ class AsyncConnection(object):
                 value is None for value in azure_options
             ):
                 raise ValueError(
-                    "Azure requires a storage account and all three credential Secret references"
+                    "Azure requires a storage account and "
+                    "all three credential Secret references"
                 )
             if any(
                 value is not None
@@ -3437,7 +3438,8 @@ class AsyncConnection(object):
                 )
             ):
                 raise ValueError(
-                    "Specify either aws_role_arn or both AWS credential Secret references"
+                    "Specify either aws_role_arn or "
+                    "both AWS credential Secret references"
                 )
 
         else:
