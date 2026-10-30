@@ -15,18 +15,22 @@ Install the DuckDB CLI as per [their docs](https://duckdb.org/install) and alter
 
 Then, open the DuckDB CLI and install and load the Lance extension as follows:
 
+<CodeGroup>
 ```sql SQL icon="database"
 INSTALL lance;
 LOAD lance;
 ```
+</CodeGroup>
 
 ## Attach the directory namespace in DuckDB {#attach-the-directory-namespace-in-duckdb}
 
 Attach the LanceDB root directory as a Lance namespace:
 
+<CodeGroup>
 ```sql SQL icon="database"
 ATTACH './local_lancedb' AS lance_ns (TYPE LANCE);
 ```
+</CodeGroup>
 
 In this page, tables are referenced using `lance_ns.main.<table_name>`, so the table path is `lance_ns.main.lance_duck`.
 
@@ -34,6 +38,7 @@ In this page, tables are referenced using `lance_ns.main.<table_name>`, so the t
 
 Create the `lance_duck` table using SQL and populate it with sample data:
 
+<CodeGroup>
 ```sql SQL icon="database"
 CREATE OR REPLACE TABLE lance_ns.main.lance_duck AS
 SELECT *
@@ -44,6 +49,7 @@ FROM (
     ('dragon', 'roar', [0.5, 0.2, 0.7]::FLOAT[])
 ) AS t(animal, noise, vector);
 ```
+</CodeGroup>
 
 This table is the source of truth for all DuckDB queries below.
 
@@ -54,14 +60,17 @@ Python as well, using LanceDB and DuckDB's Python clients in your application co
 
 ## Query the table with SQL {#query-the-table-with-sql}
 
+<CodeGroup>
 ```sql SQL icon="database"
 SELECT *
   FROM lance_ns.main.lance_duck
   LIMIT 5;
 ```
+</CodeGroup>
 
 ## Vector search {#vector-search}
 
+<CodeGroup>
 ```sql SQL icon="database"
 SELECT animal, noise, vector, _distance
   FROM lance_vector_search(
@@ -73,9 +82,11 @@ SELECT animal, noise, vector, _distance
   )
   ORDER BY _distance ASC;
 ```
+</CodeGroup>
 
 ## Full-text search {#full-text-search}
 
+<CodeGroup>
 ```sql SQL icon="database"
 SELECT animal, noise, vector, _score
   FROM lance_fts(
@@ -87,9 +98,11 @@ SELECT animal, noise, vector, _score
   )
   ORDER BY _score DESC;
 ```
+</CodeGroup>
 
 ## Hybrid search {#hybrid-search}
 
+<CodeGroup>
 ```sql SQL icon="database"
 SELECT animal, noise, vector, _hybrid_score, _distance, _score
   FROM lance_hybrid_search(
@@ -105,6 +118,7 @@ SELECT animal, noise, vector, _hybrid_score, _distance, _score
   )
   ORDER BY _hybrid_score DESC;
 ```
+</CodeGroup>
 
 ## Directory namespace model {#directory-namespace-model}
 

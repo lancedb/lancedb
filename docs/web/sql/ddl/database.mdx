@@ -16,10 +16,12 @@ reachable.
 
 ## ATTACH DATABASE {#attach}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 ATTACH DATABASE analytics WITH (location = 'analytics')
 ATTACH DATABASE IF NOT EXISTS analytics WITH (location = 'analytics')
 ```
+</CodeGroup>
 
 `location` is the only supported option, and the only way to say where a
 database lives: a relative subdirectory, never an absolute path or a URI.

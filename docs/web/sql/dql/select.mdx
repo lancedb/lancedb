@@ -9,7 +9,8 @@ availability:
   enterprise: available
 ---
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 [WITH cte AS (...)]
 SELECT [ALL | DISTINCT] select_expr [, ...]
 FROM from_item [[JOIN ...] ON ...]
@@ -19,11 +20,12 @@ FROM from_item [[JOIN ...] ON ...]
 [ORDER BY expr [ASC | DESC] [NULLS FIRST | LAST] [, ...]]
 [LIMIT n] [OFFSET n]
 ```
+</CodeGroup>
 
 ## Projection {#projection}
 
 <CodeGroup>
-```sql SQL
+```sql SQL icon="database"
 SELECT id, title, identifier FROM documents
 ```
 
@@ -50,7 +52,7 @@ Row metadata is available as [pseudo-columns](/sql/data-types#pseudo-columns)
 ## Filtering {#filtering}
 
 <CodeGroup>
-```sql SQL
+```sql SQL icon="database"
 SELECT * FROM documents
 WHERE identifier > 0 AND identifier < 1000000
 ```
@@ -71,11 +73,13 @@ them unchanged. A supported predicate can use a scalar index; confirm the chosen
 
 ## Ordering and limiting {#order-limit}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT id, title FROM documents
 ORDER BY created_at DESC NULLS LAST
 LIMIT 100 OFFSET 200
 ```
+</CodeGroup>
 
 `ORDER BY` on a large table is a sort over the whole result, so pair it with a
 `LIMIT` unless you genuinely need every row ordered.
@@ -84,23 +88,27 @@ LIMIT 100 OFFSET 200
 
 `UNION`, `UNION ALL`, `INTERSECT` and `EXCEPT` combine whole queries:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT id FROM documents WHERE category = 'film'
 UNION ALL
 SELECT id FROM archived_documents WHERE category = 'film'
 ```
+</CodeGroup>
 
 `UNION` deduplicates and `UNION ALL` does not, which makes `UNION ALL` the
 cheaper one when you already know the inputs are disjoint.
 
 ## Common table expressions {#ctes}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 WITH recent AS (
     SELECT * FROM documents WHERE created_at > now() - INTERVAL '7 days'
 )
 SELECT category, count(*) FROM recent GROUP BY category
 ```
+</CodeGroup>
 
 A CTE is scoped to the statement. One you want to keep is a
 [view](/management/view); one whose rows you want stored is a
@@ -111,27 +119,33 @@ A CTE is scoped to the statement. One you want to keep is a
 Subqueries are allowed anywhere an expression or a relation is (in `FROM`, in
 `WHERE` with `IN` or `EXISTS`, and as a scalar in the select list):
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT title
 FROM documents
 WHERE category_id IN (SELECT id FROM categories WHERE active)
 ```
+</CodeGroup>
 
 ## Namespaced tables {#namespaces}
 
 A table inside a [namespace](/management/namespace) is written as a dotted path:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT * FROM prod.events.clicks
 ```
+</CodeGroup>
 
 ## Reading the plan {#plans}
 
 `EXPLAIN` and `EXPLAIN ANALYZE` work as DataFusion defines them, and produce the
 same operators the SDK methods do:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 EXPLAIN ANALYZE SELECT * FROM documents WHERE identifier < 1000
 ```
+</CodeGroup>
 
 See [Explain](/search/explain) and [Explain Analyze](/search/explain).

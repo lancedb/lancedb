@@ -13,16 +13,20 @@ A LanceDB extension with no DataFusion equivalent. It is what makes
 [feature engineering](/feature-engineering) reachable from SQL: a column
 declared by [DDL](/sql/ddl/table#computed-column) starts empty, and a refresh fills it.
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 REFRESH COLUMN <column> ON [TABLE] <table>
   [WHERE <predicate>]
   [WITH (<option> = <value> [, ...])]
 ```
+</CodeGroup>
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 REFRESH COLUMN doubled ON my_table
 REFRESH COLUMN embedding ON documents WHERE created_at > '2026-01-01'
 ```
+</CodeGroup>
 
 A refresh gives values to rows that lack them, recomputes rows whose inputs
 changed, and **leaves other filled rows alone**. That makes it idempotent, cheap
@@ -43,10 +47,12 @@ committing to the whole table.
 | `batch_size` | rows a worker takes at a time |
 | `error_policy` | `'skip'` continues past failing rows instead of failing the job |
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 REFRESH COLUMN embedding ON documents
   WITH (cpu_millis = 8000, memory_bytes = 17179869184, gpu_count = 2)
 ```
+</CodeGroup>
 
 `num_workers` sets a count; the budget options size each worker. They are
 alternatives rather than a pair.

@@ -20,7 +20,8 @@ classes used from the SDK and serialized with `.to_json()`.
 Run these statements in order, sending one statement per SQL request.
 Semicolons separate the statements for clients that execute a script.
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 CREATE TABLE my_docs (id INT, text STRING, category STRING, author STRING);
 
 INSERT INTO my_docs VALUES
@@ -31,6 +32,7 @@ INSERT INTO my_docs VALUES
 
 CREATE INDEX ON my_docs USING fts (text);
 ```
+</CodeGroup>
 
 <Warning>
 Phrase queries need position information, which costs extra index size.
@@ -45,28 +47,34 @@ The query builder produces the JSON string used as the second SQL argument.
 The SQL examples below spell out the equivalent match object so they can be
 run directly after the setup above.
 
-```python
+<CodeGroup>
+```python Python icon="python"
 from lancedb.query import MatchQuery
 
 query = MatchQuery("puppy", "text")
 json_query = query.to_json()
 ```
+</CodeGroup>
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT id, text, category
 FROM fts('my_docs', '{"match":{"column":"text","terms":"puppy"}}')
 LIMIT 5
 ```
+</CodeGroup>
 
 By default the top 5 matches come back in **arbitrary order**. Select
 `_score` and order by it for relevance ranking:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT id, text, _score
 FROM fts('my_docs', '{"match":{"column":"text","terms":"puppy"}}')
 ORDER BY _score DESC
 LIMIT 5
 ```
+</CodeGroup>
 
 `_score` is a pseudo-column carrying the query's BM25 relevance for the row;
 it behaves like any other column, but exists only in a relation that came
@@ -76,35 +84,42 @@ from `fts()`. See [Data types](/sql/data-types#pseudo-columns).
 
 Tolerates typos, up to a character-edit budget:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 MatchQuery("pupy", "text", fuzziness=2)
 ```
+</CodeGroup>
 
 ## Phrase {#phrase}
 
 Exact phrase, or with `slop` to allow words between terms:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 from lancedb.query import PhraseQuery
 
 PhraseQuery("happy puppy", "text")
 PhraseQuery("puppy park", "text", slop=2)   # up to 2 words between them
 ```
+</CodeGroup>
 
 ## Boolean {#boolean}
 
 Combine queries with `&` (AND) or `|` (OR):
 
-```python
+<CodeGroup>
+```python Python icon="python"
 MatchQuery("puppy", "text") & MatchQuery("happy", "text")
 MatchQuery("puppy", "text") | MatchQuery("kitten", "text")
 ```
+</CodeGroup>
 
 ## Boost {#boost}
 
 Weight a query up or down relative to another:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 from lancedb.query import BoostQuery
 
 BoostQuery(
@@ -113,29 +128,34 @@ BoostQuery(
     negative_boost=0.2,
 )
 ```
+</CodeGroup>
 
 ## Multi-match {#multi-match}
 
 Search several columns at once, optionally weighting them differently:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 from lancedb.query import MultiMatchQuery
 
 MultiMatchQuery("puppy", ["text", "category"])
 MultiMatchQuery("puppy", ["text", "category"], boosts=[2.0, 1.0])  # text weighted 2x
 ```
+</CodeGroup>
 
 ## Combining with SQL {#combining}
 
 `fts()` is a relation, so it composes with the rest of the SQL surface.
 Filter, join, or aggregate over it same as any table:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT id, text, category
 FROM fts('my_docs', '{"match":{"column":"text","terms":"puppy"}}')
 WHERE category = 'animals'
 LIMIT 5
 ```
+</CodeGroup>
 
 ## What to read next {#next}
 

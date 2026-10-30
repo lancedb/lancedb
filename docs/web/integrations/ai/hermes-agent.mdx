@@ -54,17 +54,21 @@ done, `rm -rf ~/.hermes/profiles/demo` removes all trace.
 <Step title="Install Hermes Agent">
 Skip this if you already have Hermes installed.
 
-```bash
+<CodeGroup>
+```bash Bash icon="terminal"
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 ```
+</CodeGroup>
 </Step>
 
 <Step title="Install the plugin">
 This shallow-clones the plugin into `~/.hermes/plugins/lancedb/`.
 
-```bash
+<CodeGroup>
+```bash Bash icon="terminal"
 hermes plugins install lancedb/hermes-agent-memory
 ```
+</CodeGroup>
 </Step>
 
 <Step title="Install runtime dependencies into Hermes' environment">
@@ -72,9 +76,11 @@ Hermes loads plugins inside its own Python interpreter, so the dependencies go *
 into a separate virtualenv. (This interpreter is shared across profiles, so you only install
 once.)
 
-```bash
+<CodeGroup>
+```bash Bash icon="terminal"
 uv pip install --python ~/.hermes/hermes-agent/venv/bin/python3 lancedb openai pyyaml
 ```
+</CodeGroup>
 </Step>
 
 <Step title="Set your embeddings API key">
@@ -91,16 +97,20 @@ change needed. See [Configuration](#configuration) below.
 <Step title="Activate and verify">
 Switch memory on and pick this plugin:
 
-```bash
+<CodeGroup>
+```bash Bash icon="terminal"
 hermes memory setup     # choose "lancedb"
 ```
+</CodeGroup>
 
 Then confirm it's actually active before you start chatting. This is the one step worth not
 skipping, because Hermes quietly falls back to its built-in notes if the provider isn't set:
 
-```bash
+<CodeGroup>
+```bash Bash icon="terminal"
 hermes memory status
 ```
+</CodeGroup>
 
 ```text
 Memory status
@@ -160,9 +170,11 @@ line below:
 First, take Hermes' built-in notes out of the picture so recall can *only* come from LanceDB
 (the two layers run side by side otherwise, and either could answer):
 
-```bash
+<CodeGroup>
+```bash Bash icon="terminal"
 hermes config set memory.memory_enabled false
 ```
+</CodeGroup>
 
 Now start a fresh session (`/new`) and ask for the convention back, worded completely
 differently from how you saved it:
@@ -260,13 +272,15 @@ it's a plain LanceDB table, you can open it directly and see exactly what the ag
 A `kind` column separates extracted `fact` rows from the raw `turn` rows they were drawn
 from:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 import lancedb
 
 db = lancedb.connect("~/.hermes/lancedb")
 tbl = db.open_table("memories")
 print(tbl.to_pandas()[["kind", "category", "content"]].head())
 ```
+</CodeGroup>
 
 ## Configuration {#configuration}
 

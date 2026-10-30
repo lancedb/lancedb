@@ -86,7 +86,8 @@ The Colab notebook's workflow starts after all three tiers have been computed. I
 
 The base schema comes from the TextVQA Lance dataset. One row contains the image bytes, natural-language question, reference answers, OCR tokens, scene tags, and retrieval embeddings.
 
-```py Python icon=Python
+<CodeGroup>
+```python Python icon="python"
 import pyarrow as pa
 
 BASE_SCHEMA = pa.schema([
@@ -104,6 +105,7 @@ BASE_SCHEMA = pa.schema([
     pa.field("set_name",      pa.string()),
 ])
 ```
+</CodeGroup>
 
 Because the raw image, text, OCR, and embedding features live together, the same table supports curation, retrieval, feature engineering, and training. For example, the notebook can run a text-to-image retrieval demo by searching `image_emb` with a question embedding that already exists in the row.
 
@@ -113,7 +115,8 @@ Geneva turns feature engineering into UDF definitions plus backfills. The UDFs c
 
 The Tier 1 features are ordinary CPU UDFs:
 
-```py Python icon=Python
+<CodeGroup>
+```python Python icon="python"
 import re
 import pyarrow as pa
 from geneva.transformer import udf
@@ -135,10 +138,12 @@ def question_type(question: str) -> str:
 def ocr_token_count(ocr_tokens: list[str] | None) -> int:
     return len(ocr_tokens) if ocr_tokens else 0
 ```
+</CodeGroup>
 
 The Tier 3 feature is heavier: run Qwen2.5-VL's frozen vision tower once, then store the merged visual hidden states as a fixed-size fp16 list.
 
-```py Python icon=Python
+<CodeGroup>
+```python Python icon="python"
 IMAGE_PX = 560
 LLM_TOKENS_PER_IMAGE = 400
 VISION_HIDDEN = 2048
@@ -172,16 +177,19 @@ class VisionTowerEmbedder:
         # and return fp16[400, 2048] flattened as one fixed-size list.
         ...
 ```
+</CodeGroup>
 
 The fixed shape matters. With `IMAGE_PX = 560`, Qwen2.5-VL produces 400 merged visual tokens, each with hidden size 2048. That becomes one `fp16[400 * 2048]` column per row. Training can scan and randomly access that column without decoding images or running the vision tower in the hot loop, saving GPU compute at training time.
 
 Run the tiered backfill with Geneva:
 
-```bash bash icon="terminal"
+<CodeGroup>
+```bash Bash icon="terminal"
 python -m vlm.backfill_geneva --tier 1     # CPU text columns
 python -m vlm.backfill_geneva --tier 2     # image decode + dhash
 python -m vlm.backfill_geneva --tier 3     # vision tower + SFT tokens
 ```
+</CodeGroup>
 
 <Tip>
 The same Tier 3 work can be done manually by creating PyArrow batches and calling Lance's column-evolution APIs directly. The demo repo includes [`backfill_direct.py`](https://github.com/lancedb/tmls-2026-demo/blob/main/vlm/backfill_direct.py) for that path. Geneva is the preferred abstraction when you want to scale the same feature code across CPU or GPU workers and keep backfills incremental.
@@ -193,16 +201,19 @@ See the full UDF registry in [`vlm/geneva_udfs.py`](https://github.com/lancedb/t
 
 The demo uses a `text_dense` slice: TextVQA examples whose images contain many OCR tokens. The slice was chosen empirically because it gave the clearest LoRA lift over the already-strong base model.
 
-```py Python icon=Python
+<CodeGroup>
+```python Python icon="python"
 TEXT_DENSE_OCR_THRESHOLD = 16
 
 def matches_text_dense(row: dict) -> bool:
     return len(row.get("ocr_tokens") or []) >= TEXT_DENSE_OCR_THRESHOLD
 ```
+</CodeGroup>
 
 The Colab-ready bake ingests a small train split, backfills Tier 3 on that train table, ingests a held-out validation split, and optionally pushes the result to Hugging Face:
 
-```bash bash icon="terminal"
+<CodeGroup>
+```bash Bash icon="terminal"
 python -m vlm.colab_prepare \
   --out data/colab \
   --slice text_dense \
@@ -211,6 +222,7 @@ python -m vlm.colab_prepare \
   --hf-repo lance-format/textvqa-lance-colab \
   --push
 ```
+</CodeGroup>
 
 The train table contains cached Tier 3 columns because training reads them directly. The validation table keeps raw images because evaluation should run the full VLM on unseen images.
 
@@ -255,7 +267,8 @@ Before training, it helps to look at the actual task. Each row pairs an image wi
 
 The notebook downloads the public pre-baked subset:
 
-```py Python icon=Python
+<CodeGroup>
+```python Python icon="python"
 from huggingface_hub import snapshot_download
 import lancedb
 import os
@@ -273,10 +286,12 @@ def open_tbl(path: str):
 train_tbl = open_tbl(f"{local}/textvqa_colab_train.lance")
 val_tbl = open_tbl(f"{local}/textvqa_colab_val.lance")
 ```
+</CodeGroup>
 
 Because the table also ships CLIP embeddings, you can run cross-modal retrieval without loading a model:
 
-```py Python icon=Python
+<CodeGroup>
+```python Python icon="python"
 import numpy as np
 
 seed = (
@@ -298,6 +313,7 @@ hits = (
     .to_pylist()
 )
 ```
+</CodeGroup>
 
 This is the same table that later feeds training. There is no separate feature store, image directory, Parquet export, or manifest to keep synchronized.
 
@@ -312,7 +328,8 @@ Many training pipelines start with Parquet. Parquet is excellent for columnar an
 
 The notebook mirrors those column groups to uncompressed Parquet, then measures sequential scans and shuffled random batches:
 
-```py Python icon=Python
+<CodeGroup>
+```python Python icon="python"
 RAW = ["image", "question", "answer"]
 VEC = ["vision_tower_hiddens"]
 BATCH = 8
@@ -336,6 +353,7 @@ def shuf(ds, cols, num_batches=20):
         ds.take(idx, columns=cols)
     return (num_batches * BATCH) / (time.time() - t0)
 ```
+</CodeGroup>
 
 One Colab run produced the following throughput:
 
@@ -359,7 +377,8 @@ The numbers shown above are central to the example. The Tier 3 feature is only u
 
 The training DataLoader projects only the columns needed by the cached training loop:
 
-```py Python icon=Python
+<CodeGroup>
+```python Python icon="python"
 from lancedb.permutation import Permutation
 
 CACHED_COLS = [
@@ -397,6 +416,7 @@ class LancePermutationDataset(torch.utils.data.Dataset):
         self._ensure_open()
         return self._perm.__getitems__(indices)
 ```
+</CodeGroup>
 
 Each worker opens its own `Permutation`, reads Arrow batches directly from Lance, and avoids per-row Python object conversion until the collate function converts arrays into tensors.
 
@@ -415,7 +435,8 @@ The training process loads the language-model side of Qwen2.5-VL in 4-bit, delet
 
 During the forward pass, the model embeds the token IDs, finds the `<|image_pad|>` positions, and inserts the cached visual hidden states into those positions:
 
-```py Python icon=Python
+<CodeGroup>
+```python Python icon="python"
 def forward_cached(model, batch, image_pad_id: int):
     base = model.get_base_model() if hasattr(model, "get_base_model") else model
     inner = base.model
@@ -438,10 +459,12 @@ def forward_cached(model, batch, image_pad_id: int):
         labels=batch.labels,
     ).loss
 ```
+</CodeGroup>
 
 At this point, the LanceDB integration is done. The rest is plain PyTorch: optimizer, gradient accumulation, checkpointing, and saving the LoRA adapter.
 
-```py Python icon=Python
+<CodeGroup>
+```python Python icon="python"
 loader = make_cached_loader(
     "data/colab/textvqa_colab_train.lance",
     batch_size=2,
@@ -454,6 +477,7 @@ for batch in loader:
     (loss / grad_accum).backward()
     ...
 ```
+</CodeGroup>
 
 This produces a training log like the following. The loss falls as the adapter learns from the cached features, and peak VRAM stays at 5.3 GB because QLoRA trains without keeping the vision tower active:
 
@@ -474,7 +498,8 @@ The training loop pays zero per-step cost for image decode, vision-tower forward
 
 Evaluation uses the held-out validation table and loads the full VLM, including the vision tower. That is intentional: inference should see raw unseen images, not the cached train features.
 
-```py Python icon=Python
+<CodeGroup>
+```python Python icon="python"
 rows = (
     val_tbl.search()
     .select(["image", "question", "answer", "answers"])
@@ -489,6 +514,7 @@ tuned_model, processor = load_model(adapter_dir="runs/colab_lora/lora", load_4bi
 base_score = score_textvqa(base_model, processor, rows)
 tuned_score = score_textvqa(tuned_model, processor, rows)
 ```
+</CodeGroup>
 
 In this end-to-end example, the held-out curated validation split produced:
 

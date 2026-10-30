@@ -145,12 +145,14 @@ and `drop_all_tables()` operations remove all tables without a confirmation prom
 Python's `connect_async` returns an `AsyncConnection`. Await its operations
 when working in an asynchronous application:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 import lancedb
 
 db = await lancedb.connect_async("./.lancedb")
 table = await db.open_table("documents")
 ```
+</CodeGroup>
 
 TypeScript's connection and table operations already return promises.
 

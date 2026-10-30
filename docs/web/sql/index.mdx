@@ -24,11 +24,13 @@ Use Python's `execute_query` or a Flight SQL client after configuring the
 [Enterprise connection](/basics/sql#sql-is-remote). TypeScript applications
 use a Flight SQL client for SQL queries.
 
-```python
+<CodeGroup>
+```python Python icon="python"
 reader = db.execute_query("SELECT id, text FROM my_docs LIMIT 10")
 for batch in reader:
     print(batch)
 ```
+</CodeGroup>
 
 SQL results arrive as Arrow record batches. Iterating over the reader avoids
 collecting the entire result in application memory. See

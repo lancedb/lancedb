@@ -71,9 +71,11 @@ A dense vector column has a fixed dimension, commonly represented as
 possible; inspect the column with [`arrow_typeof`](/sql/scalar-functions#type) rather than assuming Float32.
 It is selectable and testable for nullness:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT id FROM documents WHERE vector IS NOT NULL
 ```
+</CodeGroup>
 
 <Warning>
 A list representation does not imply that ordinary arithmetic operators
@@ -87,10 +89,12 @@ plan; see [SQL](/basics/sql#no-vector-sql).
 Stored as JSONB in `large_binary` with the `lance.json` extension name. It reads
 through accessor functions rather than a `->` operator:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT json_get_string(data, 'name') FROM events
 WHERE json_get_int(data, 'status') = 200
 ```
+</CodeGroup>
 
 `json_get`, its typed variants, and `json_extract` are **index-accelerated** by a
 JSON scalar index. See [Functions](/sql/scalar-functions#json).
@@ -135,10 +139,12 @@ from an `fts()` relation explicitly when you want a projection containing it.
 
 ## Casting {#casting}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT CAST(identifier AS VARCHAR) FROM documents
 SELECT TRY_CAST(maybe_number AS BIGINT) FROM raw
 ```
+</CodeGroup>
 
 `TRY_CAST` yields null rather than failing the query on a value that will not
 convert. See [Operators](/sql/operators#casting).

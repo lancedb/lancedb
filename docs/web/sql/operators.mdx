@@ -67,10 +67,12 @@ or a name with mixed case): `SELECT "order" FROM "MyTable"`.
 
 ## Casting {#casting}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT CAST(identifier AS VARCHAR) AS with_cast, identifier::VARCHAR AS with_colons
 FROM documents
 ```
+</CodeGroup>
 
 Both forms work. Give each its own alias when one projection uses both: they
 produce the same expression name, and a projection refuses two columns with

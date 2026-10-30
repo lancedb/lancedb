@@ -27,7 +27,8 @@ a record; `doc_id` identifies the document it describes.
 Run each statement separately in a scratch database or namespace. Create these
 tables once for the whole section, using fresh names if they already exist.
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 CREATE TABLE curation_documents (
     row_id BIGINT, doc_id BIGINT, version BIGINT,
     source VARCHAR, caption VARCHAR, score DOUBLE
@@ -44,6 +45,7 @@ CREATE TABLE curation_labels (doc_id BIGINT, label VARCHAR);
 INSERT INTO curation_labels VALUES
     (10, 'cat'), (20, 'dog'), (30, 'cat');
 ```
+</CodeGroup>
 
 `score` is a sample quality score, not a search result score. Document 10 has
 two versions. Document 30 has two records at the same version. Document 40
@@ -57,7 +59,8 @@ has no label. These cases let you check the effect of each operation.
 and `ORDER BY` determines which record comes first. This query selects the
 latest version of each document, using `row_id` to break ties:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 WITH ranked AS (
     SELECT *, row_number() OVER (
         PARTITION BY doc_id ORDER BY version DESC, row_id DESC
@@ -69,6 +72,7 @@ FROM ranked
 WHERE rn = 1
 ORDER BY doc_id;
 ```
+</CodeGroup>
 
 This returns row IDs **2, 3, 5 and 6**. For document 30, rows 4 and 5 have the
 same version; the example deliberately chooses the larger `row_id`.
@@ -84,7 +88,8 @@ because window functions are evaluated after the inner query's `WHERE` clause.
 
 Deduplicate first, then rank the labeled documents within each class:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 WITH latest AS (
     SELECT *, row_number() OVER (
         PARTITION BY doc_id ORDER BY version DESC, row_id DESC
@@ -104,6 +109,7 @@ FROM ranked
 WHERE class_rank <= 1
 ORDER BY label;
 ```
+</CodeGroup>
 
 The result is **document 10 for cat and document 20 for dog**. Change the cap
 from `1` to the maximum number you want per class. A class with fewer records
@@ -130,7 +136,8 @@ evaluation population.
 `lag()` and `lead()` read neighboring rows in the specified order. For example,
 inspect how scores change across a document's records:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT doc_id, row_id, score,
        lag(score) OVER (
            PARTITION BY doc_id ORDER BY version, row_id
@@ -138,6 +145,7 @@ SELECT doc_id, row_id, score,
 FROM curation_documents
 ORDER BY doc_id, version, row_id;
 ```
+</CodeGroup>
 
 The first record in each document has no previous score. In this dataset,
 row 2 follows a score of 0.80 and row 5 follows a score of 0.70.

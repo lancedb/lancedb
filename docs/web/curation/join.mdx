@@ -27,7 +27,8 @@ a record; `doc_id` identifies the document it describes.
 Run each statement separately in a scratch database or namespace. Create these
 tables once for the whole section, using fresh names if they already exist.
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 CREATE TABLE curation_documents (
     row_id BIGINT, doc_id BIGINT, version BIGINT,
     source VARCHAR, caption VARCHAR, score DOUBLE
@@ -44,6 +45,7 @@ CREATE TABLE curation_labels (doc_id BIGINT, label VARCHAR);
 INSERT INTO curation_labels VALUES
     (10, 'cat'), (20, 'dog'), (30, 'cat');
 ```
+</CodeGroup>
 
 `score` is a sample quality score, not a search result score. Document 10 has
 two versions. Document 30 has two records at the same version. Document 40
@@ -55,12 +57,14 @@ has no label. These cases let you check the effect of each operation.
 
 An inner join keeps matching records:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT d.row_id, d.doc_id, l.label
 FROM curation_documents AS d
 JOIN curation_labels AS l ON l.doc_id = d.doc_id
 ORDER BY d.row_id;
 ```
+</CodeGroup>
 
 This returns **5 rows**: both records for document 10, one for document 20,
 and both records for document 30. To produce one row per document,
@@ -71,13 +75,15 @@ and both records for document 30. To produce one row per document,
 A left join keeps every record from the left table and fills missing right-side
 values with `NULL`. Add `WHERE l.doc_id IS NULL` to return only unlabeled documents:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT DISTINCT d.doc_id
 FROM curation_documents AS d
 LEFT JOIN curation_labels AS l ON l.doc_id = d.doc_id
 WHERE l.doc_id IS NULL
 ORDER BY d.doc_id;
 ```
+</CodeGroup>
 
 The result is **document 40**. You might send it for annotation, retain it for
 an unlabeled-data workflow, or exclude it from a task that requires labels.
@@ -87,12 +93,14 @@ an unlabeled-data workflow, or exclude it from a task that requires labels.
 This example joins `curation_documents.doc_id` to `curation_labels.doc_id`.
 First check whether the label table contains more than one row per document:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT doc_id, count(*) AS labels
 FROM curation_labels
 GROUP BY doc_id
 HAVING count(*) > 1;
 ```
+</CodeGroup>
 
 The example returns no rows. If your data returns duplicates, decide whether
 they represent valid multiple labels or records that need consolidation.
@@ -139,11 +147,13 @@ key. `selected` is narrow: the frame IDs an earlier curation step already
 kept, such as a sample or a dedupe result. Join on the key, project the wide
 columns last:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT s.frame_id, f.image, f.embedding
 FROM selected AS s
 JOIN frames AS f ON f.frame_id = s.frame_id
 ```
+</CodeGroup>
 
 `selected` narrows the row set before `image` or `embedding` is ever touched
 on the `frames` side, rather than reading every row's blob and vector just

@@ -26,10 +26,12 @@ process-wide current branch.
 Install the model packages, then download the `nomic-embed-text` model from Ollama
 (or any other model you prefer):
 
-```bash
+<CodeGroup>
+```bash Bash icon="terminal"
 uv add sentence-transformers ollama
 ollama pull nomic-embed-text
 ```
+</CodeGroup>
 
 It's always recommended to measure the results of an experiment on a fixed evaluation set.
 Here's an example of how you could ask the agent to run both experiments and compare the results:

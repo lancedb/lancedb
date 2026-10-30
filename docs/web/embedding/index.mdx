@@ -142,7 +142,8 @@ when this process has approved them:
 Embedding functions you create in the current process are approved automatically. When you open a table in a new
 process, approve these settings explicitly before computing embeddings:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 from lancedb.embeddings import get_registry
 
 registry = get_registry()
@@ -150,6 +151,7 @@ registry = get_registry()
 registry.allow_remote_code("nomic-ai/nomic-embed-text-v1.5", revision="<commit-hash>")
 registry.allow_endpoint("http://my-ollama-host:11434")
 ```
+</CodeGroup>
 
 Until then, computing embeddings raises `UntrustedEmbeddingConfigError`. Other operations on the table still work.
 
@@ -212,16 +214,20 @@ When the Python SDK connects to Enterprise, `table.search("hello")` can take two
   The client uses the same local LanceDB embedding registry used by LanceDB Embedded tables to
   reconstruct the embedding function from schema metadata, compute the query vector in
   the client process, and send that vector to Enterprise for search.
-  ```python
+  <CodeGroup>
+  ```python Python icon="python"
   result = table.search("hello").limit(1).to_list()
   # The Python client computes the query embedding locally, then sends a vector search.
   ```
+  </CodeGroup>
 - If the table does not have embedding metadata for that search, `table.search("hello")` in `auto` mode is
   treated as an FTS query instead.
-  ```python
+  <CodeGroup>
+  ```python Python icon="python"
   result = table.search("hello").limit(5).to_list()
   # In auto mode this is treated as an FTS query, not a vector query.
   ```
+  </CodeGroup>
 
 If you want explicit vector or hybrid behavior and the client cannot resolve an embedding function from the
 table metadata, generate the query embedding yourself and pass the vector directly.

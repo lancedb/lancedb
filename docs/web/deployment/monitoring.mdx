@@ -38,12 +38,15 @@ The recorder is process-global and pull-based: your configured `MetricReader` co
 
 Install LanceDB with the `otel` extra to pull in the OpenTelemetry API, plus an OpenTelemetry SDK of your choice. The SDK is intentionally not bundled, so you configure it and its readers and exporters however your platform expects.
 
-```bash
+<CodeGroup>
+```bash Bash icon="terminal"
 pip install "lancedb[otel]" opentelemetry-sdk opentelemetry-exporter-otlp-proto-grpc
 ```
+</CodeGroup>
 
 Call `instrument_lancedb_metrics()` once at startup, before opening any tables. It returns `True` when the recorder is installed and instruments are registered.
 
+<CodeGroup>
 ```python Python icon="python"
 import lancedb
 from lancedb.otel import instrument_lancedb_metrics
@@ -63,6 +66,7 @@ instrument_lancedb_metrics(provider)
 # Any object store activity from this point on is now recorded.
 db = lancedb.connect("s3://my-bucket/lancedb")
 ```
+</CodeGroup>
 
 If you omit `meter_provider`, LanceDB uses the global provider returned by `opentelemetry.metrics.get_meter_provider()`.
 
@@ -74,10 +78,13 @@ If you omit `meter_provider`, LanceDB uses the global provider returned by `open
 
 Install the OpenTelemetry SDK and exporter in your application:
 
-```bash
+<CodeGroup>
+```bash Bash icon="terminal"
 npm install @opentelemetry/sdk-metrics @opentelemetry/exporter-metrics-otlp-grpc
 ```
+</CodeGroup>
 
+<CodeGroup>
 ```typescript TypeScript icon="square-js"
 import { connect, instrumentLanceDbMetrics } from "@lancedb/lancedb";
 import { MeterProvider, PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
@@ -92,6 +99,7 @@ instrumentLanceDbMetrics(provider);
 
 const db = await connect("s3://my-bucket/lancedb");
 ```
+</CodeGroup>
 
 `instrumentLanceDbMetrics()` also accepts no arguments, in which case it uses the global provider from `@opentelemetry/api`. Calling it more than once is safe: instruments are created only on the first successful call.
 

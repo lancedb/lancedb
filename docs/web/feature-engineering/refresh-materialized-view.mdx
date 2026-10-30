@@ -18,9 +18,11 @@ In SQL this is [`REFRESH MATERIALIZED VIEW`](/sql/dml/refresh-materialized-view)
 
 ## Refresh a view {#refresh}
 
-```python
+<CodeGroup>
+```python Python icon="python"
 view.refresh()
 ```
+</CodeGroup>
 
 Every refresh rebuilds the view completely from its source query -- there is
 no incremental refresh. Calling it again with no source changes still
@@ -28,19 +30,23 @@ rebuilds and commits a new table version.
 
 The result reports what the refresh did:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 result = view.refresh()
 result.rows_written  # rows in the rebuilt view
 result.source_version  # the source table version the view now reflects
 result.version  # the view's own new table version
 ```
+</CodeGroup>
 
 Pass `source_version=N` to refresh against a particular source version
 instead of the latest:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 view.refresh(source_version=12)
 ```
+</CodeGroup>
 
 Use `view.table.count_rows()` for the view's row count at any time; it
 always matches `rows_written` from the most recent refresh.
@@ -49,7 +55,8 @@ always matches `rows_written` from the most recent refresh.
 
 Set scheduling options when [creating the view](/feature-engineering/materialized-views#auto-refresh):
 
-```python
+<CodeGroup>
+```python Python icon="python"
 view = db.create_materialized_view(
     "frames_captioned",
     source="frames",
@@ -59,6 +66,7 @@ view = db.create_materialized_view(
     auto_refresh_interval_seconds=300,
 )
 ```
+</CodeGroup>
 
 `auto_refresh_interval_seconds` is a positive minimum delay after the last
 successful refresh before the next automatic one is eligible; omit it to let

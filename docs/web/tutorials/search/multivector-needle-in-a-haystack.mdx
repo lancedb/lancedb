@@ -72,6 +72,7 @@ This is the pure, baseline late-interaction search. It offers the highest potent
 **LanceDB also integrates with ConteXtualized Token Retriever (XTR)** , an advanced retrieval model that prioritizes the most semantically important document tokens during search. This integration enhances the quality of search results by focusing on the most relevant token matches.
 **LanceDB Implementation:**
 
+<CodeGroup>
 ```python Python icon="python"
 import lancedb
 import pyarrow as pa
@@ -94,6 +95,7 @@ tbl.add([{"page_num": 1, "vector": multi_token_embeddings.tolist()}])
 # query_multi_vector is also shape (num_query_tokens, 128)
 results = tbl.search(query_multi_vector).limit(5).to_list()
 ```
+</CodeGroup>
 
 ### 2\. `flatten`: Mean Pooling {#2-flatten-mean-pooling}
 
@@ -101,6 +103,7 @@ This strategy "flattens" the set of token vectors into a single vector by averag
 
 **LanceDB Implementation:**
 
+<CodeGroup>
 ```python Python icon="python"
 # Schema for single-vector data
 schema_flat = pa.schema([
@@ -117,6 +120,7 @@ tbl_flat.add([{"page_num": 1, "vector": mean_vector.tolist()}])
 query_mean_vector = query_multi_vector.mean(axis=0)
 results = tbl_flat.search(query_mean_vector).limit(5).to_list()
 ```
+</CodeGroup>
 
 ### 3\. Max pooling {#3-max-pooling}
 
@@ -128,6 +132,7 @@ This two-stage strategy aims for the best of both worlds. First, use a fast, poo
 **LanceDB Implementation:**
 This requires a table with two vector columns.
 
+<CodeGroup>
 ```python Python icon="python"
 # Schema with both flat and multivector columns
 schema_rerank = pa.schema([
@@ -161,6 +166,7 @@ final_results = tbl_rerank.search(query_multi_vector, vector_column_name="vector
                           .limit(5) \
                           .to_list()
 ```
+</CodeGroup>
 
 ### 5\. `hierarchical token pooling`: Compressing the Haystack {#5-hierarchical-token-pooling-compressing-the-haystack}
 
@@ -172,6 +178,7 @@ This is an indexing-time strategy that aims to reduce the storage footprint and 
 **LanceDB Implementation:**
 The schema is identical to the `base` multivector search, but the data is pre-processed before ingestion.
 
+<CodeGroup>
 ```python Python icon="python"
 from utils import pool_embeddings_hierarchical
 import numpy as np
@@ -197,6 +204,7 @@ tbl_hierarchical.add([{"page_num": 1, "vector": pooled_embeddings.tolist()}])
 # Search is identical to the base multivector search
 results = tbl_hierarchical.search(query_multi_vector).limit(5).to_list()
 ```
+</CodeGroup>
 
 ## The Results {#the-results}
 

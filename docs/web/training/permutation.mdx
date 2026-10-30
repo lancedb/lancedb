@@ -78,12 +78,14 @@ It expects a list of tensors which it will then stack. This is what is output by
 requires a data copy. To avoid this error, and avoid data copies, you will need to provide a custom collation function
 in addition to specifying the `torch_col` format.
 
-```py Python icon=Python
+<CodeGroup>
+```python Python icon="python"
 from lancedb.permutation import Permutation
 
 permutation = Permutation.identity(table).with_format("torch_col")
 dataloader = torch.utils.data.DataLoader(permutation, collate_fn=lambda x: x)
 ```
+</CodeGroup>
 
 This will now output a single two-dimensional tensor for each batch.
 
@@ -93,7 +95,8 @@ By default, the `Table` class will return all columns in the table when used as 
 a subset of columns, you can significantly reduce your I/O requirements by selecting only the columns you need. The
 `Permutation` class provides a `select_columns` method that provides this functionality.
 
-```py Python icon=Python
+<CodeGroup>
+```python Python icon="python"
 import lancedb
 import pyarrow as pa
 import torch
@@ -119,5 +122,6 @@ dataloader = torch.utils.data.DataLoader(
 for batch in dataloader:
     print(sorted(batch))  # ['id', 'prompt']: the embedding is never read
 ```
+</CodeGroup>
 
 Each batch is a dict of the selected columns, the default `Permutation` format described above.

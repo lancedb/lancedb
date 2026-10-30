@@ -11,10 +11,12 @@ availability:
 
 ## CREATE TABLE {#create}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 CREATE TABLE documents (id BIGINT, title VARCHAR, created_at TIMESTAMP)
 CREATE TABLE recent AS SELECT * FROM documents WHERE created_at > now() - INTERVAL '7 days'
 ```
+</CodeGroup>
 
 Column types are Arrow types under SQL names. See [Data types](/sql/data-types).
 
@@ -23,9 +25,11 @@ A table inside a [namespace](/sql/ddl/namespace) is written as a dotted path:
 
 ## DESCRIBE {#describe}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 DESCRIBE documents
 ```
+</CodeGroup>
 
 The table's columns and types, without a plan. The SQL counterpart of
 `table.schema`.
@@ -44,9 +48,11 @@ with the SDK instead. See
 
 ### A computed column {#computed-column}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 ALTER TABLE t ADD COLUMN doubled AS value * 2
 ```
+</CodeGroup>
 
 `AS <expression>` declares a [computed column](/feature-engineering/add-computed-column).
 The column is committed empty and the expression is stored, not evaluated:
@@ -149,21 +155,25 @@ Declaration `WITH` accepts `auto_refresh_enabled` and
 
 ### Table properties {#properties}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 ALTER TABLE t SET UNENFORCED PRIMARY KEY (id)
 ```
+</CodeGroup>
 
 Records which column identifies a row. **Unenforced** is not a hedge in the
 naming: uniqueness is not checked on write, and declaring it does not make
 duplicates impossible. It tells the planner what to assume. The column must be
 declared `NOT NULL`.
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 ALTER TABLE t SET RTE
 ALTER TABLE t SET RTE WITH (sharding = 'bucket', column = 'id', buckets = 4)
 ALTER TABLE t SET RTE WITH (maintained_indexes = '')
 ALTER TABLE t UNSET RTE
 ```
+</CodeGroup>
 
 The [real time engine](/tables/realtime-engine) puts a write-ahead log in front
 of the table, making small frequent writes cheap by batching them out of the
@@ -194,12 +204,14 @@ Dropping, renaming, or retyping a column is an SDK operation
 
 ## CLONE {#clone}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 CREATE TABLE docs_snapshot CLONE documents
 CREATE TABLE docs_at_v42 CLONE documents AT 42
 CREATE TABLE docs_at_release CLONE documents AT TAG 'release-1'
 CREATE TABLE docs_yesterday CLONE documents AT TIMESTAMP '2026-09-01T00:00:00Z'
 ```
+</CodeGroup>
 
 A **shallow clone**: the new table shares the source's data files rather than
 copying them, so it costs one metadata commit regardless of the source's size.
@@ -219,9 +231,11 @@ when the copy has to outlive the source's history.
 
 ## DROP TABLE {#drop}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 DROP TABLE documents
 ```
+</CodeGroup>
 
 <Warning>
 Removes the table and every version of it. There is no undrop.

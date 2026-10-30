@@ -50,7 +50,8 @@ a record; `doc_id` identifies the document it describes.
 Run each statement separately in a scratch database or namespace. Create these
 tables once for the whole section, using fresh names if they already exist.
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 CREATE TABLE curation_documents (
     row_id BIGINT, doc_id BIGINT, version BIGINT,
     source VARCHAR, caption VARCHAR, score DOUBLE
@@ -67,6 +68,7 @@ CREATE TABLE curation_labels (doc_id BIGINT, label VARCHAR);
 INSERT INTO curation_labels VALUES
     (10, 'cat'), (20, 'dog'), (30, 'cat');
 ```
+</CodeGroup>
 
 `score` is a sample quality score, not a search result score. Document 10 has
 two versions. Document 30 has two records at the same version. Document 40
@@ -77,7 +79,8 @@ has no label. These cases let you check the effect of each operation.
 The following query chooses the latest record for each document, then keeps
 only documents with a label:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 WITH ranked AS (
     SELECT *, row_number() OVER (
         PARTITION BY doc_id ORDER BY version DESC, row_id DESC
@@ -90,6 +93,7 @@ JOIN curation_labels AS l ON l.doc_id = d.doc_id
 WHERE d.rn = 1
 ORDER BY d.doc_id;
 ```
+</CodeGroup>
 
 The result contains documents **10, 20 and 30**, with labels **cat, dog and
 cat**. Document 40 is excluded because this particular task requires a label.

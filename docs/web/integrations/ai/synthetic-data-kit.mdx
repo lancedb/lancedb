@@ -37,37 +37,45 @@ Here is an example of the end-to-end workflow:
 
     This command reads a source document and creates a Lance dataset from it.
 
-    ```bash
+    <CodeGroup>
+    ```bash Bash icon="terminal"
     synthetic-data-kit ingest docs/report.pdf --multimodal
     # This will create a Lance dataset at data/parsed/report.lance
     # with 'text' and 'image' columns.
     ```
+    </CodeGroup>
 
 2.  **Create fine-tuning data**
 
     This command uses the Lance dataset created in the previous step to generate multimodal question-answer pairs.
 
-    ```bash
+    <CodeGroup>
+    ```bash Bash icon="terminal"
     synthetic-data-kit create data/parsed/report.lance --type multimodal-qa
     # This writes data/generated/report.json
     ```
+    </CodeGroup>
 
 3.  **Curate the data**
 
     This step uses a language model to curate the generated data and ensure its quality.
 
-    ```bash
+    <CodeGroup>
+    ```bash Bash icon="terminal"
     synthetic-data-kit curate data/generated/report.json
     # This writes data/curated/report_cleaned.json
     ```
+    </CodeGroup>
 
 4.  **Save the final dataset**
 
     Finally, save the curated data in the format you need: `jsonl`, `alpaca`, `ft` or `chatml`.
 
-    ```bash
+    <CodeGroup>
+    ```bash Bash icon="terminal"
     synthetic-data-kit save-as data/curated/report_cleaned.json -f jsonl -o ./my_finetuning_data.jsonl
     ```
+    </CodeGroup>
 
 This workflow allows you to go from a collection of documents to a high-quality, fine-tuning dataset with just a few commands. The use of LanceDB in the background makes the process efficient and scalable.
 
@@ -76,5 +84,3 @@ This workflow allows you to go from a collection of documents to a high-quality,
 To get started with the synthetic-data-kit, you can clone the [GitHub Repository](https://github.com/meta-llama/synthetic-data-kit) and install the necessary dependencies. 
 
 > **Note:** You will also need access to a Llama model, either running locally or via a hosted API.
-
-

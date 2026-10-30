@@ -23,11 +23,13 @@ deployment's configuration enables it.
 
 ## Retention {#retention}
 
-```python
+<CodeGroup>
+```python Python icon="python"
 from datetime import timedelta
 
 table.optimize(cleanup_older_than=timedelta(days=30))
 ```
+</CodeGroup>
 
 `cleanup_older_than` defaults to **7 days**. Versions older than that are
 removed, along with the files only they referenced. In LanceDB Enterprise, the
@@ -101,9 +103,11 @@ versions that referenced the superseded files.
 If you need to reclaim space aggressively in the embedded library, shorten the
 retention window rather than waiting for the default:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 table.optimize(cleanup_older_than=timedelta(days=1))
 ```
+</CodeGroup>
 
 ## Files from failed transactions {#unverified}
 
@@ -111,9 +115,11 @@ A write that fails partway can leave files that look like an operation still
 in progress. Cleanup will not remove them until they are at least seven days
 old, because it cannot tell them apart from a live write.
 
-```python
+<CodeGroup>
+```python Python icon="python"
 table.optimize(delete_unverified=True)
 ```
+</CodeGroup>
 
 This option belongs to `optimize()` in the embedded library. A deployment's
 cleanup jobs never set it.

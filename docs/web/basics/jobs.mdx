@@ -23,13 +23,15 @@ so check its status before
 waiting or requesting cancellation. See the operation's API reference for when
 the method returns.
 
-```python
+<CodeGroup>
+```python Python icon="python"
 job = tbl.create_index_async("vector", replace=True)
 
 print(job.id)
 print(job.job_type)
 print(job.status())
 ```
+</CodeGroup>
 
 ## Submit and wait for a job {#waiting}
 
@@ -50,7 +52,8 @@ If the timeout expires while disconnected, the wait raises `ConnectionError`
 with the job ID and instructions to resume waiting. A timeout while connected
 raises `TimeoutError`. The job may still be running; timing out does not cancel it.
 
-```python
+<CodeGroup>
+```python Python icon="python"
 from datetime import timedelta
 from lancedb.exceptions import JobFailedError, JobCancelledError
 
@@ -68,6 +71,7 @@ except ConnectionError as exc:
 except TimeoutError:
     print(f"still running: {job.status()}")
 ```
+</CodeGroup>
 
 After connectivity returns, reopen an Enterprise registry job by its saved ID
 and continue waiting on the existing operation:
@@ -95,7 +99,8 @@ cannot be reopened with `db.open_job()`; see [SQL-backed job handles](#sql-backe
 Reopening a job retrieves the existing operation; it does not restart failed
 work. Treat the ID as an opaque identifier and pass it unchanged to the jobs API.
 
-```python
+<CodeGroup>
+```python Python icon="python"
 job = db.open_job(job_id)  # raises JobNotFoundError if unknown
 job.refresh()              # pull the latest status from the server
 print(job.status())
@@ -105,13 +110,16 @@ print(events.to_pylist())
 
 job.cancel()
 ```
+</CodeGroup>
 
 List jobs on a connection, paging through the results:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 for info in db.list_jobs(page_limit=50):
     print(info.job_id, info.job_type, info.state)
 ```
+</CodeGroup>
 
 Event responses have [row limits](/basics/limits#jobs). An explicit limit can
 request more than the default, but it does not guarantee a complete event

@@ -16,17 +16,21 @@ row per source row -- use it to inspect what would be collapsed before
 committing to [`dedupe`](/sql/dql/dedupe), which resolves these same pairs
 into groups.
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT * FROM duplicate_pairs(<table>, <vector_column>,
   distance_threshold => <float>
   [, id_column => <column>]
   [, selection => 'all' | 'first' | 'random', count => <int>, seed => <int>]
 )
 ```
+</CodeGroup>
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT * FROM duplicate_pairs('frames', 'vec', distance_threshold => 0.02)
 ```
+</CodeGroup>
 
 <Note>
 Earlier releases spelled this `vector_duplicate_pairs`; that name is rejected
@@ -68,9 +72,11 @@ A row ID is internal and not stable across compaction. Pass `id_column`, a
 top-level scalar column such as a primary key, to project its value instead:
 `row_id_a`/`row_id_b` are replaced by `id_a`/`id_b`, typed like `id_column`.
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT * FROM duplicate_pairs('frames', 'vec', distance_threshold => 0.02, id_column => 'frame_id')
 ```
+</CodeGroup>
 
 ## Sampling partitions {#sampling}
 
@@ -80,10 +86,12 @@ the same `all` (default) / `first` / `random` choice as
 distance threshold or duplicate rate on a large table before scanning it in
 full:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT * FROM duplicate_pairs('frames', 'vec',
   distance_threshold => 0.02, selection => 'random', count => 100, seed => 42)
 ```
+</CodeGroup>
 
 ## What to read next {#next}
 
