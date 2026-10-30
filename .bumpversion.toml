@@ -71,6 +71,11 @@ replace = "\nversion = \"{new_version}\""
 search = "\nversion = \"{current_version}\""
 
 [[tool.bumpversion.files]]
+filename = "rust/lancedb/cli/Cargo.toml"
+replace = "\nversion = \"{new_version}\""
+search = "\nversion = \"{current_version}\""
+
+[[tool.bumpversion.files]]
 filename = "nodejs/Cargo.toml"
 replace = "\nversion = \"{new_version}\""
 search = "\nversion = \"{current_version}\""
