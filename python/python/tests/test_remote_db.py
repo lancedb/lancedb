@@ -763,7 +763,8 @@ def test_remote_permutation_is_picklable():
 
 
 @pytest.mark.parametrize("with_schema", [True, False])
-def test_create_table_embedding_functions(with_schema):
+@pytest.mark.parametrize("source_target", ["text", "`text`"])
+def test_create_table_embedding_functions(with_schema, source_target):
     func = MockNonNormTextEmbeddingFunction.create()
     config = EmbeddingFunctionConfig(
         source_column="text", vector_column="vector", function=func
@@ -864,7 +865,7 @@ def test_create_table_embedding_functions(with_schema):
         with pytest.raises(
             ValueError, match="source column 'text'.*vector column 'vector'"
         ):
-            table.update(values={"text": "updated text"})
+            table.update(values={source_target: "updated text"})
 
 
 def test_create_table_positional_parameters_match_base_contract():

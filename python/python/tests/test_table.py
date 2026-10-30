@@ -2778,8 +2778,9 @@ def test_update(mem_db: DBConnection):
 @pytest.mark.parametrize("async_api", [False, True])
 @pytest.mark.parametrize("use_sql", [False, True])
 @pytest.mark.parametrize("where", [None, "id = 1", col("id") == 1])
+@pytest.mark.parametrize("source_target", ["text", "`text`"])
 async def test_update_embedding_source_requires_vector(
-    tmp_path, async_api, use_sql, where
+    tmp_path, async_api, use_sql, where, source_target
 ):
     func = MockTextEmbeddingFunction.create()
 
@@ -2801,7 +2802,7 @@ async def test_update_embedding_source_requires_vector(
         version = table.version
 
     # Rejection must happen before any rows or the table version change.
-    updates = {"text": "text || ' updated'" if use_sql else "updated text"}
+    updates = {source_target: "text || ' updated'" if use_sql else "updated text"}
     with pytest.raises(
         ValueError, match="source column 'text'.*vector column 'vector'"
     ):
@@ -2826,8 +2827,23 @@ async def test_update_embedding_source_requires_vector(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("async_api", [False, True])
 @pytest.mark.parametrize("use_sql", [False, True])
+@pytest.mark.parametrize(
+    "source_target,vector_target,other_vector_target",
+    [
+        ("text", "vector", "other_vector"),
+        ("`text`", "vector", "`other_vector`"),
+        ("text", "`vector`", "other_vector"),
+        ("`text`", "`vector`", "`other_vector`"),
+    ],
+)
 async def test_update_embedding_source_with_multiple_vectors(
-    tmp_path, monkeypatch, async_api, use_sql
+    tmp_path,
+    monkeypatch,
+    async_api,
+    use_sql,
+    source_target,
+    vector_target,
+    other_vector_target,
 ):
     func = MockTextEmbeddingFunction.create()
 
@@ -2863,7 +2879,7 @@ async def test_update_embedding_source_with_multiple_vectors(
         return table.update(values=values, where=col("id") == 1)
 
     vector = func.compute_source_embeddings(["updated text"])[0]
-    updates = {"text": "updated text", "vector": vector}
+    updates = {source_target: "updated text", vector_target: vector}
     if use_sql:
         updates = {
             key: table_module.value_to_sql(value) for key, value in updates.items()
@@ -2874,7 +2890,7 @@ async def test_update_embedding_source_with_multiple_vectors(
     with pytest.raises(ValueError, match="vector column 'other_vector'"):
         await update(updates)
 
-    updates["other_vector"] = updates["vector"]
+    updates[other_vector_target] = updates[vector_target]
     result = await update(updates)
     assert result.rows_updated == 1
     actual = await table.to_arrow() if async_api else table.to_arrow()
@@ -2885,7 +2901,7 @@ async def test_update_embedding_source_with_multiple_vectors(
     assert rows[1]["text"] == "goodbye world"
 
     # Vector-only and unrelated updates are still allowed on embedding tables.
-    assert (await update({"vector": updates["vector"]})).rows_updated == 1
+    assert (await update({vector_target: updates[vector_target]})).rows_updated == 1
     assert (await update({"id": "3" if use_sql else 3})).rows_updated == 1
 
 
