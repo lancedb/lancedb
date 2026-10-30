@@ -5,7 +5,7 @@ description: "Install LanceDB, create a table, and run your first vector search.
 icon: rocket
 ---
 import { PyConnect, TsConnect, RsConnect, PyConnectObjectStorage, TsConnectObjectStorage, RsConnectObjectStorage, PyConnectEnterprisePlaceholders, TsConnectEnterprisePlaceholders, RsConnectEnterprisePlaceholders } from '/snippets/connection.mdx';
-import { PyQuickstartData, PyQuickstartCreateTable, PyQuickstartAddData, PyQuickstartCurateSample, PyQuickstartCurateDedupeSetup, PyQuickstartCurateDedupe, PyQuickstartCurateDedupeQuery, PyQuickstartAddFeature, PyQuickstartAddFeatureEnterprise, PyQuickstartMultimodalBytes, PyQuickstartTraining, TsQuickstartData, TsQuickstartCreateTable, TsQuickstartAddData, TsQuickstartVectorSearch1, TsQuickstartMultimodalBytes, RsQuickstartDefineStruct, RsQuickstartData, RsQuickstartCreateTable, RsQuickstartAddData, RsQuickstartVectorSearch1, RsQuickstartMultimodalBytes } from '/snippets/quickstart.mdx';
+import { PyQuickstartData, PyQuickstartCreateTable, PyQuickstartAddData, PyQuickstartCurateSample, PyQuickstartCurateDedupeSetup, PyQuickstartCurateDedupe, PyQuickstartCurateDedupeQuery, PyQuickstartFlattenStats, PyQuickstartAddFeature, PyQuickstartAddFeatureEnterprise, PyQuickstartMultimodalBytes, PyQuickstartTraining, TsQuickstartData, TsQuickstartCreateTable, TsQuickstartAddData, TsQuickstartVectorSearch1, TsQuickstartMultimodalBytes, RsQuickstartDefineStruct, RsQuickstartData, RsQuickstartCreateTable, RsQuickstartAddData, RsQuickstartVectorSearch1, RsQuickstartMultimodalBytes } from '/snippets/quickstart.mdx';
 
 This quickstart uses LanceDB Embedded with a local database and works without an account or API key.
 LanceDB Embedded runs in your application's process; your data can live on local disk or in object storage.
@@ -309,8 +309,16 @@ sampling across a join.
 This step also needs LanceDB Enterprise -- see [step 5](#5-curate-with-sql).
 </Info>
 
+A UDF binds to top-level columns, so flatten the fields inside `stats` first:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyQuickstartFlattenStats}
+    </CodeBlock>
+</CodeGroup>
+
 Register a UDF as a Function, then call it to fill a column computed from
-existing fields. This fills every existing row once, immediately:
+those flattened fields. This fills every existing row once, immediately:
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
