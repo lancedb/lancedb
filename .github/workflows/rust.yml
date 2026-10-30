@@ -14,6 +14,7 @@ on:
       - docs/web-tests/blob-v2/rs/**
       - nodejs/Cargo.toml
       - python/Cargo.toml
+      - .github/actions/setup-protoc/**
       - .github/workflows/rust.yml
 
 permissions:
@@ -324,8 +325,8 @@ jobs:
           # unreadable outside their own branch anyway, since GitHub scopes
           # caches to the creating ref.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Install Protoc v21.12
-        run: choco install --no-progress protoc
+      - name: Install protoc
+        uses: ./.github/actions/setup-protoc
       - name: Build
         run: |
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
@@ -361,8 +362,8 @@ jobs:
           # unreadable outside their own branch anyway, since GitHub scopes
           # caches to the creating ref.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Install Protoc v21.12
-        run: choco install --no-progress protoc
+      - name: Install protoc
+        uses: ./.github/actions/setup-protoc
       - name: Build
         run: |
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
