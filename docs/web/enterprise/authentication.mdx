@@ -5,12 +5,8 @@ description: "Authentication modes for LanceDB Enterprise: API keys and OAuth cr
 icon: key
 keywords: ["authentication", "oauth", "api key", "authorization code", "device code", "azure managed identity", "client credentials"]
 availability:
-  oss: unavailable
+  embedded: unavailable
   enterprise: available
-  summary: >-
-    Requests to a deployment carry an API key or an OAuth token, whichever it is
-    configured to accept. Embedded LanceDB has no server to sign in to; see
-    [Architecture](/architecture).
 ---
 
 A deployment authenticates each request over a `db://` connection before
@@ -423,5 +419,5 @@ control. All three SDKs deliberately omit the secret from their debug/repr outpu
 so accidental log lines do not expose the value.
 </Warning>
 
-Embedded LanceDB has nothing to authenticate to: your process opens the files
+LanceDB Embedded has nothing to authenticate to: your process opens the files
 directly, and the object store's own credentials are the only gate.

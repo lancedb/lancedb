@@ -60,16 +60,21 @@ impl Catalog {
         })
     }
 
-    #[pyo3(signature = (name, *, ignore_missing=false))]
+    #[pyo3(signature = (name, *, ignore_missing=false, cascade=false))]
     fn drop_database<'py>(
         self_: PyRef<'py, Self>,
         name: String,
         ignore_missing: bool,
+        cascade: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
             inner
-                .drop_database(DropDatabaseRequest::new(name).ignore_missing(ignore_missing))
+                .drop_database(
+                    DropDatabaseRequest::new(name)
+                        .ignore_missing(ignore_missing)
+                        .cascade(cascade),
+                )
                 .await
                 .infer_error()
         })

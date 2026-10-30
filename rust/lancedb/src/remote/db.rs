@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use crate::storage_integration::{CreateStorageIntegrationRequest, StorageIntegrationInfo};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -33,7 +34,8 @@ use crate::remote::util::stream_as_body;
 use crate::secrets::SecretInfo;
 use crate::table::BaseTable;
 use crate::utils::{
-    validate_database_name, validate_namespace, validate_table_name, validate_view_name,
+    validate_database_name, validate_function_name, validate_namespace, validate_table_name,
+    validate_view_name,
 };
 use crate::view::ViewDescription;
 
@@ -43,9 +45,11 @@ use super::client::{
 };
 use super::sql::SqlClient;
 use super::sql::materialized_view::quote_identifier;
+use super::storage_integration as integration_sql;
 use super::table::RemoteTable;
 use super::util::parse_server_version;
 use super::{ARROW_STREAM_CONTENT_TYPE, extract_job_id};
+use futures::TryStreamExt;
 
 // Request structure for the remote clone table API
 #[derive(serde::Serialize)]
@@ -112,7 +116,7 @@ pub const OPT_REMOTE_SQL_HOST_OVERRIDE: &str = "remote_database_sql_host_overrid
 
 #[derive(Clone, Debug, Default)]
 pub struct RemoteDatabaseOptions {
-    /// The LanceDB Cloud API key
+    /// The LanceDB Enterprise or LanceDB Cloud (legacy) API key
     pub api_key: Option<String>,
     /// The LanceDB Cloud region
     pub region: Option<String>,
@@ -182,11 +186,11 @@ impl RemoteDatabaseOptionsBuilder {
         }
     }
 
-    /// Set the LanceDB Cloud API key
+    /// Set the LanceDB Enterprise or LanceDB Cloud (legacy) API key
     ///
     /// # Arguments
     ///
-    /// * `api_key` - The LanceDB Cloud API key
+    /// * `api_key` - The API key
     pub fn api_key(mut self, api_key: String) -> Self {
         self.options.api_key = Some(api_key);
         self
@@ -215,7 +219,7 @@ impl RemoteDatabaseOptionsBuilder {
 
 #[derive(Debug)]
 pub struct RemoteDatabase<S: HttpSend = Sender> {
-    client: RestfulLanceDbClient<S>,
+    pub(super) client: RestfulLanceDbClient<S>,
     // Cache existence and server capabilities, not mutable per-handle table state.
     table_cache: Cache<String, ServerVersion>,
     uri: String,
@@ -761,7 +765,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
 
     async fn read_consistency(&self) -> Result<ReadConsistency> {
         Err(Error::NotSupported {
-            message: "Getting the read consistency of a remote database is not yet supported"
+            message: "Getting the read consistency is not yet supported in LanceDB Distributed"
                 .to_string(),
         })
     }
@@ -772,7 +776,9 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     ) -> Result<Job> {
         if request.with_no_data {
             return Err(Error::NotSupported {
-                message: "remote materialized views must be populated during creation".to_string(),
+                message:
+                    "materialized views in LanceDB Distributed must be populated during creation"
+                        .to_string(),
             });
         }
         if let Some(seconds) = request.auto_refresh_interval_seconds
@@ -861,24 +867,26 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         request: FunctionRegistrationRequest,
         namespace_path: &[String],
     ) -> Result<Job<FunctionVersion>> {
-        crate::utils::validate_function_name(&request.name)?;
+        validate_function_name(&request.name)?;
         validate_namespace(namespace_path)?;
         self.sql_client()?
             .register_function(request, namespace_path)
             .await
     }
+
     async fn get_function(
         &self,
         name: &str,
         version: &str,
         namespace_path: &[String],
     ) -> Result<FunctionVersion> {
-        crate::utils::validate_function_name(name)?;
+        validate_function_name(name)?;
         validate_namespace(namespace_path)?;
         self.sql_client()?
             .describe_function(name, version, namespace_path)
             .await
     }
+
     async fn list_functions(
         &self,
         namespace_path: &[String],
@@ -889,13 +897,14 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             .list_functions(namespace_path, options)
             .await
     }
+
     async fn drop_function(
         &self,
         name: &str,
         version: &str,
         namespace_path: &[String],
     ) -> Result<bool> {
-        crate::utils::validate_function_name(name)?;
+        validate_function_name(name)?;
         validate_namespace(namespace_path)?;
         let (dropped, job) = self
             .sql_client()?
@@ -904,17 +913,95 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         job.wait().await?;
         Ok(dropped)
     }
+
     async fn drop_function_async(
         &self,
         name: &str,
         version: &str,
         namespace_path: &[String],
     ) -> Result<(bool, Job)> {
-        crate::utils::validate_function_name(name)?;
+        validate_function_name(name)?;
         validate_namespace(namespace_path)?;
         self.sql_client()?
             .drop_function(name, version, namespace_path)
             .await
+    }
+
+    async fn create_storage_integration(
+        &self,
+        name: &str,
+        request: CreateStorageIntegrationRequest,
+        namespace_path: &[String],
+    ) -> Result<StorageIntegrationInfo> {
+        let sql = integration_sql::create_sql(name, namespace_path, &request)?;
+        let result = self
+            .execute_query_async(ExecuteQueryRequest {
+                query: sql,
+                default_namespace_path: namespace_path.to_vec(),
+                parameters: None,
+            })
+            .await?;
+        integration_sql::decode_info(&result.reader().await?.try_collect::<Vec<_>>().await?)
+    }
+
+    async fn describe_storage_integration(
+        &self,
+        name: &str,
+        namespace_path: &[String],
+    ) -> Result<StorageIntegrationInfo> {
+        let name = integration_sql::object_name(name, namespace_path)?;
+        let result = self
+            .execute_query_async(ExecuteQueryRequest {
+                query: format!("DESCRIBE STORAGE INTEGRATION {name}"),
+                default_namespace_path: namespace_path.to_vec(),
+                parameters: None,
+            })
+            .await?;
+        integration_sql::decode_info(&result.reader().await?.try_collect::<Vec<_>>().await?)
+    }
+
+    async fn list_storage_integrations(
+        &self,
+        namespace_path: &[String],
+        options: ListingOptions,
+    ) -> Result<ListingPage<String>> {
+        validate_namespace(namespace_path)?;
+        let result = self
+            .execute_query_async(ExecuteQueryRequest {
+                query: "SHOW STORAGE INTEGRATIONS".into(),
+                default_namespace_path: namespace_path.to_vec(),
+                parameters: None,
+            })
+            .await?;
+        let mut names =
+            integration_sql::decode_names(&result.reader().await?.try_collect::<Vec<_>>().await?)?;
+        if let Some(token) = options.page_token {
+            names.retain(|name| name > &token);
+        }
+        let mut page_token = None;
+        if let Some(limit) = options.page_limit
+            && names.len() > limit as usize
+        {
+            names.truncate(limit as usize);
+            page_token = names.last().cloned();
+        }
+        Ok(ListingPage {
+            items: names,
+            page_token,
+        })
+    }
+
+    async fn drop_storage_integration(&self, name: &str, namespace_path: &[String]) -> Result<()> {
+        let name = integration_sql::object_name(name, namespace_path)?;
+        let result = self
+            .execute_query_async(ExecuteQueryRequest {
+                query: format!("DROP STORAGE INTEGRATION {name}"),
+                default_namespace_path: namespace_path.to_vec(),
+                parameters: None,
+            })
+            .await?;
+        result.reader().await?.try_collect::<Vec<_>>().await?;
+        Ok(())
     }
 
     async fn create_secret(
@@ -1144,6 +1231,16 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         })
     }
 
+    async fn check_sql_connection(&self) -> Result<()> {
+        self.sql_client
+            .as_ref()
+            .ok_or_else(|| Error::NotSupported {
+                message: "SQL is unavailable for this remote database client".into(),
+            })?
+            .check_connection()
+            .await
+    }
+
     async fn execute_query_async(&self, request: ExecuteQueryRequest) -> Result<crate::sql::Query> {
         let client = self
             .sql_client
@@ -1251,6 +1348,25 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn create_table(&self, mut request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
+        // The remote create endpoint does not transmit Lance write parameters.
+        // Reject them before consuming data or issuing a request, especially
+        // for overwrite: silently using the server's format can lose intent.
+        for (option, provided) in [
+            (
+                "write_options (including storage_options)",
+                request.write_options.lance_write_params.is_some(),
+            ),
+            ("location", request.location.is_some()),
+            ("namespace_client", request.namespace_client.is_some()),
+        ] {
+            if provided {
+                return Err(Error::NotSupported {
+                    message: format!(
+                        "{option} is not supported for table creation in LanceDB Distributed"
+                    ),
+                });
+            }
+        }
         let data_schema = request.data.schema();
         let body = stream_as_body(request.data.scan_as_stream())?;
 
@@ -1375,6 +1491,25 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
+        // Validate before looking in the cache as well as before sending HTTP.
+        for (option, provided) in [
+            ("index_cache_size", request.index_cache_size.is_some()),
+            (
+                "lance_read_params (including storage_options)",
+                request.lance_read_params.is_some(),
+            ),
+            ("location", request.location.is_some()),
+            ("namespace_client", request.namespace_client.is_some()),
+            ("managed_versioning", request.managed_versioning.is_some()),
+        ] {
+            if provided {
+                return Err(Error::NotSupported {
+                    message: format!(
+                        "{option} is not supported for table access in LanceDB Distributed"
+                    ),
+                });
+            }
+        }
         let identifier = build_table_identifier(&request.name, &request.namespace_path)?;
         let cache_key = build_cache_key(&request.name, &request.namespace_path);
 
@@ -2108,14 +2243,14 @@ mod tests {
         let table = conn.open_table("table1").execute().await.unwrap();
         assert_eq!(table.name(), "table1");
 
-        // Storage options should be ignored.
-        let table = conn
+        // Per-table storage options must not be silently ignored.
+        let result = conn
             .open_table("table1")
             .storage_option("key", "value")
             .execute()
-            .await
-            .unwrap();
-        assert_eq!(table.name(), "table1");
+            .await;
+        assert!(matches!(result, Err(Error::NotSupported { message })
+            if message.contains("storage_options")));
     }
 
     #[tokio::test]
@@ -2337,6 +2472,126 @@ mod tests {
         assert!(
             matches!(result, Err(crate::Error::TableAlreadyExists { name }) if name == "table1")
         );
+    }
+
+    #[rstest]
+    #[case("new_table_data_storage_version", "2.0")]
+    #[case("new_table_enable_v2_manifest_paths", "false")]
+    #[case("bogus_option_xyz", "1")]
+    #[tokio::test]
+    async fn test_create_rejects_local_storage_options(#[case] key: &str, #[case] value: &str) {
+        let conn = Connection::new_with_handler(|_| -> http::Response<&'static str> {
+            panic!("must not send a create request")
+        });
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let data = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        for builder in [
+            conn.create_table("table1", data),
+            conn.create_empty_table("table1", schema),
+        ] {
+            let result = builder
+                .mode(CreateTableMode::Overwrite)
+                .storage_option(key, value)
+                .execute()
+                .await;
+            assert!(matches!(result, Err(Error::NotSupported { message })
+                if message.contains("write_options") && message.contains("LanceDB Distributed")));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_rejects_local_write_params_and_location() {
+        let conn = Connection::new_with_handler(|_| -> http::Response<&'static str> {
+            panic!("must not send a create request")
+        });
+        let schema = Arc::new(Schema::empty());
+        for builder in [
+            conn.create_empty_table("table1", schema.clone())
+                .write_options(crate::table::WriteOptions {
+                    lance_write_params: Some(lance::dataset::WriteParams::default()),
+                }),
+            conn.create_empty_table("table1", schema)
+                .location("/tmp/elsewhere"),
+        ] {
+            assert!(matches!(
+                builder.execute().await,
+                Err(Error::NotSupported { .. })
+            ));
+        }
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_open_rejects_local_options_even_when_cached(#[values(false, true)] cached: bool) {
+        let mut db = super::RemoteDatabase::new_mock(|request| {
+            assert_eq!(request.url().path(), "/v1/table/table1/create/");
+            http::Response::builder().status(200).body("").unwrap()
+        });
+        db.table_cache = moka::future::Cache::new(10);
+        let table_cache = db.table_cache.clone();
+        let conn = Connection::new(
+            Arc::new(db),
+            Arc::new(crate::embeddings::MemoryRegistry::new()),
+        );
+        if cached {
+            conn.create_empty_table("table1", Arc::new(Schema::empty()))
+                .execute()
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            table_cache
+                .get(&build_cache_key("table1", &[]))
+                .await
+                .is_some(),
+            cached
+        );
+        for (option, builder) in [
+            (
+                "index_cache_size",
+                conn.open_table("table1").index_cache_size(10),
+            ),
+            (
+                "storage_options",
+                conn.open_table("table1").storage_option("x", "y"),
+            ),
+            ("location", conn.open_table("table1").location("/tmp/zzz")),
+            (
+                "managed_versioning",
+                conn.open_table("table1").managed_versioning(false),
+            ),
+            (
+                "lance_read_params",
+                conn.open_table("table1")
+                    .lance_read_params(Default::default()),
+            ),
+        ] {
+            let result = builder.execute().await;
+            assert!(matches!(result, Err(Error::NotSupported { message })
+                if message.contains(option) && message.contains("LanceDB Distributed")));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_connect_rejects_local_options() {
+        for (option, builder) in [
+            (
+                "manifest_enabled",
+                ConnectBuilder::new("db://dev").manifest_enabled(true),
+            ),
+            (
+                "namespace_client_properties",
+                ConnectBuilder::new("db://dev").namespace_client_properties([("root", "/tmp/db")]),
+            ),
+        ] {
+            let result = builder.api_key("fake").region("us-east-1").execute().await;
+            assert!(matches!(result, Err(Error::NotSupported { message })
+                if message.contains(option) && message.contains("LanceDB Distributed")));
+        }
     }
 
     #[rstest]
@@ -3385,19 +3640,12 @@ mod tests {
                         let query = request.url().query_pairs().collect::<HashMap<_, _>>();
                         assert_eq!(query.get("page_token").unwrap(), token);
                         assert_eq!(query.get("limit").unwrap(), "2");
-                        if resource == "function" {
-                            assert_eq!(query.get("include_definition").unwrap(), "true");
-                        }
                     }
                     let (key, item) = match resource {
                         "secret" => ("secrets", serde_json::json!({"name": "a"})),
                         "jobs" => (
                             "jobs",
                             serde_json::json!({"job_id": "a", "table": "t", "job_type": "create_index", "state": "in_progress", "created_at_millis": 1}),
-                        ),
-                        "function" => (
-                            "functions",
-                            serde_json::json!({"name": "embed", "version": "1", "definition": serde_json::from_str::<serde_json::Value>(include_str!("../../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json")).unwrap()}),
                         ),
                         _ => ("views", serde_json::json!("a")),
                     };
@@ -3416,7 +3664,6 @@ mod tests {
             match resource {
                 "secret" => check(conn.list_secrets(&namespace, options), count).await,
                 "view" => check(conn.list_views(&namespace, options), count).await,
-                "function" => check(conn.list_functions(&namespace, options), count).await,
                 _ => check(conn.list_jobs(options), count).await,
             }
         }

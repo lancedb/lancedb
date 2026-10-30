@@ -20,6 +20,17 @@ pip install lancedb
 The following methods describe the synchronous API client. There
 is also an [asynchronous API client](#connections-asynchronous).
 
+Connections to `db://` databases reject local-only options with
+`NotImplementedError`. These include `session` and `manifest_enabled=True` on
+connect, per-table storage and write options on create, and `index_cache_size`,
+`storage_options`, or `location` on open (where the method accepts them).
+Omit these options to use server-managed storage and caching. Connection-level
+`storage_options` supported by an Enterprise deployment remain available.
+
+The synchronous LanceDB Distributed `create_table` uses the same positional order as the
+LanceDB Embedded API: `name, data, schema, mode, exist_ok, on_bad_vectors, fill_value,
+embedding_functions`. Prefer keyword arguments for optional parameters.
+
 ## Connections (Synchronous)
 
 ::: lancedb.connect
@@ -30,6 +41,12 @@ Resource listings return iterators. Use `list(db.list_tables())` to collect all
 table names. `db.list_tables().tables` is a list of the first page; `limit`
 controls its page size and `page_token` resumes at a saved token. The same
 patterns apply to `list_namespaces()`. Other resource listings use `page_limit`.
+
+Resource listings (`list_storage_integrations`, `list_secrets`, `list_views`, `list_jobs`, `list_functions`, and
+`list_materialized_views`) return lazy iterators. Use `list(db.list_views())` to
+collect synchronous results, or `[name async for name in db.list_views()]` with
+an asynchronous connection. `page_limit` controls each request, and `page_token`
+resumes a listing. Drain the iterator's cached results before saving its token.
 
 ::: lancedb.listing.Listing
 
@@ -151,6 +168,11 @@ registered functions, for example,
 namespace. These objects identify resources for ACL operations; a secret object
 contains the credential's name, not its value.
 
+Storage integration objects identify database-owned storage configuration, for
+example `Object.storage_integration(database="default", name="raw")`. Pass
+`namespace_path` for nested namespaces. Their keyspace is separate from Secrets,
+Functions, and relations; the wire name is `storage_integration:default:public$raw`.
+
 More object types may be added in the future.
 
 ### Access control lists
@@ -194,6 +216,27 @@ for privilege in [Privilege.CREATE_SECRET, Privilege.CREATE_FUNCTION]:
 Both privileges also accept their string names in synchronous and asynchronous
 ACL methods.
 
+Storage integration creation requires `CREATE_STORAGE_INTEGRATION` on its containing
+namespace, together with database and namespace `USAGE`:
+
+```python
+catalog.authz.add_acl(
+    object=Object.namespace(database="default"),
+    subject=Subject.role("developer"),
+    privilege=Privilege.CREATE_STORAGE_INTEGRATION,
+)
+catalog.authz.add_acl(
+    object=Object.storage_integration(database="default", name="raw"),
+    subject=Subject.role("reader"),
+    privilege=Privilege.USAGE,
+)
+```
+
+Creation grants ownership to the creator. Describing an integration requires
+`USAGE` on that integration; dropping it requires `OWNERSHIP`. Listing integrations
+requires `USAGE` on the selected database and namespace. Describing and dropping
+also require parent `USAGE` grants. Manage these grants through `catalog.authz`.
+
 By default, the `list_acls` function lists all the access control entries in
 the system. By adding a function parameter, the output is filtered to just ACLs
 matching that parameter. For example, this code lists all the ACLs for the
@@ -216,14 +259,14 @@ async for entry in catalog.authz.list_acls(subject=Subject.role("reader")):
 
 ## Remote SQL
 
-Submit SQL against a remote LanceDB database through the connection.
+Submit SQL against a LanceDB Distributed database through the connection.
 The connected database and `default_namespace_path=["public"]` are used for
 unqualified tables. Fully qualified references can still query other databases
 and namespaces available to the same deployment. `execute_query` returns a
 reader as soon as its initial result stream is available. `execute_query_async`
 returns a query handle once submission is accepted; use it to inspect progress, open a reader,
 or cancel the query. The SQL client is initialized by the first query and
-retained for the lifetime of the remote connection. Query ids are random,
+retained for the lifetime of the connection. Query ids are random,
 connection-scoped references rather than encoded SQL or durable resume tokens.
 
 Both APIs start with one Flight call. The server can stream results on that
@@ -297,7 +340,28 @@ listing a storage directory.
 
 ## Tables (Synchronous)
 
+LanceDB Embedded and LanceDB Distributed tables use the same arguments for index creation, deletion,
+index statistics, and search. For example, `table.delete(where="id = 1")`,
+`table.create_index("cosine", 2)` (the deprecated vector API), and
+`table.search([1.0, 1.0], fast_search=True)` work with either backend.
+`fast_search=True` excludes rows that have not been indexed.
+
+`create_scalar_index` defaults to `replace=True` on both backends. Both scalar
+and full-text index creation accept `wait_timeout`. LanceDB Distributed maintenance methods
+accept the LanceDB Embedded options: cleanup and compaction warn that they are no-ops,
+while `optimize` reports an unsupported operation. Removed Tantivy options
+produce the same explanatory errors on both backends.
+
+The old LanceDB Distributed keyword names `predicate` for `delete`, `index_name` for
+`drop_index`, `index_uuid` for `index_stats`, and `column` for `create_fts_index`
+remain available with deprecation warnings. Use `where`, `name`, `index_name`,
+and `field_names`, respectively. For positional calls, use the argument order
+documented by `Table` below; specify index options by keyword when migrating
+code that used the former LanceDB Distributed-only argument order.
+
 ::: lancedb.table.Table
+
+::: lancedb.table.CompactionOptions
 
 ::: lancedb.table.FragmentStatistics
 
@@ -397,7 +461,14 @@ scoped to each invocation and support `read`, `readinto`, `seek`, `tell`,
 
 ## Materialized Views (Synchronous)
 
-On Cloud and Enterprise, creation accepts `auto_refresh_enabled` and
+In the 0.41 SDK release, LanceDB Embedded materialized-view creation and refresh require a
+source build with the `experimental-functions` Cargo feature. Published Python
+packages leave it disabled. Opening, reading, listing and dropping existing views
+remain available, as do LanceDB Distributed operations. The same feature
+requirement applies to LanceDB Embedded SQL computed-column declaration and refresh; ordinary
+eager `add_columns` transforms remain available.
+
+In LanceDB Distributed, creation accepts `auto_refresh_enabled` and
 `auto_refresh_interval_seconds`:
 
 ```python
@@ -411,7 +482,8 @@ view = db.create_materialized_view(
 
 Omit `auto_refresh_interval_seconds` to let the server determine when to refresh.
 These options also apply to asynchronous creation and creation jobs. Embedded
-connections support manual refresh and reject automatic scheduling requests.
+connections built with `experimental-functions` support manual refresh and reject
+automatic scheduling requests.
 
 ::: lancedb.materialized_view.MaterializedView
 
@@ -467,6 +539,8 @@ and combined with [BooleanQuery][lancedb.query.BooleanQuery].
 ::: lancedb.query.BoostQuery
 
 ::: lancedb.query.MultiMatchQuery
+
+::: lancedb.query.CombinedFieldsQuery
 
 ::: lancedb.query.BooleanQuery
 
@@ -541,10 +615,41 @@ pylance, LanceDB uses a matching `lance.blob.v2` extension type so blob columns
 still work. Native table queries return descriptors. Call
 [`fetch_blob_files`][lancedb.table.Table.fetch_blob_files] for lazy reads or
 [`fetch_blobs`][lancedb.table.Table.fetch_blobs] for eager bytes.
+LanceDB Embedded supports these fetch APIs for both legacy blob v1 columns
+(`lance-encoding:blob`) and blob v2 columns. For legacy columns, obtain row IDs
+with `search().with_row_id(True).to_arrow()` and pass the result to the fetch API.
 One missing or deleted row ID rejects the entire blob-read batch; the APIs do
 not return partial results.
 
-Remote SQL returns blob bytes by default. Select `blob_descriptor(video)` to
+To construct inline Blob V2 arrays for ingestion in record batches, use
+[blob_array][lancedb.schema.blob_array]. It accepts bytes and `None`, preserving
+the distinction between an empty blob (`b""`) and a null blob:
+
+```python
+import pyarrow as pa
+from lancedb.schema import blob, blob_array
+
+schema = pa.schema([pa.field("video_id", pa.string()), blob("video")])
+batch = pa.RecordBatch.from_arrays(
+    [pa.array(["a", "b", "c"]), blob_array([b"abc", None, b""])],
+    schema=schema,
+)
+table = db.create_table("videos", data=iter([batch]), schema=schema)
+table.add(iter([batch]))
+```
+
+`create_table(..., schema=...)` also casts plain binary values into blob columns
+declared in the schema. `table.add(...)` casts them using the table's schema.
+These conversions apply to Python rows and plain binary Arrow columns.
+PyArrow's `RecordBatch.from_pylist(..., schema=...)` cannot convert raw bytes
+into the blob extension type; use `blob_array` and `RecordBatch.from_arrays`
+when constructing batches explicitly.
+
+For external blob references, construct the descriptor struct described by
+[blob][lancedb.schema.blob], then wrap it with `pa.ExtensionArray.from_storage`.
+Inline `data` and external `uri` representations are mutually exclusive.
+
+LanceDB Distributed SQL returns blob bytes by default. Select `blob_descriptor(video)` to
 return an openable reference instead, then use
 [`open_blob_file`][lancedb.table.Table.open_blob_file] or the lazy iterable
 [`open_blob_files`][lancedb.table.Table.open_blob_files]:
@@ -561,7 +666,7 @@ for row in rows.to_pylist():
             frame = extract_frame(video, row["timestamp"])
 ```
 
-This example uses a remote SQL connection that produces source-bearing
+This example uses a LanceDB Distributed SQL connection that produces source-bearing
 descriptors. The descriptor contains `kind`, `position`, `size`, `blob_id`,
 `blob_uri`, and a `source` struct with `uri`, `version`, `committed_at_micros`,
 `branch`, `column`, `row_reference`, and `row_is_address`. The opener verifies
@@ -593,7 +698,7 @@ async for video in async_videos.open_blob_files(rows["video"]):
 ```
 
 Payload bytes load on reads. Opening an external blob with unspecified size
-can issue a metadata-only HEAD request. Remote reads use authenticated range
+can issue a metadata-only HEAD request. LanceDB Distributed reads use authenticated range
 requests that validate the captured URI and commit timestamp.
 
 Blobs inside lists can be written and queried as descriptors. They are omitted
@@ -601,6 +706,8 @@ from `blob_columns()` because row ids do not identify individual list elements,
 so the fetch APIs cannot read their bytes yet.
 
 ::: lancedb.blob
+
+::: lancedb.schema.blob_array
 
 ::: lancedb._blob.BlobFile
     options:
@@ -776,3 +883,52 @@ rows nearest to a query vector and can be created with the
 ::: lancedb.query.AsyncTakeQuery
     options:
       inherited_members: true
+
+## Storage integrations
+
+::: lancedb.storage_integration.StorageIntegrationInfo
+
+::: lancedb.storage_integration.SecretReference
+
+Integrations belong to a database and follow the same namespace-path naming rules
+as Secrets, with their own keyspace. Use a regular database under the cluster root for storage configuration needed
+before opening an external database. `default` is a convention; no database with
+that name is required or created automatically. The system database is read-only.
+Client methods execute SQL through the existing SQL transport.
+
+```python
+catalog = lancedb.connect_catalog("https://my-server.example", api_key="secret")
+db = catalog.connect_database("default")
+integration = db.create_storage_integration(
+    "raw", "s3://customer-bucket/raw/",
+    aws_role_arn="arn:aws:iam::123456789012:role/lancedb-access",
+)
+print(integration.configuration_instructions)
+integration = db.describe_storage_integration("raw")
+for name in db.list_storage_integrations():
+    print(name)
+db.drop_storage_integration("raw")
+```
+
+Static credentials use two existing, single-value Secrets instead of a role:
+
+```python
+from lancedb.storage_integration import SecretReference
+
+integration = db.create_storage_integration(
+    "raw", "s3://customer-bucket/raw/",
+    aws_access_key_id_secret=SecretReference("s3-key-id", database="default"),
+    aws_secret_access_key_secret=SecretReference("s3-secret-key", database="default"),
+)
+```
+
+Pass `namespace_path` on the object APIs and Secret references to select a namespace.
+A string Secret reference selects the root namespace of the integration's database.
+Cross-database references require `USAGE` on the source database, namespace, and
+Secret. Role and static-credential modes are mutually exclusive. Credential values
+are never included in integration metadata.
+
+`configuration_instructions` is one sentence of display guidance whose wording may
+change. Use the structured identity and policy fields for programmatic access.
+Registration does not verify AWS access. `AsyncConnection` provides the same methods;
+await create, describe, and drop, and use `async for` for listing.
