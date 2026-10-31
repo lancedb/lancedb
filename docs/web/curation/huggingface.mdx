@@ -1,0 +1,158 @@
+---
+title: "Read Hugging Face datasets with SQL"
+sidebarTitle: "Hugging Face Datasets"
+description: "Query Parquet files on Hugging Face directly from SQL, and import the result into a table with distributed CTAS."
+icon: database
+keywords: ["hugging face", "huggingface", "import", "ingestion", "parquet", "ctas", "storage integration", "sql"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+A single-quoted Hugging Face dataset URI works directly in a SQL `FROM`
+clause, the same as a table name -- no separate download, no intermediate
+file on disk. Curate a sample before committing to a full import, or skip
+straight to importing the whole thing into a table.
+
+## Read a dataset directly {#read}
+
+<CodeGroup>
+```sql SQL icon="database"
+SELECT id, text
+FROM 'hf://datasets/owner/repo/data/train-*.parquet'
+WHERE text IS NOT NULL
+LIMIT 100
+```
+</CodeGroup>
+
+<CodeGroup>
+```python Python icon="python"
+reader = db.execute_query("""
+    SELECT id, text
+    FROM 'hf://datasets/owner/repo/data/train-*.parquet'
+    WHERE text IS NOT NULL
+    LIMIT 100
+""")
+sample = reader.read_all().to_pylist()
+```
+</CodeGroup>
+
+The URI is `hf://datasets/<owner>/<repo>[@<revision>]/<path>`. `<path>` can
+be one Parquet file, a directory, or a glob: `*` matches within one
+directory, `**` matches across directories, and a repository root selects
+every Parquet file beneath it. Select a dataset configuration or split by
+including it in the path. The default revision is `main`; each statement
+resolves the revision to a commit once, so every worker reads the same
+snapshot. This source reads Parquet files -- it does not run a dataset's
+own generation scripts, and it does not compute embeddings or build
+indexes, so [chunk](/curation/chunking), embed, or index the result as a
+separate step, the same as data from any other source.
+
+<Note>
+Files matched by one statement must have compatible schemas, and an
+unmatched path is an error rather than a silent fallback to a different
+split. Nested Parquet values come through as-is; a floating-point list is
+not automatically converted into a fixed-size vector column.
+</Note>
+
+## Access a private repository {#access}
+
+A private repository, or one subject to Hugging Face's authenticated rate
+limits, needs a [storage integration](/management/storage-integration)
+bound to a token [Secret](/management/secret):
+
+<CodeGroup>
+```python Python icon="python"
+db.create_secret("hf_token", "<your-hugging-face-token>")
+
+db.create_storage_integration(
+    "private_hub", "hf://datasets/owner/private/data/",
+    storage_provider="HUGGINGFACE",
+    huggingface_token_secret="hf_token",
+)
+
+reader = db.execute_query(
+    "SELECT * FROM 'hf://datasets/owner/private/data/*.parquet' LIMIT 10"
+)
+```
+
+```sql SQL icon="database"
+CREATE SECRET hf_token WITH (value = '<your-hugging-face-token>')
+
+CREATE STORAGE INTEGRATION private_hub
+    STORAGE_PROVIDER = 'HUGGINGFACE'
+    STORAGE_PREFIX = 'hf://datasets/owner/private/data/'
+    HUGGINGFACE_TOKEN_SECRET = hf_token
+
+SELECT * FROM 'hf://datasets/owner/private/data/*.parquet' LIMIT 10
+```
+</CodeGroup>
+
+A query never names the integration: the planner matches the most specific
+`STORAGE_PREFIX` that covers the URI being read, across every integration
+the caller has `USAGE` on. Omit `HUGGINGFACE_TOKEN_SECRET` to register an
+explicitly anonymous integration for a prefix instead -- useful to pin
+anonymous access even when a cluster-wide token is also configured. With no
+matching integration at all, a deployment falls back to its existing
+behavior: a configured `HF_TOKEN`/`HUGGINGFACE_TOKEN` environment variable,
+or anonymous access. See
+[Storage Integration](/management/storage-integration) for every provider
+and the full credential model -- the same object also covers S3, GCS and
+Azure prefixes, not just Hugging Face.
+
+## Import into a table {#import}
+
+<CodeGroup>
+```sql SQL icon="database"
+CREATE TABLE imported AS
+SELECT *
+FROM 'hf://datasets/owner/repo/data/train-*.parquet'
+```
+</CodeGroup>
+
+<CodeGroup>
+```python Python icon="python"
+db.execute_query("""
+    CREATE TABLE imported AS
+    SELECT * FROM 'hf://datasets/owner/repo/data/train-*.parquet'
+""")
+table = db.open_table("imported")
+```
+</CodeGroup>
+
+This `CREATE TABLE AS SELECT` runs as a distributed import when the
+deployment has an available plan-executor fleet: the planner assigns
+disjoint file and row-group ranges to workers, each worker writes
+uncommitted Lance files directly to the destination, and a coordinator
+commits the completed table from their transaction metadata once every
+worker finishes. A query with a global limit, aggregation or join keeps
+its usual coordination; a small import can run as one local task without a
+fleet. The table becomes queryable only after that final commit --
+nothing partial is ever visible, and a failed or cancelled import can
+resume the same durable job from its retained attempt rather than
+restarting from nothing. To start over after a failed one-off import
+instead, drop the partial table and rerun the statement.
+
+<Note>
+Importing requires a native database with `database_manifest_enabled`.
+Combining a Hugging Face source with a WAL-backed destination table in one
+CTAS is rejected, since the import cannot publish a base-only read that
+omits the destination's unflushed data.
+</Note>
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Storage Integration" icon="cloud" href="/management/storage-integration">
+    The credential object behind private and anonymous repository access.
+  </Card>
+  <Card title="Create a Function" icon="code" href="/curation/create-function">
+    Add embeddings or derived columns to the imported data.
+  </Card>
+  <Card title="Chunk records into multiple rows" icon="diagram-subtask" href="/curation/chunking">
+    Split long text or media fields after importing.
+  </Card>
+  <Card title="Table" icon="table" href="/sql/ddl/table#create">
+    `CREATE TABLE AS SELECT` syntax and options in full.
+  </Card>
+</CardGroup>

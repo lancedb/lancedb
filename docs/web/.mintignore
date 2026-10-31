@@ -6,17 +6,32 @@
 # draft or not) to management/function.mdx and sql/ddl/function.mdx -- each
 # currently carries a plain `<Badge color="red">Enterprise</Badge>` instead
 # -- and re-link curation/chunking.mdx's plain-text `CREATE FUNCTION`/
-# `add_columns` mentions to /management/function and /sql/ddl/function#create
-# now that those pages have a route. Chunking stays published ahead of
-# Functions shipping, so its examples intentionally do not link to either
-# gated page -- only an unrouted page would break.
+# `add_columns` mentions, and curation/create-function.mdx's intro sentence
+# and missing "Function" card in "What to read next", to /management/function
+# and /sql/ddl/function#create now that those pages have a route. Both pages
+# stay published ahead of Functions shipping, so their examples intentionally
+# do not link to either gated page -- only an unrouted page would break.
 management/function.mdx
 sql/ddl/function.mdx
 
-# GRANT/REVOKE currently only covers privileges on Secrets and Functions
-# (CREATE SECRET, CREATE FUNCTION, USAGE on a secret or function), which are
-# themselves part of the Functions release: see the "Draft for the Functions
-# release" block in governance/authorization.mdx#privileges. At release,
-# remove this entry, add the page to the navigation in docs.json, and give it
-# `availability` frontmatter like the rest of the SQL reference.
+# This page documents GRANT/REVOKE for both SECRET and FUNCTION targets
+# together, since the SQL grammar shares one statement for both. Secrets
+# shipped already -- its GRANT/REVOKE syntax is documented live at
+# sql/ddl/secret.mdx#grant -- but this page stays gated until Functions
+# ships too, since un-gating it now would publish the FUNCTION target and
+# the CREATE FUNCTION privilege early. At release, remove this entry, fold
+# sql/ddl/secret.mdx#grant's content into this page (or cross-link the two),
+# add this page to the navigation in docs.json, and give it `availability`
+# frontmatter like the rest of the SQL reference. Also see the "Draft for
+# the Functions release" blocks in governance/privileges.mdx.
+#
+# Separately, this page's own content has drifted behind governance/
+# privileges.mdx regardless of the Function gate: GRANT/REVOKE now also
+# reaches DATABASE, TABLE, VIEW, MATERIALIZED VIEW and STORAGE INTEGRATION
+# targets, not just SECRET/FUNCTION/SCHEMA. The "Naming the target" section
+# has a pointer to governance/privileges#sql for these rather than
+# reproducing them, but the top grammar block, the "## Privileges" table
+# and the examples still only show SECRET/FUNCTION/SCHEMA. Widen all three
+# to the full target list when this page is finally ungated, not just when
+# Functions ships.
 sql/ddl/grant.mdx

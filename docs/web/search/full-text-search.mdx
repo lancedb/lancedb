@@ -225,7 +225,7 @@ on an Enterprise table.
 
 Use a metadata predicate to restrict qualifying records. See
 [filtering options](#filtering-options) for prefiltering and postfiltering.
-Enterprise SQL provides [`fts()`](/sql/functions#fts) for scored text retrieval.
+Enterprise SQL provides [`fts()`](/sql/dql/fts) for scored text retrieval.
 
 ## Configure tokenization and matching {#advanced-usage}
 
@@ -280,9 +280,11 @@ table.create_fts_index(
 
 Model-backed tokenizers require tokenizer model files in Lance's language model home. Lance looks under the default platform data directory for `lance/language_models`, or you can set `LANCE_LANGUAGE_MODEL_HOME` to point to a different model root:
 
-```bash
+<CodeGroup>
+```bash Bash icon="terminal"
 export LANCE_LANGUAGE_MODEL_HOME=/path/to/lance/language_models
 ```
+</CodeGroup>
 
 For example, `jieba/default` is resolved under `<model-home>/jieba/default/...`, `lindera/ipadic` under `<model-home>/lindera/ipadic/...`, and `lindera/ko-dic` under `<model-home>/lindera/ko-dic/...`.
 
@@ -980,9 +982,11 @@ assert set(r["text"] for r in results) == {"lance database", "lance is cool"}
 </CodeGroup>
 
 
+<CodeGroup>
 ```python Python icon="python"
 directory.cleanup()
 ```
+</CodeGroup>
 
 </Accordion>
 

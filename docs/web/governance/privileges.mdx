@@ -1,0 +1,146 @@
+---
+title: "Privileges"
+sidebarTitle: "Privileges"
+description: "Every privilege, which object it's granted on, and the GRANT/REVOKE syntax that covers each one."
+icon: key
+keywords: ["privileges", "grant", "revoke", "rbac", "acl"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+| Privilege | Granted on | Allows |
+| --- | --- | --- |
+| `OWNERSHIP` | any object | full authority over it, including granting any other privilege |
+| `USAGE` | system | listing jobs and their events, and looking up other identities |
+| `USAGE` | database | accessing the namespaces inside |
+| `USAGE` | namespace | accessing the tables inside |
+| `USAGE` | secret | binding it to a Function, and resolving its value at evaluation time |
+| `USAGE` | storage integration | reading through it or importing with it |
+| `SELECT` | table, view | reading rows |
+| `INSERT` | table | appending rows |
+| `UPDATE` | table | modifying existing rows |
+| `UPDATE` | secret | rotating it, without the right to bind or read it |
+| `DELETE` | table | deleting rows |
+| `CREATE_DATABASE` | system | creating a database |
+| `CREATE_NAMESPACE` | database, namespace | creating immediate child namespaces |
+| `CREATE_TABLE` | namespace | creating a table in it |
+| `CREATE_MATERIALIZED_VIEW` | namespace | creating a materialized view in it |
+| `CREATE_VIEW` | namespace | creating a non-materialized view in it |
+| `CREATE_SECRET` | namespace | creating a Secret in it |
+| `CREATE_STORAGE_INTEGRATION` | namespace | registering a storage integration in it |
+| `OPERATE` | system | describing and controlling jobs, managing caches, reading server configuration, and managing role membership |
+
+{/*
+Draft for the Functions release. Add these rows to the table above.
+After the `USAGE` row for secret:
+| `USAGE` | function | binding it to a column, and refreshing a column it computes |
+After the `CREATE_SECRET` row:
+| `CREATE_FUNCTION` | namespace | registering a Function in it |
+*/}
+
+`OWNERSHIP` is never revoked -- granting it again transfers it to a new
+owner instead, and a single `GRANT OWNERSHIP` statement names exactly one
+subject. The caller must already hold `OWNERSHIP` on an object to change
+any grant on it.
+
+<Note>
+`CREATE_MATERIALIZED_VIEW` and `CREATE_VIEW` are separate privileges because
+[the two objects differ](/basics/catalog): one stores rows and is refreshed,
+the other stores only a query. Granting the ability to create one does not
+grant the other.
+</Note>
+
+## Creating an object you don't own yet {#creation}
+
+Creating a database or namespace checks its *parent*, not itself: one with
+no owner -- because it doesn't exist yet -- falls back to `CREATE_DATABASE`
+on the system, or `CREATE_NAMESPACE` on its parent namespace, and the
+creator becomes its owner. This is what makes creation possible at all, so
+holding `CREATE_DATABASE` is enough to create a table in a database that
+has not been created yet.
+
+## Granting privileges from SQL {#sql}
+
+`GRANT` and `REVOKE` reach every object in the table above -- `SYSTEM`,
+`DATABASE`, `SCHEMA` (a namespace, also spelled `NAMESPACE`), `TABLE`,
+`VIEW`, `MATERIALIZED VIEW`, `SECRET`, `STORAGE INTEGRATION`, and
+`FUNCTION` -- with the same statement shape:
+
+<CodeGroup>
+```sql SQL icon="database"
+GRANT USAGE, CREATE SCHEMA ON DATABASE analytics TO ROLE readers
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE events TO ROLE etl
+GRANT SELECT ON VIEW dashboard TO ROLE analysts
+GRANT SELECT, UPDATE ON MATERIALIZED VIEW daily_rollup TO ROLE analysts
+GRANT CREATE SECRET ON SCHEMA platform TO ROLE platform_admins
+GRANT USAGE, UPDATE ON SECRET platform.`openai-prod` TO ROLE etl, rotation_service
+GRANT OWNERSHIP ON SECRET platform.`openai-prod` TO ROLE platform_admins
+GRANT USAGE ON STORAGE INTEGRATION platform.hub TO ROLE research
+REVOKE UPDATE ON SECRET platform.`openai-prod` FROM ROLE etl
+```
+</CodeGroup>
+
+A materialized view is a table for authorization purposes: the same
+`OWNERSHIP`, `SELECT`, `INSERT`, `UPDATE` and `DELETE` privileges apply, and
+granting one does not reach the non-materialized `VIEW` beside it.
+
+| Target in the statement | Privileges it accepts |
+| --- | --- |
+| `SYSTEM` | `OPERATE`, `CREATE DATABASE`, `USAGE` |
+| `DATABASE` | `OWNERSHIP`, `USAGE`, `CREATE SCHEMA` (or `CREATE NAMESPACE`) |
+| `SCHEMA` / `NAMESPACE` | `OWNERSHIP`, `USAGE`, `CREATE NAMESPACE`, `CREATE TABLE`, `CREATE MATERIALIZED VIEW`, `CREATE VIEW`, `CREATE SECRET`, `CREATE STORAGE INTEGRATION`, `CREATE FUNCTION` |
+| `TABLE`, `MATERIALIZED VIEW` | `OWNERSHIP`, `SELECT`, `INSERT`, `UPDATE`, `DELETE` |
+| `VIEW` | `OWNERSHIP`, `SELECT` |
+| `SECRET` | `OWNERSHIP`, `USAGE` (bind it to a Function), `UPDATE` (rotate it) |
+| `STORAGE INTEGRATION` | `OWNERSHIP`, `USAGE` |
+
+See [GRANT and REVOKE](/sql/ddl/secret#grant) for the full statement
+syntax -- hosted on the Secret page, but every grantee form (`ROLE`,
+`USER`, `GROUP`, the `ID '<id>'` form) and every status a statement can
+return are shared by every target above, not specific to Secret.
+
+The REST ACL API covers the same objects and reaches further back: it works
+against deployments whose SQL surface does not yet expose a given target,
+and is the only option for a client that does not speak SQL.
+
+### What each Secret operation requires {#secret-operations}
+
+| Operation | Requires |
+| --- | --- |
+| Create a Secret | `CREATE_SECRET` on the namespace. The creator owns the new Secret. |
+| Rotate (`alter`) | `UPDATE` on the Secret |
+| Describe | `USAGE` on the Secret |
+| List | `USAGE` on the database and the namespace |
+| Drop | `OWNERSHIP` on the Secret. Dropping also deletes its grants. |
+| Bind it to a Function | `USAGE` on the Secret |
+
+`UPDATE` is deliberately separate from `USAGE`, so a rotation service can
+replace a value without being able to bind the Secret to a Function of its
+own.
+
+### Example: sharing one key {#example}
+
+- A **platform operator** owns the `platform` namespace. They create
+  `platform$openai-prod`, then grant the `research` group `USAGE` on that
+  one Secret.
+- A **researcher** in `research` registers a Function bound to
+  `platform$openai-prod`. Binding any other Secret in `platform` is
+  refused.
+- A **table owner** in `research` adds a column computed by that Function.
+  They hold `USAGE` on the Secret through the group, but are refused until
+  they also hold `USAGE` on the Function.
+- **Analysts** read the resulting column with table access alone -- no
+  Function runs on the read path, so they need no grant on the Function or
+  its Secret.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Authorization" icon="shield-halved" href="/governance/authorization">
+    The access-control model a grant is built from.
+  </Card>
+  <Card title="Principals" icon="user" href="/governance/principals">
+    Users, groups, and roles -- where each comes from, and how a grant names one.
+  </Card>
+</CardGroup>

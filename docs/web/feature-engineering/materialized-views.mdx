@@ -56,7 +56,8 @@ Pass `auto_refresh_enabled` and `auto_refresh_interval_seconds` to schedule
 refreshes instead of calling
 [`refresh`](/feature-engineering/refresh-materialized-view) yourself:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 view = db.create_materialized_view(
     "frames_captioned",
     source="frames",
@@ -66,6 +67,7 @@ view = db.create_materialized_view(
     auto_refresh_interval_seconds=300,
 )
 ```
+</CodeGroup>
 
 Omit `auto_refresh_enabled` to let the server decide whether to enable it,
 and omit `auto_refresh_interval_seconds` to let the server decide the

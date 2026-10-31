@@ -1,37 +1,80 @@
 ---
 title: "Job"
 sidebarTitle: "Job"
-description: "SHOW JOBS, SHOW ERRORS, and controlling a running job with PAUSE, RESUME and CANCEL."
+description: "SHOW JOBS, SHOW JOB EVENTS, DESCRIBE JOB, SHOW ERRORS, and controlling a running job with PAUSE, RESUME and CANCEL."
 icon: hourglass-half
-keywords: ["show jobs", "show errors", "pause job", "resume job", "cancel job", "sql"]
+keywords: ["show jobs", "show job events", "describe job", "show errors", "pause job", "resume job", "cancel job", "sql"]
 availability:
   embedded: unavailable
   enterprise: available
 ---
 
 A [job](/basics/jobs) is not a catalog object (it has no schema and is not
-namespaced), but it has its own SQL statements, grouped here the same way the
-catalog objects are.
+namespaced), but it has its own SQL statements, grouped here the same way
+the catalog objects are.
 
 ## SHOW JOBS {#show}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SHOW JOBS
+SHOW JOBS FOR TABLE documents
+SHOW JOBS FOR JOB '<parent_job_id>' [LIMIT n]
 ```
+</CodeGroup>
 
-Every job the server knows about: id, type, state, creation time. The SQL
-counterpart of `list_jobs`.
+The unfiltered command lists jobs in the connected database, newest first:
+id, type, state, creation time -- the SQL counterpart of `list_jobs`. `FOR
+TABLE` filters that listing by the current namespace's table name. `FOR JOB`
+lists the parent's direct child jobs using the REST API's child model.
+Child rows expose their ID, kind, phase, row progress and attempt; unknown
+values remain NULL. Children are read-only diagnostic identities.
+
+`FOR JOB` defaults to 1,000 children and accepts `LIMIT` from 1 to 10,000,
+following backend continuation pages up to that limit. Child history can be
+`available`, `not_yet_recorded`, or `unavailable` after archival.
+
+## SHOW JOB EVENTS {#events}
+
+<CodeGroup>
+```sql SQL icon="database"
+SHOW JOB EVENTS '<parent_or_child_job_id>' [LIMIT n]
+```
+</CodeGroup>
+
+Events are returned newest first. Parent history does not include child
+history. The default limit is 1,000; valid limits range from 1 to 10,000.
+The result includes event sequence, state, timestamps, origin, claim and
+resource/work fields. Child `kind` and `details` expose the REST API's
+allowlisted diagnostics; raw parent payloads are excluded.
+
+## DESCRIBE JOB {#describe}
+
+<CodeGroup>
+```sql SQL icon="database"
+DESCRIBE JOB '<job_id>' [FORMAT TEXT | TABLE | JSON]
+DESC JOB '<job_id>' [FORMAT TEXT | TABLE | JSON]
+```
+</CodeGroup>
+
+Both spellings show a finished root job's timing profile. `TEXT` is the
+default; `TABLE` returns typed phase/step rows and `JSON` returns the
+profile as one document. A running job has no profile rows.
 
 ## SHOW ERRORS {#errors}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SHOW ERRORS ON <table> [FOR JOB '<job-id>'] [LIMIT <n>]
 ```
+</CodeGroup>
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SHOW ERRORS ON documents
 SHOW ERRORS ON documents FOR JOB 'job-abc' LIMIT 100
 ```
+</CodeGroup>
 
 Why rows failed. Reach for this when a [refresh](/sql/dml/refresh-column) reports
 fewer filled rows than you expected.
@@ -50,25 +93,33 @@ rather than raising the limit blindly.
 
 ## PAUSE JOB {#pause}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 PAUSE JOB 'j-ci-abc-def'
 ```
+</CodeGroup>
 
 ## RESUME JOB {#resume}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 RESUME JOB 'j-ci-abc-def'
 ```
+</CodeGroup>
 
 ## CANCEL JOB {#cancel}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 CANCEL JOB 'j-ci-abc-def'
 ```
+</CodeGroup>
 
 The job id is always a quoted string literal. All three take exactly one and
 nothing after it: a second token on the line is a syntax error rather than
-being ignored.
+being ignored. Pause requires the deployment's pause-write opt-in and a
+resumable job type; it may return `pausing` while workers drain, and resume
+may return `still_pausing` until drain finishes.
 
 <Note>
 Cancellation is a request, matching the SDK's
@@ -78,6 +129,14 @@ doing more work, and asking twice or cancelling a finished job does nothing.
 configured, which is a deployment condition rather than something you can work
 around from SQL.
 </Note>
+
+## Compatibility {#compatibility}
+
+`SHOW JOBS FOR <table>` (without the `TABLE` keyword), `SHOW JOB SUMMARY`,
+and `SHOW JOB SPLITS` retain their existing behavior as compatibility forms.
+Prefer `SHOW JOBS FOR TABLE`/`FOR JOB` and `DESCRIBE JOB` going forward. See
+[`SHOW JOB SPLITS`](/sql/dml/refresh#watching) for the per-split diagnostics
+form.
 
 ## What to read next {#next}
 

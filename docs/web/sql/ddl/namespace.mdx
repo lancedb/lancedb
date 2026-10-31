@@ -1,48 +1,168 @@
 ---
 title: "Namespace"
 sidebarTitle: "Namespace"
-description: "CREATE SCHEMA and DROP SCHEMA: the SQL spelling of namespace DDL."
+description: "Create, alter, describe, list, and drop namespace paths with SQL."
 icon: folder-tree
-keywords: ["namespace", "schema", "create schema", "drop schema", "sql"]
+keywords: ["namespace", "schema", "create schema", "create namespace", "describe schema", "show namespaces", "drop schema", "sql"]
 availability:
   embedded: unavailable
   enterprise: available
 ---
 
 A [namespace](/management/namespace) is addressed in SQL as a `SCHEMA`, the
-standard's name for the same concept.
+standard's name for the same concept. A **schema** is a complete namespace
+path, optionally qualified by a database; a nested path occupies one
+backtick-quoted identifier with `$` between components, such as
+`` analytics.`team$features` ``. A **namespace**, as a separate keyword, names
+one path component, relative to an explicit parent schema or the session's
+current schema -- it cannot contain `$` or be qualified with a database.
 
-## CREATE SCHEMA {#create}
+`SCHEMA` never accepts `IN`. `NAMESPACE` accepts `IN` followed by a complete
+schema identifier. Names are lowercased unless quoted.
 
-```sql
+## CREATE SCHEMA and CREATE NAMESPACE {#create}
+
+Create a namespace using its complete schema path:
+
+<CodeGroup>
+```sql SQL icon="database"
 CREATE SCHEMA analytics
 CREATE SCHEMA db1.`ns1$ns2`
 CREATE SCHEMA IF NOT EXISTS `ns1$ns2`
 ```
+</CodeGroup>
+
+Alternatively, create the same namespace by naming its component and parent:
+
+<CodeGroup>
+```sql SQL icon="database"
+CREATE NAMESPACE features IN team
+```
+</CodeGroup>
+
+To supply creation metadata and tolerate an existing namespace:
+
+<CodeGroup>
+```sql SQL icon="database"
+CREATE NAMESPACE IF NOT EXISTS features IN analytics.team
+    WITH (owner = 'search-team', purpose = 'retrieval')
+```
+</CodeGroup>
 
 A nested namespace is one backtick-quoted name with `$` between its
-components: `` db1.`ns1$ns2` `` creates `ns2` inside `ns1` in database `db1`,
-provided `ns1` already exists. The part before the dot is the database, so a
-three-part path such as `db1.ns1.ns2` is rejected. `public` is the database's
-root namespace, which is never created or dropped.
+components: `` db1.`ns1$ns2` `` creates `ns2` inside `ns1` in database `db1`.
+Both forms create namespaces in the same catalog, and missing ancestors are
+created automatically -- the part before the first dot is always the
+database. `public` is the database's root namespace, which is never created
+or dropped.
 
 `IF NOT EXISTS` makes the statement a no-op rather than an error when the
-namespace is already there.
+namespace is already there, though it does not replace an existing
+namespace's properties. Without it, an existing target is an error.
+Properties are string values stored on the target only; implicitly created
+ancestors receive no properties, and duplicate property keys are errors.
 
-## DROP SCHEMA {#drop}
+The result has `operation`, `name`, and `status` columns. The operation is
+`CREATE SCHEMA` for either spelling; the name is the resolved path and the
+status is `created`.
 
-```sql
-DROP SCHEMA db1.analytics
-DROP SCHEMA IF EXISTS `a$b`
-DROP SCHEMA `a$b` RESTRICT
+## ALTER SCHEMA and ALTER NAMESPACE {#alter}
+
+| Operation | SCHEMA syntax | NAMESPACE syntax |
+| --- | --- | --- |
+| Set metadata | `` ALTER SCHEMA `team$features` SET (purpose = 'retrieval') `` | `ALTER NAMESPACE features IN team SET (purpose = 'retrieval')` |
+| Remove metadata | `` ALTER SCHEMA `team$features` UNSET (purpose) `` | `ALTER NAMESPACE features IN team UNSET (purpose)` |
+
+`SET` adds or replaces the listed string properties, preserving other keys.
+`UNSET` removes the listed keys; a missing key is ignored. Lists must be
+nonempty, and duplicate keys are errors. Quote a key containing punctuation,
+for example `SET ("owner.team" = 'search')`.
+
+Each statement updates metadata atomically and preserves unrelated
+concurrent changes. Metadata changes do not change ownership or grants. Use
+`DESCRIBE` to read the updated properties. A missing namespace is an error.
+
+<Note>
+`ALTER` metadata is supported by native manifest-backed databases. Legacy
+directory and external catalogs report an unsupported-operation error. The
+implicit `public` root and the read-only `system` database cannot be
+altered.
+</Note>
+
+The result has `operation`, `name`, and `status` columns, with operation
+`ALTER SCHEMA` for either spelling and status `altered`.
+
+## DESCRIBE SCHEMA and DESCRIBE NAMESPACE {#describe}
+
+<CodeGroup>
+```sql SQL icon="database"
+DESCRIBE SCHEMA analytics.`team$features`
+DESCRIBE NAMESPACE features IN analytics.team
+DESC NAMESPACE features IN team
 ```
+</CodeGroup>
 
-<Warning>
-`CASCADE` is rejected: **"DROP SCHEMA CASCADE is not supported; drop the
-objects inside first."** A namespace's tables, views and other objects must be
-dropped explicitly before the namespace itself can go. `RESTRICT` (the
-default) states that requirement rather than changing it.
-</Warning>
+Returns one row with `name` (the complete `$`-joined schema path) and
+`properties` (a JSON object). An unannotated namespace returns `{}`. A
+missing namespace is an error. `DESC` is an alias for `DESCRIBE`.
+
+## SHOW SCHEMAS and SHOW NAMESPACES {#show}
+
+<CodeGroup>
+```sql SQL icon="database"
+SHOW SCHEMAS
+SHOW NAMESPACES
+SHOW NAMESPACES IN analytics.team
+```
+</CodeGroup>
+
+`SHOW SCHEMAS` returns complete paths in the current database, recursively,
+including `public` when the caller can use it. It does not accept `IN`.
+
+`SHOW NAMESPACES` lists only immediate child names under the session's
+current schema. `IN` selects a different parent schema, optionally in
+another database -- use `IN public` for the current database's root, or
+`IN analytics.public` for another database's root. A missing parent is an
+error.
+
+Both forms return a sorted `name` column and omit namespaces the caller
+cannot use. Large listings that exceed 10,000 namespaces, or recursive
+listings deeper than 32 levels, return an error suggesting a narrower
+listing.
+
+## DROP SCHEMA and DROP NAMESPACE {#drop}
+
+<CodeGroup>
+```sql SQL icon="database"
+DROP SCHEMA analytics.`team$features`
+DROP NAMESPACE IF EXISTS features IN analytics.team RESTRICT
+DROP NAMESPACE team CASCADE
+```
+</CodeGroup>
+
+The default, `RESTRICT`, refuses a namespace with children or objects --
+tables, views and other objects inside must be dropped explicitly first. In
+native manifest-backed databases, `CASCADE` instead removes the namespace
+and all descendant bindings atomically in one catalog commit, then submits
+a background job that cleans up their storage; deployments without cascade
+support reject it. A storage integration used by an attached database
+blocks the drop of its namespace.
+
+`RESTRICT` returns `operation`, `name`, and `status`, with status `dropped`
+or `not_found`. `CASCADE` returns `operation`, `job_id`, and `status`, with
+status `dropping`, or an empty job ID and `not_found` for a missing target
+with `IF EXISTS`. Inspect a cascade drop's child jobs with
+[`SHOW JOBS FOR JOB`](/sql/ddl/job#show). Both spellings report operation
+`DROP SCHEMA`.
+
+## Correcting invalid syntax {#errors}
+
+| Invalid form | Use instead |
+| --- | --- |
+| `CREATE SCHEMA child IN parent` | `CREATE NAMESPACE child IN parent` or `` CREATE SCHEMA `parent$child` `` |
+| `` DESCRIBE NAMESPACE `parent$child` `` | `` DESCRIBE SCHEMA `parent$child` `` or `DESCRIBE NAMESPACE child IN parent` |
+| `DROP NAMESPACE analytics.child` | `DROP NAMESPACE child IN analytics.public` |
+| `SHOW SCHEMAS IN parent` | `SHOW NAMESPACES IN parent` |
 
 ## What to read next {#next}
 

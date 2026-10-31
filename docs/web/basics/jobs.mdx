@@ -1,6 +1,6 @@
 ---
-title: "Jobs"
-sidebarTitle: "Job"
+title: "Job Framework"
+sidebarTitle: "Job Framework"
 description: "Track background work from submission to completion."
 icon: hourglass-half
 keywords: ["job", "background", "progress", "events", "cancel"]
@@ -23,13 +23,15 @@ so check its status before
 waiting or requesting cancellation. See the operation's API reference for when
 the method returns.
 
-```python
+<CodeGroup>
+```python Python icon="python"
 job = tbl.create_index_async("vector", replace=True)
 
 print(job.id)
 print(job.job_type)
 print(job.status())
 ```
+</CodeGroup>
 
 ## Submit and wait for a job {#waiting}
 
@@ -44,7 +46,8 @@ In Python, `job.status()` reports the current state and `job.wait()` waits for
 completion, raising if the job fails or is cancelled. If `job.wait()` times out, the client stops waiting.
 The timeout does not cancel the server job.
 
-```python
+<CodeGroup>
+```python Python icon="python"
 from datetime import timedelta
 from lancedb.exceptions import JobFailedError, JobCancelledError
 
@@ -59,6 +62,7 @@ except JobCancelledError:
 except TimeoutError:
     print(f"still running: {job.status()}")
 ```
+</CodeGroup>
 
 <span id="inspecting" />
 <span id="events" />
@@ -75,7 +79,8 @@ except TimeoutError:
 Reopening a job retrieves the existing operation; it does not restart failed
 work. Treat the ID as an opaque identifier and pass it unchanged to the jobs API.
 
-```python
+<CodeGroup>
+```python Python icon="python"
 job = db.open_job(job_id)  # raises JobNotFoundError if unknown
 job.refresh()              # pull the latest status from the server
 print(job.status())
@@ -85,23 +90,26 @@ print(events.to_pylist())
 
 job.cancel()
 ```
+</CodeGroup>
 
 List jobs on a connection, paging through the results:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 for info in db.list_jobs(page_limit=50):
     print(info.job_id, info.job_type, info.state)
 ```
+</CodeGroup>
 
 Event responses have [row limits](/basics/limits#jobs). An explicit limit can
 request more than the default, but it does not guarantee a complete event
 history.
 
-## Embedded and Distributed execution {#in-process}
+## Embedded and Enterprise execution {#in-process}
 
 The following table describes LanceDB Embedded operations and registry jobs on
-LanceDB Distributed (provided by LanceDB Enterprise).
-SQL-backed job handles follow the query lifecycle described below.
+LanceDB Enterprise. SQL-backed job handles follow the query lifecycle
+described below.
 
 | | Embedded | Enterprise registry job |
 | --- | --- | --- |

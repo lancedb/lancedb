@@ -11,12 +11,12 @@ aggregates, and prepare datasets. SQL queries work with the same Lance tables
 you create and update through the SDKs, without exporting the data to another
 system.
 
-This guide covers the two ways to run SQL, connection settings, a first query,
+This guide covers the three ways to run SQL, connection settings, a first query,
 parameterized queries, and how to read and manage the results.
 
 ## Access LanceDB with SQL {#access}
 
-There are two ways to run SQL against LanceDB Enterprise, both against the
+There are three ways to run SQL against LanceDB Enterprise, all against the
 same [Arrow Flight SQL](https://arrow.apache.org/docs/format/FlightSql.html)
 endpoint, returning results as Arrow record batches:
 
@@ -27,9 +27,8 @@ endpoint, returning results as Arrow record batches:
    languages, whose LanceDB SDKs do not expose a SQL execution method, or from
    any tool with its own Flight SQL integration. A LanceDB-specific SDK is not
    required to submit SQL.
-
-From the command line, use `lancedb` to open the [SQL shell](/tools/cli)
-or execute a statement or file.
+3. **The [LanceDB CLI](/tools/cli).** Open an interactive SQL shell, or run a
+   statement or file, directly from the command line with no code at all.
 
 The [SQL reference](/sql#connecting) shows a query from Python. See
 [SDKs](/basics/sdk) for the LanceDB language clients.
@@ -109,7 +108,8 @@ separately, use `execute_query_async()`.
 Pass a `parameters` argument to bind values into a query, instead of
 formatting them into the SQL string:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 import numpy as np
 
 reader = db.execute_query(
@@ -117,6 +117,7 @@ reader = db.execute_query(
     parameters=[np.array([0.1, 0.2, 0.3], dtype=np.float32), 10],
 )
 ```
+</CodeGroup>
 
 Values travel as Arrow, not interpolated SQL text, so a vector binds as a
 fixed-size list with no manual formatting and no injection risk. Reference a
@@ -132,11 +133,46 @@ binding:
 
 <Note>
 `parameters` is a LanceDB-specific mechanism, separate from the Flight SQL
-protocol's `PREPARE`/bind step, which
-[a deployment does not implement](/sql/prepared-statements#parameters). Bind
-values with `parameters` from the Python SDK; a generic Flight SQL client has
-no equivalent.
+protocol's `PREPARE`/bind step, which a deployment does not implement; see
+[Prepared statements](#prepared-statements) below. Bind values with
+`parameters` from the Python SDK; a generic Flight SQL client has no
+equivalent.
 </Note>
+
+## Prepared statements {#prepared-statements}
+
+A Flight SQL client can prepare a statement before it runs it. A deployment
+accepts that, but it keeps no plan between runs and does not accept the
+parameter values described above at this protocol layer.
+
+<Warning>
+There is no SQL `PREPARE` / `EXECUTE` here. Preparation is part of the
+**Arrow Flight SQL protocol**, so you reach it through your client rather than
+by sending a statement. A script containing `PREPARE name AS SELECT ...` will
+not run.
+</Warning>
+
+A Flight SQL client takes these steps, whatever it calls them:
+
+1. **Prepare:** send the SQL and get back a handle and the result schema. The
+   statement is parsed and planned at this point, so a syntax or name error
+   surfaces here rather than at execution.
+2. **Execute:** run the handle and read the result. The deployment plans the
+   statement again each time it runs, so reusing a handle does not save
+   planning time.
+3. **Close:** release the handle.
+
+A client that binds values to placeholders such as `$1` and `$2` at this
+protocol layer gets a "not implemented" error when it executes the
+statement. Use `parameters` [above](#parameters) instead; do not put
+untrusted input directly into prepared statement text, since quoting it does
+not protect the statement the way binding a parameter would.
+
+Prepare a statement when your client requires it, or to get a statement's
+result schema and catch syntax and name errors without running it. Preparing
+does not make a repeated statement faster. To give a reusable query a name,
+create a [view](/management/view). To store its result for later queries,
+create a [materialized view](/management/materialized-view).
 
 ## Read and manage results {#results}
 
@@ -212,8 +248,8 @@ The [SDK vector search API](/search/vector-search) is also available in
 LanceDB Enterprise and LanceDB Embedded. Use it when you prefer the SDK query builder or need to
 search embedded tables.
 
-For full-text search in SQL, use the [`fts()`](/sql/functions#fts) table
-function or the [`contains_tokens`](/sql/scalar-functions#contains-tokens)
+For full-text search in SQL, use the [`fts()`](/sql/dql/fts) table
+function or the [`contains_tokens`](/sql/dql/contains-tokens)
 predicate.
 
 ## SQL syntax and API references {#reference}

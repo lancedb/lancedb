@@ -45,7 +45,7 @@
     },
     {
       "source": "/basics/offerings",
-      "destination": "/#embedded-and-enterprise"
+      "destination": "/#architecture"
     },
     {
       "source": "/enterprise/deployment",
@@ -185,11 +185,15 @@
     },
     {
       "source": "/storage",
-      "destination": "/deployment/storage"
+      "destination": "/basics/catalog#object-storage"
     },
     {
       "source": "/storage/configuration",
-      "destination": "/deployment/storage"
+      "destination": "/basics/catalog#object-storage"
+    },
+    {
+      "source": "/deployment/storage",
+      "destination": "/basics/catalog#object-storage"
     },
     {
       "source": "/storage/monitoring",
@@ -234,6 +238,22 @@
     {
       "source": "/sql/explain",
       "destination": "/sql/dql/explain"
+    },
+    {
+      "source": "/sql/operators",
+      "destination": "/sql/dql/operators"
+    },
+    {
+      "source": "/sql/functions",
+      "destination": "/sql/dql/functions"
+    },
+    {
+      "source": "/sql/scalar-functions",
+      "destination": "/sql/dql/scalar-functions"
+    },
+    {
+      "source": "/sql/prepared-statements",
+      "destination": "/basics/sql#prepared-statements"
     },
     {
       "source": "/sql/ddl",
@@ -284,14 +304,9 @@
               "quickstart",
               "basics/sdk",
               "basics/sql",
+              "tools/cli",
               "basics/agentic-skills",
               "deployment/support"
-            ]
-          },
-          {
-            "group": "Tools",
-            "pages": [
-              "tools/cli"
             ]
           },
           {
@@ -330,7 +345,8 @@
               "reranking/index",
               "search/explain",
               "search/realtime-read",
-              "enterprise/distributed-search"
+              "enterprise/distributed-search",
+              "enterprise/benchmarks"
             ]
           },
           {
@@ -338,12 +354,15 @@
             "pages": [
               "curation/index",
               "curation/create-function",
+              "curation/vend-secret",
+              "curation/huggingface",
               "curation/chunking",
               "curation/changes",
               "curation/aggregate",
               "curation/sampling",
               "curation/join",
               "curation/windowing",
+              "curation/clustering",
               "curation/dedupe"
             ]
           },
@@ -370,12 +389,15 @@
             "group": "Management",
             "pages": [
               "management/index",
+              "management/catalog",
               "management/database",
               "management/namespace",
               "management/table",
               "tables/branching",
               "management/view",
-              "management/materialized-view"
+              "management/materialized-view",
+              "management/secret",
+              "management/storage-integration"
             ]
           },
           {
@@ -401,10 +423,8 @@
             "group": "Deployment",
             "pages": [
               "enterprise/index",
-              "deployment/storage",
               "deployment/monitoring",
-              "enterprise/deployment/kubernetes",
-              "enterprise/benchmarks"
+              "enterprise/deployment/kubernetes"
             ]
           },
           {
@@ -412,6 +432,8 @@
             "pages": [
               "enterprise/authentication",
               "governance/authorization",
+              "governance/principals",
+              "governance/privileges",
               "enterprise/security"
             ]
           },
@@ -428,6 +450,8 @@
                   "sql/ddl/table",
                   "sql/ddl/view",
                   "sql/ddl/materialized-view",
+                  "sql/ddl/secret",
+                  "sql/ddl/storage-integration",
                   "sql/ddl/index",
                   "sql/ddl/job"
                 ],
@@ -451,26 +475,25 @@
                   "sql/dql/select",
                   "sql/dql/subqueries",
                   "sql/dql/join",
+                  "sql/dql/operators",
+                  "sql/dql/functions",
+                  "sql/dql/scalar-functions",
                   "sql/dql/aggregation",
                   "sql/dql/window",
                   "sql/dql/sampling",
                   "sql/dql/changes",
                   "sql/dql/fts",
+                  "sql/dql/contains-tokens",
+                  "sql/dql/ivf-partition",
                   "sql/dql/dedupe",
                   "sql/dql/duplicate-pairs",
+                  "sql/dql/vector-distance",
+                  "sql/dql/json-functions",
+                  "sql/dql/blob-descriptor",
+                  "sql/dql/generate-series",
                   "sql/dql/explain"
                 ],
                 "icon": "filter"
-              },
-              {
-                "group": "Expressions",
-                "pages": [
-                  "sql/operators",
-                  "sql/functions",
-                  "sql/scalar-functions",
-                  "sql/prepared-statements"
-                ],
-                "icon": "code"
               }
             ]
           }

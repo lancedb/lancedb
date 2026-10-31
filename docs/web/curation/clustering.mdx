@@ -1,0 +1,142 @@
+---
+title: "Cluster records by index partition"
+sidebarTitle: "Clustering"
+description: "Group records by the partition an existing IVF vector index already assigns them to, without training a new clustering model."
+icon: circle-nodes
+keywords: ["clustering", "ivf_partition", "ivf", "vector index", "group by", "centroid"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+`ivf_partition` groups records by the partition a vector falls into, using the
+centroids of an IVF-family vector index you already built for search -- no
+separate clustering model to train or maintain. Use it as a `GROUP BY` key to
+aggregate per cluster, or to sample across clusters instead of across rows.
+
+## Example data {#example-data}
+
+Connect with an [Enterprise connection](/basics/catalog#enterprise).
+
+<Accordion title="Create the example table">
+
+Use the same `curation_embeddings` fixture as [dedupe](/curation/dedupe#example-data)
+-- eight records, where rows 10 and 20 are near-identical, 30, 40 and 50
+form one looser cluster, and 60, 70 and 80 are each distinct and
+increasingly far apart -- but build the index with more partitions.
+Clustering wants partitions fine-grained enough to tell the two clusters
+apart; deduplication only needs a distance threshold within one:
+
+<CodeGroup>
+```python Python icon="python"
+table.create_index("embedding", config=IvfFlat(num_partitions=5, distance_type="l2"))
+table.wait_for_index(["embedding_idx"])
+```
+</CodeGroup>
+
+`ivf_partition` reads an existing index's trained centroids; it does not
+train one. The column needs an up-to-date, single-segment IVF-family index
+before the function runs, the same requirement [`dedupe`](/curation/dedupe#example-data)
+has.
+
+</Accordion>
+
+## Group records by partition {#group}
+
+`ivf_partition(column)` returns the partition each row's vector falls into.
+Rows closer to the same centroid than to any other land in the same
+partition, so the near-identical cat photos (10, 20) group together, the
+three dog photos (30, 40, 50) group together, and the three increasingly
+distant photos (60, 70, 80) are more likely to each keep their own partition:
+
+<CodeGroup>
+```sql SQL icon="database"
+SELECT ivf_partition(embedding) AS cluster, array_agg(id) AS ids, count(*) AS n
+FROM curation_embeddings
+GROUP BY cluster
+ORDER BY cluster
+```
+</CodeGroup>
+
+The exact partition numbers depend on how the index's centroids were trained,
+but rows that are close together in embedding space consistently land in the
+same group. Aggregate anything per cluster this way -- `count(*)` for cluster
+sizes, `avg(score)` for a per-cluster quality signal, or `array_agg(id)` to
+collect candidate rows for a downstream pass.
+
+## Sample across clusters instead of across rows {#sample}
+
+Pass a selection mode to group by only a subset of the index's partitions,
+instead of all of them:
+
+<CodeGroup>
+```sql SQL icon="database"
+-- The first 2 partitions, deterministically
+SELECT ivf_partition(embedding, 'first', 2) AS cluster, array_agg(id) AS ids
+FROM curation_embeddings
+GROUP BY cluster;
+
+-- 2 partitions chosen at random, reproducible via the seed
+SELECT ivf_partition(embedding, 'random', 2, 42) AS cluster, array_agg(id) AS ids
+FROM curation_embeddings
+GROUP BY cluster;
+```
+</CodeGroup>
+
+`'first'` takes the first `count` partitions and accepts no seed, since the
+result is already deterministic. `'random'` requires a seed, so the same
+call reproduces the same partitions. Either way, the result is a
+spatially-stratified sample across the embedding space: one that covers
+each selected region of the data, rather than a plain row sample that can
+easily pick many near-duplicate rows from a dense cluster and miss a sparse
+one entirely.
+
+## Keep a clustering current with a materialized view {#materialized}
+
+Wrap a `GROUP BY ivf_partition(...)` query in a
+[materialized view](/management/materialized-view) so the grouping stays
+current as new records arrive:
+
+<CodeGroup>
+```sql SQL icon="database"
+CREATE MATERIALIZED VIEW curation_embeddings_clustered AS
+SELECT ivf_partition(embedding) AS cluster, array_agg(id) AS ids
+FROM curation_embeddings
+GROUP BY cluster
+```
+</CodeGroup>
+
+A refresh reassigns every row's partition from the index's current centroids,
+so retraining the index with
+[`replace=True`](/feature-engineering/add-computed-column) regroups the view
+on the next refresh. See
+[Refresh a materialized view](/feature-engineering/refresh-materialized-view)
+for manual and automatic refresh options.
+
+## A typical use case: deduplication {#dedupe}
+
+Near-duplicate records are close together in embedding space, so they
+consistently land in the same or a neighboring partition. Grouping by
+`ivf_partition` first, then comparing distances only within each group, finds
+near-duplicate candidates without a full pairwise scan across the whole
+table.
+
+This is exactly the approach [`dedupe` and `duplicate_pairs`](/curation/dedupe)
+use internally, packaged as a table function with a `distance_threshold`
+instead of a `GROUP BY` clause to write yourself. Reach for those directly for
+deduplication; use `ivf_partition` when the task is a different kind of
+per-cluster grouping or sampling, not deduplication specifically.
+
+## Related guides {#next}
+
+<CardGroup cols={2}>
+  <Card title="IVF_PARTITION" icon="circle-nodes" href="/sql/dql/ivf-partition">
+    The full function signature: arguments, sampling modes, and positional syntax.
+  </Card>
+  <Card title="Deduplicate near-duplicates" icon="clone" href="/curation/dedupe">
+    The packaged table function for the deduplication use case above.
+  </Card>
+  <Card title="Sampling" icon="dice" href="/curation/sampling">
+    Row-level and fragment-level sampling, without clustering.
+  </Card>
+</CardGroup>

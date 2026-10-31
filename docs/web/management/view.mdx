@@ -30,3 +30,17 @@ Views are created in LanceDB Enterprise, either in SQL over the
 `createView`, which send the query to the deployment. Either way, the deployment
 must have views enabled. See [View](/sql/ddl/view) for `CREATE VIEW`,
 `DROP VIEW`, and listing.
+
+## Privileges {#privileges}
+
+A view's `OWNERSHIP` and `SELECT` are granted through the REST ACL API or
+SQL `GRANT`/`REVOKE`:
+
+<CodeGroup>
+```sql SQL icon="database"
+GRANT SELECT ON VIEW dashboard TO ROLE analysts
+```
+</CodeGroup>
+
+See [Privileges](/governance/privileges#sql) for the full statement syntax
+and every target it reaches.

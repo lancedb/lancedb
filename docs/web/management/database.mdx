@@ -21,7 +21,7 @@ objects, and configure how your application reaches the data.
 | --- | --- | --- |
 | `./.lancedb` | LanceDB Embedded, with local storage | In your application |
 | `s3://bucket/path`, `gs://bucket/path`, `az://container/path` | LanceDB Embedded, with object storage | In your application |
-| `db://my-database` | LanceDB Enterprise | On the Enterprise service (LanceDB Distributed) |
+| `db://my-database` | LanceDB Enterprise | On the Enterprise service |
 
 [Connect to LanceDB](/basics/catalog) has examples for each connection type.
 A connection to object storage still uses the embedded library: your process
@@ -84,7 +84,7 @@ Set stable row IDs before creating a table that needs them, such as an ordinary
 materialized-view source in Python SDK 0.40.0. The option does not change tables
 that already exist. Enterprise storage settings are managed on the server.
 
-See [Storage](/deployment/storage) for provider credentials and other options.
+See [Object storage](/basics/catalog#object-storage) for provider credentials and other options.
 
 ## Read consistency {#consistency}
 
@@ -145,12 +145,14 @@ and `drop_all_tables()` operations remove all tables without a confirmation prom
 Python's `connect_async` returns an `AsyncConnection`. Await its operations
 when working in an asynchronous application:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 import lancedb
 
 db = await lancedb.connect_async("./.lancedb")
 table = await db.open_table("documents")
 ```
+</CodeGroup>
 
 TypeScript's connection and table operations already return promises.
 
@@ -158,3 +160,17 @@ An async connection and a background job serve different purposes. Async APIs
 let other tasks run while your application waits for an operation. A
 [job](/basics/jobs) represents work that can continue on the server after the
 submission call returns.
+
+## Privileges {#privileges}
+
+A database's `OWNERSHIP`, `USAGE` and `CREATE_NAMESPACE` are granted through
+the REST ACL API or SQL `GRANT`/`REVOKE`:
+
+<CodeGroup>
+```sql SQL icon="database"
+GRANT USAGE, CREATE SCHEMA ON DATABASE analytics TO ROLE readers
+```
+</CodeGroup>
+
+See [Privileges](/governance/privileges#sql) for the full statement syntax
+and every target it reaches.

@@ -20,24 +20,28 @@ underlying query is cheap enough to simply re-run on every read.
 
 A view over a products table, selecting and deriving a few columns:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 CREATE VIEW "discounted_products" AS
 SELECT id, name, price, price * 0.9 AS sale_price
 FROM "products"
 WHERE in_stock = true
 ```
+</CodeGroup>
 
 The statement resolves the view's schema from the query at creation time.
-Anything the [SQL dialect](/sql/functions) supports can define one: joins,
+Anything the [SQL dialect](/sql/dql/functions) supports can define one: joins,
 predicates, aggregates, window functions -- the same expressiveness as
 [a computed column's](/feature-engineering/add-computed-column#expressions)
 SQL expression, just over a whole derived table instead of one column.
 
 ## Read it like a table {#reading}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT * FROM "discounted_products" WHERE sale_price < 20
 ```
+</CodeGroup>
 
 Every read runs the saved query against current data, so `sale_price`
 reflects whatever `price` is right now -- there is no staleness window to

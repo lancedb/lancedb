@@ -23,27 +23,31 @@ catalog removal; physical cleanup can continue afterward.
 
 ## CREATE VIEW {#create}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 CREATE VIEW "recent_matches" AS
 SELECT t1.floats
 FROM "documents" AS t1
 INNER JOIN "categories" AS t2 ON t1.ints = t2.ints
 ```
+</CodeGroup>
 
 The statement returns one UTF-8 `definition` column containing JSON with the
 view name, namespace, original query, default database and namespace, and its
 Arrow schema resolved at creation time. `DESCRIBE VIEW "recent_matches"`
 returns the same metadata shape. Anything the
-[dialect](/sql/functions) supports can define one: joins, predicates,
+[dialect](/sql/dql/functions) supports can define one: joins, predicates,
 aggregates, window functions.
 
 ## Reading one {#reading}
 
 A view is queried like a table:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT * FROM "recent_matches" WHERE floats > 0.5
 ```
+</CodeGroup>
 
 Predicates applied to the view compose with the query inside it rather than
 filtering its output afterwards, so a selective filter does not pay for rows
@@ -51,9 +55,11 @@ the view would have produced and then discarded.
 
 ## DROP VIEW {#drop}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 DROP VIEW "recent_matches"
 ```
+</CodeGroup>
 
 Removes the saved query. Unlike dropping a table, no data is removed: there
 was none to begin with.

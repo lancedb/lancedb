@@ -8,17 +8,21 @@ keywords: ["grant", "revoke", "privileges", "authorization", "sql", "ownership"]
 
 <Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 GRANT <privilege>[, ...] ON { SECRET | FUNCTION } <name> TO <grantee>[, ...]
 GRANT <privilege>[, ...] ON SCHEMA <namespace> TO <grantee>[, ...]
 REVOKE <privilege>[, ...] ON ... FROM <grantee>[, ...]
 ```
+</CodeGroup>
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 GRANT USAGE, UPDATE ON SECRET api_key TO ROLE readers, writers
 GRANT CREATE FUNCTION ON SCHEMA analytics TO ROLE data_science
 REVOKE USAGE ON FUNCTION embed FROM ROLE readers
 ```
+</CodeGroup>
 
 ## Privileges {#privileges}
 
@@ -37,18 +41,22 @@ more than one grantee for the same reason.
 </Warning>
 
 These are a subset of the full privilege model; see
-[Authorization](/governance/authorization#privileges) for privileges on
-tables, views and namespaces, which this statement does not grant.
+[Privileges](/governance/privileges) for privileges on tables, views,
+databases and namespaces, which this statement does not grant.
 
 ## Grantees {#grantees}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 <grantee> ::= [ ROLE ] <role> | [ { USER | GROUP } ] { <name> | ID '<id>' }
 ```
+</CodeGroup>
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 GRANT USAGE ON SECRET api_key TO ROLE readers, USER alice, GROUP ID 'g1'
 ```
+</CodeGroup>
 
 A grantee is a role, or a user or group named by its identity-directory name
 or its directory ID. A grantee with no leading `ROLE`/`USER`/`GROUP` keyword
@@ -62,13 +70,14 @@ exactly as written.
 A `SECRET` or `FUNCTION` target can be qualified with its namespace and
 database, the same as anywhere else: `SECRET analytics.api_key`,
 `SECRET db1.analytics.api_key`. A `SCHEMA` target is the namespace itself.
-There is no `TABLE` target: table privileges are granted through
-[Authorization](/governance/authorization), not this statement.
+`DATABASE`, `TABLE`, `VIEW`, `MATERIALIZED VIEW` and `STORAGE INTEGRATION`
+targets also exist, granting the broader privilege set covered on
+[Privileges](/governance/privileges#sql), not reproduced on this page.
 
 ## What to read next {#next}
 
 <CardGroup cols={2}>
-  <Card title="Authorization" icon="user-shield" href="/governance/authorization">
+  <Card title="Privileges" icon="key" href="/governance/privileges">
     The full privilege model, and how creation privileges resolve upward.
   </Card>
   <Card title="Namespace" icon="folder-tree" href="/sql/ddl/namespace">

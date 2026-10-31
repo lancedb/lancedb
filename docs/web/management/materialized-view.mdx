@@ -104,6 +104,21 @@ Enterprise supports creating and refreshing materialized views on remote
 compute. Use the SDK version supported by your deployment, or the
 [SQL interface](/sql/ddl/materialized-view).
 
+## Privileges {#privileges}
+
+A materialized view **is** a table (see [Dropping one](/sql/ddl/materialized-view#drop)),
+so the same `OWNERSHIP`, `SELECT`, `INSERT`, `UPDATE` and `DELETE`
+privileges apply, granted through the REST ACL API or SQL `GRANT`/`REVOKE`:
+
+<CodeGroup>
+```sql SQL icon="database"
+GRANT SELECT, UPDATE ON MATERIALIZED VIEW daily_rollup TO ROLE analysts
+```
+</CodeGroup>
+
+See [Privileges](/governance/privileges#sql) for the full statement syntax
+and every target it reaches.
+
 ## Related guides {#next}
 
 <CardGroup cols={2}>

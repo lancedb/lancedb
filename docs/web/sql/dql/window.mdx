@@ -13,48 +13,56 @@ A window function computes across a set of rows related to the current one and
 returns a value **per row**. That is the difference from
 [aggregation](/sql/dql/aggregation), which collapses the rows it covers.
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT
     title,
     score,
     row_number() OVER (PARTITION BY category ORDER BY score DESC) AS rank
 FROM documents
 ```
+</CodeGroup>
 
 Every row survives; each one gains its rank within its category.
 
 ## The window {#window}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 OVER (
     [PARTITION BY expr [, ...]]
     [ORDER BY expr [, ...]]
     [ROWS | RANGE BETWEEN frame_start AND frame_end]
 )
 ```
+</CodeGroup>
 
 `PARTITION BY` splits the rows into independent groups. `ORDER BY` orders them
 inside each partition. Supply an ordering for useful ranks, and a stable
 tie-breaker when selecting one row from several equal values. The frame clause narrows the window further, which is
 how running totals and moving averages are expressed:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT
     created_at,
     sum(amount) OVER (ORDER BY created_at ROWS UNBOUNDED PRECEDING) AS running_total,
     avg(amount) OVER (ORDER BY created_at ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) AS trailing_7
 FROM transactions
 ```
+</CodeGroup>
 
 A `WINDOW` clause names a definition when several functions share one:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT
     row_number() OVER w,
     lag(score) OVER w
 FROM documents
 WINDOW w AS (PARTITION BY category ORDER BY score DESC)
 ```
+</CodeGroup>
 
 ## The functions {#functions}
 
@@ -82,13 +90,15 @@ window function. This is how running totals and moving averages are written.
 The common practical use: keep one row per key, chosen by some ordering. A
 window ranks, and an outer query filters:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 WITH ranked AS (
     SELECT *, row_number() OVER (PARTITION BY doc_id ORDER BY version DESC) AS rn
     FROM revisions
 )
 SELECT * FROM ranked WHERE rn = 1
 ```
+</CodeGroup>
 
 The outer query is needed because a window function cannot appear in `WHERE`:
 windows are computed after filtering, so the predicate would have nothing to

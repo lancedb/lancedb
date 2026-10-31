@@ -11,13 +11,17 @@ availability:
 
 A LanceDB extension with no DataFusion equivalent.
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 REFRESH MATERIALIZED VIEW <name>
 ```
+</CodeGroup>
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 REFRESH MATERIALIZED VIEW chunks
 ```
+</CodeGroup>
 
 A refresh updates the view's stored result. Refresh views in dependency order,
 starting with their source views.

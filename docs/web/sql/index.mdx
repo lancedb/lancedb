@@ -24,11 +24,13 @@ Use Python's `execute_query` or a Flight SQL client after configuring the
 [Enterprise connection](/basics/sql#sql-is-remote). TypeScript applications
 use a Flight SQL client for SQL queries.
 
-```python
+<CodeGroup>
+```python Python icon="python"
 reader = db.execute_query("SELECT id, text FROM my_docs LIMIT 10")
 for batch in reader:
     print(batch)
 ```
+</CodeGroup>
 
 SQL results arrive as Arrow record batches. Iterating over the reader avoids
 collecting the entire result in application memory. See
@@ -47,13 +49,15 @@ operations that have no SQL form, such as a merge insert. See
 
 | | |
 | --- | --- |
-| [Database](/sql/ddl/database) | `ATTACH DATABASE` |
-| [Namespace](/sql/ddl/namespace) | `CREATE SCHEMA`, `DROP SCHEMA` |
+| [Database](/sql/ddl/database) | `CREATE`, `DESCRIBE`, `SHOW`, `ATTACH`, `DROP DATABASE` |
+| [Namespace](/sql/ddl/namespace) | `CREATE`, `ALTER`, `DESCRIBE`, `SHOW`, `DROP SCHEMA`/`NAMESPACE` |
 | [Table](/sql/ddl/table) | `CREATE`, `DESCRIBE`, `ALTER`, `CLONE`, `DROP TABLE` |
 | [View](/sql/ddl/view) | `CREATE VIEW`, `DROP VIEW` |
 | [Materialized view](/sql/ddl/materialized-view) | `CREATE MATERIALIZED VIEW`, `SHOW MATERIALIZED VIEWS` |
+| [Secret](/sql/ddl/secret) | `CREATE`, `ALTER`, `DESCRIBE`, `SHOW`, `DROP SECRET` |
+| [Storage Integration](/sql/ddl/storage-integration) | `CREATE`, `DESCRIBE`, `SHOW`, `DROP STORAGE INTEGRATION` |
 | [Index](/sql/ddl/index) | `CREATE INDEX`, `DROP INDEX` |
-| [Job](/sql/ddl/job) | `SHOW JOBS`, `SHOW ERRORS`, `PAUSE`/`RESUME`/`CANCEL JOB` |
+| [Job](/sql/ddl/job) | `SHOW JOBS`, `SHOW JOB EVENTS`, `DESCRIBE JOB`, `SHOW ERRORS`, `PAUSE`/`RESUME`/`CANCEL JOB` |
 
 {/*
 Draft for the Functions release. Add this row to the table above, after Index:
@@ -84,16 +88,10 @@ Draft for the Functions release. Add this row to the table above, after Index:
 | [Sampling](/sql/dql/sampling) | `TABLESAMPLE`, by rows or by fragments |
 | [Changes](/sql/dql/changes) | `CHANGES`: rows appended since an earlier version |
 | [Full-Text Search](/sql/dql/fts) | the `fts()` table function, and its query forms |
+| [Operators](/sql/dql/operators) | comparison, logical, arithmetic, literals, precedence |
+| [Functions](/sql/dql/functions) | where to find each kind, and table functions |
+| [Scalar functions](/sql/dql/scalar-functions) | the per-row catalogue, and what Lance accelerates |
 | [Explain](/sql/dql/explain) | `EXPLAIN`, `EXPLAIN ANALYZE`, `EXPLAIN VERBOSE` |
-
-### Expressions {#expressions}
-
-| | |
-| --- | --- |
-| [Operators](/sql/operators) | comparison, logical, arithmetic, literals, precedence |
-| [Functions](/sql/functions) | where to find each kind, and table functions |
-| [Scalar functions](/sql/scalar-functions) | the per-row catalogue, and what Lance accelerates |
-| [Prepared statements](/sql/prepared-statements) | preparing through a Flight SQL client |
 
 ## SQL limitations and alternatives {#cannot}
 
@@ -103,7 +101,7 @@ Draft for the Functions release. Add this row to the table above, after Index:
 | Merge insert | no SQL form: it needs a source relation and a per-match policy |
 | `information_schema` | not enabled, so `SHOW TABLES` and `SHOW COLUMNS` fail |
 | `COPY` | refused by recent deployment versions (see [Copy](/sql/dml/copy)) |
-| `PREPARE` / `EXECUTE` | preparation is a [protocol feature](/sql/prepared-statements), not a statement |
+| `PREPARE` / `EXECUTE` | preparation is a [protocol feature](/basics/sql#prepared-statements), not a statement |
 | Run on a local database | no engine to plan the statement |
 
 See [Limits](/basics/limits#sql) for the bounds these pages enforce.
