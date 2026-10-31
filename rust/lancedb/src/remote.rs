@@ -14,6 +14,7 @@ pub(crate) mod job;
 pub mod oauth;
 mod retry;
 pub(crate) mod sql;
+mod storage_integration;
 pub(crate) mod table;
 pub(crate) mod token_cache;
 pub(crate) mod util;
@@ -35,7 +36,8 @@ fn extract_job_id(body: &str) -> Option<String> {
 pub use client::{ClientConfig, HeaderProvider, RetryConfig, TimeoutConfig, TlsConfig};
 pub use db::{RemoteDatabaseOptions, RemoteDatabaseOptionsBuilder};
 pub use oauth::{
-    AuthorizationCodeOptions, ClientAuthMethod, OAuthConfig, OAuthFlow, OAuthHeaderProvider,
+    AuthorizationCodeOptions, ClientAuthMethod, DeviceCodeOptions, OAuthConfig, OAuthFlow,
+    OAuthHeaderProvider,
 };
 pub use token_cache::{OAuthSession, SessionLogout, SessionStatus, TokenCacheOptions};
 

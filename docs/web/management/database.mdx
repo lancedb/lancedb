@@ -5,12 +5,8 @@ description: "Connect to LanceDB and configure storage, credentials and read con
 icon: database
 keywords: ["connect", "database", "uri", "api key", "storage options", "consistency"]
 availability:
-  oss: available
+  embedded: available
   enterprise: available
-  summary: >-
-    LanceDB Embedded opens tables in a local directory or object storage.
-    LanceDB Enterprise connects with a database URI and credentials and runs
-    operations with LanceDB Distributed.
 ---
 
 import { PyConnectEnterprisePlaceholders, TsConnectEnterprisePlaceholders } from '/snippets/connection.mdx';
@@ -27,11 +23,10 @@ objects, and configure how your application reaches the data.
 | `s3://bucket/path`, `gs://bucket/path`, `az://container/path` | LanceDB Embedded, with object storage | In your application |
 | `db://my-database` | LanceDB Enterprise | On the Enterprise service (LanceDB Distributed) |
 
-[Connect to LanceDB](/basics/connect) has examples for each connection type.
-A connection to object storage still uses LanceDB Embedded: your process
-reads and writes the bucket directly. LanceDB Enterprise runs LanceDB
-Distributed: query execution, indexing and maintenance run on the Enterprise
-service, outside your application.
+[Connect to LanceDB](/basics/catalog) has examples for each connection type.
+A connection to object storage still uses the embedded library: your process
+reads and writes the bucket directly. Enterprise runs operations remotely and
+manages the supporting compute and maintenance.
 
 ## Connect to Enterprise {#deployment}
 

@@ -26,7 +26,7 @@ This integration uses [AnswersDotAI's rerankers](https://github.com/AnswerDotAI/
 | `model_type` | `str` | `"colbert"` | The type of model to use. Supported model types can be found here: https://github.com/AnswerDotAI/rerankers. |
 | `model_name` | `str` | `"answerdotai/answerai-colbert-small-v1"` | The name of the reranker model to use. |
 | `column` | `str` | `"text"` | The name of the column to use as input to the cross encoder model. |
-| `return_score` | `str` | `"relevance"` | Options are "relevance" or "all". The type of score to return. If "relevance", will return only the `_relevance_score. If "all" is supported, will return relevance score along with the vector and/or fts scores depending on query type. |
+| `return_score` | `str` | `"relevance"` | Options are "relevance" or "all". The type of score to return. If "relevance", will return only the `_relevance_score` column. If "all" is supported, will return relevance score along with the vector and/or fts scores depending on query type. |
 
 
 

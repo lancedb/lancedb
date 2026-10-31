@@ -1,14 +1,12 @@
 ---
-title: "SQL sampling"
-sidebarTitle: "SQL Sampling"
+title: "Sampling"
+sidebarTitle: "Sampling"
 description: "Choose a sample for exploration or evaluation and preserve the selected records when reproducibility matters."
 icon: dice
 keywords: ["sampling", "tablesample", "subset", "eval set", "reproducible", "shuffle"]
 availability:
-  oss: unavailable
+  embedded: available
   enterprise: available
-  summary: >-
-    Enterprise supports SQL `TABLESAMPLE`. For sampling in LanceDB Embedded and LanceDB Enterprise through the Python SDK, see [Sample without SQL](#training).
 ---
 
 import { PySampleDataset } from '/snippets/curation_sampling.mdx';
@@ -17,10 +15,13 @@ Sampling selects records from a larger table. Use it to explore unfamiliar
 data, run a smaller experiment, or prepare an evaluation dataset. Enterprise
 SQL provides `TABLESAMPLE` for selecting a percentage or number of rows.
 
-This page covers Enterprise SQL sampling and a complete
-[Python SDK example](#training) that runs locally.
+Sampling works in LanceDB Embedded and LanceDB Enterprise through the
+[Python SDK](#training). SQL sampling, the sections marked Enterprise below, needs
+LanceDB Enterprise.
 
 ## Example data {#example-data}
+
+<Badge color="red">Enterprise</Badge>
 
 Connect with an [Enterprise SQL client](/basics/sql). The examples use a small
 document table and a separate label table. Expand the setup below to create them.
@@ -60,6 +61,8 @@ has no label. These cases let you check the effect of each operation.
 
 ## Basic sampling {#quick}
 
+<Badge color="red">Enterprise</Badge>
+
 A percentage selects a fraction of the source; `ROWS` requests a row count:
 
 ```sql
@@ -76,6 +79,8 @@ rather than assuming it contains every category you need.
 change a production table's write configuration just to try an example.
 
 ## Sampling methods {#methods}
+
+<Badge color="red">Enterprise</Badge>
 
 Choose a method according to how records should be selected:
 
@@ -98,6 +103,8 @@ all records or none. Row sampling also needs an adequate sample size to
 represent rare groups; check that the resulting sample covers the groups you need.
 
 ## Repeatable samples {#fixed}
+
+<Badge color="red">Enterprise</Badge>
 
 A seed requests a repeatable draw:
 
@@ -122,6 +129,8 @@ revisions of the same document into different splits; decide the
 training or evaluation.
 
 ## Sampling with joins {#joins}
+
+<Badge color="red">Enterprise</Badge>
 
 Sampling both input tables independently changes which pairs can match.
 For a one-to-one match, independent 10% row samples retain a given pair with
@@ -163,7 +172,7 @@ promise the same IDs across SDK versions or changes to the source dataset.
 </Accordion>
 
 For shuffled training reads, worker configuration and data loaders, see
-[Loading data for model training](/training/data-loading).
+[PyTorch Data Loader](/training/data-loading).
 
 ## Related guides {#reference}
 

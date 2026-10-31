@@ -14,6 +14,7 @@ on:
       - docs/web-tests/blob-v2/rs/**
       - nodejs/Cargo.toml
       - python/Cargo.toml
+      - .github/actions/setup-protoc/**
       - .github/workflows/rust.yml
 
 permissions:
@@ -270,7 +271,7 @@ jobs:
     timeout-minutes: 60
     strategy:
       matrix:
-        mac-runner: ["macos-14", "macos-15"]
+        mac-runner: ["macos-15", "macos-26"]
     runs-on: "${{ matrix.mac-runner }}"
     defaults:
       run:
@@ -324,8 +325,8 @@ jobs:
           # unreadable outside their own branch anyway, since GitHub scopes
           # caches to the creating ref.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Install Protoc v21.12
-        run: choco install --no-progress protoc
+      - name: Install protoc
+        uses: ./.github/actions/setup-protoc
       - name: Build
         run: |
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
@@ -361,8 +362,8 @@ jobs:
           # unreadable outside their own branch anyway, since GitHub scopes
           # caches to the creating ref.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Install Protoc v21.12
-        run: choco install --no-progress protoc
+      - name: Install protoc
+        uses: ./.github/actions/setup-protoc
       - name: Build
         run: |
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
@@ -381,7 +382,7 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       matrix:
-        msrv: ["1.94.0"] # This should match up with rust-version in Cargo.toml
+        msrv: ["1.95.0"] # This should match up with rust-version in Cargo.toml
     env:
       # Need up-to-date compilers for kernels
       CC: clang-18
@@ -404,10 +405,18 @@ jobs:
           # unreadable outside their own branch anyway, since GitHub scopes
           # caches to the creating ref.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Downgrade dependencies
-        # aws-smithy-types 1.6.1+ requires rustc 1.94.1
-        run: cargo update -p aws-smithy-types --precise 1.5.0
+      - name: Resolve MSRV-compatible dependencies
+        # Resolve the AWS SDK and Smithy crates together: newer SDK releases
+        # require newer Smithy versions, so downgrading only Smithy can fail.
+        run: cargo +${{ matrix.msrv }} update --config 'resolver.incompatible-rust-versions="fallback"'
+      - name: Keep Xet dependencies compatible with the MSRV
+        # Xet 1.7 does not declare its MSRV, but requires sysinfo 0.39 (Rust 1.95).
+        # Downgrade parents before their dependencies to satisfy their constraints.
+        run: |
+          for crate in hf-xet xet-data xet-client xet-core-structures xet-runtime; do
+            cargo +${{ matrix.msrv }} update -p "$crate" --precise 1.6.0
+          done
       - name: cargo +${{ matrix.msrv }} check
         env:
           RUSTUP_TOOLCHAIN: ${{ matrix.msrv }}
-        run: cargo check --profile ci --workspace --tests --benches --all-features
+        run: cargo check --locked --profile ci --workspace --tests --benches --all-features

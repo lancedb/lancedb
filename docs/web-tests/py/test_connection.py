@@ -41,6 +41,7 @@ def connect_enterprise_quickstart_config():
         api_key=os.environ["LANCEDB_API_KEY"],
         region=os.environ.get("LANCEDB_REGION", "us-east-1"),
         host_override=os.environ["LANCEDB_HOST_OVERRIDE"],  # https://your-endpoint
+        sql_host_override=os.environ["LANCEDB_SQL_HOST_OVERRIDE"],
     )
     # --8<-- [end:connect_enterprise_quickstart]
     return db
@@ -60,6 +61,9 @@ def test_connect_enterprise_quickstart(monkeypatch):
     monkeypatch.setenv("LANCEDB_API_KEY", "your-api-key")
     monkeypatch.delenv("LANCEDB_REGION", raising=False)
     monkeypatch.setenv("LANCEDB_HOST_OVERRIDE", "https://your-endpoint")
+    monkeypatch.setenv(
+        "LANCEDB_SQL_HOST_OVERRIDE", "grpc+tls://your-sql-endpoint:10026"
+    )
 
     assert connect_enterprise_quickstart_config() is not None
     assert captured == {
@@ -67,6 +71,7 @@ def test_connect_enterprise_quickstart(monkeypatch):
         "api_key": "your-api-key",
         "region": "us-east-1",
         "host_override": "https://your-endpoint",
+        "sql_host_override": "grpc+tls://your-sql-endpoint:10026",
     }
 
 
@@ -76,6 +81,16 @@ def test_connect_enterprise_quickstart_requires_an_endpoint(monkeypatch):
     monkeypatch.delenv("LANCEDB_HOST_OVERRIDE", raising=False)
 
     with pytest.raises(KeyError, match="LANCEDB_HOST_OVERRIDE"):
+        connect_enterprise_quickstart_config()
+
+
+def test_connect_enterprise_quickstart_requires_a_sql_endpoint(monkeypatch):
+    monkeypatch.setenv("LANCEDB_URI", "db://your-database")
+    monkeypatch.setenv("LANCEDB_API_KEY", "your-api-key")
+    monkeypatch.setenv("LANCEDB_HOST_OVERRIDE", "https://your-endpoint")
+    monkeypatch.delenv("LANCEDB_SQL_HOST_OVERRIDE", raising=False)
+
+    with pytest.raises(KeyError, match="LANCEDB_SQL_HOST_OVERRIDE"):
         connect_enterprise_quickstart_config()
 
 
@@ -169,6 +184,7 @@ def test_namespace_admin_ops(tmp_path, monkeypatch, capsys):
     )
     assert db.list_namespaces().namespaces == []
 
+
 async def connect_object_storage_config_async():
     # --8<-- [start:connect_object_storage_async]
     import lancedb
@@ -199,6 +215,7 @@ def test_connect_enterprise_placeholders(monkeypatch):
         api_key="your-api-key",
         region="us-east-1",
         host_override="https://your-endpoint",
+        sql_host_override="grpc+tls://your-sql-endpoint:10026",
     )
     # --8<-- [end:connect_enterprise_placeholders]
     assert db is not None
@@ -207,4 +224,5 @@ def test_connect_enterprise_placeholders(monkeypatch):
         "api_key": "your-api-key",
         "region": "us-east-1",
         "host_override": "https://your-endpoint",
+        "sql_host_override": "grpc+tls://your-sql-endpoint:10026",
     }

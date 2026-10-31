@@ -28,6 +28,7 @@ use crate::database::{
 };
 use crate::embeddings::{EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
+use crate::graph::{PropertyGraphDefinition, PropertyGraphDescription};
 use crate::listing::{Listing, ListingOptions, ListingPage};
 #[cfg(feature = "remote")]
 use crate::remote::{
@@ -38,7 +39,10 @@ use crate::remote::{
     },
 };
 use crate::secrets::SecretInfo;
-use crate::utils::{validate_namespace, validate_secret_reference, validate_view_reference};
+use crate::utils::{
+    validate_namespace, validate_property_graph_reference, validate_secret_reference,
+    validate_view_reference,
+};
 use crate::view::ViewDescription;
 use lance::io::ObjectStoreParams;
 pub use lance_file::version::LanceFileVersion;
@@ -528,6 +532,12 @@ impl Connection {
         ExecuteQueryAsyncBuilder::new(self.internal.clone(), query.into())
     }
 
+    /// Establish the remote SQL transport without executing a statement.
+    /// This checks connectivity and TLS; authentication is checked by subsequent requests.
+    pub async fn check_sql_connection(&self) -> Result<()> {
+        self.internal.check_sql_connection().await
+    }
+
     /// Describe a submitted SQL query by its connection-scoped id.
     ///
     /// This performs one bounded status poll using state retained by this
@@ -640,9 +650,10 @@ impl Connection {
     /// in `namespace_path`, which is empty for the root namespace.
     ///
     /// The server-side job builds the OCI image, then registers the completed
-    /// artifact. Waiting on the returned typed job yields the durable
-    /// [`crate::function::FunctionVersion`]. Creation is supported only in LanceDB Distributed.
-    /// LanceDB Embedded databases return [`Error::NotSupported`].
+    /// artifact. The returned job has type `query` and the SQL query UUID as its
+    /// ID. Waiting on the returned typed job yields the durable
+    /// [`crate::function::FunctionVersion`]. Creation is remote-only.
+    /// Local databases return [`Error::NotSupported`].
     ///
     pub async fn create_function_async(
         &self,
@@ -724,12 +735,11 @@ impl Connection {
             .await
     }
 
-    /// Start dropping a Function and return its cleanup job.
+    /// Drop a Function binding and return its SQL query handle.
     ///
-    /// The name is unbound before this returns; the object's content may still be being
-    /// deleted. Await [`Job::wait`][crate::job::Job::wait] to wait for that to finish. When
-    /// the server deletes inline, or when nothing was bound, the returned job is already
-    /// finished and has no id. LanceDB Embedded databases return [`Error::NotSupported`].
+    /// The boolean reports catalog removal. The query job retains its query ID,
+    /// and repeated waits confirm completion. Physical cleanup continues in the
+    /// background. Local databases return [`Error::NotSupported`].
     pub async fn drop_function_async(
         &self,
         name: impl AsRef<str>,
@@ -738,6 +748,69 @@ impl Connection {
     ) -> Result<(bool, crate::job::Job)> {
         self.internal
             .drop_function_async(name.as_ref(), version.as_ref(), namespace_path)
+            .await
+    }
+
+    /// Register storage access in this database. Names follow Secret namespace rules.
+    ///
+    /// ```
+    /// # async fn example(db: &lancedb::Connection) -> lancedb::Result<()> {
+    /// use lancedb::storage_integration::CreateStorageIntegrationRequest;
+    /// let info = db.create_storage_integration("raw", CreateStorageIntegrationRequest::s3("s3://customer-bucket/raw/", "arn:aws:iam::123456789012:role/access"), &[]).await?;
+    /// println!("{}", info.configuration_instructions);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn create_storage_integration(
+        &self,
+        name: impl AsRef<str>,
+        request: crate::storage_integration::CreateStorageIntegrationRequest,
+        namespace_path: &[String],
+    ) -> Result<crate::storage_integration::StorageIntegrationInfo> {
+        validate_secret_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .create_storage_integration(name.as_ref(), request, namespace_path)
+            .await
+    }
+    /// Describe a storage integration, returning secret references without credential values.
+    pub async fn describe_storage_integration(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<crate::storage_integration::StorageIntegrationInfo> {
+        validate_secret_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .describe_storage_integration(name.as_ref(), namespace_path)
+            .await
+    }
+    /// Lazily list storage integrations in a namespace of this database.
+    pub fn list_storage_integrations(
+        &self,
+        namespace_path: &[String],
+        options: ListingOptions,
+    ) -> Listing<String> {
+        let database = self.database().clone();
+        let namespace_path = namespace_path.to_vec();
+        Listing::new(options, move |options| {
+            let database = database.clone();
+            let namespace_path = namespace_path.clone();
+            async move {
+                validate_namespace(&namespace_path)?;
+                database
+                    .list_storage_integrations(&namespace_path, options)
+                    .await
+            }
+        })
+    }
+    /// Drop an integration with ownership permission; integrations in use cannot be dropped.
+    pub async fn drop_storage_integration(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<()> {
+        validate_secret_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .drop_storage_integration(name.as_ref(), namespace_path)
             .await
     }
 
@@ -917,31 +990,23 @@ impl Connection {
             .await
     }
 
-    /// Drop a view and wait for its definition to be deleted.
+    /// Drop a view and wait for catalog removal.
     ///
     /// The tables it reads are untouched: a view holds no rows of its own.
-    /// Use [`Connection::drop_view_async`] to get the cleanup job instead of
-    /// waiting on it. LanceDB Embedded databases return [`Error::NotSupported`].
+    /// Use [`Connection::drop_view_async`] to retain its SQL query job.
+    /// Completion confirms catalog removal; physical cleanup continues
+    /// separately. LanceDB Embedded databases return [`Error::NotSupported`].
     pub async fn drop_view(&self, name: impl AsRef<str>, namespace_path: &[String]) -> Result<()> {
         validate_view_reference(name.as_ref(), namespace_path)?;
         self.internal.drop_view(name.as_ref(), namespace_path).await
     }
 
-    /// Start dropping a view and return the job deleting its definition.
+    /// Drop a view and return its SQL query job.
     ///
-    /// The name is free before this returns; the definition dataset may still
-    /// be being deleted. Await [`Job::wait`][crate::job::Job::wait] to wait for
-    /// that. When nothing was bound to the name, the returned job is already
-    /// finished and has no id. LanceDB Embedded databases return [`Error::NotSupported`].
-    ///
-    /// ```no_run
-    /// # use lancedb::Connection;
-    /// # async fn drop(conn: &Connection) -> lancedb::Result<()> {
-    /// let job = conn.drop_view_async("recent_orders", &[]).await?;
-    /// job.wait().await?;
-    /// # Ok(())
-    /// # }
-    /// ```
+    /// The job has type `query` and its ID is the SQL query UUID. Await
+    /// [`Job::wait`][crate::job::Job::wait] to confirm catalog removal; physical
+    /// cleanup continues separately. LanceDB Embedded databases return
+    /// [`Error::NotSupported`].
     pub async fn drop_view_async(
         &self,
         name: impl AsRef<str>,
@@ -984,6 +1049,138 @@ impl Connection {
             async move {
                 validate_namespace(&namespace_path)?;
                 database.list_views(&namespace_path, options).await
+            }
+        })
+    }
+
+    /// Create a property graph over tables in its namespace.
+    ///
+    /// The definition names the tables that hold its nodes, with each one's
+    /// key column and label, and the tables that hold its edges, with the node
+    /// keys each one's source and destination columns reference -- the shape
+    /// of SQL/PGQ's `CREATE PROPERTY GRAPH`. The graph stores nothing else: a
+    /// query reads its tables through SQL `GRAPH_TABLE`, as they are when it
+    /// runs.
+    ///
+    /// The database checks the definition against the tables now, so one they
+    /// cannot satisfy is refused here rather than at the first query. The
+    /// returned description lists each table's properties as they resolved.
+    /// A name another property graph holds is an error. Local databases return
+    /// [`Error::NotSupported`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use futures::TryStreamExt;
+    /// use lancedb::graph::{EdgeTable, Endpoint, NodeTable, PropertyGraphDefinition};
+    ///
+    /// # async fn graph_lifecycle(
+    /// #     connection: &lancedb::Connection,
+    /// # ) -> Result<(), Box<dyn std::error::Error>> {
+    /// let namespace = vec!["analytics".to_string()];
+    ///
+    /// let definition = PropertyGraphDefinition {
+    ///     nodes: vec![NodeTable::new("person", "person_id", "Person").properties(["name"])],
+    ///     edges: vec![EdgeTable::new(
+    ///         "knows",
+    ///         "KNOWS",
+    ///         Endpoint::new("src_id", "person", "person_id"),
+    ///         Endpoint::new("dst_id", "person", "person_id"),
+    ///     )],
+    /// };
+    /// let graph = connection
+    ///     .create_property_graph("social", &definition, &namespace)
+    ///     .await?;
+    /// // The key is always a property, beside the columns asked for.
+    /// println!("{:?}", graph.definition.nodes[0].properties);
+    ///
+    /// let names: Vec<_> = connection
+    ///     .list_property_graphs(&namespace, Default::default())
+    ///     .try_collect()
+    ///     .await?;
+    /// assert!(names.iter().any(|name| name == "social"));
+    ///
+    /// // Dropping the graph leaves `person` and `knows` untouched.
+    /// connection.drop_property_graph("social", &namespace).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn create_property_graph(
+        &self,
+        name: impl AsRef<str>,
+        definition: &PropertyGraphDefinition,
+        namespace_path: &[String],
+    ) -> Result<PropertyGraphDescription> {
+        validate_property_graph_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .create_property_graph(name.as_ref(), definition, namespace_path)
+            .await
+    }
+
+    /// What this database records about one property graph: its node and edge
+    /// tables, with each table's properties as create resolved them.
+    ///
+    /// Local databases return [`Error::NotSupported`].
+    pub async fn describe_property_graph(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<PropertyGraphDescription> {
+        validate_property_graph_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .describe_property_graph(name.as_ref(), namespace_path)
+            .await
+    }
+
+    /// Drop a property graph and wait for its definition to be deleted.
+    ///
+    /// The tables it reads are untouched: a property graph holds no rows of
+    /// its own. Local databases return [`Error::NotSupported`].
+    pub async fn drop_property_graph(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<()> {
+        validate_property_graph_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .drop_property_graph(name.as_ref(), namespace_path)
+            .await
+    }
+
+    /// The names of the property graphs in one namespace.
+    ///
+    /// Names only; a definition comes from [`Self::describe_property_graph`].
+    /// Local databases return [`Error::NotSupported`].
+    ///
+    /// Results are fetched lazily, one page at a time. See [`Listing`]
+    /// for cached-result and continuation-token semantics. Errors terminate iteration.
+    ///
+    /// ```
+    /// use futures::TryStreamExt;
+    ///
+    /// # async fn example(connection: &lancedb::Connection) -> lancedb::Result<()> {
+    /// let mut items = connection.list_property_graphs(&[], Default::default());
+    /// while let Some(item) = items.try_next().await? {
+    ///     println!("{item:?}");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn list_property_graphs(
+        &self,
+        namespace_path: &[String],
+        options: ListingOptions,
+    ) -> Listing<String> {
+        let database = self.database().clone();
+        let namespace_path = namespace_path.to_vec();
+        Listing::new(options, move |options| {
+            let database = database.clone();
+            let namespace_path = namespace_path.clone();
+            async move {
+                validate_namespace(&namespace_path)?;
+                database
+                    .list_property_graphs(&namespace_path, options)
+                    .await
             }
         })
     }

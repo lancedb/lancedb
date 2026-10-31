@@ -1108,11 +1108,15 @@ class RemoteTable(Table):
             )
         )
 
-    def refresh_column(self, column: str):
-        return LOOP.run(self._table.refresh_column(column))
+    def refresh_column(self, column: str, *, batch_size: Optional[int] = None):
+        return LOOP.run(self._table.refresh_column(column, batch_size=batch_size))
 
-    def refresh_column_async(self, column: str) -> Job[RefreshColumnResult]:
-        return Job(LOOP.run(self._table.refresh_column_async(column)))
+    def refresh_column_async(
+        self, column: str, *, batch_size: Optional[int] = None
+    ) -> Job[RefreshColumnResult]:
+        return Job(
+            LOOP.run(self._table.refresh_column_async(column, batch_size=batch_size))
+        )
 
     def function_errors(
         self,
@@ -1152,6 +1156,18 @@ class RemoteTable(Table):
     def get_rte_spec(self) -> Optional["RTEWriteSpec"]:
         """Read the installed RTEWriteSpec, or ``None``."""
         return LOOP.run(self._table.get_rte_spec())
+
+    def get_table_overrides(self) -> dict[str, Any]:
+        """Read Enterprise table overrides for this table."""
+        return LOOP.run(self._table.get_table_overrides())
+
+    def update_table_overrides(self, **overrides: Any) -> dict[str, Any]:
+        """Merge Enterprise table overrides into the current table overrides."""
+        return LOOP.run(self._table.update_table_overrides(**overrides))
+
+    def reset_table_overrides(self) -> dict[str, Any]:
+        """Clear Enterprise table overrides for this table."""
+        return LOOP.run(self._table.reset_table_overrides())
 
     # WAL-PK-FUSION: delete both hooks.
     def _hybrid_pk_fusion_learned(self) -> bool:
