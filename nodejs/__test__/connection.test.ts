@@ -158,7 +158,7 @@ describe("given a connection", () => {
     await expect(tbl.countRows()).resolves.toBe(1);
   });
 
-  it("should isolate object-form table creation across databases", async () => {
+  it("should isolate local object-form table creation across connections", async () => {
     const otherTmpDir = tmp.dirSync({ unsafeCleanup: true });
     const otherDb = await connect(otherTmpDir.name);
 
