@@ -119,6 +119,24 @@ and `cancel()`. Synchronous creation, refresh, and drop wait on the same SQL
 execution before returning. A completed DROP means the catalog binding has been
 removed; physical cleanup continues in the background.
 
+Remote function registration also returns a SQL query job. The SQL operation
+submits the durable image build and waits for catalog publication before returning
+the immutable FunctionVersion. `drop_function_async()` returns the catalog-removal
+boolean together with a query job; waiting on that handle confirms removal while
+physical cleanup continues separately.
+
+Remote Secret create, alter, list, describe, and drop use the SQL query backend.
+The synchronous APIs wait on query completion internally. Create and alter bind
+the credential as a parameter to `CREATE SECRET name AS $1` or
+`ALTER SECRET name AS $1`, keeping it out of SQL text. Results contain only
+completion status or Secret names and timestamps; they never return credential
+values. SQL `DESCRIBE SECRET` additionally exposes rotation history.
+
+Remote view creation, description, listing, and drop also use SQL. Creation
+returns the stored definition and schema from the same SQL execution.
+`drop_view_async()` returns a query job: waiting confirms catalog removal while
+physical cleanup continues in the background.
+
 The existing `job.job_type` identifies query-backed handles as `"query"` from
 submission, and `job.id` contains the connection-scoped SQL query UUID string.
 Use `describe_query(job.id)` on the submitting connection to inspect the query.

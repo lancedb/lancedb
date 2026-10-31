@@ -133,8 +133,9 @@ result.rows_assigned
 A backfill over a large table can therefore be started, left, and checked on
 from a different process: the connection does not have to stay open.
 
-Enterprise manages the compute for the refresh. You still control when to
-submit it; declaring a computed column does not schedule recurring refreshes.
+Enterprise manages the compute for the refresh. Declaring a computed column
+doesn't refresh it on a schedule unless your deployment enables automatic
+refresh; see [Automatic refresh](/feature-engineering/refresh-column#automatic).
 {/* Draft for the Functions release: That is also why a function must declare the environment it needs. */}
 
 ## Recovering from a failure {#failures}

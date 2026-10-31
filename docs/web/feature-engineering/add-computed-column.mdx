@@ -71,21 +71,21 @@ including that you can travel back to before the column existed.
 `computed` and `transforms` cannot be combined in one call. Reach for `computed` when the table is
 large enough that you would rather control when the work happens.
 
-Pass `auto_refresh_enabled` and `auto_refresh_interval_seconds` alongside
-`computed` to have the server keep the column refreshed instead of calling
-[`refresh_column`](/feature-engineering/refresh-column) yourself:
+Automatic refresh is on by default for each computed column, and takes effect
+when your Enterprise deployment enables its refresh scheduler. Until then, and in
+LanceDB Embedded, which never refreshes on a schedule, call
+[`refresh_column`](/feature-engineering/refresh-column) yourself. Pass
+`auto_refresh_enabled=False` to opt a column out, or
+`auto_refresh_interval_seconds` to set how often it refreshes:
 
 ```python
 table.add_columns(
     computed={"doubled": "x * 2"},
-    auto_refresh_enabled=True,
     auto_refresh_interval_seconds=300,
 )
 ```
 
-A local table stores these settings but does not act on them -- automatic
-scheduling runs on LanceDB Cloud or Enterprise. See
-[Automatic refresh](/feature-engineering/refresh-column#automatic) for the
+See [Automatic refresh](/feature-engineering/refresh-column#automatic) for the
 full behavior, including how to change the setting later.
 
 An eager `transforms` call looks like this, starting from a small product

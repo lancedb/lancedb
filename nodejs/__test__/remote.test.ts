@@ -483,98 +483,6 @@ describe("remote connection", () => {
     expect(insertRequests).toBe(2);
   });
 
-  it("creates a view and decodes the schema it resolved to", async () => {
-    await withMockDatabase(
-      (req, res) => {
-        expect(req.method).toBe("POST");
-        expect(req.url).toBe("/v1/view/analytics$adults/create");
-        res.writeHead(200, { "content-type": "application/json" }).end(
-          JSON.stringify({
-            name: "adults",
-            namespace: ["analytics"],
-            query: "SELECT name FROM people",
-            // biome-ignore lint/style/useNamingConvention: the wire field is snake_case
-            default_database: "db",
-            // biome-ignore lint/style/useNamingConvention: the wire field is snake_case
-            default_namespace: ["analytics"],
-            schema: {
-              fields: [
-                { name: "name", nullable: true, type: { type: "utf8" } },
-              ],
-            },
-          }),
-        );
-      },
-      async (db) => {
-        const view = await db.createView("adults", "SELECT name FROM people", [
-          "analytics",
-        ]);
-        expect(view.name).toBe("adults");
-        expect(view.namespacePath).toEqual(["analytics"]);
-        expect(view.query).toBe("SELECT name FROM people");
-        expect(view.defaultDatabase).toBe("db");
-        expect(view.defaultNamespacePath).toEqual(["analytics"]);
-        expect(view.schema.fields.map((f) => f.name)).toEqual(["name"]);
-      },
-    );
-  });
-
-  it("lists and drops views through their own routes", async () => {
-    await withMockDatabase(
-      (req, res) => {
-        expect(req.url).toBe("/v1/namespace/$/view/list");
-        res
-          .writeHead(200, { "content-type": "application/json" })
-          .end(JSON.stringify({ views: ["adults"] }));
-      },
-      async (db) => {
-        expect(await collect(db.listViews())).toEqual(["adults"]);
-      },
-    );
-
-    await withMockDatabase(
-      (req, res) => {
-        expect(req.method).toBe("POST");
-        expect(req.url).toBe("/v1/view/adults/drop");
-        res.writeHead(200, { "content-type": "application/json" }).end("{}");
-      },
-      async (db) => {
-        await db.dropView("adults");
-      },
-    );
-  });
-
-  it("reports the cleanup job when a view drop is accepted", async () => {
-    await withMockDatabase(
-      (req, res) => {
-        expect(req.method).toBe("POST");
-        expect(req.url).toBe("/v1/view/adults/drop");
-        res
-          .writeHead(202, { "content-type": "application/json" })
-          .end('{"job_id": "j1-do-abc"}');
-      },
-      async (db) => {
-        const job = await db.dropViewAsync("adults");
-        expect(job.id).toBe("j1-do-abc");
-      },
-    );
-  });
-
-  it("reports a finished job when a view drop had nothing to delete", async () => {
-    await withMockDatabase(
-      (req, res) => {
-        expect(req.url).toBe("/v1/view/adults/drop");
-        res.writeHead(200, { "content-type": "application/json" }).end("{}");
-      },
-      async (db) => {
-        // A 200 means the name was not bound, so there is no cleanup to wait on.
-        const job = await db.dropViewAsync("adults");
-        expect(job.id).toBeNull();
-        await job.wait();
-      },
-    );
-  });
-
   it("should accept partial connection options", async () => {
     await connect("db://test", {
       apiKey: "fake",
@@ -1710,13 +1618,12 @@ async function collect<T>(items: AsyncIterable<T>): Promise<T[]> {
 }
 
 describe("lazy resource listings", () => {
-  for (const kind of ["views", "jobs"] as const) {
+  for (const kind of ["jobs"] as const) {
     const listing = (
       db: Connection,
       options: { pageToken?: string; pageLimit?: number } = {},
     ) => {
-      if (kind === "jobs") return db.listJobs(options);
-      return db.listViews(["team"], options);
+      return db.listJobs(options);
     };
     const page = (names: string[], token?: string) => {
       const items =

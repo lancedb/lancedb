@@ -70,7 +70,7 @@ SELECT * FROM dedupe('frames', 'vec', distance_threshold => 0.02)
 
 `resolution` chooses how overlapping pairs group together:
 
-| `resolution` | |
+| `resolution` value | How pairs group |
 | --- | --- |
 | `connected_components` (default) | groups transitively: if a~b and b~c are both close, all three resolve together |
 | `direct_representative` | only pairs within the threshold of each other resolve together |

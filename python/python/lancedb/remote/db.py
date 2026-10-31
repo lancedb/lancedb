@@ -38,11 +38,13 @@ from ..common import DATA
 from lancedb.listing import Listing, NamespaceListing, TableListing
 from ..db import DBConnection, LOOP
 from ..functions import FunctionVersion, UdfDefinition
+from ..graph import EdgeTable, NodeTable, PropertyGraph
 from ..job import AsyncJob, Job
 from ..sql import Query as SqlQuery
 from ..sql import QueryDescription, QueryParameters
 from ..materialized_view import MaterializedView, MaterializedViewSource, SelectArg
 from ..secrets import EnvVarSecret, SecretInfo
+from ..storage_integration import SecretReference, StorageIntegrationInfo
 from ..view import ViewDescription
 
 if TYPE_CHECKING:
@@ -909,8 +911,7 @@ class RemoteDBConnection(DBConnection):
     def drop_all_tables(self, namespace_path: Optional[List[str]] = None):
         """Drop all tables from the database.
 
-        The remote API does not currently support this operation. Use
-        ``list_tables()`` and ``drop_table()`` to drop tables individually.
+        Lists the tables in the selected namespace and drops them one at a time.
         """
         LOOP.run(self._conn.drop_all_tables(namespace_path=namespace_path))
 
@@ -1037,6 +1038,62 @@ class RemoteDBConnection(DBConnection):
         return dropped, Job(job)
 
     @override
+    def create_storage_integration(
+        self,
+        name: str,
+        storage_prefix: str,
+        *,
+        aws_role_arn: Optional[str] = None,
+        aws_access_key_id_secret: Optional[Union[str, SecretReference]] = None,
+        aws_secret_access_key_secret: Optional[Union[str, SecretReference]] = None,
+        aws_region: Optional[str] = None,
+        namespace_path: Optional[List[str]] = None,
+    ) -> StorageIntegrationInfo:
+        return LOOP.run(
+            self._conn.create_storage_integration(
+                name,
+                storage_prefix,
+                aws_role_arn=aws_role_arn,
+                aws_access_key_id_secret=aws_access_key_id_secret,
+                aws_secret_access_key_secret=aws_secret_access_key_secret,
+                aws_region=aws_region,
+                namespace_path=namespace_path,
+            )
+        )
+
+    @override
+    def describe_storage_integration(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> StorageIntegrationInfo:
+        return LOOP.run(
+            self._conn.describe_storage_integration(name, namespace_path=namespace_path)
+        )
+
+    @override
+    def list_storage_integrations(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> Listing[str]:
+        return Listing(
+            self._conn.list_storage_integrations(
+                namespace_path=namespace_path,
+                page_token=page_token,
+                page_limit=page_limit,
+            )
+        )
+
+    @override
+    def drop_storage_integration(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(
+            self._conn.drop_storage_integration(name, namespace_path=namespace_path)
+        )
+
+    @override
     def create_secret(
         self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
     ) -> None:
@@ -1125,6 +1182,61 @@ class RemoteDBConnection(DBConnection):
         """
         return Listing(
             self._conn.list_views(
+                namespace_path=namespace_path,
+                page_token=page_token,
+                page_limit=page_limit,
+            )
+        )
+
+    @override
+    def create_property_graph(
+        self,
+        name: str,
+        nodes: Sequence[NodeTable],
+        edges: Sequence[EdgeTable] = (),
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> PropertyGraph:
+        return PropertyGraph(
+            LOOP.run(
+                self._conn.create_property_graph(
+                    name, nodes, edges, namespace_path=namespace_path
+                )
+            )
+        )
+
+    @override
+    def open_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> PropertyGraph:
+        return PropertyGraph(
+            LOOP.run(
+                self._conn.open_property_graph(name, namespace_path=namespace_path)
+            )
+        )
+
+    @override
+    def drop_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(self._conn.drop_property_graph(name, namespace_path=namespace_path))
+
+    @override
+    def list_property_graphs(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> Listing[str]:
+        """List property graphs.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        return Listing(
+            self._conn.list_property_graphs(
                 namespace_path=namespace_path,
                 page_token=page_token,
                 page_limit=page_limit,

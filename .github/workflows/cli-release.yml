@@ -1,0 +1,167 @@
+name: CLI release packages
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'rust/lancedb/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/config.toml'
+      - '.bumpversion.toml'
+      - 'LICENSE'
+      - 'RUST_THIRD_PARTY_LICENSES.html'
+      - 'ci/build_cli_linux.sh'
+      - 'ci/package_cli.py'
+      - 'ci/tests/test_package_cli.py'
+      - '.github/actions/setup-protoc/**'
+      - '.github/workflows/cli-release.yml'
+      - '.github/workflows/gh-release.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cli-packages-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Validate release version before building
+        id: version
+        run: |
+          version=$(python ci/package_cli.py version)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: version
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-2404-8x-x64
+            image: quay.io/pypa/manylinux_2_28_x86_64
+            protoc: linux-x86_64
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-2404-8x-arm64
+            image: quay.io/pypa/manylinux_2_28_aarch64
+            protoc: linux-aarch_64
+          - target: aarch64-apple-darwin
+            runner: warp-macos-14-arm64-6x
+    runs-on: ${{ matrix.runner }}
+    env:
+      CLI_TARGET: ${{ matrix.target }}
+      CLI_VERSION: ${{ needs.version.outputs.version }}
+      MACOSX_DEPLOYMENT_TARGET: '14.0'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          # Leave .cargo/config.toml's CPU/feature flags in effect.
+          rustflags: ''
+          cache: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: cli-release-${{ matrix.target }}
+          save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
+      - uses: ./.github/actions/setup-protoc
+        id: protoc
+        with:
+          install: ${{ runner.os == 'macOS' }}
+      - name: Add swap for Arm fat LTO
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          swap_file="$RUNNER_TEMP/lancedb-cli-swap"
+          sudo fallocate --length 16G "$swap_file"
+          sudo chmod 600 "$swap_file"
+          sudo mkswap "$swap_file"
+          sudo swapon "$swap_file"
+      - name: Build Linux CLI against glibc 2.28
+        if: runner.os == 'Linux'
+        env:
+          MANYLINUX_IMAGE: ${{ matrix.image }}
+          PROTOC_PLATFORM: ${{ matrix.protoc }}
+          PROTOC_VERSION: ${{ steps.protoc.outputs.version }}
+          PROTOC_SHA256: ${{ matrix.protoc == 'linux-x86_64' && steps.protoc.outputs.linux-x86_64-sha256 || steps.protoc.outputs.linux-aarch_64-sha256 }}
+        run: |
+          docker run --rm \
+            --volume "$PWD:/workspace" --workdir /workspace \
+            --volume "$HOME/.cargo:/cargo" --env CARGO_HOME=/cargo \
+            --volume "$HOME/.rustup:/rustup" --env RUSTUP_HOME=/rustup \
+            --env CLI_TARGET --env PROTOC_PLATFORM --env PROTOC_VERSION --env PROTOC_SHA256 \
+            "$MANYLINUX_IMAGE" bash ci/build_cli_linux.sh
+      - name: Build macOS CLI
+        if: runner.os == 'macOS'
+        run: |
+          cargo build --locked --release -p lancedb-cli --bin lancedb --target "$CLI_TARGET"
+          strip -S "target/$CLI_TARGET/release/lancedb"
+          # Stripping can invalidate the linker's ad-hoc signature on Apple Silicon.
+          codesign --force --sign - "target/$CLI_TARGET/release/lancedb"
+      - name: Package, inspect runtime dependencies, and smoke-test archive
+        run: |
+          python ci/package_cli.py package \
+            --binary "target/$CLI_TARGET/release/lancedb" --target "$CLI_TARGET" --output dist
+      - name: Smoke-test Linux archive on a clean glibc 2.28 system
+        if: runner.os == 'Linux'
+        run: |
+          docker run --rm --volume "$PWD/dist:/artifacts:ro" \
+            --env CLI_TARGET --env CLI_VERSION almalinux:8 bash -euo pipefail -c '
+              dnf install -y libstdc++
+              mkdir -p /tmp/check /tmp/cli-home
+              export HOME=/tmp/cli-home XDG_CONFIG_HOME=/tmp/cli-home/.config
+              stem="lancedb-v${CLI_VERSION}-${CLI_TARGET}"
+              tar -xzf "/artifacts/${stem}.tar.gz" -C /tmp/check
+              cli="/tmp/check/${stem}/lancedb"
+              "$cli" --help
+              test "$("$cli" --version)" = "lancedb ${CLI_VERSION}"
+              "$cli" profile list
+            '
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cli-archive-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  assemble:
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: cli-archive-*
+          merge-multiple: true
+          path: dist
+      - name: Require all three archives and generate checksums
+        run: |
+          python ci/package_cli.py checksums --output dist
+          python ci/package_cli.py verify --output dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cli-release
+          path: dist/*
+          if-no-files-found: error

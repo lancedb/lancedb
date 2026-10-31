@@ -85,7 +85,7 @@ class LabelList:
     """Describe a LabelList index configuration.
 
     `LabelList` is a scalar index that can be used on `List<T>` columns to
-    support queries with `array_contains_all` and `array_contains_any`
+    support queries with `array_has_all` and `array_has_any`
     using an underlying bitmap index.
 
     For example, it works with `tags`, `categories`, `keywords`, etc.

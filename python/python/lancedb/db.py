@@ -8,6 +8,8 @@ from abc import abstractmethod
 import asyncio
 from datetime import timedelta
 from pathlib import Path
+from dataclasses import asdict
+import json
 import sys
 from typing import (
     TYPE_CHECKING,
@@ -57,7 +59,15 @@ from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
 from . import __version__
 from ._lancedb import connect as lancedb_connect  # type: ignore
 from .functions import FunctionVersion, UdfDefinition
+from .graph import (
+    AsyncPropertyGraph,
+    EdgeTable,
+    NodeTable,
+    PropertyGraph,
+    _definition_json,
+)
 from .job import AsyncJob, Job, _typed_job
+from .storage_integration import SecretReference, StorageIntegrationInfo
 from .sql import AsyncQuery as AsyncSqlQuery
 from .sql import Query as SqlQuery
 from .sql import QueryDescription, QueryParameters, to_parameter_batch
@@ -374,6 +384,38 @@ class DBConnection(EnforceOverrides):
         Iterable of str
         """
         pass
+
+    def create_storage_integration(
+        self,
+        name: str,
+        storage_prefix: str,
+        *,
+        aws_role_arn: Optional[str] = None,
+        aws_access_key_id_secret: Optional[Union[str, SecretReference]] = None,
+        aws_secret_access_key_secret: Optional[Union[str, SecretReference]] = None,
+        aws_region: Optional[str] = None,
+        namespace_path: Optional[List[str]] = None,
+    ) -> StorageIntegrationInfo:
+        raise NotImplementedError
+
+    def describe_storage_integration(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> StorageIntegrationInfo:
+        raise NotImplementedError
+
+    def list_storage_integrations(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> Listing[str]:
+        raise NotImplementedError
+
+    def drop_storage_integration(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        raise NotImplementedError
 
     @abstractmethod
     def create_table(
@@ -816,8 +858,7 @@ class DBConnection(EnforceOverrides):
         """
         Drop all tables from the database
 
-        LanceDB Distributed does not currently support this operation. Use
-        ``list_tables()`` and ``drop_table()`` to drop tables individually.
+        Lists the tables in the selected namespace and drops them one at a time.
 
         Parameters
         ----------
@@ -940,7 +981,8 @@ class DBConnection(EnforceOverrides):
         """Submit a scalar Python UDF for building and registration.
 
         The server-side job builds the OCI image, then registers the completed
-        artifact. Waiting on the job returns the immutable Function version.
+        artifact. The returned job has type ``query`` and the SQL query UUID as
+        its ID. Waiting on it returns the immutable Function version.
         LanceDB Embedded connections raise ``NotImplementedError``.
         """
         raise NotImplementedError(
@@ -998,10 +1040,10 @@ class DBConnection(EnforceOverrides):
         """Drop a Function name and the object it was bound to.
 
         The requested version must exist in the currently named object. Returns
-        True when the name was removed and False when it was absent. The
-        object's content is deleted with it, which may finish after this
-        returns; use :meth:`drop_function_async` to wait for that. Local
-        connections raise NotImplementedError.
+        True when the catalog binding was removed and False when it was absent.
+        Physical cleanup continues in the background; use
+        :meth:`drop_function_async` to access the query job. Local connections
+        raise NotImplementedError.
         """
         raise NotImplementedError(
             "Function catalog operations are not supported for this connection type"
@@ -1014,13 +1056,12 @@ class DBConnection(EnforceOverrides):
         version: str,
         namespace_path: Optional[List[str]] = None,
     ) -> Tuple[bool, Job]:
-        """Drop a Function name and return its cleanup job.
+        """Drop a Function binding and return its SQL query job.
 
-        The name is unbound before this returns; the object's content may still
-        be being deleted. Call :meth:`Job.wait` to wait for that to finish. When
-        the server deletes inline, or when nothing was bound, the returned job
-        is already finished and has no id. LanceDB Embedded connections raise
-        NotImplementedError.
+        The boolean reports catalog removal. The job has type ``query`` and its
+        ID is the SQL query UUID. Repeated waits confirm that completion;
+        physical cleanup continues in the background. LanceDB Embedded
+        connections raise NotImplementedError.
         """
         raise NotImplementedError(
             "Function catalog operations are not supported for this connection type"
@@ -1143,10 +1184,11 @@ class DBConnection(EnforceOverrides):
     def drop_view(
         self, name: str, *, namespace_path: Optional[List[str]] = None
     ) -> None:
-        """Drop a view and wait for its definition to be deleted.
+        """Drop a view and wait for catalog removal.
 
         The tables it reads are untouched: a view holds no rows of its own. Use
-        :meth:`drop_view_async` to get the cleanup job instead of waiting on it.
+        :meth:`drop_view_async` to retain its SQL query job. Completion confirms
+        catalog removal; physical cleanup continues in the background.
         LanceDB Embedded connections raise ``NotImplementedError``.
         """
         raise NotImplementedError(
@@ -1156,12 +1198,11 @@ class DBConnection(EnforceOverrides):
     def drop_view_async(
         self, name: str, *, namespace_path: Optional[List[str]] = None
     ) -> "Job[None]":
-        """Start dropping a view and return the job deleting its definition.
+        """Drop a view and return its SQL query job.
 
-        The name is free before this returns. Call :meth:`Job.wait` to wait for
-        the definition dataset to be deleted. When nothing was bound to the
-        name, the returned job is already finished and has no id. Local
-        connections raise ``NotImplementedError``.
+        The job has type ``query`` and its ID is the SQL query UUID. Call
+        :meth:`Job.wait` to confirm catalog removal. Physical cleanup continues
+        in the background. Local connections raise ``NotImplementedError``.
         """
         raise NotImplementedError(
             "View operations are not supported for this connection type"
@@ -1186,6 +1227,99 @@ class DBConnection(EnforceOverrides):
         """
         raise NotImplementedError(
             "View operations are not supported for this connection type"
+        )
+
+    def create_property_graph(
+        self,
+        name: str,
+        nodes: Sequence[NodeTable],
+        edges: Sequence[EdgeTable] = (),
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> PropertyGraph:
+        """Create a property graph over tables in its namespace.
+
+        Each [NodeTable][lancedb.graph.NodeTable] names the table holding one
+        label's nodes and its key column, and each
+        [EdgeTable][lancedb.graph.EdgeTable] the table holding one label's
+        edges and the node keys its source and destination columns reference
+        -- the shape of SQL/PGQ's ``CREATE PROPERTY GRAPH``. The graph stores
+        nothing else: a query reads its tables through SQL ``GRAPH_TABLE``, as
+        they are when it runs.
+
+        The database checks the definition against the tables now, so one they
+        cannot satisfy is refused here rather than at the first query. A name
+        another property graph holds is an error. Local connections raise
+        ``NotImplementedError``.
+
+        >>> import lancedb
+        >>> from lancedb.graph import EdgeTable, Endpoint, NodeTable
+        >>> db = lancedb.connect("db://my_database")  # doctest: +SKIP
+        >>> graph = db.create_property_graph(
+        ...     "social",
+        ...     nodes=[NodeTable("person", key="person_id", label="Person")],
+        ...     edges=[
+        ...         EdgeTable(
+        ...             "knows",
+        ...             label="KNOWS",
+        ...             source=Endpoint("src_id", references=("person", "person_id")),
+        ...             destination=Endpoint(
+        ...                 "dst_id", references=("person", "person_id")
+        ...             ),
+        ...         )
+        ...     ],
+        ... )  # doctest: +SKIP
+        >>> graph.describe().nodes[0].properties  # doctest: +SKIP
+        ['person_id', 'name']
+        """
+        raise NotImplementedError(
+            "Property graph operations are not supported for this connection type"
+        )
+
+    def open_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> PropertyGraph:
+        """Open the property graph named ``name``.
+
+        The graph is described to check that it exists, so a name no property
+        graph holds raises [HttpError][lancedb.remote.errors.HttpError] with
+        ``status_code`` 404. Local connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Property graph operations are not supported for this connection type"
+        )
+
+    def drop_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Drop a property graph and wait for its definition to be deleted.
+
+        The tables it reads are untouched: a property graph holds no rows of
+        its own. Local connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Property graph operations are not supported for this connection type"
+        )
+
+    def list_property_graphs(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> Listing[str]:
+        """The names of the property graphs in one namespace.
+
+        Names only; a definition comes from
+        [PropertyGraph.describe][lancedb.graph.PropertyGraph.describe]. Local
+        connections raise ``NotImplementedError``.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        raise NotImplementedError(
+            "Property graph operations are not supported for this connection type"
         )
 
     def open_job(self, job_id: str) -> Job:
@@ -2100,6 +2234,62 @@ class LanceDBConnection(DBConnection):
         return dropped, Job(job)
 
     @override
+    def create_storage_integration(
+        self,
+        name: str,
+        storage_prefix: str,
+        *,
+        aws_role_arn: Optional[str] = None,
+        aws_access_key_id_secret: Optional[Union[str, SecretReference]] = None,
+        aws_secret_access_key_secret: Optional[Union[str, SecretReference]] = None,
+        aws_region: Optional[str] = None,
+        namespace_path: Optional[List[str]] = None,
+    ) -> StorageIntegrationInfo:
+        return LOOP.run(
+            self._conn.create_storage_integration(
+                name,
+                storage_prefix,
+                aws_role_arn=aws_role_arn,
+                aws_access_key_id_secret=aws_access_key_id_secret,
+                aws_secret_access_key_secret=aws_secret_access_key_secret,
+                aws_region=aws_region,
+                namespace_path=namespace_path,
+            )
+        )
+
+    @override
+    def describe_storage_integration(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> StorageIntegrationInfo:
+        return LOOP.run(
+            self._conn.describe_storage_integration(name, namespace_path=namespace_path)
+        )
+
+    @override
+    def list_storage_integrations(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> Listing[str]:
+        return Listing(
+            self._conn.list_storage_integrations(
+                namespace_path=namespace_path,
+                page_token=page_token,
+                page_limit=page_limit,
+            )
+        )
+
+    @override
+    def drop_storage_integration(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(
+            self._conn.drop_storage_integration(name, namespace_path=namespace_path)
+        )
+
+    @override
     def create_secret(
         self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
     ) -> None:
@@ -2189,6 +2379,61 @@ class LanceDBConnection(DBConnection):
         """
         return Listing(
             self._conn.list_views(
+                namespace_path=namespace_path,
+                page_token=page_token,
+                page_limit=page_limit,
+            )
+        )
+
+    @override
+    def create_property_graph(
+        self,
+        name: str,
+        nodes: Sequence[NodeTable],
+        edges: Sequence[EdgeTable] = (),
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> PropertyGraph:
+        return PropertyGraph(
+            LOOP.run(
+                self._conn.create_property_graph(
+                    name, nodes, edges, namespace_path=namespace_path
+                )
+            )
+        )
+
+    @override
+    def open_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> PropertyGraph:
+        return PropertyGraph(
+            LOOP.run(
+                self._conn.open_property_graph(name, namespace_path=namespace_path)
+            )
+        )
+
+    @override
+    def drop_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(self._conn.drop_property_graph(name, namespace_path=namespace_path))
+
+    @override
+    def list_property_graphs(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> Listing[str]:
+        """List property graphs.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        return Listing(
+            self._conn.list_property_graphs(
                 namespace_path=namespace_path,
                 page_token=page_token,
                 page_limit=page_limit,
@@ -3160,6 +3405,8 @@ class AsyncConnection(object):
     async def drop_all_tables(self, namespace_path: Optional[List[str]] = None):
         """Drop all tables from the database.
 
+        Lists the tables in the selected namespace and drops them one at a time.
+
         Parameters
         ----------
         namespace_path: List[str], optional
@@ -3186,7 +3433,8 @@ class AsyncConnection(object):
         """Submit a scalar Python UDF for building and registration.
 
         The server-side job builds the OCI image, then registers the completed
-        artifact. Waiting on the job returns the immutable Function version.
+        artifact. The returned job has type ``query`` and the SQL query UUID as
+        its ID. Waiting on it returns the immutable Function version.
         ``secrets`` is a sequence of
         [EnvVarSecret][lancedb.secrets.EnvVarSecret], each naming a Secret and
         the environment variable its value arrives in. ``namespace_path`` is
@@ -3256,16 +3504,112 @@ class AsyncConnection(object):
         version: str,
         namespace_path: Optional[List[str]] = None,
     ) -> Tuple[bool, AsyncJob]:
-        """Drop a Function name and return its cleanup job.
+        """Drop a Function binding and return its SQL query job.
 
-        The name is unbound before this returns; the object's content may still
-        be being deleted. Await :meth:`AsyncJob.wait` to wait for that to
-        finish.
+        The boolean reports catalog removal. The job has type ``query`` and its
+        ID is the SQL query UUID. Repeated waits confirm that completion;
+        physical cleanup continues in the background.
         """
         dropped, job = await self._inner.drop_function_async(
             name, version, namespace_path
         )
         return dropped, AsyncJob(job)
+
+    async def create_storage_integration(
+        self,
+        name: str,
+        storage_prefix: str,
+        *,
+        aws_role_arn: Optional[str] = None,
+        aws_access_key_id_secret: Optional[Union[str, SecretReference]] = None,
+        aws_secret_access_key_secret: Optional[Union[str, SecretReference]] = None,
+        aws_region: Optional[str] = None,
+        namespace_path: Optional[List[str]] = None,
+    ) -> StorageIntegrationInfo:
+        """Register database-owned S3 access using a role or two Secret references.
+
+        ``namespace_path`` follows Secret naming rules. A SecretReference can name
+        another database; a string names a root Secret in this database.
+        Registration returns setup instructions without verifying storage access.
+        """
+        role_mode = aws_role_arn is not None
+        key_mode = (
+            aws_access_key_id_secret is not None
+            and aws_secret_access_key_secret is not None
+        )
+        if role_mode == key_mode or (
+            role_mode
+            and (
+                aws_access_key_id_secret is not None
+                or aws_secret_access_key_secret is not None
+            )
+        ):
+            raise ValueError(
+                "Specify either aws_role_arn or both AWS credential Secret references"
+            )
+
+        def reference(value):
+            if value is None:
+                return None
+            if isinstance(value, str):
+                value = SecretReference(value)
+            if not isinstance(value, SecretReference):
+                raise TypeError(
+                    "Credential secrets must be names or SecretReference objects"
+                )
+            return asdict(value)
+
+        request = {
+            "storage_provider": "S3",
+            "storage_prefix": storage_prefix,
+            "aws_role_arn": aws_role_arn,
+            "aws_region": aws_region,
+            "aws_access_key_id_secret": reference(aws_access_key_id_secret),
+            "aws_secret_access_key_secret": reference(aws_secret_access_key_secret),
+        }
+        info = await self._inner.create_storage_integration(
+            validate_secret_name(name),
+            json.dumps(request),
+            list(validate_namespace_path(namespace_path)),
+        )
+        return StorageIntegrationInfo(**json.loads(info))
+
+    async def describe_storage_integration(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> StorageIntegrationInfo:
+        """Return configuration and Secret references without credential values."""
+        return StorageIntegrationInfo(
+            **json.loads(
+                await self._inner.describe_storage_integration(
+                    validate_secret_name(name),
+                    list(validate_namespace_path(namespace_path)),
+                )
+            )
+        )
+
+    def list_storage_integrations(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> AsyncListing[str]:
+        """Lazily list one namespace of this database's storage integrations."""
+        return AsyncListing(
+            self._inner.list_storage_integrations(
+                namespace_path=list(validate_namespace_path(namespace_path)),
+                page_token=page_token,
+                page_limit=page_limit,
+            )
+        )
+
+    async def drop_storage_integration(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Drop a storage integration with ownership permission."""
+        await self._inner.drop_storage_integration(
+            validate_secret_name(name), list(validate_namespace_path(namespace_path))
+        )
 
     async def create_secret(
         self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
@@ -3361,10 +3705,11 @@ class AsyncConnection(object):
     async def drop_view(
         self, name: str, *, namespace_path: Optional[List[str]] = None
     ) -> None:
-        """Drop a view and wait for its definition to be deleted.
+        """Drop a view and wait for catalog removal.
 
         The tables it reads are untouched. Use :meth:`drop_view_async` to get
-        the cleanup job instead of waiting on it.
+        its SQL query job. Completion confirms catalog removal; physical cleanup
+        continues in the background.
         """
         await self._inner.drop_view(name, list(namespace_path or []))
 
@@ -3374,10 +3719,11 @@ class AsyncConnection(object):
         *,
         namespace_path: Optional[List[str]] = None,
     ) -> AsyncJob[None]:
-        """Start dropping a view and return the job deleting its definition.
+        """Drop a view and return its SQL query job.
 
-        The name is free before this returns. Await :meth:`AsyncJob.wait` before
-        assuming the definition dataset is gone.
+        The job has type ``query`` and its ID is the SQL query UUID. Await
+        :meth:`AsyncJob.wait` to confirm catalog removal. Physical cleanup
+        continues in the background.
         """
         if namespace_path is None:
             namespace_path = []
@@ -3400,6 +3746,67 @@ class AsyncConnection(object):
         """
         return AsyncListing(
             self._inner.list_views(
+                namespace_path=namespace_path,
+                page_token=page_token,
+                page_limit=page_limit,
+            )
+        )
+
+    async def create_property_graph(
+        self,
+        name: str,
+        nodes: Sequence[NodeTable],
+        edges: Sequence[EdgeTable] = (),
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> AsyncPropertyGraph:
+        """Create a property graph over tables in its namespace.
+
+        See
+        [DBConnection.create_property_graph][lancedb.DBConnection.create_property_graph].
+        """
+        definition = _definition_json(nodes, edges)
+        graph = AsyncPropertyGraph(self._inner, name, namespace_path)
+        await self._inner.create_property_graph(name, definition, graph.namespace_path)
+        return graph
+
+    async def open_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> AsyncPropertyGraph:
+        """Open the property graph named ``name``, describing it to check that
+        it exists.
+
+        See
+        [DBConnection.open_property_graph][lancedb.DBConnection.open_property_graph].
+        """
+        graph = AsyncPropertyGraph(self._inner, name, namespace_path)
+        await graph.describe()
+        return graph
+
+    async def drop_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Drop a property graph and wait for its definition to be deleted.
+
+        The tables it reads are untouched.
+        """
+        await self._inner.drop_property_graph(name, list(namespace_path or []))
+
+    def list_property_graphs(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> AsyncListing[str]:
+        """The names of the property graphs in one namespace.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        return AsyncListing(
+            self._inner.list_property_graphs(
                 namespace_path=namespace_path,
                 page_token=page_token,
                 page_limit=page_limit,

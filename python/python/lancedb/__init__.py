@@ -47,12 +47,14 @@ from .functions import (
 )
 from .secrets import EnvVarSecret as EnvVarSecret
 from .secrets import SecretInfo as SecretInfo
+from .storage_integration import StorageIntegrationInfo as StorageIntegrationInfo
 from .materialized_view import (
     AsyncMaterializedView,
     MaterializedView,
     MaterializedViewDefinition,
 )
 from .view import ViewDescription as ViewDescription
+from .graph import PropertyGraph, PropertyGraphDescription
 from .table import AsyncTable, CompactionOptions, Table
 from .types import BaseTokenizerType
 from ._lancedb import Session
@@ -608,6 +610,8 @@ __all__ = [
     "MaterializedView",
     "MaterializedViewDefinition",
     "ViewDescription",
+    "PropertyGraph",
+    "PropertyGraphDescription",
     "connect",
     "connect_async",
     "tokenize",
