@@ -180,13 +180,13 @@ abstract createMaterializedView(
 
 Define a materialized view named `name` over the table `source`.
 
+LanceDB Embedded creation and refresh require a source build with the
+`experimental-functions` Cargo feature, disabled in published packages.
+LanceDB Distributed operations do not require this feature.
+
 The view is populated before creation returns. Set `withNoData` to create
 only its definition and empty backing table. The view is a normal table:
 it can be queried, indexed and searched, and it appears in `tableNames`.
-The source table must have stable row ids (create it with
-the `newTableEnableStableRowIds` storage option); they keep the view's
-provenance valid across source compactions and cannot be enabled after
-a table exists.
 
 #### Parameters
 
@@ -319,6 +319,38 @@ Creates a new Table and initialize it with new data.
 
 ***
 
+### createView()
+
+```ts
+abstract createView(
+   name,
+   query,
+   namespacePath?): Promise<ViewDescription>
+```
+
+Create a view: a named query the database plans on every read.
+
+The query is planned once, at creation, so one that cannot be planned is
+rejected now rather than at the first read. A view holds no rows, and its
+readers see its sources as they are at read time.
+
+There is no replace: a name already taken is an error, and changing a
+view is a drop followed by a create.
+
+#### Parameters
+
+* **name**: `string`
+
+* **query**: `string`
+
+* **namespacePath?**: `string`[]
+
+#### Returns
+
+`Promise`&lt;[`ViewDescription`](../interfaces/ViewDescription.md)&gt;
+
+***
+
 ### describeNamespace()
 
 ```ts
@@ -339,6 +371,27 @@ Describe a namespace, returning its properties.
 
 The namespace's properties
   (may be undefined if the namespace has none).
+
+***
+
+### describeView()
+
+```ts
+abstract describeView(name, namespacePath?): Promise<ViewDescription>
+```
+
+What this database records about the view named `name`: its defining
+query and the schema that query resolved to.
+
+#### Parameters
+
+* **name**: `string`
+
+* **namespacePath?**: `string`[]
+
+#### Returns
+
+`Promise`&lt;[`ViewDescription`](../interfaces/ViewDescription.md)&gt;
 
 ***
 
@@ -383,8 +436,8 @@ abstract dropMaterializedView(name, namespacePath?): Promise<void>
 
 Drop the materialized view named `name`.
 
-The view may become unavailable before physical cleanup finishes. Use
-[dropMaterializedViewAsync](Connection.md#dropmaterializedviewasync) to retain and wait for the cleanup job.
+Remote drops wait for the SQL command to remove the catalog binding.
+Physical cleanup continues in the background.
 
 Rejects a table that exists but is not a materialized view.
 
@@ -406,8 +459,9 @@ Rejects a table that exists but is not a materialized view.
 abstract dropMaterializedViewAsync(name, namespacePath?): Promise<Job>
 ```
 
-Start dropping the materialized view named `name` and return its cleanup
-job without waiting for completion.
+Start dropping the materialized view named `name` and return its job.
+Remote jobs have type `query` and use the SQL query ID as `id`. Waiting
+confirms catalog removal; physical cleanup continues in the background.
 
 Rejects a table that exists but is not a materialized view.
 
@@ -498,6 +552,52 @@ on the returned job to know when cleanup has finished.
 
 ***
 
+### dropView()
+
+```ts
+abstract dropView(name, namespacePath?): Promise<void>
+```
+
+Drop the view named `name` and wait for catalog removal.
+
+The tables it reads are untouched: a view holds no rows of its own. Use
+[dropViewAsync](Connection.md#dropviewasync) to retain its SQL query job. Completion confirms
+catalog removal; physical cleanup continues in the background.
+
+#### Parameters
+
+* **name**: `string`
+
+* **namespacePath?**: `string`[]
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
+### dropViewAsync()
+
+```ts
+abstract dropViewAsync(name, namespacePath?): Promise<Job>
+```
+
+Drop a view and return its SQL query job.
+The job has type `query` and its ID is the SQL query UUID. Waiting confirms
+catalog removal; physical cleanup continues in the background.
+
+#### Parameters
+
+* **name**: `string`
+
+* **namespacePath?**: `string`[]
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&gt;
+
+***
+
 ### isOpen()
 
 ```ts
@@ -515,124 +615,114 @@ Return true if the connection has not been closed
 ### listJobs()
 
 ```ts
-abstract listJobs(): Promise<JobInfo[]>
+abstract listJobs(options?): Listing<JobInfo>
 ```
 
-List server-side jobs across the database's tables.
+Iterate lazily over server-side jobs across the database's tables.
+Use `for await...of`. Options control page size and the starting token.
+See [Listing](Listing.md) for pagination state and error behavior.
+
+#### Parameters
+
+* **options?**: [`ListingOptions`](../interfaces/ListingOptions.md)
 
 #### Returns
 
-`Promise`&lt;[`JobInfo`](../interfaces/JobInfo.md)[]&gt;
+[`Listing`](Listing.md)&lt;[`JobInfo`](../interfaces/JobInfo.md)&gt;
 
 ***
 
 ### listMaterializedViews()
 
 ```ts
-abstract listMaterializedViews(): Promise<string[]>
+abstract listMaterializedViews(options?): Listing<string>
 ```
 
 The names of the materialized views in this database.
 
-Found by reading every table's schema, so this costs an open per table.
+Iterate lazily with `for await...of`. Local listings inspect table schemas
+one page at a time. Options control page size and the starting token.
+See [Listing](Listing.md) for pagination state and error behavior.
+
+#### Parameters
+
+* **options?**: [`ListingOptions`](../interfaces/ListingOptions.md)
 
 #### Returns
 
-`Promise`&lt;`string`[]&gt;
+[`Listing`](Listing.md)&lt;`string`&gt;
 
 ***
 
 ### listNamespaces()
 
 ```ts
-abstract listNamespaces(namespacePath?, options?): Promise<ListNamespacesResponse>
+abstract listNamespaces(namespacePath?, options?): Listing<string>
 ```
 
-List the immediate child namespaces under the given parent.
-
-Results may be paginated. To retrieve subsequent pages, pass the
-`pageToken` returned by a previous call.
+Lazily list immediate child namespaces, 100 per page by default.
 
 #### Parameters
 
 * **namespacePath?**: `string`[]
-    The parent namespace path. Defaults
-    to the root namespace if omitted.
 
-* **options?**: `Partial`&lt;[`ListNamespacesOptions`](../interfaces/ListNamespacesOptions.md)&gt;
-    Pagination options
-    (`pageToken`, `limit`).
+* **options?**: [`ListingOptions`](../interfaces/ListingOptions.md)
 
 #### Returns
 
-`Promise`&lt;[`ListNamespacesResponse`](../interfaces/ListNamespacesResponse.md)&gt;
-
-Child namespace names and
-  an optional token for fetching the next page.
+[`Listing`](Listing.md)&lt;`string`&gt;
 
 ***
 
 ### listTables()
 
-#### listTables(options)
-
 ```ts
-abstract listTables(options?): Promise<ListTablesResponse>
+abstract listTables(namespacePath?, options?): Listing<string>
 ```
 
-List a page of the tables in this database.
+Lazily list tables in a namespace, requesting 100 per page by default.
 
-To retrieve the tables after the page, pass the `pageToken` the response
-carries back in. A page can be shorter than `limit` without being the last
-one, so walk until a response carries no page token:
-
-```ts
-const names = [];
-let pageToken = undefined;
-do {
-  const page = await conn.listTables({ pageToken, limit: 100 });
-  names.push(...page.tables);
-  pageToken = page.pageToken;
-} while (pageToken);
-```
-
-##### Parameters
-
-* **options?**: `Partial`&lt;[`ListTablesOptions`](../interfaces/ListTablesOptions.md)&gt;
-    Pagination options
-    (`pageToken`, `limit`).
-
-##### Returns
-
-`Promise`&lt;[`ListTablesResponse`](../interfaces/ListTablesResponse.md)&gt;
-
-A page of table names and an
-  optional token for the tables after it.
-
-#### listTables(namespacePath, options)
-
-```ts
-abstract listTables(namespacePath?, options?): Promise<ListTablesResponse>
-```
-
-List a page of the tables in this database.
-
-##### Parameters
+#### Parameters
 
 * **namespacePath?**: `string`[]
-    The namespace path to list tables from
-    (defaults to root namespace)
 
-* **options?**: `Partial`&lt;[`ListTablesOptions`](../interfaces/ListTablesOptions.md)&gt;
-    Pagination options
-    (`pageToken`, `limit`).
+* **options?**: [`ListingOptions`](../interfaces/ListingOptions.md)
 
-##### Returns
+#### Returns
 
-`Promise`&lt;[`ListTablesResponse`](../interfaces/ListTablesResponse.md)&gt;
+[`Listing`](Listing.md)&lt;`string`&gt;
 
-A page of table names and an
-  optional token for the tables after it.
+#### Example
+
+```ts
+for await (const name of conn.listTables([], { pageLimit: 20 })) {
+  console.log(name);
+}
+```
+
+***
+
+### listViews()
+
+```ts
+abstract listViews(namespacePath?, options?): Listing<string>
+```
+
+The names of the views in one namespace.
+
+Names only; a definition comes from [describeView](Connection.md#describeview).
+Iterate lazily with `for await...of`. See [Listing](Listing.md) for pagination
+state and error behavior; options control page size and the starting token.
+
+#### Parameters
+
+* **namespacePath?**: `string`[]
+
+* **options?**: [`ListingOptions`](../interfaces/ListingOptions.md)
+
+#### Returns
+
+[`Listing`](Listing.md)&lt;`string`&gt;
 
 ***
 
@@ -703,6 +793,28 @@ abstract openTable(
 
 ***
 
+### pauseJob()
+
+```ts
+abstract pauseJob(jobId): Promise<string>
+```
+
+Pause a server-side job by id.
+
+The job's workers drain and it stays parked until resumed. Resolves to
+"pausing", "already_paused", or "committing" -- a job finalizing its
+results cannot be parked; retry shortly.
+
+#### Parameters
+
+* **jobId**: `string`
+
+#### Returns
+
+`Promise`&lt;`string`&gt;
+
+***
+
 ### renameTable()
 
 ```ts
@@ -714,7 +826,7 @@ abstract renameTable(
 
 Rename a table.
 
-Currently only supported by LanceDB Cloud. Local OSS connections and
+Currently only supported in LanceDB Distributed. LanceDB Embedded connections and
 namespace-backed connections (via [connectNamespace](../functions/connectNamespace.md)) reject with
 a "not supported" error.
 
@@ -733,6 +845,28 @@ a "not supported" error.
 #### Returns
 
 `Promise`&lt;`void`&gt;
+
+***
+
+### resumeJob()
+
+```ts
+abstract resumeJob(jobId): Promise<string>
+```
+
+Resume a paused server-side job by id.
+
+Its workers pick their work back up from checkpoints. Resolves to
+"resumed", "still_pausing" -- the pause's worker drain is not confirmed
+yet; retry shortly -- or "not_paused".
+
+#### Parameters
+
+* **jobId**: `string`
+
+#### Returns
+
+`Promise`&lt;`string`&gt;
 
 ***
 

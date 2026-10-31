@@ -2,13 +2,20 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 """Materialized views: tables defined by a query over a source table and
-maintained by refresh. See ``DBConnection.create_materialized_view``."""
+maintained by refresh. See ``DBConnection.create_materialized_view``.
+
+LanceDB Embedded creation and refresh require the ``experimental-functions``
+Cargo feature in a source build. Published packages disable it. Opening, reading,
+listing and dropping existing views and LanceDB Distributed operations remain
+available.
+"""
 
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple, Union
+
+import json
+from dataclasses import dataclass
 
 from .background_loop import LOOP
 from .job import AsyncJob, Job, _typed_job
@@ -29,22 +36,28 @@ SelectArg = Union[
 ]
 
 
+MaterializedViewSource = str
+
+
+DEFINITION_FORMAT = 2
+"""The newest stored layout this version reads: ``{"format": N, "query": "<SQL>"}``,
+format 2 being a query with ``GROUP BY``. A ``kind`` key beside it is for
+readers older than the format number."""
+
+
 @dataclass
 class MaterializedViewDefinition:
-    """The query that defines a materialized view."""
+    """The query that defines a materialized view, as stored::
 
-    source_table: str
-    """Name of the source table, in the same database as the view."""
-    projections: List[Tuple[str, str]]
-    """``(output column, SQL expression)`` pairs, in view schema order."""
-    filter: Optional[str] = None
-    """SQL predicate selecting the source rows the view holds."""
-    limit: Optional[int] = None
-    """Cap on the number of rows the view holds."""
-    inputs: List[str] = field(default_factory=list)
-    """Source columns the projections and filter read."""
-    source_namespace: List[str] = field(default_factory=list)
-    """Namespace holding the source table; empty is the root namespace."""
+        SELECT columns
+        FROM [ns.]table [, function(args) AS alias | , UNNEST(column) AS alias]
+        [WHERE predicate] [GROUP BY expr, ...] [LIMIT n]
+
+    A Function in ``FROM`` position yields one row per element it returns.
+    """
+
+    query: str
+    """The defining query, in the canonical spelling the server stores."""
 
 
 def _definition_from_schema(
@@ -54,38 +67,64 @@ def _definition_from_schema(
     raw = metadata.get(DEFINITION_META_KEY)
     if raw is None:
         raise ValueError(f"Table '{name}' is not a materialized view")
-    value = json.loads(raw)
+    return _definition_from_value(json.loads(raw), name)
+
+
+def _definition_from_json(raw: str, name: str = "") -> MaterializedViewDefinition:
+    """Parse the definition native code hands over, in its stored layout."""
+    return _definition_from_value(json.loads(raw), name)
+
+
+def _definition_from_value(value: dict, name: str) -> MaterializedViewDefinition:
+    fmt = value.get("format")
+    if fmt is not None:
+        # A newer writer's layout is reported, never guessed at.
+        if not isinstance(fmt, int) or fmt > DEFINITION_FORMAT:
+            raise NotImplementedError(
+                f"materialized view '{name}' is stored in format {fmt}, which "
+                "this version of lancedb cannot refresh"
+            )
+        return MaterializedViewDefinition(query=value["query"])
+    # The structured layout written before the format number.
     kind = value.get("kind")
-    # "namespaced_select" keeps older readers from resolving the source at root.
     if kind not in ("select", "namespaced_select"):
         raise NotImplementedError(
-            f"materialized view '{name}' is defined by '{kind}', which this "
-            "version of lancedb cannot refresh"
+            f"materialized view '{name}' is stored in format kind '{kind}', "
+            "which this version of lancedb cannot refresh"
         )
-    return MaterializedViewDefinition(
-        source_table=value["source_table"],
-        projections=[
-            (p["output"], p["expression"]) for p in value.get("projections", [])
-        ],
-        filter=value.get("filter"),
-        limit=value.get("limit"),
-        inputs=value.get("inputs", []),
-        source_namespace=value.get("source_namespace", []),
-    )
+    return MaterializedViewDefinition(query=_legacy_query(value))
 
 
-def _definition_from_json(raw: str) -> MaterializedViewDefinition:
-    value = json.loads(raw)
-    return MaterializedViewDefinition(
-        source_table=value["source_table"],
-        projections=[
-            (p["output"], p["expression"]) for p in value.get("projections", [])
-        ],
-        filter=value.get("filter"),
-        limit=value.get("limit"),
-        inputs=value.get("inputs", []),
-        source_namespace=value.get("source_namespace", []),
+def _legacy_ident(name: str) -> str:
+    if name and all(c == "_" or c.islower() or c.isdigit() for c in name):
+        return name
+    return _quote_identifier(name)
+
+
+def _legacy_query(value: dict) -> str:
+    """Render the pre-format structured layout as the query it described."""
+    projections = value.get("projections", [])
+    if projections:
+        items = []
+        for p in projections:
+            output, expression = p["output"], p["expression"]
+            if expression in (output, _quote_identifier(output)):
+                items.append(expression)
+            else:
+                items.append(f"{expression} AS {_legacy_ident(output)}")
+        columns = ", ".join(items)
+    else:
+        columns = "*"
+    table = ".".join(
+        _legacy_ident(part)
+        for part in [*value.get("source_namespace", []), value["source_table"]]
     )
+    query = f"SELECT {columns} FROM {table}"
+    if value.get("filter") is not None:
+        query += f" WHERE {value['filter']}"
+    if value.get("limit") is not None:
+        query += f" LIMIT {value['limit']}"
+    return query
 
 
 def _quote_identifier(name: str) -> str:
@@ -150,18 +189,17 @@ class AsyncMaterializedView:
     ) -> "RefreshMaterializedViewResult":
         """Recompute the view from its source.
 
-        The refresh is incremental when the source's changes can be
-        reconciled into the view -- rows added, changed or removed since the
-        last one -- and otherwise rebuilds. ``full=True`` forces a rebuild;
-        ``source_version`` refreshes to that source version instead of the
-        latest.
+        In LanceDB Distributed, ``full=True`` forces a rebuild; otherwise the
+        server chooses the refresh mode. LanceDB Embedded views always rebuild,
+        and ``source_version`` selects a source version instead of the latest.
+        LanceDB Distributed SQL refreshes do not support source-version pinning.
 
-        Concurrent refreshes of one view do not duplicate its rows. Two that
-        plan the same source rows conflict on commit, and the loser raises
-        rather than writing them a second time.
+        LanceDB Distributed results leave ``mode``, ``rows_written``, and
+        ``source_version`` as ``None`` because the SQL job adapter does not expose
+        these metrics.
         """
         return await self._table._inner.refresh_materialized_view(
-            full=full, source_version=source_version
+            source_version=source_version, full=full
         )
 
     async def refresh_async(
@@ -169,15 +207,16 @@ class AsyncMaterializedView:
     ) -> "AsyncJob[RefreshMaterializedViewResult]":
         """Submit a refresh and return its job without waiting.
 
-        The job may already be complete for a local view. On LanceDB Cloud
-        and Enterprise, its ``id`` is the server job identifier returned by
-        the refresh endpoint.
+        The job may already be complete in LanceDB Embedded. In LanceDB
+        Distributed, refreshes are submitted through the SQL service. Options and
+        result metrics follow
+        [refresh][lancedb.materialized_view.AsyncMaterializedView.refresh].
         """
         from ._lancedb import RefreshMaterializedViewResult
 
         return _typed_job(
             await self._table._inner.refresh_materialized_view_async(
-                full=full, source_version=source_version
+                source_version=source_version, full=full
             ),
             RefreshMaterializedViewResult.from_json,
         )

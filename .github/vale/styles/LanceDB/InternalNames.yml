@@ -1,0 +1,25 @@
+extends: substitution
+message: "Use '%s' instead of the internal name '%s'."
+link: https://github.com/lancedb/docs/blob/main/STYLE.md#names
+level: warning
+ignorecase: false
+# Internal component names stay out of public text. Environment variables such
+# as `PHALANX_*` and Helm keys such as `planExecutorNodes` are code. Geneva is
+# a product name and is not listed.
+swap:
+  Phalanx: query node
+  '[Pp]lan\s+[Ee]xecutor': executor
+  '[Pp]lan\s+[Ee]xecutors': executors
+  Sophon: LanceDB Enterprise
+tests:
+  - name: replaces internal component names
+    input: Phalanx sends work to a Plan Executor. Plan executors cache data in Sophon.
+    want: |
+      1:1:LanceDB.InternalNames:Use 'query node' instead of the internal name 'Phalanx'.
+      1:25:LanceDB.InternalNames:Use 'executor' instead of the internal name 'Plan Executor'.
+      1:40:LanceDB.InternalNames:Use 'executors' instead of the internal name 'Plan executors'.
+      1:69:LanceDB.InternalNames:Use 'LanceDB Enterprise' instead of the internal name 'Sophon'.
+  - name: leaves Geneva, configuration keys and code alone
+    input: |
+      Geneva runs on the executor + cache fleet. Set `PHALANX_REMOTE_FTS_SCORER` and `planExecutorNodes`.
+    want: ''

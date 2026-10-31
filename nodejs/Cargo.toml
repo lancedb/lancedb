@@ -1,7 +1,7 @@
 [package]
 name = "lancedb-nodejs"
 edition.workspace = true
-version = "0.40.0-beta.3"
+version = "0.41.0-beta.17"
 publish = false
 license.workspace = true
 description.workspace = true
@@ -23,7 +23,7 @@ env_logger.workspace = true
 futures.workspace = true
 lancedb.workspace = true
 lance-namespace.workspace = true
-napi = { version = "3.8.3", default-features = false, features = [
+napi = { version = "3.15.0", default-features = false, features = [
     "napi9",
     "async",
     "chrono_date",
@@ -31,7 +31,7 @@ napi = { version = "3.8.3", default-features = false, features = [
 ] }
 chrono.workspace = true
 serde_json.workspace = true
-napi-derive = "3.5.2"
+napi-derive = "3.6.13"
 # Prevent dynamic linking of lzma, which comes from datafusion
 lzma-sys = { version = "0.1", features = ["static"] }
 log.workspace = true
@@ -48,3 +48,4 @@ napi-build = "2.3.1"
 default = ["remote", "lancedb/aws", "lancedb/gcs", "lancedb/azure", "lancedb/dynamodb", "lancedb/oss", "lancedb/huggingface", "lancedb/goosefs", "lancedb/metrics-otel"]
 fp16kernels = ["lancedb/fp16kernels"]
 remote = ["lancedb/remote"]
+experimental-functions = ["lancedb/experimental-functions"]
