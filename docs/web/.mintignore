@@ -6,10 +6,11 @@
 # draft or not) to management/function.mdx and sql/ddl/function.mdx -- each
 # currently carries a plain `<Badge color="red">Enterprise</Badge>` instead
 # -- and re-link curation/chunking.mdx's plain-text `CREATE FUNCTION`/
-# `add_columns` mentions to /management/function and /sql/ddl/function#create
-# now that those pages have a route. Chunking stays published ahead of
-# Functions shipping, so its examples intentionally do not link to either
-# gated page -- only an unrouted page would break.
+# `add_columns` mentions, and curation/create-function.mdx's intro sentence
+# and missing "Function" card in "What to read next", to /management/function
+# and /sql/ddl/function#create now that those pages have a route. Both pages
+# stay published ahead of Functions shipping, so their examples intentionally
+# do not link to either gated page -- only an unrouted page would break.
 management/function.mdx
 sql/ddl/function.mdx
 
