@@ -763,8 +763,8 @@ impl<S: HttpSend> RemoteTable<S> {
             return;
         };
         self.track_read_version(description.version);
-        if let Ok(schema) = arrow_schema::Schema::try_from(description.schema) {
-            self.schema_cache.seed(Arc::new(schema));
+        if let Ok(schema) = schema_from_description(description.schema) {
+            self.schema_cache.seed(schema);
         }
     }
 
@@ -836,7 +836,7 @@ impl<S: HttpSend> RemoteTable<S> {
         }
 
         let description = self.describe_read_snapshot(read_snapshot).await?;
-        Ok(Arc::new(description.schema.try_into()?))
+        schema_from_description(description.schema)
     }
 
     async fn resolve_tag_version_with_request(
@@ -1596,6 +1596,34 @@ struct TableDescription {
     location: Option<String>,
 }
 
+/// Keep server-owned Function assignment columns out of client schemas.
+fn schema_from_description(schema: JsonSchema) -> Result<SchemaRef> {
+    let schema: arrow_schema::Schema = schema.try_into()?;
+    // Reading a schema must remain possible with newer binding metadata.
+    let bindings = crate::table::computed_columns::function_bindings(&schema).unwrap_or_default();
+    let assignments = bindings
+        .iter()
+        .filter_map(|binding| {
+            binding
+                .assignment()
+                .map(|assignment| assignment.output_name.as_str())
+        })
+        .collect::<HashSet<_>>();
+    if assignments.is_empty() {
+        return Ok(Arc::new(schema));
+    }
+    let fields = schema
+        .fields()
+        .iter()
+        .filter(|field| !assignments.contains(field.name().as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    Ok(Arc::new(arrow_schema::Schema::new_with_metadata(
+        fields,
+        schema.metadata,
+    )))
+}
+
 /// How a response body frames its Arrow IPC payload. `/query` answers with file framing
 /// and `fetch_blobs` with stream framing, so the reader is picked per response.
 enum ArrowIpcFraming {
@@ -1723,8 +1751,7 @@ async fn fetch_schema<S: HttpSend>(
         });
     }
 
-    let arrow_schema: arrow_schema::Schema = description.schema.try_into()?;
-    Ok(Arc::new(arrow_schema))
+    schema_from_description(description.schema)
 }
 
 impl<S: HttpSend> std::fmt::Display for RemoteTable<S> {
@@ -2318,7 +2345,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             schema,
             location,
         } = description;
-        let schema = Arc::new(arrow_schema::Schema::try_from(schema)?);
+        let schema = schema_from_description(schema)?;
         let snapshot = self.with_branch(self.branch.clone());
         *snapshot.version.write().await = Some(version);
         *snapshot.location.write().await = location;
@@ -2336,7 +2363,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             schema,
             location,
         } = description;
-        let schema = Arc::new(arrow_schema::Schema::try_from(schema)?);
+        let schema = schema_from_description(schema)?;
         let snapshot = self.with_branch(self.branch.clone());
         *snapshot.version.write().await = Some(version);
         *snapshot.location.write().await = location;
@@ -10173,6 +10200,167 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.version, 10);
+    }
+
+    #[rstest]
+    #[case(false, false)]
+    #[case(true, false)]
+    #[case(true, true)]
+    #[tokio::test]
+    async fn test_add_flattened_function_bindings_with_server_owned_assignment(
+        #[case] has_assignment: bool,
+        #[case] has_assignment_field: bool,
+    ) {
+        use crate::function::{FunctionApplication, FunctionBinding};
+        use crate::table::computed_columns::{
+            FUNCTION_BINDINGS_META_KEY, function_bindings_metadata,
+        };
+
+        let mut raw_binding: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/first_class_functions/v1/remote_function_binding.json"
+        ))
+        .unwrap();
+        for output in raw_binding["outputs"].as_array_mut().unwrap() {
+            output["nullable"] = json!(true);
+        }
+        let assignment_name = "__function_assignment_fb_01K3TEXT";
+        if has_assignment {
+            raw_binding["assignment"] = json!({
+                "output_name": assignment_name,
+                "output_field_id": -1,
+            });
+            raw_binding["output_schema"]["fields"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({
+                    "name": assignment_name,
+                    "nullable": true,
+                    "type": {"type": "bool"},
+                }));
+        }
+        let function = raw_binding["function"].clone();
+        let binding: FunctionBinding = serde_json::from_value(raw_binding).unwrap();
+        let mut schema = fixture_bound_schema();
+        schema.metadata.insert(
+            FUNCTION_BINDINGS_META_KEY.into(),
+            function_bindings_metadata(&[binding]).unwrap(),
+        );
+        let visible_schema = Arc::new(schema.clone());
+        if has_assignment_field {
+            let mut fields = schema.fields().to_vec();
+            // Even the assignment field's physical type and metadata are server-owned.
+            fields.push(Arc::new(Field::new(
+                assignment_name,
+                DataType::Int32,
+                false,
+            )));
+            schema = Schema::new_with_metadata(fields, schema.metadata().clone());
+        }
+        let description = describe_response(&schema);
+        let seeded = RemoteTable::new_mock(
+            "my_table".into(),
+            move |_| {
+                http::Response::builder()
+                    .status(200)
+                    .body(description.clone())
+                    .unwrap()
+            },
+            None,
+        );
+        seeded.seed_schema(&describe_response(&schema));
+        assert_eq!(seeded.schema().await.unwrap(), visible_schema);
+        seeded.invalidate_schema_cache();
+        assert_eq!(
+            seeded
+                .schema_read_snapshot(seeded.snapshot_read_state().await)
+                .await
+                .unwrap(),
+            visible_schema,
+        );
+        assert_eq!(
+            seeded
+                .query_snapshot()
+                .await
+                .unwrap()
+                .schema()
+                .await
+                .unwrap(),
+            visible_schema,
+        );
+        assert_eq!(
+            seeded
+                .checkout_current()
+                .await
+                .unwrap()
+                .schema()
+                .await
+                .unwrap(),
+            visible_schema,
+        );
+
+        let initial_schema = Schema::new(schema.fields()[..2].to_vec());
+        let writes = Arc::new(AtomicUsize::new(0));
+        let handler_writes = writes.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            let body = match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    if handler_writes.load(Ordering::SeqCst) == 0 {
+                        describe_response(&initial_schema)
+                    } else {
+                        describe_response(&schema)
+                    }
+                }
+                "/v1/table/my_table/add_columns/" => {
+                    let actual: serde_json::Value =
+                        serde_json::from_slice(request.body().unwrap().as_bytes().unwrap())
+                            .unwrap();
+                    let index = handler_writes.fetch_add(1, Ordering::SeqCst);
+                    let prefix = if index == 0 { "search" } else { "secondary" };
+                    assert_eq!(
+                        actual["new_columns"],
+                        json!([
+                            {"name": format!("{prefix}_text"), "all_null": true},
+                            {"name": format!("{prefix}_token_count"), "all_null": true}
+                        ])
+                    );
+                    json!({"version": index + 2}).to_string()
+                }
+                path => panic!("Unexpected path: {path}"),
+            };
+            http::Response::builder().status(200).body(body).unwrap()
+        });
+
+        for prefix in ["search", "secondary"] {
+            let application = FunctionApplication::from_json(
+                &json!({
+                    "function": function,
+                    "inputs": [
+                        {"parameter": "title", "kind": "column", "value": {"path": "title"}},
+                        {"parameter": "body", "kind": "column", "value": {"path": "body"}}
+                    ],
+                    "output": {"kind": "named_struct", "fields": [
+                        {"name": "normalized_text", "arrow_type": "utf8", "nullable": true},
+                        {"name": "token_count", "arrow_type": "int64", "nullable": true}
+                    ]},
+                    "columns": {
+                        "normalized_text": format!("{prefix}_text"),
+                        "token_count": format!("{prefix}_token_count")
+                    }
+                })
+                .to_string(),
+            )
+            .unwrap();
+            table
+                .add_columns()
+                .function(application)
+                .execute()
+                .await
+                .unwrap();
+            if prefix == "search" {
+                assert_eq!(table.schema().await.unwrap(), visible_schema);
+            }
+        }
+        assert_eq!(writes.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
