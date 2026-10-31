@@ -56,13 +56,13 @@ def remote_server(text_type=pa.string()):
                         configuration_instructions=(
                             "Grant the referenced identity access to the prefix."
                         ),
-                        huggingface_api_key_secret=(
+                        huggingface_token_secret=(
                             dict(
                                 database="shared",
                                 namespace_path=["credentials"],
-                                name="hf_key",
+                                name="hf_token",
                             )
-                            if b"HUGGINGFACE_API_KEY_SECRET" in command
+                            if b"HUGGINGFACE_TOKEN_SECRET" in command
                             else None
                         ),
                     )
@@ -126,7 +126,7 @@ def remote_server(text_type=pa.string()):
                     "azure_client_id_secret",
                     "azure_client_secret_secret",
                     "gcp_credentials_json_secret",
-                    "huggingface_api_key_secret",
+                    "huggingface_token_secret",
                 ]:
                     if field in row and row[field] is not None:
                         row[field] = json.dumps(row[field])
@@ -421,20 +421,20 @@ async def test_async_gcp_requires_one_secret_and_rejects_other_cloud_options():
 @pytest.mark.parametrize(
     "text_type", [pa.string(), pa.large_string(), pa.string_view()]
 )
-def test_huggingface_lifecycle_uses_one_qualified_api_key_secret(text_type):
+def test_huggingface_lifecycle_uses_one_qualified_token_secret(text_type):
     with remote_server(text_type) as (host, calls):
         db = connect(host)
         info = db.create_storage_integration(
             "hub",
             "hf://datasets/acme/private/raw/",
             storage_provider="HUGGINGFACE",
-            huggingface_api_key_secret=SecretReference(
-                "hf_key", database="shared", namespace_path=("credentials",)
+            huggingface_token_secret=SecretReference(
+                "hf_token", database="shared", namespace_path=("credentials",)
             ),
         )
         assert info.storage_provider == "HUGGINGFACE"
-        assert info.huggingface_api_key_secret.name == "hf_key"
-        assert info.huggingface_api_key_secret.database == "shared"
+        assert info.huggingface_token_secret.name == "hf_token"
+        assert info.huggingface_token_secret.database == "shared"
         assert info.aws_role_arn is None
         assert info.azure_storage_account is None
         assert info.aws_iam_principal_arn == ""
@@ -445,7 +445,7 @@ def test_huggingface_lifecycle_uses_one_qualified_api_key_secret(text_type):
         db.drop_storage_integration("hub")
         assert b"STORAGE_PROVIDER = 'HUGGINGFACE'" in calls[0]
         assert (
-            b'HUGGINGFACE_API_KEY_SECRET = "shared"."credentials"."hf_key"' in calls[0]
+            b'HUGGINGFACE_TOKEN_SECRET = "shared"."credentials"."hf_token"' in calls[0]
         )
         assert b"STORAGE_AWS" not in calls[0]
         assert b"STORAGE_AZURE" not in calls[0]
@@ -461,9 +461,9 @@ async def test_async_huggingface_rejects_other_cloud_options():
             host_override="http://127.0.0.1:1",
         )
         for invalid in (
-            {"huggingface_api_key_secret": "hf_key", "aws_role_arn": ROLE},
+            {"huggingface_token_secret": "hf_token", "aws_role_arn": ROLE},
             {
-                "huggingface_api_key_secret": "hf_key",
+                "huggingface_token_secret": "hf_token",
                 "azure_storage_account": "account",
             },
         ):
@@ -479,23 +479,23 @@ async def test_async_huggingface_rejects_other_cloud_options():
                 "hub",
                 "hf://datasets/acme/private/raw/",
                 aws_role_arn=ROLE,
-                huggingface_api_key_secret="hf_key",
+                huggingface_token_secret="hf_token",
             )
         assert calls == []
         info = await db.create_storage_integration(
             "hub",
             "hf://datasets/acme/private/raw/",
             storage_provider="HUGGINGFACE",
-            huggingface_api_key_secret="hf_key",
+            huggingface_token_secret="hf_token",
         )
         assert info.storage_provider == "HUGGINGFACE"
-        assert b'HUGGINGFACE_API_KEY_SECRET = "public"."hf_key"' in calls[0]
+        assert b'HUGGINGFACE_TOKEN_SECRET = "public"."hf_token"' in calls[0]
 
 
 @pytest.mark.parametrize(
     "text_type", [pa.string(), pa.large_string(), pa.string_view()]
 )
-def test_anonymous_huggingface_lifecycle_omits_api_key_secret(text_type):
+def test_anonymous_huggingface_lifecycle_omits_token_secret(text_type):
     with remote_server(text_type) as (host, calls):
         db = connect(host)
         info = db.create_storage_integration(
@@ -504,11 +504,11 @@ def test_anonymous_huggingface_lifecycle_omits_api_key_secret(text_type):
             storage_provider="HUGGINGFACE",
         )
         assert info.storage_provider == "HUGGINGFACE"
-        assert info.huggingface_api_key_secret is None
+        assert info.huggingface_token_secret is None
         assert db.describe_storage_integration("public_hub") == info
         assert list(db.list_storage_integrations()) == ["raw", "zeta"]
         db.drop_storage_integration("public_hub")
-        assert b"HUGGINGFACE_API_KEY_SECRET" not in calls[0]
+        assert b"HUGGINGFACE_TOKEN_SECRET" not in calls[0]
 
 
 @pytest.mark.asyncio
@@ -525,5 +525,5 @@ async def test_async_huggingface_allows_anonymous_access():
             "hf://datasets/acme/public/raw/",
             storage_provider="HUGGINGFACE",
         )
-        assert info.huggingface_api_key_secret is None
-        assert b"HUGGINGFACE_API_KEY_SECRET" not in calls[0]
+        assert info.huggingface_token_secret is None
+        assert b"HUGGINGFACE_TOKEN_SECRET" not in calls[0]

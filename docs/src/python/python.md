@@ -1065,7 +1065,7 @@ its JSON content. GCP options cannot be combined with AWS or Azure options.
 
 ### Hugging Face storage integrations
 
-Store a Hugging Face API key as one Secret, then register the repository prefix
+Store a Hugging Face token as one Secret, then register the repository prefix
 with the existing integration methods. Only the Secret name is part of the
 integration configuration:
 
@@ -1074,12 +1074,12 @@ import os
 
 from lancedb.storage_integration import SecretReference
 
-db.create_secret("hf_api_key", os.environ["HF_TOKEN"])
+db.create_secret("hf_token", os.environ["HF_TOKEN"])
 info = db.create_storage_integration(
     "private_hub",
     "hf://datasets/acme/private/raw/",
     storage_provider="HUGGINGFACE",
-    huggingface_api_key_secret=SecretReference("hf_api_key"),
+    huggingface_token_secret=SecretReference("hf_token"),
 )
 print(info.configuration_instructions)
 info = db.describe_storage_integration("private_hub")
@@ -1093,14 +1093,14 @@ The equivalent SQL references the existing Secret:
 CREATE STORAGE INTEGRATION private_hub
     STORAGE_PROVIDER = 'HUGGINGFACE'
     STORAGE_PREFIX = 'hf://datasets/acme/private/raw/'
-    HUGGINGFACE_API_KEY_SECRET = public.hf_api_key;
+    HUGGINGFACE_TOKEN_SECRET = public.hf_token;
 DESCRIBE STORAGE INTEGRATION private_hub;
 SHOW STORAGE INTEGRATIONS;
 SELECT * FROM 'hf://datasets/acme/private/raw/*.parquet' LIMIT 10;
 DROP STORAGE INTEGRATION private_hub;
 ```
 
-Omit the API-key Secret for anonymous access at Hugging Face's default anonymous
+Omit the token Secret for anonymous access at Hugging Face's default anonymous
 rate limits. A tokenless integration does not use a cluster's Hugging Face token:
 
 ```python
@@ -1116,7 +1116,7 @@ CREATE STORAGE INTEGRATION public_hub
     STORAGE_PREFIX = 'hf://datasets/acme/public/raw/';
 ```
 
-When provided, the Secret must contain the API key itself, with repository read
+When provided, the Secret must contain the token itself, with repository read
 permission.
 Cross-database and namespace references use the same `SecretReference` rules as
 other integrations. Sync and async APIs accept the same options. Registration

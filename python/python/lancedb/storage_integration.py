@@ -49,7 +49,7 @@ class StorageIntegrationInfo:
     azure_client_id_secret: Optional[SecretReference] = None
     azure_client_secret_secret: Optional[SecretReference] = None
     gcp_credentials_json_secret: Optional[SecretReference] = None
-    huggingface_api_key_secret: Optional[SecretReference] = None
+    huggingface_token_secret: Optional[SecretReference] = None
 
     def __post_init__(self):
         for field in (
@@ -59,7 +59,7 @@ class StorageIntegrationInfo:
             "azure_client_id_secret",
             "azure_client_secret_secret",
             "gcp_credentials_json_secret",
-            "huggingface_api_key_secret",
+            "huggingface_token_secret",
         ):
             value = getattr(self, field)
             if isinstance(value, dict):

@@ -400,7 +400,7 @@ class DBConnection(EnforceOverrides):
         azure_client_id_secret: Optional[Union[str, SecretReference]] = None,
         azure_client_secret_secret: Optional[Union[str, SecretReference]] = None,
         gcp_credentials_json_secret: Optional[Union[str, SecretReference]] = None,
-        huggingface_api_key_secret: Optional[Union[str, SecretReference]] = None,
+        huggingface_token_secret: Optional[Union[str, SecretReference]] = None,
         namespace_path: Optional[List[str]] = None,
     ) -> StorageIntegrationInfo:
         raise NotImplementedError
@@ -2256,7 +2256,7 @@ class LanceDBConnection(DBConnection):
         azure_client_id_secret: Optional[Union[str, SecretReference]] = None,
         azure_client_secret_secret: Optional[Union[str, SecretReference]] = None,
         gcp_credentials_json_secret: Optional[Union[str, SecretReference]] = None,
-        huggingface_api_key_secret: Optional[Union[str, SecretReference]] = None,
+        huggingface_token_secret: Optional[Union[str, SecretReference]] = None,
         namespace_path: Optional[List[str]] = None,
     ) -> StorageIntegrationInfo:
         return LOOP.run(
@@ -2273,7 +2273,7 @@ class LanceDBConnection(DBConnection):
                 azure_client_id_secret=azure_client_id_secret,
                 azure_client_secret_secret=azure_client_secret_secret,
                 gcp_credentials_json_secret=gcp_credentials_json_secret,
-                huggingface_api_key_secret=huggingface_api_key_secret,
+                huggingface_token_secret=huggingface_token_secret,
                 namespace_path=namespace_path,
             )
         )
@@ -3551,7 +3551,7 @@ class AsyncConnection(object):
         azure_client_id_secret: Optional[Union[str, SecretReference]] = None,
         azure_client_secret_secret: Optional[Union[str, SecretReference]] = None,
         gcp_credentials_json_secret: Optional[Union[str, SecretReference]] = None,
-        huggingface_api_key_secret: Optional[Union[str, SecretReference]] = None,
+        huggingface_token_secret: Optional[Union[str, SecretReference]] = None,
         namespace_path: Optional[List[str]] = None,
     ) -> StorageIntegrationInfo:
         """Register cloud storage access using database-owned credential Secrets.
@@ -3563,8 +3563,8 @@ class AsyncConnection(object):
         For GCP, set ``storage_provider="GCP"`` and ``gcp_credentials_json_secret``
         to a Secret containing the application credentials JSON file content.
         For Hugging Face, set ``storage_provider="HUGGINGFACE"`` and
-        optionally set ``huggingface_api_key_secret`` to a Secret containing the
-        API key; omitting it selects anonymous access at the default rate limits.
+        optionally set ``huggingface_token_secret`` to a Secret containing the
+        token; omitting it selects anonymous access at the default rate limits.
         Registration returns setup instructions without verifying storage access.
         """
         azure_options = (
@@ -3572,7 +3572,7 @@ class AsyncConnection(object):
             azure_client_id_secret,
             azure_client_secret_secret,
         )
-        if storage_provider != "HUGGINGFACE" and huggingface_api_key_secret is not None:
+        if storage_provider != "HUGGINGFACE" and huggingface_token_secret is not None:
             raise ValueError(
                 "Hugging Face options require storage_provider HUGGINGFACE"
             )
@@ -3670,7 +3670,7 @@ class AsyncConnection(object):
             "azure_client_id_secret": reference(azure_client_id_secret),
             "azure_client_secret_secret": reference(azure_client_secret_secret),
             "gcp_credentials_json_secret": reference(gcp_credentials_json_secret),
-            "huggingface_api_key_secret": reference(huggingface_api_key_secret),
+            "huggingface_token_secret": reference(huggingface_token_secret),
             "aws_access_key_id_secret": reference(aws_access_key_id_secret),
             "aws_secret_access_key_secret": reference(aws_secret_access_key_secret),
         }

@@ -55,7 +55,7 @@ pub(super) fn create_sql(
     request: &CreateStorageIntegrationRequest,
 ) -> Result<String> {
     if request.storage_provider != StorageProvider::HuggingFace
-        && request.huggingface_api_key_secret.is_some()
+        && request.huggingface_token_secret.is_some()
     {
         return Err(invalid(
             "Hugging Face credential options require storage_provider HUGGINGFACE",
@@ -81,9 +81,9 @@ pub(super) fn create_sql(
             object_name(name, namespace)?,
             literal(&request.storage_prefix)
         );
-        if let Some(reference) = &request.huggingface_api_key_secret {
+        if let Some(reference) = &request.huggingface_token_secret {
             sql.push_str(&format!(
-                " HUGGINGFACE_API_KEY_SECRET = {}",
+                " HUGGINGFACE_TOKEN_SECRET = {}",
                 secret_name(reference)?
             ));
         }
@@ -240,7 +240,7 @@ pub(super) fn decode_info(batches: &[RecordBatch]) -> Result<StorageIntegrationI
                 | "azure_client_id_secret"
                 | "azure_client_secret_secret"
                 | "gcp_credentials_json_secret"
-                | "huggingface_api_key_secret"
+                | "huggingface_token_secret"
                 | "trust_policy"
                 | "permissions_policy"
         ) && let Some(json) = value.as_str()
@@ -371,24 +371,22 @@ mod huggingface_tests {
     fn huggingface_renders_optional_secret_and_rejects_mixed_auth() {
         let mut request =
             CreateStorageIntegrationRequest::huggingface("hf://datasets/acme/private/raw/")
-                .with_huggingface_api_key_secret(
-                    SecretReference::new("api-key")
+                .with_huggingface_token_secret(
+                    SecretReference::new("token")
                         .with_database("shared")
                         .with_namespace(vec!["credentials".into()]),
                 );
         let sql = create_sql("hub", &[], &request).unwrap();
         assert!(sql.contains("STORAGE_PROVIDER = 'HUGGINGFACE'"));
-        assert!(
-            sql.contains("HUGGINGFACE_API_KEY_SECRET = \"shared\".\"credentials\".\"api-key\"")
-        );
+        assert!(sql.contains("HUGGINGFACE_TOKEN_SECRET = \"shared\".\"credentials\".\"token\""));
         request.gcp_credentials_json_secret = Some(SecretReference::new("gcp"));
         assert!(create_sql("hub", &[], &request).is_err());
         request.gcp_credentials_json_secret = None;
-        request.huggingface_api_key_secret = None;
+        request.huggingface_token_secret = None;
         assert!(
             !create_sql("hub", &[], &request)
                 .unwrap()
-                .contains("HUGGINGFACE_API_KEY_SECRET")
+                .contains("HUGGINGFACE_TOKEN_SECRET")
         );
     }
 }
