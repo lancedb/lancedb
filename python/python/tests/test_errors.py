@@ -50,6 +50,15 @@ def test_pickle_http_error():
     assert str(restored) == "not found"
     assert restored.request_id == "req-789"
     assert restored.status_code == 404
+    assert restored.is_transport_error is False
+
+
+def test_pickle_http_transport_error():
+    err = HttpError("connection reset", "req-789", is_transport_error=True)
+    restored = pickle.loads(pickle.dumps(err))
+    assert isinstance(restored, HttpError)
+    assert restored.is_transport_error is True
+    assert restored.request_id == "req-789"
 
 
 def test_pickle_retry_error():

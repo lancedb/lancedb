@@ -44,9 +44,26 @@ class HttpError(LanceDBClientError):
     status_code: int
         The HTTP status code of the response. May be None if the request
         failed before the response was received.
+    is_transport_error: bool
+        Whether the request failed while connecting, sending, or reading, rather
+        than because of an HTTP status or an invalid response payload.
     """
 
-    pass
+    def __init__(
+        self,
+        message: str,
+        request_id: str,
+        status_code: Optional[int] = None,
+        is_transport_error: bool = False,
+    ):
+        super().__init__(message, request_id, status_code)
+        self.is_transport_error = is_transport_error
+
+    def __reduce__(self) -> tuple[type, tuple]:
+        return (
+            self.__class__,
+            (str(self), self.request_id, self.status_code, self.is_transport_error),
+        )
 
 
 class RetryError(LanceDBClientError):

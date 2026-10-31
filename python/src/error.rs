@@ -52,6 +52,7 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
                         message,
                         request_id,
                         status_code.map(|s| s.as_u16()),
+                        is_transport_error(source.as_ref()),
                     ))?;
 
                     if let Some(cause) = source.source() {
@@ -143,13 +144,13 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
 
 fn http_from_rust_error(
     py: Python<'_>,
-    err: &dyn std::error::Error,
+    err: &(dyn std::error::Error + 'static),
     request_id: &str,
     status_code: Option<u16>,
 ) -> PyResult<PyErr> {
     let message = err.to_string();
     let http_err_cls = py.import("lancedb.remote.errors")?.getattr("HttpError")?;
-    let py_err = http_err_cls.call1((message, request_id, status_code))?;
+    let py_err = http_err_cls.call1((message, request_id, status_code, is_transport_error(err)))?;
 
     // Reset the traceback since it doesn't provide additional information.
     let py_err = py_err.call_method1(intern!(py, "with_traceback"), (PyNone::get(py),))?;
@@ -160,4 +161,18 @@ fn http_from_rust_error(
     }
 
     Ok(PyErr::from_value(py_err))
+}
+
+// Preserve the typed transport classification across the Python boundary.
+// A missing status code alone also covers malformed job responses, which
+// waiting longer cannot repair.
+fn is_transport_error(err: &(dyn std::error::Error + 'static)) -> bool {
+    if let Some(error) = err.downcast_ref::<reqwest::Error>() {
+        return error.is_connect()
+            || error.is_timeout()
+            || error.is_request()
+            || error.is_body()
+            || error.is_decode();
+    }
+    err.source().is_some_and(is_transport_error)
 }
