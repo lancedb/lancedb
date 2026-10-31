@@ -791,6 +791,79 @@ async def test_aliases_in_lance_model_async(mem_db_async):
     assert model.distance < 0.01
 
 
+def test_aliased_lance_model_reads_back_its_own_table(mem_db):
+    # The schema and add() use field names, so to_pydantic() must accept rows
+    # keyed by field name even though pydantic validates by alias.
+    class Item(LanceModel):
+        user_id: int = Field(alias="userId")
+        vector: Vector(2)
+
+    tbl = mem_db.create_table("aliased_items", schema=Item)
+    tbl.add([Item(userId=1, vector=[0.1, 0.2])])
+    assert tbl.schema.names == ["user_id", "vector"]
+
+    [item] = tbl.search([0.1, 0.2]).limit(1).to_pydantic(Item)
+    assert item.user_id == 1
+    [item] = tbl.search().to_pydantic(Item)
+    assert item.user_id == 1
+
+
+def test_aliased_lance_model_with_name_only_validation(mem_db):
+    class Item(LanceModel):
+        model_config = pydantic.ConfigDict(
+            validate_by_alias=False, validate_by_name=True
+        )
+        user_id: int = Field(default=0, alias="userId")
+
+    tbl = mem_db.create_table("name_only_items", schema=Item)
+    tbl.add([Item(user_id=42)])
+    [item] = tbl.search().to_pydantic(Item)
+    assert item.user_id == 42
+
+
+def test_field_name_that_is_another_fields_alias_keeps_its_meaning(mem_db):
+    class Item(LanceModel):
+        record_id: int = Field(default=0, alias="id")
+        id: int = Field(default=-1, alias="legacy_id")
+
+    tbl = mem_db.create_table("alias_collision_items", data=[{"id": 42}])
+    [item] = tbl.search().to_pydantic(Item)
+    assert item.model_dump() == {"record_id": 42, "id": -1}
+
+
+@pytest.mark.parametrize(
+    "validation_alias",
+    [
+        pydantic.AliasChoices("id", "recordId"),
+        pydantic.AliasPath("id"),
+        pydantic.AliasChoices(pydantic.AliasPath("id"), "recordId"),
+    ],
+)
+def test_field_name_read_by_another_fields_alias_choices_or_path(
+    mem_db, validation_alias
+):
+    class Item(LanceModel):
+        record_id: int = Field(default=0, validation_alias=validation_alias)
+        id: int = Field(default=-1, alias="legacy_id")
+
+    tbl = mem_db.create_table("alias_choices_items", data=[{"id": 42}])
+    [item] = tbl.search().to_pydantic(Item)
+    assert item.model_dump() == {"record_id": 42, "id": -1}
+
+
+@pytest.mark.asyncio
+async def test_aliased_lance_model_reads_back_its_own_table_async(mem_db_async):
+    class Item(LanceModel):
+        user_id: int = Field(alias="userId")
+        vector: Vector(2)
+
+    tbl = await mem_db_async.create_table("aliased_items", schema=Item)
+    await tbl.add([Item(userId=1, vector=[0.1, 0.2])])
+
+    [item] = await tbl.vector_search([0.1, 0.2]).limit(1).to_pydantic(Item)
+    assert item.user_id == 1
+
+
 def test_enum_types():
     """Enum fields should map to the Arrow type of their value (issue #1846)."""
 
