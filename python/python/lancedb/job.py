@@ -14,6 +14,7 @@ from lancedb.background_loop import LOOP
 
 from . import _lancedb
 from ._lancedb import JobDescription, JobFailureInfo, JobInfo
+from .remote.errors import HttpError, RetryError
 
 T = TypeVar("T")
 
@@ -73,13 +74,59 @@ class AsyncJob(Generic[T]):
 
         Raises `JobFailedError` if the operation failed, `JobCancelledError`
         if it was cancelled, and `TimeoutError` if `timeout` elapses first.
+        Transient connection and read errors are retried with capped exponential
+        backoff within the same timeout (indefinitely when no timeout is given).
+        If the timeout expires while disconnected, raises `ConnectionError`
+        instead, with the job ID and instructions to resume waiting. The job
+        may still be running; timing out does not cancel it.
         """
         if self._inner is None:
             return cast(T, None)
-        if timeout is None:
-            result = await self._inner.wait()
-        else:
-            result = await asyncio.wait_for(self._inner.wait(), timeout.total_seconds())
+        last_error = None
+
+        async def wait_with_retries():
+            nonlocal last_error
+            delay = 0.25
+            while True:
+                try:
+                    if last_error is not None:
+                        # Confirm recovery before restarting the backend poller,
+                        # so a later timeout isn't blamed on an earlier outage.
+                        await self._inner.status()
+                        last_error = None
+                        delay = 0.25
+                    return await self._inner.wait()
+                except (HttpError, RetryError) as error:
+                    cause = error.__cause__ if isinstance(error, RetryError) else error
+                    if not isinstance(cause, HttpError) or not cause.is_transport_error:
+                        raise
+                    last_error = error
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 30.0)
+
+        try:
+            if timeout is None:
+                result = await wait_with_retries()
+            else:
+                result = await asyncio.wait_for(
+                    wait_with_retries(), timeout.total_seconds()
+                )
+        except asyncio.TimeoutError:
+            if last_error is None:
+                raise
+            identity = f"job {self.id!r}" if self.id is not None else "the operation"
+            if self.id is not None and self.job_type != "query":
+                reconnect = (
+                    f"Use db.open_job({self.id!r}) to reconnect, then call wait() "
+                    "on the returned job."
+                )
+            else:
+                reconnect = "Call wait() on this job handle to reconnect."
+            raise ConnectionError(
+                f"Lost connection while waiting and the timeout expired; "
+                f"{identity} may still be running. "
+                f"{reconnect}"
+            ) from last_error
         if self._result_decoder is not None:
             return self._result_decoder(result)
         return cast(T, result)
@@ -270,6 +317,11 @@ class Job(Generic[T]):
 
         Raises `JobFailedError` if the operation failed, `JobCancelledError`
         if it was cancelled, and `TimeoutError` if `timeout` elapses first.
+        Transient connection and read errors are retried within that timeout;
+        if it expires while disconnected, raises `ConnectionError` with
+        instructions to reconnect. Timing out does not cancel the job.
+
+        See :meth:`AsyncJob.wait`.
         """
         if self._inner is None:
             return cast(T, None)
