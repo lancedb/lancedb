@@ -2040,6 +2040,27 @@ describe("When querying a table", () => {
         .toArrow({ timeoutMs: 0 }),
     ).rejects.toThrow("Query timeout");
   });
+
+  it("should execute ST_DWithin filters for plain and vector queries", async () => {
+    const db = await connect(tmpDir.name);
+    const table = await db.createTable("geo_dwithin", [
+      { id: 1, x: 0.0, y: 0.0, vector: [0.0, 0.0] },
+      { id: 2, x: 1.0, y: 1.0, vector: [1.0, 1.0] },
+      { id: 3, x: 3.0, y: 4.0, vector: [3.0, 4.0] },
+    ]);
+    const filter = "ST_DWithin(ST_Point(x, y), ST_Point(0.0, 0.0), 2.0)";
+
+    const plain = await table.query().where(filter).toArray();
+    expect(plain.map((row) => row.id).sort((a, b) => a - b)).toEqual([1, 2]);
+
+    const vector = await table
+      .query()
+      .nearestTo([0.0, 0.0])
+      .where(filter)
+      .limit(2)
+      .toArray();
+    expect(vector.map((row) => row.id).sort((a, b) => a - b)).toEqual([1, 2]);
+  });
 });
 
 describe("Read consistency interval", () => {

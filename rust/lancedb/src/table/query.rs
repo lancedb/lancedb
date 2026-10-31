@@ -162,7 +162,13 @@ pub async fn create_plan(
     query: &AnyQuery,
     options: QueryExecutionOptions,
 ) -> Result<Arc<dyn ExecutionPlan>> {
-    let query = query.canonicalized()?;
+    let mut query = query.canonicalized()?;
+    // Remote and namespace queries retain their original SQL. Native execution
+    // lowers ST_DWithin after canonicalization, before take/RTE routing clones
+    // or consumes the query.
+    if let Some(QueryFilter::Sql(predicate)) = &mut query.base_mut().filter {
+        *predicate = crate::query::sql::rewrite_st_dwithin(predicate);
+    }
     if let AnyQuery::Query(request) = &query
         && let Some(offsets) = &request.take_offsets
     {
@@ -1147,7 +1153,7 @@ mod tests {
     use futures::TryStreamExt;
     use lance_arrow::FixedSizeListArrayExt;
     use std::sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     };
 
@@ -1360,6 +1366,123 @@ mod tests {
         assert!(ns_request.vector_column.is_none());
 
         assert!(ns_request.vector.single_vector.as_ref().unwrap().is_empty());
+    }
+
+    #[derive(Debug)]
+    struct CapturingNamespaceClient {
+        filters: Mutex<Vec<Option<String>>>,
+        response: bytes::Bytes,
+    }
+
+    #[async_trait::async_trait]
+    impl LanceNamespace for CapturingNamespaceClient {
+        fn namespace_id(&self) -> String {
+            "capturing".to_string()
+        }
+
+        async fn query_table(&self, request: NsQueryTableRequest) -> lance::Result<bytes::Bytes> {
+            self.filters.lock().unwrap().push(request.filter);
+            Ok(self.response.clone())
+        }
+    }
+
+    fn namespace_query_response() -> bytes::Bytes {
+        use arrow_ipc::writer::FileWriter;
+        use arrow_schema::{DataType, Field, Schema};
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef],
+        )
+        .unwrap();
+        let mut response = Vec::new();
+        {
+            let mut writer = FileWriter::try_new(&mut response, &schema).unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+        }
+        bytes::Bytes::from(response)
+    }
+
+    #[tokio::test]
+    async fn test_namespace_query_pushdown_preserves_st_dwithin_filter() {
+        use crate::connect;
+        use arrow_schema::{DataType, Field, Schema};
+
+        const FILTER: &str = "ST_DWithin(ST_Point(x, y), ST_Point(0.0, 0.0), 2.0)";
+
+        let vectors = fixed_size_list_array(vec![0.0, 0.0, 1.0, 1.0], 2);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+            Field::new("vector", vectors.data_type().clone(), false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])),
+                Arc::new(arrow_array::Float64Array::from(vec![0.0, 1.0])),
+                Arc::new(arrow_array::Float64Array::from(vec![0.0, 1.0])),
+                Arc::new(vectors),
+            ],
+        )
+        .unwrap();
+        let table = connect("memory://")
+            .execute()
+            .await
+            .unwrap()
+            .create_table("namespace_geo", batch)
+            .execute()
+            .await
+            .unwrap();
+        let namespace_client = Arc::new(CapturingNamespaceClient {
+            filters: Mutex::new(Vec::new()),
+            response: namespace_query_response(),
+        });
+        let mut native_table = table.as_native().unwrap().clone();
+        native_table.namespace_client = Some(namespace_client.clone());
+        native_table
+            .pushdown_operations
+            .insert(NamespaceClientPushdownOperation::QueryTable);
+
+        for query in [
+            AnyQuery::Query(QueryRequest {
+                filter: Some(QueryFilter::Sql(FILTER.to_string())),
+                ..Default::default()
+            }),
+            AnyQuery::VectorQuery(VectorQueryRequest {
+                base: QueryRequest {
+                    filter: Some(QueryFilter::Sql(FILTER.to_string())),
+                    limit: Some(2),
+                    ..Default::default()
+                },
+                column: Some("vector".to_string()),
+                query_vector: vec![Arc::new(Float32Array::from(vec![0.0, 0.0])) as ArrayRef],
+                ..Default::default()
+            }),
+        ] {
+            let batches = native_table
+                .query(&query, QueryExecutionOptions::default())
+                .await
+                .unwrap()
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap();
+            let batch = arrow::compute::concat_batches(&batches[0].schema(), &batches).unwrap();
+            assert_eq!(
+                batch["id"]
+                    .as_primitive::<arrow::datatypes::Int32Type>()
+                    .values(),
+                &[1, 2]
+            );
+        }
+
+        assert_eq!(
+            namespace_client.filters.lock().unwrap().as_slice(),
+            &[Some(FILTER.to_string()), Some(FILTER.to_string())]
+        );
     }
 
     #[test]
