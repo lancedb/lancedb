@@ -16,16 +16,32 @@ or a Hugging Face dataset repository. A query or import statement that
 reads a matching URI uses the integration automatically -- it is never
 named in the query itself.
 
-Today, storage integrations are created, inspected and dropped entirely
-through SQL; there is no Python, TypeScript or REST equivalent.
-
 ## Create and manage {#manage}
 
-Every provider takes `STORAGE_PROVIDER` and `STORAGE_PREFIX`, plus
-provider-specific credential options. Credential options end in `_SECRET`
-and name a [Secret](/management/secret) by reference, never by value:
+Every provider takes a `storage_prefix` and `storage_provider`, plus
+provider-specific credential options. Credential options take a
+[Secret](/management/secret) reference, never a value directly -- either a
+bare name (resolved in the caller's own database and namespace) or a
+`SecretReference` qualified with a database and namespace path:
 
 <CodeGroup>
+```python Python icon="python"
+from lancedb.storage_integration import SecretReference
+
+info = db.create_storage_integration(
+    "hub", "hf://datasets/owner/private/data/",
+    storage_provider="HUGGINGFACE",
+    huggingface_token_secret=SecretReference(
+        "hf_token", database="bootstrap", namespace_path=("credentials",),
+    ),
+)
+print(info.configuration_instructions)
+
+info = db.describe_storage_integration("hub")
+names = list(db.list_storage_integrations())
+db.drop_storage_integration("hub")
+```
+
 ```sql SQL icon="database"
 CREATE STORAGE INTEGRATION hub
     STORAGE_PROVIDER = 'HUGGINGFACE'
@@ -45,12 +61,14 @@ provider's exact options, S3's two credential modes, and the full output
 schema -- this page covers the CRUD operations above at a glance; that one
 is the complete reference.
 
-| Operation | SQL | Notes |
-| --- | --- | --- |
-| Create | `CREATE STORAGE INTEGRATION` | Fails if the name is taken, so a create never silently replaces one. |
-| Describe | `DESCRIBE` / `DESC` | One row: provider, prefix, credential references, and (for an AWS role integration) the generated trust policy. |
-| List | `SHOW` / `LIST STORAGE INTEGRATIONS` | Optionally scoped `IN` one namespace. |
-| Drop | `DROP [IF EXISTS]` | Blocked while an attached database still depends on it. |
+| Operation | Python | SQL | Notes |
+| --- | --- | --- | --- |
+| Create | `create_storage_integration` | `CREATE STORAGE INTEGRATION` | Fails if the name is taken, so a create never silently replaces one. |
+| Describe | `describe_storage_integration` | `DESCRIBE` / `DESC` | One row: provider, prefix, credential references, and (for an AWS role integration) the generated trust policy. |
+| List | `list_storage_integrations` | `SHOW` / `LIST STORAGE INTEGRATIONS` | Optionally scoped to one namespace. |
+| Drop | `drop_storage_integration` | `DROP [IF EXISTS]` | Blocked while an attached database still depends on it. |
+
+There is no TypeScript or REST equivalent yet; use the Python SDK or SQL.
 
 There is no `ALTER`. To rotate a credential, rotate the
 [Secret](/management/secret#manage) it references -- the integration's
