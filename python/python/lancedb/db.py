@@ -394,11 +394,12 @@ class DBConnection(EnforceOverrides):
         aws_access_key_id_secret: Optional[Union[str, SecretReference]] = None,
         aws_secret_access_key_secret: Optional[Union[str, SecretReference]] = None,
         aws_region: Optional[str] = None,
-        storage_provider: Literal["S3", "AZURE"] = "S3",
+        storage_provider: Literal["S3", "AZURE", "GCP"] = "S3",
         azure_storage_account: Optional[str] = None,
         azure_tenant_id_secret: Optional[Union[str, SecretReference]] = None,
         azure_client_id_secret: Optional[Union[str, SecretReference]] = None,
         azure_client_secret_secret: Optional[Union[str, SecretReference]] = None,
+        gcp_credentials_json_secret: Optional[Union[str, SecretReference]] = None,
         namespace_path: Optional[List[str]] = None,
     ) -> StorageIntegrationInfo:
         raise NotImplementedError
@@ -2248,11 +2249,12 @@ class LanceDBConnection(DBConnection):
         aws_access_key_id_secret: Optional[Union[str, SecretReference]] = None,
         aws_secret_access_key_secret: Optional[Union[str, SecretReference]] = None,
         aws_region: Optional[str] = None,
-        storage_provider: Literal["S3", "AZURE"] = "S3",
+        storage_provider: Literal["S3", "AZURE", "GCP"] = "S3",
         azure_storage_account: Optional[str] = None,
         azure_tenant_id_secret: Optional[Union[str, SecretReference]] = None,
         azure_client_id_secret: Optional[Union[str, SecretReference]] = None,
         azure_client_secret_secret: Optional[Union[str, SecretReference]] = None,
+        gcp_credentials_json_secret: Optional[Union[str, SecretReference]] = None,
         namespace_path: Optional[List[str]] = None,
     ) -> StorageIntegrationInfo:
         return LOOP.run(
@@ -2268,6 +2270,7 @@ class LanceDBConnection(DBConnection):
                 azure_tenant_id_secret=azure_tenant_id_secret,
                 azure_client_id_secret=azure_client_id_secret,
                 azure_client_secret_secret=azure_client_secret_secret,
+                gcp_credentials_json_secret=gcp_credentials_json_secret,
                 namespace_path=namespace_path,
             )
         )
@@ -3539,19 +3542,22 @@ class AsyncConnection(object):
         aws_access_key_id_secret: Optional[Union[str, SecretReference]] = None,
         aws_secret_access_key_secret: Optional[Union[str, SecretReference]] = None,
         aws_region: Optional[str] = None,
-        storage_provider: Literal["S3", "AZURE"] = "S3",
+        storage_provider: Literal["S3", "AZURE", "GCP"] = "S3",
         azure_storage_account: Optional[str] = None,
         azure_tenant_id_secret: Optional[Union[str, SecretReference]] = None,
         azure_client_id_secret: Optional[Union[str, SecretReference]] = None,
         azure_client_secret_secret: Optional[Union[str, SecretReference]] = None,
+        gcp_credentials_json_secret: Optional[Union[str, SecretReference]] = None,
         namespace_path: Optional[List[str]] = None,
     ) -> StorageIntegrationInfo:
-        """Register S3 or Azure Blob access using database-owned credential objects.
+        """Register S3, Azure Blob or GCP access using database-owned credential objects.
 
         ``namespace_path`` follows Secret naming rules. A SecretReference can name
         another database; a string names a root Secret in this database.
         For Azure, set ``storage_provider="AZURE"``, ``azure_storage_account``,
         and Secret references for tenant ID, client ID and client secret.
+        For GCP, set ``storage_provider="GCP"`` and ``gcp_credentials_json_secret``
+        to a Secret containing the application credentials JSON file content.
         Registration returns setup instructions without verifying storage access.
         """
         azure_options = (
@@ -3559,7 +3565,23 @@ class AsyncConnection(object):
             azure_client_id_secret,
             azure_client_secret_secret,
         )
-        if storage_provider == "AZURE":
+        if storage_provider != "GCP" and gcp_credentials_json_secret is not None:
+            raise ValueError("GCP credential options require storage_provider GCP")
+        if storage_provider == "GCP":
+            if gcp_credentials_json_secret is None:
+                raise ValueError("GCP requires gcp_credentials_json_secret")
+            if azure_storage_account is not None or any(
+                value is not None
+                for value in azure_options
+                + (
+                    aws_role_arn,
+                    aws_access_key_id_secret,
+                    aws_secret_access_key_secret,
+                    aws_region,
+                )
+            ):
+                raise ValueError("GCP integrations cannot contain AWS or Azure options")
+        elif storage_provider == "AZURE":
             if not azure_storage_account or any(
                 value is None for value in azure_options
             ):
@@ -3600,7 +3622,7 @@ class AsyncConnection(object):
                 )
 
         else:
-            raise ValueError("storage_provider must be S3 or AZURE")
+            raise ValueError("storage_provider must be S3, AZURE or GCP")
 
         def reference(value):
             if value is None:
@@ -3622,6 +3644,7 @@ class AsyncConnection(object):
             "azure_tenant_id_secret": reference(azure_tenant_id_secret),
             "azure_client_id_secret": reference(azure_client_id_secret),
             "azure_client_secret_secret": reference(azure_client_secret_secret),
+            "gcp_credentials_json_secret": reference(gcp_credentials_json_secret),
             "aws_access_key_id_secret": reference(aws_access_key_id_secret),
             "aws_secret_access_key_secret": reference(aws_secret_access_key_secret),
         }
