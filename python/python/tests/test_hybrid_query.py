@@ -7,10 +7,12 @@ import lancedb
 
 from lancedb.query import LanceHybridQueryBuilder
 from lancedb.rerankers.rrf import RRFReranker
+import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 import pytest
 import pytest_asyncio
+import random
 
 from lancedb.index import BTree, FTS, IvfPq
 from lancedb.table import AsyncTable, Table
@@ -58,8 +60,10 @@ async def test_async_hybrid_query(table: AsyncTable):
         table.query().nearest_to([0.0, 0.4]).nearest_to_text("dog").limit(2).to_arrow()
     )
     assert len(result) == 2
-    # ensure we get results that would match well for text and vector
-    assert result["text"].to_pylist() == ["a", "dog"]
+    # ensure we get results that would match well for text and vector.
+    # 'dog' matches both the text query and the vector query, so rank fusion
+    # over the full candidate window (#4758) puts it first.
+    assert result["text"].to_pylist() == ["dog", "a"]
 
     # ensure there is no rowid by default
     assert "_rowid" not in result
@@ -76,9 +80,11 @@ async def test_async_hybrid_query_with_row_ids(table: AsyncTable):
         .to_arrow()
     )
     assert len(result) == 2
-    # ensure we get results that would match well for text and vector
-    assert result["text"].to_pylist() == ["a", "dog"]
-    assert result["_rowid"].to_pylist() == [0, 3]
+    # ensure we get results that would match well for text and vector.
+    # 'dog' matches both the text query and the vector query, so rank fusion
+    # over the full candidate window (#4758) puts it first.
+    assert result["text"].to_pylist() == ["dog", "a"]
+    assert result["_rowid"].to_pylist() == [3, 0]
 
 
 @pytest.mark.asyncio
@@ -268,10 +274,11 @@ async def test_async_hybrid_query_fts_first_default_limit(table: AsyncTable):
 
 @pytest.mark.asyncio
 async def test_async_hybrid_query_explain_plan_matches_execution(table: AsyncTable):
-    # Paging rewrites the sub-queries: each one fetches limit + offset rows with
-    # no offset of its own, and the window is sliced out after fusion. The plans
-    # have to be built from those rewritten sub-queries, otherwise explain_plan
-    # and analyze_plan describe a query that is never run.
+    # Paging rewrites the sub-queries: each one fetches enough rows to cover
+    # limit + offset, and never fewer than the rank-fusion window (#4758),
+    # with no offset of its own, and the window is sliced out after fusion.
+    # The plans have to be built from those rewritten sub-queries, otherwise
+    # explain_plan and analyze_plan describe a query that is never run.
     query = (
         table.query().nearest_to([0.0, 0.4]).nearest_to_text("dog").offset(2).limit(2)
     )
@@ -281,12 +288,12 @@ async def test_async_hybrid_query_explain_plan_matches_execution(table: AsyncTab
     assert [
         line.strip() for line in plan.splitlines() if "GlobalLimitExec" in line
     ] == [
-        "GlobalLimitExec: skip=0, fetch=4",
-        "GlobalLimitExec: skip=0, fetch=4",
+        "GlobalLimitExec: skip=0, fetch=50",
+        "GlobalLimitExec: skip=0, fetch=50",
     ]
 
     analyzed = await query.analyze_plan()
-    assert analyzed.count("skip=0, fetch=4") == 2
+    assert analyzed.count("skip=0, fetch=50") == 2
     assert "skip=2" not in analyzed
 
 
@@ -313,6 +320,42 @@ def test_hybrid_query_offset(sync_table: Table):
         .to_arrow()
     )
     assert offset_result["_rowid"].to_pylist() == full["_rowid"].to_pylist()[2:]
+
+
+def test_hybrid_query_top_result_stable_across_limits(tmpdir_factory):
+    # Regression test for #4758: the top result of a hybrid search must not
+    # depend on `limit`. Each side used to fetch only `limit + offset` rows
+    # before fusion, so asking for fewer results could return a different
+    # first result instead of just a shorter list.
+    rng = np.random.default_rng(0)
+    random.seed(0)
+    words = "alpha beta gamma delta epsilon zeta eta theta iota kappa".split()
+    rows = [
+        {
+            "id": i,
+            "text": " ".join(random.choice(words) for _ in range(12)),
+            "vector": rng.random(16).astype("float32"),
+        }
+        for i in range(300)
+    ]
+    tmp_path = str(tmpdir_factory.mktemp("data"))
+    table = lancedb.connect(tmp_path).create_table("t", data=rows)
+    table.create_fts_index("text", with_position=False)
+
+    query_vec = rng.random(16).astype("float32")
+
+    def top_id(limit):
+        result = (
+            table.search(query_type="hybrid")
+            .vector(query_vec)
+            .text("alpha beta gamma")
+            .limit(limit)
+            .to_list()
+        )
+        assert len(result) == limit
+        return result[0]["id"]
+
+    assert top_id(1) == top_id(3) == top_id(10)
 
 
 @pytest.mark.parametrize(
