@@ -51,7 +51,7 @@ LanceDB is a central location where developers can build, train and analyze thei
 ### **Ecosystem**:
 - **Columnar Storage**: Built on the Lance columnar format for efficient storage and analytics.
 - **Seamless Integration**: Python, Node.js, Rust, and REST APIs for easy integration. Native Python and Javascript/Typescript support.
-- **Rich Ecosystem**: Integrations with [**LangChain** 🦜️🔗](https://python.langchain.com/docs/integrations/vectorstores/lancedb/), [**LlamaIndex** 🦙](https://gpt-index.readthedocs.io/en/latest/examples/vector_stores/LanceDBIndexDemo.html), Apache-Arrow, Pandas, Polars, DuckDB and more on the way.
+- **Rich Ecosystem**: Integrations with [**LangChain** 🦜️🔗](https://docs.lancedb.com/integrations/ai/langchain), [**LlamaIndex** 🦙](https://docs.lancedb.com/integrations/ai/llamaIndex), Apache-Arrow, Pandas, Polars, DuckDB and more on the way.
 
 ## **How to Install**:
 
