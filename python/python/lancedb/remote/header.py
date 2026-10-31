@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-"""Header providers for LanceDB remote connections.
+"""Header providers for LanceDB Enterprise connections.
 
 This module provides a flexible header management framework for LanceDB remote
 connections, allowing users to implement custom header strategies for
@@ -141,7 +141,7 @@ class OAuthProvider(HeaderProvider):
 
                 # Set expiration if provided
                 expires_in = token_data.get("expires_in")
-                if expires_in:
+                if expires_in is not None:
                     self._token_expires_at = time.time() + expires_in
                 else:
                     # Token doesn't expire or expiration unknown
@@ -177,4 +177,7 @@ class OAuthProvider(HeaderProvider):
         if not self._current_token:
             raise RuntimeError("Failed to obtain OAuth token")
 
-        return {"Authorization": f"Bearer {self._current_token}"}
+        return {
+            "Authorization": f"Bearer {self._current_token}",
+            "x-lancedb-credential-type": "oidc",
+        }
