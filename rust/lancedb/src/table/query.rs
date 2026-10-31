@@ -27,7 +27,7 @@ use datafusion_physical_plan::PhysicalExpr;
 use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::repartition::RepartitionExec;
 use datafusion_physical_plan::union::UnionExec;
-use datafusion_physical_plan::{ExecutionPlan, with_new_children_if_necessary};
+use datafusion_physical_plan::{ExecutionPlan, replace_children_if_necessary};
 use lance::dataset::mem_wal::DatasetMemWalExt;
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::scanner::Scanner;
@@ -740,7 +740,7 @@ fn replace_ann_branches(
         .cloned()
         .map(|child| replace_ann_branches(child, internal_ann_plans, normalized_l2_indices))
         .collect::<Result<Vec<_>>>()?;
-    Ok(with_new_children_if_necessary(public_plan, children)?)
+    Ok(replace_children_if_necessary(public_plan, children)?)
 }
 
 fn scale_distance_column(

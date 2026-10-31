@@ -69,7 +69,7 @@ pub struct RetryConfig {
     /// `LANCE_CLIENT_RETRY_BACKOFF_JITTER`.
     pub backoff_jitter: Option<f64>,
     /// The HTTP status codes for which to retry the request. Default is
-    /// [429, 500, 502, 503].
+    /// [409, 429, 500, 502, 503, 504].
     ///
     /// You can also set this via the environment variable
     /// `LANCE_CLIENT_RETRY_STATUSES`. Use a comma-separated list of integers.
@@ -108,7 +108,7 @@ pub struct ClientConfig {
     pub tls_config: Option<TlsConfig>,
     /// User identifier for tracking purposes.
     ///
-    /// This is sent as the `x-lancedb-user-id` header in requests to LanceDB Cloud/Enterprise.
+    /// This is sent as the `x-lancedb-user-id` header in requests to LanceDB Enterprise.
     /// It can be set directly, or via the `LANCEDB_USER_ID` environment variable.
     /// Alternatively, set `LANCEDB_USER_ID_ENV_KEY` to specify another environment
     /// variable that contains the user ID value.
@@ -276,7 +276,7 @@ impl TryFrom<OAuthConfig> for lancedb::remote::oauth::OAuthConfig {
                 }
                 OAuthFlow::AuthorizationCode(options)
             }
-            "device_code" => OAuthFlow::DeviceCode,
+            "device_code" => OAuthFlow::DeviceCode(Default::default()),
             "azure_managed_identity" => OAuthFlow::AzureManagedIdentity {
                 client_id: config.managed_identity_client_id,
             },
@@ -560,7 +560,7 @@ mod tests {
         let converted = lancedb::remote::oauth::OAuthConfig::try_from(config).unwrap();
         assert!(matches!(
             converted.flow,
-            lancedb::remote::oauth::OAuthFlow::DeviceCode
+            lancedb::remote::oauth::OAuthFlow::DeviceCode(options) if !options.use_pkce
         ));
     }
 

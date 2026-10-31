@@ -1,6 +1,6 @@
 [package]
 name = "lancedb"
-version = "0.41.0-beta.15"
+version = "0.41.0-beta.17"
 edition.workspace = true
 description = "LanceDB: A serverless, low-latency vector database for AI applications"
 license.workspace = true
@@ -8,6 +8,7 @@ repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
 rust-version.workspace = true
+exclude = ["cli/**"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]
@@ -22,7 +23,7 @@ arrow-ord = { workspace = true }
 arrow-cast = { workspace = true }
 arrow-ipc.workspace = true
 arrow-flight = { workspace = true, optional = true }
-prost = { version = "0.14", optional = true }
+prost = { workspace = true, optional = true }
 chrono = { workspace = true }
 datafusion-catalog.workspace = true
 datafusion-common.workspace = true
@@ -46,7 +47,7 @@ lance-index = { workspace = true, features = ["tokenizer-jieba", "tokenizer-lind
 lance-table = { workspace = true }
 lance-linalg = { workspace = true }
 lance-encoding = { workspace = true }
-lance-arrow = { "version" = "=15.0.0-beta.3", "tag" = "v15.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-arrow = { workspace = true }
 lance-namespace = { workspace = true }
 lance-namespace-impls = { workspace = true }
 metrics = { workspace = true, optional = true }
@@ -86,16 +87,16 @@ reqwest = { version = "0.13.0", default-features = false, features = [
     "system-proxy",
 ], optional = true }
 tonic = { workspace = true, optional = true }
-http = { version = "1", optional = true } # Matching what is in reqwest
+http = { workspace = true, optional = true } # Matching what is in reqwest
 oauth2 = { workspace = true, optional = true }
 urlencoding = { version = "2", optional = true }
-base64 = { version = "0.22", optional = true }
+base64 = { workspace = true, optional = true }
 fs4 = { version = "0.13", optional = true }
 webbrowser = { version = "1", optional = true }
 uuid = { workspace = true, features = ["v5"] }
 polars-arrow = { version = ">=0.37,<0.40.0", optional = true }
 polars = { version = ">=0.37,<0.40.0", optional = true }
-hf-hub = { version = "0.4.1", optional = true, default-features = false, features = [
+hf-hub = { workspace = true, optional = true, features = [
     "rustls-tls",
     "tokio",
     "ureq",
@@ -106,10 +107,12 @@ candle-nn = { version = "0.9.1", optional = true }
 tokenizers = { version = "0.19.1", optional = true }
 semver = { workspace = true }
 roaring = "0.11.4"
-sha2 = "0.10"
+sha2.workspace = true
 
 [dev-dependencies]
-anyhow = "1"
+anyhow.workspace = true
+# `test-util` adds the per-request records that the `assert_io_*` macros print.
+lance-io = { workspace = true, features = ["test-util"] }
 lance-testing = { workspace = true }
 # RestAdapter is only used by cfg(test) code. Keep rest-adapter off the
 # production remote feature so Python wheels do not resolve its Axum 0.7 stack.
@@ -130,7 +133,7 @@ datafusion.workspace = true
 http-body = "1"                                        # Matching reqwest
 rstest = "0.23.0"
 test-log = "0.2"
-serial_test = "3"
+serial_test.workspace = true
 [target.'cfg(unix)'.dev-dependencies]
 pprof = { version = "0.14", features = ["flamegraph"] }
 

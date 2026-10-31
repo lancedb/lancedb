@@ -1,14 +1,12 @@
 ---
-title: "Refresh a column"
-sidebarTitle: "Column Refresh"
+title: "Refresh a computed column"
+sidebarTitle: "Refresh Computed Column"
 description: "Populate a computed column and update it when its inputs change."
 icon: arrows-rotate
 keywords: ["refresh_column", "backfill", "job", "idempotent", "REFRESH COLUMN"]
 availability:
-  oss: available
+  embedded: available
   enterprise: available
-  summary: >-
-    Local column refresh requires a source build with the experimental-functions Cargo feature. Enterprise runs it as a server job that must be enabled for your Enterprise cluster.
 ---
 
 Refresh a [computed column](/feature-engineering/add-computed-column) to fill
@@ -16,9 +14,9 @@ new rows and recompute values whose inputs changed. The example below continues
 with the `doubled` column from the computed-column guide.
 
 <Note>
-In the 0.41 SDK release, local declaration and refresh require a source build
+In the 0.41 SDK release, declaration and refresh in LanceDB Embedded require a source build
 with the `experimental-functions` Cargo feature. Published Python and TypeScript
-packages leave it disabled. Remote Cloud and Enterprise operations do not require
+packages leave it disabled. LanceDB Enterprise operations do not require
 this feature; existing computed-column data remains readable in default builds.
 </Note>
 
@@ -64,10 +62,6 @@ That is what makes the call idempotent and safe to retry. However, unlike a
 spreadsheet formula, nothing is recomputed until you refresh, so a derived
 column is stale between an update and the next refresh.
 
-{/*
-Draft for automatic computed-column refresh. Keep the released manual-refresh
-instructions above until the server feature is available.
-
 ## Automatic refresh {#automatic}
 
 Set scheduling options when declaring a computed column:
@@ -80,17 +74,17 @@ table.add_columns(
 )
 ```
 
-Both options apply to every computed output declared in that call, including
-registered Function outputs. Automatic refresh is enabled by default. When
-the interval is omitted, the server determines when to refresh. Local tables
-persist only an explicitly configured interval; automatic execution requires a
-Cloud or Enterprise server with its separate `column_refresh.enabled` switch
-turned on. That server switch is disabled in the base configuration.
+These options apply to every computed output declared in that call. Automatic
+refresh is enabled by default. When the interval is omitted, the server
+determines when to refresh. Local tables store the setting, but automatic
+execution requires a Cloud or Enterprise server with its separate
+`column_refresh.enabled` switch turned on. That server switch is disabled in
+the base configuration.
 
 The interval is a positive minimum delay after the last successful refresh
 of that output. A first refresh is immediately eligible. The scheduler still
 checks input freshness and waits for computed ancestors to settle; the timer
-does not make unchanged inputs require recomputation. Each Function output's
+does not make unchanged inputs require recomputation. Each declared output's
 interval is independent, so refreshing a sibling does not postpone it.
 
 Pacing uses retained live Job Registry history. If completed jobs are archived
@@ -107,10 +101,31 @@ ALTER TABLE my_table ALTER COLUMN doubled SET auto_refresh_interval_seconds = 60
 ALTER TABLE my_table ALTER COLUMN doubled SET auto_refresh_enabled = true;
 ```
 
-Disabling automatic refresh prevents new automatic jobs. Inflight jobs may
-finish, and manual refresh remains available. Re-enabling wakes maintenance
-to consider accumulated changes under the interval and dependency rules.
-*/}
+<Note>
+The current setting is in the column's own field metadata,
+`computed_column.auto_refresh_enabled`, readable from `table.schema` without
+submitting a job to ask.
+</Note>
+
+Setting the flag is a metadata-only change and always succeeds, independent of
+whether the scheduler can actually refresh the column -- a deployment issue
+that keeps the background job from running (for example, a worker that cannot
+reach object storage) does not stop the `ALTER` from committing. Check the
+column's job history, not just its metadata, if values stop appearing after
+re-enabling.
+
+**Disabling does not skip or drop writes.** Rows written while disabled
+commit with no computed value, the same as a row written before the column
+existed; they do not queue anywhere separate. Inflight jobs may finish, and
+manual refresh remains available throughout.
+
+**Re-enabling catches up the entire backlog in one pass**, not just rows
+written after that point: the next scheduler tick processes every row left
+unfilled since the column was disabled, in a single refresh, with no
+further write required to trigger it. This is "catch up," not "resume
+cadence" -- a column disabled for an hour and re-enabled fills everything
+that accumulated during that hour, immediately, rather than only picking up
+new rows from the moment it is re-enabled.
 
 ## Refreshing part of a table {#partial}
 
@@ -196,7 +211,7 @@ symptoms, which rarely name their cause.
   <Card title="Jobs" icon="hourglass-half" href="/basics/jobs">
     Waiting on, inspecting, and cancelling server-side work.
   </Card>
-  <Card title="Refresh a materialized view" icon="table" href="/feature-engineering/materialized-views">
+  <Card title="Refresh a materialized view" icon="table" href="/feature-engineering/refresh-materialized-view">
     The same idea, for a whole derived table.
   </Card>
 </CardGroup>

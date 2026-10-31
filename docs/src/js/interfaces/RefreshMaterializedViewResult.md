@@ -14,7 +14,7 @@
 optional mode: string;
 ```
 
-How the view was brought up to date: "rebuild", or absent for remote SQL refreshes.
+How the view was brought up to date: "rebuild", or absent for LanceDB Distributed SQL refreshes.
 
 ***
 
@@ -24,7 +24,7 @@ How the view was brought up to date: "rebuild", or absent for remote SQL refresh
 optional rowsWritten: number;
 ```
 
-Rows written by this refresh, or absent for remote SQL refreshes.
+Rows written by this refresh, or absent for LanceDB Distributed SQL refreshes.
 
 ***
 
@@ -34,7 +34,7 @@ Rows written by this refresh, or absent for remote SQL refreshes.
 optional sourceVersion: number;
 ```
 
-Source version refreshed to, or absent for remote SQL refreshes.
+Source version refreshed to, or absent for LanceDB Distributed SQL refreshes.
 
 ***
 
