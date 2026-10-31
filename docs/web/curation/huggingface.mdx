@@ -62,6 +62,20 @@ limits, needs a [storage integration](/management/storage-integration)
 bound to a token [Secret](/management/secret):
 
 <CodeGroup>
+```python Python icon="python"
+db.create_secret("hf_token", "<your-hugging-face-token>")
+
+db.create_storage_integration(
+    "private_hub", "hf://datasets/owner/private/data/",
+    storage_provider="HUGGINGFACE",
+    huggingface_token_secret="hf_token",
+)
+
+reader = db.execute_query(
+    "SELECT * FROM 'hf://datasets/owner/private/data/*.parquet' LIMIT 10"
+)
+```
+
 ```sql SQL icon="database"
 CREATE SECRET hf_token WITH (value = '<your-hugging-face-token>')
 
