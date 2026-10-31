@@ -4,9 +4,10 @@
 from datetime import timedelta
 import deprecation
 import logging
-from functools import cached_property
+from functools import cached_property, wraps
 import os
 from typing import (
+    TYPE_CHECKING,
     Any,
     Callable,
     Dict,
@@ -31,42 +32,75 @@ from lancedb._lancedb import (
     DropColumnsResult,
     FtsToken,
     IndexConfig,
-    LsmWriteSpec,
+    RTEWriteSpec,
     MergeResult,
     UpdateResult,
 )
 from lancedb.embeddings.base import EmbeddingFunctionConfig
+from lancedb.expr import Expr
 from lancedb.index import (
     FTS,
     BTree,
     Bitmap,
-    HnswFlat,
-    HnswSq,
-    IvfFlat,
-    IvfPq,
-    IvfRq,
-    IvfSq,
     LabelList,
 )
 from lancedb.job import Job
-from lancedb.functions import FunctionApplication
+from lancedb.functions import FunctionApplication, RefreshColumnResult
 from lancedb.remote.db import LOOP
-from lancedb.table import IndexConfigType, KNOWN_METRICS
+from lancedb.table import IndexConfigType, _maybe_add_fts_error_note
 import pyarrow as pa
 
 from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
+from lancedb._blob import validate_blob_mode
 from lancedb.merge import LanceMergeInsertBuilder
 from lancedb.embeddings import EmbeddingFunctionRegistry
 from lancedb.table import _normalize_progress
 
 from ..query import (
     AnalyzePlanDistributedMetrics,
+    DocumentGranularity,
+    FullTextQuery,
     LanceQueryBuilder,
     LanceTakeQueryBuilder,
-    LanceVectorQueryBuilder,
 )
-from ..table import AsyncTable, BlobMode, Branches, IndexStatistics, Query, Table, Tags
-from ..types import BaseTokenizerType
+from ..table import (
+    AsyncTable,
+    BlobMode,
+    Branches,
+    CompactionOptions,
+    IndexStatistics,
+    Query,
+    Table,
+    Tags,
+)
+from ..types import BaseTokenizerType, ScalarIndexType
+from ..util import infer_vector_column_name
+
+if TYPE_CHECKING:
+    import lance
+    import polars as pl
+
+
+def _deprecated_keyword(old_name: str, new_name: str):
+    """Keep old remote-only keyword names without changing the Table signature."""
+
+    def decorate(method):
+        @wraps(method)
+        def wrapped(self, *args, **kwargs):
+            if old_name in kwargs:
+                if new_name in kwargs:
+                    raise TypeError(f"Cannot specify both {old_name} and {new_name}")
+                warnings.warn(
+                    f"{old_name} is deprecated; use {new_name} instead",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                kwargs[new_name] = kwargs.pop(old_name)
+            return method(self, *args, **kwargs)
+
+        return wrapped
+
+    return decorate
 
 
 class RemoteTable(Table):
@@ -92,8 +126,8 @@ class RemoteTable(Table):
     def _serialized_connection_state(self) -> str:
         if self._connection_state is None:
             raise RuntimeError(
-                "Cannot reopen this remote table because it does not carry "
-                "serialized connection state"
+                "Cannot reopen this LanceDB Distributed table because it does not "
+                "carry serialized connection state"
             )
         if callable(self._connection_state):
             self._connection_state = self._connection_state()
@@ -158,6 +192,18 @@ class RemoteTable(Table):
     def name(self) -> str:
         """The name of the table"""
         return self._name
+
+    @property
+    def namespace(self) -> List[str]:
+        return self._namespace_path
+
+    @deprecation.deprecated(
+        deprecated_in="0.33.1",
+        current_version=__version__,
+        details="Use update_field_metadata() instead.",
+    )
+    def replace_field_metadata(self, field_name: str, new_metadata: Dict[str, str]):
+        LOOP.run(self._table.replace_field_metadata(field_name, new_metadata))
 
     def __repr__(self) -> str:
         return f"RemoteTable({self.db_name}.{self.name})"
@@ -226,13 +272,35 @@ class RemoteTable(Table):
         """List all versions of the table"""
         return LOOP.run(self._table.list_versions())
 
-    def to_arrow(self) -> pa.Table:
-        """to_arrow() is not yet supported on LanceDB cloud."""
-        raise NotImplementedError("to_arrow() is not yet supported on LanceDB cloud.")
+    def to_arrow(self, *, blob_mode: BlobMode = "lazy") -> pa.Table:
+        """to_arrow() is not supported in LanceDB Distributed."""
+        validate_blob_mode(blob_mode)
+        raise NotImplementedError(
+            "to_arrow() is not supported in LanceDB Distributed. "
+            "Use table.search().to_arrow() instead."
+        )
 
     def to_pandas(self, blob_mode: BlobMode = "lazy", **kwargs):
-        """to_pandas() is not yet supported on LanceDB cloud."""
-        raise NotImplementedError("to_pandas() is not yet supported on LanceDB cloud.")
+        """to_pandas() is not supported in LanceDB Distributed."""
+        validate_blob_mode(blob_mode)
+        raise NotImplementedError(
+            "to_pandas() is not supported in LanceDB Distributed. "
+            "Use table.search().to_pandas() instead."
+        )
+
+    def to_lance(self, **kwargs) -> "lance.LanceDataset":
+        """Direct Lance dataset access is not supported in LanceDB Distributed.
+
+        Use ``table.search().to_arrow()`` to read query results through the server.
+        """
+        return LOOP.run(self._table.to_lance(**kwargs))
+
+    def to_polars(self, batch_size=None) -> "pl.LazyFrame":
+        """Use ``table.search().to_polars()`` to read query results."""
+        raise NotImplementedError(
+            "to_polars() is not supported in LanceDB Distributed. "
+            "Use table.search().to_polars() instead."
+        )
 
     def checkout(self, version: Union[int, str]):
         result = LOOP.run(self._table.checkout(version))
@@ -263,16 +331,21 @@ class RemoteTable(Table):
         """Tokenize a query using the tokenizer configured on an FTS index.
 
         Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
-        rebuilt in the client process from index metadata, so the same tokenizer
-        model files must exist locally.
+        rebuilt in the client process from index metadata. In LanceDB Distributed,
+        this means the same tokenizer model files must also exist locally
+        (under ``LANCE_LANGUAGE_MODEL_HOME``) and must match the files the
+        server uses. A mismatch cannot be detected: the returned tokens may
+        differ from what the server's index produces. If the model files are
+        missing, an error naming the tokenizer is raised.
         """
         return LOOP.run(
             self._table.tokenize(query, column=column, index_name=index_name)
         )
 
-    def index_stats(self, index_uuid: str) -> Optional[IndexStatistics]:
+    @_deprecated_keyword("index_uuid", "index_name")
+    def index_stats(self, index_name: str) -> Optional[IndexStatistics]:
         """List all the stats of a specified index"""
-        return LOOP.run(self._table.index_stats(index_uuid))
+        return LOOP.run(self._table.index_stats(index_name))
 
     @deprecation.deprecated(
         deprecated_in="0.25.0",
@@ -282,43 +355,38 @@ class RemoteTable(Table):
     def create_scalar_index(
         self,
         column: str,
-        index_type: Literal["BTREE", "BITMAP", "LABEL_LIST", "scalar"] = "scalar",
         *,
-        replace: bool = False,
+        replace: bool = True,
+        index_type: ScalarIndexType = "BTREE",
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
     ):
-        """Creates a scalar index.
+        """Create a scalar index on a column.
 
         .. deprecated:: 0.25.0
             Use :meth:`create_index` with a BTree, Bitmap, or LabelList config instead.
             Example: ``table.create_index("column", config=BTree())``
-
-        Parameters
-        ----------
-        column : str
-            The column to be indexed.  Must be a boolean, integer, float,
-            or string column.
-        index_type : str
-            The index type of the scalar index. Must be "scalar" (BTREE),
-            "BTREE", "BITMAP", or "LABEL_LIST",
-        replace : bool
-            If True, replace the existing index with the new one.
         """
-        if index_type == "scalar" or index_type == "BTREE":
+        if index_type == "scalar":
+            warnings.warn(
+                'index_type="scalar" is deprecated; use "BTREE" instead',
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            index_type = "BTREE"
+        if index_type == "BTREE":
             config = BTree()
         elif index_type == "BITMAP":
             config = Bitmap()
         elif index_type == "LABEL_LIST":
             config = LabelList()
         else:
-            raise ValueError(f"Unknown index type: {index_type}")
-
-        LOOP.run(
+            raise ValueError(f"Unknown index type {index_type}")
+        return LOOP.run(
             self._table.create_index(
                 column,
-                config=config,
                 replace=replace,
+                config=config,
                 wait_timeout=wait_timeout,
                 name=name,
             )
@@ -329,26 +397,32 @@ class RemoteTable(Table):
         current_version=__version__,
         details="Use create_index() with config=FTS() instead.",
     )
+    @_deprecated_keyword("column", "field_names")
     def create_fts_index(
         self,
-        column: str,
+        field_names: Union[str, List[str]],
         *,
+        ordering_field_names: Optional[Union[str, List[str]]] = None,
         replace: bool = False,
-        wait_timeout: Optional[timedelta] = None,
+        writer_heap_size: Optional[int] = 1024 * 1024 * 1024,
+        use_tantivy: bool = False,
+        tokenizer_name: Optional[str] = None,
         with_position: bool = False,
         # tokenizer configs:
         base_tokenizer: BaseTokenizerType = "simple",
         language: str = "English",
         max_token_length: Optional[int] = 40,
         lower_case: bool = True,
-        stem: bool = True,
-        remove_stop_words: bool = True,
+        stem: Optional[bool] = None,
+        remove_stop_words: Optional[bool] = None,
         custom_stop_words: Optional[List[str]] = None,
         ascii_folding: bool = True,
         ngram_min_length: int = 3,
         ngram_max_length: int = 3,
         prefix_only: bool = False,
         block_size: int = 128,
+        document_granularity: DocumentGranularity = DocumentGranularity.ROW,
+        wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
     ):
         """Create a full-text search index on a column.
@@ -357,30 +431,70 @@ class RemoteTable(Table):
             Use :meth:`create_index` with an FTS config instead.
             Example: ``table.create_index("text_column", config=FTS())``
         """
-        config = FTS(
-            with_position=with_position,
-            base_tokenizer=base_tokenizer,
-            language=language,
-            max_token_length=max_token_length,
-            lower_case=lower_case,
-            stem=stem,
-            remove_stop_words=remove_stop_words,
-            custom_stop_words=custom_stop_words,
-            ascii_folding=ascii_folding,
-            ngram_min_length=ngram_min_length,
-            ngram_max_length=ngram_max_length,
-            prefix_only=prefix_only,
-            block_size=block_size,
-        )
-        LOOP.run(
-            self._table.create_index(
-                column,
-                config=config,
-                replace=replace,
-                wait_timeout=wait_timeout,
-                name=name,
+        if use_tantivy:
+            raise ValueError(
+                "Tantivy-based FTS has been removed. "
+                "Remove use_tantivy and recreate the index with native FTS."
             )
+        if ordering_field_names is not None:
+            raise ValueError(
+                "ordering_field_names was only supported by the removed "
+                "Tantivy-based FTS implementation."
+            )
+        if writer_heap_size != 1024 * 1024 * 1024:
+            raise ValueError(
+                "writer_heap_size was only supported by the removed "
+                "Tantivy-based FTS implementation."
+            )
+        if not isinstance(field_names, str):
+            raise ValueError(
+                "Native FTS indexes can only be created on a single field "
+                "at a time. To search over multiple text fields, create a "
+                "separate FTS index for each field."
+            )
+
+        if tokenizer_name is None:
+            tokenizer_configs = {
+                "base_tokenizer": base_tokenizer,
+                "language": language,
+                "with_position": with_position,
+                "max_token_length": max_token_length,
+                "lower_case": lower_case,
+                "stem": stem,
+                "remove_stop_words": remove_stop_words,
+                "custom_stop_words": custom_stop_words,
+                "ascii_folding": ascii_folding,
+                "ngram_min_length": ngram_min_length,
+                "ngram_max_length": ngram_max_length,
+                "prefix_only": prefix_only,
+            }
+        else:
+            tokenizer_configs = self.infer_tokenizer_configs(tokenizer_name)
+            tokenizer_configs["custom_stop_words"] = custom_stop_words
+
+        config = FTS(
+            block_size=block_size,
+            document_granularity=document_granularity,
+            **tokenizer_configs,
         )
+
+        try:
+            LOOP.run(
+                self._table.create_index(
+                    field_names,
+                    replace=replace,
+                    config=config,
+                    name=name,
+                    wait_timeout=wait_timeout,
+                )
+            )
+        except (ValueError, RuntimeError) as e:
+            _maybe_add_fts_error_note(
+                e,
+                base_tokenizer=config.base_tokenizer,
+                language=config.language,
+            )
+            raise e
 
     # New unified API overload
     @overload
@@ -390,6 +504,7 @@ class RemoteTable(Table):
         /,
         *,
         config: IndexConfigType,
+        replace: bool = ...,
         wait_timeout: Optional[timedelta] = ...,
         name: Optional[str] = ...,
         train: bool = ...,
@@ -400,38 +515,56 @@ class RemoteTable(Table):
     def create_index(
         self,
         metric: Literal["l2", "cosine", "dot", "hamming"] = ...,
-        vector_column_name: str = ...,
-        index_cache_size: Optional[int] = ...,
         num_partitions: Optional[int] = ...,
         num_sub_vectors: Optional[int] = ...,
-        replace: Optional[bool] = ...,
+        vector_column_name: str = ...,
+        replace: bool = ...,
         accelerator: Optional[str] = ...,
-        index_type: Literal[
-            "VECTOR", "IVF_FLAT", "IVF_SQ", "IVF_PQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"
-        ] = ...,
-        wait_timeout: Optional[timedelta] = ...,
-        *,
+        index_cache_size: Optional[int] = ...,
         num_bits: int = ...,
+        index_type: Literal[
+            "IVF_FLAT", "IVF_SQ", "IVF_PQ", "IVF_RQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"
+        ] = ...,
+        max_iterations: int = ...,
+        sample_rate: int = ...,
+        m: int = ...,
+        ef_construction: int = ...,
+        *,
+        wait_timeout: Optional[timedelta] = ...,
         name: Optional[str] = ...,
         train: bool = ...,
+        target_partition_size: Optional[int] = ...,
     ) -> None: ...
 
     def create_index(
         self,
         metric: str = "l2",
-        vector_column_name: str = VECTOR_COLUMN_NAME,
-        index_cache_size: Optional[int] = None,
         num_partitions: Optional[int] = None,
         num_sub_vectors: Optional[int] = None,
-        replace: Optional[bool] = None,
+        vector_column_name: str = VECTOR_COLUMN_NAME,
+        replace: bool = True,
         accelerator: Optional[str] = None,
-        index_type="vector",
-        wait_timeout: Optional[timedelta] = None,
-        *,
+        index_cache_size: Optional[int] = None,
         num_bits: int = 8,
+        index_type: Literal[
+            "IVF_FLAT",
+            "IVF_SQ",
+            "IVF_PQ",
+            "IVF_RQ",
+            "IVF_HNSW_SQ",
+            "IVF_HNSW_PQ",
+            "IVF_HNSW_FLAT",
+        ] = "IVF_PQ",
+        max_iterations: int = 50,
+        sample_rate: int = 256,
+        m: int = 20,
+        ef_construction: int = 300,
+        *,
         config: Optional[IndexConfigType] = None,
+        wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
         train: bool = True,
+        target_partition_size: Optional[int] = None,
     ):
         """Create an index on a column.
 
@@ -441,6 +574,24 @@ class RemoteTable(Table):
         ``config``; the legacy API takes the distance metric as the first
         argument plus separate ``vector_column_name`` / ``num_partitions`` /
         etc. parameters, and emits a ``DeprecationWarning``.
+
+        Parameters
+        ----------
+        metric : str
+            For new API: the column name to index.
+            For legacy API: the distance metric ("l2", "cosine", "dot", "hamming").
+        config : IndexConfigType, optional
+            The index configuration object. If provided, uses the new unified API.
+            Can be one of: IvfFlat, IvfPq, IvfSq, IvfRq, HnswPq, HnswSq,
+            BTree, Bitmap, LabelList, Fm, FTS.
+        replace : bool, default True
+            Whether to replace an existing index on this column.
+        wait_timeout : timedelta, optional
+            Timeout to wait for async indexing to complete.
+        name : str, optional
+            Custom name for the index.
+        train : bool, default True
+            Whether to train the index with existing data.
 
         Examples
         --------
@@ -467,7 +618,6 @@ class RemoteTable(Table):
             vector_column_name,
             accelerator,
             index_cache_size,
-            replace,
         )
 
         if is_legacy:
@@ -483,59 +633,39 @@ class RemoteTable(Table):
                 stacklevel=2,
             )
 
+            # Legacy API: first arg is the distance metric
             column = vector_column_name
 
             if accelerator is not None:
                 logging.warning(
-                    "GPU accelerator is not yet supported on LanceDB cloud."
-                    "If you have 100M+ vectors to index,"
-                    "please contact us at contact@lancedb.com"
-                )
-            if replace is not None:
-                logging.warning(
-                    "replace is not supported on LanceDB cloud."
-                    "Existing indexes will always be replaced."
+                    "GPU accelerator is not supported in LanceDB Distributed "
+                    "and will be ignored."
                 )
 
-            idx_type = index_type.upper()
-            if idx_type == "VECTOR" or idx_type == "IVF_PQ":
-                config = IvfPq(
-                    distance_type=metric,
-                    num_partitions=num_partitions,
-                    num_sub_vectors=num_sub_vectors,
-                    num_bits=num_bits,
-                )
-            elif idx_type == "IVF_RQ":
-                config = IvfRq(
-                    distance_type=metric,
-                    num_partitions=num_partitions,
-                    num_bits=num_bits,
-                )
-            elif idx_type == "IVF_SQ":
-                config = IvfSq(distance_type=metric, num_partitions=num_partitions)
-            elif idx_type == "IVF_HNSW_PQ":
-                raise ValueError(
-                    "IVF_HNSW_PQ is not supported on LanceDB cloud."
-                    "Please use IVF_HNSW_SQ instead."
-                )
-            elif idx_type == "IVF_HNSW_SQ":
-                config = HnswSq(distance_type=metric, num_partitions=num_partitions)
-            elif idx_type == "IVF_HNSW_FLAT":
-                config = HnswFlat(distance_type=metric, num_partitions=num_partitions)
-            elif idx_type == "IVF_FLAT":
-                config = IvfFlat(distance_type=metric, num_partitions=num_partitions)
-            else:
-                raise ValueError(
-                    f"Unknown vector index type: {idx_type}. Valid options are"
-                    " 'IVF_FLAT', 'IVF_PQ', 'IVF_RQ', 'IVF_SQ',"
-                    " 'IVF_HNSW_PQ', 'IVF_HNSW_SQ', 'IVF_HNSW_FLAT'"
-                )
+            # Build config from legacy parameters
+            config = self._build_vector_config_from_legacy_params(
+                metric=metric,
+                index_type="IVF_PQ"
+                if index_type.upper() == "VECTOR"
+                else index_type.upper(),
+                num_partitions=num_partitions,
+                num_sub_vectors=num_sub_vectors,
+                num_bits=num_bits,
+                max_iterations=max_iterations,
+                sample_rate=sample_rate,
+                m=m,
+                ef_construction=ef_construction,
+                target_partition_size=target_partition_size,
+                accelerator=None,
+            )
+
         else:
             column = metric
 
-        LOOP.run(
+        return LOOP.run(
             self._table.create_index(
                 column,
+                replace=replace,
                 config=config,
                 wait_timeout=wait_timeout,
                 name=name,
@@ -571,37 +701,6 @@ class RemoteTable(Table):
             )
         )
 
-    def _is_legacy_create_index_call(
-        self,
-        first_arg: str,
-        config: Optional[IndexConfigType],
-        num_partitions: Optional[int],
-        num_sub_vectors: Optional[int],
-        vector_column_name: str,
-        accelerator: Optional[str],
-        index_cache_size: Optional[int],
-        replace: Optional[bool],
-    ) -> bool:
-        """Detect if this is a legacy create_index call."""
-        if config is not None:
-            return False
-        if any(
-            x is not None
-            for x in (
-                num_partitions,
-                num_sub_vectors,
-                accelerator,
-                index_cache_size,
-                replace,
-            )
-        ):
-            return True
-        if vector_column_name != VECTOR_COLUMN_NAME:
-            return True
-        if first_arg.lower() in KNOWN_METRICS:
-            return True
-        return False
-
     def add(
         self,
         data: DATA,
@@ -610,10 +709,11 @@ class RemoteTable(Table):
         fill_value: float = 0.0,
         progress: Optional[Union[bool, Callable, Any]] = None,
         write_parallelism: Optional[int] = None,
+        allow_external_blob_outside_bases: bool = False,
     ) -> AddResult:
         """Add more data to the [Table][lancedb.table.Table].
 
-        It has the same API signature as the OSS version.
+        It has the same API signature as the LanceDB Embedded version.
 
         Parameters
         ----------
@@ -642,6 +742,8 @@ class RemoteTable(Table):
             data in flight. Defaults to an estimate based on the data size,
             capped at the number of CPU cores. Lower this if bulk ingestion is
             using too much memory.
+        allow_external_blob_outside_bases: bool, default False
+            Not supported in LanceDB Distributed. Setting this raises.
 
         Returns
         -------
@@ -658,6 +760,7 @@ class RemoteTable(Table):
                     fill_value=fill_value,
                     progress=progress,
                     write_parallelism=write_parallelism,
+                    allow_external_blob_outside_bases=allow_external_blob_outside_bases,
                 )
             )
         finally:
@@ -669,9 +772,10 @@ class RemoteTable(Table):
         query: Union[VEC, str] = None,
         vector_column_name: Optional[str] = None,
         query_type="auto",
+        ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
-        fast_search: bool = False,
-    ) -> LanceVectorQueryBuilder:
+        fast_search: Optional[bool] = None,
+    ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support
         [vector search](https://lancedb.com/docs/search/vector-search/)
@@ -703,7 +807,7 @@ class RemoteTable(Table):
         Parameters
         ----------
         query: list/np.ndarray/str/PIL.Image.Image, default None
-            The targetted vector to search for.
+            The targeted vector to search for.
 
             - *default None*.
             Acceptable types are: list, np.ndarray, PIL.Image.Image
@@ -717,11 +821,17 @@ class RemoteTable(Table):
             - If the table has multiple vector columns then the *vector_column_name*
             needs to be specified. Otherwise, an error is raised.
 
+        query_type: str, default "auto"
+            The type of search: "auto", "vector", "fts", or "hybrid".
+            With "auto", a string query uses the embedding function for the
+            inferred or specified vector column if available, otherwise it uses
+            full-text search.
+
         fast_search: bool, optional
             Skip a flat search of unindexed data. This may improve
             search performance but search results will not include unindexed data.
 
-            - *default False*.
+            - *default None*, which leaves fast search disabled.
 
         Returns
         -------
@@ -736,12 +846,28 @@ class RemoteTable(Table):
             - and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
+        if isinstance(query, FullTextQuery):
+            query_type = "fts"
+        elif (
+            query_type == "auto"
+            and isinstance(query, str)
+            and not self.embedding_functions
+        ):
+            query_type = "fts"
+        vector_column_name = infer_vector_column_name(
+            schema=self.schema,
+            query_type=query_type,
+            query=query,
+            vector_column_name=vector_column_name,
+        )
+
         return LanceQueryBuilder.create(
             self,
             query,
             query_type,
             vector_column_name=vector_column_name,
-            fts_columns=fts_columns,
+            ordering_field_name=ordering_field_name,
+            fts_columns=fts_columns or [],
             fast_search=fast_search,
         )
 
@@ -800,7 +926,8 @@ class RemoteTable(Table):
             self._table._do_merge(merge, new_data, on_bad_vectors, fill_value)
         )
 
-    def delete(self, predicate: str) -> DeleteResult:
+    @_deprecated_keyword("predicate", "where")
+    def delete(self, where: Union[str, Expr]) -> DeleteResult:
         """Delete rows from the table.
 
         This can be used to delete a single row, many rows, all rows, or
@@ -808,7 +935,7 @@ class RemoteTable(Table):
 
         Parameters
         ----------
-        predicate: str
+        where: Union[str, Expr]
             The SQL where clause to use when deleting rows.
 
             - For example, 'x = 2' or 'x IN (1, 2, 3)'.
@@ -852,11 +979,11 @@ class RemoteTable(Table):
            x      vector  _distance # doctest: +SKIP
         0  2  [3.0, 4.0]       85.0 # doctest: +SKIP
         """
-        return LOOP.run(self._table.delete(predicate))
+        return LOOP.run(self._table.delete(where))
 
     def update(
         self,
-        where: Optional[str] = None,
+        where: Optional[Union[str, Expr]] = None,
         values: Optional[dict] = None,
         *,
         values_sql: Optional[Dict[str, str]] = None,
@@ -867,9 +994,11 @@ class RemoteTable(Table):
 
         Parameters
         ----------
-        where: str, optional
-            The SQL where clause to use when updating rows. For example, 'x = 2'
-            or 'x IN (1, 2, 3)'. The filter must not be empty, or it will error.
+        where: str or [Expr][lancedb.expr.Expr], optional
+            The filter condition. Can be a SQL string or a type-safe
+            [Expr][lancedb.expr.Expr] built with [col][lancedb.expr.col] and
+            [lit][lancedb.expr.lit]. The filter must not be empty, or it will
+            error.
         values: dict, optional
             The values to update. The keys are the column names and the values
             are the values to set.
@@ -912,28 +1041,27 @@ class RemoteTable(Table):
             self._table.update(where=where, updates=values, updates_sql=values_sql)
         )
 
-    def cleanup_old_versions(self, *_):
+    def cleanup_old_versions(
+        self,
+        older_than: Optional[timedelta] = None,
+        *,
+        delete_unverified: bool = False,
+    ):
         """
-        cleanup_old_versions() is a no-op on LanceDB Cloud.
-
-        Tables are automatically cleaned up and optimized.
+        cleanup_old_versions() is a no-op in LanceDB Distributed.
         """
         warnings.warn(
-            "cleanup_old_versions() is a no-op on LanceDB Cloud. "
-            "Tables are automatically cleaned up and optimized.",
+            "cleanup_old_versions() is a no-op in LanceDB Distributed.",
             stacklevel=2,
         )
         pass
 
-    def compact_files(self, *_):
+    def compact_files(self, *args, **kwargs):
         """
-        compact_files() is a no-op on LanceDB Cloud.
-
-        Tables are automatically compacted and optimized.
+        compact_files() is a no-op in LanceDB Distributed.
         """
         warnings.warn(
-            "compact_files() is a no-op on LanceDB Cloud. "
-            "Tables are automatically compacted and optimized.",
+            "compact_files() is a no-op in LanceDB Distributed.",
             stacklevel=2,
         )
         pass
@@ -943,18 +1071,17 @@ class RemoteTable(Table):
         *,
         cleanup_older_than: Optional[timedelta] = None,
         delete_unverified: bool = False,
+        retrain: bool = False,
+        compaction_options: Optional[CompactionOptions] = None,
     ):
-        """
-        optimize() is a no-op on LanceDB Cloud.
-
-        Indices are optimized automatically.
-        """
-        warnings.warn(
-            "optimize() is a no-op on LanceDB Cloud. "
-            "Indices are optimized automatically.",
-            stacklevel=2,
+        """optimize() is not supported in LanceDB Distributed."""
+        return LOOP.run(
+            self._table.optimize(
+                cleanup_older_than=cleanup_older_than,
+                delete_unverified=delete_unverified,
+                retrain=retrain,
+            )
         )
-        pass
 
     def count_rows(self, filter: Optional[str] = None) -> int:
         return LOOP.run(self._table.count_rows(filter))
@@ -963,17 +1090,43 @@ class RemoteTable(Table):
         self,
         transforms: Dict[str, str | FunctionApplication]
         | FunctionApplication
+        | pa.Field
+        | List[pa.Field]
+        | pa.Schema
         | None = None,
         *,
         computed: Dict[str, str] | None = None,
+        auto_refresh_enabled: bool | None = None,
+        auto_refresh_interval_seconds: int | None = None,
     ) -> AddColumnsResult:
-        return LOOP.run(self._table.add_columns(transforms, computed=computed))
+        return LOOP.run(
+            self._table.add_columns(
+                transforms,
+                computed=computed,
+                auto_refresh_enabled=auto_refresh_enabled,
+                auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+            )
+        )
 
-    def refresh_column(self, column: str):
-        return LOOP.run(self._table.refresh_column(column))
+    def refresh_column(self, column: str, *, batch_size: Optional[int] = None):
+        return LOOP.run(self._table.refresh_column(column, batch_size=batch_size))
 
-    def refresh_column_async(self, column: str) -> Job:
-        return Job(LOOP.run(self._table.refresh_column_async(column)))
+    def refresh_column_async(
+        self, column: str, *, batch_size: Optional[int] = None
+    ) -> Job[RefreshColumnResult]:
+        return Job(
+            LOOP.run(self._table.refresh_column_async(column, batch_size=batch_size))
+        )
+
+    def function_errors(
+        self,
+        job_id: Optional[str] = None,
+        column: Optional[str] = None,
+        limit: Optional[int] = None,
+    ):
+        return LOOP.run(
+            self._table.function_errors(job_id=job_id, column=column, limit=limit)
+        )
 
     def alter_columns(
         self, *alterations: Iterable[Dict[str, str]]
@@ -989,49 +1142,70 @@ class RemoteTable(Table):
         return LOOP.run(self._table.drop_columns(columns))
 
     def set_unenforced_primary_key(self, columns: Union[str, Iterable[str]]) -> None:
-        """Not supported on LanceDB Cloud."""
+        """Set the unenforced primary key for this table to a single column."""
         return LOOP.run(self._table.set_unenforced_primary_key(columns))
 
-    def set_lsm_write_spec(self, spec: "LsmWriteSpec") -> None:
-        """Install an LsmWriteSpec."""
-        return LOOP.run(self._table.set_lsm_write_spec(spec))
+    def enable_rte(self, spec: "RTEWriteSpec") -> None:
+        """Install an RTEWriteSpec."""
+        return LOOP.run(self._table.enable_rte(spec))
 
-    def unset_lsm_write_spec(self) -> None:
-        """Remove the LsmWriteSpec."""
-        return LOOP.run(self._table.unset_lsm_write_spec())
+    def disable_rte(self) -> None:
+        """Remove the RTEWriteSpec."""
+        return LOOP.run(self._table.disable_rte())
 
-    def get_lsm_write_spec(self) -> Optional["LsmWriteSpec"]:
-        """Read the installed LsmWriteSpec, or ``None``."""
-        return LOOP.run(self._table.get_lsm_write_spec())
+    def get_rte_spec(self) -> Optional["RTEWriteSpec"]:
+        """Read the installed RTEWriteSpec, or ``None``."""
+        return LOOP.run(self._table.get_rte_spec())
 
-    def checkpoint_lsm(self) -> None:
+    def get_table_overrides(self) -> dict[str, Any]:
+        """Read Enterprise table overrides for this table."""
+        return LOOP.run(self._table.get_table_overrides())
+
+    def update_table_overrides(self, **overrides: Any) -> dict[str, Any]:
+        """Merge Enterprise table overrides into the current table overrides."""
+        return LOOP.run(self._table.update_table_overrides(**overrides))
+
+    def reset_table_overrides(self) -> dict[str, Any]:
+        """Clear Enterprise table overrides for this table."""
+        return LOOP.run(self._table.reset_table_overrides())
+
+    # WAL-PK-FUSION: delete both hooks.
+    def _hybrid_pk_fusion_learned(self) -> bool:
+        # `self._table` is the async table, which owns the Rust handle.
+        return self._table._hybrid_pk_fusion_learned()
+
+    def _note_hybrid_pk_fusion(self) -> None:
+        self._table._note_hybrid_pk_fusion()
+
+    def checkpoint_rte(self) -> None:
         """Synchronous version of
-        [`AsyncTable.checkpoint_lsm`][lancedb.AsyncTable.checkpoint_lsm]."""
-        return LOOP.run(self._table.checkpoint_lsm())
+        [`AsyncTable.checkpoint_rte`][lancedb.AsyncTable.checkpoint_rte]."""
+        return LOOP.run(self._table.checkpoint_rte())
 
-    def flush_lsm(self) -> None:
+    def flush_rte(self) -> None:
         """Synchronous version of
-        [`AsyncTable.flush_lsm`][lancedb.AsyncTable.flush_lsm]."""
-        return LOOP.run(self._table.flush_lsm())
+        [`AsyncTable.flush_rte`][lancedb.AsyncTable.flush_rte]."""
+        return LOOP.run(self._table.flush_rte())
 
-    def compact_lsm(self) -> None:
+    def compact_rte(self) -> None:
         """Synchronous version of
-        [`AsyncTable.compact_lsm`][lancedb.AsyncTable.compact_lsm]."""
-        return LOOP.run(self._table.compact_lsm())
+        [`AsyncTable.compact_rte`][lancedb.AsyncTable.compact_rte]."""
+        return LOOP.run(self._table.compact_rte())
 
-    def get_lsm_stats(self, *, include_generation_rows: bool = False) -> Optional[dict]:
+    def get_rte_stats(self, *, include_sstable_rows: bool = False) -> Optional[dict]:
         """Synchronous version of
-        [`AsyncTable.get_lsm_stats`][lancedb.AsyncTable.get_lsm_stats]."""
+        [`AsyncTable.get_rte_stats`][lancedb.AsyncTable.get_rte_stats]."""
         return LOOP.run(
-            self._table.get_lsm_stats(include_generation_rows=include_generation_rows)
+            self._table.get_rte_stats(include_sstable_rows=include_sstable_rows)
         )
 
-    def close_lsm_writers(self) -> None:
-        """No-op on LanceDB Cloud (no local shard writers)."""
-        return LOOP.run(self._table.close_lsm_writers())
+    def close_rte_writers(self) -> None:
+        """No-op in LanceDB Distributed (no local shard writers)."""
+        return LOOP.run(self._table.close_rte_writers())
 
-    def drop_index(self, index_name: str):
-        return LOOP.run(self._table.drop_index(index_name))
+    @_deprecated_keyword("index_name", "name")
+    def drop_index(self, name: str) -> None:
+        return LOOP.run(self._table.drop_index(name))
 
     def prewarm_index(self, name: str) -> None:
         """Prewarm an index in the table.
@@ -1055,7 +1229,7 @@ class RemoteTable(Table):
 
         This is a hint to the database that the given columns will be accessed
         in the future and the database should prefetch the data if possible.
-        Currently only supported on remote tables.
+        Currently only supported in LanceDB Distributed.
 
         This call initiates prewarming and returns once the request is accepted.
         It is idempotent and safe to call from multiple clients concurrently.
@@ -1084,43 +1258,56 @@ class RemoteTable(Table):
     def uri(self) -> str:
         """The table URI (storage location).
 
-        For remote tables, this fetches the location from the server via describe.
+        In LanceDB Distributed, this fetches the location from the server via describe.
         """
         return LOOP.run(self._table.uri())
 
-    def take_offsets(self, offsets: list[int]) -> LanceTakeQueryBuilder:
-        return LanceTakeQueryBuilder(self._table.take_offsets(offsets))
+    def take_offsets(
+        self, offsets: list[int], *, with_row_id: bool = False
+    ) -> LanceTakeQueryBuilder:
+        builder = LanceTakeQueryBuilder(self._table.take_offsets(offsets))
+        if with_row_id:
+            builder.with_row_id()
+        return builder
 
-    def take_row_ids(self, row_ids: list[int]) -> LanceTakeQueryBuilder:
-        return LanceTakeQueryBuilder(self._table.take_row_ids(row_ids))
+    def take_row_ids(
+        self, row_ids: list[int], *, with_row_id: bool = False
+    ) -> LanceTakeQueryBuilder:
+        builder = LanceTakeQueryBuilder(self._table.take_row_ids(row_ids))
+        if with_row_id:
+            builder.with_row_id()
+        return builder
 
     def uses_v2_manifest_paths(self) -> bool:
-        raise NotImplementedError(
-            "uses_v2_manifest_paths() is not supported on the LanceDB Cloud"
-        )
+        return LOOP.run(self._table.uses_v2_manifest_paths())
 
     def migrate_v2_manifest_paths(self):
-        raise NotImplementedError(
-            "migrate_v2_manifest_paths() is not supported on the LanceDB Cloud"
-        )
+        return LOOP.run(self._table.migrate_manifest_paths_v2())
 
     def blob_columns(self) -> list[str]:
         return LOOP.run(self._table.blob_columns())
 
     def fetch_blobs(
-        self, column: str, row_ids: Union[list[int], pa.Table]
+        self,
+        column: str,
+        row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
     ) -> pa.LargeBinaryArray:
         return LOOP.run(self._table.fetch_blobs(column, row_ids))
 
     def fetch_blob_ranges(self, column: str, requests) -> pa.LargeBinaryArray:
-        raise NotImplementedError(
-            "fetch_blob_ranges() is not supported on LanceDB Cloud"
-        )
+        return LOOP.run(self._table.fetch_blob_ranges(column, list(requests)))
 
     def fetch_blob_files(
-        self, column: str, row_ids: Union[list[int], pa.Table]
+        self,
+        column: str,
+        row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
     ) -> "list[Optional[BlobFile]]":
         return LOOP.run(self._table.fetch_blob_files(column, row_ids))
+
+    def open_blob_file(
+        self, descriptor: Union[dict, pa.StructScalar, None]
+    ) -> Optional[BlobFile]:
+        return LOOP.run(self._table.open_blob_file(descriptor))
 
     def head(self, n=5) -> pa.Table:
         """

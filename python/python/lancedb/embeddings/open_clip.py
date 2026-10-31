@@ -7,6 +7,7 @@ import io
 import os
 import urllib.parse as urlparse
 from typing import TYPE_CHECKING, List, Union
+from urllib.request import url2pathname
 
 import numpy as np
 import pyarrow as pa
@@ -48,6 +49,9 @@ class OpenClipEmbeddings(EmbeddingFunction):
             self.name, pretrained=self.pretrained
         )
         model.to(self.device)
+        # open_clip returns the model in training mode, which keeps dropout,
+        # stochastic depth and batch norm in their training behaviour.
+        model.eval()
         self._model, self._preprocess = model, preprocess
         self._tokenizer = open_clip.get_tokenizer(self.name)
         self._ndims = None
@@ -154,7 +158,7 @@ class OpenClipEmbeddings(EmbeddingFunction):
             parsed = urlparse.urlparse(image)
             # TODO handle drive letter on windows.
             if parsed.scheme == "file":
-                return PIL_Image.open(parsed.path)
+                return PIL_Image.open(url2pathname(parsed.path))
             elif parsed.scheme == "":
                 return PIL_Image.open(image if os.name == "nt" else parsed.path)
             elif parsed.scheme.startswith("http"):

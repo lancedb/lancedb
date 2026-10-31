@@ -9,6 +9,15 @@ from pathlib import Path
 import pytest
 
 
+@pytest.mark.parametrize("name", ["JobInfo", "JobDescription", "JobFailureInfo"])
+def test_job_metadata_types_have_resolvable_modules(name):
+    """Documentation tools resolve re-exports through each type's module."""
+    public_type = getattr(importlib.import_module("lancedb.job"), name)
+    defining_module = importlib.import_module(public_type.__module__)
+
+    assert getattr(defining_module, public_type.__name__, None) is public_type
+
+
 def test_pyo3_abi_matches_minimum_supported_python():
     project_dir = Path(__file__).parents[2]
     pyproject = (project_dir / "pyproject.toml").read_text()
@@ -23,8 +32,10 @@ def test_pyo3_abi_matches_minimum_supported_python():
     expected_abi = f"abi3-py{major}{minor}"
     configured_abis = re.findall(r'"(abi3-py\d+)"', cargo_manifest)
 
-    assert configured_abis == [expected_abi, expected_abi], (
-        "the pyo3 runtime and build ABI features must both match requires-python"
+    # PyO3 0.29 configures the ABI through the runtime dependency; its
+    # build-config crate no longer exposes ABI features.
+    assert configured_abis == [expected_abi], (
+        "the pyo3 runtime ABI feature must match requires-python"
     )
 
 

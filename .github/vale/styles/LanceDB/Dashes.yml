@@ -1,0 +1,40 @@
+extends: existence
+message: "Avoid '%s' in prose. Use a comma, a colon, parentheses or two sentences."
+link: https://github.com/lancedb/docs/blob/main/STYLE.md#punctuation
+level: warning
+nonword: true
+# An em dash in prose, and a double hyphen or en dash used as one, with a
+# space on each side. A table cell holding only an em dash, meaning "none",
+# ranges such as 1–3 and flags such as --force are left alone, and code is
+# never prose.
+raw:
+  - '(?<!^\s*)—|—(?!\s*$)|(?<=\s)(?:--|–)(?=\s|$)'
+tests:
+  - name: flags an em dash
+    input: Indexes are optional—queries work without them.
+    want: |
+      1:21:LanceDB.Dashes:Avoid '—' in prose. Use a comma, a colon, parentheses or two sentences.
+  - name: flags a double hyphen used as a dash
+    input: It has one page per statement, syntax first -- and every SDK operation has a SQL form.
+    want: |
+      1:45:LanceDB.Dashes:Avoid '--' in prose. Use a comma, a colon, parentheses or two sentences.
+  - name: flags a spaced en dash
+    input: Compaction is cheap – it rewrites only small fragments.
+    want: |
+      1:21:LanceDB.Dashes:Avoid '–' in prose. Use a comma, a colon, parentheses or two sentences.
+  - name: leaves an empty table cell alone
+    input: |
+      | Provider | Text | Images |
+      | --- | --- | --- |
+      | OpenAI | ✓ | — |
+      | Gemini | ✓ | per request — batched |
+    want: |
+      4:28:LanceDB.Dashes:Avoid '—' in prose. Use a comma, a colon, parentheses or two sentences.
+  - name: leaves ranges, flags and code alone
+    input: |
+      Use 1–3 replicas and pass --force to overwrite. Run `lancedb --version`.
+
+      ```bash
+      uv run pytest -- -k search
+      ```
+    want: ''
