@@ -25,6 +25,10 @@ pub struct TimeoutConfig {
     /// The timeout for reading data from the server in seconds. Default is 300
     /// seconds (5 minutes). This can also be set via the environment variable
     /// `LANCE_CLIENT_READ_TIMEOUT`, as an integer number of seconds.
+    ///
+    /// This also applies while waiting for response headers during an upload.
+    /// A large or slowly produced request body (for example, when creating a
+    /// table) may need a longer timeout even if data is still being uploaded.
     pub read_timeout: Option<f64>,
     /// The timeout for keeping idle connections in the connection pool in seconds.
     /// Default is 300 seconds (5 minutes). This can also be set via the
@@ -65,7 +69,7 @@ pub struct RetryConfig {
     /// `LANCE_CLIENT_RETRY_BACKOFF_JITTER`.
     pub backoff_jitter: Option<f64>,
     /// The HTTP status codes for which to retry the request. Default is
-    /// [429, 500, 502, 503].
+    /// [409, 429, 500, 502, 503, 504].
     ///
     /// You can also set this via the environment variable
     /// `LANCE_CLIENT_RETRY_STATUSES`. Use a comma-separated list of integers.
@@ -92,6 +96,10 @@ pub struct ClientConfig {
     pub user_agent: Option<String>,
     pub retry_config: Option<RetryConfig>,
     pub timeout_config: Option<TimeoutConfig>,
+    /// Maximum number of concurrent blob HTTP requests across all tables and
+    /// blob handles on this connection. Defaults to 8. Can also be set with
+    /// `LANCE_CLIENT_BLOB_REQUEST_CONCURRENCY`. Must be greater than zero.
+    pub blob_request_concurrency: Option<u32>,
     pub extra_headers: Option<HashMap<String, String>>,
     /// The delimiter joining a namespace path and a name into one object
     /// identifier. `"$"` is the only supported value, and leaving this unset is
@@ -100,7 +108,7 @@ pub struct ClientConfig {
     pub tls_config: Option<TlsConfig>,
     /// User identifier for tracking purposes.
     ///
-    /// This is sent as the `x-lancedb-user-id` header in requests to LanceDB Cloud/Enterprise.
+    /// This is sent as the `x-lancedb-user-id` header in requests to LanceDB Enterprise.
     /// It can be set directly, or via the `LANCEDB_USER_ID` environment variable.
     /// Alternatively, set `LANCEDB_USER_ID_ENV_KEY` to specify another environment
     /// variable that contains the user ID value.
@@ -268,7 +276,7 @@ impl TryFrom<OAuthConfig> for lancedb::remote::oauth::OAuthConfig {
                 }
                 OAuthFlow::AuthorizationCode(options)
             }
-            "device_code" => OAuthFlow::DeviceCode,
+            "device_code" => OAuthFlow::DeviceCode(Default::default()),
             "azure_managed_identity" => OAuthFlow::AzureManagedIdentity {
                 client_id: config.managed_identity_client_id,
             },
@@ -428,6 +436,7 @@ impl From<ClientConfig> for lancedb::remote::ClientConfig {
                 .unwrap_or(concat!("LanceDB-Node-Client/", env!("CARGO_PKG_VERSION")).to_string()),
             retry_config: config.retry_config.map(Into::into).unwrap_or_default(),
             timeout_config: config.timeout_config.map(Into::into).unwrap_or_default(),
+            blob_request_concurrency: config.blob_request_concurrency.map(|value| value as usize),
             extra_headers: config.extra_headers.unwrap_or_default(),
             id_delimiter: config.id_delimiter,
             tls_config: config.tls_config.map(Into::into),
@@ -551,7 +560,7 @@ mod tests {
         let converted = lancedb::remote::oauth::OAuthConfig::try_from(config).unwrap();
         assert!(matches!(
             converted.flow,
-            lancedb::remote::oauth::OAuthFlow::DeviceCode
+            lancedb::remote::oauth::OAuthFlow::DeviceCode(options) if !options.use_pkce
         ));
     }
 

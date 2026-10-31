@@ -288,16 +288,44 @@ impl Database for LanceNamespaceDatabase {
     }
 
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
-        let ns_request = ListTablesRequest {
-            id: Some(request.namespace_path),
-            page_token: request.start_after,
-            limit: request.limit.map(|l| l as i32),
-            ..Default::default()
-        };
+        if request.limit == Some(0) {
+            return Ok(Vec::new());
+        }
 
-        let response = self.namespace.list_tables(ns_request).await?;
+        // Namespace tokens are opaque, and pages need not arrive in name order.
+        // Collect the listing before applying the name cursor and overall limit.
+        let mut names = Vec::new();
+        let mut page_token = None;
+        let mut seen_tokens = HashSet::new();
+        loop {
+            let response = self
+                .namespace
+                .list_tables(ListTablesRequest {
+                    id: Some(request.namespace_path.clone()),
+                    page_token,
+                    ..Default::default()
+                })
+                .await?;
+            names.extend(response.tables);
+            let Some(token) = response.page_token.filter(|token| !token.is_empty()) else {
+                break;
+            };
+            if !seen_tokens.insert(token.clone()) {
+                return Err(Error::Runtime {
+                    message: "Namespace table listing response repeated a page_token".into(),
+                });
+            }
+            page_token = Some(token);
+        }
 
-        Ok(response.tables)
+        names.sort();
+        if let Some(ref start_after) = request.start_after {
+            names.retain(|name| name > start_after);
+        }
+        if let Some(limit) = request.limit {
+            names.truncate(limit as usize);
+        }
+        Ok(names)
     }
 
     async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
@@ -588,6 +616,135 @@ mod tests {
     use arrow_schema::{DataType, Field, Schema};
     use futures::TryStreamExt;
     use tempfile::tempdir;
+
+    #[derive(Debug)]
+    struct ScriptedNamespace {
+        pages: Vec<ListTablesResponse>,
+        requests: Mutex<Vec<ListTablesRequest>>,
+    }
+
+    #[async_trait]
+    impl LanceNamespace for ScriptedNamespace {
+        fn namespace_id(&self) -> String {
+            "scripted".into()
+        }
+
+        async fn list_tables(
+            &self,
+            request: ListTablesRequest,
+        ) -> lance_core::Result<ListTablesResponse> {
+            let mut requests = self.requests.lock().unwrap();
+            let page = self.pages[requests.len()].clone();
+            requests.push(request);
+            Ok(page)
+        }
+    }
+
+    fn namespace_with_pages(
+        pages: Vec<ListTablesResponse>,
+    ) -> (LanceNamespaceDatabase, Arc<ScriptedNamespace>) {
+        let namespace = Arc::new(ScriptedNamespace {
+            pages,
+            requests: Mutex::new(Vec::new()),
+        });
+        let db = LanceNamespaceDatabase::from_namespace_client(
+            namespace.clone(),
+            "scripted".into(),
+            HashMap::new(),
+            HashMap::new(),
+            None,
+            None,
+            HashSet::new(),
+        );
+        (db, namespace)
+    }
+
+    fn listing_page(names: &[&str], token: Option<&str>) -> ListTablesResponse {
+        ListTablesResponse {
+            tables: names.iter().map(|name| (*name).into()).collect(),
+            page_token: token.map(String::from),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn test_table_names_collects_namespace_pages() {
+        for namespace_path in [vec![], vec!["child".into()]] {
+            for (start_after, limit, expected) in [
+                (None, None, vec!["a", "b", "c", "d"]),
+                (Some("a".into()), Some(2), vec!["b", "c"]),
+            ] {
+                let (db, namespace) = namespace_with_pages(vec![
+                    listing_page(&["d", "b"], Some("opaque-1")),
+                    listing_page(&[], Some("opaque-2")),
+                    listing_page(&["c", "a"], None),
+                ]);
+                let names = db
+                    .table_names(TableNamesRequest {
+                        namespace_path: namespace_path.clone(),
+                        start_after,
+                        limit,
+                    })
+                    .await
+                    .unwrap();
+                assert_eq!(names, expected);
+
+                let requests = namespace.requests.lock().unwrap();
+                assert_eq!(requests.len(), 3);
+                for request in requests.iter() {
+                    assert_eq!(request.id.as_ref(), Some(&namespace_path));
+                    assert_eq!(request.limit, None);
+                }
+                assert_eq!(requests[0].page_token, None);
+                assert_eq!(requests[1].page_token.as_deref(), Some("opaque-1"));
+                assert_eq!(requests[2].page_token.as_deref(), Some("opaque-2"));
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn test_table_names_zero_limit_skips_namespace_request() {
+        let (db, namespace) = namespace_with_pages(vec![]);
+        assert!(
+            db.table_names(TableNamesRequest {
+                limit: Some(0),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .is_empty()
+        );
+        assert!(namespace.requests.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn test_table_names_stops_on_empty_namespace_token() {
+        let (db, namespace) = namespace_with_pages(vec![listing_page(&["a"], Some(""))]);
+        assert_eq!(
+            db.table_names(TableNamesRequest::default()).await.unwrap(),
+            vec!["a"]
+        );
+        assert_eq!(namespace.requests.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn test_table_names_rejects_namespace_token_cycle() {
+        let (db, namespace) = namespace_with_pages(vec![
+            listing_page(&["a"], Some("one")),
+            listing_page(&["b"], Some("two")),
+            listing_page(&["c"], Some("one")),
+        ]);
+        let error = db
+            .table_names(TableNamesRequest::default())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("repeated a page_token"));
+        assert_eq!(namespace.requests.lock().unwrap().len(), 3);
+    }
 
     /// Helper function to create test data
     fn create_test_data() -> RecordBatch {

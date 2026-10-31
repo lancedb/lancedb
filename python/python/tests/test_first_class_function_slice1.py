@@ -146,6 +146,27 @@ def test_function_version_identity_is_immutable_and_exact():
             FunctionVersion(**{**value, "version": invalid})
 
 
+@pytest.mark.parametrize("source_digest", [None, "sha256:source-artifact"])
+def test_function_version_preserves_source_digest(source_digest):
+    value = job_result("remote_function_job.json")
+    legacy = FunctionVersion.from_json(json.dumps(value))
+    assert legacy.source_digest is None
+    assert "source_digest" not in json.loads(legacy.to_canonical_json())
+
+    value["source_digest"] = source_digest
+    version = FunctionVersion.from_json(json.dumps(value))
+    assert version.source_digest == source_digest
+    assert version.image == legacy.image
+    encoded = version.to_canonical_json()
+    if source_digest is None:
+        assert "source_digest" not in json.loads(encoded)
+    else:
+        assert json.loads(encoded)["source_digest"] == source_digest
+    assert FunctionVersion.from_json(encoded) == version
+    with pytest.raises((TypeError, ValueError)):
+        version.source_digest = "sha256:changed"
+
+
 def test_function_version_binds_named_columns_as_one_immutable_application():
     version = FunctionVersion.from_json(
         json.dumps(job_result("remote_function_job.json"))
@@ -160,6 +181,29 @@ def test_function_version_binds_named_columns_as_one_immutable_application():
         (value.parameter, value.kind, value.value["path"])
         for value in application.inputs
     ] == [("text", "column", "documents.body")]
+
+
+def test_function_version_names_its_namespace_as_a_separate_field():
+    """A Function is named by its parts, as a Secret is; a root one states no
+    namespace."""
+    value = job_result("remote_function_job.json")
+    root = FunctionVersion.from_json(json.dumps(value))
+    assert root.namespace_path == ()
+    assert "namespace_path" not in json.loads(root.to_canonical_json())
+
+    nested = FunctionVersion(**{**value, "namespace_path": ["analytics", "features"]})
+    assert nested.name == "embed"
+    assert nested.namespace_path == ("analytics", "features")
+    assert json.loads(nested.to_canonical_json())["namespace_path"] == [
+        "analytics",
+        "features",
+    ]
+    application = nested(text=col("documents.body"))
+    assert application.function.name == "embed"
+    assert application.function.namespace_path == ("analytics", "features")
+    assert json.loads(application.to_canonical_json())["function"][
+        "namespace_path"
+    ] == ["analytics", "features"]
 
 
 def test_function_version_binding_validates_names_and_direct_columns():
@@ -375,8 +419,21 @@ class _FunctionDeclarationInner:
     def __init__(self):
         self.calls = []
 
-    async def add_function_columns(self, application_json, output_name):
-        self.calls.append((json.loads(application_json), output_name))
+    async def add_function_columns(
+        self,
+        application_json,
+        output_name,
+        auto_refresh_enabled,
+        auto_refresh_interval_seconds,
+    ):
+        self.calls.append(
+            (
+                json.loads(application_json),
+                output_name,
+                auto_refresh_enabled,
+                auto_refresh_interval_seconds,
+            )
+        )
         return "declared"
 
 
@@ -397,14 +454,18 @@ async def test_add_columns_routes_struct_as_one_and_multi_output_binding_atomica
     )
     assert result == "declared"
     assert inner.calls[-1][1] == "features"
+    assert inner.calls[-1][2:] == (None, None)
 
     bare = application._copy(update={"columns": {}}).rename(
         columns={"normalized_text": "search_text"}
     )
-    result = await table.add_columns(bare)
+    result = await table.add_columns(
+        bare, auto_refresh_enabled=False, auto_refresh_interval_seconds=300
+    )
     assert result == "declared"
     assert inner.calls[-1][1] is None
     assert inner.calls[-1][0]["columns"] == {"normalized_text": "search_text"}
+    assert inner.calls[-1][2:] == (False, 300)
 
 
 @pytest.mark.asyncio

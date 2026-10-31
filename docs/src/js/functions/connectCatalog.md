@@ -28,5 +28,7 @@ headers; opened database connections inherit authentication and client options.
 ```ts
 const catalog = await connectCatalog("https://my-server.example", { apiKey: "secret" });
 const db = await catalog.createDatabase("analytics", { existOk: true });
-const page = await catalog.listDatabases({ limit: 20 });
+for await (const name of catalog.listDatabases({ pageLimit: 20 })) {
+  console.log(name);
+}
 ```

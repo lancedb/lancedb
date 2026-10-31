@@ -9,6 +9,7 @@
 // comes from the exact same library instance.  This is not always the case
 // and so we must sanitize the input to ensure that it is compatible.
 
+import * as arrowModule from "apache-arrow";
 import { BufferType, Data, Vector } from "apache-arrow";
 import type { IntBitWidth, TKeys, TimeBitWidth } from "apache-arrow/type";
 import {
@@ -43,6 +44,8 @@ import {
   Interval,
   IntervalDayTime,
   IntervalYearMonth,
+  LargeBinary,
+  LargeUtf8,
   List,
   Map_,
   Null,
@@ -73,6 +76,66 @@ import {
   Union,
   Utf8,
 } from "./arrow";
+
+/**
+ * Whether `value` was created by *this* copy of apache-arrow's `ctor`.
+ *
+ * Arrow 21 overrides `Symbol.hasInstance` on `Schema`, `Field`, `Table`,
+ * `RecordBatch`, `Vector` and `Data` so that `instanceof` also matches objects
+ * built by a different copy of the library.  Those are exactly the objects
+ * this module has to rebuild: the `DataType` instances nested inside them are
+ * deliberately *not* given that treatment upstream, so Arrow's own builders and
+ * writers reject them.  Walk the real prototype chain instead of trusting
+ * `instanceof`.
+ */
+function isOwnInstance<T>(
+  value: unknown,
+  // biome-ignore lint/suspicious/noExplicitAny: matches any class constructor
+  ctor: abstract new (...args: any[]) => T,
+): value is T {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Object.prototype.isPrototypeOf.call(ctor.prototype, value)
+  );
+}
+
+/**
+ * Types added to Arrow JS after release 18, keyed by the `Type` enum value
+ * they use.  The library compiles and runs against every Arrow release in the
+ * peer range, so these are looked up by name at runtime instead of imported:
+ * an older Arrow simply does not have the class.
+ */
+type NewerTypeName =
+  | "IntervalMonthDayNano"
+  | "LargeList"
+  | "BinaryView"
+  | "Utf8View";
+const NEWER_TYPES: ReadonlyArray<{
+  name: NewerTypeName;
+  typeId: number;
+  since: number;
+}> = [
+  { name: "IntervalMonthDayNano", typeId: -31, since: 20 },
+  { name: "LargeList", typeId: 21, since: 21 },
+  { name: "BinaryView", typeId: 23, since: 21 },
+  { name: "Utf8View", typeId: 24, since: 21 },
+];
+
+// biome-ignore lint/suspicious/noExplicitAny: constructor arity varies by type
+type DataTypeConstructor = new (...args: any[]) => DataType;
+
+function newerTypeConstructor(name: NewerTypeName): DataTypeConstructor {
+  const ctor = (arrowModule as unknown as Record<string, unknown>)[name];
+  if (typeof ctor !== "function") {
+    const since = NEWER_TYPES.find((t) => t.name === name)?.since;
+    throw new Error(
+      `The Arrow type ${name} requires apache-arrow ${since} or newer, ` +
+        "but the installed apache-arrow does not provide it",
+    );
+  }
+  return ctor as DataTypeConstructor;
+}
 
 type SanitizationContext = {
   types: WeakMap<object, DataType>;
@@ -210,19 +273,37 @@ export function sanitizeList(typeLike: object) {
   return sanitizeListWithContext(typeLike, createSanitizationContext());
 }
 
+function sanitizeListChildWithContext(
+  typeLike: object,
+  context: SanitizationContext,
+  typeName: string,
+): Field {
+  if (!("children" in typeLike) || !Array.isArray(typeLike.children)) {
+    throw Error(
+      `Expected a ${typeName} type to have an array-like \`children\` property`,
+    );
+  }
+  if (typeLike.children.length !== 1) {
+    throw Error(`Expected a ${typeName} type to have exactly one child`);
+  }
+  return sanitizeFieldWithContext(typeLike.children[0], context);
+}
+
 function sanitizeListWithContext(
   typeLike: object,
   context: SanitizationContext,
 ) {
-  if (!("children" in typeLike) || !Array.isArray(typeLike.children)) {
-    throw Error(
-      "Expected a List type to have an array-like `children` property",
-    );
-  }
-  if (typeLike.children.length !== 1) {
-    throw Error("Expected a List type to have exactly one child");
-  }
-  return new List(sanitizeFieldWithContext(typeLike.children[0], context));
+  return new List(sanitizeListChildWithContext(typeLike, context, "List"));
+}
+
+function sanitizeLargeListWithContext(
+  typeLike: object,
+  context: SanitizationContext,
+) {
+  const LargeList = newerTypeConstructor("LargeList");
+  return new LargeList(
+    sanitizeListChildWithContext(typeLike, context, "LargeList"),
+  );
 }
 
 export function sanitizeStruct(typeLike: object) {
@@ -449,11 +530,30 @@ function sanitizeTypeWithContext(
   return type;
 }
 
+function sanitizeNewerTypeById(
+  typeLike: object,
+  typeId: number,
+  context: SanitizationContext,
+): DataType | undefined {
+  const entry = NEWER_TYPES.find((t) => t.typeId === typeId);
+  if (entry === undefined) {
+    return undefined;
+  }
+  if (entry.name === "LargeList") {
+    return sanitizeLargeListWithContext(typeLike, context);
+  }
+  return new (newerTypeConstructor(entry.name))();
+}
+
 function sanitizeTypeById(
   typeLike: object,
   typeId: Type,
   context: SanitizationContext,
 ): DataType {
+  const newer = sanitizeNewerTypeById(typeLike, typeId, context);
+  if (newer !== undefined) {
+    return newer;
+  }
   switch (typeId) {
     case Type.NONE:
       throw Error("Received a Type with a typeId of NONE");
@@ -465,8 +565,12 @@ function sanitizeTypeById(
       return sanitizeFloat(typeLike);
     case Type.Binary:
       return new Binary();
+    case Type.LargeBinary:
+      return new LargeBinary();
     case Type.Utf8:
       return new Utf8();
+    case Type.LargeUtf8:
+      return new LargeUtf8();
     case Type.Bool:
       return new Bool();
     case Type.Decimal:
@@ -566,7 +670,7 @@ function sanitizeFieldWithContext(
   fieldLike: unknown,
   context: SanitizationContext,
 ): Field {
-  if (fieldLike instanceof Field) {
+  if (isOwnInstance(fieldLike, Field)) {
     return fieldLike;
   }
   if (typeof fieldLike !== "object" || fieldLike === null) {
@@ -620,7 +724,7 @@ function sanitizeSchemaWithContext(
   schemaLike: SchemaLike,
   context: SanitizationContext,
 ): Schema {
-  if (schemaLike instanceof Schema) {
+  if (isOwnInstance(schemaLike, Schema)) {
     return schemaLike;
   }
   if (typeof schemaLike !== "object" || schemaLike === null) {
@@ -647,7 +751,7 @@ function sanitizeSchemaWithContext(
 }
 
 export function sanitizeTable(tableLike: TableLike): Table {
-  if (tableLike instanceof Table) {
+  if (isOwnInstance(tableLike, Table)) {
     return tableLike;
   }
   if (typeof tableLike !== "object" || tableLike === null) {
@@ -675,7 +779,7 @@ function sanitizeRecordBatch(
   batchLike: RecordBatchLike,
   context: SanitizationContext,
 ): RecordBatch {
-  if (batchLike instanceof RecordBatch) {
+  if (isOwnInstance(batchLike, RecordBatch)) {
     return batchLike;
   }
   if (typeof batchLike !== "object" || batchLike === null) {
@@ -704,11 +808,17 @@ type DictionaryDataLike = DataLike & {
   dictionary?: DictionaryVectorLike;
 };
 
+// Arrow 21 added `variadicBuffers` to `Data` for the Utf8View / BinaryView
+// types.  Older Arrow versions do not have the property, so it is optional.
+type VariadicDataLike = DataLike & {
+  variadicBuffers?: ReadonlyArray<Uint8Array>;
+};
+
 function sanitizeData(
   dataLike: DataLike,
   context: SanitizationContext,
 ): Data<DataType> {
-  if (dataLike instanceof Data) {
+  if (isOwnInstance(dataLike, Data)) {
     return dataLike;
   }
   const cachedData = context.data.get(dataLike);
@@ -726,7 +836,12 @@ function sanitizeData(
       context.vectors.set(dictionaryLike, dictionary);
     }
   }
-  const data = new Data(
+  // Arrow 21 added an eighth constructor parameter (`variadicBuffers`); older
+  // releases ignore the extra argument but their typings do not declare it.
+  const DataCtor = Data as unknown as new (
+    ...args: unknown[]
+  ) => Data<DataType>;
+  const data = new DataCtor(
     sanitizeTypeWithContext(dataLike.type, context),
     dataLike.offset,
     dataLike.length,
@@ -739,6 +854,7 @@ function sanitizeData(
     },
     dataLike.children.map((child) => sanitizeData(child, context)),
     dictionary,
+    (dataLike as VariadicDataLike).variadicBuffers,
   );
   context.data.set(dataLike, data);
   return data;
@@ -747,7 +863,11 @@ function sanitizeData(
 const constructorsByTypeName = {
   null: () => new Null(),
   binary: () => new Binary(),
+  largebinary: () => new LargeBinary(),
+  binaryview: () => new (newerTypeConstructor("BinaryView"))(),
   utf8: () => new Utf8(),
+  largeutf8: () => new LargeUtf8(),
+  utf8view: () => new (newerTypeConstructor("Utf8View"))(),
   bool: () => new Bool(),
   int8: () => new Int8(),
   int16: () => new Int16(),
@@ -768,6 +888,8 @@ const constructorsByTypeName = {
   timesecond: () => new TimeSecond(),
   intervaldaytime: () => new IntervalDayTime(),
   intervalyearmonth: () => new IntervalYearMonth(),
+  intervalmonthdaynano: () =>
+    new (newerTypeConstructor("IntervalMonthDayNano"))(),
   durationnanosecond: () => new DurationNanosecond(),
   durationmicrosecond: () => new DurationMicrosecond(),
   durationmillisecond: () => new DurationMillisecond(),
