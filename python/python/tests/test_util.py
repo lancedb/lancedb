@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 
+import json
 import os
 import pathlib
 from datetime import time, timedelta, timezone
@@ -35,6 +36,7 @@ from lancedb.util import (
     get_uri_location,
     get_uri_scheme,
     inf_vector_column_query,
+    infer_vector_column_name,
     join_uri,
     value_to_sql,
 )
@@ -1468,3 +1470,132 @@ def test_inf_vector_column_query_dim_mismatch_with_multiple_columns():
 
     with pytest.raises(ValueError, match="more than one vector column"):
         inf_vector_column_query(schema, dim=99)
+
+
+def _text_tables(tmp_path):
+    db = lancedb.connect(tmp_path)
+    text_only = db.create_table(
+        "text_only",
+        [{"id": 1, "text": "quick brown fox"}, {"id": 2, "text": "lazy dog"}],
+    )
+    two_vectors = db.create_table(
+        "two_vectors",
+        pa.table(
+            {
+                "id": [1, 2],
+                "text": ["quick brown fox", "lazy dog"],
+                "va": pa.array([[1.0, 2.0]] * 2, pa.list_(pa.float32(), 2)),
+                "vb": pa.array([[1.0, 2.0, 3.0]] * 2, pa.list_(pa.float32(), 3)),
+            }
+        ),
+    )
+    for table in (text_only, two_vectors):
+        table.create_fts_index("text")
+    return text_only, two_vectors
+
+
+def test_auto_string_query_runs_fts_without_a_single_vector_column(tmp_path):
+    """A string query with the default query_type="auto" is full text search
+    when no vector column has an embedding function, as the search docstring
+    says. It used to fail inferring a vector column first."""
+    for table in _text_tables(tmp_path):
+        assert [r["id"] for r in table.search("fox").to_list()] == [1]
+
+
+@pytest.mark.asyncio
+async def test_auto_string_query_runs_fts_without_a_single_vector_column_async(
+    tmp_path,
+):
+    _text_tables(tmp_path)
+    db = await lancedb.connect_async(tmp_path)
+    for name in ("text_only", "two_vectors"):
+        table = await db.open_table(name)
+        rows = await (await table.search("fox")).to_list()
+        assert [r["id"] for r in rows] == [1]
+
+
+def _embedding_metadata(*vector_columns):
+    functions = [
+        {"name": "test", "model": {}, "source_column": "text", "vector_column": c}
+        for c in vector_columns
+    ]
+    return {b"embedding_functions": json.dumps(functions).encode()}
+
+
+def test_auto_string_query_keeps_the_column_with_an_embedding_function():
+    fields = [
+        pa.field("text", pa.string()),
+        pa.field("va", pa.list_(pa.float32(), 2)),
+        pa.field("vb", pa.list_(pa.float32(), 3)),
+    ]
+    one = pa.schema(fields, metadata=_embedding_metadata("vb"))
+    assert infer_vector_column_name(one, "auto", "fox", None) == "vb"
+
+    both = pa.schema(fields, metadata=_embedding_metadata("va", "vb"))
+    with pytest.raises(ValueError, match="more than one vector column"):
+        infer_vector_column_name(both, "auto", "fox", None)
+
+    none = pa.schema(fields)
+    assert infer_vector_column_name(none, "auto", "fox", None) is None
+
+    # A name in the metadata that is not a vector column of the schema (here a
+    # dropped column) does not count as an embedded column.
+    stale = pa.schema(fields, metadata=_embedding_metadata("gone"))
+    assert infer_vector_column_name(stale, "auto", "fox", None) is None
+
+
+def test_auto_string_query_single_vector_column_without_embedding(tmp_path):
+    """One vector column but no embedding function: the column is inferred as
+    before, and the query still runs as full text search."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "one_vector",
+        pa.table(
+            {
+                "id": [1, 2],
+                "text": ["quick brown fox", "lazy dog"],
+                "vector": pa.array([[1.0, 2.0]] * 2, pa.list_(pa.float32(), 2)),
+            }
+        ),
+    )
+    table.create_fts_index("text")
+    assert [r["id"] for r in table.search("fox").to_list()] == [1]
+
+
+@pytest.mark.asyncio
+async def test_auto_string_query_uses_the_embedded_column_async(tmp_path):
+    """With two vector columns, an async auto string query embeds the query
+    for the one column that has an embedding function. v2 has a different
+    dimension and there is no FTS index, so any other choice would fail."""
+    registry = EmbeddingFunctionRegistry.get_instance()
+    registry.register("test")(MockTextEmbeddingFunction)
+    func = MockTextEmbeddingFunction.create()
+    conf = EmbeddingFunctionConfig(
+        source_column="text", vector_column="v1", function=func
+    )
+    texts = ["puppy dog", "kitten cat"]
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("text", pa.string()),
+            pa.field("v1", pa.list_(pa.float32(), 10)),
+            pa.field("v2", pa.list_(pa.float32(), 3)),
+        ],
+        metadata=registry.get_table_metadata([conf]),
+    )
+    data = pa.table(
+        {
+            "id": [1, 2],
+            "text": texts,
+            "v1": pa.array(
+                [list(map(float, v)) for v in func.generate_embeddings(texts)],
+                pa.list_(pa.float32(), 10),
+            ),
+            "v2": pa.array([[1.0, 2.0, 3.0]] * 2, pa.list_(pa.float32(), 3)),
+        },
+        schema=schema,
+    )
+    lancedb.connect(tmp_path).create_table("two", data)
+    table = await (await lancedb.connect_async(tmp_path)).open_table("two")
+    rows = await (await table.search("puppy dog")).limit(1).to_list()
+    assert rows[0]["id"] == 1
