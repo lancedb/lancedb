@@ -24,4 +24,14 @@ sql/ddl/function.mdx
 # add this page to the navigation in docs.json, and give it `availability`
 # frontmatter like the rest of the SQL reference. Also see the "Draft for
 # the Functions release" blocks in governance/privileges.mdx.
+#
+# Separately, this page's own content has drifted behind governance/
+# privileges.mdx regardless of the Function gate: GRANT/REVOKE now also
+# reaches DATABASE, TABLE, VIEW, MATERIALIZED VIEW and STORAGE INTEGRATION
+# targets, not just SECRET/FUNCTION/SCHEMA. The "Naming the target" section
+# has a pointer to governance/privileges#sql for these rather than
+# reproducing them, but the top grammar block, the "## Privileges" table
+# and the examples still only show SECRET/FUNCTION/SCHEMA. Widen all three
+# to the full target list when this page is finally ungated, not just when
+# Functions ships.
 sql/ddl/grant.mdx
