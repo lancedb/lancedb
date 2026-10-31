@@ -7,7 +7,7 @@ use arrow_array::{
 use serde_json::Value;
 
 use crate::storage_integration::{
-    CreateStorageIntegrationRequest, SecretReference, StorageIntegrationInfo,
+    CreateStorageIntegrationRequest, SecretReference, StorageIntegrationInfo, StorageProvider,
 };
 use crate::utils::{validate_database_name, validate_namespace, validate_secret_name};
 use crate::{Error, Result};
@@ -54,6 +54,53 @@ pub(super) fn create_sql(
     namespace: &[String],
     request: &CreateStorageIntegrationRequest,
 ) -> Result<String> {
+    if request.storage_provider == StorageProvider::Azure {
+        if request.aws_role_arn.is_some()
+            || request.aws_access_key_id_secret.is_some()
+            || request.aws_secret_access_key_secret.is_some()
+            || request.aws_region.is_some()
+        {
+            return Err(invalid("Azure integrations cannot contain AWS options"));
+        }
+        let account = request
+            .azure_storage_account
+            .as_ref()
+            .filter(|account| !account.is_empty())
+            .ok_or_else(|| invalid("Azure integrations require azure_storage_account"))?;
+        let mut sql = format!(
+            "CREATE STORAGE INTEGRATION {} STORAGE_PROVIDER = 'AZURE' STORAGE_PREFIX = {} STORAGE_AZURE_STORAGE_ACCOUNT = {}",
+            object_name(name, namespace)?,
+            literal(&request.storage_prefix),
+            literal(account)
+        );
+        for (key, reference) in [
+            (
+                "STORAGE_AZURE_TENANT_ID_SECRET",
+                &request.azure_tenant_id_secret,
+            ),
+            (
+                "STORAGE_AZURE_CLIENT_ID_SECRET",
+                &request.azure_client_id_secret,
+            ),
+            (
+                "STORAGE_AZURE_CLIENT_SECRET_SECRET",
+                &request.azure_client_secret_secret,
+            ),
+        ] {
+            let reference = reference.as_ref().ok_or_else(|| {
+                invalid("Azure integrations require all three credential Secret references")
+            })?;
+            sql.push_str(&format!(" {key} = {}", secret_name(reference)?));
+        }
+        return Ok(sql);
+    }
+    if request.azure_storage_account.is_some()
+        || request.azure_tenant_id_secret.is_some()
+        || request.azure_client_id_secret.is_some()
+        || request.azure_client_secret_secret.is_some()
+    {
+        return Err(invalid("S3 integrations cannot contain Azure options"));
+    }
     let mut sql = format!(
         "CREATE STORAGE INTEGRATION {} STORAGE_PROVIDER = 'S3' STORAGE_PREFIX = {}",
         object_name(name, namespace)?,
@@ -122,6 +169,9 @@ pub(super) fn decode_info(batches: &[RecordBatch]) -> Result<StorageIntegrationI
             "namespace_path"
                 | "aws_access_key_id_secret"
                 | "aws_secret_access_key_secret"
+                | "azure_tenant_id_secret"
+                | "azure_client_id_secret"
+                | "azure_client_secret_secret"
                 | "trust_policy"
                 | "permissions_policy"
         ) && let Some(json) = value.as_str()
@@ -181,6 +231,31 @@ mod tests {
             sql.contains("STORAGE_AWS_ACCESS_KEY_ID_SECRET = \"platform/raw\".\"public\".\"key\"")
         );
         assert!(create_sql("a/b", &[], &role).is_err());
+    }
+
+    #[test]
+    fn azure_sql_uses_only_explicit_account_and_three_secret_objects() {
+        let reference = SecretReference::new("credential")
+            .with_database("shared")
+            .with_namespace(vec!["credentials".into()]);
+        let mut config = CreateStorageIntegrationRequest::azure(
+            "az://container/raw/",
+            "customeraccount",
+            reference.clone(),
+            reference.clone(),
+            reference,
+        );
+        let sql = create_sql("blobs", &[], &config).unwrap();
+        assert!(sql.contains("STORAGE_PROVIDER = 'AZURE'"));
+        assert!(sql.contains("STORAGE_AZURE_STORAGE_ACCOUNT = 'customeraccount'"));
+        assert!(sql.contains(
+            "STORAGE_AZURE_CLIENT_SECRET_SECRET = \"shared\".\"credentials\".\"credential\""
+        ));
+        assert!(!sql.contains("STORAGE_AWS"));
+        config.azure_tenant_id_secret = None;
+        assert!(create_sql("blobs", &[], &config).is_err());
+        config.aws_region = Some("us-east-1".into());
+        assert!(create_sql("blobs", &[], &config).is_err());
     }
 
     #[test]

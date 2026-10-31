@@ -43,6 +43,23 @@ def remote_server(text_type=pa.string()):
             elif b"DROP STORAGE INTEGRATION" in command:
                 result = pa.table({"dropped": [True]})
             else:
+                if b"STORAGE_AZURE_STORAGE_ACCOUNT" in command:
+                    info.update(
+                        storage_provider="AZURE",
+                        storage_prefix="az://customer-data@customeraccount.blob.core.windows.net/raw/",
+                        azure_storage_account="customeraccount",
+                        aws_role_arn=None,
+                        trust_policy=None,
+                        permissions_policy=None,
+                    )
+                    for field, name in (
+                        ("azure_tenant_id_secret", "tenant"),
+                        ("azure_client_id_secret", "client"),
+                        ("azure_client_secret_secret", "credential"),
+                    ):
+                        info[field] = dict(
+                            database="shared", namespace_path=["credentials"], name=name
+                        )
                 if b"STORAGE_AWS_ACCESS_KEY_ID_SECRET" in command:
                     info["aws_role_arn"] = None
                     info["trust_policy"] = None
@@ -63,6 +80,9 @@ def remote_server(text_type=pa.string()):
                     "permissions_policy",
                     "aws_access_key_id_secret",
                     "aws_secret_access_key_secret",
+                    "azure_tenant_id_secret",
+                    "azure_client_id_secret",
+                    "azure_client_secret_secret",
                 ]:
                     if field in row and row[field] is not None:
                         row[field] = json.dumps(row[field])
@@ -205,3 +225,83 @@ def test_namespace_connections_keep_existing_apis_available(tmp_path):
     db = lancedb.connect_namespace("dir", {"root": str(tmp_path)})
     with pytest.raises(NotImplementedError):
         db.create_storage_integration("raw", "s3://customer/raw/", aws_role_arn=ROLE)
+
+
+@pytest.mark.parametrize(
+    "text_type", [pa.string(), pa.large_string(), pa.string_view()]
+)
+def test_azure_lifecycle_uses_three_qualified_secret_references(text_type):
+    with remote_server(text_type) as (host, calls):
+        db = connect(host)
+        refs = [
+            SecretReference(name, database="shared", namespace_path=("credentials",))
+            for name in ("tenant", "client", "credential")
+        ]
+        info = db.create_storage_integration(
+            "blobs",
+            "az://customer-data/raw/",
+            storage_provider="AZURE",
+            azure_storage_account="customeraccount",
+            azure_tenant_id_secret=refs[0],
+            azure_client_id_secret=refs[1],
+            azure_client_secret_secret=refs[2],
+        )
+        assert info.storage_provider == "AZURE"
+        assert info.azure_storage_account == "customeraccount"
+        assert info.azure_tenant_id_secret.name == "tenant"
+        assert info.azure_client_id_secret.database == "shared"
+        assert info.azure_client_secret_secret.name == "credential"
+        assert info.trust_policy is None
+        assert info.permissions_policy is None
+        assert not info.access_verified
+        assert db.describe_storage_integration("blobs") == info
+        assert list(db.list_storage_integrations()) == ["raw", "zeta"]
+        db.drop_storage_integration("blobs")
+        sql = calls[0]
+        assert b"STORAGE_PROVIDER = 'AZURE'" in sql
+        assert b"STORAGE_AZURE_STORAGE_ACCOUNT = 'customeraccount'" in sql
+        assert (
+            b'STORAGE_AZURE_CLIENT_SECRET_SECRET = "shared"."credentials"."credential"'
+            in sql
+        )
+        assert b"STORAGE_AWS" not in sql
+
+
+@pytest.mark.asyncio
+async def test_async_azure_requires_account_and_all_three_secret_references():
+    with remote_server() as (host, calls):
+        db = await lancedb.connect_async(
+            "db://default",
+            api_key="fake",
+            sql_host_override=host,
+            host_override="http://127.0.0.1:1",
+        )
+        config = dict(
+            storage_provider="AZURE",
+            azure_storage_account="customeraccount",
+            azure_tenant_id_secret="tenant",
+            azure_client_id_secret="client",
+            azure_client_secret_secret="credential",
+        )
+        for missing in (
+            "azure_storage_account",
+            "azure_tenant_id_secret",
+            "azure_client_id_secret",
+            "azure_client_secret_secret",
+        ):
+            partial = dict(config)
+            partial.pop(missing)
+            with pytest.raises(ValueError):
+                await db.create_storage_integration(
+                    "blobs", "az://customer-data/raw/", **partial
+                )
+        with pytest.raises(ValueError):
+            await db.create_storage_integration(
+                "blobs", "az://customer-data/raw/", aws_role_arn=ROLE, **config
+            )
+        assert calls == []
+        info = await db.create_storage_integration(
+            "blobs", "az://customer-data/raw/", **config
+        )
+        assert info.storage_provider == "AZURE"
+        assert b'STORAGE_AZURE_TENANT_ID_SECRET = "public"."tenant"' in calls[0]
