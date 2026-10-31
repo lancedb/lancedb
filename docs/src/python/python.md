@@ -1061,3 +1061,55 @@ options. The service interprets the stored JSON when accessing storage; registra
 does not validate its credentials format or verify access, and leaves
 `access_verified` false. Integration metadata contains the Secret reference, never
 its JSON content. GCP options cannot be combined with AWS or Azure options.
+
+
+### Hugging Face storage integrations
+
+Store a Hugging Face API key as one Secret, then register the repository prefix
+with the existing integration methods. Only the Secret name is part of the
+integration configuration:
+
+```python
+import os
+
+from lancedb.storage_integration import SecretReference
+
+db.create_secret("hf_api_key", os.environ["HF_TOKEN"])
+info = db.create_storage_integration(
+    "private_hub",
+    "hf://datasets/acme/private/raw/",
+    storage_provider="HUGGINGFACE",
+    huggingface_api_key_secret=SecretReference("hf_api_key"),
+)
+print(info.configuration_instructions)
+info = db.describe_storage_integration("private_hub")
+names = list(db.list_storage_integrations())
+db.drop_storage_integration("private_hub")
+```
+
+The equivalent SQL references the existing Secret:
+
+```sql
+CREATE STORAGE INTEGRATION private_hub
+    STORAGE_PROVIDER = 'HUGGINGFACE'
+    STORAGE_PREFIX = 'hf://datasets/acme/private/raw/'
+    HUGGINGFACE_API_KEY_SECRET = public.hf_api_key;
+DESCRIBE STORAGE INTEGRATION private_hub;
+SHOW STORAGE INTEGRATIONS;
+SELECT * FROM 'hf://datasets/acme/private/raw/*.parquet' LIMIT 10;
+DROP STORAGE INTEGRATION private_hub;
+```
+
+The Secret must contain the API key itself, with repository read permission.
+Cross-database and namespace references use the same `SecretReference` rules as
+other integrations. Sync and async APIs accept the same options. Registration
+returns one sentence of instructions and leaves `access_verified` false; it does
+not contact Hugging Face. Metadata contains the Secret reference, never its value.
+Hugging Face options cannot be combined with AWS, Azure or GCP options.
+
+Repository prefixes use `hf://datasets/<owner>/<repo>[/<path>]` or
+`hf://models/<owner>/<repo>[/<path>]`. An optional `@revision` follows the repository
+name; omitting it allows matching reads of any revision. Prefixes must be concrete
+paths without wildcards or traversal. This integration does not make Hugging Face
+a writable database location for `ATTACH DATABASE`. Dataset SQL sources select a
+matching integration automatically, with no integration argument in the query.
