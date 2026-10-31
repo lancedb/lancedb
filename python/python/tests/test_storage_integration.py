@@ -53,7 +53,9 @@ def remote_server(text_type=pa.string()):
                         aws_iam_principal_arn="",
                         trust_policy=None,
                         permissions_policy=None,
-                        configuration_instructions="Grant the referenced service account access to the storage prefix.",
+                        configuration_instructions=(
+                            "Grant the referenced identity access to the prefix."
+                        ),
                         gcp_credentials_json_secret=dict(
                             database="shared",
                             namespace_path=["credentials"],
