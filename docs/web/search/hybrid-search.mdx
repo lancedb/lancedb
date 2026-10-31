@@ -283,6 +283,12 @@ Set `limit()` to the number of results your application needs. The default is 10
 A larger candidate set can help a reranker find relevant records, but adds work.
 </Info>
 
+Each side of a hybrid query (vector and full-text) fetches at least 50
+candidates before rank fusion — `max(limit + offset, 50)` — so that asking for
+fewer results returns a shorter list, not a different ranking. This candidate
+floor is separate from `limit()`, which only controls how many fused results
+are returned (default 10).
+
 ### Returning row IDs {#returning-row-ids}
 
 Pass `with_row_id(True)` (Python) or `withRowId()` (TypeScript) to include the internal `_rowid` column in the results. This is useful for joining hybrid results back to a primary table, or for deduping across multiple queries:

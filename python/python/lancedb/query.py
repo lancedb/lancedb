@@ -4723,14 +4723,14 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         RRFReranker(K=60)
             ProjectionExec: expr=[vector@0 as vector, text@3 as text, _distance@2 as _distance, _rowid@1 as _rowid]
               LanceRead: uri=..., projection=[text], source=stream(_rowid)
-                GlobalLimitExec: skip=0, fetch=10
+                GlobalLimitExec: skip=0, fetch=50
                   FilterExec: _distance@2 IS NOT NULL
                     SortExec: TopK(fetch=1), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
                       KNNVectorDistance: metric=l2
                         LanceRead: uri=..., projection=[vector], num_fragments=..., ...
             ProjectionExec: expr=[vector@2 as vector, text@3 as text, _score@1 as _score, _rowid@0 as _rowid]
               LanceRead: uri=..., projection=[vector, text], source=stream(_rowid)
-                GlobalLimitExec: skip=0, fetch=10
+                GlobalLimitExec: skip=0, fetch=50
                   MatchQuery: column=text, query=[hello]
 
         Parameters
