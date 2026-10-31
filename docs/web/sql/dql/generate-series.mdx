@@ -1,0 +1,30 @@
+---
+title: "GENERATE_SERIES"
+sidebarTitle: "GENERATE_SERIES"
+description: "The generate_series() table function: rows from a range."
+icon: list-ol
+keywords: ["generate_series", "sql", "table function", "range", "series"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+<CodeGroup>
+```sql SQL icon="database"
+SELECT * FROM generate_series(
+    1,
+    10
+)
+```
+</CodeGroup>
+
+Rows from a range, useful for building a dense axis to left-join sparse data
+onto.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Functions" icon="function" href="/sql/dql/functions#table-functions">
+    The other table functions: `fts`, `dedupe`, and `duplicate_pairs`.
+  </Card>
+</CardGroup>
