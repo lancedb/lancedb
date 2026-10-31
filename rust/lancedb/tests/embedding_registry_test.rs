@@ -14,6 +14,7 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema};
 use futures::StreamExt;
+use lance::dataset::ColumnAlteration;
 use lancedb::{
     Error, Result, connect,
     embeddings::{EmbeddingDefinition, EmbeddingFunction, EmbeddingRegistry},
@@ -191,6 +192,69 @@ async fn test_open_table_embeddings() -> Result<()> {
         let embeddings = embeddings.unwrap();
         assert_eq!(embeddings.data_type(), embed_fun.dest_type()?.as_ref());
     }
+    Ok(())
+}
+
+#[rstest::rstest]
+#[case(Some("embeddings"), "embeddings")]
+#[case(None, "text_embedding")]
+#[tokio::test]
+async fn test_schema_evolution_preserves_native_embeddings(
+    #[case] dest_column: Option<&str>,
+    #[case] vector_column: &str,
+) -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let uri = tempdir.path().to_str().unwrap();
+    let db = connect(uri).execute().await?;
+    db.embedding_registry()
+        .register("embed_fun", Arc::new(MockEmbed::new("embed_fun".into(), 2)))?;
+    let table = db
+        .create_table("test", create_some_records()?)
+        .add_embedding(EmbeddingDefinition::new("text", "embed_fun", dest_column))?
+        .execute()
+        .await?;
+    let schema = table.schema().await?;
+    let version = table.version().await?;
+    assert!(
+        schema
+            .metadata()
+            .contains_key("lancedb::column_definitions")
+    );
+    assert!(!schema.metadata().contains_key("embedding_functions"));
+
+    // Schema protection must not require the embedding function to be loaded.
+    let unregistered_db = connect(uri).execute().await?;
+    let table = unregistered_db.open_table("test").execute().await?;
+    for column in ["text", vector_column] {
+        let err = table
+            .alter_columns(&[
+                ColumnAlteration::new("id".into()).rename("new_id".into()),
+                ColumnAlteration::new(column.into()).rename("renamed".into()),
+            ])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidInput { .. }), "got {err:?}");
+        assert!(err.to_string().contains("used by an embedding function"));
+        assert_eq!(table.schema().await?, schema);
+        assert_eq!(table.version().await?, version);
+
+        let err = table.drop_columns(&["id", column]).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidInput { .. }), "got {err:?}");
+        assert!(err.to_string().contains("used by an embedding function"));
+        assert_eq!(table.schema().await?, schema);
+        assert_eq!(table.version().await?, version);
+    }
+
+    let table = db.open_table("test").execute().await?;
+    assert_eq!(table.schema().await?, schema);
+    table.add(create_some_records()?).execute().await?;
+    assert_eq!(table.count_rows(None).await?, 4);
+
+    table
+        .alter_columns(&[ColumnAlteration::new("id".into()).rename("new_id".into())])
+        .await?;
+    table.drop_columns(&["new_id"]).await?;
+    assert_eq!(table.schema().await?.metadata(), schema.metadata());
     Ok(())
 }
 

@@ -126,6 +126,9 @@ abstract alterColumns(columnAlterations): Promise<AlterColumnsResult>
 
 Alter the name or nullability of columns.
 
+Local tables reject renaming source or vector columns referenced by
+`embedding_functions` schema metadata, preserving the embedding binding.
+
 #### Parameters
 
 * **columnAlterations**: [`ColumnAlteration`](../interfaces/ColumnAlteration.md)[]
@@ -503,6 +506,9 @@ This is a metadata-only operation and does not remove the data from the
 underlying storage. In order to remove the data, you must subsequently
 call ``compact_files`` to rewrite the data without the removed columns and
 then call ``cleanup_files`` to remove the old files.
+
+Local tables reject dropping source or vector columns referenced by
+`embedding_functions` schema metadata, preserving the embedding binding.
 
 #### Parameters
 

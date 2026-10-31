@@ -2000,6 +2000,10 @@ impl Table {
     /// Each alteration must specify at least one of `rename`, `data_type`, or
     /// `nullable`. Returns [`Error::InvalidInput`] before applying any changes
     /// if an alteration does not specify any of these fields.
+    ///
+    /// Local tables reject renaming source or vector columns referenced by
+    /// [`EmbeddingDefinition`] or `embedding_functions` schema metadata to
+    /// preserve the embedding binding.
     pub async fn alter_columns(
         &self,
         alterations: &[ColumnAlteration],
@@ -2043,6 +2047,10 @@ impl Table {
     }
 
     /// Remove columns from the table.
+    ///
+    /// Local tables reject dropping source or vector columns referenced by
+    /// [`EmbeddingDefinition`] or `embedding_functions` schema metadata to
+    /// preserve the embedding binding.
     pub async fn drop_columns(&self, columns: &[&str]) -> Result<DropColumnsResult> {
         self.inner.drop_columns(columns).await
     }
