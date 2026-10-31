@@ -24,6 +24,8 @@ on:
     # This should trigger a dry run (we skip the final publish step)
     paths:
       - .github/workflows/npm-publish.yml
+      - nodejs/package.json
+      - nodejs/npm/**
       - Cargo.toml # Change in dependency frequently breaks builds
       - Cargo.lock
 
@@ -43,6 +45,11 @@ jobs:
             # Fat LTO was ~111 of this job's ~113 minutes.
             lto: thin
             codegen_units: 16
+            pre_build: |-
+              brew install protobuf
+          - target: x86_64-apple-darwin
+            host: macos-15-intel
+            features: ","
             pre_build: |-
               brew install protobuf
           - target: x86_64-pc-windows-msvc
@@ -333,6 +340,8 @@ jobs:
           #   target: x86_64-pc-windows-msvc
           - host: macos-latest
             target: aarch64-apple-darwin
+          - host: macos-15-intel
+            target: x86_64-apple-darwin
           - target: x86_64-unknown-linux-gnu
             host: ubuntu-latest
           - target: aarch64-unknown-linux-gnu
