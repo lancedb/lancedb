@@ -8,6 +8,8 @@ export const PyQuickstartComputedFeature = "table.add_columns(computed={\"captio
 
 export const PyQuickstartComputedFeatureEnterprise = "table.add_columns(computed={\"caption_length\": \"length(caption)\"})\njob = table.refresh_column_async(\"caption_length\")\njob.wait()\n";
 
+export const PyQuickstartCreateIndexes = "from lancedb.index import BTree, IvfPq\n\ntable.create_index(\"embedding\", config=IvfPq())\ntable.create_index(\"stats.motion\", config=BTree())\n";
+
 export const PyQuickstartCreateTable = "table = db.create_table(\"frames\", data=data, mode=\"overwrite\")\n";
 
 export const PyQuickstartCreateTableAsync = "async_table = await async_db.create_table(\n    \"frames\",\n    data=data,\n    mode=\"overwrite\",\n)\n";
@@ -32,6 +34,8 @@ export const TsQuickstartAddData = "await table.add([\n  {\n    frame_id: \"4\",
 
 export const TsQuickstartAddFeature = "await table.addColumns([\n  {\n    name: \"quality_score\",\n    valueSql:\n      \"cast(((stats.motion + stats.sharpness + stats.exposure + stats.framing) / 4.0) as float)\",\n  },\n]);\n";
 
+export const TsQuickstartCreateIndexes = "await table.createIndex(\"embedding\", { config: lancedb.Index.ivfPq() });\nawait table.createIndex(\"stats.motion\", { config: lancedb.Index.btree() });\n";
+
 export const TsQuickstartCreateTable = "const table = await db.createTable(\"frames\", data, { mode: \"overwrite\" });\n";
 
 export const TsQuickstartCurateWithMetadata = "const curated = await table\n  .search(queryVector)\n  .where(\"stats.motion >= 4\")\n  .select([\"frame_id\", \"video_id\", \"caption\", \"_distance\"])\n  .limit(2)\n  .toArray();\nconsole.table(curated);\n";
@@ -47,6 +51,8 @@ export const TsQuickstartVectorSearch1 = "// Search for frames similar to \"a gr
 export const RsQuickstartAddData = "let more_data = vec![Frame {\n    frame_id: \"4\".to_string(),\n    video_id: \"clip-2\".to_string(),\n    caption: \"a gripper lowering a cup onto the table\".to_string(),\n    stats: Stats {\n        motion: 5,\n        sharpness: 4,\n        exposure: 4,\n        framing: 2,\n    },\n    embedding: [0.3, 0.9, 0.6, 0.8],\n}];\ntable\n    .add(frames_to_reader(schema.clone(), &more_data))\n    .execute()\n    .await\n    .unwrap();\n";
 
 export const RsQuickstartAddFeature = "table\n    .add_columns(\n        NewColumnTransform::SqlExpressions(vec![(\n            \"quality_score\".to_string(),\n            \"cast(((stats.motion + stats.sharpness + stats.exposure + stats.framing) / 4.0) as float)\"\n                .to_string(),\n        )]),\n        None,\n    )\n    .await\n    .unwrap();\n";
+
+export const RsQuickstartCreateIndexes = "use lancedb::index::Index;\nuse lancedb::index::scalar::BTreeIndexBuilder;\nuse lancedb::index::vector::IvfPqIndexBuilder;\n\ntable\n    .create_index(&[\"embedding\"], Index::IvfPq(IvfPqIndexBuilder::default()))\n    .execute()\n    .await\n    .unwrap();\ntable\n    .create_index(\n        &[\"stats.motion\"],\n        Index::BTree(BTreeIndexBuilder::default()),\n    )\n    .execute()\n    .await\n    .unwrap();\n";
 
 export const RsQuickstartCreateTable = "use lancedb::database::CreateTableMode;\n\nlet schema = frames_schema();\nlet table = db\n    .create_table(\"frames\", frames_to_reader(schema.clone(), &data))\n    .mode(CreateTableMode::Overwrite)\n    .execute()\n    .await\n    .unwrap();\n";
 

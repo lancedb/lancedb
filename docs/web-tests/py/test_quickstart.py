@@ -151,6 +151,17 @@ def create_frames(db):
     # --8<-- [end:quickstart_create_table]
     assert table.count_rows() == 3
 
+    # --8<-- [start:quickstart_create_indexes]
+    from lancedb.index import BTree, IvfPq
+
+    table.create_index("embedding", config=IvfPq())
+    table.create_index("stats.motion", config=BTree())
+    # --8<-- [end:quickstart_create_indexes]
+    assert {index.name for index in table.list_indices()} == {
+        "embedding_idx",
+        "stats.motion_idx",
+    }
+
     # --8<-- [start:quickstart_add_data]
     table.add(
         [

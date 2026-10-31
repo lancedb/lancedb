@@ -48,10 +48,127 @@ import {
 } from '/snippets/ingestion_examples.mdx';
 
 import { PyWriteWorkflow, TsWriteWorkflowBody, TsWriteWorkflowTail, RsWriteWorkflow } from '/snippets/ingestion_examples.mdx';
+import {
+    PyTableSetupData,
+    PyTableSetupLoadThenIndex,
+    PyTableSetupOptimize,
+    PyTableSetupStream,
+} from '/snippets/ingestion_examples.mdx';
 
 Create a table from existing records, or define an empty table before data
 arrives. Define a schema to specify column types, allow or disallow missing
 values, and set the size of your vectors.
+
+## Set up the table for your workload {#set-up-for-your-workload}
+
+A table created from data alone has no indexes, so every vector search,
+keyword search and filter reads every row. That is fast enough for a few
+thousand rows, but is slow for millions. When you create a new table, consider
+adding indexes up front to make your planned workloads fast.
+
+### Choose indexes {#choose-indexes}
+
+Index each column your application searches, filters or merges on:
+
+| Your workload | Index | Python config |
+| :------------ | :---- | :------------ |
+| Vector similarity search on an embedding column | IVF_RQ, or another [vector index](/indexing/vector-index) | `IvfRq(distance_type=...)` |
+| Keyword search over a text column | [Full-text](/indexing/fts-index) | `FTS()` |
+| Exact-match filters on a column with few distinct values, such as a status or category | [Bitmap](/indexing/scalar-index) | `Bitmap()` |
+| Exact-match or range filters on a column with many distinct values, such as an ID, timestamp or price | [BTree](/indexing/scalar-index) | `BTree()` |
+| Filters on the contents of a list column, such as tags | [LabelList](/indexing/scalar-index) | `LabelList()` |
+| The key column of [`merge_insert`](/ingestion/merge-insert) upserts | [BTree](/indexing/scalar-index) | `BTree()` |
+
+Index only the columns your workload uses, since each index costs build time
+and slows writes. Set the vector index's distance type to the one your
+embedding model was trained for: a query that asks for a different metric
+can't use the index. IVF_RQ needs a vector dimension that is a multiple of 8.
+Size IVF partitions with `target_partition_size` instead
+of `num_partitions`, so the number of partitions follows the table as it grows.
+
+Then choose how to create the indexes, based on how data arrives.
+
+The examples below use a table of driving scenes. Each scene has an ID, a
+camera, a weather label, a caption and an embedding. `make_scenes` generates
+rows with made-up embeddings, and `db` is an open
+[connection](/basics/catalog):
+
+<Accordion title="Scene schema and data">
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyTableSetupData}
+    </CodeBlock>
+</CodeGroup>
+</Accordion>
+
+### Load once, then index {#load-then-index}
+
+If you have the data up front, create the table with it, then build the
+indexes. Each index is trained on the full data, and the table is fast as soon
+as the build finishes.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyTableSetupLoadThenIndex}
+    </CodeBlock>
+</CodeGroup>
+
+LanceDB Enterprise keeps indexes up to date with background jobs as you write.
+In LanceDB Embedded, indexes update only when you ask. Queries still return
+rows added since the last update, but read them without the index. After
+appending data, call `optimize()`. `index_stats` reports how many rows an index
+doesn't cover yet:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyTableSetupOptimize}
+    </CodeBlock>
+</CodeGroup>
+
+### Stream into an empty table {#stream-into-empty-table}
+
+If data arrives over time, create the table from a schema and declare its
+indexes before the first write. With `train=False`, `create_index` records the
+index definition without training it, since there is no data to train on yet.
+The indexes appear in `list_indices()` immediately. Until an index is trained,
+queries return correct results by reading the rows it doesn't cover.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyTableSetupStream}
+    </CodeBlock>
+</CodeGroup>
+
+LanceDB Enterprise trains and maintains the declared indexes with background
+jobs as data arrives. In LanceDB Embedded, `optimize()` trains them on the rows
+written so far, the same way it updates indexes in the previous pattern.
+
+#### Turn on the real time engine for frequent writes {#stream-with-rte}
+
+<Badge color="red">Enterprise</Badge>
+
+If many writers send small batches of upserts, turn on the
+[real time engine](/tables/realtime-engine) (RTE) before the first write. RTE
+absorbs frequent small writes and makes each one searchable within
+milliseconds. It needs a primary key, and the scalar index declared on that key
+above lets RTE apply partial updates and deletes. RTE maintains every index on
+the table, including ones created after you turn it on.
+
+```python Python icon="python"
+from lancedb import RTEWriteSpec
+
+tbl.set_unenforced_primary_key("scene_id")
+tbl.enable_rte(RTEWriteSpec.bucket("scene_id", 16))
+
+tbl.merge_insert("scene_id") \
+    .when_matched_update_all() \
+    .when_not_matched_insert_all() \
+    .execute(make_scenes(0, 1_000))
+```
+
+On an RTE table, writes go through `merge_insert` on the primary key. See
+[Real Time writes](/ingestion/realtime-write) for the supported write forms and
+for choosing the number of shards.
 
 ## Create a table with data {#create-a-table-with-data}
 

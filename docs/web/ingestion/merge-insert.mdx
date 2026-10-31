@@ -54,8 +54,11 @@ for duplicate and null keys before merging. A primary-key declaration does not
 enforce uniqueness on ordinary writes, and append operations do not deduplicate
 records for you.
 
-A scalar index on the key can help matching. Keep it current and measure the
-actual workload rather than assuming every merge uses an index. Enterprise may
+Create a `BTree` index on the key, ideally when you
+[create the table](/ingestion/create-table#set-up-for-your-workload), so a merge
+can look up matching rows instead of reading the whole table. Keep the index
+current and measure the actual workload rather than assuming every merge uses
+it. Enterprise may
 reject a merge when the unindexed scan exceeds its configured limit; inspect
 that error and the index state before retrying.
 
