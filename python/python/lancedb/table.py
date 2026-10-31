@@ -3089,8 +3089,8 @@ class Table(ABC):
         by the next one, and rows whose inputs changed since they were computed
         are recomputed; everything else is left as it is.
 
-        LanceDB Embedded only. In LanceDB Distributed, a refresh runs as a
-        server job, through
+        Supported for local tables only. For remote tables, a refresh runs as
+        a server job, through
         [`refresh_column_async`][lancedb.table.Table.refresh_column_async].
 
         Parameters
@@ -3098,9 +3098,9 @@ class Table(ABC):
         column: str
             The name of the computed column to fill.
         batch_size: int, optional
-            Maximum rows per Function call in LanceDB Distributed. Must be
+            Maximum rows per Function call on the remote server. Must be
             greater than zero. None uses the server default. Has no effect on
-            expression-backed columns in LanceDB Embedded.
+            local expression-backed columns.
 
         Returns
         -------
@@ -3117,25 +3117,24 @@ class Table(ABC):
         Like :meth:`refresh_column`, but returns a handle to the refresh job
         instead of blocking until it completes.
 
-        LanceDB Embedded refresh requires a source build with
-        ``experimental-functions``.
-        LanceDB Distributed jobs do not require this feature.
+        Local refresh requires a source build with ``experimental-functions``.
+        Remote jobs do not require this feature.
 
         The job may already be complete when returned; callers must not assume
         the column is filled until :meth:`Job.wait` returns. Invalid input --
         an unknown column, or one that is not computed -- raises here rather
-        than failing the job. In LanceDB Embedded the job runs in-process; in
-        LanceDB Distributed it is the server's backfill job.
+        than failing the job. For local tables, the job runs in-process; for
+        remote tables, it is the server's backfill job.
 
         Parameters
         ----------
         column: str
             The name of the computed column to fill.
         batch_size: int, optional
-            Maximum rows per Function call in LanceDB Distributed. Must be
+            Maximum rows per Function call on the remote server. Must be
             greater than zero. None uses the server default. Lower this for
             slow Functions to stay within the executor's per-call deadline.
-            Has no effect on expression-backed columns in LanceDB Embedded.
+            Has no effect on local expression-backed columns.
 
         Returns
         -------
@@ -7460,8 +7459,8 @@ class AsyncTable:
         by the next one, and rows whose inputs changed since they were computed
         are recomputed; everything else is left as it is.
 
-        LanceDB Embedded only. In LanceDB Distributed, a refresh runs as a
-        server job, through
+        Supported for local tables only. For remote tables, a refresh runs as
+        a server job, through
         [`refresh_column_async`][lancedb.table.Table.refresh_column_async].
 
         Parameters
@@ -7469,9 +7468,9 @@ class AsyncTable:
         column: str
             The name of the computed column to fill.
         batch_size: int, optional
-            Maximum rows per Function call in LanceDB Distributed. Must be
+            Maximum rows per Function call on the remote server. Must be
             greater than zero. None uses the server default. Has no effect on
-            expression-backed columns in LanceDB Embedded.
+            local expression-backed columns.
 
         Returns
         -------
@@ -7530,26 +7529,24 @@ class AsyncTable:
         Like :meth:`refresh_column`, but returns a handle to the refresh job
         instead of blocking until it completes.
 
-        LanceDB Embedded refresh requires a source build with
-        ``experimental-functions``.
-        LanceDB Distributed jobs do not require this feature.
+        Local refresh requires a source build with ``experimental-functions``.
+        Remote jobs do not require this feature.
 
         The job may already be complete when returned; callers must not assume
         the column is filled until :meth:`AsyncJob.wait` resolves. Invalid
         input -- an unknown column, or one that is not computed -- raises here
-        rather than failing the job. In LanceDB Embedded the job runs
-        in-process; in LanceDB Distributed it is the server's
-        backfill job.
+        rather than failing the job. For local tables, the job runs in-process;
+        for remote tables, it is the server's backfill job.
 
         Parameters
         ----------
         column: str
             The name of the computed column to fill.
         batch_size: int, optional
-            Maximum rows per Function call in LanceDB Distributed. Must be
+            Maximum rows per Function call on the remote server. Must be
             greater than zero. None uses the server default. Lower this for
             slow Functions to stay within the executor's per-call deadline.
-            Has no effect on expression-backed columns in LanceDB Embedded.
+            Has no effect on local expression-backed columns.
 
         Returns
         -------
