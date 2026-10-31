@@ -1153,6 +1153,18 @@ class RemoteTable(Table):
         """Read the installed RTEWriteSpec, or ``None``."""
         return LOOP.run(self._table.get_rte_spec())
 
+    def get_table_overrides(self) -> dict[str, Any]:
+        """Read Enterprise table overrides for this table."""
+        return LOOP.run(self._table.get_table_overrides())
+
+    def update_table_overrides(self, **overrides: Any) -> dict[str, Any]:
+        """Merge Enterprise table overrides into the current table overrides."""
+        return LOOP.run(self._table.update_table_overrides(**overrides))
+
+    def reset_table_overrides(self) -> dict[str, Any]:
+        """Clear Enterprise table overrides for this table."""
+        return LOOP.run(self._table.reset_table_overrides())
+
     # WAL-PK-FUSION: delete both hooks.
     def _hybrid_pk_fusion_learned(self) -> bool:
         # `self._table` is the async table, which owns the Rust handle.

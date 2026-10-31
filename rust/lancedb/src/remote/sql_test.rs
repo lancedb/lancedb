@@ -1098,6 +1098,7 @@ async fn remote_refresh_omits_unknown_metrics_and_forwards_full() {
     });
     let table = RemoteTable::new_with_sql_client(
         client,
+        "analytics".into(),
         "view".into(),
         vec!["ns".into()],
         "ns$view".into(),
@@ -1204,6 +1205,7 @@ async fn cancelling_remote_refresh_cancels_sql_query() {
     });
     let table = RemoteTable::new_with_sql_client(
         client,
+        "analytics".into(),
         "cancel_view".into(),
         vec![],
         "cancel_view".into(),
@@ -2157,6 +2159,7 @@ async fn remote_describe_materialized_view_preserves_the_sql_definition() {
             client_with_handler(|request| -> http::Response<String> {
                 panic!("unexpected REST request: {}", request.url().path());
             }),
+            "analytics".into(),
             "daily_sales".into(),
             vec!["analytics".into()],
             "analytics$daily_sales".into(),
