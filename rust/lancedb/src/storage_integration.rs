@@ -176,19 +176,20 @@ impl CreateStorageIntegrationRequest {
         }
     }
 
-    /// Register Hugging Face repository access using a Secret containing an API key.
+    /// Register anonymous Hugging Face access at the default anonymous rate limits.
+    /// Use `with_huggingface_api_key_secret` to reference a Secret containing an API key.
     ///
     /// ```
     /// use lancedb::storage_integration::{CreateStorageIntegrationRequest, SecretReference};
     /// let config = CreateStorageIntegrationRequest::huggingface(
-    ///     "hf://datasets/acme/private/data/", SecretReference::new("hf_api_key"),
-    /// );
+    ///     "hf://datasets/acme/private/data/",
+    /// ).with_huggingface_api_key_secret(SecretReference::new("hf_api_key"));
     /// ```
-    pub fn huggingface(storage_prefix: impl Into<String>, api_key: SecretReference) -> Self {
+    pub fn huggingface(storage_prefix: impl Into<String>) -> Self {
         Self {
             storage_provider: StorageProvider::HuggingFace,
             storage_prefix: storage_prefix.into(),
-            huggingface_api_key_secret: Some(api_key),
+            huggingface_api_key_secret: None,
             gcp_credentials_json_secret: None,
             aws_role_arn: None,
             aws_access_key_id_secret: None,
@@ -199,6 +200,12 @@ impl CreateStorageIntegrationRequest {
             azure_client_id_secret: None,
             azure_client_secret_secret: None,
         }
+    }
+
+    /// Use a Hugging Face API key stored in a Secret instead of anonymous access.
+    pub fn with_huggingface_api_key_secret(mut self, api_key: SecretReference) -> Self {
+        self.huggingface_api_key_secret = Some(api_key);
+        self
     }
 
     /// Set the AWS region of the storage prefix.

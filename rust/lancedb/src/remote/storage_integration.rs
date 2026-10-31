@@ -76,15 +76,18 @@ pub(super) fn create_sql(
                 "Hugging Face integrations cannot contain AWS, Azure or GCP options",
             ));
         }
-        let reference = request.huggingface_api_key_secret.as_ref().ok_or_else(|| {
-            invalid("Hugging Face integrations require huggingface_api_key_secret")
-        })?;
-        return Ok(format!(
-            "CREATE STORAGE INTEGRATION {} STORAGE_PROVIDER = 'HUGGINGFACE' STORAGE_PREFIX = {} HUGGINGFACE_API_KEY_SECRET = {}",
+        let mut sql = format!(
+            "CREATE STORAGE INTEGRATION {} STORAGE_PROVIDER = 'HUGGINGFACE' STORAGE_PREFIX = {}",
             object_name(name, namespace)?,
-            literal(&request.storage_prefix),
-            secret_name(reference)?
-        ));
+            literal(&request.storage_prefix)
+        );
+        if let Some(reference) = &request.huggingface_api_key_secret {
+            sql.push_str(&format!(
+                " HUGGINGFACE_API_KEY_SECRET = {}",
+                secret_name(reference)?
+            ));
+        }
+        return Ok(sql);
     }
     if request.storage_provider != StorageProvider::Gcp
         && request.gcp_credentials_json_secret.is_some()
@@ -365,13 +368,14 @@ mod huggingface_tests {
     use super::*;
 
     #[test]
-    fn huggingface_renders_one_secret_reference_and_rejects_mixed_auth() {
-        let mut request = CreateStorageIntegrationRequest::huggingface(
-            "hf://datasets/acme/private/raw/",
-            SecretReference::new("api-key")
-                .with_database("shared")
-                .with_namespace(vec!["credentials".into()]),
-        );
+    fn huggingface_renders_optional_secret_and_rejects_mixed_auth() {
+        let mut request =
+            CreateStorageIntegrationRequest::huggingface("hf://datasets/acme/private/raw/")
+                .with_huggingface_api_key_secret(
+                    SecretReference::new("api-key")
+                        .with_database("shared")
+                        .with_namespace(vec!["credentials".into()]),
+                );
         let sql = create_sql("hub", &[], &request).unwrap();
         assert!(sql.contains("STORAGE_PROVIDER = 'HUGGINGFACE'"));
         assert!(
@@ -381,6 +385,10 @@ mod huggingface_tests {
         assert!(create_sql("hub", &[], &request).is_err());
         request.gcp_credentials_json_secret = None;
         request.huggingface_api_key_secret = None;
-        assert!(create_sql("hub", &[], &request).is_err());
+        assert!(
+            !create_sql("hub", &[], &request)
+                .unwrap()
+                .contains("HUGGINGFACE_API_KEY_SECRET")
+        );
     }
 }

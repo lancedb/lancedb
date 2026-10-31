@@ -43,7 +43,7 @@ def remote_server(text_type=pa.string()):
             elif b"DROP STORAGE INTEGRATION" in command:
                 result = pa.table({"dropped": [True]})
             else:
-                if b"HUGGINGFACE_API_KEY_SECRET" in command:
+                if b"STORAGE_PROVIDER = 'HUGGINGFACE'" in command:
                     info.update(
                         storage_provider="HUGGINGFACE",
                         storage_prefix="hf://datasets/acme/private/raw/",
@@ -56,10 +56,14 @@ def remote_server(text_type=pa.string()):
                         configuration_instructions=(
                             "Grant the referenced identity access to the prefix."
                         ),
-                        huggingface_api_key_secret=dict(
-                            database="shared",
-                            namespace_path=["credentials"],
-                            name="hf_key",
+                        huggingface_api_key_secret=(
+                            dict(
+                                database="shared",
+                                namespace_path=["credentials"],
+                                name="hf_key",
+                            )
+                            if b"HUGGINGFACE_API_KEY_SECRET" in command
+                            else None
                         ),
                     )
                 if b"GCP_CREDENTIALS_JSON_SECRET" in command:
@@ -448,7 +452,7 @@ def test_huggingface_lifecycle_uses_one_qualified_api_key_secret(text_type):
 
 
 @pytest.mark.asyncio
-async def test_async_huggingface_requires_one_secret_and_rejects_other_cloud_options():
+async def test_async_huggingface_rejects_other_cloud_options():
     with remote_server() as (host, calls):
         db = await lancedb.connect_async(
             "db://default",
@@ -457,7 +461,6 @@ async def test_async_huggingface_requires_one_secret_and_rejects_other_cloud_opt
             host_override="http://127.0.0.1:1",
         )
         for invalid in (
-            {},
             {"huggingface_api_key_secret": "hf_key", "aws_role_arn": ROLE},
             {
                 "huggingface_api_key_secret": "hf_key",
@@ -487,3 +490,40 @@ async def test_async_huggingface_requires_one_secret_and_rejects_other_cloud_opt
         )
         assert info.storage_provider == "HUGGINGFACE"
         assert b'HUGGINGFACE_API_KEY_SECRET = "public"."hf_key"' in calls[0]
+
+
+@pytest.mark.parametrize(
+    "text_type", [pa.string(), pa.large_string(), pa.string_view()]
+)
+def test_anonymous_huggingface_lifecycle_omits_api_key_secret(text_type):
+    with remote_server(text_type) as (host, calls):
+        db = connect(host)
+        info = db.create_storage_integration(
+            "public_hub",
+            "hf://datasets/acme/public/raw/",
+            storage_provider="HUGGINGFACE",
+        )
+        assert info.storage_provider == "HUGGINGFACE"
+        assert info.huggingface_api_key_secret is None
+        assert db.describe_storage_integration("public_hub") == info
+        assert list(db.list_storage_integrations()) == ["raw", "zeta"]
+        db.drop_storage_integration("public_hub")
+        assert b"HUGGINGFACE_API_KEY_SECRET" not in calls[0]
+
+
+@pytest.mark.asyncio
+async def test_async_huggingface_allows_anonymous_access():
+    with remote_server() as (host, calls):
+        db = await lancedb.connect_async(
+            "db://default",
+            api_key="fake",
+            sql_host_override=host,
+            host_override="http://127.0.0.1:1",
+        )
+        info = await db.create_storage_integration(
+            "public_hub",
+            "hf://datasets/acme/public/raw/",
+            storage_provider="HUGGINGFACE",
+        )
+        assert info.huggingface_api_key_secret is None
+        assert b"HUGGINGFACE_API_KEY_SECRET" not in calls[0]

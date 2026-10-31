@@ -1100,7 +1100,24 @@ SELECT * FROM 'hf://datasets/acme/private/raw/*.parquet' LIMIT 10;
 DROP STORAGE INTEGRATION private_hub;
 ```
 
-The Secret must contain the API key itself, with repository read permission.
+Omit the API-key Secret for anonymous access at Hugging Face's default anonymous
+rate limits. A tokenless integration does not use a cluster's Hugging Face token:
+
+```python
+info = db.create_storage_integration(
+    "public_hub", "hf://datasets/acme/public/raw/",
+    storage_provider="HUGGINGFACE",
+)
+```
+
+```sql
+CREATE STORAGE INTEGRATION public_hub
+    STORAGE_PROVIDER = 'HUGGINGFACE'
+    STORAGE_PREFIX = 'hf://datasets/acme/public/raw/';
+```
+
+When provided, the Secret must contain the API key itself, with repository read
+permission.
 Cross-database and namespace references use the same `SecretReference` rules as
 other integrations. Sync and async APIs accept the same options. Registration
 returns one sentence of instructions and leaves `access_verified` false; it does

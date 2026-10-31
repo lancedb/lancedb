@@ -3563,7 +3563,8 @@ class AsyncConnection(object):
         For GCP, set ``storage_provider="GCP"`` and ``gcp_credentials_json_secret``
         to a Secret containing the application credentials JSON file content.
         For Hugging Face, set ``storage_provider="HUGGINGFACE"`` and
-        ``huggingface_api_key_secret`` to a Secret containing the API key.
+        optionally set ``huggingface_api_key_secret`` to a Secret containing the
+        API key; omitting it selects anonymous access at the default rate limits.
         Registration returns setup instructions without verifying storage access.
         """
         azure_options = (
@@ -3578,8 +3579,6 @@ class AsyncConnection(object):
         if storage_provider != "GCP" and gcp_credentials_json_secret is not None:
             raise ValueError("GCP credential options require storage_provider GCP")
         if storage_provider == "HUGGINGFACE":
-            if huggingface_api_key_secret is None:
-                raise ValueError("Hugging Face requires huggingface_api_key_secret")
             if any(
                 value is not None
                 for value in azure_options
