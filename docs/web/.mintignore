@@ -13,10 +13,14 @@
 management/function.mdx
 sql/ddl/function.mdx
 
-# GRANT/REVOKE currently only covers privileges on Secrets and Functions
-# (CREATE SECRET, CREATE FUNCTION, USAGE on a secret or function), which are
-# themselves part of the Functions release: see the "Draft for the Functions
-# release" block in governance/authorization.mdx#privileges. At release,
-# remove this entry, add the page to the navigation in docs.json, and give it
-# `availability` frontmatter like the rest of the SQL reference.
+# This page documents GRANT/REVOKE for both SECRET and FUNCTION targets
+# together, since the SQL grammar shares one statement for both. Secrets
+# shipped already -- its GRANT/REVOKE syntax is documented live at
+# sql/ddl/secret.mdx#grant -- but this page stays gated until Functions
+# ships too, since un-gating it now would publish the FUNCTION target and
+# the CREATE FUNCTION privilege early. At release, remove this entry, fold
+# sql/ddl/secret.mdx#grant's content into this page (or cross-link the two),
+# add this page to the navigation in docs.json, and give it `availability`
+# frontmatter like the rest of the SQL reference. Also see the "Draft for
+# the Functions release" blocks in governance/privileges.mdx.
 sql/ddl/grant.mdx
