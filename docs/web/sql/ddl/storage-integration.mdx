@@ -1,0 +1,210 @@
+---
+title: "Storage Integration"
+sidebarTitle: "Storage Integration"
+description: "CREATE, DESCRIBE, SHOW and DROP STORAGE INTEGRATION: a namespace-scoped, reusable credential for reading or importing from external storage."
+icon: cloud
+keywords: ["storage integration", "create storage integration", "show storage integrations", "drop storage integration", "s3", "gcs", "azure", "huggingface", "sql"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+A storage integration is a namespace-scoped catalog object that lets a
+query read from, or import from, a storage location outside the
+deployment's own tables -- an S3, GCS or Azure prefix, or a Hugging Face
+dataset repository -- without embedding a credential in the query itself.
+It is addressed and scoped the same way a [Secret](/sql/ddl/secret) is:
+`<database>.<namespace_path...>.<name>`.
+
+## CREATE STORAGE INTEGRATION {#create}
+
+<CodeGroup>
+```sql SQL icon="database"
+CREATE STORAGE INTEGRATION <name>
+    STORAGE_PROVIDER = 'S3' | 'AZURE' | 'GCP' | 'HUGGINGFACE'
+    STORAGE_PREFIX = '<uri-prefix>'
+    [ <provider option> = <value> [...] ]
+```
+</CodeGroup>
+
+`STORAGE_PROVIDER` and `STORAGE_PREFIX` are required for every provider.
+`STORAGE_PREFIX` is the URI prefix the integration covers -- a query only
+matches an integration whose prefix is a prefix of the URI it reads.
+Options ending in `_SECRET` take a [Secret](/sql/ddl/secret) reference, not
+a literal value: either `<database>.<namespace_path...>.<name>`, or a bare
+string naming a Secret in the caller's own database and namespace. Passing
+an option a provider does not accept, such as an Azure option on an `S3`
+integration, is refused.
+
+### S3 {#s3}
+
+<CodeGroup>
+```sql SQL icon="database"
+CREATE STORAGE INTEGRATION raw
+    STORAGE_PROVIDER = 'S3'
+    STORAGE_PREFIX = 's3://customer-data/raw/'
+    STORAGE_AWS_ROLE_ARN = 'arn:aws:iam::123456789012:role/lancedb-access'
+
+CREATE STORAGE INTEGRATION raw
+    STORAGE_PROVIDER = 'S3'
+    STORAGE_PREFIX = 's3://customer-data/raw/'
+    STORAGE_AWS_ACCESS_KEY_ID_SECRET = bootstrap.credentials.aws_key_id
+    STORAGE_AWS_SECRET_ACCESS_KEY_SECRET = bootstrap.credentials.aws_key_secret
+```
+</CodeGroup>
+
+| Option | Type | Meaning |
+| --- | --- | --- |
+| `STORAGE_AWS_ROLE_ARN` | string | an IAM role to assume, by cross-account trust (see [below](#trust)) |
+| `STORAGE_AWS_ACCESS_KEY_ID_SECRET` | Secret ref | a static access key ID, paired with the secret key below |
+| `STORAGE_AWS_SECRET_ACCESS_KEY_SECRET` | Secret ref | the matching static secret access key |
+| `STORAGE_AWS_REGION` | string, optional | the bucket's region |
+
+Give either `STORAGE_AWS_ROLE_ARN` alone, or both key-pair options together
+-- mixing the two, or supplying only one half of the key pair, is refused.
+
+### Azure {#azure}
+
+<CodeGroup>
+```sql SQL icon="database"
+CREATE STORAGE INTEGRATION blobs
+    STORAGE_PROVIDER = 'AZURE'
+    STORAGE_PREFIX = 'az://customer-data/raw/'
+    STORAGE_AZURE_STORAGE_ACCOUNT = 'customeraccount'
+    STORAGE_AZURE_TENANT_ID_SECRET = bootstrap.credentials.tenant
+    STORAGE_AZURE_CLIENT_ID_SECRET = bootstrap.credentials.client
+    STORAGE_AZURE_CLIENT_SECRET_SECRET = bootstrap.credentials.credential
+```
+</CodeGroup>
+
+| Option | Type | Meaning |
+| --- | --- | --- |
+| `STORAGE_AZURE_STORAGE_ACCOUNT` | string | the storage account name |
+| `STORAGE_AZURE_TENANT_ID_SECRET` | Secret ref | Entra ID tenant |
+| `STORAGE_AZURE_CLIENT_ID_SECRET` | Secret ref | service principal client ID |
+| `STORAGE_AZURE_CLIENT_SECRET_SECRET` | Secret ref | service principal client secret |
+
+All four are required together; there is no role-based alternative for
+Azure.
+
+### GCP {#gcp}
+
+<CodeGroup>
+```sql SQL icon="database"
+CREATE STORAGE INTEGRATION gcs
+    STORAGE_PROVIDER = 'GCP'
+    STORAGE_PREFIX = 'gs://customer-data/raw/'
+    GCP_CREDENTIALS_JSON_SECRET = bootstrap.credentials.gcp
+```
+</CodeGroup>
+
+`GCP_CREDENTIALS_JSON_SECRET` -- note the option name has no `STORAGE_`
+prefix, unlike every other provider's options -- names a Secret holding
+the full service-account JSON key. It is required; GCP has no role-based
+alternative here.
+
+### Hugging Face {#huggingface}
+
+<CodeGroup>
+```sql SQL icon="database"
+CREATE STORAGE INTEGRATION hub
+    STORAGE_PROVIDER = 'HUGGINGFACE'
+    STORAGE_PREFIX = 'hf://datasets/owner/private/data/'
+    HUGGINGFACE_TOKEN_SECRET = bootstrap.credentials.hf_token
+```
+</CodeGroup>
+
+`HUGGINGFACE_TOKEN_SECRET` is the only Hugging Face option, and the only
+optional credential option of any provider: omit it to read the prefix
+anonymously, at Hugging Face's default anonymous rate limits. See
+[Read Hugging Face datasets with SQL](/curation/huggingface) for the full
+read and import workflow this integration unlocks.
+
+### The S3 trust policy {#trust}
+
+Creating an `STORAGE_AWS_ROLE_ARN` integration does not finish the AWS
+side of the setup. The result row's `trust_policy`, `permissions_policy`
+and `configuration_instructions` columns -- also visible from
+[`DESCRIBE`](#describe) -- are the IAM policy documents your role needs:
+attach `trust_policy` as the role's trust relationship, scoped to
+`aws_account_id`, `aws_iam_principal_arn` and `aws_external_id` from the
+same row, and attach `permissions_policy` to grant that role read access
+to the bucket. `access_verified` reports whether the deployment already
+confirmed it can assume the role and read the prefix; `false` typically
+means the trust policy has not been attached yet.
+
+## DESCRIBE STORAGE INTEGRATION {#describe}
+
+<CodeGroup>
+```sql SQL icon="database"
+DESCRIBE STORAGE INTEGRATION raw
+DESC STORAGE INTEGRATION platform.hub
+```
+</CodeGroup>
+
+Returns one row with every column `CREATE` returns: the provider, prefix,
+the Secret references and plain-string options that apply to its
+provider (the rest are null), `created_at_millis`, `access_verified`, and
+-- for an `STORAGE_AWS_ROLE_ARN` integration -- the generated AWS policy
+documents from [above](#trust). No call ever returns a Secret's value,
+only the reference naming it.
+
+## SHOW STORAGE INTEGRATIONS {#show}
+
+<CodeGroup>
+```sql SQL icon="database"
+SHOW STORAGE INTEGRATIONS
+SHOW STORAGE INTEGRATIONS IN platform
+LIST STORAGE INTEGRATIONS
+```
+</CodeGroup>
+
+`LIST` is an alias for `SHOW` here. Returns one `name` column; `IN`
+narrows the listing to one namespace.
+
+## DROP STORAGE INTEGRATION {#drop}
+
+<CodeGroup>
+```sql SQL icon="database"
+DROP STORAGE INTEGRATION raw
+DROP STORAGE INTEGRATION IF EXISTS raw
+```
+</CodeGroup>
+
+Returns `dropped`, `true` or `false`. There is no `ALTER STORAGE
+INTEGRATION`: to rotate a credential, rotate the Secret it references
+(see [Secret](/sql/ddl/secret)) rather than dropping and recreating the
+integration. A storage integration an attached database still depends on
+blocks the drop; detach the database first.
+
+## GRANT and REVOKE {#grant}
+
+<CodeGroup>
+```sql SQL icon="database"
+GRANT CREATE STORAGE INTEGRATION ON SCHEMA platform TO ROLE platform_admins
+GRANT USAGE ON STORAGE INTEGRATION platform.hub TO ROLE research
+GRANT OWNERSHIP ON STORAGE INTEGRATION platform.hub TO ROLE platform_admins
+REVOKE USAGE ON STORAGE INTEGRATION platform.hub FROM ROLE research
+```
+</CodeGroup>
+
+`CREATE_STORAGE_INTEGRATION` on the namespace creates one; `USAGE` on the
+integration itself lets a query match and read through it; `OWNERSHIP`
+grants full control, including dropping it. See
+[Privileges](/governance/privileges#sql) for the full statement syntax,
+every grantee form, and how a query picks a matching integration without
+naming one.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Read Hugging Face datasets with SQL" icon="database" href="/curation/huggingface">
+    Query and import Hugging Face datasets, the most common use of a storage integration today.
+  </Card>
+  <Card title="Secret" icon="key" href="/sql/ddl/secret">
+    The credential storage integration options reference.
+  </Card>
+  <Card title="Privileges" icon="key" href="/governance/privileges">
+    Every privilege, and the grant and revoke syntax that covers each one.
+  </Card>
+</CardGroup>

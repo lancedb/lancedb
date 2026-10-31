@@ -1,0 +1,108 @@
+---
+title: "Storage Integration"
+sidebarTitle: "Storage Integration"
+description: "A namespace-scoped, reusable credential for reading or importing from storage outside the deployment's own tables."
+icon: cloud
+keywords: ["storage integration", "s3", "gcs", "azure", "huggingface", "external storage", "credentials"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+A **storage integration** is a namespace-scoped catalog object, like a
+[Secret](/management/secret), that names a credential for reading or
+importing from one external storage location: an S3, GCS or Azure prefix,
+or a Hugging Face dataset repository. A query or import statement that
+reads a matching URI uses the integration automatically -- it is never
+named in the query itself.
+
+Today, storage integrations are created, inspected and dropped entirely
+through SQL; there is no Python, TypeScript or REST equivalent.
+
+## Create and manage {#manage}
+
+Every provider takes `STORAGE_PROVIDER` and `STORAGE_PREFIX`, plus
+provider-specific credential options. Credential options end in `_SECRET`
+and name a [Secret](/management/secret) by reference, never by value:
+
+<CodeGroup>
+```sql SQL icon="database"
+CREATE STORAGE INTEGRATION hub
+    STORAGE_PROVIDER = 'HUGGINGFACE'
+    STORAGE_PREFIX = 'hf://datasets/owner/private/data/'
+    HUGGINGFACE_TOKEN_SECRET = bootstrap.credentials.hf_token
+
+DESCRIBE STORAGE INTEGRATION hub
+
+SHOW STORAGE INTEGRATIONS
+
+DROP STORAGE INTEGRATION hub
+```
+</CodeGroup>
+
+See [Storage Integration](/sql/ddl/storage-integration) for every
+provider's exact options, S3's two credential modes, and the full output
+schema -- this page covers the CRUD operations above at a glance; that one
+is the complete reference.
+
+| Operation | SQL | Notes |
+| --- | --- | --- |
+| Create | `CREATE STORAGE INTEGRATION` | Fails if the name is taken, so a create never silently replaces one. |
+| Describe | `DESCRIBE` / `DESC` | One row: provider, prefix, credential references, and (for an AWS role integration) the generated trust policy. |
+| List | `SHOW` / `LIST STORAGE INTEGRATIONS` | Optionally scoped `IN` one namespace. |
+| Drop | `DROP [IF EXISTS]` | Blocked while an attached database still depends on it. |
+
+There is no `ALTER`. To rotate a credential, rotate the
+[Secret](/management/secret#manage) it references -- the integration's
+reference does not change, so nothing that reads through it needs updating.
+
+## The S3 trust workflow {#trust}
+
+An S3 integration created with `STORAGE_AWS_ROLE_ARN` (instead of a static
+access key pair) needs one more step outside LanceDB: `DESCRIBE` returns
+`trust_policy` and `permissions_policy`, the IAM policy documents your role
+needs, built from `aws_account_id`, `aws_iam_principal_arn` and
+`aws_external_id` in the same row. Attach `trust_policy` as the role's
+trust relationship and `permissions_policy` as its permissions, then check
+`access_verified` on a later `DESCRIBE` to confirm LanceDB can assume the
+role and read the prefix.
+
+## Privileges {#privileges}
+
+A storage integration is its own object in the authorization model, a
+namespace child like a Secret: `CREATE_STORAGE_INTEGRATION` on the
+namespace to create one, `USAGE` on the integration for a query to read
+through it, `OWNERSHIP` for full control including dropping it. See
+[Privileges](/governance/privileges#sql) for the privilege each operation
+requires and the full `GRANT`/`REVOKE` syntax.
+
+## Troubleshooting {#troubleshooting}
+
+**A query does not use the integration you expected**: integrations match
+by the most specific `STORAGE_PREFIX` covering the URI, not by name, and
+are scoped to native databases under the catalog root. Two integrations
+with equally specific prefixes make the query fail rather than guess; keep
+prefixes for the same bucket or dataset family unambiguous.
+
+**403 or access-denied reading a matching prefix**: confirm `USAGE` on the
+integration, and for an S3 role integration, confirm `access_verified` is
+`true` on `DESCRIBE` -- `false` usually means the trust policy from
+[above](#trust) is missing or misconfigured on the AWS side, not a LanceDB
+permission problem.
+
+**`DROP` refuses with a dependent database**: detach the database that
+still uses the integration first, then drop it.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Storage Integration" icon="cloud" href="/sql/ddl/storage-integration">
+    The complete SQL reference: every provider's options, output columns, and GRANT syntax.
+  </Card>
+  <Card title="Read Hugging Face datasets with SQL" icon="database" href="/curation/huggingface">
+    The most common use of a storage integration today: reading and importing Hugging Face datasets.
+  </Card>
+  <Card title="Secret" icon="key" href="/management/secret">
+    The credential a storage integration's `_SECRET` options reference.
+  </Card>
+</CardGroup>
