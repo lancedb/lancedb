@@ -355,6 +355,7 @@
               "curation/index",
               "curation/create-function",
               "curation/vend-secret",
+              "curation/huggingface",
               "curation/chunking",
               "curation/changes",
               "curation/aggregate",
@@ -395,7 +396,8 @@
               "tables/branching",
               "management/view",
               "management/materialized-view",
-              "management/secret"
+              "management/secret",
+              "management/storage-integration"
             ]
           },
           {
@@ -449,6 +451,7 @@
                   "sql/ddl/view",
                   "sql/ddl/materialized-view",
                   "sql/ddl/secret",
+                  "sql/ddl/storage-integration",
                   "sql/ddl/index",
                   "sql/ddl/job"
                 ],
