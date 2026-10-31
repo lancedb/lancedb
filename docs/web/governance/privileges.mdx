@@ -16,6 +16,7 @@ availability:
 | `USAGE` | database | accessing the namespaces inside |
 | `USAGE` | namespace | accessing the tables inside |
 | `USAGE` | secret | binding it to a Function, and resolving its value at evaluation time |
+| `USAGE` | storage integration | reading through it or importing with it |
 | `SELECT` | table, view | reading rows |
 | `INSERT` | table | appending rows |
 | `UPDATE` | table | modifying existing rows |
@@ -27,6 +28,7 @@ availability:
 | `CREATE_MATERIALIZED_VIEW` | namespace | creating a materialized view in it |
 | `CREATE_VIEW` | namespace | creating a non-materialized view in it |
 | `CREATE_SECRET` | namespace | creating a Secret in it |
+| `CREATE_STORAGE_INTEGRATION` | namespace | registering a storage integration in it |
 | `OPERATE` | system | describing and controlling jobs, managing caches, reading server configuration, and managing role membership |
 
 {/*
@@ -58,25 +60,49 @@ creator becomes its owner. This is what makes creation possible at all, so
 holding `CREATE_DATABASE` is enough to create a table in a database that
 has not been created yet.
 
-## Secrets and namespaces: granted from SQL {#sql}
+## Granting privileges from SQL {#sql}
+
+`GRANT` and `REVOKE` reach every object in the table above -- `SYSTEM`,
+`DATABASE`, `SCHEMA` (a namespace, also spelled `NAMESPACE`), `TABLE`,
+`VIEW`, `MATERIALIZED VIEW`, `SECRET`, `STORAGE INTEGRATION`, and
+`FUNCTION` -- with the same statement shape:
 
 <CodeGroup>
 ```sql SQL icon="database"
+GRANT USAGE, CREATE SCHEMA ON DATABASE analytics TO ROLE readers
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE events TO ROLE etl
+GRANT SELECT ON VIEW dashboard TO ROLE analysts
+GRANT SELECT, UPDATE ON MATERIALIZED VIEW daily_rollup TO ROLE analysts
 GRANT CREATE SECRET ON SCHEMA platform TO ROLE platform_admins
-GRANT USAGE ON SECRET platform.`openai-prod` TO ROLE research
 GRANT USAGE, UPDATE ON SECRET platform.`openai-prod` TO ROLE etl, rotation_service
 GRANT OWNERSHIP ON SECRET platform.`openai-prod` TO ROLE platform_admins
+GRANT USAGE ON STORAGE INTEGRATION platform.hub TO ROLE research
 REVOKE UPDATE ON SECRET platform.`openai-prod` FROM ROLE etl
 ```
 </CodeGroup>
 
+A materialized view is a table for authorization purposes: the same
+`OWNERSHIP`, `SELECT`, `INSERT`, `UPDATE` and `DELETE` privileges apply, and
+granting one does not reach the non-materialized `VIEW` beside it.
+
 | Target in the statement | Privileges it accepts |
 | --- | --- |
+| `SYSTEM` | `OPERATE`, `CREATE DATABASE`, `USAGE` |
+| `DATABASE` | `OWNERSHIP`, `USAGE`, `CREATE SCHEMA` (or `CREATE NAMESPACE`) |
+| `SCHEMA` / `NAMESPACE` | `OWNERSHIP`, `USAGE`, `CREATE NAMESPACE`, `CREATE TABLE`, `CREATE MATERIALIZED VIEW`, `CREATE VIEW`, `CREATE SECRET`, `CREATE STORAGE INTEGRATION`, `CREATE FUNCTION` |
+| `TABLE`, `MATERIALIZED VIEW` | `OWNERSHIP`, `SELECT`, `INSERT`, `UPDATE`, `DELETE` |
+| `VIEW` | `OWNERSHIP`, `SELECT` |
 | `SECRET` | `OWNERSHIP`, `USAGE` (bind it to a Function), `UPDATE` (rotate it) |
-| `SCHEMA` (a namespace) | `CREATE SECRET` |
+| `STORAGE INTEGRATION` | `OWNERSHIP`, `USAGE` |
 
 See [GRANT and REVOKE](/sql/ddl/secret#grant) for the full statement
-syntax, every grantee form, and every status a statement can return.
+syntax -- hosted on the Secret page, but every grantee form (`ROLE`,
+`USER`, `GROUP`, the `ID '<id>'` form) and every status a statement can
+return are shared by every target above, not specific to Secret.
+
+The REST ACL API covers the same objects and reaches further back: it works
+against deployments whose SQL surface does not yet expose a given target,
+and is the only option for a client that does not speak SQL.
 
 ### What each Secret operation requires {#secret-operations}
 
@@ -107,13 +133,6 @@ own.
 - **Analysts** read the resulting column with table access alone -- no
   Function runs on the read path, so they need no grant on the Function or
   its Secret.
-
-## Databases, tables, and views: granted from REST today {#rest}
-
-SQL `GRANT` and `REVOKE` do not yet reach a database, a table, a view, or a
-materialized view. Set `OWNERSHIP`, `USAGE`, `SELECT`, `INSERT`, `UPDATE`,
-`DELETE`, or any of the `CREATE_*` privileges in the table above on those
-objects through the REST ACL API instead.
 
 ## What to read next {#next}
 

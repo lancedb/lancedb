@@ -1563,5 +1563,13 @@ to a version inside the retention window, delete it, or widen the window.
 ## Privileges {#privileges}
 
 A table's `OWNERSHIP`, `SELECT`, `INSERT`, `UPDATE` and `DELETE` are
-granted through the REST ACL API, not yet SQL `GRANT`/`REVOKE`; see
-[Privileges](/governance/privileges#rest).
+granted through the REST ACL API or SQL `GRANT`/`REVOKE`:
+
+<CodeGroup>
+```sql SQL icon="database"
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE events TO ROLE etl
+```
+</CodeGroup>
+
+See [Privileges](/governance/privileges#sql) for the full statement syntax
+and every target it reaches.

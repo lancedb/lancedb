@@ -163,5 +163,14 @@ submission call returns.
 
 ## Privileges {#privileges}
 
-A database's `OWNERSHIP` and `USAGE` are granted through the REST ACL API,
-not yet SQL `GRANT`/`REVOKE`; see [Privileges](/governance/privileges#rest).
+A database's `OWNERSHIP`, `USAGE` and `CREATE_NAMESPACE` are granted through
+the REST ACL API or SQL `GRANT`/`REVOKE`:
+
+<CodeGroup>
+```sql SQL icon="database"
+GRANT USAGE, CREATE SCHEMA ON DATABASE analytics TO ROLE readers
+```
+</CodeGroup>
+
+See [Privileges](/governance/privileges#sql) for the full statement syntax
+and every target it reaches.
