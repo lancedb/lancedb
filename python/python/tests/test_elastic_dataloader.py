@@ -1080,6 +1080,31 @@ def test_streaming_dataloader_commits_only_consumed_worker_batches(tmp_path):
     assert remaining == uninterrupted == [[3, 4], [30, 40]]
 
 
+def test_block_size_dataloader_workers_reconnect(tmp_path):
+    """Block-mode datasets pickle with no permutation table and reopen per worker."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("block_workers", pa.table({"id": list(range(8))}))
+    dataset = StreamingDataset(
+        table,
+        num_splits=2,
+        shuffle=False,
+        block_size=2,
+    )
+    loader = StreamingDataLoader(
+        dataset,
+        batch_size=2,
+        num_workers=2,
+        multiprocessing_context="spawn",
+    )
+    iterator = iter(loader)
+    try:
+        batches = [batch["id"].tolist() for batch in iterator]
+    finally:
+        iterator._shutdown_workers()
+
+    assert sorted(row for batch in batches for row in batch) == list(range(8))
+
+
 def test_distributed_checkpoint_uses_rank_local_worker_boundary(tmp_path):
     db = lancedb.connect(tmp_path)
     table = db.create_table("rank_boundary", pa.table({"id": list(range(8))}))
@@ -3746,6 +3771,8 @@ def test_two_phase_constructor_validation_raises(lance_table, extra_kwargs):
             shuffle_seed=SHUFFLE_SEED,
             **extra_kwargs,
         )
+
+
 # ---------------------------------------------------------------------------
 # split_strategy escape hatch
 # ---------------------------------------------------------------------------

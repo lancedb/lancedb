@@ -1144,9 +1144,7 @@ class StreamingDataset(IterableDataset):
                     fixed=num_splits, seed=perm_seed, clump_size=shuffle_clump_size
                 ).execute()
             else:
-                self._perm_table = builder.split_sequential(
-                    fixed=num_splits
-                ).execute()
+                self._perm_table = builder.split_sequential(fixed=num_splits).execute()
             # Only split_strategy needs a fingerprint: the built-in strategies
             # are pinned by shuffle_seed/num_splits, while row ids can change
             # across compaction.
