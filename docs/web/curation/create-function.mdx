@@ -14,7 +14,10 @@ model, an image decode, a call to an external service. A Function is a
 Python callable registered with the database, versioned, and then applied as
 a column or called in a query -- the code runs where the data is, not pulled
 into your process first. This page covers how to shape one; later curation
-tasks such as [Chunking](/curation/chunking) assume you have read it.
+tasks such as [Chunking](/curation/chunking) assume you have read it. The
+full registration, listing, refresh and drop lifecycle is covered on the
+Function management reference; the examples below focus on shaping a
+Function for common curation tasks.
 
 ## Scalar: once per row {#scalar}
 
@@ -140,21 +143,52 @@ See [Vend a Secret to a Function](/curation/vend-secret#specify) for the
 full worked example, how the bound value actually reaches a running
 evaluation, and how that differs from rotating or revoking it later.
 
-## Blob v2 input and output {#blob}
+## Read and produce blobs {#blobs}
 
 A Function can bind a [Blob v2 column](/management/table#managed-blobs) and
-return another one, including a blob nested inside a struct field, not only
-at the top level. In row mode, a blob parameter arrives as Python `bytes`
-(or a `BlobReader` for incremental, seekable access, so a function never
-has to materialize a payload it only partially needs):
+return another blob, including a blob nested inside a struct field, not only
+at the top level. In row mode, a top-level blob parameter arrives as Python
+`bytes`, or `None` for a nullable input, after the worker has read the
+payload. Return bytes and let the destination table store the Managed
+payload and descriptor.
+
+This section extracts a frame from a stored video and captions it,
+continuing as one example across chaining, persisting and incremental reads
+below. `videos` holds raw clips in a `video` Blob v2 column; `frames` names
+one timestamp per clip to extract, with a `selected` flag to skip some:
 
 <CodeGroup>
 ```python Python icon="python"
-import pyarrow as pa
 import lancedb
-from lancedb import BlobReader, udf
+import pyarrow as pa
+
+videos = db.create_table("videos", schema=pa.schema([
+    pa.field("id", pa.utf8(), nullable=False),
+    lancedb.blob("video", nullable=False),
+]))
+frames = db.create_table("frames", [
+    {"frame_id": 1, "video_id": "clip-1", "ts": 0.5, "selected": True},
+    {"frame_id": 2, "video_id": "clip-1", "ts": 1.5, "selected": True},
+])
+```
+</CodeGroup>
+
+### Produce a blob {#produce-blobs}
+
+Declare blob inputs and outputs explicitly. `extract_frame` reads one frame
+out of a video at a timestamp and returns it as a JPEG, without loading the
+whole clip first -- see [Read a blob incrementally](#incremental) below for
+how the `video: BlobReader` parameter does that:
+
+<CodeGroup>
+```python Python icon="python"
+from datetime import timedelta
+
+from lancedb import BlobReader, col
+from lancedb.functions import udf
 
 @udf(
+    name="extract_frame",
     gpu=True,
     pip=["av==13.1.0", "pillow==11.0.0"],
     input_schema=pa.schema([
@@ -165,14 +199,128 @@ from lancedb import BlobReader, udf
 )
 def extract_frame(video: BlobReader, ts: float) -> bytes:
     ...  # decode the frame at ts, encode as JPEG, return its bytes
+
+version = db.create_function_async(extract_frame).wait(timeout=timedelta(minutes=15))
 ```
 </CodeGroup>
 
-`output_schema=lancedb.blob(...)` is what makes the result Blob v2 rather
-than plain Arrow `binary` -- returning `bytes` with no explicit blob output
-schema still holds the right bytes, but skips the Managed storage path and
-`fetch_blobs`. Declare it explicitly on every function whose output should
-be a blob.
+An empty byte string is a filled result. A scalar output cannot be nullable,
+because a physical NULL marks an unfilled computed row. To return a nullable
+blob as a value, use a named-struct output schema with a nullable blob field;
+the struct itself records whether the result has been filled. Read a nested
+blob with `table.fetch_blobs("payload.image", hits)`.
+
+<Warning>
+`output_schema=lancedb.blob(...)` is what makes a persisted result Blob v2
+rather than plain Arrow `binary`. Returning `bytes` from a function whose
+output type is inferred from a bare annotation, with no explicit
+`lancedb.blob(...)` output schema, persists as ordinary `binary`: the column
+still holds the right bytes, but it skips the Managed storage path, descriptor
+reads, and `fetch_blobs`. Declare it explicitly on every function whose output
+should be a blob, not just the first one in a chain.
+</Warning>
+
+### Chain a Function on its output {#chain}
+
+A second Function can bind a blob another Function produced. Register
+`caption` the same way, consuming a blob instead of producing one:
+
+<CodeGroup>
+```python Python icon="python"
+@udf(gpu=True, pip=["transformers==4.47.0"])
+def caption(jpeg: bytes) -> str:
+    ...  # run a vision-language model over the JPEG, return one sentence
+
+caption_version = db.create_function_async(caption).wait(timeout=timedelta(minutes=15))
+```
+</CodeGroup>
+
+Compose both in one SQL statement over a join, instead of applying each as
+its own column. The join supplies `video` and `ts` from two different
+tables, and `caption` reads `extract_frame`'s result as it is computed,
+before anything is written:
+
+<CodeGroup>
+```sql SQL
+SELECT f.frame_id, extract_frame(v.video, f.ts) AS jpeg,
+       caption(extract_frame(v.video, f.ts)) AS caption
+FROM videos v JOIN frames f ON v.id = f.video_id
+WHERE f.selected = true
+```
+</CodeGroup>
+
+[`EXPLAIN`](/sql/dql/explain) on a query like this shows `RemoteTake`: the
+blob is read once, where the worker runs, and never pulled into the query
+node first.
+
+### Persist it as a column, or a materialized view {#persist}
+
+Apply the same chained expression with `add_columns` to persist it as an
+ordinary table column:
+
+<CodeGroup>
+```python Python icon="python"
+table.add_columns({"jpeg": extract_frame(video=col("video"), ts=col("ts"))})
+result = table.refresh_column_async("jpeg").wait(timeout=timedelta(minutes=15))
+assert result.rows_failed == 0
+
+hits = table.search().select(["frame_id", "jpeg"]).with_row_id(True).to_arrow()
+values = table.fetch_blobs("jpeg", hits).to_pylist()
+```
+</CodeGroup>
+
+Or wrap the join and both Functions in a
+[materialized view](/sql/ddl/materialized-view) instead, so the extracted
+frame and its caption stay current as new videos and frames arrive. See
+[Automatic refresh](/feature-engineering/refresh-column#automatic) for
+keeping either one fresh without calling refresh yourself.
+
+On deployments that support computed-column inputs, another Function can
+bind to `col("jpeg")` directly, the same as the SQL join above does through
+its own expression. Refresh the producer first, then the consumer. Once
+outputs are current, a later refresh fills appended rows. A filtered
+refresh preserves payload references for unselected Managed outputs. An
+unfiltered refresh can recompute a whole fragment when it cannot establish
+that the fragment's outputs are current.
+
+Function output blobs follow the same compaction and cleanup lifecycle as
+ingested Managed blobs. Retained versions continue to own their payloads;
+cleanup reclaims an object only after its retained references are gone.
+
+### Read a blob incrementally {#incremental}
+
+Annotate a row Function parameter with `BlobReader` to read a Blob v2 input
+incrementally, the way `extract_frame` above does, instead of materializing
+the whole payload first. The signature selects the access mode without
+another registration option. A minimal example, reading only the first MP4
+box type without loading the rest of the video:
+
+<CodeGroup>
+```python Python icon="python"
+from lancedb import BlobReader, udf
+
+
+@udf
+def first_box_type(video: BlobReader) -> bytes:
+    video.seek(4)
+    return video.read(4)
+```
+</CodeGroup>
+
+The worker passes a seekable reader backed by the stored blob --
+`video.seekable()` is `True`. `read(size)` reads from the current cursor;
+`read_range(offset, length)` reads a byte range without moving it, the same
+bytes a `seek(offset)` followed by `read(length)` would read. `size()`
+returns the payload size without reading it. Each row call receives its own
+reader, which closes when the call returns or raises. Do not retain it for
+another invocation.
+
+Use `video: bytes` when the Function needs the complete payload. Bytes inputs
+materialize before invocation and remain subject to eager input limits.
+Reader inputs keep the unread payload out of the input batch, but calling
+`video.read()` without a size loads all remaining bytes in Python. Reader
+inputs are supported in row mode. Return values remain ordinary values such
+as `bytes`; this feature does not add streamed outputs.
 
 ## What to read next {#next}
 
