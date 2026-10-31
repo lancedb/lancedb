@@ -3075,7 +3075,9 @@ class Table(ABC):
         """
 
     @abstractmethod
-    def refresh_column(self, column: str) -> "RefreshColumnResult":
+    def refresh_column(
+        self, column: str, *, batch_size: Optional[int] = None
+    ) -> "RefreshColumnResult":
         """
         Fill the rows of a computed column that hold no value yet.
 
@@ -3095,6 +3097,10 @@ class Table(ABC):
         ----------
         column: str
             The name of the computed column to fill.
+        batch_size: int, optional
+            Maximum rows per Function call in LanceDB Distributed. Must be
+            greater than zero. None uses the server default. Has no effect on
+            expression-backed columns in LanceDB Embedded.
 
         Returns
         -------
@@ -3104,7 +3110,9 @@ class Table(ABC):
         """
 
     @abstractmethod
-    def refresh_column_async(self, column: str) -> Job[RefreshColumnJobResult]:
+    def refresh_column_async(
+        self, column: str, *, batch_size: Optional[int] = None
+    ) -> Job[RefreshColumnJobResult]:
         """
         Like :meth:`refresh_column`, but returns a handle to the refresh job
         instead of blocking until it completes.
@@ -3118,6 +3126,16 @@ class Table(ABC):
         an unknown column, or one that is not computed -- raises here rather
         than failing the job. In LanceDB Embedded the job runs in-process; in
         LanceDB Distributed it is the server's backfill job.
+
+        Parameters
+        ----------
+        column: str
+            The name of the computed column to fill.
+        batch_size: int, optional
+            Maximum rows per Function call in LanceDB Distributed. Must be
+            greater than zero. None uses the server default. Lower this for
+            slow Functions to stay within the executor's per-call deadline.
+            Has no effect on expression-backed columns in LanceDB Embedded.
 
         Returns
         -------
@@ -5156,18 +5174,24 @@ class LanceTable(Table):
             )
         )
 
-    def refresh_column(self, column: str) -> "RefreshColumnResult":
+    def refresh_column(
+        self, column: str, *, batch_size: Optional[int] = None
+    ) -> "RefreshColumnResult":
         """Fill a computed column's unfilled rows and recompute those whose
         inputs changed. See
         [`AsyncTable.refresh_column`][lancedb.AsyncTable.refresh_column]."""
-        return LOOP.run(self._table.refresh_column(column))
+        return LOOP.run(self._table.refresh_column(column, batch_size=batch_size))
 
-    def refresh_column_async(self, column: str) -> Job[RefreshColumnJobResult]:
+    def refresh_column_async(
+        self, column: str, *, batch_size: Optional[int] = None
+    ) -> Job[RefreshColumnJobResult]:
         """Fill a computed column's unfilled rows and recompute those whose
         inputs changed, returning a handle to the refresh job. See
         [`Table.refresh_column_async`][lancedb.table.Table.refresh_column_async].
         """
-        return Job(LOOP.run(self._table.refresh_column_async(column)))
+        return Job(
+            LOOP.run(self._table.refresh_column_async(column, batch_size=batch_size))
+        )
 
     def function_errors(
         self,
@@ -7422,7 +7446,9 @@ class AsyncTable:
         else:
             return await self._inner.add_columns(list(transforms.items()))
 
-    async def refresh_column(self, column: str) -> RefreshColumnResult:
+    async def refresh_column(
+        self, column: str, *, batch_size: Optional[int] = None
+    ) -> RefreshColumnResult:
         """
         Fill the rows of a computed column that hold no value yet.
 
@@ -7442,13 +7468,17 @@ class AsyncTable:
         ----------
         column: str
             The name of the computed column to fill.
+        batch_size: int, optional
+            Maximum rows per Function call in LanceDB Distributed. Must be
+            greater than zero. None uses the server default. Has no effect on
+            expression-backed columns in LanceDB Embedded.
 
         Returns
         -------
         RefreshColumnResult
             The number of rows filled and the new version of the table.
         """
-        return await self._inner.refresh_column(column)
+        return await self._inner.refresh_column(column, batch_size=batch_size)
 
     async def function_errors(
         self,
@@ -7494,7 +7524,7 @@ class AsyncTable:
         )
 
     async def refresh_column_async(
-        self, column: str
+        self, column: str, *, batch_size: Optional[int] = None
     ) -> AsyncJob[RefreshColumnJobResult]:
         """
         Like :meth:`refresh_column`, but returns a handle to the refresh job
@@ -7510,6 +7540,16 @@ class AsyncTable:
         rather than failing the job. In LanceDB Embedded the job runs
         in-process; in LanceDB Distributed it is the server's
         backfill job.
+
+        Parameters
+        ----------
+        column: str
+            The name of the computed column to fill.
+        batch_size: int, optional
+            Maximum rows per Function call in LanceDB Distributed. Must be
+            greater than zero. None uses the server default. Lower this for
+            slow Functions to stay within the executor's per-call deadline.
+            Has no effect on expression-backed columns in LanceDB Embedded.
 
         Returns
         -------
@@ -7533,7 +7573,7 @@ class AsyncTable:
         'finished'
         """
         return _typed_job(
-            await self._inner.refresh_column_async(column),
+            await self._inner.refresh_column_async(column, batch_size=batch_size),
             RefreshColumnJobResult.from_json,
         )
 

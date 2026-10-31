@@ -54,6 +54,34 @@ use super::{BaseTable, NativeTable};
 use crate::job::Job;
 use crate::{Error, Result};
 
+/// Options for refreshing a computed column.
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub struct RefreshColumnOptions {
+    /// Maximum rows per Function call in LanceDB Distributed.
+    ///
+    /// Must be greater than zero. `None` uses the server default. This has no
+    /// effect on expression-backed columns in LanceDB Embedded.
+    pub batch_size: Option<usize>,
+}
+
+impl RefreshColumnOptions {
+    /// Limit each Function call to at most `batch_size` rows.
+    pub fn batch_size(mut self, batch_size: usize) -> Self {
+        self.batch_size = Some(batch_size);
+        self
+    }
+
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.batch_size == Some(0) {
+            return Err(Error::InvalidInput {
+                message: "batch_size must be greater than zero".into(),
+            });
+        }
+        Ok(())
+    }
+}
+
 /// The result of refreshing a computed column.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct RefreshColumnResult {

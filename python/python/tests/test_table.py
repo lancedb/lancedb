@@ -5551,14 +5551,15 @@ async def test_async_search_runs_embedding_on_dedicated_executor(
 
 
 @pytest.mark.experimental_functions
-def test_computed_column_declare_and_refresh(tmp_path):
+@pytest.mark.parametrize("batch_size", [None, 8])
+def test_computed_column_declare_and_refresh(tmp_path, batch_size):
     db = lancedb.connect(tmp_path)
     table = db.create_table("computed", [{"x": 1}, {"x": 2}])
 
     table.add_columns(computed={"doubled": "x * 2"})
     assert table.to_arrow()["doubled"].to_pylist() == [None, None]
 
-    result = table.refresh_column("doubled")
+    result = table.refresh_column("doubled", batch_size=batch_size)
     assert result.rows_filled == 2
     assert sorted(table.to_arrow()["doubled"].to_pylist()) == [2, 4]
 
@@ -5600,14 +5601,36 @@ def test_computed_column_blob_projection_inherits_semantics(tmp_path):
 
 @pytest.mark.experimental_functions
 @pytest.mark.asyncio
-async def test_computed_column_async(tmp_path):
+@pytest.mark.parametrize("batch_size", [None, 8])
+async def test_computed_column_async(tmp_path, batch_size):
     db = await lancedb.connect_async(tmp_path)
     table = await db.create_table("computed_async", [{"x": 3}])
 
     await table.add_columns(computed={"tripled": "x * 3"})
-    await table.refresh_column("tripled")
+    await table.refresh_column("tripled", batch_size=batch_size)
 
     assert (await table.to_arrow())["tripled"].to_pylist() == [9]
+
+
+@pytest.mark.parametrize("method", ["refresh_column", "refresh_column_async"])
+@pytest.mark.parametrize("batch_size", [0, -1])
+def test_refresh_column_rejects_invalid_batch_size(tmp_path, method, batch_size):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("invalid_refresh_batch", [{"x": 1}])
+    with pytest.raises(ValueError, match="batch_size must be greater than zero"):
+        getattr(table, method)("x", batch_size=batch_size)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["refresh_column", "refresh_column_async"])
+@pytest.mark.parametrize("batch_size", [0, -1])
+async def test_async_refresh_column_rejects_invalid_batch_size(
+    tmp_path, method, batch_size
+):
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("invalid_refresh_batch", [{"x": 1}])
+    with pytest.raises(ValueError, match="batch_size must be greater than zero"):
+        await getattr(table, method)("x", batch_size=batch_size)
 
 
 def test_function_errors_are_remote_only(tmp_path):
@@ -5620,12 +5643,13 @@ def test_function_errors_are_remote_only(tmp_path):
 
 
 @pytest.mark.experimental_functions
-def test_refresh_column_async_returns_job(tmp_path):
+@pytest.mark.parametrize("batch_size", [None, 8])
+def test_refresh_column_async_returns_job(tmp_path, batch_size):
     db = lancedb.connect(tmp_path)
     table = db.create_table("computed_job", [{"x": 1}, {"x": 2}])
     table.add_columns(computed={"doubled": "x * 2"})
 
-    job = table.refresh_column_async("doubled")
+    job = table.refresh_column_async("doubled", batch_size=batch_size)
     assert job.id is None  # in-process jobs have no server id
     result = job.wait()
     assert isinstance(result, lancedb.RefreshColumnResult)
@@ -5650,12 +5674,13 @@ def test_refresh_column_async_returns_job(tmp_path):
 
 @pytest.mark.experimental_functions
 @pytest.mark.asyncio
-async def test_refresh_column_async_job_async_table(tmp_path):
+@pytest.mark.parametrize("batch_size", [None, 8])
+async def test_refresh_column_async_job_async_table(tmp_path, batch_size):
     db = await lancedb.connect_async(tmp_path)
     table = await db.create_table("computed_job_async", [{"x": 3}])
     await table.add_columns(computed={"tripled": "x * 3"})
 
-    job = await table.refresh_column_async("tripled")
+    job = await table.refresh_column_async("tripled", batch_size=batch_size)
     result = await job.wait()
     assert isinstance(result, lancedb.RefreshColumnResult)
     assert result.rows_assigned == 1

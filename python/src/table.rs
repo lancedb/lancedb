@@ -30,7 +30,7 @@ use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::table::{
     AddDataMode, ColumnAlteration, CompactionMode, CompactionOptions, Duration,
     FieldMetadataUpdate, FtsToken as LanceDbFtsToken, IndexRemapMode, NewColumnTransform,
-    OptimizeAction, OptimizeOptions, Ref, Table as LanceDbTable,
+    OptimizeAction, OptimizeOptions, Ref, RefreshColumnOptions, Table as LanceDbTable,
 };
 use lancedb::tokenize as lancedb_tokenize;
 use pyo3::{
@@ -41,6 +41,15 @@ use pyo3::{
 };
 
 mod scannable;
+
+fn refresh_column_options(batch_size: Option<i64>) -> PyResult<RefreshColumnOptions> {
+    let mut options = RefreshColumnOptions::default();
+    options.batch_size = batch_size
+        .map(usize::try_from)
+        .transpose()
+        .map_err(|_| PyValueError::new_err("batch_size must be greater than zero"))?;
+    Ok(options)
+}
 
 /// Convert `RTEStats` to a Python dict, preserving the per-table-shard list.
 ///
@@ -2062,21 +2071,36 @@ impl Table {
         })
     }
 
-    pub fn refresh_column(self_: PyRef<'_, Self>, column: String) -> PyResult<Bound<'_, PyAny>> {
+    #[pyo3(signature = (column, *, batch_size=None))]
+    pub fn refresh_column(
+        self_: PyRef<'_, Self>,
+        column: String,
+        batch_size: Option<i64>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let options = refresh_column_options(batch_size)?;
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            let result = inner.refresh_column(column).await.infer_error()?;
+            let result = inner
+                .refresh_column_with_options(column, options)
+                .await
+                .infer_error()?;
             Ok(RefreshColumnResult::from(result))
         })
     }
 
+    #[pyo3(signature = (column, *, batch_size=None))]
     pub fn refresh_column_async(
         self_: PyRef<'_, Self>,
         column: String,
+        batch_size: Option<i64>,
     ) -> PyResult<Bound<'_, PyAny>> {
+        let options = refresh_column_options(batch_size)?;
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            let job = inner.refresh_column_async(column).await.infer_error()?;
+            let job = inner
+                .refresh_column_async_with_options(column, options)
+                .await
+                .infer_error()?;
             Ok(crate::job::Job::new_typed(job))
         })
     }

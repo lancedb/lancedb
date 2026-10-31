@@ -111,7 +111,7 @@ pub use lance_index::optimize::OptimizeOptions;
 pub use optimize::{
     CompactionMode, CompactionOptions, IndexRemapMode, OptimizeAction, OptimizeStats,
 };
-pub use refresh::RefreshColumnResult;
+pub use refresh::{RefreshColumnOptions, RefreshColumnResult};
 pub use rte_stats::{MemtableStats, RTEStats, SsTableStats, TableShardStats};
 pub use schema_evolution::{
     AddColumnsResult, AlterColumnsResult, DropColumnsResult, FieldMetadataUpdate,
@@ -879,6 +879,16 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "this operation is only supported on LanceDB Embedded".into(),
         })
     }
+    /// Refresh with options; expression-backed local refreshes ignore the
+    /// Function batch size.
+    async fn refresh_column_with_options(
+        &self,
+        column: &str,
+        options: RefreshColumnOptions,
+    ) -> Result<RefreshColumnResult> {
+        options.validate()?;
+        self.refresh_column(column).await
+    }
     /// Fill a computed column's unfilled rows and recompute those whose
     /// inputs changed, returning a [`Job`] tracking the operation.
     async fn refresh_column_async(
@@ -888,6 +898,15 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         Err(Error::NotSupported {
             message: "this operation is only supported on LanceDB Embedded".into(),
         })
+    }
+    /// Start a refresh job with options.
+    async fn refresh_column_async_with_options(
+        &self,
+        column: &str,
+        options: RefreshColumnOptions,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
+        options.validate()?;
+        self.refresh_column_async(column).await
     }
     /// The per-row errors Function refreshes recorded on this table; see
     /// [`Table::function_errors`]. The default returns `NotSupported`.
@@ -1936,6 +1955,33 @@ impl Table {
         self.inner.refresh_column(column.as_ref()).await
     }
 
+    /// Like [`Table::refresh_column`], with explicit refresh options.
+    ///
+    /// [`RefreshColumnOptions::batch_size()`] caps rows per Function call in
+    /// LanceDB Distributed and must be greater than zero when set. It has no
+    /// effect on expression-backed columns in LanceDB Embedded. Remote refreshes
+    /// require [`Table::refresh_column_async_with_options`].
+    ///
+    /// ```
+    /// # use lancedb::{Table, table::RefreshColumnOptions};
+    /// # async fn refresh(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let result = table.refresh_column_with_options(
+    ///     "doubled", RefreshColumnOptions::default(),
+    /// ).await?;
+    /// println!("filled {} rows", result.rows_filled);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn refresh_column_with_options(
+        &self,
+        column: impl AsRef<str>,
+        options: RefreshColumnOptions,
+    ) -> Result<RefreshColumnResult> {
+        self.inner
+            .refresh_column_with_options(column.as_ref(), options)
+            .await
+    }
+
     /// Like [`Table::refresh_column`], but returns a [`Job`] tracking the
     /// operation instead of blocking until it completes.
     ///
@@ -1963,6 +2009,34 @@ impl Table {
         column: impl AsRef<str>,
     ) -> Result<Job<crate::function::RefreshColumnResult>> {
         self.inner.refresh_column_async(column.as_ref()).await
+    }
+
+    /// Like [`Table::refresh_column_async`], with explicit refresh options.
+    ///
+    /// Set [`RefreshColumnOptions::batch_size()`] to cap the rows each remote
+    /// Function call receives, for example to keep slow Functions within the
+    /// executor's per-call deadline. An unset batch size uses the server default;
+    /// zero is rejected before submitting a job. Embedded expression refreshes
+    /// ignore the batch size.
+    ///
+    /// ```
+    /// # use lancedb::{Table, table::RefreshColumnOptions};
+    /// # async fn refresh(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let job = table.refresh_column_async_with_options(
+    ///     "quality", RefreshColumnOptions::default().batch_size(8),
+    /// ).await?;
+    /// let result = job.wait().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn refresh_column_async_with_options(
+        &self,
+        column: impl AsRef<str>,
+        options: RefreshColumnOptions,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
+        self.inner
+            .refresh_column_async_with_options(column.as_ref(), options)
+            .await
     }
 
     /// The per-row errors Function refreshes recorded on this table: the
