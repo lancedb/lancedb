@@ -88,6 +88,12 @@ _SYNC_VECTOR_QUERY_TYPES = (list, tuple, np.ndarray, pa.Array, pa.ChunkedArray)
 # mirrors the default the Rust query builder applies to its sub-queries.
 DEFAULT_HYBRID_LIMIT = 10
 
+# Minimum number of rows each side of a hybrid query fetches before rank
+# fusion. Fusion needs a candidate window larger than the page it returns:
+# with only `limit + offset` rows per side, asking for fewer results can
+# return a different top result instead of just a shorter list (#4758).
+DEFAULT_HYBRID_RANK_WINDOW = 50
+
 
 @runtime_checkable
 class _LanceScanner(Protocol):
@@ -3175,9 +3181,12 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         # Apply common configurations
         # The final offset/limit window is sliced out of the combined,
         # reranked results, so each sub-query must fetch enough rows to
-        # cover the skipped prefix as well as the window itself.
+        # cover the skipped prefix as well as the window itself. Rank fusion
+        # additionally needs a candidate window larger than the returned page
+        # (#4758): with only `limit + offset` rows per side, a smaller limit
+        # can return a different top result instead of just a shorter list.
         limit = self._limit or DEFAULT_HYBRID_LIMIT
-        sub_query_limit = limit + (self._offset or 0)
+        sub_query_limit = max(limit + (self._offset or 0), DEFAULT_HYBRID_RANK_WINDOW)
         self._vector_query.limit(sub_query_limit)
         self._fts_query.limit(sub_query_limit)
         # WAL-PK-FUSION: without the fallback, select `self._columns` as is.
@@ -4610,9 +4619,13 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         # offset() pushes the offset down into both sub-queries, which would make
         # each of them skip its own first `offset` rows. The window has to be
         # taken out of the combined, reranked results instead, so fetch the
-        # skipped prefix here too and slice it off afterwards.
-        fts_query.limit(limit + offset)
-        vec_query.limit(limit + offset)
+        # skipped prefix here too and slice it off afterwards. Rank fusion
+        # additionally needs a candidate window larger than the returned page
+        # (#4758), so never fetch fewer than DEFAULT_HYBRID_RANK_WINDOW rows
+        # per side.
+        sub_query_limit = max(limit + offset, DEFAULT_HYBRID_RANK_WINDOW)
+        fts_query.limit(sub_query_limit)
+        vec_query.limit(sub_query_limit)
         fts_query.offset(0)
         vec_query.offset(0)
 
@@ -4710,14 +4723,14 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         RRFReranker(K=60)
             ProjectionExec: expr=[vector@0 as vector, text@3 as text, _distance@2 as _distance, _rowid@1 as _rowid]
               LanceRead: uri=..., projection=[text], source=stream(_rowid)
-                GlobalLimitExec: skip=0, fetch=10
+                GlobalLimitExec: skip=0, fetch=50
                   FilterExec: _distance@2 IS NOT NULL
                     SortExec: TopK(fetch=1), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
                       KNNVectorDistance: metric=l2
                         LanceRead: uri=..., projection=[vector], num_fragments=..., ...
             ProjectionExec: expr=[vector@2 as vector, text@3 as text, _score@1 as _score, _rowid@0 as _rowid]
               LanceRead: uri=..., projection=[vector, text], source=stream(_rowid)
-                GlobalLimitExec: skip=0, fetch=10
+                GlobalLimitExec: skip=0, fetch=50
                   MatchQuery: column=text, query=[hello]
 
         Parameters
