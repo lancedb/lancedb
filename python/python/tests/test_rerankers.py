@@ -836,6 +836,56 @@ def test_empty_hybrid_result_reranker():
     assert "_rowid" in result.column_names
 
 
+@pytest.mark.parametrize("reranker_cls", [LinearCombinationReranker, RRFReranker])
+@pytest.mark.parametrize("return_score", ["relevance", "all"])
+def test_empty_hybrid_result_keeps_reranker_columns(
+    tmp_path, reranker_cls, return_score
+):
+    # A filter that matches nothing must not change which columns come back.
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "t",
+        pa.table(
+            {
+                "text": ["red fox", "blue fox"],
+                "vector": pa.array([[1.0, 2.0], [3.0, 4.0]], pa.list_(pa.float32(), 2)),
+            }
+        ),
+    )
+    table.create_fts_index("text")
+    reranker = reranker_cls(return_score=return_score)
+
+    def columns(where):
+        query = table.search(query_type="hybrid").vector([1.0, 2.0]).text("fox")
+        query = query.where(where, prefilter=True).rerank(reranker)
+        return query.to_arrow().column_names
+
+    assert columns("text = 'none'") == columns("text != 'none'")
+
+
+def test_empty_hybrid_result_skips_keep_relevance_score_override(tmp_path):
+    # An override written for non-empty results must not run on the empty path.
+    class FirstRowReranker(LinearCombinationReranker):
+        def _keep_relevance_score(self, combined_results):
+            combined_results["_relevance_score"][0]
+            return super()._keep_relevance_score(combined_results)
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "t",
+        pa.table(
+            {
+                "text": ["red fox", "blue fox"],
+                "vector": pa.array([[1.0, 2.0], [3.0, 4.0]], pa.list_(pa.float32(), 2)),
+            }
+        ),
+    )
+    table.create_fts_index("text")
+    query = table.search(query_type="hybrid").vector([1.0, 2.0]).text("fox")
+    query = query.where("text = 'none'", prefilter=True).rerank(FirstRowReranker())
+    assert query.to_arrow().num_rows == 0
+
+
 @pytest.mark.parametrize("norm", ["score", "rank"])
 def test_hybrid_return_all_restores_original_scores(norm):
     from lancedb.query import LanceHybridQueryBuilder
