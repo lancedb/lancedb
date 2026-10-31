@@ -441,8 +441,9 @@ mod tests {
     use crate::connect;
     use crate::database::listing::OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS;
     use crate::index::{
-        Index, scalar::BTreeIndexBuilder,
-        vector::{IvfRqIndexBuilder, IvfHnswSqIndexBuilder},
+        Index,
+        scalar::BTreeIndexBuilder,
+        vector::{IvfHnswSqIndexBuilder, IvfRqIndexBuilder},
     };
     use crate::query::ExecutableQuery;
     use crate::table::{CompactionOptions, OptimizeAction, OptimizeStats};
@@ -1181,7 +1182,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_optimize_all_with_ivf_hnsw_sq_index() {
+    async fn test_optimize_all_with_hnsw_index() {
         let conn = connect("memory://").execute().await.unwrap();
 
         let dimension = 8;
