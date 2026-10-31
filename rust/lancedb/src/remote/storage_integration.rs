@@ -54,6 +54,38 @@ pub(super) fn create_sql(
     namespace: &[String],
     request: &CreateStorageIntegrationRequest,
 ) -> Result<String> {
+    if request.storage_provider != StorageProvider::Gcp
+        && request.gcp_credentials_json_secret.is_some()
+    {
+        return Err(invalid(
+            "GCP credential options require storage_provider GCP",
+        ));
+    }
+    if request.storage_provider == StorageProvider::Gcp {
+        if request.aws_role_arn.is_some()
+            || request.aws_access_key_id_secret.is_some()
+            || request.aws_secret_access_key_secret.is_some()
+            || request.aws_region.is_some()
+            || request.azure_storage_account.is_some()
+            || request.azure_tenant_id_secret.is_some()
+            || request.azure_client_id_secret.is_some()
+            || request.azure_client_secret_secret.is_some()
+        {
+            return Err(invalid(
+                "GCP integrations cannot contain AWS or Azure options",
+            ));
+        }
+        let reference = request
+            .gcp_credentials_json_secret
+            .as_ref()
+            .ok_or_else(|| invalid("GCP integrations require gcp_credentials_json_secret"))?;
+        return Ok(format!(
+            "CREATE STORAGE INTEGRATION {} STORAGE_PROVIDER = 'GCP' STORAGE_PREFIX = {} GCP_CREDENTIALS_JSON_SECRET = {}",
+            object_name(name, namespace)?,
+            literal(&request.storage_prefix),
+            secret_name(reference)?
+        ));
+    }
     if request.storage_provider == StorageProvider::Azure {
         if request.aws_role_arn.is_some()
             || request.aws_access_key_id_secret.is_some()
@@ -172,6 +204,7 @@ pub(super) fn decode_info(batches: &[RecordBatch]) -> Result<StorageIntegrationI
                 | "azure_tenant_id_secret"
                 | "azure_client_id_secret"
                 | "azure_client_secret_secret"
+                | "gcp_credentials_json_secret"
                 | "trust_policy"
                 | "permissions_policy"
         ) && let Some(json) = value.as_str()
@@ -231,6 +264,25 @@ mod tests {
             sql.contains("STORAGE_AWS_ACCESS_KEY_ID_SECRET = \"platform/raw\".\"public\".\"key\"")
         );
         assert!(create_sql("a/b", &[], &role).is_err());
+    }
+
+    #[test]
+    fn gcp_sql_accepts_one_secret_object_and_rejects_mixed_modes() {
+        let mut request = CreateStorageIntegrationRequest::gcp(
+            "gs://customer-data/raw/",
+            SecretReference::new("gcp")
+                .with_database("shared")
+                .with_namespace(vec!["credentials".into()]),
+        );
+        let sql = create_sql("gcs", &[], &request).unwrap();
+        assert!(sql.contains("STORAGE_PROVIDER = 'GCP'"));
+        assert!(sql.contains("GCP_CREDENTIALS_JSON_SECRET = \"shared\".\"credentials\".\"gcp\""));
+        assert!(!sql.contains("STORAGE_AWS"));
+        request.aws_region = Some("us-east-1".into());
+        assert!(create_sql("gcs", &[], &request).is_err());
+        request.aws_region = None;
+        request.gcp_credentials_json_secret = None;
+        assert!(create_sql("gcs", &[], &request).is_err());
     }
 
     #[test]

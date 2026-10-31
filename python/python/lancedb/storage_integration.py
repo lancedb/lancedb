@@ -30,7 +30,7 @@ class StorageIntegrationInfo:
     name: str
     database: str
     namespace_path: list[str]
-    storage_provider: Literal["S3", "AZURE"]
+    storage_provider: Literal["S3", "AZURE", "GCP"]
     storage_prefix: str
     aws_region: Optional[str]
     aws_account_id: str
@@ -48,6 +48,7 @@ class StorageIntegrationInfo:
     azure_tenant_id_secret: Optional[SecretReference] = None
     azure_client_id_secret: Optional[SecretReference] = None
     azure_client_secret_secret: Optional[SecretReference] = None
+    gcp_credentials_json_secret: Optional[SecretReference] = None
 
     def __post_init__(self):
         for field in (
@@ -56,6 +57,7 @@ class StorageIntegrationInfo:
             "azure_tenant_id_secret",
             "azure_client_id_secret",
             "azure_client_secret_secret",
+            "gcp_credentials_json_secret",
         ):
             value = getattr(self, field)
             if isinstance(value, dict):
