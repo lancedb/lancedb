@@ -84,7 +84,7 @@ inputs do not force work. A new column is immediately eligible for its first
 refresh. The server's separate automatic-refresh switch must also be enabled.
 
 These options also work beside a Function binding's `version` and `branch`,
-continuing the [`caption` Function](/management/function#chain) from Functions:
+continuing the [`caption` Function](/curation/create-function#chain) from Create a Function:
 
 ```sql
 ALTER TABLE frames ADD COLUMN caption AS caption(extract_frame(video, ts))

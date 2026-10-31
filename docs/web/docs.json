@@ -388,6 +388,7 @@
             "group": "Management",
             "pages": [
               "management/index",
+              "management/catalog",
               "management/database",
               "management/namespace",
               "management/table",
