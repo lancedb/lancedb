@@ -59,50 +59,43 @@ GPU-ready batches from a tagged dataset version. Training pipelines need curatio
 splits, fast random access, and a clean path into frameworks such as PyTorch -- LanceDB keeps all of it connected
 through the same table model, whether a workflow uses one table or several related ones.
 
-## Architecture {#architecture}
+## Architecture: Embedded and Enterprise {#architecture}
 
-LanceDB Embedded and Enterprise are both built on [Lance](/basics/lance), which stores table data, versions, and
-indexes in open, columnar files. The format and table model are the same across both offerings -- what changes is
-how storage and compute are organized around them.
+LanceDB ships as two offerings on the same [Lance](/basics/lance) format and table model, which stores table data,
+versions, and indexes in open, columnar files. What changes between them is how storage and compute are organized
+around that format. Start locally with Embedded, then move to Enterprise when your team needs distributed scale,
+managed infrastructure, private deployment, or higher-throughput curation, feature engineering, search and
+retrieval, and training workflows.
 
-![LanceDB suite: LanceDB Embedded for search, and LanceDB Enterprise for search, data exploration and curation, feature engineering, and training, both on the Lance format](/static/assets/images/overview/lancedb-suite.svg)
-
-Embedded reads and writes tables on local disk or in object storage from inside your application process.
-Enterprise keeps durable table data and index artifacts in object storage, independently of the machines serving
-requests, and separates query serving, read execution and caching, and indexing and background work into their
-own independently sized components. Caches accelerate reads; they are never the durable source of truth. With
-multiple serving replicas, Enterprise routes traffic to surviving nodes when one fails; losing a cache node
-temporarily raises latency while its replacement warms, rather than causing an outage.
-
-Sharing a format does not mean an Enterprise deployment automatically opens an existing Embedded database --
-plan how to move or connect your data and configure access for your deployment.
-
-## Embedded and Enterprise {#embedded-and-enterprise}
-
-LanceDB ships as two offerings on the same Lance format and table model. Start locally with Embedded, then move to
-Enterprise when your team needs distributed scale, managed infrastructure, private deployment, or higher-throughput
-curation, feature engineering, search and retrieval, and training workflows.
+<Columns cols={2}>
+  <Frame caption="LanceDB Embedded: the LanceDB SDK and the Lance format run in your application, reading and writing tables on local disk or in object storage.">
+    <img src="/static/assets/images/overview/lancedb-embedded.png" alt="LanceDB Embedded architecture" />
+  </Frame>
+  <Frame caption="LanceDB Distributed: the LanceDB SDK connects to LanceDB Enterprise, where a query fleet, executor and cache fleets, the realtime engine, and a jobs fleet run on top of the Lance format and object storage.">
+    <img src="/static/assets/images/overview/lancedb-distributed.png" alt="LanceDB Enterprise architecture" />
+  </Frame>
+</Columns>
 
 ### 1\. LanceDB Embedded {#1-lancedb-oss}
 
 **LanceDB Embedded** is an open-source, embedded retrieval library, with client SDKs in Python, TypeScript and
 Rust -- the application itself plans queries, builds indexes, and runs background work, with no separate database
-server to deploy. This fits local retrieval applications, notebooks, development, and single-node data pipelines,
-where your application controls its own compute resources and [table maintenance](/maintenance/compaction).
-
-![LanceDB Embedded: the LanceDB SDK and the Lance format run in your application, reading and writing tables on local disk or in object storage.](/static/assets/images/overview/lancedb-embedded.png)
+server to deploy. It reads and writes tables on local disk or in object storage from inside your application
+process. This fits local retrieval applications, notebooks, development, and single-node data pipelines, where
+your application controls its own compute resources and [table maintenance](/maintenance/compaction).
 
 ### 2\. LanceDB Enterprise {#2-lancedb-enterprise}
 
 [LanceDB Enterprise](/enterprise) is a petabyte-scale (and beyond), distributed **multimodal lakehouse** platform
 built for search, curation, feature engineering, and high-throughput training data access workflows on top of the
 same core table abstraction, without building bespoke infrastructure. Applications connect through a LanceDB SDK
-while the service handles requests across a fleet, with query serving, read execution and caching, and indexing
-and background work sized and scaled as separate components. A control plane governs configuration, identity
-and cluster lifecycle, separately from the data-plane components in the diagram below. See
+while the service handles requests across a fleet. Enterprise keeps durable table data and index artifacts in
+object storage, independently of the machines serving requests, with query serving, read execution and caching,
+and indexing and background work sized and scaled as separate components, governed by a control plane that manages
+configuration, identity and cluster lifecycle. Caches accelerate reads; they are never the durable source of
+truth. With multiple serving replicas, Enterprise routes traffic to surviving nodes when one fails; losing a cache
+node temporarily raises latency while its replacement warms, rather than causing an outage. See
 [Distributed search](/enterprise/distributed-search) for how query nodes and plan executors divide a request.
-
-![LanceDB Distributed: the LanceDB SDK connects to LanceDB Enterprise, where a query fleet, executor and cache fleets, the realtime engine, and a jobs fleet run on top of the Lance format and object storage.](/static/assets/images/overview/lancedb-distributed.png)
 
 Teams choose Enterprise to:
 
@@ -116,6 +109,9 @@ Teams choose Enterprise to:
   [SQL](/basics/sql), [feature engineering](/feature-engineering), and [Geneva](/geneva) feature backfills.
 
 To set up LanceDB Enterprise in your organization, [reach out to us](https://www.lancedb.com/contact).
+
+Sharing a format does not mean an Enterprise deployment automatically opens an existing Embedded database --
+plan how to move or connect your data and configure access for your deployment.
 
 ### Compare features {#compare}
 
