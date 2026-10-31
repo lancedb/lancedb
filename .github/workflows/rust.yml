@@ -11,8 +11,10 @@ on:
       - rust-toolchain.toml
       - deny.toml
       - rust/**
+      - docs/web-tests/blob-v2/rs/**
       - nodejs/Cargo.toml
       - python/Cargo.toml
+      - .github/actions/setup-protoc/**
       - .github/workflows/rust.yml
 
 permissions:
@@ -29,6 +31,63 @@ env:
   RUST_BACKTRACE: "1"
 
 jobs:
+  dependency-overrides:
+    name: Downstream Lance override
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Read the pinned Lance tag
+        id: lance
+        run: |
+          python3 - <<'PYTHON'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          manifest = tomllib.loads(Path("Cargo.toml").read_text())
+          tag = manifest["workspace"]["dependencies"]["lance"]["tag"]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"tag={tag}\n")
+          PYTHON
+      - uses: actions/checkout@v6
+        with:
+          repository: lance-format/lance
+          ref: ${{ steps.lance.outputs.tag }}
+          path: local-lance
+      - name: Resolve a downstream workspace with a local Lance override
+        run: |
+          mkdir -p downstream/src
+          touch downstream/src/lib.rs
+          cat > downstream/Cargo.toml <<'TOML'
+          [package]
+          name = "lancedb-local-lance-consumer"
+          version = "0.1.0"
+          edition = "2024"
+
+          [workspace]
+
+          [dependencies]
+          lancedb = { path = "../rust/lancedb", default-features = false }
+          lance-arrow = { path = "../local-lance/rust/lance-arrow" }
+
+          [patch."https://github.com/lance-format/lance.git"]
+          lance-arrow = { path = "../local-lance/rust/lance-arrow" }
+          TOML
+          cargo metadata --manifest-path downstream/Cargo.toml --format-version 1 > downstream/graph.json
+          python3 - <<'PYTHON'
+          import json
+          from pathlib import Path
+
+          graph = json.loads(Path("downstream/graph.json").read_text())
+          packages = [p for p in graph["packages"] if p["name"] == "lance-arrow"]
+          assert len(packages) == 1, [p["id"] for p in packages]
+          assert Path(packages[0]["manifest_path"]).resolve() == Path(
+              "local-lance/rust/lance-arrow/Cargo.toml"
+          ).resolve()
+          PYTHON
+
   lint:
     timeout-minutes: 30
     runs-on: ubuntu-24.04
@@ -121,7 +180,6 @@ jobs:
       # Need up-to-date compilers for kernels
       CC: clang-18
       CXX: clang++-18
-      GH_TOKEN: ${{ secrets.SOPHON_READ_TOKEN }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -165,18 +223,55 @@ jobs:
       - name: Run feature tests
         run: CARGO_ARGS="--profile ci" make -C ./lancedb feature-tests
       - name: Run examples
-        run: cargo run  --profile ci --example simple --locked
+        run: cargo run --profile ci --all-features --example simple --locked
+      - name: Run blob v2 docs example
+        # Python and TypeScript blob docs tests install preview packages.
+        # Those builds are not guaranteed to remain available for more than
+        # 6 months, so they stay a manual run. This example uses the workspace crate.
+        run: cargo run --profile ci --all-features -p lancedb-blob-v2-docs --example multimodal --locked
+
+  remote:
+    timeout-minutes: 30
+    # Running this requires access to secrets, so skip if this is a PR from a
+    # fork. Keep it separate from the all-features build so Cargo does not
+    # retain both dependency graphs in one target directory.
+    if: github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork
+    runs-on: ubuntu-2404-4x-x64
+    defaults:
+      run:
+        shell: bash
+        working-directory: rust
+    env:
+      CC: clang-18
+      CXX: clang++-18
+      GH_TOKEN: ${{ github.token }}
+      SOPHON_READ_TOKEN: ${{ secrets.SOPHON_READ_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          lfs: true
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Remote tests use a different feature graph from the main Linux
+          # job. Cache downloads, but build into a fresh target directory.
+          cache-targets: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y protobuf-compiler libssl-dev
+      - uses: rui314/setup-mold@v1
+      - name: Test the default local Functions gate
+        run: cargo test --profile ci -p lancedb --features remote --test experimental_functions --locked
       - name: Run remote tests
-        # Running this requires access to secrets, so skip if this is
-        # a PR from a fork.
-        if: github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork
         run: CARGO_ARGS="--profile ci" make -C ./lancedb remote-tests
 
   macos:
     timeout-minutes: 60
     strategy:
       matrix:
-        mac-runner: ["macos-14", "macos-15"]
+        mac-runner: ["macos-15", "macos-26"]
     runs-on: "${{ matrix.mac-runner }}"
     defaults:
       run:
@@ -204,7 +299,10 @@ jobs:
           ALL_FEATURES=`cargo metadata --format-version=1 --no-deps \
             | jq -r '.packages[] | .features | keys | .[]' \
             | grep -v s3-test | sort | uniq | paste -s -d "," -`
-          cargo test --profile ci --features $ALL_FEATURES --locked
+          # Run doctests before test binaries fill the runner disk. Examples are
+          # already built by the Linux job, so avoid retaining them here.
+          cargo test --profile ci --features $ALL_FEATURES --locked --doc
+          cargo test --profile ci --features $ALL_FEATURES --locked --lib --tests
 
   windows:
     strategy:
@@ -213,12 +311,6 @@ jobs:
         include:
           - target: x86_64-pc-windows-msvc
             runner: windows-2022
-          # windows-11-arm is a standard runner, so it is free on public repos.
-          # Running natively lets the aarch64 tests actually execute -- this
-          # job used to cross-compile them and then skip the test step, paying
-          # full codegen and link cost for a compile check.
-          - target: aarch64-pc-windows-msvc
-            runner: windows-11-arm
     runs-on: ${{ matrix.runner }}
     defaults:
       run:
@@ -233,8 +325,8 @@ jobs:
           # unreadable outside their own branch anyway, since GitHub scopes
           # caches to the creating ref.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Install Protoc v21.12
-        run: choco install --no-progress protoc
+      - name: Install protoc
+        uses: ./.github/actions/setup-protoc
       - name: Build
         run: |
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
@@ -247,13 +339,50 @@ jobs:
           # dependency graph a second time.
           cargo test --profile ci --features aws,remote --locked --target ${{ matrix.target }}
 
+  # Run the aarch64 Windows tests only on main so PRs wait for a single
+  # Windows platform. windows-11-arm is a standard runner, so it is free on
+  # public repos. Running natively lets the aarch64 tests actually execute --
+  # this job used to cross-compile them and then skip the test step, paying
+  # full codegen and link cost for a compile check.
+  windows-arm:
+    # Keep the historical name so the check shows up as before on main.
+    name: windows (aarch64-pc-windows-msvc, windows-11-arm)
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-11-arm
+    defaults:
+      run:
+        working-directory: rust/lancedb
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set target
+        run: rustup target add aarch64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Restore everywhere, but only save from main. Per-PR saves are
+          # unreadable outside their own branch anyway, since GitHub scopes
+          # caches to the creating ref.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install protoc
+        uses: ./.github/actions/setup-protoc
+      - name: Build
+        run: |
+          $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
+          cargo build --profile ci --features aws,remote --tests --locked --target aarch64-pc-windows-msvc
+      - name: Run tests
+        run: |
+          $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
+          # `--target` has to match the build step above. Without it cargo uses
+          # target/ci/ rather than target/<triple>/ci/ and rebuilds the entire
+          # dependency graph a second time.
+          cargo test --profile ci --features aws,remote --locked --target aarch64-pc-windows-msvc
+
   msrv:
     # Check the minimum supported Rust version
     name: MSRV Check - Rust v${{ matrix.msrv }}
     runs-on: ubuntu-24.04
     strategy:
       matrix:
-        msrv: ["1.91.0"] # This should match up with rust-version in Cargo.toml
+        msrv: ["1.95.0"] # This should match up with rust-version in Cargo.toml
     env:
       # Need up-to-date compilers for kernels
       CC: clang-18
@@ -276,41 +405,18 @@ jobs:
           # unreadable outside their own branch anyway, since GitHub scopes
           # caches to the creating ref.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Downgrade  dependencies
-        # These packages have newer requirements for MSRV
+      - name: Resolve MSRV-compatible dependencies
+        # Resolve the AWS SDK and Smithy crates together: newer SDK releases
+        # require newer Smithy versions, so downgrading only Smithy can fail.
+        run: cargo +${{ matrix.msrv }} update --config 'resolver.incompatible-rust-versions="fallback"'
+      - name: Keep Xet dependencies compatible with the MSRV
+        # Xet 1.7 does not declare its MSRV, but requires sysinfo 0.39 (Rust 1.95).
+        # Downgrade parents before their dependencies to satisfy their constraints.
         run: |
-          cargo update -p aws-sdk-bedrockruntime --precise 1.77.0
-          cargo update -p aws-sdk-dynamodb --precise 1.68.0
-          cargo update -p aws-config --precise 1.6.0
-          cargo update -p aws-sdk-kms --precise 1.63.0
-          cargo update -p aws-sdk-s3 --precise 1.79.0
-          cargo update -p aws-sdk-sso --precise 1.62.0
-          cargo update -p aws-sdk-ssooidc --precise 1.63.0
-          cargo update -p aws-sdk-sts --precise 1.63.0
-          # aws-runtime/sigv4/credential-types/types and the aws-smithy-*
-          # crates bumped their MSRV to 1.91.1 in late 2026; pin to the last
-          # 1.91.0-compatible versions. The order matters — each downgrade
-          # only succeeds once everything that still pins it at a higher
-          # version has itself been downgraded.
-          cargo update -p aws-runtime --precise 1.5.12
-          cargo update -p aws-types --precise 1.3.9
-          cargo update -p aws-sigv4 --precise 1.3.5
-          cargo update -p aws-credential-types --precise 1.2.8
-          # aws-smithy-checksums must stay at or above 0.63.13: OpenDAL's S3
-          # service needs crc-fast ~1.9, and older releases pin it to ~1.3.
-          cargo update -p aws-smithy-checksums --precise 0.63.13
-          cargo update -p aws-smithy-runtime --precise 1.9.3
-          cargo update -p aws-smithy-http --precise 0.62.6
-          cargo update -p aws-smithy-eventstream --precise 0.60.14
-          cargo update -p aws-smithy-http-client --precise 1.1.3
-          cargo update -p aws-smithy-observability --precise 0.1.4
-          cargo update -p aws-smithy-query --precise 0.60.8
-          cargo update -p aws-smithy-runtime-api --precise 1.9.3
-          cargo update -p aws-smithy-async --precise 1.2.7
-          cargo update -p aws-smithy-types --precise 1.3.6
-          cargo update -p aws-smithy-xml --precise 0.60.11
-          cargo update -p home --precise 0.5.9
+          for crate in hf-xet xet-data xet-client xet-core-structures xet-runtime; do
+            cargo +${{ matrix.msrv }} update -p "$crate" --precise 1.6.0
+          done
       - name: cargo +${{ matrix.msrv }} check
         env:
           RUSTUP_TOOLCHAIN: ${{ matrix.msrv }}
-        run: cargo check --profile ci --workspace --tests --benches --all-features
+        run: cargo check --locked --profile ci --workspace --tests --benches --all-features

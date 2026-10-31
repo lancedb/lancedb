@@ -45,6 +45,9 @@ impl CreateTableBuilder {
     }
 
     /// Apply the given write options when writing the initial data
+    ///
+    /// LanceDB Distributed connections reject explicit Lance write parameters with
+    /// [`Error::NotSupported`] instead of silently using server defaults.
     pub fn write_options(mut self, write_options: WriteOptions) -> Self {
         self.request.write_options = write_options;
         self
@@ -69,6 +72,8 @@ impl CreateTableBuilder {
     }
 
     /// Set multiple options for the storage layer.
+    ///
+    /// Table-level storage options are not supported by LanceDB Distributed connections.
     ///
     /// Options already set on the connection will be inherited by the table,
     /// but can be overridden here.
@@ -438,10 +443,9 @@ mod tests {
             .await
             .unwrap()
             .data_storage_format
-            .lance_file_version()
-            .unwrap();
+            .lance_file_format();
         // Compare resolved versions since Stable/Next are aliases that resolve at storage time
-        assert_eq!(storage_format.resolve(), data_storage_version.resolve());
+        assert_eq!(storage_format, data_storage_version.resolve());
     }
 
     #[tokio::test]

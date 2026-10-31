@@ -1,0 +1,97 @@
+---
+title: "Create a materialized view"
+sidebarTitle: "Create Materialized View"
+description: "Store the result of a query as a table, ready to query, index and search."
+icon: table
+keywords: ["materialized view", "create_materialized_view"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+A materialized view stores the result of a query as a table. Use it to keep a
+filtered or transformed dataset that you can query, index and search
+repeatedly, instead of recomputing the query every time you read it.
+
+<Note>
+In SQL this is [`CREATE MATERIALIZED VIEW`](/sql/ddl/materialized-view#create).
+</Note>
+
+## Create a view {#create}
+
+<CodeGroup>
+```python Python icon="python"
+view = db.create_materialized_view(
+    "frames_captioned",
+    source="frames",
+    select=["frame_id", "video_id", "ts", "caption"],
+    where="selected = true",
+)
+```
+
+```typescript TypeScript icon="square-js"
+const view = await db.createMaterializedView("frames_captioned", "frames", {
+  select: ["frame_id", "video_id", "ts", "caption"],
+  where: "selected = true",
+});
+```
+</CodeGroup>
+
+`source` names the table the view reads. `select` takes column names,
+`(alias, expression)` pairs, or a dict of the same; omitting it selects every
+source column, expanded against the schema as it was at creation time.
+`where` filters source rows, and `limit` caps the view.
+
+Creating the view computes its rows, so it is ready to read. Pass
+`with_no_data=True` to create it empty instead; a later
+[refresh](/feature-engineering/refresh-materialized-view) populates it.
+
+Your administrator manages stable row IDs and other source-table
+requirements for materialized views on the server; confirm support for your
+source table's shape before creating a view over it.
+
+## Automatic refresh at creation {#auto-refresh}
+
+Pass `auto_refresh_enabled` and `auto_refresh_interval_seconds` to schedule
+refreshes instead of calling
+[`refresh`](/feature-engineering/refresh-materialized-view) yourself:
+
+```python
+view = db.create_materialized_view(
+    "frames_captioned",
+    source="frames",
+    select=["frame_id", "video_id", "ts", "caption"],
+    where="selected = true",
+    auto_refresh_enabled=True,
+    auto_refresh_interval_seconds=300,
+)
+```
+
+Omit `auto_refresh_enabled` to let the server decide whether to enable it,
+and omit `auto_refresh_interval_seconds` to let the server decide the
+pacing. See
+[Automatic refresh](/feature-engineering/refresh-materialized-view#auto-refresh)
+for how scheduling behaves once the view exists.
+
+## Working with the view {#working-with-the-view}
+
+`view.table` is the underlying table, for querying, indexing, or search.
+`view.definition` is the recorded query: the select list, predicate, and
+limit. Use it to inspect the query without inferring it from the rows. Both
+are properties; on an async view, the definition is read with
+`await view.definition()`.
+
+An existing view is reopened with `db.open_materialized_view(name)`. Creation,
+refresh and drop also have async, job-returning SDK methods; see
+[Materialized view](/management/materialized-view#manage).
+
+## Related guides {#next}
+
+<CardGroup cols={2}>
+  <Card title="Refresh a materialized view" icon="arrows-rotate" href="/feature-engineering/refresh-materialized-view">
+    Bring the view up to date with its source.
+  </Card>
+  <Card title="Versioning" icon="clock-rotate-left" href="/management/table#versioning">
+    Inspect the table history and read a particular version.
+  </Card>
+</CardGroup>

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 """A zero-dependency mock OpenAI embeddings API endpoint for testing purposes."""
+
 import argparse
 import json
 import http.server
@@ -22,11 +23,13 @@ class MockOpenAIRequestHandler(http.server.BaseHTTPRequestHandler):
 
         data = []
         for i in range(num_inputs):
-            data.append({
-                "object": "embedding",
-                "embedding": [0.1] * 1536,
-                "index": i,
-            })
+            data.append(
+                {
+                    "object": "embedding",
+                    "embedding": [0.1] * 1536,
+                    "index": i,
+                }
+            )
 
         response = {
             "object": "list",
@@ -35,7 +38,7 @@ class MockOpenAIRequestHandler(http.server.BaseHTTPRequestHandler):
             "usage": {
                 "prompt_tokens": 0,
                 "total_tokens": 0,
-            }
+            },
         }
 
         self.send_response(200)

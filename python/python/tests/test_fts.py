@@ -13,6 +13,7 @@
 #  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
+import json
 import os
 import random
 import shutil
@@ -25,6 +26,9 @@ from lancedb.db import DBConnection
 from lancedb.index import FTS
 from lancedb.query import (
     BoostQuery,
+    CombinedFieldsQuery,
+    DocumentGranularity,
+    FullTextOperator,
     MatchQuery,
     MultiMatchQuery,
     PhraseQuery,
@@ -41,6 +45,75 @@ import pytest_asyncio
 from utils import exception_output
 
 TEST_LANGUAGE_MODEL_HOME = Path(__file__).parent / "models"
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.parametrize("block_size", [128, 256])
+def test_json_fts(tmp_path, block_size):
+    db = ldb.connect(tmp_path)
+    data = pa.table(
+        {
+            "id": [0, 1, 2, 3],
+            "doc": pa.array(
+                [
+                    '{"title":"brown fox","meta":{"tag":"nature"},"author":"alice"}',
+                    '{"title":"blue car","meta":{"tag":"city"}}',
+                    '{"title":"brown bear","meta":{"tag":"nature"}}',
+                    '{"title":"red fox","author":"alice"}',
+                ],
+                type=pa.json_(),
+            ),
+        }
+    )
+    table = db.create_table("json_fts", data)
+    table.create_index("doc", config=FTS(block_size=block_size), name="doc_fts")
+    table = db.open_table("json_fts")
+    index = table.list_indices()[0]
+    assert index.name == "doc_fts"
+    assert index.index_type == "FTS"
+    assert index.columns == ["doc"]
+    stats = table.index_stats("doc_fts")
+    assert stats.num_indexed_rows == 4
+    assert stats.num_unindexed_rows == 0
+
+    for query, expected in [
+        ("title,str,brown", [0, 2]),
+        ("meta.tag,str,nature", [0, 2]),
+        ("author,str,alice", [0, 3]),
+        ("title,str,alice", []),
+        ("title,str,title", []),
+    ]:
+        search = table.search(query, query_type="fts", fts_columns="doc")
+        assert sorted(row["id"] for row in search.to_list()) == expected
+        plan = search.explain_plan(True)
+        assert "MatchQuery" in plan, plan
+        assert "FlatMatchQuery" not in plan, plan
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.asyncio
+async def test_json_fts_async(tmp_path):
+    db = await ldb.connect_async(tmp_path)
+    table = await db.create_table(
+        "json_fts",
+        pa.table({"doc": pa.array(['{"meta":{"tag":"nature"}}'], type=pa.json_())}),
+    )
+    await table.create_index("doc", config=FTS())
+    search = table.query().nearest_to_text(MatchQuery("meta.tag,str,nature", "doc"))
+    assert len(await search.to_list()) == 1
+    plan = await search.explain_plan(True)
+    assert "MatchQuery" in plan, plan
+    assert "FlatMatchQuery" not in plan, plan
+
+
+@pytest.mark.parametrize("dtype", [pa.binary(), pa.large_binary()])
+def test_fts_rejects_raw_binary(tmp_path, dtype):
+    table = ldb.connect(tmp_path).create_table(
+        "binary_fts", pa.table({"doc": pa.array([b'{"title":"brown"}'], type=dtype)})
+    )
+    with pytest.raises(ValueError, match="FTS.*lance.json.*raw binary"):
+        table.create_index("doc", config=FTS())
+    assert table.list_indices() == []
 
 
 @pytest.fixture
@@ -245,6 +318,63 @@ def test_create_inverted_index_rejects_invalid_block_size(table):
         table.create_index("text", config=FTS(block_size=129))
 
 
+def test_list_element_document_granularity(tmp_path):
+    docs_type = pa.list_(pa.struct([pa.field("content", pa.string())]))
+    docs = pa.array(
+        [
+            [
+                {"content": "alpha beta"},
+                None,
+                {"content": ""},
+                {"content": "the and"},
+                {"content": "alpha beta"},
+            ]
+        ],
+        type=docs_type,
+    )
+    table = ldb.connect(tmp_path).create_table(
+        "list_element_docs", pa.table({"id": [0], "docs": docs})
+    )
+    row_table = ldb.connect(tmp_path).create_table(
+        "row_docs", pa.table({"id": [0], "docs": docs})
+    )
+    row_table.create_index("docs.content", config=FTS())
+    row_result = row_table.search(MatchQuery("alpha", "docs.content")).to_arrow()
+    assert row_result.num_rows == 1
+    assert "_doc_index" not in row_result.column_names
+
+    granularity = DocumentGranularity.LIST_ELEMENT
+    table.create_index(
+        "docs.content",
+        config=FTS(with_position=True, document_granularity=granularity),
+    )
+    assert table.list_indices()[0].columns == ["docs.content"]
+
+    def coordinates(query):
+        result = table.search(query).limit(10).to_arrow()
+        doc_index_type = result.schema.field("_doc_index").type
+        assert pa.types.is_list(doc_index_type)
+        assert doc_index_type.value_type == pa.uint32()
+        return sorted(result["_doc_index"].to_pylist())
+
+    assert coordinates(
+        MatchQuery("alpha", "docs.content", document_granularity=granularity)
+    ) == [[0], [4]]
+    assert coordinates(
+        PhraseQuery("alpha beta", "docs.content", document_granularity=granularity)
+    ) == [[0], [4]]
+    assert coordinates(MatchQuery("alpha", "docs.content")) == [[0], [4]]
+    assert FTS().document_granularity is DocumentGranularity.ROW
+
+
+def test_create_inverted_index_respects_build_memory_limit(table):
+    with pytest.raises(ValueError, match="exceeds worker memory limit"):
+        table.create_index(
+            "text",
+            config=FTS(memory_limit=0, num_workers=1),
+        )
+
+
 def test_custom_stop_words_list(table):
     table.create_index(
         "text",
@@ -256,11 +386,25 @@ def test_custom_stop_words_list(table):
     assert [token.text for token in tokens] == ["the", "data"]
     empty_tokens = ldb.tokenize("the lance data", stem=False, custom_stop_words=[])
     assert [token.text for token in empty_tokens] == ["the", "lance", "data"]
-    with pytest.raises(TypeError, match=r"custom_stop_words.*int"):
+    with pytest.raises(TypeError, match=r"'int' object is not an instance of 'str'"):
         ldb.tokenize(
             "the lance data",
             custom_stop_words=["lance", 42],
         )
+
+
+def test_list_indices_with_missing_fts_files(table):
+    # Regression test for https://github.com/lancedb/lancedb/issues/4250
+    table.create_fts_index("text")
+    table.create_scalar_index("id")
+
+    fts = next(i for i in table.list_indices() if i.index_type == "FTS")
+    shutil.rmtree(Path(table.uri) / "_indices" / fts.index_uuid)
+
+    indices = {i.name: i for i in table.list_indices()}
+    assert set(indices) == {"text_idx", "id_idx"}
+    assert indices["text_idx"].index_type == "FTS"
+    assert indices["text_idx"].columns == ["text"]
 
 
 def test_search_fts(table):
@@ -440,6 +584,52 @@ async def test_search_fts_phrase_query_async(async_table):
     )
     assert len(results) > len(phrase_results)
     assert len(phrase_results) > 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("columns", [None, ["text"]])
+async def test_phrase_query_to_query_object_async(tmp_path, columns):
+    db = await ldb.connect_async(tmp_path)
+    table = await db.create_table(
+        "phrases", pa.table({"text": ["puppy runs fast", "cat sleeps"]})
+    )
+    await table.create_index("text", config=FTS(with_position=True))
+
+    query = table.query().nearest_to_text('"puppy runs"', columns=columns)
+    phrase = query.to_query_object().full_text_query.query
+
+    expected = (
+        PhraseQuery("puppy runs", "text") if columns else PhraseQuery("puppy runs")
+    )
+    assert phrase == expected
+    results = await table.query().nearest_to_text(phrase).to_list()
+    assert [row["text"] for row in results] == ["puppy runs fast"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("column", [None, "text"])
+async def test_phrase_query_object_roundtrip_async(tmp_path, column):
+    db = await ldb.connect_async(tmp_path)
+    table = await db.create_table(
+        "phrases",
+        pa.table({"text": ["puppy runs fast", "puppy often runs", "cat sleeps"]}),
+    )
+    await table.create_index("text", config=FTS(with_position=True))
+    phrase = PhraseQuery(
+        "puppy runs", column, slop=1, document_granularity=DocumentGranularity.ROW
+    )
+    query = table.query().nearest_to_text(phrase)
+
+    assert query.to_query_object().full_text_query.query == phrase
+    serialized = json.loads(phrase.to_json())["phrase"]
+    assert serialized["slop"] == 1
+    assert serialized["document_granularity"] == "row"
+    assert serialized.get("column") == column
+    results = await query.to_list()
+    assert sorted(row["text"] for row in results) == [
+        "puppy often runs",
+        "puppy runs fast",
+    ]
 
 
 def test_search_fts_specify_column(table):
@@ -836,6 +1026,78 @@ def test_tokenize_uses_simple_index_tokenizer(mem_db: DBConnection):
     ]
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize(
+    ("base_tokenizer", "options", "expected_filters", "expected_tokens"),
+    [
+        (
+            "code",
+            {},
+            (False, False),
+            [("running", 0), ("in", 1), ("cafe", 2)],
+        ),
+        (
+            "code",
+            {"stem": None, "remove_stop_words": None},
+            (False, False),
+            [("running", 0), ("in", 1), ("cafe", 2)],
+        ),
+        (
+            "code",
+            {"stem": True},
+            (True, False),
+            [("run", 0), ("in", 1), ("cafe", 2)],
+        ),
+        (
+            "code",
+            {"remove_stop_words": True},
+            (False, True),
+            [("running", 0), ("cafe", 2)],
+        ),
+        (
+            "code",
+            {"stem": True, "remove_stop_words": True},
+            (True, True),
+            [("run", 0), ("cafe", 2)],
+        ),
+        (
+            "simple",
+            {},
+            (True, True),
+            [("run", 0), ("cafe", 2)],
+        ),
+        (
+            "simple",
+            {"stem": False, "remove_stop_words": False},
+            (False, False),
+            [("running", 0), ("in", 1), ("cafe", 2)],
+        ),
+    ],
+)
+def test_fts_tokenizer_filter_defaults(
+    mem_db, legacy, base_tokenizer, options, expected_filters, expected_tokens
+):
+    text = "Running in café"
+    table = mem_db.create_table("test_filter_defaults", data=[{"text": text}])
+    if legacy:
+        with pytest.warns(DeprecationWarning, match="create_fts_index"):
+            table.create_fts_index("text", base_tokenizer=base_tokenizer, **options)
+    else:
+        table.create_index("text", config=FTS(base_tokenizer=base_tokenizer, **options))
+
+    details = table.list_indices()[0].index_details
+    assert (details["stem"], details["remove_stop_words"]) == expected_filters
+    assert [
+        (token.text, token.position) for token in table.tokenize(text, column="text")
+    ] == expected_tokens
+    assert [
+        (token.text, token.position)
+        for token in ldb.tokenize(text, base_tokenizer=base_tokenizer, **options)
+    ] == expected_tokens
+    if base_tokenizer == "code" and not expected_filters[1]:
+        assert table.search("in", query_type="fts").to_list()[0]["text"] == text
+
+
 def test_tokenize_uses_icu_index_tokenizer_by_name(mem_db: DBConnection):
     data = pa.table({"text": ["Hello, こんにちは世界!"]})
     table = mem_db.create_table("test_tokenize_icu", data=data)
@@ -953,8 +1215,13 @@ def test_fts_ngram(mem_db: DBConnection):
     assert set(r["text"] for r in results) == {"lance database", "lance is cool"}
 
     results = (
-        table.search("nce", query_type="fts").limit(10).to_list()
-    )  # spellchecker:disable-line
+        table.search(
+            "nce",  # spellchecker:disable-line
+            query_type="fts",
+        )
+        .limit(10)
+        .to_list()
+    )
     assert len(results) == 2
     assert set(r["text"] for r in results) == {"lance database", "lance is cool"}
 
@@ -976,8 +1243,13 @@ def test_fts_ngram(mem_db: DBConnection):
     assert set(r["text"] for r in results) == {"lance database", "lance is cool"}
 
     results = (
-        table.search("nce", query_type="fts").limit(10).to_list()
-    )  # spellchecker:disable-line
+        table.search(
+            "nce",  # spellchecker:disable-line
+            query_type="fts",
+        )
+        .limit(10)
+        .to_list()
+    )
     assert len(results) == 0
 
     results = table.search("la", query_type="fts").limit(10).to_list()
@@ -1069,6 +1341,131 @@ def test_fts_lindera_tokenizer(
     assert [row["text"] for row in results] == ["成田国際空港"]
 
 
+@pytest.mark.parametrize("fuzziness", [None, 0, 1, 2])
+def test_match_query_fuzziness_to_json(fuzziness):
+    query = MatchQuery("puppy", "text", fuzziness=fuzziness)
+
+    assert query.fuzziness == fuzziness
+    assert json.loads(query.to_json())["match"]["fuzziness"] == fuzziness
+
+
+@pytest.mark.parametrize(
+    "options, expected",
+    [
+        pytest.param({}, ["ab"], id="default-exact"),
+        pytest.param({"fuzziness": 0}, ["ab"], id="explicit-exact"),
+        pytest.param({"fuzziness": None}, ["ab"], id="automatic"),
+        pytest.param({"fuzziness": 1}, ["ab", "ac"], id="one-edit"),
+        pytest.param({"fuzziness": 2}, ["ab", "ac", "zz"], id="two-edits"),
+    ],
+)
+def test_match_query_fuzziness_search(tmp_db, options, expected):
+    # Automatic fuzziness is zero for two-character terms.
+    table = tmp_db.create_table("fuzzy", pa.table({"text": ["ab", "ac", "zz"]}))
+    table.create_index("text", config=FTS(stem=False, remove_stop_words=False))
+
+    results = table.search(MatchQuery("ab", "text", **options)).to_list()
+
+    assert sorted(row["text"] for row in results) == sorted(expected)
+
+
+@pytest.mark.parametrize(
+    "operator,combined_ids,multi_match_ids",
+    [
+        # Combined fields treat the columns as one field, so AND also matches
+        # row 0, where "john" is in the title and "smith" is in the body.
+        (FullTextOperator.AND, {0, 1}, {1}),
+        (FullTextOperator.OR, {0, 1, 2}, {0, 1, 2}),
+    ],
+)
+def test_combined_fields_query(mem_db, operator, combined_ids, multi_match_ids):
+    table = mem_db.create_table(
+        "people",
+        pa.table(
+            {
+                "id": [0, 1, 2],
+                "title": ["john", "john smith", "john"],
+                "body": ["smith", "foo", "alice"],
+            }
+        ),
+    )
+    table.create_index("title", config=FTS())
+    table.create_index("body", config=FTS())
+
+    def ids(query):
+        return {row["id"] for row in table.search(query).select(["id"]).to_list()}
+
+    combined = CombinedFieldsQuery("john smith", ["title", "body"], operator=operator)
+    multi_match = MultiMatchQuery("john smith", ["title", "body"], operator=operator)
+    assert ids(combined) == combined_ids
+    assert ids(multi_match) == multi_match_ids
+
+
+def test_combined_fields_query_boosts(mem_db):
+    table = mem_db.create_table(
+        "docs", pa.table({"title": ["hello"], "body": ["world"]})
+    )
+    table.create_index("title", config=FTS())
+    table.create_index("body", config=FTS())
+
+    results = table.search(
+        CombinedFieldsQuery("hello", ["title", "body"], boosts=[1.5, 1.0])
+    ).to_list()
+    assert len(results) == 1
+
+    # Each weight must be at least 1, and there must be one per column.
+    with pytest.raises(ValueError, match="boost"):
+        table.search(
+            CombinedFieldsQuery("hello", ["title", "body"], boosts=[0.5, 1.0])
+        ).to_list()
+    with pytest.raises(ValueError, match="boosts"):
+        table.search(
+            CombinedFieldsQuery("hello", ["title", "body"], boosts=[1.0])
+        ).to_list()
+
+
+@pytest.mark.asyncio
+async def test_combined_fields_query_round_trip(mem_db_async):
+    table = await mem_db_async.create_table(
+        "docs", pa.table({"title": ["hello"], "body": ["world"]})
+    )
+    query = CombinedFieldsQuery(
+        "hello world",
+        ["title", "body"],
+        boosts=[2.0, 1.0],
+        operator=FullTextOperator.AND,
+    )
+
+    query_obj = table.query().nearest_to_text(query).to_query_object()
+
+    assert query_obj.full_text_query.query == query
+
+
+@pytest.mark.asyncio
+async def test_combined_fields_query_nested_round_trip(mem_db_async):
+    table = await mem_db_async.create_table(
+        "docs", pa.table({"title": ["hello"], "body": ["world"]})
+    )
+    query = BooleanQuery(
+        [
+            (
+                Occur.MUST,
+                CombinedFieldsQuery(
+                    "hello world",
+                    ["title", "body"],
+                    boosts=[2.0, 1.0],
+                    operator=FullTextOperator.AND,
+                ),
+            ),
+            (Occur.MUST_NOT, MatchQuery("draft", "body")),
+        ]
+    )
+
+    query_obj = table.query().nearest_to_text(query).to_query_object()
+
+    assert query_obj.full_text_query.query == query
+
+
 def test_fts_query_to_json():
     """Test that FTS query to_json() produces valid JSON strings with exact format."""
 
@@ -1081,12 +1478,39 @@ def test_fts_query_to_json():
     )
     assert json_str == expected
 
+    # Test MatchQuery with list-element document granularity
+    match_query = MatchQuery(
+        "hello world",
+        "text",
+        document_granularity=DocumentGranularity.LIST_ELEMENT,
+    )
+    json_str = match_query.to_json()
+    expected = (
+        '{"match":{"column":"text","terms":"hello world","boost":1.0,'
+        '"fuzziness":0,"max_expansions":50,"operator":"Or","prefix_length":0,'
+        '"document_granularity":"list_element"}}'
+    )
+    assert json_str == expected
+
     # Test MatchQuery with options
     match_query = MatchQuery("puppy", "text", fuzziness=2, boost=1.5, prefix_length=3)
     json_str = match_query.to_json()
     expected = (
         '{"match":{"column":"text","terms":"puppy","boost":1.5,"fuzziness":2,'
         '"max_expansions":50,"operator":"Or","prefix_length":3}}'
+    )
+    assert json_str == expected
+
+    # Test PhraseQuery with list-element document granularity
+    phrase_query = PhraseQuery(
+        "quick brown fox",
+        "title",
+        document_granularity=DocumentGranularity.LIST_ELEMENT,
+    )
+    json_str = phrase_query.to_json()
+    expected = (
+        '{"phrase":{"column":"title","terms":"quick brown fox","slop":0,'
+        '"document_granularity":"list_element"}}'
     )
     assert json_str == expected
 
@@ -1172,7 +1596,21 @@ def test_fts_query_to_json():
     json_str = multi_match.to_json()
     expected = (
         '{"multi_match":{"query":"python","columns":["tags","title"],'
-        '"boost":[1.0,1.0]}}'
+        '"boost":[1.0,1.0],"match_queries":[{"column":"tags","terms":"python",'
+        '"boost":1.0,"fuzziness":0,"max_expansions":50,"operator":"Or",'
+        '"prefix_length":0},{"column":"title","terms":"python","boost":1.0,'
+        '"fuzziness":0,"max_expansions":50,"operator":"Or","prefix_length":0}]}}'
+    )
+    assert json_str == expected
+
+    # Test CombinedFieldsQuery
+    combined_fields = CombinedFieldsQuery(
+        "python", ["tags", "title"], boosts=[2.0, 1.0], operator=FullTextOperator.AND
+    )
+    json_str = combined_fields.to_json()
+    expected = (
+        '{"combined_fields":{"query":"python","columns":["tags","title"],'
+        '"boost":[2.0,1.0],"operator":"And"}}'
     )
     assert json_str == expected
 
