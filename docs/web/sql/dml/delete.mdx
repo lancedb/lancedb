@@ -9,9 +9,11 @@ availability:
   enterprise: available
 ---
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 DELETE FROM documents WHERE created_at < TIMESTAMP '2025-01-01 00:00:00'
 ```
+</CodeGroup>
 
 Compare a timestamp column with a typed literal, as above, or with
 `CAST('2025-01-01' AS TIMESTAMP)`. A bare string such as `'2025-01-01'` is

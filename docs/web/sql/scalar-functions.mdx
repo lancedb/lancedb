@@ -65,10 +65,14 @@ to_date  to_time  to_local_time
 fixed-width intervals, which is how you build a time series without a
 self-join.
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT date_bin(INTERVAL '1 hour', created_at) AS hour, count(*)
-FROM events GROUP BY hour ORDER BY hour
+FROM events
+GROUP BY hour
+ORDER BY hour
 ```
+</CodeGroup>
 
 ## Arrays and maps {#arrays}
 
@@ -103,7 +107,8 @@ A third, optional argument is a comma-separated options string. `metric`
 selects `l2` (default, alias `euclidean`), `cosine`, or `dot`; the
 index-search rewrite also reads `nprobes` and `use_index`:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT id FROM documents
 ORDER BY distance(embedding, ARRAY[0.1, 0.2, 0.3], 'metric=cosine,nprobes=20')
 LIMIT 10
@@ -113,6 +118,7 @@ SELECT id FROM documents
 ORDER BY exact_distance(embedding, ARRAY[0.1, 0.2, 0.3], 'use_index=false')
 LIMIT 10
 ```
+</CodeGroup>
 
 ## Structs and fields {#structs}
 
@@ -136,10 +142,12 @@ with_metadata  version
 
 Use `arrow_typeof` to inspect the Arrow data type of a column or expression:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT arrow_typeof(vector) FROM documents LIMIT 1
 -- FixedSizeList(Field { name: "item", data_type: Float32, .. }, 1536)
 ```
+</CodeGroup>
 
 `arrow_cast` casts to an Arrow type by name, reaching types SQL has no spelling
 for. See [Data types](/sql/data-types).
@@ -150,9 +158,11 @@ These are registered by Lance on top of DataFusion's set.
 
 ### `contains_tokens(column, tokens)` {#contains-tokens}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT * FROM my_docs WHERE contains_tokens(text, 'fox jumps dog')
 ```
+</CodeGroup>
 
 True when the column contains **all** the tokens, split on whitespace and
 punctuation. Equivalent to an `fts()` match query with fuzziness off, `AND`
@@ -164,25 +174,34 @@ it over `LIKE` for keyword tests.
 
 ### `ivf_partition(vector, ...)` {#ivf-partition}
 
-```sql
-SELECT ivf_partition(embedding, selection => 'random', count => 100, seed => 42) AS partition,
-       array_agg(id) AS ids
+<CodeGroup>
+```sql SQL icon="database"
+SELECT
+    ivf_partition(embedding, selection => 'random', count => 100, seed => 42) AS partition,
+    array_agg(id) AS ids
 FROM documents
 GROUP BY partition
 ```
+</CodeGroup>
 
-Assigns each row to one of `count` IVF-style partitions over `vector`, using
-the named arguments `selection` (partition-center strategy; `'random'` is
-sampled with `seed`) and `seed`. Grouping by its result buckets rows by
-vector proximity without building or querying a vector index — useful for
+Reads an existing IVF-family vector index's trained partitions and assigns
+each row to the one its `vector` falls into -- the column needs an
+up-to-date, single-segment index before the function runs, the same
+requirement [`dedupe`](/curation/dedupe#example-data) has. `selection`
+(`'all'` default, `'first'`, or `'random'`, sampled with `seed`) scopes the
+scan to some of the index's partitions instead of all of them, and `count`
+is how many to sample when `selection => 'random'`. Grouping by its result
+buckets rows by vector proximity without a full pairwise scan — useful for
 blocking a large table into comparable chunks, such as before a pairwise
 similarity pass.
 
 ### `blob_descriptor(column)` {#blob-descriptor}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT id, blob_descriptor(video) AS descriptor FROM videos
 ```
+</CodeGroup>
 
 A [BlobV2](/management/table#managed-blobs) column's bytes are not fetched by
 a plain `SELECT`: that already returns `large_binary`, the same as any other
@@ -190,11 +209,13 @@ binary column. `blob_descriptor` instead returns a small struct describing
 where the payload lives, without reading it. Pass one row's descriptor to
 the SDK's blob file reader to open that payload directly:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 rows = db.execute_query("SELECT id, blob_descriptor(video) AS descriptor FROM videos").read_all().to_pylist()
 with table.open_blob_file(rows[0]["descriptor"]) as reader:
     payload = reader.read()
 ```
+</CodeGroup>
 
 A descriptor is pinned to the table version it was read at: it keeps
 resolving correctly even after the table is appended to and checked out to a
@@ -217,19 +238,23 @@ newer version.
 
 `json_get` returns JSON, so a typed accessor can read a field inside it:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT * FROM events
 WHERE json_get_string(json_get(data, 'user'), 'name') = 'Alice'
 ```
+</CodeGroup>
 
 That works one level down. A `json_get` nested inside another `json_get` is
 refused, so reach a deeper value with `json_extract` and a JSONPath instead. It
 returns JSON text, so a string compares with its quotes:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT * FROM events
 WHERE json_extract(data, '$.user.profile.name') = '"Alice"'
 ```
+</CodeGroup>
 
 **`json_get`, its typed variants, and `json_extract` are index-accelerated** by a
 JSON scalar index on the column. The rest evaluate per row.

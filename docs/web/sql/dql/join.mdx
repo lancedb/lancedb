@@ -13,11 +13,13 @@ Use SQL joins to combine rows from two or more tables.
 
 ## The join types {#types}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT d.title, c.name
 FROM documents AS d
 JOIN categories AS c ON c.id = d.category_id
 ```
+</CodeGroup>
 
 | | What it keeps |
 | --- | --- |
@@ -35,11 +37,13 @@ avoids repeating it in the select list.
 Tables in different [namespaces](/management/namespace) join by their dotted paths. The
 catalog is one catalog, so there is nothing to federate:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT c.id, u.email
 FROM prod.events.clicks AS c
 JOIN prod.reference.users AS u ON u.id = c.user_id
 ```
+</CodeGroup>
 
 ## Joining a search result {#search}
 
@@ -48,13 +52,18 @@ and joins like any other. This example assumes `my_docs` has `text` and
 `category_id` columns, a full-text index on `text`, and a `categories` table
 with `id` and `name` columns:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT c.name, count(*) AS hits
-FROM fts('my_docs', '{"match":{"column":"text","terms":"puppy"}}') AS m
+FROM fts(
+    'my_docs',
+    '{"match":{"column":"text","terms":"puppy"}}'
+) AS m
 JOIN categories AS c ON c.id = m.category_id
 GROUP BY c.name
 ORDER BY hits DESC
 ```
+</CodeGroup>
 
 That composition is the reason full-text search is a relation rather than a
 predicate: a `WHERE` clause has nowhere to put the relevance score.
@@ -82,12 +91,14 @@ for every candidate row first. In a plan where this applies, the wide column
 is read once per surviving row, where the worker runs, and never pulled into
 the query node to be joined directly.
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT d.title, b.caption
 FROM documents AS d
 JOIN (SELECT _rowid, caption FROM captions WHERE source = 'model-v2') AS b
   ON b._rowid = d._rowid
 ```
+</CodeGroup>
 
 This is query planning, not a syntax you opt into: a join written this way
 is a **candidate** for the planner to defer the wide read, not a guarantee.

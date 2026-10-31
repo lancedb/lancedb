@@ -239,10 +239,12 @@ If your column name contains special characters, upper-case characters, or is a 
 you can use backtick (`` ` ``) to escape it. For nested fields, each segment of the
 path must be wrapped in backticks.
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 `CUBE` = 10 AND `UpperCaseName` = '3' AND `column name with space` IS NOT NULL
 AND `nested with space`.`inner with space` < 2
 ```
+</CodeGroup>
 
 <Note>
 Periods separate nested fields. LanceDB does not allow a literal period in a

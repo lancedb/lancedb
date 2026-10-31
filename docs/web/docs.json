@@ -45,7 +45,7 @@
     },
     {
       "source": "/basics/offerings",
-      "destination": "/#embedded-and-enterprise"
+      "destination": "/#architecture"
     },
     {
       "source": "/enterprise/deployment",
@@ -185,11 +185,15 @@
     },
     {
       "source": "/storage",
-      "destination": "/deployment/storage"
+      "destination": "/basics/catalog#object-storage"
     },
     {
       "source": "/storage/configuration",
-      "destination": "/deployment/storage"
+      "destination": "/basics/catalog#object-storage"
+    },
+    {
+      "source": "/deployment/storage",
+      "destination": "/basics/catalog#object-storage"
     },
     {
       "source": "/storage/monitoring",
@@ -284,14 +288,9 @@
               "quickstart",
               "basics/sdk",
               "basics/sql",
+              "tools/cli",
               "basics/agentic-skills",
               "deployment/support"
-            ]
-          },
-          {
-            "group": "Tools",
-            "pages": [
-              "tools/cli"
             ]
           },
           {
@@ -330,7 +329,8 @@
               "reranking/index",
               "search/explain",
               "search/realtime-read",
-              "enterprise/distributed-search"
+              "enterprise/distributed-search",
+              "enterprise/benchmarks"
             ]
           },
           {
@@ -338,12 +338,14 @@
             "pages": [
               "curation/index",
               "curation/create-function",
+              "curation/vend-secret",
               "curation/chunking",
               "curation/changes",
               "curation/aggregate",
               "curation/sampling",
               "curation/join",
               "curation/windowing",
+              "curation/clustering",
               "curation/dedupe"
             ]
           },
@@ -375,7 +377,8 @@
               "management/table",
               "tables/branching",
               "management/view",
-              "management/materialized-view"
+              "management/materialized-view",
+              "management/secret"
             ]
           },
           {
@@ -401,10 +404,8 @@
             "group": "Deployment",
             "pages": [
               "enterprise/index",
-              "deployment/storage",
               "deployment/monitoring",
-              "enterprise/deployment/kubernetes",
-              "enterprise/benchmarks"
+              "enterprise/deployment/kubernetes"
             ]
           },
           {
@@ -412,6 +413,8 @@
             "pages": [
               "enterprise/authentication",
               "governance/authorization",
+              "governance/principals",
+              "governance/privileges",
               "enterprise/security"
             ]
           },
@@ -428,6 +431,7 @@
                   "sql/ddl/table",
                   "sql/ddl/view",
                   "sql/ddl/materialized-view",
+                  "sql/ddl/secret",
                   "sql/ddl/index",
                   "sql/ddl/job"
                 ],

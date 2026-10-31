@@ -14,11 +14,13 @@ standard's name for the same concept.
 
 ## CREATE SCHEMA {#create}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 CREATE SCHEMA analytics
 CREATE SCHEMA db1.`ns1$ns2`
 CREATE SCHEMA IF NOT EXISTS `ns1$ns2`
 ```
+</CodeGroup>
 
 A nested namespace is one backtick-quoted name with `$` between its
 components: `` db1.`ns1$ns2` `` creates `ns2` inside `ns1` in database `db1`,
@@ -31,11 +33,13 @@ namespace is already there.
 
 ## DROP SCHEMA {#drop}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 DROP SCHEMA db1.analytics
 DROP SCHEMA IF EXISTS `a$b`
 DROP SCHEMA `a$b` RESTRICT
 ```
+</CodeGroup>
 
 <Warning>
 `CASCADE` is rejected: **"DROP SCHEMA CASCADE is not supported; drop the

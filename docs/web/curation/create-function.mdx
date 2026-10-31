@@ -132,40 +132,13 @@ in the function's source. A Secret is a database-scoped named credential:
 puts it in the environment variable the function reads, without ever
 returning it from any API or recording it in the function's own definition.
 Combine it with the stateful form so the HTTP client -- and any rate limiter
-around it -- is built once, not reopened on every row:
+around it -- is built once, not reopened on every row. There is no built-in
+retry or per-row error-skip policy -- a function that calls a flaky service
+should handle timeouts and retries itself, inside `__call__`.
 
-<CodeGroup>
-```python Python icon="python"
-import os
-from lancedb import EnvVarSecret, udf
-
-db.create_secret("openai-prod", os.environ["OPENAI_API_KEY"])
-
-@udf
-class embed_remote:
-    def __init__(self, model: str = "text-embedding-3-small"):
-        import os
-        from openai import OpenAI
-
-        self.client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-        self.model = model
-
-    def __call__(self, text: str) -> list[float]:
-        response = self.client.embeddings.create(input=text, model=self.model)
-        return response.data[0].embedding
-
-version = db.create_function_async(
-    embed_remote,
-    secrets=[EnvVarSecret(secret_name="openai-prod", env_variable="OPENAI_API_KEY")],
-).wait()
-```
-</CodeGroup>
-
-A mistyped Secret name is caught at registration; a mistyped environment
-variable name only surfaces on the first rows, since nothing records which
-variables a function reads. There is no built-in retry or per-row
-error-skip policy -- a function that calls a flaky service should handle
-timeouts and retries itself, inside `__call__`.
+See [Vend a Secret to a Function](/curation/vend-secret#specify) for the
+full worked example, how the bound value actually reaches a running
+evaluation, and how that differs from rotating or revoking it later.
 
 ## Blob v2 input and output {#blob}
 
@@ -204,6 +177,9 @@ be a blob.
 ## What to read next {#next}
 
 <CardGroup cols={2}>
+  <Card title="Vend a Secret to a Function" icon="key" href="/curation/vend-secret">
+    Bind a credential by reference instead of putting it in the function's source.
+  </Card>
   <Card title="Chunk records into multiple rows" icon="diagram-subtask" href="/curation/chunking">
     A Function whose output is a list, exploded into one row per element.
   </Card>

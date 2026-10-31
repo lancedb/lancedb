@@ -3,7 +3,7 @@ title: "Real Time engine (RTE)"
 sidebarTitle: "Real Time Engine"
 description: "Absorb small, frequent writes cheaply and make them queryable within milliseconds."
 icon: "bolt"
-keywords: ["rte", "real time engine", "wal", "memwal", "lsm", "write-ahead log", "streaming writes", "upsert"]
+keywords: ["rte", "real time engine", "wal", "memwal", "wal node", "lsm", "write-ahead log", "streaming writes", "upsert", "sharding"]
 availability:
   embedded: unavailable
   enterprise: available
@@ -20,23 +20,66 @@ It turns many small writes into a few large commits, and makes each write
 **searchable within milliseconds** of being acknowledged. It is enabled per
 table, and nothing about how you query that table changes.
 
-## How it works {#how-it-works}
+## The Lance MemWAL format {#memwal-format}
 
-- **[Writes](/ingestion/realtime-write).** A `merge_insert` or `delete` lands in
-  an in-memory **memtable** and is acknowledged once it is durable in the
-  write-ahead log on object storage.
-- **Flush and compaction.** Memtables freeze into **SSTables**, which background
-  jobs compact into the base table, catching its indexes up as they go. See
-  [Background jobs](/maintenance/background-jobs#wal).
-- **[Reads](/search/realtime-read).** Every query runs against the base table
-  and the fresh tier (memtables and SSTables) in parallel. Fresh rows supersede
-  base rows with the same primary key, and the two are merged into one result.
-- **Indexes stay fresh.** Vector, full-text, BTree, bitmap, and most other
-  scalar indexes are maintained on the memtable, so new rows are searchable
-  through the index as soon as they are written.
+RTE is built on **MemWAL**, a log-structured-merge (LSM) format that Lance
+itself defines -- the structure Enterprise serves is part of the open Lance
+format, not a layer bolted on beside it. A table with RTE enabled is divided
+into one or more **shards** (see [Real Time writes](/ingestion/realtime-write#primary-key)
+for enabling and sizing them), and each shard holds:
+
+- A **memtable**: the active, in-memory table for that shard's newest rows,
+  queryable as soon as a write lands in it.
+- A **WAL buffer**: the same writes, batched and flushed to object storage
+  before a write is acknowledged, so an unflushed memtable is never the only
+  copy of a row.
+- Its own **in-memory indexes** (vector, full-text, BTree, and other scalar
+  types), kept current as rows land, independently of the base table's
+  indexes.
+
+A write commits in two stages, both before it is acknowledged: the WAL buffer
+append makes it durable, then it lands in the shard's memtable. When a
+memtable crosses a size or row-count threshold, it freezes and flushes as an
+immutable **SSTable** -- an ordinary Lance data file -- and a fresh memtable
+takes over. [Compaction](/maintenance/background-jobs#wal) later folds
+SSTables into the base table, catching its indexes up as it goes.
+
+## WAL nodes serve MemWAL shards {#wal-nodes}
+
+RTE's serving layer is a dedicated component, separate from the
+[query nodes and plan executors](/enterprise/distributed-search)
+that serve ordinary queries:
+
+| Component | Responsibility |
+| --- | --- |
+| WAL node | Own one or more tables' shards; append their WAL, maintain their memtables and in-memory indexes, and serve reads and writes against them. |
+
+A query node routes every request for an RTE-enabled table -- reads and
+writes alike -- to the WAL node that owns that table, by a consistent hash of
+the database and table name. WAL node pods share nothing but the underlying
+object storage; no pod talks to another one directly.
+
+One WAL node owns every shard of a given table. Splitting a table into more
+shards parallelizes that table's own writes into more independent append
+streams on the node that already owns it; adding more WAL node replicas
+instead spreads ownership of more *tables* across more pods. Shard a large
+table to raise its own ingest ceiling, and add WAL node replicas to raise the
+cluster's overall capacity.
+
+If a WAL node pod is replaced, its successor must claim ownership of a shard,
+by a version number that only ever increases, before writing to it -- so two
+pods are never both appending to the same shard's WAL at once.
+
+## Reading a real time table {#reads}
+
+Every query runs against the base table and the fresh tier -- every shard's
+memtable and not-yet-compacted SSTables -- in parallel. Fresh rows supersede
+base rows with the same primary key, and the two are merged into one result.
+See [Real Time reads](/search/realtime-read) for what this means for query
+results.
 
 ## Next steps {#next-steps}
 
 - [Real Time writes](/ingestion/realtime-write) — enable RTE and write to a table
-- [Real Time reads](/search/realtime-read) — query an RTE table and its performance
+- [Real Time reads](/search/realtime-read) — query an RTE table
 - [Background jobs](/maintenance/background-jobs#wal)

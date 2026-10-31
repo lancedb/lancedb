@@ -63,17 +63,18 @@ rather than silently returning stale or wrong results.
 
 `dedupe` returns one representative row per cluster of records within
 `distance_threshold` of each other -- rows 10/20 collapse to one, 30/40/50
-collapse to one, and the four distinct rows pass through unchanged:
+collapse to one, and the four distinct rows pass through unchanged, leaving
+ids 10, 30, 60, 70 and 80:
 
 <CodeGroup>
-```python Python icon="python"
-reader = db.execute_query("""
-    SELECT id, caption FROM dedupe('curation_embeddings', 'embedding', distance_threshold => 0.06)
-    ORDER BY id
-""")
-print(reader.read_all().to_pylist())
-# [{'id': 10, 'caption': 'a cat on a chair'}, {'id': 30, 'caption': 'a dog in a field'},
-#  {'id': 60, ...}, {'id': 70, ...}, {'id': 80, ...}]
+```sql SQL icon="database"
+SELECT id, caption
+FROM dedupe(
+    'curation_embeddings',
+    'embedding',
+    distance_threshold => 0.06
+)
+ORDER BY id
 ```
 </CodeGroup>
 
@@ -96,13 +97,15 @@ id as a stable identifier for its cluster.
 anything -- useful for review, or for a threshold that is still being tuned:
 
 <CodeGroup>
-```python Python icon="python"
-db.execute_query("""
-    SELECT id_a, id_b, distance FROM duplicate_pairs(
-        'curation_embeddings', 'embedding', distance_threshold => 0.06, id_column => 'id'
-    )
-    ORDER BY id_a
-""")
+```sql SQL icon="database"
+SELECT id_a, id_b, distance
+FROM duplicate_pairs(
+    'curation_embeddings',
+    'embedding',
+    distance_threshold => 0.06,
+    id_column => 'id'
+)
+ORDER BY id_a
 ```
 </CodeGroup>
 
@@ -117,11 +120,13 @@ the deduplicated set stays current as new records arrive, instead of
 recomputing it from scratch on every curation pass:
 
 <CodeGroup>
-```python Python icon="python"
-db.execute_query("""
-    CREATE MATERIALIZED VIEW curation_embeddings_deduped AS
-    SELECT * FROM dedupe('curation_embeddings', 'embedding', distance_threshold => 0.06)
-""")
+```sql SQL icon="database"
+CREATE MATERIALIZED VIEW curation_embeddings_deduped AS
+SELECT * FROM dedupe(
+    'curation_embeddings',
+    'embedding',
+    distance_threshold => 0.06
+)
 ```
 </CodeGroup>
 

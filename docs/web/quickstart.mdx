@@ -5,7 +5,7 @@ description: "Install LanceDB, create a table, and run your first vector search.
 icon: rocket
 ---
 import { PyConnect, TsConnect, RsConnect, PyConnectObjectStorage, TsConnectObjectStorage, RsConnectObjectStorage, PyConnectEnterprisePlaceholders, TsConnectEnterprisePlaceholders, RsConnectEnterprisePlaceholders } from '/snippets/connection.mdx';
-import { PyQuickstartData, PyQuickstartCreateTable, PyQuickstartAddData, PyQuickstartAddFeature, PyQuickstartComputedFeature, PyQuickstartComputedFeatureEnterprise, PyQuickstartMultimodalBytes, PyQuickstartTraining, TsQuickstartData, TsQuickstartCreateTable, TsQuickstartAddData, TsQuickstartVectorSearch1, TsQuickstartCurateWithMetadata, TsQuickstartAddFeature, TsQuickstartQueryFeature, TsQuickstartMultimodalBytes, RsQuickstartDefineStruct, RsQuickstartData, RsQuickstartCreateTable, RsQuickstartAddData, RsQuickstartVectorSearch1, RsQuickstartCurateWithMetadata, RsQuickstartAddFeature, RsQuickstartQueryFeature, RsQuickstartMultimodalBytes } from '/snippets/quickstart.mdx';
+import { PyQuickstartData, PyQuickstartCreateTable, PyQuickstartAddData, PyQuickstartCurateSample, PyQuickstartCurateDedupeSetup, PyQuickstartCurateDedupe, PyQuickstartCurateDedupeQuery, PyQuickstartFlattenStats, PyQuickstartAddFeature, PyQuickstartAddFeatureEnterprise, PyQuickstartMultimodalBytes, PyQuickstartTraining, TsQuickstartData, TsQuickstartCreateTable, TsQuickstartAddData, TsQuickstartVectorSearch1, TsQuickstartMultimodalBytes, RsQuickstartDefineStruct, RsQuickstartData, RsQuickstartCreateTable, RsQuickstartAddData, RsQuickstartVectorSearch1, RsQuickstartMultimodalBytes } from '/snippets/quickstart.mdx';
 
 This quickstart uses LanceDB Embedded with a local database and works without an account or API key.
 LanceDB Embedded runs in your application's process; your data can live on local disk or in object storage.
@@ -13,7 +13,8 @@ LanceDB Embedded runs in your application's process; your data can live on local
 <Tip>
 Using LanceDB Enterprise? Only the connection changes. In step 2, use the
 [Enterprise](#connect-to-lancedb-enterprise) connection with your deployment's database URI, API key, and endpoint
-in place of the local directory. The remaining steps use the same API.
+in place of the local directory. The remaining steps use the same API, except
+steps 5 and 6, which need Enterprise either way.
 </Tip>
 
 ## 1\. Install LanceDB {#1-install-lancedb}
@@ -104,9 +105,11 @@ with `Illegal instruction`.
 Install `lancedb-compat` instead. It exposes the same API (`import lancedb` still works), is built at the
 `x86-64-v2` baseline, and uses runtime SIMD dispatch to still use AVX2, FMA, or AVX-512 when available:
 
+<CodeGroup>
 ```bash Python (pip) icon="terminal"
 pip install lancedb-compat
 ```
+</CodeGroup>
 
 The two packages share the same `lancedb/` namespace and conflict at install time, so pick one. To switch,
 uninstall the other first (`pip uninstall lancedb && pip install lancedb-compat`).
@@ -138,7 +141,7 @@ For Python's async API, see [Connecting to a database](/basics/catalog).
 
 ### Object storage {#connect-via-object-storage-uris}
 
-Use an `s3://`, `gs://`, or `az://` URI in place of the local path. See [Configuring storage](/deployment/storage) for credentials and provider-specific options.
+Use an `s3://`, `gs://`, or `az://` URI in place of the local path. See [Object storage](/basics/catalog#object-storage) for credentials and provider-specific options.
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -249,37 +252,77 @@ Find the two embeddings closest to the query embedding. This example uses a fixe
 
 Frames 2 and 4 come back first -- the gripper closing on the cup, then lowering it. Python displays a Pandas DataFrame, Rust displays a Polars DataFrame, and TypeScript displays an array of results. The `_distance` column measures how far each result is from your query embedding, with smaller values indicating a closer match.
 
-## 5\. Filter results {#5-curation}
+## 5\. Curate data with SQL {#5-curate-with-sql}
 
-Combine vector search with a metadata filter, such as `stats.motion >= 4`, to curate results instead of just ranking them:
+<Info>
+Steps 5 and 6 need LanceDB Enterprise: SQL and Functions are both Enterprise
+features. If you're using LanceDB Embedded, skip ahead to
+[step 7](#7-store-multimodal-data).
+</Info>
+
+LanceDB Enterprise accepts SQL over the same connection, for sampling, joins, and
+curation tasks that go beyond a single table scan. Draw a quick sample to look
+at the data:
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
-    {"curated = (\n    table.search(query_vector)\n    .where(\"stats.motion >= 4\")\n    .select([\"frame_id\", \"video_id\", \"caption\", \"_distance\"])\n    .limit(2)\n    .to_pandas()\n)\nprint(curated)\n"}
-    </CodeBlock>
-    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
-    {TsQuickstartCurateWithMetadata}
-    </CodeBlock>
-    <CodeBlock filename="Rust" language="Rust" icon="rust">
-    {RsQuickstartCurateWithMetadata}
+    {PyQuickstartCurateSample}
     </CodeBlock>
 </CodeGroup>
 
-Frames 2 and 4 come back again here, since both already have `motion >= 4`; frames 1 and 3 are excluded from ranking entirely, rather than ranked and then dropped. See [SQL filtering](/search/filtering) for the full predicate syntax.
+See [SQL](/basics/sql) for the Flight SQL client and CLI alternatives to `execute_query()`.
+
+Now add a near-duplicate frame -- frame 5 is one video frame after frame 2, with
+an almost identical embedding -- and build the vector index that `dedupe` reads:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyQuickstartCurateDedupeSetup}
+    </CodeBlock>
+</CodeGroup>
+
+Collapse near-duplicates into a materialized view that stays current as new frames arrive, then read it back:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyQuickstartCurateDedupe}
+    </CodeBlock>
+</CodeGroup>
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyQuickstartCurateDedupeQuery}
+    </CodeBlock>
+</CodeGroup>
+
+Frames 2 and 5 collapse into one representative -- five rows become four.
+Which of the two ids survives is not guaranteed to stay the same across
+appends, so don't treat it as a stable identifier for the cluster. See
+[Deduplicate near-duplicate records](/curation/dedupe) for `duplicate_pairs`,
+resolution strategies, and tuning `distance_threshold`, and
+[Sampling](/curation/sampling) for percentage samples, repeatable draws, and
+sampling across a join.
 
 ## 6\. Add a derived feature {#6-add-a-derived-feature}
 
-Add a column calculated from existing fields with a SQL expression. This fills every existing row once, immediately:
+<Info>
+This step also needs LanceDB Enterprise -- see [step 5](#5-curate-with-sql).
+</Info>
+
+A UDF binds to top-level columns, so flatten the fields inside `stats` first:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyQuickstartFlattenStats}
+    </CodeBlock>
+</CodeGroup>
+
+Register a UDF as a Function, then call it to fill a column computed from
+those flattened fields. This fills every existing row once, immediately:
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
     {PyQuickstartAddFeature}
-    </CodeBlock>
-    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
-    {TsQuickstartAddFeature}
-    </CodeBlock>
-    <CodeBlock filename="Rust" language="Rust" icon="rust">
-    {RsQuickstartAddFeature}
     </CodeBlock>
 </CodeGroup>
 
@@ -289,37 +332,21 @@ Read it back like any other column:
     <CodeBlock filename="Python" language="Python" icon="python">
     {"features = table.search().select([\"frame_id\", \"video_id\", \"quality_score\"]).limit(10).to_pandas()\nprint(features)\n"}
     </CodeBlock>
-    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
-    {TsQuickstartQueryFeature}
-    </CodeBlock>
-    <CodeBlock filename="Rust" language="Rust" icon="rust">
-    {RsQuickstartQueryFeature}
-    </CodeBlock>
 </CodeGroup>
 
-See [Adding columns](/management/table#schema-add-new-columns) for more on this form.
-
-## 7\. Set up computed columns {#7-computed-columns}
-
-A computed column is declared up front and filled -- or refilled -- on demand, instead of being calculated once like step 6's. Declare `caption_length`, then fill it explicitly:
+`refresh_column` fills only rows added since the last refresh and recomputes rows whose inputs changed, leaving unchanged rows alone. Run the same refresh as a background job instead, so it doesn't block:
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
-    {PyQuickstartComputedFeature}
+    {PyQuickstartAddFeatureEnterprise}
     </CodeBlock>
 </CodeGroup>
 
-A later `refresh_column` call fills only rows added since the last refresh and recomputes rows whose inputs changed, leaving unchanged rows alone. On LanceDB Enterprise, the equivalent refresh runs as a background job instead of blocking:
+See [Create a Function](/curation/create-function) for UDFs that call external
+models or services, and [Computed columns](/feature-engineering/add-computed-column)
+for the SQL-expression form that doesn't need a registered Function.
 
-<CodeGroup>
-    <CodeBlock filename="Python" language="Python" icon="python">
-    {PyQuickstartComputedFeatureEnterprise}
-    </CodeBlock>
-</CodeGroup>
-
-TypeScript and Rust declare and refresh computed columns the same way, through the same `add_columns`/`refresh_column` calls. See [Computed columns](/feature-engineering/add-computed-column) for the full refresh semantics and the automatic-refresh option.
-
-## 8\. Store multimodal data {#8-store-multimodal-data}
+## 7\. Store multimodal data {#7-store-multimodal-data}
 
 Store images, audio, or other binary data alongside vectors and metadata, in a column of raw bytes. This creates a new table from one image file -- replace the path with one of your own:
 
@@ -337,7 +364,7 @@ Store images, audio, or other binary data alongside vectors and metadata, in a c
 
 See [Multimodal data types](/management/table#multimodal) for larger payloads and the Blob v2 column type, which avoids loading binary data on every scan.
 
-## 9\. Train on your data {#9-train}
+## 8\. Train on your data {#8-train}
 
 Read table data into PyTorch, projecting and shuffling only the columns a training step needs:
 
@@ -347,7 +374,7 @@ Read table data into PyTorch, projecting and shuffling only the columns a traini
     </CodeBlock>
 </CodeGroup>
 
-`Permutation` is LanceDB's row-ordering primitive for training reads; `select_columns` projects before reading, so a training step touches only the columns it selects, not unused ones such as `caption` or `embedding`. See [Data loading](/training/data-loading) for the full `StreamingDataset` API, including resuming and multi-worker loading.
+`StreamingDataset` wraps a table for PyTorch training reads; `columns` projects before reading, so a training step touches only the columns it selects, not unused ones such as `caption` or `embedding`. It works the same way against LanceDB Embedded and LanceDB Enterprise. See [PyTorch Data Loader](/training/data-loading) for shuffling, transforms, resuming, and multi-worker loading, and [Permutation](/training/permutation) for the lower-level row-ordering primitive it's built on.
 
 ## Where to go next {#next-steps}
 

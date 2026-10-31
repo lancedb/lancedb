@@ -482,38 +482,15 @@ in the function's source or its `env` map in plain text. A Secret is a
 database-scoped named credential; `db.create_secret` stores the value once,
 and an `EnvVarSecret` binds it to the environment variable the function
 reads. Binding is a registration-time decision, passed to
-`create_function_async`, not to `@udf`:
+`create_function_async`, not to `@udf`. No API returns a Secret's value,
+and it never appears in the function's registration: the function reads the
+environment variable the way it always did, and the binding is what puts a
+value there. A mistyped Secret name is caught at registration; a mistyped
+environment variable name surfaces only on the first rows, since nothing
+records which variables a function reads.
 
-<CodeGroup>
-```python Python icon="python"
-import os
-
-from lancedb import EnvVarSecret
-
-db.create_secret("openai-prod", os.environ["OPENAI_API_KEY"])
-
-@udf
-def embed(text: str) -> list[float]:
-    import os
-
-    from openai import OpenAI
-
-    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-    response = client.embeddings.create(input=text, model="text-embedding-3-small")
-    return response.data[0].embedding
-
-version = db.create_function_async(
-    embed,
-    secrets=[EnvVarSecret(secret_name="openai-prod", env_variable="OPENAI_API_KEY")],
-).wait()
-```
-</CodeGroup>
-
-No API returns a Secret's value, and it never appears in the function's
-registration: `embed` reads `OPENAI_API_KEY` the way it always did, and the
-binding is what puts a value there. A mistyped Secret name is caught at
-registration; a mistyped environment variable name surfaces only on the
-first rows, since nothing records which variables a function reads.
+See [Vend a Secret to a Function](/curation/vend-secret#specify) for the
+full worked example.
 
 ## Failure handling {#failures}
 

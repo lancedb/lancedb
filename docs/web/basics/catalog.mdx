@@ -3,7 +3,7 @@ title: "LanceDB Catalog"
 sidebarTitle: "LanceDB Catalog"
 description: "LanceDB Lakehouse objects are organized into a catalog of databases, namespaces and tables -- connect to a database to work with them."
 icon: sitemap
-keywords: ["catalog", "namespace", "hierarchy", "governance", "database", "table", "view", "connect", "uri", "embedded", "object storage", "s3", "enterprise", "db://"]
+keywords: ["catalog", "namespace", "namespace path", "hierarchy", "governance", "database", "table", "view", "connect", "uri", "embedded", "object storage", "s3", "enterprise", "db://"]
 ---
 
 import {
@@ -18,38 +18,98 @@ import {
     TsConnectObjectStorage,
 } from '/snippets/connection.mdx';
 
-## Catalog overview {#catalog}
+## Catalog Hierarchy {#hierarchy}
 
 A catalog keeps track of named data objects, such as tables and views, so
-applications can discover and access them. In LanceDB, it organizes those
-objects into databases and namespaces -- similar to a catalog in Postgres,
-Snowflake, or other database systems.
+applications can discover and access them. In LanceDB Enterprise, the
+catalog is the top-level entry point: it organizes databases, which in turn
+organize namespaces and tables -- similar to a catalog in Postgres,
+Snowflake, or other database systems. The catalog itself has no name of its
+own -- it's just the root -- and an Enterprise deployment's catalog is
+identified by its endpoint, not a name like the objects beneath it.
+
+LanceDB Embedded has no catalog at all. Connect directly to a
+[database](#connecting-to-database) instead of going through a catalog.
+
+A database contains namespaces that group related tables and views.
+Namespaces can also contain other namespaces, letting teams organize data by
+project, environment or purpose.
+
+For example, a search application can keep production and staging data in
+separate namespaces within the same database, with `prod` further split into
+a nested `search` namespace:
+
+```mermaid
+flowchart TD
+    catalog["catalog · root, unnamed"] --> database["ai_data · database"]
+    database --> prod["prod · namespace"]
+    database --> staging["staging · namespace"]
+    prod --> search["search · namespace"]
+    search --> search_docs["documents · table"]
+    staging --> staging_docs["documents · table"]
+```
+
+| Object | What it represents |
+| --- | --- |
+| Catalog | The unnamed root of an Enterprise deployment, identified by its endpoint; lists, creates and drops databases. Not present in Embedded. |
+| [Database](/management/database) | A container for namespaces and their data objects. |
+| [Namespace](/management/namespace) | A named group of tables, views or nested namespaces, addressed by its namespace path. |
+| [Table](/management/table) | Data stored as rows and columns. |
+| [View](/management/view) | A saved query, evaluated when read. Available in Enterprise. |
+| [Materialized view](/management/materialized-view) | The stored results of a query, updated by a refresh. Available in Enterprise. |
+| [Secret](/management/secret) | A named credential that a Function binds by reference. Available in Enterprise. |
+
+{/*
+Draft for the Functions release. Add this row to the table above:
+| [Function](/management/function) | Registered code used to compute column values. Available in Enterprise. |
+*/}
+
+### Namespace paths {#namespace-paths}
+
+A **namespace path** is the sequence of namespace names from the database
+down to a given namespace. In the diagram above, `search` sits inside `prod`,
+so its namespace path is `prod.search`. Each part of that path is itself a
+namespace with its own name: `prod` is a namespace named `prod` directly
+under the database, and `search` is a namespace named `search` nested inside
+`prod`. SQL and the SDKs address a namespace, or a table within one, by its
+full path, such as `prod.search.documents`.
 
 ## Connecting {#connecting}
 
 You always run table and query operations within a **database**; cross-database
 operations go through SQL instead. The same Python, TypeScript and Rust SDKs
-reach a database two ways:
+reach a database and the catalog separately.
 
-- **Directly, the common case.** `lancedb.connect(uri)` opens one database in a
-  single call -- a local directory, an object-storage path, or (with a `db://`
-  URI) a specific Enterprise database.
-- **Through the catalog, for admin and cross-database work.** `connect_catalog(endpoint)`
-  connects to Enterprise's root catalog, which can list, create and drop
-  databases across the whole deployment. Its `connect_database(name)` and
-  `create_database(name)` then return the same kind of database connection
-  `lancedb.connect()` does. Local filesystem and object-store deployments have
-  no catalog to connect to -- each is already scoped to one database.
+### Connecting to Catalog {#connecting-to-catalog}
 
-The table below shows which URI reaches which kind of database directly.
+<Badge color="red">Enterprise</Badge>
 
-| URI | Where queries run |
-| --- | --- |
-| A local path, such as `./data` | Embedded: in your process |
-| `s3://`, `gs://` or `az://` | Embedded: in your process, reading object storage |
-| `db://` | LanceDB Enterprise: queries run on your cluster |
+`connect_catalog(endpoint)` connects to Enterprise's root catalog, which can
+list, create and drop databases across the whole deployment. Its
+`connect_database(name)` and `create_database(name)` then return the same
+kind of database connection `lancedb.connect()` does.
 
-### A local directory {#local}
+This connection is for database administration, not table or query work:
+list, create and drop databases through it, then switch to a **database**
+connection for everything else -- tables, queries, and SQL all run within a
+database, never directly against the catalog. Local filesystem and
+object-store deployments have no catalog to connect to -- each is already
+scoped to one database.
+
+### Connecting to Database {#connecting-to-database}
+
+`lancedb.connect(uri)` opens one database in a single call -- a local
+directory, an object-storage path, or (with a `db://` URI) a specific
+Enterprise database. The table below shows which URI reaches which kind of
+database directly.
+
+| URI | Mode | Where queries run |
+| --- | --- | --- |
+| A local path, such as `./data` | <Badge color="green">Embedded</Badge> | In your process |
+| `s3://`, `gs://` or `az://` | <Badge color="green">Embedded</Badge> | In your process, reading object storage |
+| `db://` | <Badge color="red">Enterprise</Badge> | On your cluster |
+
+#### A local directory {#local}
 
 Embedded in your application, LanceDB reads and writes the tables in a
 directory on disk.
@@ -75,12 +135,11 @@ directory on disk.
     </CodeBlock>
 </CodeGroup>
 
-### Object storage {#object-storage}
+#### Object storage {#object-storage}
 
 With an object storage URI the library is still embedded: your process runs
-every query and reads and writes the bucket directly, with the credentials from
-its environment or its storage options. [Configuring storage](/deployment/storage)
-covers credentials, endpoints and provider options.
+every query and reads and writes the bucket directly, with credentials from
+its environment or its connection's `storage_options`.
 
 <CodeGroup>
     <CodeBlock filename="Python (sync)" language="Python" icon="python">
@@ -99,7 +158,22 @@ covers credentials, endpoints and provider options.
 
 In Rust, pass the same URI to `connect`.
 
-### LanceDB Enterprise {#enterprise}
+LanceDB supports these object storage backends:
+
+| Backend | URI scheme | Credentials |
+| --- | --- | --- |
+| AWS S3, and S3-compatible stores (MinIO, Tigris, ...) | `s3://` | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, or `storage_options`. Compatible stores also need `endpoint` and `region`. |
+| Google Cloud Storage | `gs://` | `GOOGLE_SERVICE_ACCOUNT` (path to a service account JSON), or `storage_options` |
+| Azure Blob Storage | `az://` | `AZURE_STORAGE_ACCOUNT_NAME` + `AZURE_STORAGE_ACCOUNT_KEY` (or a SAS token), or `storage_options` |
+| Tencent COS | `cos://` | `TENCENTCLOUD_SECRET_ID` / `TENCENTCLOUD_SECRET_KEY`, or `storage_options` |
+| GooseFS (a cache layer over COS or S3) | `goosefs://` | Reads from the GooseFS client environment |
+
+Pass credentials as environment variables (uppercase), or as a
+`storage_options` dict at connection or table level (lowercase keys); a
+table's `storage_options` inherit the connection's and override on a
+per-key basis.
+
+#### LanceDB Enterprise {#enterprise}
 
 A `db://` URI connects directly to one database in LanceDB Enterprise, where
 your cluster runs queries and background work. Get the database URI, API key,
@@ -124,40 +198,6 @@ instead of an API key, see
 [Authentication](/enterprise/authentication); for every connection option, see
 [Database](/management/database#deployment).
 
-## Databases, namespaces and tables {#objects}
-
-A database contains namespaces that group related tables and views. Namespaces
-can also contain other namespaces, allowing teams to organize data by project,
-environment or purpose.
-
-For example, a search application can keep production and staging data in
-separate namespaces within the same database:
-
-```mermaid
-flowchart TD
-    database["ai_data · database"] --> prod["prod · namespace"]
-    database --> staging["staging · namespace"]
-    prod --> prod_docs["documents · table"]
-    staging --> staging_docs["documents · table"]
-```
-
-<span id="views" />
-
-| Object | What it represents |
-| --- | --- |
-| [Database](/management/database) | A container for namespaces and their data objects. |
-| [Namespace](/management/namespace) | A named group of tables, views or nested namespaces. |
-| [Table](/management/table) | Data stored as rows and columns. |
-| [View](/management/view) | A saved query, evaluated when read. Available in Enterprise. |
-| [Materialized view](/management/materialized-view) | The stored results of a query, updated by a refresh. Available in Enterprise. |
-
-{/*
-Draft for the Functions release. Add this row to the table above:
-| [Function](/management/function) | Registered code used to compute column values. Available in Enterprise. |
-*/}
-
-<span id="resolution" />
-
 ## Organization and access control {#governance}
 
 - **Separate projects and environments.** Keep production and staging tables
@@ -167,12 +207,11 @@ Draft for the Functions release. Add this row to the table above:
 - **Control access in Enterprise.** Use permissions on databases, namespaces
   and tables to manage who can access shared data and what they can do with it.
 
-<span id="elsewhere" />
-
 ## Learn more {#next}
 
 - [Databases](/management/database): connect to and manage a database.
 - [Namespaces](/management/namespace): create groups and address tables within them.
 - [Tables](/management/table): create, inspect and manage your data.
 - [Views](/management/view) and [materialized views](/management/materialized-view): work with query-defined data.
+- [Secrets](/management/secret): store a credential that a Function can bind by reference.
 - [Authorization](/governance/authorization): configure Enterprise access permissions.

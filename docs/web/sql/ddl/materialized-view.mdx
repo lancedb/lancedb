@@ -21,9 +21,11 @@ its LanceDB Enterprise version and configuration.
 
 ## CREATE MATERIALIZED VIEW {#create}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 CREATE MATERIALIZED VIEW <name> AS SELECT ...
 ```
+</CodeGroup>
 
 Once created, a materialized view can be queried like a table. Use the
 statements below to list, refresh and drop it. For SDK methods, see
@@ -38,9 +40,12 @@ Functions from [Functions](/management/function#chain):
 
 ```sql
 CREATE MATERIALIZED VIEW frames_captioned AS
-SELECT f.frame_id, extract_frame(v.video, f.ts) AS jpeg,
-       caption(extract_frame(v.video, f.ts)) AS caption
-FROM videos v JOIN frames f ON v.id = f.video_id
+SELECT
+    f.frame_id,
+    extract_frame(v.video, f.ts) AS jpeg,
+    caption(extract_frame(v.video, f.ts)) AS caption
+FROM videos v
+JOIN frames f ON v.id = f.video_id
 WHERE f.selected = true
 WITH (auto_refresh_enabled = false, auto_refresh_interval_seconds = 5)
 ```
@@ -54,9 +59,11 @@ automatic execution needs the same server-side switch enabled. Omitting
 
 ## SHOW MATERIALIZED VIEWS {#show}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SHOW MATERIALIZED VIEWS
 ```
+</CodeGroup>
 
 <Note>
 This asks the server for its views, as the SDK's `list_materialized_views` does
@@ -65,9 +72,11 @@ on a `db://` connection.
 
 ## Refreshing one {#refresh}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 REFRESH MATERIALIZED VIEW chunks
 ```
+</CodeGroup>
 
 See [REFRESH MATERIALIZED VIEW](/sql/dml/refresh-materialized-view) for the full syntax,
 and compatibility notes for older server versions.

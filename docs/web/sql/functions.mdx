@@ -39,12 +39,17 @@ produces relevance alongside the matching rows. The following query assumes
 `my_docs` has `id` and `text` columns and a full-text index on `text`; see the
 [setup example](/sql/dql/fts#setup):
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT id, text, _score
-FROM fts('my_docs', '{"match":{"column":"text","terms":"puppy"}}')
+FROM fts(
+    'my_docs',
+    '{"match":{"column":"text","terms":"puppy"}}'
+)
 ORDER BY _score DESC
 LIMIT 5
 ```
+</CodeGroup>
 
 The second argument is a string literal containing a JSON query object. A bare
 query string such as `'puppy'` is rejected. Match, fuzzy, phrase, boolean, boost
@@ -56,13 +61,18 @@ Being a relation is also what makes it compose: join it, filter it, aggregate
 over it. This join additionally requires `my_docs.category_id` and a
 `categories` table with `id` and `name` columns:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT c.name, count(*) AS hits
-FROM fts('my_docs', '{"match":{"column":"text","terms":"puppy"}}') AS m
+FROM fts(
+    'my_docs',
+    '{"match":{"column":"text","terms":"puppy"}}'
+) AS m
 JOIN categories AS c ON c.id = m.category_id
 GROUP BY c.name
 ORDER BY hits DESC
 ```
+</CodeGroup>
 
 For a keyword test that needs no score, the
 [`contains_tokens`](/sql/scalar-functions#contains-tokens) predicate is
@@ -83,10 +93,21 @@ in a relation that came from `fts()`. See
 Scan a vector column's [index](/indexing/vector-index) partitions for rows
 closer than a distance threshold, without a full pairwise scan or a shuffle:
 
-```sql
-SELECT * FROM duplicate_pairs('frames', 'vec', distance_threshold => 0.02)
-SELECT * FROM dedupe('frames', 'vec', distance_threshold => 0.02)
+<CodeGroup>
+```sql SQL icon="database"
+SELECT * FROM duplicate_pairs(
+    'frames',
+    'vec',
+    distance_threshold => 0.02
+)
+
+SELECT * FROM dedupe(
+    'frames',
+    'vec',
+    distance_threshold => 0.02
+)
 ```
+</CodeGroup>
 
 <Note>
 Earlier releases spelled these `vector_duplicate_pairs` and `vector_dedup`;
@@ -103,9 +124,14 @@ schema, resolution grouping, and partition sampling.
 
 ### `generate_series` {#generate-series}
 
-```sql
-SELECT * FROM generate_series(1, 10)
+<CodeGroup>
+```sql SQL icon="database"
+SELECT * FROM generate_series(
+    1,
+    10
+)
 ```
+</CodeGroup>
 
 Rows from a range, useful for building a dense axis to left-join sparse data
 onto.

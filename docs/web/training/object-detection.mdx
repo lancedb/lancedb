@@ -48,7 +48,8 @@ Each curated slice becomes a [Geneva materialized view](/geneva/jobs/materialize
 
 The source table holds raw image bytes alongside structured annotations. Bounding boxes are stored as a parallel list (one element per box) rather than a nested struct so they remain directly queryable with SQL.
 
-```py Python icon=Python
+<CodeGroup>
+```python Python icon="python"
 import pyarrow as pa
 
 BDD_SCHEMA = pa.schema([
@@ -69,6 +70,7 @@ BDD_SCHEMA = pa.schema([
     pa.field("ann_occluded",   pa.list_(pa.bool_())),
 ])
 ```
+</CodeGroup>
 
 Ingestion streams `pa.RecordBatch`es of raw frames + annotations directly into a Lance table, with no intermediate preprocessing job. The table can live on local disk, S3, GCS, or Azure; everything downstream (backfills, views, the training loader) opens it in place via `lancedb.connect("s3://...")` with no local copy step.
 
@@ -76,7 +78,8 @@ Ingestion streams `pa.RecordBatch`es of raw frames + annotations directly into a
 
 Curation signals are added as columns on the same table using [Geneva backfilling](/geneva/jobs/backfilling). Backfills are incremental and checkpointed: re-running the command after new footage arrives only computes the new rows.
 
-```py Python icon=Python
+<CodeGroup>
+```python Python icon="python"
 import pyarrow as pa
 from geneva.transformer import udf
 
@@ -99,10 +102,12 @@ class PersonBboxAreaPct:
         # lazy model load — runs once per Ray worker, then reused
         ...
 ```
+</CodeGroup>
 
 Run the backfill against the live table:
 
-```py Python icon=Python
+<CodeGroup>
+```python Python icon="python"
 import geneva
 
 gconn = geneva.connect("data/bdd100k/lancedb")
@@ -115,6 +120,7 @@ with gconn.local_ray_context():
     tbl.backfill("has_rider")
     tbl.backfill("person_bbox_area_pct")
 ```
+</CodeGroup>
 
 <Note>
 Because the curation features are flat scalar columns on the same table, all four retrieval modes (SQL, full-text search, vector search, and SQL-filtered vector search) work directly without joins or exports. See [Geneva backfilling](/geneva/jobs/backfilling) for how a backfill fills only the rows that lack values.
@@ -124,7 +130,8 @@ Because the curation features are flat scalar columns on the same table, all fou
 
 A training split is a named SQL filter, not a CSV manifest. Each view stays in sync with the source table and bumps its `version` on every refresh. That version is the link between a checkpoint and the exact data that produced it.
 
-```py Python icon=Python
+<CodeGroup>
+```python Python icon="python"
 import geneva
 
 gconn = geneva.connect("data/bdd100k/lancedb")
@@ -152,12 +159,14 @@ with gconn.local_ray_context():
         mv.refresh()
         print(f"[{name}]  {mv.count_rows()} rows  (version {mv.version})")
 ```
+</CodeGroup>
 
 ## 4\. PyTorch DataLoader via the Permutation API {#4-pytorch-dataloader-via-the-permutation-api}
 
 The training script doesn't know about the filter: it opens a view by name and reads through the [`Permutation`](/training/permutation) API. Each DataLoader worker reopens its own connection lazily, reads Arrow batches directly from Lance (zero-copy, no intermediate file format), and the collate function decodes the whole batch in one pass. `Permutation` provides random-access indexing over the table, so shuffling is a cheap pointer rewrite rather than a full-dataset shuffle on disk.
 
-```py Python icon=Python
+<CodeGroup>
+```python Python icon="python"
 import lancedb
 import torch
 import torchvision.io as tio
@@ -193,10 +202,12 @@ class LanceDetectionDataset(torch.utils.data.Dataset):
         self._ensure_open()
         return self._perm.__getitems__(indices)
 ```
+</CodeGroup>
 
 The collate function decodes JPEG bytes and converts BDD category strings into COCO class IDs (so the comparison against the pretrained checkpoint is valid):
 
-```py Python icon=Python
+<CodeGroup>
+```python Python icon="python"
 BDD_LABEL_MAP = {
     "person": 1, "rider": 1, "bicycle": 2, "car": 3, "motorcycle": 4,
     "bus": 6, "train": 7, "truck": 8, "traffic light": 10,
@@ -226,10 +237,12 @@ def detection_collate(batch):
         })
     return images, targets
 ```
+</CodeGroup>
 
 Wire it into a standard `torch.utils.data.DataLoader`:
 
-```py Python icon=Python
+<CodeGroup>
+```python Python icon="python"
 def make_loader(uri, table_name, batch_size=64, num_workers=8, shuffle=False):
     dataset = LanceDetectionDataset(uri, table_name)
     sampler = torch.utils.data.RandomSampler(dataset) if shuffle else None
@@ -244,6 +257,7 @@ def make_loader(uri, table_name, batch_size=64, num_workers=8, shuffle=False):
         multiprocessing_context="spawn" if num_workers > 0 else None,
     )
 ```
+</CodeGroup>
 
 <Note>
 `with_format("arrow")` keeps batches as zero-copy `pa.RecordBatch`es: no per-row Python boxing, no pickling between worker and main. Each DataLoader worker reopens its own `Permutation` after fork (the Rust async handle is cleared in `__getstate__`), so reads scale with `num_workers` and stream straight from the underlying object store. JPEG decode overlaps with GPU compute via `pin_memory` + `prefetch_factor`, which is what keeps the loader from becoming the bottleneck on a fast GPU.
@@ -253,7 +267,8 @@ def make_loader(uri, table_name, batch_size=64, num_workers=8, shuffle=False):
 
 The training loop is plain PyTorch: the Lance integration ends at the loader. Mixed precision is enabled on CUDA for ~2× speedup on Ampere GPUs.
 
-```py Python icon=Python
+<CodeGroup>
+```python Python icon="python"
 import time
 import torch
 from torchvision.models.detection import (
@@ -309,12 +324,14 @@ for epoch in range(1, 11):
     scheduler.step()
     print(f"epoch {epoch}  ({time.time() - t0:.1f}s)")
 ```
+</CodeGroup>
 
 ## 6\. Pin the checkpoint to a data version {#6-pin-the-checkpoint-to-a-data-version}
 
 Every Lance table, including a materialized view, exposes a monotonically increasing `version`. Logging it next to the weights gives a permanent, deterministic link between a checkpoint and the exact data snapshot that produced it.
 
-```py Python icon=Python
+<CodeGroup>
+```python Python icon="python"
 import json
 from pathlib import Path
 
@@ -330,19 +347,23 @@ with open(out / "metadata.json", "w") as f:
         "row_count":     len(train_tbl),
     }, f, indent=2)
 ```
+</CodeGroup>
 
 To reproduce a run, [time-travel](/management/table#versioning) the view to the recorded version before opening the loader:
 
-```py Python icon=Python
+<CodeGroup>
+```python Python icon="python"
 tbl = lancedb.connect("data/bdd100k/lancedb").open_table("bdd100k_rider_train")
 tbl.checkout(version=7)   # exact snapshot the checkpoint was trained on
 ```
+</CodeGroup>
 
 ## 7\. Continuous updates {#7-continuous-updates}
 
 When new footage arrives, the same three calls update every downstream view (no view definitions change, no training-script edits required):
 
-```py Python icon=Python
+<CodeGroup>
+```python Python icon="python"
 # 1. ingest the new footage into the source table
 table.add(new_record_batches)
 
@@ -360,6 +381,7 @@ for view_name in gconn.table_names():
     mv.refresh()
     print(f"[{view_name}]  {before} → {mv.count_rows()} rows  (version {mv.version})")
 ```
+</CodeGroup>
 
 The next training run picks up the new data automatically and pins itself to the new `version`.
 

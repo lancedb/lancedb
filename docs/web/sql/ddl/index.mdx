@@ -11,10 +11,12 @@ availability:
 
 ## CREATE INDEX {#create}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 CREATE INDEX ON documents USING btree (title)
 CREATE INDEX text_search ON documents USING fts (text)
 ```
+</CodeGroup>
 
 `USING` is required: it names the algorithm. The scalar algorithms are `btree`,
 `bitmap` and `label_list`; `fts` builds a full-text index; and the vector
@@ -38,9 +40,11 @@ runs as `create_` followed by the algorithm instead. See
 
 ## DROP INDEX {#drop}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 DROP INDEX documents.title_idx
 ```
+</CodeGroup>
 
 Takes the qualified `table.index` name. Find it with the SDK's
 [`list_indices`](/indexing) if you created the index without

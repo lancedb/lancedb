@@ -193,21 +193,6 @@ def test_quickstart(db):
     # --8<-- [end:quickstart_output_pandas]
     assert result["frame_id"].to_list() == ["2", "4"]
 
-    # --8<-- [start:quickstart_curate_with_metadata]
-    curated = (
-        table.search(query_vector)
-        .where("stats.motion >= 4")
-        .select(["frame_id", "video_id", "caption", "_distance"])
-        .limit(2)
-        .to_polars()
-    )
-    print(curated)
-    # --8<-- [end:quickstart_curate_with_metadata]
-    assert curated["frame_id"].to_list() == ["2", "4"]
-
-    curated = table.search(query_vector).where("stats.motion < 4").limit(2).to_list()
-    assert [row["frame_id"] for row in curated] == ["1", "3"]
-
 
 @pytest.mark.asyncio
 async def test_quickstart_async_api(async_db):
@@ -234,66 +219,165 @@ async def test_quickstart_async_api(async_db):
     query_vector = [0.2, 0.8, 0.4, 0.9]
 
     # Ensure you run `pip install polars` beforehand
-    async_result = await (
-        await async_table.search(query_vector)
-    ).select(["frame_id", "video_id", "caption", "_distance"]).limit(2).to_polars()
+    async_result = (
+        await (await async_table.search(query_vector))
+        .select(["frame_id", "video_id", "caption", "_distance"])
+        .limit(2)
+        .to_polars()
+    )
     print(async_result)
     # --8<-- [end:quickstart_vector_search_1_async]
     assert async_result["frame_id"].to_list() == ["2"]
 
 
-def test_quickstart_derived_feature(db):
+def test_quickstart_curate_with_sql(deployment):
+    db = deployment.db
     table = create_frames(db)
+    deployment.claimed.append("frames")
 
-    # --8<-- [start:quickstart_add_feature]
+    # --8<-- [start:quickstart_curate_sample]
+    sample = db.execute_query(
+        "SELECT frame_id FROM frames TABLESAMPLE (2 ROWS)"
+    ).read_all()
+    print(sample.to_pylist())
+    # --8<-- [end:quickstart_curate_sample]
+    assert sample.num_rows == 2
+
+    # --8<-- [start:quickstart_curate_dedupe_setup]
+    # Frame 5 is a near-duplicate of frame 2: the gripper is still closing,
+    # one video frame later, with an almost identical embedding.
+    table.add(
+        [
+            {
+                "frame_id": "5",
+                "video_id": "clip-1",
+                "caption": "the two-finger gripper still closing on the cup",
+                "stats": {"motion": 5, "sharpness": 4, "exposure": 5, "framing": 2},
+                "embedding": [0.2, 0.9, 0.4, 0.89],
+            }
+        ]
+    )
+    from lancedb.index import IvfFlat
+
+    table.create_index(
+        "embedding", config=IvfFlat(num_partitions=1, distance_type="l2")
+    )
+    table.wait_for_index(["embedding_idx"])
+    # --8<-- [end:quickstart_curate_dedupe_setup]
+
+    # --8<-- [start:quickstart_curate_dedupe]
+    db.execute_query("""
+        CREATE MATERIALIZED VIEW frames_deduped AS
+        SELECT * FROM dedupe(
+            'frames',
+            'embedding',
+            distance_threshold => 0.03
+        )
+    """)
+    # --8<-- [end:quickstart_curate_dedupe]
+    deployment.claimed.append("frames_deduped")
+
+    # --8<-- [start:quickstart_curate_dedupe_query]
+    deduped = db.execute_query(
+        "SELECT frame_id FROM frames_deduped ORDER BY frame_id"
+    ).read_all()
+    print(deduped.to_pylist())
+    # --8<-- [end:quickstart_curate_dedupe_query]
+    assert deduped.column("frame_id").to_pylist() in (
+        ["1", "2", "3", "4"],
+        ["1", "3", "4", "5"],
+    )
+
+
+def quality_scores(table):
+    rows = table.search().select(["frame_id", "video_id", "quality_score"]).to_list()
+    return {row["frame_id"]: row["quality_score"] for row in rows}
+
+
+EXPECTED_QUALITY_SCORES = {"1": 3.5, "2": 4.0, "3": 3.0, "4": 3.75}
+
+
+def flatten_stats(table):
+    # --8<-- [start:quickstart_flatten_stats]
     table.add_columns(
         {
-            "quality_score": "cast(((stats.motion + stats.sharpness + stats.exposure + stats.framing) / 4.0) as float)"
+            "motion": "cast(stats.motion as float)",
+            "sharpness": "cast(stats.sharpness as float)",
+            "exposure": "cast(stats.exposure as float)",
+            "framing": "cast(stats.framing as float)",
         }
     )
+    # --8<-- [end:quickstart_flatten_stats]
+
+
+def test_quickstart_derived_feature(db_path_factory):
+    db = lancedb.connect(db_path_factory("derived_feature"))
+    table = create_frames(db)
+    flatten_stats(table)
+
+    # --8<-- [start:quickstart_add_feature]
+    from lancedb import col, udf
+
+    @udf
+    def quality_score(
+        motion: float, sharpness: float, exposure: float, framing: float
+    ) -> float:
+        return (motion + sharpness + exposure + framing) / 4.0
+
+    version = db.create_function_async(quality_score).wait()
+    table.add_columns(
+        {
+            "quality_score": version(
+                motion=col("motion"),
+                sharpness=col("sharpness"),
+                exposure=col("exposure"),
+                framing=col("framing"),
+            )
+        }
+    )
+    table.refresh_column("quality_score")
     # --8<-- [end:quickstart_add_feature]
 
     # --8<-- [start:quickstart_query_feature]
-    features = table.search().select(["frame_id", "video_id", "quality_score"]).to_polars()
+    features = (
+        table.search().select(["frame_id", "video_id", "quality_score"]).to_polars()
+    )
     print(features)
     # --8<-- [end:quickstart_query_feature]
-    assert sorted(zip(features["frame_id"], features["quality_score"])) == [
-        ("1", 3.5),
-        ("2", 4.0),
-        ("3", 3.0),
-        ("4", 3.75),
-    ]
+    assert quality_scores(table) == EXPECTED_QUALITY_SCORES
 
 
-def caption_lengths(table):
-    rows = table.search().select(["caption", "caption_length"]).to_list()
-    return {row["caption"]: row["caption_length"] for row in rows}
-
-
-def test_quickstart_computed_column(db_path_factory):
-    table = create_frames(lancedb.connect(db_path_factory("computed")))
-
-    # --8<-- [start:quickstart_computed_feature]
-    table.add_columns(computed={"caption_length": "length(caption)"})
-    table.refresh_column("caption_length")
-    # --8<-- [end:quickstart_computed_feature]
-    lengths = caption_lengths(table)
-    assert lengths == {text: len(text) for text in lengths}
-
-
-def test_quickstart_computed_column_on_a_deployment(deployment):
+def test_quickstart_derived_feature_on_a_deployment(deployment):
     table = create_frames(deployment)
+    flatten_stats(table)
 
-    # --8<-- [start:quickstart_computed_feature_enterprise]
-    table.add_columns(computed={"caption_length": "length(caption)"})
-    job = table.refresh_column_async("caption_length")
+    from lancedb import col, udf
+
+    @udf
+    def quality_score(
+        motion: float, sharpness: float, exposure: float, framing: float
+    ) -> float:
+        return (motion + sharpness + exposure + framing) / 4.0
+
+    version = deployment.db.create_function_async(quality_score).wait()
+    table.add_columns(
+        {
+            "quality_score": version(
+                motion=col("motion"),
+                sharpness=col("sharpness"),
+                exposure=col("exposure"),
+                framing=col("framing"),
+            )
+        }
+    )
+
+    # --8<-- [start:quickstart_add_feature_enterprise]
+    job = table.refresh_column_async("quality_score")
     job.wait()
-    # --8<-- [end:quickstart_computed_feature_enterprise]
-    lengths = caption_lengths(table)
-    assert len(lengths) == 4
-    assert lengths == {text: len(text) for text in lengths}
+    # --8<-- [end:quickstart_add_feature_enterprise]
+    assert quality_scores(table) == EXPECTED_QUALITY_SCORES
     with pytest.raises(Exception):
-        table.refresh_column("caption_length")
+        table.refresh_column("quality_score")
 
 
 def test_quickstart_multimodal(db, tmp_path, monkeypatch):
@@ -330,7 +414,7 @@ def test_quickstart_training(db):
 
     # --8<-- [start:quickstart_training]
     import torch
-    from lancedb.permutation import Permutation
+    from lancedb.streaming import StreamingDataset
 
     table.add_columns(
         {
@@ -338,8 +422,8 @@ def test_quickstart_training(db):
             "sharpness": "cast(stats.sharpness as float)",
         }
     )
-    dataset = Permutation.identity(table).select_columns(["motion", "sharpness"])
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=1024, shuffle=True)
+    dataset = StreamingDataset(table, columns=["motion", "sharpness"], shuffle_seed=42)
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=1024, num_workers=0)
     # --8<-- [end:quickstart_training]
     batches = list(dataloader)
     assert len(batches) == 1

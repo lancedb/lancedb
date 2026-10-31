@@ -192,10 +192,12 @@ Two environment variables control how a multipart write's parts are cut. Both ar
 
 A part is cut after the input batch that reaches either limit, so cuts fall between batches. Lower the byte budget, with smaller input batches, when large ingests hit the read timeout; lower the duration when uploads are slow or throttled and the byte budget isn't the limiting factor.
 
-```bash
+<CodeGroup>
+```bash Bash icon="terminal"
 export LANCE_CLIENT_MAX_BYTES_PER_REQUEST=1073741824  # 1 GiB
 export LANCE_CLIENT_MAX_REQUEST_DURATION=120          # 2 minutes
 ```
+</CodeGroup>
 
 Splitting into more parts does not change the final table. The server stages the parts under their shared upload ID before committing
 the write. This upload protocol is separate from repeating an application-level

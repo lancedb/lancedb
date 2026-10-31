@@ -76,7 +76,7 @@ Enterprise runs materialization on remote compute, as a server-side job.
 | | What it produces | Filled by | Available |
 | --- | --- | --- | --- |
 | [View](/feature-engineering/view) | a saved query, no stored rows of its own | nothing -- it runs on every read | Enterprise |
-| [Computed column](/feature-engineering/add-computed-column) | a new column on an existing table | a SQL expression | Embedded and Enterprise |
+| [Computed column](/feature-engineering/add-computed-column) | a new column on an existing table | a SQL expression | Enterprise |
 | [Materialized view](/feature-engineering/materialized-views) | a new table derived by a query | a refresh | Enterprise |
 | [Geneva](/geneva) | columns filled by Python | the `geneva` package | <Badge color="red">Enterprise</Badge> |
 
@@ -124,11 +124,13 @@ cluster, and the API reflects that: `refresh_column` raises, and
 columns are off by default in LanceDB Enterprise, and its administrator has to enable
 them before a column can be declared there.
 
-```python
+<CodeGroup>
+```python Python icon="python"
 job = table.refresh_column_async("power_score")
 result = job.wait()
 result.rows_assigned
 ```
+</CodeGroup>
 
 A backfill over a large table can therefore be started, left, and checked on
 from a different process: the connection does not have to stay open.

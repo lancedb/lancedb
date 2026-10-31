@@ -1,0 +1,65 @@
+---
+title: "Principals"
+sidebarTitle: "Principals"
+description: "Users, groups, and roles: where each comes from, and how a GRANT or REVOKE statement names one."
+icon: user
+keywords: ["principal", "role", "group", "user", "subject", "rbac"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+A grant names one of three kinds of subject:
+
+| Subject | Where it comes from |
+| --- | --- |
+| User (principal) | Your identity provider -- OIDC, Microsoft Entra, Okta, or Keycloak. LanceDB never creates one. |
+| Group | Also your identity provider. LanceDB never creates one. |
+| Role | LanceDB itself. There is no statement that creates a role -- naming one in a grant is what brings it into existence. |
+
+## Naming a subject in SQL {#naming}
+
+`GRANT` and `REVOKE` accept a role, user, or group name directly, with an
+optional keyword to disambiguate:
+
+<CodeGroup>
+```sql SQL icon="database"
+GRANT USAGE ON SECRET platform.`openai-prod` TO ROLE research
+GRANT USAGE ON SECRET platform.`openai-prod` TO USER alice
+GRANT USAGE ON SECRET platform.`openai-prod` TO GROUP data-science
+```
+</CodeGroup>
+
+A `USER` or `GROUP` name is resolved against your identity provider, but
+only after the caller's `OWNERSHIP` on the object is checked -- so a grant
+to a misspelled name is still accepted, and quietly applies to no one.
+`ROLE` needs no such lookup, since a role is simply whatever name a grant
+has used.
+
+Name several subjects of the same kind in one statement by omitting the
+keyword after the first:
+
+<CodeGroup>
+```sql SQL icon="database"
+GRANT USAGE ON SECRET platform.`openai-prod` TO ROLE etl, rotation_service
+```
+</CodeGroup>
+
+## A role has no membership of its own in SQL {#membership}
+
+A role is not a group of users that `GRANT` and `REVOKE` can manage.
+Deciding which users or groups a role applies to -- its membership -- is a
+separate, REST and CLI-only operation. Granting a privilege to a role
+before anyone is a member of it is valid; the role simply has no effect
+yet.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Authorization" icon="shield-halved" href="/governance/authorization">
+    The access-control model a grant is built from.
+  </Card>
+  <Card title="Privileges" icon="key" href="/governance/privileges">
+    Every object's privileges, and the GRANT/REVOKE syntax that covers them.
+  </Card>
+</CardGroup>

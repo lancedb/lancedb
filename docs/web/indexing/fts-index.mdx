@@ -75,11 +75,13 @@ LanceDB rejects paths that don't resolve to a text leaf:
 
 The async API accepts the same dotted paths through `create_index`:
 
+<CodeGroup>
 ```python Python icon="python"
 from lancedb.index import FTS
 
 await async_table.create_index("payload.text", config=FTS(with_position=True))
 ```
+</CodeGroup>
 
 ## Configuration Options {#configuration-options}
 
@@ -131,6 +133,7 @@ Lance `15.0.0-beta.1` revises the built-in stop-word lists, including the multil
 
 You can set the option through either the synchronous or asynchronous API. In the async Python API, pass it on the `FTS` config, and in the TypeScript API use the camelCase `blockSize` field on `FtsOptions`:
 
+<CodeGroup>
 ```python Python icon="python"
 from lancedb.index import FTS
 
@@ -142,6 +145,7 @@ await table.createIndex("text", {
   config: lancedb.Index.fts({ blockSize: 256 }),
 });
 ```
+</CodeGroup>
 
 ### Phrase Query Configuration {#phrase-query-configuration}
 
@@ -156,7 +160,8 @@ Enable phrase queries by setting:
 
 You can build an FTS index on a string field inside a struct by passing its full dotted path, like `nested.text`. The same path is used when you query the index through `fts_columns`, and the indexed column is reported back as the full path from `list_indices()`.
 
-```python
+<CodeGroup>
+```python Python icon="python"
 # Schema: pa.struct([pa.field("text", pa.string())]) stored under the `nested` column.
 table.create_fts_index("nested.text")
 
@@ -166,6 +171,7 @@ results = (
     .to_list()
 )
 ```
+</CodeGroup>
 
 <Note>
 Use the canonical Lance path: dot-separate each struct field from root to leaf (for example, `metadata.author.name`). The same convention applies to scalar and vector indexes.
