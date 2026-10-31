@@ -2,9 +2,9 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 from enum import Enum
-from typing import List, Optional, Tuple
+from typing import List, Literal, Optional, Tuple
 
 import pyarrow as pa
 import pydantic
@@ -863,4 +863,61 @@ def test_plain_enum_values_are_written(mem_db):
         {"color": "red", "priority": 2, "opt_color": "blue"},
         {"color": "blue", "priority": 1, "opt_color": None},
     ]
+    assert tbl.search().to_pydantic(TestModel) == rows
+
+
+def test_literal_time_and_timedelta_types():
+    class TestModel(pydantic.BaseModel):
+        status: Literal["todo", "done"]
+        priority: Literal[1, 2, 3]
+        flag: Literal[True]
+        tags: List[Literal["a", "b"]]
+        opt_status: Optional[Literal["todo", "done"]] = None
+        starts: time
+        duration: timedelta
+
+    schema = pydantic_to_schema(TestModel)
+
+    assert schema.field("status").type == pa.utf8()
+    assert schema.field("priority").type == pa.int64()
+    assert schema.field("flag").type == pa.bool_()
+    assert schema.field("tags").type == pa.list_(pa.utf8())
+    assert schema.field("opt_status").type == pa.utf8()
+    assert schema.field("opt_status").nullable
+    assert schema.field("starts").type == pa.time64("us")
+    assert schema.field("duration").type == pa.duration("us")
+
+
+def test_literal_with_mixed_value_types_raises_type_error():
+    class TestModel(pydantic.BaseModel):
+        value: Literal["a", 1]
+
+    with pytest.raises(TypeError, match="same type"):
+        pydantic_to_schema(TestModel)
+
+
+def test_literal_time_and_timedelta_round_trip(mem_db):
+    class TestModel(LanceModel):
+        status: Literal["todo", "done"]
+        starts: time
+        duration: timedelta
+        vector: Vector(2)
+
+    rows = [
+        TestModel(
+            status="done",
+            starts=time(9, 30),
+            duration=timedelta(minutes=45),
+            vector=[1.0, 2.0],
+        ),
+        TestModel(
+            status="todo",
+            starts=time(17, 0, 0, 250),
+            duration=timedelta(days=1, microseconds=5),
+            vector=[3.0, 4.0],
+        ),
+    ]
+    tbl = mem_db.create_table("test", schema=TestModel)
+    tbl.add(rows)
+
     assert tbl.search().to_pydantic(TestModel) == rows
