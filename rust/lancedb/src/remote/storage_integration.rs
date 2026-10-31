@@ -54,6 +54,41 @@ pub(super) fn create_sql(
     namespace: &[String],
     request: &CreateStorageIntegrationRequest,
 ) -> Result<String> {
+    if request.storage_provider != StorageProvider::HuggingFace
+        && request.huggingface_token_secret.is_some()
+    {
+        return Err(invalid(
+            "Hugging Face credential options require storage_provider HUGGINGFACE",
+        ));
+    }
+    if request.storage_provider == StorageProvider::HuggingFace {
+        if request.aws_role_arn.is_some()
+            || request.aws_access_key_id_secret.is_some()
+            || request.aws_secret_access_key_secret.is_some()
+            || request.aws_region.is_some()
+            || request.azure_storage_account.is_some()
+            || request.azure_tenant_id_secret.is_some()
+            || request.azure_client_id_secret.is_some()
+            || request.azure_client_secret_secret.is_some()
+            || request.gcp_credentials_json_secret.is_some()
+        {
+            return Err(invalid(
+                "Hugging Face integrations cannot contain AWS, Azure or GCP options",
+            ));
+        }
+        let mut sql = format!(
+            "CREATE STORAGE INTEGRATION {} STORAGE_PROVIDER = 'HUGGINGFACE' STORAGE_PREFIX = {}",
+            object_name(name, namespace)?,
+            literal(&request.storage_prefix)
+        );
+        if let Some(reference) = &request.huggingface_token_secret {
+            sql.push_str(&format!(
+                " HUGGINGFACE_TOKEN_SECRET = {}",
+                secret_name(reference)?
+            ));
+        }
+        return Ok(sql);
+    }
     if request.storage_provider != StorageProvider::Gcp
         && request.gcp_credentials_json_secret.is_some()
     {
@@ -205,6 +240,7 @@ pub(super) fn decode_info(batches: &[RecordBatch]) -> Result<StorageIntegrationI
                 | "azure_client_id_secret"
                 | "azure_client_secret_secret"
                 | "gcp_credentials_json_secret"
+                | "huggingface_token_secret"
                 | "trust_policy"
                 | "permissions_policy"
         ) && let Some(json) = value.as_str()
@@ -323,6 +359,34 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("namespace_path")
+        );
+    }
+}
+
+#[cfg(test)]
+mod huggingface_tests {
+    use super::*;
+
+    #[test]
+    fn huggingface_renders_optional_secret_and_rejects_mixed_auth() {
+        let mut request =
+            CreateStorageIntegrationRequest::huggingface("hf://datasets/acme/private/raw/")
+                .with_huggingface_token_secret(
+                    SecretReference::new("token")
+                        .with_database("shared")
+                        .with_namespace(vec!["credentials".into()]),
+                );
+        let sql = create_sql("hub", &[], &request).unwrap();
+        assert!(sql.contains("STORAGE_PROVIDER = 'HUGGINGFACE'"));
+        assert!(sql.contains("HUGGINGFACE_TOKEN_SECRET = \"shared\".\"credentials\".\"token\""));
+        request.gcp_credentials_json_secret = Some(SecretReference::new("gcp"));
+        assert!(create_sql("hub", &[], &request).is_err());
+        request.gcp_credentials_json_secret = None;
+        request.huggingface_token_secret = None;
+        assert!(
+            !create_sql("hub", &[], &request)
+                .unwrap()
+                .contains("HUGGINGFACE_TOKEN_SECRET")
         );
     }
 }

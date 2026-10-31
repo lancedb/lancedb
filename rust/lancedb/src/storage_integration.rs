@@ -60,6 +60,8 @@ pub struct CreateStorageIntegrationRequest {
     pub azure_client_secret_secret: Option<SecretReference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gcp_credentials_json_secret: Option<SecretReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub huggingface_token_secret: Option<SecretReference>,
 }
 
 /// Cloud storage providers supported by storage integrations.
@@ -71,6 +73,8 @@ pub enum StorageProvider {
     Azure,
     #[serde(rename = "GCP")]
     Gcp,
+    #[serde(rename = "HUGGINGFACE")]
+    HuggingFace,
 }
 
 impl CreateStorageIntegrationRequest {
@@ -88,6 +92,7 @@ impl CreateStorageIntegrationRequest {
             azure_client_id_secret: None,
             azure_client_secret_secret: None,
             gcp_credentials_json_secret: None,
+            huggingface_token_secret: None,
         }
     }
 
@@ -109,6 +114,7 @@ impl CreateStorageIntegrationRequest {
             azure_client_id_secret: None,
             azure_client_secret_secret: None,
             gcp_credentials_json_secret: None,
+            huggingface_token_secret: None,
         }
     }
 
@@ -137,6 +143,7 @@ impl CreateStorageIntegrationRequest {
             azure_client_id_secret: Some(client_id),
             azure_client_secret_secret: Some(client_secret),
             gcp_credentials_json_secret: None,
+            huggingface_token_secret: None,
             aws_role_arn: None,
             aws_access_key_id_secret: None,
             aws_secret_access_key_secret: None,
@@ -157,6 +164,7 @@ impl CreateStorageIntegrationRequest {
             storage_provider: StorageProvider::Gcp,
             storage_prefix: storage_prefix.into(),
             gcp_credentials_json_secret: Some(credentials_json),
+            huggingface_token_secret: None,
             aws_role_arn: None,
             aws_access_key_id_secret: None,
             aws_secret_access_key_secret: None,
@@ -166,6 +174,38 @@ impl CreateStorageIntegrationRequest {
             azure_client_id_secret: None,
             azure_client_secret_secret: None,
         }
+    }
+
+    /// Register anonymous Hugging Face access at the default anonymous rate limits.
+    /// Use `with_huggingface_token_secret` to reference a Secret containing a token.
+    ///
+    /// ```
+    /// use lancedb::storage_integration::{CreateStorageIntegrationRequest, SecretReference};
+    /// let config = CreateStorageIntegrationRequest::huggingface(
+    ///     "hf://datasets/acme/private/data/",
+    /// ).with_huggingface_token_secret(SecretReference::new("hf_token"));
+    /// ```
+    pub fn huggingface(storage_prefix: impl Into<String>) -> Self {
+        Self {
+            storage_provider: StorageProvider::HuggingFace,
+            storage_prefix: storage_prefix.into(),
+            huggingface_token_secret: None,
+            gcp_credentials_json_secret: None,
+            aws_role_arn: None,
+            aws_access_key_id_secret: None,
+            aws_secret_access_key_secret: None,
+            aws_region: None,
+            azure_storage_account: None,
+            azure_tenant_id_secret: None,
+            azure_client_id_secret: None,
+            azure_client_secret_secret: None,
+        }
+    }
+
+    /// Use a Hugging Face token stored in a Secret instead of anonymous access.
+    pub fn with_huggingface_token_secret(mut self, token: SecretReference) -> Self {
+        self.huggingface_token_secret = Some(token);
+        self
     }
 
     /// Set the AWS region of the storage prefix.
@@ -205,6 +245,8 @@ pub struct StorageIntegrationInfo {
     pub azure_client_secret_secret: Option<SecretReference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gcp_credentials_json_secret: Option<SecretReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub huggingface_token_secret: Option<SecretReference>,
     pub aws_account_id: String,
     pub aws_iam_principal_arn: String,
     pub aws_external_id: String,

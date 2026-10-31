@@ -43,6 +43,29 @@ def remote_server(text_type=pa.string()):
             elif b"DROP STORAGE INTEGRATION" in command:
                 result = pa.table({"dropped": [True]})
             else:
+                if b"STORAGE_PROVIDER = 'HUGGINGFACE'" in command:
+                    info.update(
+                        storage_provider="HUGGINGFACE",
+                        storage_prefix="hf://datasets/acme/private/raw/",
+                        aws_role_arn=None,
+                        aws_region=None,
+                        aws_account_id="",
+                        aws_iam_principal_arn="",
+                        trust_policy=None,
+                        permissions_policy=None,
+                        configuration_instructions=(
+                            "Grant the referenced identity access to the prefix."
+                        ),
+                        huggingface_token_secret=(
+                            dict(
+                                database="shared",
+                                namespace_path=["credentials"],
+                                name="hf_token",
+                            )
+                            if b"HUGGINGFACE_TOKEN_SECRET" in command
+                            else None
+                        ),
+                    )
                 if b"GCP_CREDENTIALS_JSON_SECRET" in command:
                     info.update(
                         storage_provider="GCP",
@@ -103,6 +126,7 @@ def remote_server(text_type=pa.string()):
                     "azure_client_id_secret",
                     "azure_client_secret_secret",
                     "gcp_credentials_json_secret",
+                    "huggingface_token_secret",
                 ]:
                     if field in row and row[field] is not None:
                         row[field] = json.dumps(row[field])
@@ -392,3 +416,114 @@ async def test_async_gcp_requires_one_secret_and_rejects_other_cloud_options():
         )
         assert info.storage_provider == "GCP"
         assert b'GCP_CREDENTIALS_JSON_SECRET = "public"."gcp"' in calls[0]
+
+
+@pytest.mark.parametrize(
+    "text_type", [pa.string(), pa.large_string(), pa.string_view()]
+)
+def test_huggingface_lifecycle_uses_one_qualified_token_secret(text_type):
+    with remote_server(text_type) as (host, calls):
+        db = connect(host)
+        info = db.create_storage_integration(
+            "hub",
+            "hf://datasets/acme/private/raw/",
+            storage_provider="HUGGINGFACE",
+            huggingface_token_secret=SecretReference(
+                "hf_token", database="shared", namespace_path=("credentials",)
+            ),
+        )
+        assert info.storage_provider == "HUGGINGFACE"
+        assert info.huggingface_token_secret.name == "hf_token"
+        assert info.huggingface_token_secret.database == "shared"
+        assert info.aws_role_arn is None
+        assert info.azure_storage_account is None
+        assert info.aws_iam_principal_arn == ""
+        assert info.trust_policy is None
+        assert not info.access_verified
+        assert db.describe_storage_integration("hub") == info
+        assert list(db.list_storage_integrations()) == ["raw", "zeta"]
+        db.drop_storage_integration("hub")
+        assert b"STORAGE_PROVIDER = 'HUGGINGFACE'" in calls[0]
+        assert (
+            b'HUGGINGFACE_TOKEN_SECRET = "shared"."credentials"."hf_token"' in calls[0]
+        )
+        assert b"STORAGE_AWS" not in calls[0]
+        assert b"STORAGE_AZURE" not in calls[0]
+
+
+@pytest.mark.asyncio
+async def test_async_huggingface_rejects_other_cloud_options():
+    with remote_server() as (host, calls):
+        db = await lancedb.connect_async(
+            "db://default",
+            api_key="fake",
+            sql_host_override=host,
+            host_override="http://127.0.0.1:1",
+        )
+        for invalid in (
+            {"huggingface_token_secret": "hf_token", "aws_role_arn": ROLE},
+            {
+                "huggingface_token_secret": "hf_token",
+                "azure_storage_account": "account",
+            },
+        ):
+            with pytest.raises(ValueError):
+                await db.create_storage_integration(
+                    "hub",
+                    "hf://datasets/acme/private/raw/",
+                    storage_provider="HUGGINGFACE",
+                    **invalid,
+                )
+        with pytest.raises(ValueError):
+            await db.create_storage_integration(
+                "hub",
+                "hf://datasets/acme/private/raw/",
+                aws_role_arn=ROLE,
+                huggingface_token_secret="hf_token",
+            )
+        assert calls == []
+        info = await db.create_storage_integration(
+            "hub",
+            "hf://datasets/acme/private/raw/",
+            storage_provider="HUGGINGFACE",
+            huggingface_token_secret="hf_token",
+        )
+        assert info.storage_provider == "HUGGINGFACE"
+        assert b'HUGGINGFACE_TOKEN_SECRET = "public"."hf_token"' in calls[0]
+
+
+@pytest.mark.parametrize(
+    "text_type", [pa.string(), pa.large_string(), pa.string_view()]
+)
+def test_anonymous_huggingface_lifecycle_omits_token_secret(text_type):
+    with remote_server(text_type) as (host, calls):
+        db = connect(host)
+        info = db.create_storage_integration(
+            "public_hub",
+            "hf://datasets/acme/public/raw/",
+            storage_provider="HUGGINGFACE",
+        )
+        assert info.storage_provider == "HUGGINGFACE"
+        assert info.huggingface_token_secret is None
+        assert db.describe_storage_integration("public_hub") == info
+        assert list(db.list_storage_integrations()) == ["raw", "zeta"]
+        db.drop_storage_integration("public_hub")
+        assert b"HUGGINGFACE_TOKEN_SECRET" not in calls[0]
+
+
+@pytest.mark.asyncio
+async def test_async_huggingface_allows_anonymous_access():
+    with remote_server() as (host, calls):
+        db = await lancedb.connect_async(
+            "db://default",
+            api_key="fake",
+            sql_host_override=host,
+            host_override="http://127.0.0.1:1",
+        )
+        info = await db.create_storage_integration(
+            "public_hub",
+            "hf://datasets/acme/public/raw/",
+            storage_provider="HUGGINGFACE",
+        )
+        assert info.huggingface_token_secret is None
+        assert b"HUGGINGFACE_TOKEN_SECRET" not in calls[0]
