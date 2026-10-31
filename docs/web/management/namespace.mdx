@@ -379,3 +379,12 @@ With `forward_header_prefixes = ["X-forward"]`, any incoming header starting wit
 For the LanceDB REST API itself, requests use `x-api-key` for API-key authentication. If your endpoint
 serves more than one database, LanceDB can also use headers such as `x-lancedb-database` or
 `x-lancedb-database-prefix` to route the request to the right database context.
+
+## Privileges {#privileges}
+
+A namespace's `USAGE`, and the `CREATE_TABLE`, `CREATE_VIEW`,
+`CREATE_MATERIALIZED_VIEW` and `CREATE_NAMESPACE` privileges for what it
+can hold, are granted through the REST ACL API, not yet SQL
+`GRANT`/`REVOKE`. `CREATE_SECRET` on a namespace is the one exception
+already granted from SQL; see [Privileges](/governance/privileges) for
+both.

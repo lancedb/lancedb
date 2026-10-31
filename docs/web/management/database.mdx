@@ -160,3 +160,8 @@ An async connection and a background job serve different purposes. Async APIs
 let other tasks run while your application waits for an operation. A
 [job](/basics/jobs) represents work that can continue on the server after the
 submission call returns.
+
+## Privileges {#privileges}
+
+A database's `OWNERSHIP` and `USAGE` are granted through the REST ACL API,
+not yet SQL `GRANT`/`REVOKE`; see [Privileges](/governance/privileges#rest).

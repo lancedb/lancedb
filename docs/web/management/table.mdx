@@ -1559,3 +1559,9 @@ one by the time cleanup runs; the error then comes after compacting, and the ind
 update does not run. To let cleanup proceed, [move the tag](#versioning-tag-based-versioning)
 to a version inside the retention window, delete it, or widen the window.
 </Note>
+
+## Privileges {#privileges}
+
+A table's `OWNERSHIP`, `SELECT`, `INSERT`, `UPDATE` and `DELETE` are
+granted through the REST ACL API, not yet SQL `GRANT`/`REVOKE`; see
+[Privileges](/governance/privileges#rest).

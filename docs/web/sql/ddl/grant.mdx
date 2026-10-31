@@ -41,8 +41,8 @@ more than one grantee for the same reason.
 </Warning>
 
 These are a subset of the full privilege model; see
-[Authorization](/governance/authorization#privileges) for privileges on
-tables, views and namespaces, which this statement does not grant.
+[Privileges](/governance/privileges) for privileges on tables, views,
+databases and namespaces, which this statement does not grant.
 
 ## Grantees {#grantees}
 
@@ -70,13 +70,13 @@ exactly as written.
 A `SECRET` or `FUNCTION` target can be qualified with its namespace and
 database, the same as anywhere else: `SECRET analytics.api_key`,
 `SECRET db1.analytics.api_key`. A `SCHEMA` target is the namespace itself.
-There is no `TABLE` target: table privileges are granted through
-[Authorization](/governance/authorization), not this statement.
+There is no `TABLE` target: table privileges are granted through the REST
+ACL API, not this statement; see [Privileges](/governance/privileges#rest).
 
 ## What to read next {#next}
 
 <CardGroup cols={2}>
-  <Card title="Authorization" icon="user-shield" href="/governance/authorization">
+  <Card title="Privileges" icon="key" href="/governance/privileges">
     The full privilege model, and how creation privileges resolve upward.
   </Card>
   <Card title="Namespace" icon="folder-tree" href="/sql/ddl/namespace">
