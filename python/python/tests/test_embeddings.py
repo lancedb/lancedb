@@ -1115,3 +1115,13 @@ def test_jina_embeddings_use_their_own_api_key(monkeypatch):
         func_b.compute_source_embeddings(["hello"])
 
     assert sent == ["Bearer key-a", "Bearer key-b"]
+
+
+def test_cohere_default_model_is_not_a_retired_v2_model():
+    # Cohere retired embed-english-v2.0, embed-english-light-v2.0 and
+    # embed-multilingual-v2.0 on April 4, 2026.
+    cohere = get_registry().get("cohere").create()
+
+    assert cohere.name == "embed-multilingual-v3.0"
+    assert "v2.0" not in cohere.name
+    assert cohere.ndims() == 1024

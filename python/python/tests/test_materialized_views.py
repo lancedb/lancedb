@@ -5,7 +5,6 @@
 import contextlib
 import http.server
 import json
-import threading
 
 import lancedb
 import pytest
@@ -13,6 +12,7 @@ import pyarrow as pa
 from lancedb.db import AsyncConnection
 from lancedb.materialized_view import MaterializedViewDefinition
 from lancedb.remote.db import RemoteDBConnection
+from utils import start_server_thread
 
 
 STABLE_ROW_IDS = {"new_table_enable_stable_row_ids": "true"}
@@ -50,11 +50,10 @@ def mock_remote_materialized_view_refresh():
             self.end_headers()
             self.wfile.write(encoded)
 
-    with http.server.HTTPServer(("localhost", 0), Handler) as server:
-        thread = threading.Thread(target=server.serve_forever)
-        thread.start()
+    with http.server.HTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = start_server_thread(server)
         try:
-            yield f"http://localhost:{server.server_address[1]}", requests
+            yield f"http://127.0.0.1:{server.server_address[1]}", requests
         finally:
             server.shutdown()
             thread.join()
@@ -726,7 +725,7 @@ def test_embedded_create_refuses_automatic_refresh_before_creating_view(
     tmp_path, options
 ):
     db = make_db(tmp_path)
-    with pytest.raises(NotImplementedError, match="Cloud or Enterprise"):
+    with pytest.raises(NotImplementedError, match="requires LanceDB Distributed"):
         db.create_materialized_view("adults", "people", **options)
     assert "adults" not in db.table_names()
 
@@ -743,7 +742,7 @@ def test_remote_create_rejects_invalid_interval_without_request(seconds):
 @pytest.mark.experimental_functions
 def test_namespace_forwards_automatic_refresh_request(tmp_path):
     db = lancedb.connect_namespace("dir", {"root": str(tmp_path)})
-    with pytest.raises(NotImplementedError, match="Cloud or Enterprise"):
+    with pytest.raises(NotImplementedError, match="requires LanceDB Distributed"):
         db.create_materialized_view("mv", "source", auto_refresh_enabled=True)
 
 
@@ -751,7 +750,7 @@ def test_namespace_forwards_automatic_refresh_request(tmp_path):
 @pytest.mark.asyncio
 async def test_async_namespace_forwards_automatic_refresh_request(tmp_path):
     db = lancedb.connect_namespace_async("dir", {"root": str(tmp_path)})
-    with pytest.raises(NotImplementedError, match="Cloud or Enterprise"):
+    with pytest.raises(NotImplementedError, match="requires LanceDB Distributed"):
         await db.create_materialized_view("mv", "source", auto_refresh_enabled=True)
 
 

@@ -125,7 +125,7 @@ def _supports_local_blob_fetch(
 def _blob_bytes_without_snapshot_error() -> NotImplementedError:
     return NotImplementedError(
         "blob_mode='bytes' cannot safely materialize blob columns without a "
-        "stable table snapshot. Remote tables and namespace QueryTable pushdown "
+        "stable table snapshot. LanceDB Distributed and namespace QueryTable pushdown "
         "run the query on a server, so the blob fetch could read another table "
         "version. Use blob_mode='descriptions'."
     )
@@ -445,6 +445,7 @@ class FullTextQueryType(str, Enum):
     MATCH_PHRASE = "match_phrase"
     BOOST = "boost"
     MULTI_MATCH = "multi_match"
+    COMBINED_FIELDS = "combined_fields"
     BOOLEAN = "boolean"
 
 
@@ -667,6 +668,42 @@ class MultiMatchQuery(FullTextQuery):
 
     def query_type(self) -> FullTextQueryType:
         return FullTextQueryType.MULTI_MATCH
+
+
+@pydantic.dataclasses.dataclass
+class CombinedFieldsQuery(FullTextQuery):
+    """
+    Combined-fields (BM25F) query for full-text search.
+
+    Unlike `MultiMatchQuery`, which scores each column on its own and keeps
+    the best one, this query treats the columns as a single virtual field, so
+    term statistics are blended across them. A query term can then match in
+    any of the columns, e.g. a first name in one column and a last name in
+    another.
+
+    Parameters
+    ----------
+    query : str
+        The query string to match against.
+    columns : list[str]
+        The columns combined into the virtual field. Every column must have the
+        same tokenizer configuration, and at least one must have an FTS index.
+    boosts : list[float], optional
+        The weight of each column, aligned with `columns`. Each weight must be
+        at least 1. If not provided, every column has a weight of 1.
+    operator : FullTextOperator, default OR
+        The operator to use for combining the query terms.
+        If `AND`, every term must appear in at least one of the columns.
+        If `OR`, at least one term must match.
+    """
+
+    query: str
+    columns: list[str]
+    boosts: Optional[list[float]] = pydantic.Field(None, kw_only=True)
+    operator: FullTextOperator = pydantic.Field(FullTextOperator.OR, kw_only=True)
+
+    def query_type(self) -> FullTextQueryType:
+        return FullTextQueryType.COMBINED_FIELDS
 
 
 @pydantic.dataclasses.dataclass
@@ -1147,7 +1184,8 @@ class LanceQueryBuilder(ABC):
             mode and for legacy blob columns. Other local blob v2
             queries return descriptors in ``"lazy"`` and ``"descriptions"``
             modes, or payloads in ``"bytes"`` mode, through :meth:`to_arrow`.
-            Remote blob queries support only ``"descriptions"`` until a stable
+            LanceDB Distributed blob queries support only ``"descriptions"`` until a
+            stable
             table snapshot can bind the query and blob fetches.
         **kwargs
             Forwarded to pyarrow.Table.to_pandas after query execution and
@@ -3483,7 +3521,7 @@ class AsyncQueryBase(object):
             ``fetch_blobs`` reads. ``"descriptions"`` returns them without it.
             ``"bytes"`` returns payload bytes and raises for legacy blob columns
             and blobs inside lists.
-            Remote tables and namespace query pushdown refuse ``"bytes"``.
+            LanceDB Distributed and namespace query pushdown refuse ``"bytes"``.
         """
         blob_sources = await self._validated_blob_sources(blob_mode)
         batch_iter = await self.to_batches(timeout=timeout)
@@ -3562,7 +3600,8 @@ class AsyncQueryBase(object):
             mode and for legacy blob columns. Other local blob v2
             queries return descriptors in ``"lazy"`` and ``"descriptions"``
             modes, or payloads in ``"bytes"`` mode, through :meth:`to_arrow`.
-            Remote blob queries support only ``"descriptions"`` until a stable
+            LanceDB Distributed blob queries support only ``"descriptions"`` until a
+            stable
             table snapshot can bind the query and blob fetches.
         **kwargs
             Forwarded to pyarrow.Table.to_pandas after query execution and
@@ -4209,9 +4248,10 @@ class AsyncVectorQueryBase:
         your actual data to find the smallest possible value that will still give
         you the desired recall.
 
-        LanceDB retains this as `nprobes` through local and remote request
-        construction. Lance sets both probe bounds to this value. Explicit minimum
-        or maximum settings can override their respective bounds.
+        LanceDB retains this as `nprobes` through LanceDB Embedded and LanceDB
+        Distributed request construction. Lance sets both probe bounds to this
+        value. Explicit minimum or maximum settings can override their respective
+        bounds.
         """
         self._inner.nprobes(nprobes)
         return self

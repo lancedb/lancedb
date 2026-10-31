@@ -24,6 +24,7 @@ use lancedb::{
     connection::NamespaceClientPushdownOperation,
     database::namespace::LanceNamespaceDatabase,
     database::{CreateTableMode, Database, ReadConsistency},
+    graph::PropertyGraphDefinition,
 };
 use pyo3::{
     Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
@@ -711,6 +712,53 @@ impl Connection {
         })
     }
 
+    pub fn namespace_exists(
+        self_: PyRef<'_, Self>,
+        namespace_id: Vec<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let request = lance_namespace::models::DescribeNamespaceRequest {
+                id: Some(namespace_id),
+                ..Default::default()
+            };
+            match inner.describe_namespace(request).await {
+                Ok(_) => Ok(true),
+                Err(lancedb::Error::Http {
+                    status_code: Some(status),
+                    ..
+                }) if status.as_u16() == 404 => Ok(false),
+                Err(lancedb::Error::Lance {
+                    source: lance_core::Error::Namespace { ref source, .. },
+                }) if matches!(
+                    source.downcast_ref::<lance_namespace::NamespaceError>(),
+                    Some(lance_namespace::NamespaceError::NamespaceNotFound { .. })
+                ) =>
+                {
+                    Ok(false)
+                }
+                Err(err) => Err(err).infer_error(),
+            }
+        })
+    }
+
+    pub fn table_exists(
+        self_: PyRef<'_, Self>,
+        mut table_id: Vec<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let name = table_id
+            .pop()
+            .ok_or_else(|| PyValueError::new_err("table_id must include a table name"))?;
+        future_into_py(self_.py(), async move {
+            match inner.open_table(name).namespace(table_id).execute().await {
+                Ok(_) => Ok(true),
+                Err(lancedb::Error::TableNotFound { .. }) => Ok(false),
+                Err(err) => Err(err).infer_error(),
+            }
+        })
+    }
+
     #[pyo3(signature = (namespace_path=None, page_token=None, limit=None))]
     pub fn list_tables(
         &self,
@@ -838,6 +886,72 @@ impl Connection {
                 .await
                 .infer_error()
                 .map(|(dropped, job)| (dropped, crate::job::Job::new(job)))
+        })
+    }
+
+    #[pyo3(signature = (name, request, namespace_path=None))]
+    pub fn create_storage_integration<'py>(
+        &self,
+        py: Python<'py>,
+        name: String,
+        request: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self.get_inner()?.clone();
+        let request: lancedb::storage_integration::CreateStorageIntegrationRequest =
+            serde_json::from_str(&request)
+                .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        future_into_py(py, async move {
+            let info = inner
+                .create_storage_integration(name, request, &namespace_path.unwrap_or_default())
+                .await
+                .infer_error()?;
+            serde_json::to_string(&info).map_err(|error| PyValueError::new_err(error.to_string()))
+        })
+    }
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn describe_storage_integration<'py>(
+        &self,
+        py: Python<'py>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self.get_inner()?.clone();
+        future_into_py(py, async move {
+            let info = inner
+                .describe_storage_integration(name, &namespace_path.unwrap_or_default())
+                .await
+                .infer_error()?;
+            serde_json::to_string(&info).map_err(|error| PyValueError::new_err(error.to_string()))
+        })
+    }
+    #[pyo3(signature = (*, namespace_path=None, page_token=None, page_limit=None))]
+    pub fn list_storage_integrations(
+        &self,
+        namespace_path: Option<Vec<String>>,
+        page_token: Option<String>,
+        page_limit: Option<u32>,
+    ) -> PyResult<crate::listing::NameListing> {
+        Ok(crate::listing::NameListing::new(
+            self.get_inner()?.list_storage_integrations(
+                &namespace_path.unwrap_or_default(),
+                crate::listing::options(page_token, page_limit),
+            ),
+        ))
+    }
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn drop_storage_integration<'py>(
+        &self,
+        py: Python<'py>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self.get_inner()?.clone();
+        future_into_py(py, async move {
+            inner
+                .drop_storage_integration(name, &namespace_path.unwrap_or_default())
+                .await
+                .infer_error()
         })
     }
 
@@ -997,6 +1111,79 @@ impl Connection {
     ) -> PyResult<crate::listing::NameListing> {
         Ok(crate::listing::NameListing::new(
             self.get_inner()?.list_views(
+                &namespace_path.unwrap_or_default(),
+                crate::listing::options(page_token, page_limit),
+            ),
+        ))
+    }
+
+    /// Create a property graph from its definition's JSON, and return its
+    /// description's JSON. The Python layer names the fields; the JSON keeps
+    /// the binding free of classes kept in step with the Rust structs.
+    #[pyo3(signature = (name, definition_json, namespace_path=None))]
+    pub fn create_property_graph(
+        self_: PyRef<'_, Self>,
+        name: String,
+        definition_json: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            let definition = PropertyGraphDefinition::from_json(&definition_json).infer_error()?;
+            inner
+                .create_property_graph(name, &definition, &namespace_path)
+                .await
+                .infer_error()?
+                .to_json()
+                .infer_error()
+        })
+    }
+
+    /// The JSON description of the property graph named `name`.
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn describe_property_graph(
+        self_: PyRef<'_, Self>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner
+                .describe_property_graph(name, &namespace_path)
+                .await
+                .infer_error()?
+                .to_json()
+                .infer_error()
+        })
+    }
+
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn drop_property_graph(
+        self_: PyRef<'_, Self>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner
+                .drop_property_graph(name, &namespace_path)
+                .await
+                .infer_error()
+        })
+    }
+
+    #[pyo3(signature = (namespace_path=None, *, page_token=None, page_limit=None))]
+    pub fn list_property_graphs(
+        &self,
+        namespace_path: Option<Vec<String>>,
+        page_token: Option<String>,
+        page_limit: Option<u32>,
+    ) -> PyResult<crate::listing::NameListing> {
+        Ok(crate::listing::NameListing::new(
+            self.get_inner()?.list_property_graphs(
                 &namespace_path.unwrap_or_default(),
                 crate::listing::options(page_token, page_limit),
             ),

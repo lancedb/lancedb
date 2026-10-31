@@ -1,6 +1,6 @@
 [package]
 name = "lancedb-python"
-version = "0.41.0-beta.16"
+version = "0.41.0-beta.17"
 publish = false
 edition.workspace = true
 description = "Python bindings for LanceDB"
@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
-rust-version = "1.94.0"
+rust-version = "1.95.0"
 
 [lib]
 name = "_lancedb"
@@ -30,9 +30,9 @@ env_logger.workspace = true
 log.workspace = true
 # Maturin enables extension-module mode for Python builds. Keeping it out of
 # Cargo features lets Rust unit tests link against libpython.
-pyo3 = { version = "0.28", features = ["abi3-py310", "chrono", "uuid"] }
+pyo3 = { version = "0.29", features = ["abi3-py310", "chrono", "uuid"] }
 chrono.workspace = true
-pyo3-async-runtimes = { version = "0.28", features = [
+pyo3-async-runtimes = { version = "0.29", features = [
     "attributes",
     "tokio-runtime",
 ] }
@@ -46,7 +46,7 @@ uuid.workspace = true
 libc = "0.2"
 
 [build-dependencies]
-pyo3-build-config = { version = "0.28", features = ["abi3-py310"] }
+pyo3-build-config = "0.29"
 
 [features]
 default = ["remote", "lancedb/aws", "lancedb/gcs", "lancedb/azure", "lancedb/dynamodb", "lancedb/oss", "lancedb/huggingface", "lancedb/cos", "lancedb/goosefs", "lancedb/metrics-otel"]

@@ -224,6 +224,10 @@ pub struct PythonEnvironmentSpec {
     pub modules: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+    /// Debian packages (`name` or `name=version`) added to the Function's
+    /// image before its Python environment is installed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub system_packages: Vec<String>,
 }
 
 /// Reproducible Python runtime definition understood by Sophon.
@@ -253,6 +257,7 @@ pub enum PythonRuntimeSpec {
     ///         path: None,
     ///         modules: Vec::new(),
     ///         image: None,
+    ///         system_packages: Vec::new(),
     ///     },
     ///     env: BTreeMap::new(),
     /// };
@@ -459,6 +464,8 @@ pub struct FunctionVersion {
     #[serde(deserialize_with = "deserialize_object_version")]
     version: String,
     image: FunctionImage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_digest: Option<String>,
     signature: FunctionSignature,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     secret_bindings: Vec<SecretBinding>,
@@ -503,6 +510,23 @@ impl FunctionVersion {
     pub fn image(&self) -> &FunctionImage {
         &self.image
     }
+
+    /// Digest of the registered source artifact, when provided by the server.
+    ///
+    /// Compare this with [`FunctionArtifactRequest::digest`] to identify matching
+    /// source, independently of the built image's manifest digest.
+    ///
+    /// ```
+    /// use lancedb::function::{FunctionArtifactRequest, FunctionVersion};
+    ///
+    /// fn has_same_source(version: &FunctionVersion, artifact: &FunctionArtifactRequest) -> bool {
+    ///     version.source_digest() == Some(artifact.digest.as_str())
+    /// }
+    /// ```
+    pub fn source_digest(&self) -> Option<&str> {
+        self.source_digest.as_deref()
+    }
+
     pub fn signature(&self) -> &FunctionSignature {
         &self.signature
     }
@@ -535,9 +559,12 @@ pub struct FunctionArtifactContent {
 
 /// Internal execution adapter selected for a Python callable artifact.
 ///
-/// The adapter converts the public scalar callable to the Arrow batch ABI
-/// used by the remote executor. It is part of the request envelope, not a
-/// public batch-UDF authoring mode.
+/// This is part of the executor request envelope, not the user-facing UDF
+/// authoring mode. For version 1, the executor selects vectorized execution
+/// when every callable parameter is annotated as `pyarrow.Array`; it passes one
+/// Arrow array per declared input and requires an Arrow array matching the
+/// declared output. Other callables are invoked row by row. Both modes use the
+/// same internal adapter kind.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PythonAdapterSpec {
     pub kind: String,
@@ -771,8 +798,8 @@ impl_json!(FunctionBinding);
 /// Stable terminal result of an expression-backed or Function-backed column
 /// refresh [`crate::Job`].
 ///
-/// Local refresh jobs produce this value in process. LanceDB Cloud and
-/// Enterprise decode the same value from the durable job's terminal payload.
+/// LanceDB Embedded refresh jobs produce this value in process. LanceDB
+/// Distributed decodes the same value from the durable job's terminal payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RefreshColumnResult {
     /// Rows assigned a value by this refresh.
@@ -920,6 +947,27 @@ mod conda_environment_tests {
     }
 
     #[test]
+    fn system_packages_round_trip_and_stay_absent_when_empty() {
+        let apt: PythonEnvironmentSpec = serde_json::from_str(
+            r#"{"kind":"pip","packages":["torchcodec"],"system_packages":["libavutil58"]}"#,
+        )
+        .unwrap();
+        assert_eq!(apt.system_packages, ["libavutil58"]);
+        assert!(
+            serde_json::to_string(&apt)
+                .unwrap()
+                .contains(r#""system_packages":["libavutil58"]"#)
+        );
+        let pip: PythonEnvironmentSpec =
+            serde_json::from_str(r#"{"kind":"pip","packages":["numpy"]}"#).unwrap();
+        assert!(
+            !serde_json::to_string(&pip)
+                .unwrap()
+                .contains("system_packages")
+        );
+    }
+
+    #[test]
     fn gpu_python_runtime_marker_round_trips_and_validates() {
         let runtime: PythonRuntimeSpec = serde_json::from_str(
             r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":true}"#,
@@ -964,6 +1012,32 @@ mod conda_environment_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn function_version_preserves_source_digest() {
+        const VERSION: &str = include_str!(
+            "../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
+        );
+        let mut document: Value = serde_json::from_str(VERSION).unwrap();
+        let legacy = FunctionVersion::from_json(VERSION).unwrap();
+        assert_eq!(legacy.source_digest(), None);
+        assert_eq!(legacy.to_canonical_json().unwrap(), VERSION.trim_end());
+
+        for digest in [Value::Null, serde_json::json!("sha256:source-artifact")] {
+            document["source_digest"] = digest.clone();
+            let version = FunctionVersion::from_json(&document.to_string()).unwrap();
+            assert_eq!(version.source_digest(), digest.as_str());
+            assert_eq!(version.image(), legacy.image());
+            let encoded = version.to_canonical_json().unwrap();
+            let encoded_value: Value = serde_json::from_str(&encoded).unwrap();
+            if digest.is_null() {
+                assert!(encoded_value.get("source_digest").is_none());
+            } else {
+                assert_eq!(encoded_value["source_digest"], digest);
+            }
+            assert_eq!(FunctionVersion::from_json(&encoded).unwrap(), version);
+        }
+    }
 
     #[test]
     fn blob_reader_access_survives_signature_round_trip() {

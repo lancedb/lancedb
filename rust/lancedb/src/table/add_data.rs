@@ -152,7 +152,7 @@ impl AddDataBuilder {
     ///
     /// The row keeps a reference, so the object has to stay readable.
     /// [`crate::table::Table::fetch_blobs`] reads from that location.
-    /// Defaults to `false`. Local tables only.
+    /// Defaults to `false`. LanceDB Embedded only.
     pub fn allow_external_blob_outside_bases(mut self, allow: bool) -> Self {
         self.allow_external_blob_outside_bases = allow;
         self

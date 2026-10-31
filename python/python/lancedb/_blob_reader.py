@@ -21,6 +21,9 @@ class BlobReader(io.RawIOBase):
     ``read_range`` does not change the sequential cursor. Readers are scoped
     to the invocation and must not be retained for a later call.
 
+    A packaged Function's source imports the worker's ``lance_blob.BlobReader``
+    in place of this class.
+
     For local calls, construct a reader from a range-reading callable and the
     blob's size. The callable accepts an offset and length and returns bytes.
     """

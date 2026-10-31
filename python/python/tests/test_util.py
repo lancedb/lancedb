@@ -4,6 +4,7 @@
 
 import os
 import pathlib
+from datetime import time, timedelta, timezone
 from decimal import Decimal, localcontext
 from typing import Optional
 
@@ -215,6 +216,106 @@ def test_value_to_sql_decimal_non_finite(value):
         ValueError, match="^Non-finite Decimal values cannot be converted to SQL$"
     ):
         value_to_sql(Decimal(value))
+
+
+def test_value_to_sql_time_and_timedelta(tmp_path):
+    assert (
+        value_to_sql(time(9, 30, 0, 250))
+        == "arrow_cast('09:30:00.000250', 'Time64(Microsecond)')"
+    )
+    assert (
+        value_to_sql(timedelta(days=1, microseconds=5))
+        == "arrow_cast(86400000005, 'Duration(Microsecond)')"
+    )
+    assert (
+        value_to_sql(timedelta(seconds=-1))
+        == "arrow_cast(-1000000, 'Duration(Microsecond)')"
+    )
+
+    # Round trip through update and a filter, including columns whose unit is not
+    # microseconds.
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "test",
+        pa.table(
+            {
+                "id": [1, 2],
+                "starts": pa.array([time(1, 2, 3), time(4, 5, 6)], pa.time64("us")),
+                "starts_ns": pa.array([time(1, 2, 3), time(4, 5, 6)], pa.time64("ns")),
+                "duration": pa.array([timedelta(0), timedelta(0)], pa.duration("us")),
+                "duration_s": pa.array([timedelta(0), timedelta(0)], pa.duration("s")),
+            }
+        ),
+    )
+    table.update(
+        where="id = 1",
+        values={
+            "starts": time(9, 30, 0, 250),
+            "starts_ns": time(9, 30, 0, 250),
+            "duration": timedelta(minutes=45, microseconds=5),
+            "duration_s": timedelta(hours=2),
+        },
+    )
+    assert table.to_arrow().sort_by("id").slice(0, 1).to_pylist() == [
+        {
+            "id": 1,
+            "starts": time(9, 30, 0, 250),
+            "starts_ns": time(9, 30, 0, 250),
+            "duration": timedelta(minutes=45, microseconds=5),
+            "duration_s": timedelta(hours=2),
+        }
+    ]
+    for where in (
+        f"starts = {value_to_sql(time(9, 30, 0, 250))}",
+        f"duration = {value_to_sql(timedelta(minutes=45, microseconds=5))}",
+    ):
+        assert table.search().where(where).to_arrow()["id"].to_pylist() == [1]
+
+
+def test_value_to_sql_keeps_nanoseconds(tmp_path):
+    # Arrow scalars and pandas.Timedelta values can hold nanoseconds, which a
+    # Python timedelta or time would round to microseconds.
+    assert (
+        value_to_sql(pd.Timedelta(1001, "ns"))
+        == "arrow_cast(1001, 'Duration(Nanosecond)')"
+    )
+    assert value_to_sql(pa.scalar(None, pa.duration("ns"))) == "NULL"
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "test",
+        pa.table(
+            {
+                "id": [1, 2],
+                "duration": pa.array([0, 1001], pa.duration("ns")),
+                "starts": pa.array([0, 34_200_000_000_250], pa.time64("ns")),
+            }
+        ),
+    )
+    source = table.to_arrow().sort_by("id")
+    table.update(
+        where="id = 1",
+        values={"duration": source["duration"][1], "starts": source["starts"][1]},
+    )
+    updated = table.to_arrow().sort_by("id")
+    assert updated["duration"].cast(pa.int64()).to_pylist() == [1001, 1001]
+    assert updated["starts"].cast(pa.int64()).to_pylist() == [
+        34_200_000_000_250,
+        34_200_000_000_250,
+    ]
+
+
+def test_value_to_sql_keeps_duration_units():
+    for unit, sql_unit in [("s", "Second"), ("ms", "Millisecond")]:
+        assert (
+            value_to_sql(pa.scalar(1500, pa.duration(unit)))
+            == f"arrow_cast(1500, 'Duration({sql_unit})')"
+        )
+
+
+def test_value_to_sql_rejects_time_with_timezone():
+    with pytest.raises(ValueError, match="time values with a timezone"):
+        value_to_sql(time(9, 30, tzinfo=timezone.utc))
 
 
 def test_value_to_sql_dict():
