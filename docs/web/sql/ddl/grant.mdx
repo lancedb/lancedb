@@ -70,8 +70,9 @@ exactly as written.
 A `SECRET` or `FUNCTION` target can be qualified with its namespace and
 database, the same as anywhere else: `SECRET analytics.api_key`,
 `SECRET db1.analytics.api_key`. A `SCHEMA` target is the namespace itself.
-There is no `TABLE` target: table privileges are granted through the REST
-ACL API, not this statement; see [Privileges](/governance/privileges#rest).
+`DATABASE`, `TABLE`, `VIEW`, `MATERIALIZED VIEW` and `STORAGE INTEGRATION`
+targets also exist, granting the broader privilege set covered on
+[Privileges](/governance/privileges#sql), not reproduced on this page.
 
 ## What to read next {#next}
 
