@@ -29,6 +29,7 @@ use lance_namespace::models::{
 
 use crate::data::scannable::Scannable;
 use crate::error::Result;
+use crate::graph::{PropertyGraphDefinition, PropertyGraphDescription};
 use crate::job::Job;
 use crate::listing::{ListingOptions, ListingPage};
 use crate::materialized_view::CreateMaterializedViewRequest;
@@ -192,7 +193,7 @@ impl CloneTableRequest {
     }
 }
 
-/// A request to start a SQL statement on a remote database.
+/// A request to start a SQL statement on a LanceDB Distributed database.
 #[derive(Clone, Debug)]
 pub struct ExecuteQueryRequest {
     /// The SQL text.
@@ -313,6 +314,12 @@ fn secret_catalog_not_supported<T>() -> Result<T> {
 fn view_ops_not_supported<T>() -> Result<T> {
     Err(crate::error::Error::NotSupported {
         message: "View operations are not supported by this database".to_string(),
+    })
+}
+
+fn property_graph_ops_not_supported<T>() -> Result<T> {
+    Err(crate::error::Error::NotSupported {
+        message: "Property graph operations are not supported by this database".to_string(),
     })
 }
 
@@ -460,10 +467,9 @@ pub trait Database:
     ) -> Result<bool> {
         function_catalog_not_supported()
     }
-    /// Start dropping a Function and return a handle to the cleanup job.
-    ///
-    /// Backends without asynchronous cleanup complete the drop before returning an
-    /// already-finished job.
+    /// Drop a Function binding and return its completion handle.
+    /// SQL backends return a query job confirming catalog removal; physical
+    /// cleanup continues separately.
     async fn drop_function_async(
         &self,
         name: &str,
@@ -473,6 +479,40 @@ pub trait Database:
         let dropped = self.drop_function(name, version, namespace_path).await?;
         Ok((dropped, crate::job::Job::new_done()))
     }
+    /// Create a database-owned storage integration in a namespace.
+    async fn create_storage_integration(
+        &self,
+        _name: &str,
+        _request: crate::storage_integration::CreateStorageIntegrationRequest,
+        _namespace_path: &[String],
+    ) -> Result<crate::storage_integration::StorageIntegrationInfo> {
+        secret_catalog_not_supported()
+    }
+    /// Describe a database-owned storage integration.
+    async fn describe_storage_integration(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<crate::storage_integration::StorageIntegrationInfo> {
+        secret_catalog_not_supported()
+    }
+    /// List one namespace of storage integrations.
+    async fn list_storage_integrations(
+        &self,
+        _namespace_path: &[String],
+        _options: ListingOptions,
+    ) -> Result<ListingPage<String>> {
+        secret_catalog_not_supported()
+    }
+    /// Drop a database-owned storage integration.
+    async fn drop_storage_integration(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<()> {
+        secret_catalog_not_supported()
+    }
+
     /// Create a named Secret in this database. Fails if the name is taken, so
     /// a create can never silently become a rotation.
     async fn create_secret(
@@ -553,6 +593,50 @@ pub trait Database:
     ) -> Result<ListingPage<String>> {
         view_ops_not_supported()
     }
+    /// Create a property graph over tables in its namespace. The tables are
+    /// checked against the definition, and each table's properties resolved,
+    /// once, by the database, so a definition they cannot satisfy is refused
+    /// now rather than at the first query.
+    async fn create_property_graph(
+        &self,
+        _name: &str,
+        _definition: &PropertyGraphDefinition,
+        _namespace_path: &[String],
+    ) -> Result<PropertyGraphDescription> {
+        property_graph_ops_not_supported()
+    }
+    /// What the database records about one property graph: its node and edge
+    /// tables, with the properties create resolved.
+    async fn describe_property_graph(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<PropertyGraphDescription> {
+        property_graph_ops_not_supported()
+    }
+    /// Drop a property graph and wait for its definition to be deleted. The
+    /// tables it reads are untouched.
+    async fn drop_property_graph(&self, _name: &str, _namespace_path: &[String]) -> Result<()> {
+        property_graph_ops_not_supported()
+    }
+    /// Drop a property graph and return the job deleting its definition,
+    /// without waiting.
+    #[doc(hidden)]
+    async fn drop_property_graph_async(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<Job> {
+        property_graph_ops_not_supported()
+    }
+    /// Fetch one page of property graph names in one namespace.
+    async fn list_property_graphs(
+        &self,
+        _namespace_path: &[String],
+        _options: ListingOptions,
+    ) -> Result<ListingPage<String>> {
+        property_graph_ops_not_supported()
+    }
     /// Open a job by id, returning a handle with its record already
     /// populated. Fails with [`crate::Error::JobNotFound`] when the server has
     /// no such job.
@@ -579,7 +663,13 @@ pub trait Database:
     async fn resume_job(&self, _job_id: &str) -> Result<ResumeJobStatus> {
         job_op_not_supported("resume_job")
     }
-    /// Start executing a SQL statement on a remote database.
+    /// Establish the SQL transport without executing a statement.
+    async fn check_sql_connection(&self) -> Result<()> {
+        Err(crate::Error::NotSupported {
+            message: "SQL is not supported by this database".into(),
+        })
+    }
+    /// Start executing a SQL statement on a LanceDB Distributed database.
     async fn execute_query_async(
         &self,
         _request: ExecuteQueryRequest,

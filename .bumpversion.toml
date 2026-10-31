@@ -1,5 +1,5 @@
 [tool.bumpversion]
-current_version = "0.41.0-beta.7"
+current_version = "0.41.0-beta.17"
 parse = """(?x)
     (?P<major>0|[1-9]\\d*)\\.
     (?P<minor>0|[1-9]\\d*)\\.
@@ -67,6 +67,11 @@ search = "\"version\": \"{current_version}\","
 # ------------
 [[tool.bumpversion.files]]
 filename = "rust/lancedb/Cargo.toml"
+replace = "\nversion = \"{new_version}\""
+search = "\nversion = \"{current_version}\""
+
+[[tool.bumpversion.files]]
+filename = "rust/lancedb/cli/Cargo.toml"
 replace = "\nversion = \"{new_version}\""
 search = "\nversion = \"{current_version}\""
 

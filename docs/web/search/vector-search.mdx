@@ -4,10 +4,8 @@ sidebarTitle: "Vector Search"
 description: "Search by vector similarity, choose a distance metric and tune your queries."
 icon: "arrow-up-right-dots"
 availability:
-  oss: available
+  embedded: available
   enterprise: available
-  summary: >-
-    Vector search is available in OSS and Enterprise.
 ---
 
 import {
@@ -131,7 +129,7 @@ Without a vector index, searches use `l2` by default. You can specify `cosine` o
 
 When a vector index exists, the search metric must match the metric used to build
 the index. If you explicitly request a different metric, LanceDB cannot use that
-index and falls back to an exhaustive (brute-force) search. On LanceDB Cloud, the
+index and falls back to an exhaustive (brute-force) search. On LanceDB Cloud (legacy hosted service), the
 brute-force KNN safety limit can reject that search on a large table instead of
 executing it. LanceDB Enterprise doesn't have the limit.
 
@@ -235,7 +233,7 @@ The table below summarizes the behavior of `_distance` in search results based o
 See [vector indexes](/indexing/vector-index) for index configuration. The
 following sections cover query-time settings.
 
-### Tuning `approx_mode`
+### Tuning `approx_mode` {#tuning-approx-mode}
 
 Use `approx_mode` when you want to adjust the speed/recall trade-off for approximate vector search at query time. This setting currently applies only to RQ-quantized indexes, such as `IVF_RQ`; other index types ignore it.
 
@@ -319,9 +317,6 @@ the filter condition after obtaining the nearest neighbors based on vector simil
 
 Use multivector search when your documents contain multiple embeddings and you need sophisticated matching between query and document vector pairs. The late interaction approach finds the most relevant combinations across all available embeddings and provides nuanced similarity scoring.
 
-Only `cosine` similarity is supported as the distance metric for multivector search operations.
-Every query vector must match the inner dimension of the multivector column.
-
 <CodeGroup>
 <CodeBlock filename="Python" language="python" icon="python">
 {MultivectorSearch}
@@ -330,7 +325,8 @@ Every query vector must match the inner dimension of the multivector column.
 
 Here you can see how to take 2 query vectors and find the best matching pairs between them and document vectors using late interaction. The `np.random.random(size=(2, 256))` creates a 2×256 array with two random query vectors, `.limit(5)` returns the top 5 best document-query combinations, and `.to_pandas()` provides results in a DataFrame format. 
 
-**Read more:** [Multivector search walkthrough](#multivector)
+For the supported metric, how scoring works and a complete example, see the
+[multivector search walkthrough](#multivector).
 
 ## Advanced Search Scenarios
 
@@ -497,7 +493,7 @@ This approach is particularly useful when:
 - Calculating recall metrics to tune index parameters
 - Ensuring exact results for critical applications
 
-## Multi-vector search {#multivector}
+## Multivector search walkthrough {#multivector}
 
 LanceDB's multivector support enables you to store and search multiple vector embeddings for a single item.
 
@@ -541,7 +537,7 @@ $Q$ represents the query embeddings, and $D = \{d_1, d_2, ..., d_{|D|}\}$ repres
 
 #### 1. Setup
 
-Connect to LanceDB and import the required libraries.
+Connect to a local LanceDB database and import the required libraries.
 
 <CodeGroup>
 ```python Python icon="python"
@@ -549,13 +545,15 @@ import lancedb
 import numpy as np
 import pyarrow as pa
 
-db = lancedb.connect(
-    uri="db://your-project-slug",
-    api_key="your-api-key",
-    region="your-region"
-)
+db = lancedb.connect("data/multivector_demo")
 ```
 </CodeGroup>
+
+<Note>
+To run this walkthrough on LanceDB Enterprise, connect with
+`lancedb.connect(uri="db://your-database", api_key="your-api-key", region="your-region")`
+instead. The remaining steps are the same.
+</Note>
 
 #### 2. Define Schema
 
@@ -569,7 +567,6 @@ Define a schema that specifies a multivector field. A multivector field is a nes
 
 <CodeGroup>
 ```python Python icon="python"
-db = lancedb.connect("data/multivector_demo")
 schema = pa.schema(
     [
         pa.field("id", pa.int64()),
@@ -623,7 +620,7 @@ tbl.create_index(metric="cosine", vector_column_name="vector")
 **Indexing matters more for multivector tables than for single-vector ones.**
 
 A brute-force scan over a multivector column has to compare every query vector to every document vector in every row, so the cost grows with both the row count and the number of vectors per row. 
-In LanceDB OSS, the query will just run, so a large unindexed multivector table can stall a process for a long time before returning results.
+In LanceDB Embedded, the query will just run, so a large unindexed multivector table can stall a process for a long time before returning results.
 
 On LanceDB Cloud, the brute-force KNN safety check applies a stricter row threshold to multivector columns; roughly 10× lower than for single-vector columns. So an unindexed multivector table can be rejected with a "vector search would use brute-force KNN" error well before a comparable single-vector table would. LanceDB Enterprise doesn't have the limit. Build the index before you start hitting it from production traffic, even if the dataset is small enough that you'd skip indexing for a single-vector workload.
 </Info>

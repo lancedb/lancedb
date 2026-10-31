@@ -19,7 +19,7 @@ use serde_json::Value;
 ///
 /// Returned by [`crate::connection::Connection::describe_secret`]. There is no
 /// field for the credential and no method that could produce one.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SecretInfo {
     /// The Secret's database-scoped name.
     pub name: String,

@@ -1,12 +1,13 @@
 ---
 title: "Delete"
 sidebarTitle: "Delete"
-description: "DELETE FROM ... WHERE — rows are marked, not erased."
+description: "DELETE FROM ... WHERE: rows are marked, not erased."
 icon: trash
 keywords: ["delete", "sql"]
+availability:
+  embedded: unavailable
+  enterprise: available
 ---
-
-<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 ```sql
 DELETE FROM documents WHERE created_at < TIMESTAMP '2025-01-01 00:00:00'
@@ -21,7 +22,7 @@ for as long as the version holding it survives
 [retention](/maintenance/cleanup).
 
 Commits a new table version, so [versioning](/management/table#versioning) and
-the [write guarantees](/basics/guarantees#writes) apply -- including that the
+the [write guarantees](/basics/guarantees#writes) apply, including that the
 version advances even when the statement affects zero rows.
 
 ## What to read next {#next}

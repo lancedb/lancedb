@@ -55,6 +55,106 @@ pub const EXPRESSION_META_KEY: &str = "computed_column.expression";
 /// Field metadata key holding the column's inputs, as a JSON array of names.
 pub const INPUTS_META_KEY: &str = "computed_column.inputs";
 
+/// Whether the server may automatically refresh this output.
+pub const AUTO_REFRESH_ENABLED_META_KEY: &str = "computed_column.auto_refresh_enabled";
+/// Minimum interval between successful automatic refreshes, in seconds.
+pub const AUTO_REFRESH_INTERVAL_META_KEY: &str = "computed_column.auto_refresh_interval_seconds";
+
+/// Scheduling settings persisted on each computed output. LanceDB Embedded
+/// stores these settings; automatic scheduling requires LanceDB Distributed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ComputedColumnOptions {
+    /// Permit automatic refresh. Manual refresh is always available.
+    pub auto_refresh_enabled: bool,
+    /// Minimum seconds after a successful refresh before another is eligible.
+    /// When omitted, the server determines when to refresh.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_refresh_interval_seconds: Option<u64>,
+}
+
+impl Default for ComputedColumnOptions {
+    fn default() -> Self {
+        Self {
+            auto_refresh_enabled: true,
+            auto_refresh_interval_seconds: None,
+        }
+    }
+}
+
+impl ComputedColumnOptions {
+    /// Reject intervals that cannot be represented by the server scheduler.
+    pub fn validate(&self) -> Result<()> {
+        if self
+            .auto_refresh_interval_seconds
+            .is_some_and(|interval| interval == 0 || interval.checked_mul(1000).is_none())
+        {
+            return Err(Error::InvalidInput {
+                message: "auto_refresh_interval_seconds must be a positive integer no greater than u64::MAX / 1000".into(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Read scheduling settings, using defaults for omitted properties.
+    pub fn from_metadata(metadata: &HashMap<String, String>) -> Result<Self> {
+        let mut options = Self::default();
+        if let Some(value) = metadata.get(AUTO_REFRESH_ENABLED_META_KEY) {
+            options.auto_refresh_enabled = value.parse().map_err(|_| Error::InvalidInput {
+                message: "auto_refresh_enabled must be true or false".into(),
+            })?;
+        }
+        if let Some(value) = metadata.get(AUTO_REFRESH_INTERVAL_META_KEY) {
+            options.auto_refresh_interval_seconds =
+                Some(value.parse().map_err(|_| Error::InvalidInput {
+                    message: "auto_refresh_interval_seconds must be a positive integer".into(),
+                })?);
+        }
+        options.validate()?;
+        Ok(options)
+    }
+
+    /// Attach validated settings to newly declared computed output fields.
+    pub fn apply_to_schema(&self, schema: &ArrowSchema) -> Result<ArrowSchema> {
+        self.validate()?;
+        let fields = schema
+            .fields()
+            .iter()
+            .map(|field| {
+                if computed_column_from_field(field).is_none()
+                    || field
+                        .metadata()
+                        .get(FUNCTION_OUTPUT_ORDINAL_META_KEY)
+                        .is_some_and(|ordinal| {
+                            ordinal == &FUNCTION_ASSIGNMENT_OUTPUT_ORDINAL.to_string()
+                        })
+                {
+                    return field.clone();
+                }
+                let mut metadata = field.metadata().clone();
+                metadata.extend(self.metadata());
+                Arc::new(field.as_ref().clone().with_metadata(metadata))
+            })
+            .collect::<Vec<_>>();
+        Ok(ArrowSchema::new_with_metadata(
+            fields,
+            schema.metadata().clone(),
+        ))
+    }
+
+    /// Field metadata values shared by native and server declaration paths.
+    pub fn metadata(&self) -> HashMap<String, String> {
+        let mut metadata = HashMap::from([(
+            AUTO_REFRESH_ENABLED_META_KEY.into(),
+            self.auto_refresh_enabled.to_string(),
+        )]);
+        if let Some(interval) = self.auto_refresh_interval_seconds {
+            metadata.insert(AUTO_REFRESH_INTERVAL_META_KEY.into(), interval.to_string());
+        }
+        metadata
+    }
+}
+
 /// Field metadata key holding the Function binding identity.
 pub const FUNCTION_BINDING_ID_META_KEY: &str = "computed_column.function.binding_id";
 
@@ -307,12 +407,23 @@ pub(crate) fn ensure_supported_function_metadata(schema: &ArrowSchema) -> Result
         .iter()
         .map(|binding| (binding.binding_id(), binding))
         .collect::<HashMap<_, _>>();
+    let assignment_columns = bindings
+        .iter()
+        .filter_map(|binding| {
+            binding
+                .assignment()
+                .map(|assignment| assignment.output_name.as_str())
+        })
+        .collect::<HashSet<_>>();
     for field in schema.fields() {
-        if field
-            .metadata()
-            .get(COMPUTED_COLUMN_META_KEY)
-            .map(String::as_str)
-            != Some("true")
+        // Assignment columns are server-owned bookkeeping, even when describe
+        // includes them. Only user-visible outputs require reciprocal metadata.
+        if assignment_columns.contains(field.name().as_str())
+            || field
+                .metadata()
+                .get(COMPUTED_COLUMN_META_KEY)
+                .map(String::as_str)
+                != Some("true")
         {
             continue;
         }
@@ -389,24 +500,6 @@ pub(crate) fn ensure_supported_function_metadata(schema: &ArrowSchema) -> Result
         }
     }
     ensure_computed_inputs_acyclic(schema, &bindings)
-}
-
-/// Refuse `operation` outright on a table with a Function binding. For
-/// operations that cannot say which columns they touch; the others use
-/// [`ensure_not_function_bound`].
-pub(crate) fn ensure_no_function_bindings_for_mutation(
-    schema: &ArrowSchema,
-    operation: &str,
-) -> Result<()> {
-    ensure_supported_function_metadata(schema)?;
-    if !function_bindings(schema)?.is_empty() {
-        return Err(Error::NotSupported {
-            message: format!(
-                "{operation} is not supported on a table with registered Function bindings"
-            ),
-        });
-    }
-    Ok(())
 }
 
 /// Refuse `operation` only when a path in `touched` names a column a Function
@@ -1279,6 +1372,7 @@ fn ensure_binding_matches_schema(schema: &ArrowSchema, binding: &FunctionBinding
             &output.arrow_type,
         )?);
     }
+    let mut declared_output_schema = binding.output_schema().cloned();
     if let Some(assignment) = binding.assignment() {
         if binding
             .outputs()
@@ -1290,49 +1384,17 @@ fn ensure_binding_matches_schema(schema: &ArrowSchema, binding: &FunctionBinding
                 binding.binding_id()
             )));
         }
-        let field = schema
-            .field_with_name(&assignment.output_name)
-            .map_err(|_| {
-                invalid_function(format!(
-                    "Function binding '{}' assignment column '{}' is missing",
-                    binding.binding_id(),
-                    assignment.output_name
-                ))
-            })?;
-        let metadata = field.metadata();
-        if field.data_type() != &DataType::Boolean
-            || !field.is_nullable()
-            || metadata.get(COMPUTED_COLUMN_META_KEY).map(String::as_str) != Some("true")
-            || metadata.get(KIND_META_KEY).map(String::as_str) != Some(FUNCTION_KIND)
-            || metadata
-                .get(FUNCTION_BINDING_ID_META_KEY)
-                .map(String::as_str)
-                != Some(binding.binding_id())
-            || metadata
-                .get(FUNCTION_OUTPUT_ORDINAL_META_KEY)
-                .and_then(|value| value.parse::<u32>().ok())
-                != Some(FUNCTION_ASSIGNMENT_OUTPUT_ORDINAL)
+        // Servers may include the internal assignment in the persisted output
+        // schema while omitting it from describe. Compare only user outputs.
+        if let Some(fields) = declared_output_schema
+            .as_mut()
+            .and_then(|schema| schema.get_mut("fields"))
+            .and_then(Value::as_array_mut)
         {
-            return Err(invalid_function(format!(
-                "Function binding '{}' assignment column no longer matches its declaration",
-                binding.binding_id()
-            )));
+            fields.retain(|field| {
+                field.get("name").and_then(Value::as_str) != Some(assignment.output_name.as_str())
+            });
         }
-        let json = lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(vec![
-            ArrowField::new(assignment.output_name.clone(), DataType::Boolean, true),
-        ]))
-        .map_err(|e| invalid_function(format!("invalid Function assignment schema: {e}")))?;
-        output_fields.push(json.fields.into_iter().next().unwrap());
-    } else if binding.outputs().iter().all(|output| output.nullable)
-        && binding
-            .outputs()
-            .iter()
-            .all(|output| output.result_field != WHOLE_RESULT_FIELD)
-    {
-        return Err(invalid_function(format!(
-            "Function binding '{}' has no flattened-result assignment column",
-            binding.binding_id()
-        )));
     }
     let output_schema = JsonArrowSchema::new(output_fields);
     let output_schema = serde_json::to_value(output_schema).map_err(|e| {
@@ -1340,7 +1402,7 @@ fn ensure_binding_matches_schema(schema: &ArrowSchema, binding: &FunctionBinding
             "could not encode exact Function output schema: {e}"
         ))
     })?;
-    if binding.output_schema() != Some(&output_schema) {
+    if declared_output_schema.as_ref() != Some(&output_schema) {
         return Err(invalid_function(format!(
             "Function binding '{}' output schema does not match physical siblings",
             binding.binding_id()
@@ -2197,7 +2259,7 @@ pub(crate) fn plan(schema: SchemaRef, columns: &[(String, String)]) -> Result<Ve
 /// every declaration. For callers that stage declarations behind other work
 /// and need those rejections before any of it lands.
 ///
-/// Only the schema is consulted. Declaring also refuses a table with a MemWAL
+/// Only the schema is consulted. Declaring also refuses a table with an RTE
 /// write spec or retained SSTables; that is table state, checked at commit.
 ///
 /// ```
@@ -2303,6 +2365,111 @@ impl<S: lance_datafusion::utils::StreamingWriteSource> lance_datafusion::utils::
             Ok(batch)
         });
         Box::pin(datafusion_physical_plan::stream::RecordBatchStreamAdapter::new(schema, stream))
+    }
+}
+
+/// Test fixtures for a table carrying a Function binding, shared by the
+/// write-path tests. No local path declares a binding, so these stamp one
+/// the way the server does.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use arrow_array::record_batch;
+
+    use super::{
+        FUNCTION_ASSIGNMENT_OUTPUT_ORDINAL, FUNCTION_BINDINGS_META_KEY,
+        ensure_supported_function_metadata, function_bindings_metadata,
+        function_computed_column_metadata,
+    };
+    use crate::Table;
+    use crate::connect;
+    use crate::function::FunctionBinding;
+
+    /// A table carrying the fixture binding: `title` and `body` are its
+    /// inputs, `search_text` and `search_token_count` its outputs, `spare`
+    /// nobody's. Stamped the way the server does it, since no local path
+    /// declares a binding.
+    pub async fn bound_table() -> Table {
+        let batch = record_batch!(
+            ("title", Utf8, ["a"]),
+            ("body", Utf8, ["b"]),
+            ("search_text", Utf8, ["a b"]),
+            ("search_token_count", Int64, [2]),
+            ("spare", Int32, [1])
+        )
+        .unwrap();
+        bound_table_from(batch).await
+    }
+
+    /// [`bound_table`] over a caller's batch, which must carry `title`, `body`,
+    /// `search_text` and `search_token_count`.
+    pub async fn bound_table_from(batch: arrow_array::RecordBatch) -> Table {
+        let conn = connect("memory://").execute().await.unwrap();
+        let table = conn.create_table("bound", batch).execute().await.unwrap();
+        stamp_bindings(&table, &[text_features_binding("")]).await;
+        table
+    }
+
+    /// The fixture binding, its id and output names suffixed so a table can
+    /// carry more than one.
+    pub fn text_features_binding(suffix: &str) -> FunctionBinding {
+        let raw = include_str!(
+            "../../tests/fixtures/first_class_functions/v1/remote_function_binding.json"
+        );
+        if suffix.is_empty() {
+            return FunctionBinding::from_json(raw).unwrap();
+        }
+        FunctionBinding::from_json(
+            &raw.replace("fb_01K3TEXT", &format!("fb_01K3TEXT{suffix}"))
+                .replace("search_text", &format!("search_text{suffix}"))
+                .replace("search_token_count", &format!("search_token_count{suffix}")),
+        )
+        .unwrap()
+    }
+
+    /// Stamp bindings the way the server does it, since no local path
+    /// declares one: the envelope on the schema, a declaration marker on
+    /// every output field.
+    pub async fn stamp_bindings(table: &Table, bindings: &[FunctionBinding]) {
+        let native = table.as_native().unwrap();
+        let mut dataset = native.dataset.get().await.unwrap().as_ref().clone();
+        dataset
+            .update_schema_metadata(vec![(
+                FUNCTION_BINDINGS_META_KEY.to_string(),
+                Some(function_bindings_metadata(bindings).unwrap()),
+            )])
+            .await
+            .unwrap();
+        let inputs = ["title".to_string(), "body".to_string()];
+        let outputs = bindings
+            .iter()
+            .flat_map(|binding| {
+                let assignment = binding.assignment().map(|assignment| {
+                    (
+                        assignment.output_name.clone(),
+                        FUNCTION_ASSIGNMENT_OUTPUT_ORDINAL,
+                    )
+                });
+                binding
+                    .outputs()
+                    .iter()
+                    .map(|output| (output.output_name.clone(), output.output_ordinal))
+                    .chain(assignment)
+                    .map(|(name, ordinal)| {
+                        (
+                            dataset.schema().field(&name).unwrap().id as u32,
+                            function_computed_column_metadata(
+                                binding.binding_id(),
+                                ordinal,
+                                &inputs,
+                            ),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        dataset.replace_field_metadata(outputs).await.unwrap();
+        native.dataset.update(dataset);
+        ensure_supported_function_metadata(&table.schema().await.unwrap()).unwrap();
     }
 }
 
@@ -2444,6 +2611,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_declare_infers_type_and_inputs() {
         let table = table_with_ints("declare_infers").await;
         let initial = table.version().await.unwrap();
@@ -2511,6 +2682,10 @@ mod tests {
     /// The binding reaches the schema only if `AllNulls` carries per-field
     /// metadata through the commit. The whole representation rests on it.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_all_nulls_preserves_field_metadata() {
         let table = table_with_ints("metadata_survives").await;
         add_computed(&table, &[("doubled".into(), "x * 2".into())])
@@ -2535,6 +2710,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_declared_column_is_all_null() {
         let table = table_with_ints("declare_is_null").await;
         add_computed(&table, &[("doubled".into(), "x * 2".into())])
@@ -2559,6 +2738,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_unknown_column_fails_at_declare_time() {
         let table = table_with_ints("unknown_input").await;
         let err = add_computed(&table, &[("bad".into(), "missing + 1".into())])
@@ -2571,6 +2754,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_unparsable_expression_fails_at_declare_time() {
         let table = table_with_ints("bad_syntax").await;
         let err = add_computed(&table, &[("bad".into(), "x *".into())])
@@ -2591,6 +2778,10 @@ mod tests {
     /// resolution is missing. When a registry-aware planner exists this
     /// becomes a supported declaration rather than a new API.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_unregistered_function_is_rejected_for_now() {
         let table = table_with_ints("udf_not_yet").await;
         let err = add_computed(&table, &[("vec".into(), "embed(x)".into())])
@@ -2608,6 +2799,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_existing_column_name_is_rejected() {
         let table = table_with_ints("name_taken").await;
         let err = add_computed(&table, &[("x".into(), "x * 2".into())])
@@ -2618,6 +2813,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_constant_expression_needs_no_inputs() {
         let table = table_with_ints("constant").await;
         add_computed(&table, &[("answer".into(), "42".into())])
@@ -2630,6 +2829,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_multiple_columns_in_one_commit() {
         let table = table_with_ints("multi").await;
         let initial = table.version().await.unwrap();
@@ -2652,6 +2855,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_duplicate_declaration_in_one_call_is_rejected() {
         let table = table_with_ints("dupe").await;
         let err = add_computed(
@@ -2670,6 +2877,10 @@ mod tests {
     /// A batch may build on itself: one commit, and the later entry's inputs
     /// name the earlier one.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_a_declaration_may_read_one_declared_before_it() {
         let table = table_with_ints("chain").await;
         let before = table.version().await.unwrap();
@@ -2722,6 +2933,10 @@ mod tests {
 
     /// Built-in functions type the column the same way an operator does.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_builtin_function_inference() {
         let conn = connect("memory://").execute().await.unwrap();
         let batch = record_batch!(("name", Utf8, ["ada", "grace"]), ("n", Int32, [-1, 2])).unwrap();
@@ -2772,6 +2987,10 @@ mod tests {
     /// an ordinary column. Reported as absent it would be refreshable by
     /// nothing and redeclarable over, silently.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_unrecognized_kind_is_reported_rather_than_hidden() {
         let table = table_with_ints("foreign_kind").await;
         super::add_foreign_kind(&table, "embedding", "udf").await;
@@ -2815,6 +3034,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_inputs_are_deduplicated_and_sorted() {
         let conn = connect("memory://").execute().await.unwrap();
         let batch = record_batch!(("b", Int32, [1, 2]), ("a", Int32, [3, 4])).unwrap();
@@ -2831,6 +3054,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_dropping_an_input_is_refused() {
         let table = table_with_ints("drop_input").await;
         add_computed(&table, &[("doubled".into(), "x * 2".into())])
@@ -2845,6 +3072,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_renaming_an_input_is_refused() {
         let table = table_with_ints("rename_input").await;
         add_computed(&table, &[("doubled".into(), "x * 2".into())])
@@ -2863,6 +3094,10 @@ mod tests {
 
     /// Nothing resolves against nullability, so it is not a rebinding.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_altering_an_input_nullability_is_allowed() {
         let table = table_with_ints("nullable_input").await;
         add_computed(&table, &[("doubled".into(), "x * 2".into())])
@@ -2879,6 +3114,10 @@ mod tests {
     /// the counting and writing passes, so the declared value is incoherent.
     /// Refused at declare time.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_a_volatile_expression_is_refused() {
         let table = table_with_ints("volatile_expr").await;
         let err = add_computed(&table, &[("maybe".into(), "random() < 0.5".into())])
@@ -2895,6 +3134,10 @@ mod tests {
     /// constant, but the stored SQL still names `x`, so the recorded inputs
     /// must too -- otherwise dropping `x` is allowed and refresh breaks.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_inputs_survive_expression_optimization() {
         let table = table_with_ints("optimized_inputs").await;
         add_computed(&table, &[("flag".into(), "true OR x > 0".into())])
@@ -2912,6 +3155,10 @@ mod tests {
     /// The gate's reproducer: casting a computed column rewrites the field
     /// without its metadata, silently destroying the declaration.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_retyping_the_computed_column_is_refused() {
         use arrow_schema::DataType as ArrowDataType;
 
@@ -2936,6 +3183,10 @@ mod tests {
     /// A declaration cannot be edited, fabricated or erased through field
     /// metadata: it is validated as a whole at declare time.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_declaration_metadata_is_immutable() {
         use crate::table::FieldMetadataUpdate;
 
@@ -2983,6 +3234,10 @@ mod tests {
     /// The gate's reproducer: only refresh materializes a declared column;
     /// a direct write would store an arbitrary durable value.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_a_computed_column_cannot_be_written_directly() {
         let table = table_with_ints("direct_write").await;
         add_computed(&table, &[("doubled".into(), "x * 2".into())])
@@ -3024,8 +3279,12 @@ mod tests {
 
     /// The gate's reproducer: the reciprocal of the declare-under-spec check.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_installing_an_lsm_spec_over_computed_columns_is_refused() {
-        use crate::table::MemWalWriteSpec;
+        use crate::table::RTEWriteSpec;
 
         let tmp_dir = tempfile::tempdir().unwrap();
         let conn = connect(tmp_dir.path().to_str().unwrap())
@@ -3053,14 +3312,14 @@ mod tests {
             .unwrap();
 
         let err = table
-            .enable_memwal(MemWalWriteSpec::unsharded())
+            .enable_rte(RTEWriteSpec::unsharded())
             .await
             .unwrap_err();
         assert!(
             matches!(&err, Error::NotSupported { message } if message.contains("computed")),
             "{err:?}"
         );
-        assert!(table.get_memwal_spec().await.unwrap().is_none());
+        assert!(table.get_rte_spec().await.unwrap().is_none());
     }
 
     /// The gate's reproducer: declaration metadata is admitted only through
@@ -3092,6 +3351,10 @@ mod tests {
 
     /// The gate's reproducer: SQL INSERT is a write path too.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_sql_insert_cannot_write_a_computed_column() {
         use datafusion::prelude::SessionContext;
 
@@ -3191,6 +3454,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_sql_insert_omitting_computed_is_allowed() {
         use datafusion::prelude::SessionContext;
 
@@ -3217,6 +3484,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_a_nested_computed_field_cannot_be_renamed() {
         let table = table_with_ints("computed_struct_rename").await;
         add_computed(&table, &[("payload".into(), "named_struct('a', x)".into())])
@@ -3233,10 +3504,14 @@ mod tests {
         );
     }
 
-    /// Stale handles must not commit the computed/MemWAL state in either order.
+    /// Stale handles must not commit the computed/RTE state in either order.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_stale_handles_cannot_mix_computed_and_lsm() {
-        use crate::table::MemWalWriteSpec;
+        use crate::table::RTEWriteSpec;
 
         let tmp_dir = tempfile::tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
@@ -3260,7 +3535,7 @@ mod tests {
             .await
             .unwrap();
         let err = stale
-            .enable_memwal(MemWalWriteSpec::unsharded())
+            .enable_rte(RTEWriteSpec::unsharded())
             .await
             .unwrap_err();
         assert!(matches!(err, Error::NotSupported { .. }), "install won");
@@ -3274,22 +3549,22 @@ mod tests {
         let table = conn.create_table("mix2", batch).execute().await.unwrap();
         table.set_unenforced_primary_key(["x"]).await.unwrap();
         let stale = conn.open_table("mix2").execute().await.unwrap();
-        table
-            .enable_memwal(MemWalWriteSpec::unsharded())
-            .await
-            .unwrap();
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
         let err = add_computed(&stale, &[("doubled".into(), "x * 2".into())])
             .await
             .unwrap_err();
         assert!(matches!(err, Error::NotSupported { .. }), "declare won");
     }
 
-    /// The gate's reproducer: after catch-up activation, an LSM write, and
-    /// unset, retained SSTable rows survive without a live spec. The catch-up
-    /// flag is the durable marker; declaration refuses on it.
+    /// Rows written through the RTE keep the spec installed, since
+    /// `disable_rte` refuses while they are unmerged, so declaration refuses.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_unset_with_retained_lsm_rows_cannot_admit_a_declaration() {
-        use crate::table::MemWalWriteSpec;
+        use crate::table::RTEWriteSpec;
         use arrow_array::{Int64Array, RecordBatchIterator};
 
         let tmp_dir = tempfile::tempdir().unwrap();
@@ -3315,21 +3590,19 @@ mod tests {
             .await
             .unwrap();
         table.set_unenforced_primary_key(["id"]).await.unwrap();
-        table
-            .enable_memwal(MemWalWriteSpec::unsharded())
-            .await
-            .unwrap();
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
 
         let mut merge = table.merge_insert(&["id"]);
         merge
             .when_matched_update_all(None)
             .when_not_matched_insert_all()
-            .use_memwal(true);
+            .use_rte(true);
         merge
             .execute(Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema)))
             .await
             .unwrap();
-        table.disable_memwal().await.unwrap();
+        // The RTE holds the written rows, so unsetting it is refused.
+        table.disable_rte().await.unwrap_err();
 
         let err = add_computed(&table, &[("doubled".into(), "value * 2".into())])
             .await
@@ -3342,6 +3615,10 @@ mod tests {
 
     /// A declaration does not read itself, so it travels with its binding.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_dropping_the_computed_column_is_allowed() {
         let table = table_with_ints("drop_computed").await;
         add_computed(&table, &[("doubled".into(), "x * 2".into())])
@@ -3598,7 +3875,7 @@ mod tests {
     }
 
     #[test]
-    fn test_binding_preserves_all_nullable_outputs_with_an_assignment_column() {
+    fn test_binding_accepts_server_owned_assignment_columns() {
         let mut raw_binding: Value = serde_json::from_str(include_str!(
             "../../tests/fixtures/first_class_functions/v1/remote_function_binding.json"
         ))
@@ -3607,16 +3884,11 @@ mod tests {
         raw_binding["outputs"][1]["nullable"] = Value::Bool(true);
         let without_assignment: FunctionBinding =
             serde_json::from_value(raw_binding.clone()).unwrap();
-        let error = ensure_binding_matches_schema(
+        ensure_binding_matches_schema(
             &valid_function_binding_schema(true, true, &without_assignment),
             &without_assignment,
         )
-        .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("flattened-result assignment column")
-        );
+        .unwrap();
 
         raw_binding["assignment"] = serde_json::json!({
             "output_name": "__function_assignment_fb_01K3TEXT",
@@ -3647,6 +3919,36 @@ mod tests {
             )]),
         );
         ensure_supported_function_metadata(&schema).unwrap();
+
+        let assignment_name = &binding.assignment().unwrap().output_name;
+        let fields = schema
+            .fields()
+            .iter()
+            .filter(|field| field.name() != assignment_name)
+            .cloned()
+            .collect::<Vec<_>>();
+        let hidden = ArrowSchema::new_with_metadata(fields.clone(), schema.metadata().clone());
+        ensure_supported_function_metadata(&hidden).unwrap();
+
+        // The assignment field's type and metadata belong to the server.
+        let mut fields = fields;
+        fields.push(Arc::new(
+            ArrowField::new(assignment_name, DataType::Int32, false).with_metadata(HashMap::from(
+                [
+                    (COMPUTED_COLUMN_META_KEY.into(), "true".into()),
+                    (KIND_META_KEY.into(), "server_owned".into()),
+                ],
+            )),
+        ));
+        let changed = ArrowSchema::new_with_metadata(fields, schema.metadata().clone());
+        ensure_supported_function_metadata(&changed).unwrap();
+
+        // Describe metadata may also omit the internal output-schema field.
+        let mut raw = serde_json::to_value(&binding).unwrap();
+        raw["output_schema"]["fields"].as_array_mut().unwrap().pop();
+        let binding_without_assignment_field: FunctionBinding =
+            serde_json::from_value(raw).unwrap();
+        ensure_binding_matches_schema(&hidden, &binding_without_assignment_field).unwrap();
 
         let mut metadata: Value =
             serde_json::from_str(schema.metadata().get(FUNCTION_BINDINGS_META_KEY).unwrap())
@@ -4482,6 +4784,10 @@ mod tests {
     /// downstream binding's immutable input schema must not record them, or
     /// the first upstream refresh strands the table.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_computed_input_survives_upstream_refresh() {
         use arrow_array::{Int32Array, Int64Array, RecordBatch};
 

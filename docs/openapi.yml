@@ -1,9 +1,9 @@
 openapi: 3.1.0
 info:
   version: 1.0.0
-  title: LanceDB Cloud API
+  title: LanceDB REST API
   description: |
-    LanceDB Cloud API is a RESTful API that allows users to access and modify data stored in LanceDB Cloud.
+    The LanceDB REST API is a RESTful API that allows users to access and modify data stored in LanceDB Enterprise or LanceDB Cloud (legacy).
     Table actions are considered temporary resource creations and all use POST method.
   contact:
     name: LanceDB support
@@ -12,7 +12,7 @@ info:
 
 servers:
   - url: https://{db}.{region}.api.lancedb.com
-    description: LanceDB Cloud REST endpoint.
+    description: LanceDB Cloud (legacy) REST endpoint. For LanceDB Enterprise, use your deployment's endpoint.
     variables:
       db:
         default: ""

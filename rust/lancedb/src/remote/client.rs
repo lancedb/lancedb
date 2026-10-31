@@ -83,7 +83,8 @@ const DEFAULT_MAX_BYTES_PER_REQUEST: u64 = 8 * 1024 * 1024 * 1024;
 /// timeout (which also covers the request-body upload) fires.
 const DEFAULT_MAX_REQUEST_DURATION_DIVISOR: u32 = 2;
 
-/// Configuration for the LanceDB Cloud HTTP client.
+/// Configuration for the HTTP client used to connect to LanceDB Enterprise or
+/// LanceDB Cloud (legacy).
 #[derive(Clone)]
 pub struct ClientConfig {
     pub timeout_config: TimeoutConfig,
@@ -108,7 +109,7 @@ pub struct ClientConfig {
     pub header_provider: Option<Arc<dyn HeaderProvider>>,
     /// User identifier for tracking purposes.
     ///
-    /// This is sent as the `x-lancedb-user-id` header in requests to LanceDB Cloud/Enterprise.
+    /// This is sent as the `x-lancedb-user-id` header in requests to LanceDB Enterprise.
     /// It can be set directly, or via the `LANCEDB_USER_ID` environment variable.
     /// Alternatively, set `LANCEDB_USER_ID_ENV_KEY` to specify another environment
     /// variable that contains the user ID value.
@@ -232,6 +233,10 @@ pub struct TimeoutConfig {
     /// The default is 120 seconds (2 minutes).
     pub connect_timeout: Option<Duration>,
     /// The timeout for reading a response from the server.
+    ///
+    /// This also applies while waiting for response headers during an upload.
+    /// A large or slowly produced request body (for example, when creating a
+    /// table) may need a longer timeout even if data is still being uploaded.
     ///
     /// You can also set the `LANCE_CLIENT_READ_TIMEOUT` environment variable
     /// to set this value. Use an integer value in seconds.
@@ -378,23 +383,30 @@ pub struct ParsedDbUrl {
 
 /// Parse a database URL and extract the database name and optional prefix.
 ///
-/// Expected format: `db://db_name` or `db://db_name/prefix`
+/// Expected format: `db://db_name`, `db://db_name/prefix`, or `db://` when
+/// connecting to the storage root through a host override.
 pub fn parse_db_url(db_url: &str) -> Result<ParsedDbUrl> {
     let parsed_url = url::Url::parse(db_url).map_err(|err| Error::InvalidInput {
         message: format!("db_url is not a valid URL. '{db_url}'. Error: {err}"),
     })?;
     debug_assert_eq!(parsed_url.scheme(), "db");
-    if !parsed_url.has_host() {
-        return Err(Error::InvalidInput {
-            message: format!("Invalid database URL (missing host) '{}'", db_url),
-        });
-    }
-    let db_name = urlencoding::decode(parsed_url.host_str().unwrap())
-        .map_err(|err| Error::InvalidInput {
-            message: format!("Invalid encoded database name: {err}"),
-        })?
-        .into_owned();
-    validate_database_name(&db_name)?;
+    let db_name = match parsed_url.host_str() {
+        Some(db_name) => {
+            let db_name = urlencoding::decode(db_name)
+                .map_err(|err| Error::InvalidInput {
+                    message: format!("Invalid encoded database name: {err}"),
+                })?
+                .into_owned();
+            validate_database_name(&db_name)?;
+            db_name
+        }
+        None if matches!(parsed_url.path(), "" | "/") => String::new(),
+        None => {
+            return Err(Error::InvalidInput {
+                message: format!("Invalid database URL (missing host) '{}'", db_url),
+            });
+        }
+    };
     let db_prefix = {
         let prefix = parsed_url.path().trim_start_matches('/');
         if prefix.is_empty() {
@@ -802,9 +814,19 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         self.client.get(full_uri)
     }
 
+    pub fn head(&self, uri: &str) -> RequestBuilder {
+        let full_uri = format!("{}{}", self.host, uri);
+        self.client.head(full_uri)
+    }
+
     pub fn post(&self, uri: &str) -> RequestBuilder {
         let full_uri = format!("{}{}", self.host, uri);
         self.client.post(full_uri)
+    }
+
+    pub fn put(&self, uri: &str) -> RequestBuilder {
+        let full_uri = format!("{}{}", self.host, uri);
+        self.client.put(full_uri)
     }
 
     /// Apply dynamic headers from the header provider if configured
@@ -1193,6 +1215,117 @@ pub mod test_utils {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn test_http_timeout_error_is_actionable() {
+        use super::*;
+        use futures::StreamExt;
+
+        // Keep consuming the upload without sending response headers (HTTP) or
+        // completing the TLS handshake (HTTPS). The HTTP body never reaches EOF,
+        // so its read timeout fires while it is still uploading.
+        for (scheme, retry) in [
+            ("http", false),
+            ("http", true),
+            ("https", false),
+            ("https", true),
+        ] {
+            let connect_timeout = scheme == "https";
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let _ = tokio::io::copy(&mut socket, &mut tokio::io::sink()).await;
+            });
+            let client = RestfulLanceDbClient::try_new(
+                &parse_db_url("db://test").unwrap(),
+                "us-east-1",
+                Some(format!("{scheme}://{address}")),
+                HeaderMap::new(),
+                ClientConfig {
+                    timeout_config: TimeoutConfig {
+                        connect_timeout: Some(Duration::from_millis(200)),
+                        read_timeout: Some(Duration::from_secs(2)),
+                        ..Default::default()
+                    },
+                    retry_config: RetryConfig {
+                        connect_retries: Some(1),
+                        read_retries: Some(1),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+            let make_body = || {
+                Ok(Body::wrap_stream(
+                    futures::stream::once(async {
+                        Ok::<_, std::io::Error>(bytes::Bytes::from_static(b"upload"))
+                    })
+                    .chain(futures::stream::pending()),
+                ))
+            };
+            let request = client
+                .post("/v1/table/test/create/")
+                .header(REQUEST_ID_HEADER, "upload-timeout");
+            let error = if retry {
+                client
+                    .send_with_retry(request, Some(Box::new(make_body)), true)
+                    .await
+            } else {
+                client.send(request.body(make_body().unwrap())).await
+            }
+            .unwrap_err();
+            server.abort();
+
+            let message = error.to_string();
+            assert!(message.contains("timed out"), "{message}");
+            let (config, env_var) = if connect_timeout {
+                (
+                    "client_config.timeout_config.connect_timeout",
+                    "LANCE_CLIENT_CONNECT_TIMEOUT",
+                )
+            } else {
+                (
+                    "client_config.timeout_config.read_timeout",
+                    "LANCE_CLIENT_READ_TIMEOUT",
+                )
+            };
+            assert!(message.contains(config), "{message}");
+            assert!(
+                message.contains("client_config.timeout_config.timeout"),
+                "{message}"
+            );
+            assert!(message.contains(env_var), "{message}");
+            let (request_id, status_code, source) = match &error {
+                Error::Http {
+                    request_id,
+                    status_code,
+                    source,
+                } if !retry => (request_id, status_code, source),
+                Error::Retry {
+                    request_id,
+                    status_code,
+                    source,
+                    read_failures,
+                    connect_failures,
+                    ..
+                } if retry => {
+                    assert_eq!(*read_failures, u8::from(!connect_timeout));
+                    assert_eq!(*connect_failures, u8::from(connect_timeout));
+                    (request_id, status_code, source)
+                }
+                other => panic!("unexpected error: {other:?}"),
+            };
+            assert_eq!(request_id, "upload-timeout");
+            assert_eq!(*status_code, None);
+            // Retain the typed source for retry classification and Python causes.
+            let source = source.downcast_ref::<reqwest::Error>().unwrap();
+            assert!(source.is_timeout());
+            assert_eq!(source.is_connect(), connect_timeout);
+        }
+    }
+
     /// A configuration naming any other delimiter is refused where it was
     /// written, rather than producing identifiers no service splits the way the
     /// caller meant.

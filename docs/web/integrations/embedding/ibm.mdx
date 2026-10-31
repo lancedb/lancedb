@@ -17,10 +17,9 @@ You can find a list of supported models at [IBM watsonx.ai Documentation](https:
 | `ibm/slate-125m-english-rtrvr-v2`            | 768        |
 | `ibm/slate-30m-english-rtrvr-v2`             | 384        |
 | `intfloat/multilingual-e5-large`             | 1024       |
-| `sentence-transformers/all-minilm-l6-v2`     | 384        |
 
 <Info>
-For new tables, `ibm/granite-embedding-278m-multilingual` is the recommended default. Older model IDs (such as `ibm/slate-125m-english-rtrvr` and `sentence-transformers/all-minilm-l12-v2`) remain resolvable for tables whose stored metadata references them, but they are no longer advertised for new use.
+For new tables, pass `name="ibm/granite-embedding-278m-multilingual"`. The default `name` is still the legacy `ibm/slate-125m-english-rtrvr`, so tables created with it reload with the same model. Legacy and deprecated IDs (such as `ibm/slate-125m-english-rtrvr`, `sentence-transformers/all-minilm-l6-v2` and `sentence-transformers/all-minilm-l12-v2`) still work for tables whose stored metadata references them, but they aren't listed above for new use.
 </Info>
 
 ## Parameters {#parameters}
