@@ -3393,7 +3393,7 @@ class AsyncConnection(object):
         gcp_credentials_json_secret: Optional[Union[str, SecretReference]] = None,
         namespace_path: Optional[List[str]] = None,
     ) -> StorageIntegrationInfo:
-        """Register S3, Azure Blob or GCP access using database-owned credential objects.
+        """Register cloud storage access using database-owned credential Secrets.
 
         ``namespace_path`` follows Secret naming rules. A SecretReference can name
         another database; a string names a root Secret in this database.
