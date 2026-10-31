@@ -969,3 +969,41 @@ DROP STORAGE INTEGRATION customer_blobs;
 ```
 
 Registration returns setup instructions and leaves `access_verified` false. It stores an account-qualified prefix such as `az://customer-data@customeraccount.blob.core.windows.net/raw/`.
+
+### GCP storage integrations
+
+Create one Secret containing the complete GCP application credentials JSON file
+content, then reference its name when registering Google Cloud Storage access:
+
+```python
+from pathlib import Path
+
+db.create_secret("gcp_credentials", Path("credentials.json").read_text())
+integration = db.create_storage_integration(
+    "customer_gcs",
+    "gs://customer-data/raw/",
+    storage_provider="GCP",
+    gcp_credentials_json_secret="gcp_credentials",
+)
+print(integration.configuration_instructions)
+```
+
+The equivalent SQL references the existing Secret:
+
+```sql
+CREATE STORAGE INTEGRATION customer_gcs
+    STORAGE_PROVIDER = 'GCP'
+    STORAGE_PREFIX = 'gs://customer-data/raw/'
+    GCP_CREDENTIALS_JSON_SECRET = public.gcp_credentials;
+DESCRIBE STORAGE INTEGRATION customer_gcs;
+SHOW STORAGE INTEGRATIONS;
+DROP STORAGE INTEGRATION customer_gcs;
+```
+
+`gcp_credentials_json_secret` names a Secret; pass the file content to
+`create_secret`, not to `create_storage_integration`. Use `SecretReference` to
+qualify another database or namespace. Sync and async connections accept the same
+options. The service interprets the stored JSON when accessing storage; registration
+does not validate its credentials format or verify access, and leaves
+`access_verified` false. Integration metadata contains the Secret reference, never
+its JSON content. GCP options cannot be combined with AWS or Azure options.
