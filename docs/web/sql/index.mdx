@@ -49,13 +49,15 @@ operations that have no SQL form, such as a merge insert. See
 
 | | |
 | --- | --- |
-| [Database](/sql/ddl/database) | `ATTACH DATABASE` |
-| [Namespace](/sql/ddl/namespace) | `CREATE SCHEMA`, `DROP SCHEMA` |
+| [Database](/sql/ddl/database) | `CREATE`, `DESCRIBE`, `SHOW`, `ATTACH`, `DROP DATABASE` |
+| [Namespace](/sql/ddl/namespace) | `CREATE`, `ALTER`, `DESCRIBE`, `SHOW`, `DROP SCHEMA`/`NAMESPACE` |
 | [Table](/sql/ddl/table) | `CREATE`, `DESCRIBE`, `ALTER`, `CLONE`, `DROP TABLE` |
 | [View](/sql/ddl/view) | `CREATE VIEW`, `DROP VIEW` |
 | [Materialized view](/sql/ddl/materialized-view) | `CREATE MATERIALIZED VIEW`, `SHOW MATERIALIZED VIEWS` |
+| [Secret](/sql/ddl/secret) | `CREATE`, `ALTER`, `DESCRIBE`, `SHOW`, `DROP SECRET` |
+| [Storage Integration](/sql/ddl/storage-integration) | `CREATE`, `DESCRIBE`, `SHOW`, `DROP STORAGE INTEGRATION` |
 | [Index](/sql/ddl/index) | `CREATE INDEX`, `DROP INDEX` |
-| [Job](/sql/ddl/job) | `SHOW JOBS`, `SHOW ERRORS`, `PAUSE`/`RESUME`/`CANCEL JOB` |
+| [Job](/sql/ddl/job) | `SHOW JOBS`, `SHOW JOB EVENTS`, `DESCRIBE JOB`, `SHOW ERRORS`, `PAUSE`/`RESUME`/`CANCEL JOB` |
 
 {/*
 Draft for the Functions release. Add this row to the table above, after Index:

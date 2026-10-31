@@ -1,9 +1,9 @@
 ---
 title: "Database"
 sidebarTitle: "Database"
-description: "ATTACH DATABASE: bind a database to a storage location."
+description: "Create, describe, list, attach, and drop databases with SQL."
 icon: database
-keywords: ["attach database", "database", "sql", "ddl"]
+keywords: ["database", "create database", "describe database", "show databases", "drop database", "attach database", "sql"]
 availability:
   embedded: unavailable
   enterprise: available
@@ -11,8 +11,61 @@ availability:
 
 A database is the catalog's top-level container: it holds
 [namespaces](/sql/ddl/namespace), which hold tables, views and other objects.
-`ATTACH DATABASE` binds a name to a storage location so its objects become
-reachable.
+Database statements name one database, independently of the session's
+current database. Database creation uses the deployment's native catalog
+and storage settings.
+
+## CREATE DATABASE {#create}
+
+<CodeGroup>
+```sql SQL icon="database"
+CREATE DATABASE analytics
+CREATE DATABASE IF NOT EXISTS "team/search"
+```
+</CodeGroup>
+
+Creates a persistent database. Requires `CREATE DATABASE` on the system, and
+ownership of the database name if it already has an owner. The caller
+becomes the owner of a new name, following the same rules as the REST API.
+
+The result has `operation`, `name`, and `status` columns. Status is
+`created`, or `already_exists` with `IF NOT EXISTS`. Without that clause, an
+existing database is an error. Creation never overwrites an existing
+database.
+
+<Note>
+`WITH` options are unsupported on `CREATE DATABASE`. Use `ATTACH DATABASE`
+[below](#attach) to register a database at an existing location. The
+`system` database and reserved storage names cannot be created.
+</Note>
+
+## DESCRIBE DATABASE {#describe}
+
+<CodeGroup>
+```sql SQL icon="database"
+DESCRIBE DATABASE analytics
+DESC DATABASE "team/search"
+```
+</CodeGroup>
+
+Requires `USAGE` on the database. Returns one row with `name` and
+`properties`. Properties are the catalog's metadata encoded as a JSON
+object; a database without metadata returns `{}`, and a database mid
+`CASCADE` drop reports a transient property marking it as dropping. A
+missing database is an error. `DESCRIBE DATABASE system` returns empty
+properties and requires system `USAGE`.
+
+## SHOW DATABASES {#show}
+
+<CodeGroup>
+```sql SQL icon="database"
+SHOW DATABASES
+```
+</CodeGroup>
+
+Returns a sorted `name` column containing the databases the caller has
+`USAGE` on, including `system` when permitted. `LIKE` and `WHERE` filters
+are unsupported.
 
 ## ATTACH DATABASE {#attach}
 
@@ -23,8 +76,10 @@ ATTACH DATABASE IF NOT EXISTS analytics WITH (location = 'analytics')
 ```
 </CodeGroup>
 
-`location` is the only supported option, and the only way to say where a
-database lives: a relative subdirectory, never an absolute path or a URI.
+Registers an existing native database at a path relative to the catalog's
+storage root, instead of creating a new one. `location` is the only
+supported option: a relative subdirectory, never an absolute path or a URI.
+`ATTACH DATABASE` requires the same creation privileges as `CREATE DATABASE`.
 
 <Warning>
 An absolute path (`/tmp/db`), an `s3://` or `file://` URI, a Windows path
@@ -40,6 +95,33 @@ A quoted name reaches characters a bare identifier cannot, such as
 `` ATTACH DATABASE "team/search" WITH (location = 'team-search') ``.
 </Note>
 
+## DROP DATABASE {#drop}
+
+<CodeGroup>
+```sql SQL icon="database"
+DROP DATABASE analytics
+DROP DATABASE IF EXISTS analytics RESTRICT
+DROP DATABASE analytics CASCADE
+```
+</CodeGroup>
+
+Requires `USAGE` and `OWNERSHIP` on the database. The default, `RESTRICT`,
+refuses a database that still contains objects. `CASCADE` refuses new
+objects in the database, revokes every grant in it, and starts a job that
+drops its contents; deployments without cascade support reject it. An
+externally attached database cannot be dropped with `CASCADE`.
+
+`RESTRICT` returns `operation`, `name`, and `status` columns: `dropped`, or
+`not_found` with `IF EXISTS` for a missing database. `CASCADE` returns
+`operation`, `job_id`, and `status` columns: the job's id with `dropping`,
+or an empty `job_id` with `not_found`. The name stays taken until the job
+finishes and the dropped storage is cleaned up. The `system` database and
+federated databases cannot be dropped.
+
+<Note>
+`ALTER DATABASE` is unsupported.
+</Note>
+
 ## What to read next {#next}
 
 <CardGroup cols={2}>
@@ -48,5 +130,8 @@ A quoted name reaches characters a bare identifier cannot, such as
   </Card>
   <Card title="Table" icon="table" href="/sql/ddl/table">
     Creating tables once a database and namespace exist.
+  </Card>
+  <Card title="Database" icon="database" href="/management/database">
+    The SDK equivalent, and connection settings.
   </Card>
 </CardGroup>
