@@ -3779,8 +3779,21 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         &self,
         column: &str,
     ) -> Result<Job<crate::function::RefreshColumnResult>> {
+        self.refresh_column_async_with_options(column, Default::default())
+            .await
+    }
+
+    async fn refresh_column_async_with_options(
+        &self,
+        column: &str,
+        options: crate::table::RefreshColumnOptions,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
+        options.validate()?;
         self.check_mutable().await?;
         let mut body = serde_json::json!({ "column": column });
+        if let Some(batch_size) = options.batch_size {
+            body["batch_size"] = serde_json::json!(batch_size);
+        }
         self.apply_branch_body(&mut body);
         let request = self
             .client
@@ -10495,7 +10508,7 @@ mod tests {
             assert_eq!(request.url().path(), "/v1/table/my_table/backfill_column");
             let body = request.body().unwrap().as_bytes().unwrap();
             let value: serde_json::Value = serde_json::from_slice(body).unwrap();
-            assert_eq!(value["column"], "doubled");
+            assert_eq!(value, serde_json::json!({"column": "doubled"}));
             http::Response::builder()
                 .status(202)
                 .body(r#"{"job_id": "j-42"}"#)
@@ -10511,6 +10524,66 @@ mod tests {
                 if message.contains("refresh_column_async")),
             "{err:?}"
         );
+    }
+
+    #[rstest]
+    #[case(None)]
+    #[case(Some(1))]
+    #[case(Some(8))]
+    #[tokio::test]
+    async fn test_refresh_column_async_batch_size(#[case] batch_size: Option<usize>) {
+        use crate::table::{Ref, RefreshColumnOptions};
+
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/branches/create/" => http::Response::builder()
+                    .status(200)
+                    .body("{}".to_string())
+                    .unwrap(),
+                "/v1/table/my_table/describe/" => simple_describe_response(),
+                "/v1/table/my_table/backfill_column" => {
+                    let mut expected = serde_json::json!({"column": "quality", "branch": "exp"});
+                    if let Some(batch_size) = batch_size {
+                        expected["batch_size"] = serde_json::json!(batch_size);
+                    }
+                    assert_eq!(request_body_json(&request), expected);
+                    http::Response::builder()
+                        .status(202)
+                        .body(r#"{"job_id": "j-42"}"#.to_string())
+                        .unwrap()
+                }
+                path => panic!("unexpected request: {path}"),
+            });
+        let branch = table
+            .create_branch("exp", Ref::Version(None, None))
+            .await
+            .unwrap();
+        let options = RefreshColumnOptions { batch_size };
+        let job = branch
+            .refresh_column_async_with_options("quality", options)
+            .await
+            .unwrap();
+        assert_eq!(job.id(), Some("j-42"));
+    }
+
+    #[tokio::test]
+    async fn test_refresh_column_rejects_zero_batch_size_before_request() {
+        use crate::table::RefreshColumnOptions;
+
+        let table = Table::new_with_handler("my_table", |_| -> http::Response<String> {
+            panic!("invalid batch size must not send a request")
+        });
+        let options = RefreshColumnOptions::default().batch_size(0);
+        let error = table
+            .refresh_column_with_options("quality", options.clone())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::InvalidInput { message } if message.contains("batch_size")));
+        let error = table
+            .refresh_column_async_with_options("quality", options)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::InvalidInput { message } if message.contains("batch_size")));
     }
 
     #[rstest]

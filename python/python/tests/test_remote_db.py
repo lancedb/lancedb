@@ -1520,7 +1520,14 @@ def test_remote_create_index_async_returns_job():
         job.cancel()
 
 
-def test_remote_refresh_async_returns_typed_terminal_result():
+@pytest.mark.asyncio
+@pytest.mark.parametrize("async_table", [False, True])
+@pytest.mark.parametrize(
+    "refresh_kwargs", [{}, {"batch_size": None}, {"batch_size": 1}, {"batch_size": 8}]
+)
+async def test_remote_refresh_async_returns_typed_terminal_result(
+    async_table, refresh_kwargs
+):
     terminal_result = {
         "rows_assigned": 12,
         "rows_failed": 0,
@@ -1533,7 +1540,10 @@ def test_remote_refresh_async_returns_typed_terminal_result():
         content_len = int(request.headers.get("Content-Length", 0))
         body = request.rfile.read(content_len) if content_len > 0 else b""
         if request.path == "/v1/table/test/backfill_column":
-            assert json.loads(body)["column"] == "derived"
+            expected = {"column": "derived"}
+            if refresh_kwargs.get("batch_size") is not None:
+                expected["batch_size"] = refresh_kwargs["batch_size"]
+            assert json.loads(body) == expected
             request.send_response(202)
             request.send_header("Content-Type", "application/json")
             request.end_headers()
@@ -1582,11 +1592,18 @@ def test_remote_refresh_async_returns_typed_terminal_result():
             request.send_response(404)
             request.end_headers()
 
-    with mock_lancedb_connection(handler) as db:
-        table = db.create_table("test", [{"id": 1}])
-        job = table.refresh_column_async("derived")
-        assert job.id == "refresh-1"
-        result = job.wait(timeout=timedelta(seconds=30))
+    if async_table:
+        async with mock_lancedb_connection_async(handler) as db:
+            table = await db.create_table("test", [{"id": 1}])
+            job = await table.refresh_column_async("derived", **refresh_kwargs)
+            assert job.id == "refresh-1"
+            result = await job.wait(timeout=timedelta(seconds=30))
+    else:
+        with mock_lancedb_connection(handler) as db:
+            table = db.create_table("test", [{"id": 1}])
+            job = table.refresh_column_async("derived", **refresh_kwargs)
+            assert job.id == "refresh-1"
+            result = job.wait(timeout=timedelta(seconds=30))
 
     assert isinstance(result, lancedb.RefreshColumnResult)
     assert result.model_dump() == terminal_result
