@@ -26,7 +26,7 @@ operator precedence.
 | `~` `~*` `!~` | regular expression match |
 
 <Note>
-For keyword matching on a text column, [`contains_tokens`](/sql/scalar-functions#contains-tokens)
+For keyword matching on a text column, [`contains_tokens`](/sql/dql/contains-tokens)
 is index-accelerated where `LIKE` is not. Reach for `LIKE` only when you need
 its wildcard semantics.
 </Note>

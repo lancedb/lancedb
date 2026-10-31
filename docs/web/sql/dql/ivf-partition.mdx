@@ -1,0 +1,55 @@
+---
+title: "IVF_PARTITION"
+sidebarTitle: "IVF_PARTITION"
+description: "The ivf_partition() scalar function: assign each row to its trained IVF index partition."
+icon: circle-nodes
+keywords: ["ivf_partition", "sql", "vector index", "ivf", "partition", "scalar function", "clustering", "blocking"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+<CodeGroup>
+```sql SQL icon="database"
+SELECT
+    ivf_partition(embedding, selection => 'random', count => 100, seed => 42) AS partition,
+    array_agg(id) AS ids
+FROM documents
+GROUP BY partition
+```
+</CodeGroup>
+
+`ivf_partition` reads an existing IVF-family vector index's trained
+partitions and assigns each row to the one its vector falls into. The column
+needs an up-to-date, single-segment index before the function runs -- the
+same requirement [`dedupe`](/curation/dedupe#example-data) has.
+
+Grouping by its result buckets rows by vector proximity without a full
+pairwise scan -- useful for blocking a large table into comparable chunks,
+such as before a pairwise similarity pass.
+
+## Input {#input}
+
+| Argument | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| vector column | column reference | yes | the indexed vector column to assign |
+| `selection` | `'all'` (default) \| `'first'` \| `'random'` | no | which index partitions to scan |
+| `count` | int | no | number of partitions to sample when `selection => 'random'` or `'first'` |
+| `seed` | int | no | random seed when `selection => 'random'` |
+
+Arguments can be passed positionally, `ivf_partition(embedding, 'random', 100, 42)`,
+or named as shown above. `selection`, `count` and `seed` are the same
+scan-scoping arguments [`dedupe`](/sql/dql/dedupe#sampling) and
+[`duplicate_pairs`](/sql/dql/duplicate-pairs#sampling) accept, so a sampled
+partition estimate from one carries over to the others.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Cluster records by index partition" icon="circle-nodes" href="/curation/clustering">
+    Use this function to group and sample records by an existing index's partitions.
+  </Card>
+  <Card title="DEDUPE" icon="layer-group" href="/sql/dql/dedupe">
+    The packaged table function for the deduplication use case, over the same index.
+  </Card>
+</CardGroup>

@@ -240,6 +240,22 @@
       "destination": "/sql/dql/explain"
     },
     {
+      "source": "/sql/operators",
+      "destination": "/sql/dql/operators"
+    },
+    {
+      "source": "/sql/functions",
+      "destination": "/sql/dql/functions"
+    },
+    {
+      "source": "/sql/scalar-functions",
+      "destination": "/sql/dql/scalar-functions"
+    },
+    {
+      "source": "/sql/prepared-statements",
+      "destination": "/basics/sql#prepared-statements"
+    },
+    {
       "source": "/sql/ddl",
       "destination": "/sql/ddl/table"
     },
@@ -455,26 +471,25 @@
                   "sql/dql/select",
                   "sql/dql/subqueries",
                   "sql/dql/join",
+                  "sql/dql/operators",
+                  "sql/dql/functions",
+                  "sql/dql/scalar-functions",
                   "sql/dql/aggregation",
                   "sql/dql/window",
                   "sql/dql/sampling",
                   "sql/dql/changes",
                   "sql/dql/fts",
+                  "sql/dql/contains-tokens",
+                  "sql/dql/ivf-partition",
                   "sql/dql/dedupe",
                   "sql/dql/duplicate-pairs",
+                  "sql/dql/vector-distance",
+                  "sql/dql/json-functions",
+                  "sql/dql/blob-descriptor",
+                  "sql/dql/generate-series",
                   "sql/dql/explain"
                 ],
                 "icon": "filter"
-              },
-              {
-                "group": "Expressions",
-                "pages": [
-                  "sql/operators",
-                  "sql/functions",
-                  "sql/scalar-functions",
-                  "sql/prepared-statements"
-                ],
-                "icon": "code"
               }
             ]
           }

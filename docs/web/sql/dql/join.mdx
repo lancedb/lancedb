@@ -47,7 +47,7 @@ JOIN prod.reference.users AS u ON u.id = c.user_id
 
 ## Joining a search result {#search}
 
-[`fts()`](/sql/functions#fts) is a table function, so its result is a relation
+[`fts()`](/sql/dql/fts) is a table function, so its result is a relation
 and joins like any other. This example assumes `my_docs` has `text` and
 `category_id` columns, a full-text index on `text`, and a `categories` table
 with `id` and `name` columns:
