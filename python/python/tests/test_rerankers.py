@@ -1100,6 +1100,35 @@ def test_linear_combination_missing_fts_is_penalised():
     )
 
 
+@pytest.mark.parametrize("empty_side", ["vector", "fts"])
+def test_linear_combination_empty_side_scores_are_null(empty_side):
+    """With return_score="all", the missing side's score column is null, not NaN."""
+    vector_results = pa.table(
+        {
+            "_rowid": pa.array([1, 2], pa.uint64()),
+            "_distance": pa.array([0.1, 0.2], pa.float32()),
+        }
+    )
+    fts_results = pa.table(
+        {
+            "_rowid": pa.array([1, 2], pa.uint64()),
+            "_score": pa.array([5.0, 4.0], pa.float32()),
+        }
+    )
+    if empty_side == "vector":
+        vector_results = vector_results.slice(0, 0)
+        missing = "_distance"
+    else:
+        fts_results = fts_results.slice(0, 0)
+        missing = "_score"
+
+    reranker = LinearCombinationReranker(return_score="all")
+    result = reranker.rerank_hybrid("query", vector_results, fts_results)
+
+    assert result[missing].type == pa.float32()
+    assert result[missing].null_count == len(result) == 2
+
+
 @pytest.mark.skipif(
     os.environ.get("WATSONX_API_KEY") is None
     or (
