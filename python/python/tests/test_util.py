@@ -1537,3 +1537,65 @@ def test_auto_string_query_keeps_the_column_with_an_embedding_function():
 
     none = pa.schema(fields)
     assert infer_vector_column_name(none, "auto", "fox", None) is None
+
+    # A name in the metadata that is not a vector column of the schema (here a
+    # dropped column) does not count as an embedded column.
+    stale = pa.schema(fields, metadata=_embedding_metadata("gone"))
+    assert infer_vector_column_name(stale, "auto", "fox", None) is None
+
+
+def test_auto_string_query_single_vector_column_without_embedding(tmp_path):
+    """One vector column but no embedding function: the column is inferred as
+    before, and the query still runs as full text search."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "one_vector",
+        pa.table(
+            {
+                "id": [1, 2],
+                "text": ["quick brown fox", "lazy dog"],
+                "vector": pa.array([[1.0, 2.0]] * 2, pa.list_(pa.float32(), 2)),
+            }
+        ),
+    )
+    table.create_fts_index("text")
+    assert [r["id"] for r in table.search("fox").to_list()] == [1]
+
+
+@pytest.mark.asyncio
+async def test_auto_string_query_uses_the_embedded_column_async(tmp_path):
+    """With two vector columns, an async auto string query embeds the query
+    for the one column that has an embedding function. v2 has a different
+    dimension and there is no FTS index, so any other choice would fail."""
+    registry = EmbeddingFunctionRegistry.get_instance()
+    registry.register("test")(MockTextEmbeddingFunction)
+    func = MockTextEmbeddingFunction.create()
+    conf = EmbeddingFunctionConfig(
+        source_column="text", vector_column="v1", function=func
+    )
+    texts = ["puppy dog", "kitten cat"]
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("text", pa.string()),
+            pa.field("v1", pa.list_(pa.float32(), 10)),
+            pa.field("v2", pa.list_(pa.float32(), 3)),
+        ],
+        metadata=registry.get_table_metadata([conf]),
+    )
+    data = pa.table(
+        {
+            "id": [1, 2],
+            "text": texts,
+            "v1": pa.array(
+                [list(map(float, v)) for v in func.generate_embeddings(texts)],
+                pa.list_(pa.float32(), 10),
+            ),
+            "v2": pa.array([[1.0, 2.0, 3.0]] * 2, pa.list_(pa.float32(), 3)),
+        },
+        schema=schema,
+    )
+    lancedb.connect(tmp_path).create_table("two", data)
+    table = await (await lancedb.connect_async(tmp_path)).open_table("two")
+    rows = await (await table.search("puppy dog")).limit(1).to_list()
+    assert rows[0]["id"] == 1

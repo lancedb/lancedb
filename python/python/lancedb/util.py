@@ -329,14 +329,25 @@ def _query_vector_dim(query: Optional[Any]) -> Optional[int]:
 
 
 def _embedding_vector_columns(schema: pa.Schema) -> List[str]:
-    """Vector columns that have an embedding function, from the schema metadata."""
+    """Vector columns that have an embedding function, from the schema metadata.
+
+    Names in the metadata that are not vector columns of the schema, for example
+    a column dropped after the metadata was written, are ignored.
+    """
     metadata = schema.metadata or {}
     serialized = metadata.get(
         b"embedding_functions", metadata.get("embedding_functions")
     )
     if serialized is None:
         return []
-    return [obj["vector_column"] for obj in json.loads(serialized)]
+    vector_columns = {
+        name for field in schema for name in _iter_vector_columns(field, [])
+    }
+    return [
+        obj["vector_column"]
+        for obj in json.loads(serialized)
+        if obj["vector_column"] in vector_columns
+    ]
 
 
 def infer_vector_column_name(
