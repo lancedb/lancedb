@@ -78,6 +78,21 @@ REVOKE UPDATE ON SECRET platform.`openai-prod` FROM ROLE etl
 See [GRANT and REVOKE](/sql/ddl/secret#grant) for the full statement
 syntax, every grantee form, and every status a statement can return.
 
+### What each Secret operation requires {#secret-operations}
+
+| Operation | Requires |
+| --- | --- |
+| Create a Secret | `CREATE_SECRET` on the namespace. The creator owns the new Secret. |
+| Rotate (`alter`) | `UPDATE` on the Secret |
+| Describe | `USAGE` on the Secret |
+| List | `USAGE` on the database and the namespace |
+| Drop | `OWNERSHIP` on the Secret. Dropping also deletes its grants. |
+| Bind it to a Function | `USAGE` on the Secret |
+
+`UPDATE` is deliberately separate from `USAGE`, so a rotation service can
+replace a value without being able to bind the Secret to a Function of its
+own.
+
 ### Example: sharing one key {#example}
 
 - A **platform operator** owns the `platform` namespace. They create
