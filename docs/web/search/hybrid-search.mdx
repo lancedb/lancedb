@@ -283,11 +283,12 @@ Set `limit()` to the number of results your application needs. The default is 10
 A larger candidate set can help a reranker find relevant records, but adds work.
 </Info>
 
-Each side of a hybrid query (vector and full-text) fetches at least 50
-candidates before rank fusion — `max(limit + offset, 50)` — so that asking for
-fewer results returns a shorter list, not a different ranking. This candidate
-floor is separate from `limit()`, which only controls how many fused results
-are returned (default 10).
+In the Python API, each side of a hybrid query (vector and full-text) fetches
+at least 50 candidates before rank fusion — `max(limit + offset, 50)` — so for
+windows where `limit + offset <= 50`, asking for fewer results returns a
+shorter list, not a different ranking. This candidate floor is separate from
+`limit()`, which only controls how many fused results are returned (default
+10). The Rust and TypeScript APIs retain their existing candidate limits.
 
 ### Returning row IDs {#returning-row-ids}
 
