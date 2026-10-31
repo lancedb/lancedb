@@ -3698,7 +3698,7 @@ def test_two_phase_rejects_fingerprinted_checkpoint(lance_table):
     target = StreamingDataset(
         lance_table,
         num_splits=NUM_SPLITS,
-        shuffle_seed=SHUFFLE_SEED,
+        shuffle_seed=checkpoint["shuffle_seed"],
         block_size=10,
     )
     with pytest.raises(ValueError, match="no permutation table"):
