@@ -1,0 +1,588 @@
+---
+title: "Functions"
+sidebarTitle: "Function"
+description: "Register a Python function once and apply it as a column, for work SQL cannot express."
+icon: code
+keywords: ["udf", "functions", "create_function", "embedding", "feature engineering"]
+---
+
+import {
+    PyFunctionDefine as FunctionDefine,
+    PyFunctionLocalCall as FunctionLocalCall,
+    PyFunctionCreateTable as FunctionCreateTable,
+    PyFunctionRegister as FunctionRegister,
+    PyFunctionApply as FunctionApply,
+    PyFunctionRefresh as FunctionRefresh,
+    PyFunctionInspect as FunctionInspect,
+    PyFunctionClassDefine as FunctionClassDefine,
+    PyFunctionClassApply as FunctionClassApply,
+} from '/snippets/function.mdx';
+import { PyConnectEnterprisePlaceholders as FunctionConnect } from '/snippets/connection.mdx';
+
+Some columns cannot be written as a SQL expression: an embedding, a model call,
+an image decode. A function is a Python callable registered with the database,
+versioned, and then applied as a column. The code runs where the data is
+rather than pulling rows to your process.
+
+Registering and running a function needs a LanceDB Enterprise deployment with
+Functions enabled, which they are not by default. On a
+LanceDB Embedded connection `create_function` raises `NotImplementedError`; to
+derive a column there, declare a
+[SQL computed column](/feature-engineering/add-computed-column) instead.
+
+<Note>
+In SQL, a function is registered with [`CREATE FUNCTION`](/sql/ddl/function#create) and listed with [`SHOW FUNCTIONS`](/sql/ddl/function#show).
+</Note>
+
+Functions are the way to fill columns with Python in LanceDB Enterprise. If you
+already use [Geneva](/geneva), it remains available; see
+[Geneva and Functions](/geneva#functions) for how its concepts map onto these.
+
+The steps below take a column of numbers to a filled column of their doubles.
+
+## Define a function {#define}
+
+`@udf` packages a scalar Python callable. Input and output types are inferred
+from annotations, so `double` takes one non-nullable `float64` parameter,
+`value`, and returns a non-nullable `float64`:
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionDefine}
+</CodeBlock>
+
+The decorated object stays callable. Calling it runs the original function in
+your process, without the database, so unit tests stay ordinary tests:
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionLocalCall}
+</CodeBlock>
+
+Where annotations cannot express the Arrow type precisely, pass `input_schema`
+and `output_schema` together: one without the other is rejected. A scalar
+output must be non-nullable, because a physical NULL is what marks a
+computed-column row as unfilled. A named-struct output may declare nullable
+fields: whether a row has a result at all is the struct's own validity, which
+Enterprise keeps in a separate internal column when it expands the result into
+sibling columns, so a null field is a value rather than a missing row.
+
+## Connect and create a table {#table}
+
+The remaining steps run against your Enterprise deployment. Replace the database
+URI, API key, region and endpoint below with your deployment details. In application
+code, load credentials from environment variables or a secrets manager:
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionConnect}
+</CodeBlock>
+
+For an ordinary stored input column, the Arrow type must match the parameter.
+A nullable column requires a nullable parameter, such as `Optional[float]`;
+a non-nullable column can bind to either. This example uses `value: float`,
+so the table declares `value` non-nullable.
+
+Computed-column inputs depend on the Enterprise server version. Where supported,
+they bind to non-nullable parameters even though the physical column is
+nullable: refresh skips rows whose computed input is still null. Check your
+deployment's support before using another computed column as an input.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionCreateTable}
+</CodeBlock>
+
+## Register it {#register}
+
+Registration returns a query-backed job; the immutable version exists once the
+SQL command finishes and the job succeeds. Its `job_type` is `query`, and its
+single `id` is the SQL query UUID. Repeated waits reuse the completed result.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionRegister}
+</CodeBlock>
+
+`create_function` is the blocking equivalent. A registered version is fetched
+with `db.get_function(name, version=...)`.
+
+<Note>
+The SQL command submits an internal `create_function` image-build job and
+waits for publication. The SDK returns the SQL query handle. Query handles
+have no registry history and cannot be reopened with `open_job()`.
+</Note>
+
+## Try it in SQL {#try-sql}
+
+A registered function is callable in SQL by its name, the same as any other
+scalar function. Before applying it as a column, call it directly over the
+table to check the registration succeeded, without committing a schema
+change:
+
+<CodeGroup>
+```python Python icon="python"
+reader = db.execute_query("SELECT value, double(value) AS doubled FROM function_demo")
+print(reader.read_all().to_pylist())
+# [{'value': 1.0, 'doubled': 2.0}, {'value': 2.0, 'doubled': 4.0}, {'value': 3.0, 'doubled': 6.0}]
+```
+</CodeGroup>
+
+<Note>
+Equivalent SQL: `SELECT value, double(value) AS doubled FROM function_demo`.
+See [Querying with SQL](/basics/sql) for `execute_query` and other languages.
+</Note>
+
+## Apply it as a column {#apply}
+
+Calling the registered version binds each parameter, by name, to a column with
+`col(...)`. `add_columns` declares the result as a new column:
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionApply}
+</CodeBlock>
+
+The column is declared empty; the function has not run yet. A mapping with one
+function application keeps its scalar or named-struct result in the named
+column. A bare named-struct application expands its result fields as one atomic
+binding, with aliases from `rename(columns=...)`.
+
+### Bind more than one input, or fill more than one column {#multi}
+
+Parameters bind by name, so a function that takes several arguments binds
+several columns in one call:
+
+<CodeGroup>
+```python Python icon="python"
+@udf
+def ratio(numerator: float, denominator: float) -> float:
+    return numerator / denominator
+
+version = db.create_function_async(ratio).wait()
+table.add_columns({"ratio": version(numerator=col("value"), denominator=col("count"))})
+```
+</CodeGroup>
+
+A named-struct output fills more than one column from a single application.
+Declare the fields with `output_schema`, then alias each field to the column
+it fills with `rename(columns=...)` and pass the application itself, not a
+mapping, so both columns come from one atomic binding:
+
+<CodeGroup>
+```python Python icon="python"
+import pyarrow as pa
+
+@udf(
+    output_schema=pa.schema([
+        pa.field("half", pa.float64(), nullable=False),
+        pa.field("double", pa.float64(), nullable=False),
+    ]),
+)
+def scale(value: float):
+    return {"half": value / 2, "double": value * 2}
+
+version = db.create_function_async(scale).wait()
+application = version(value=col("value")).rename(
+    columns={"half": "value_half", "double": "value_double"}
+)
+table.add_columns(application)
+```
+</CodeGroup>
+
+A single refresh fills `value_half` and `value_double` together: there is no
+state where one is filled and the other is still empty.
+
+## Fill the column {#refresh}
+
+A refresh runs the function on the cluster as a [job](/basics/jobs). `wait()`
+blocks until the job finishes and returns its result, including how many rows
+it filled:
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionRefresh}
+</CodeBlock>
+
+The filled values are read like any other column:
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionInspect}
+</CodeBlock>
+
+Filling then works as it does for a SQL computed column: a later refresh fills
+rows added since the last one and recomputes rows whose inputs changed, and
+leaves filled rows with unchanged inputs alone. See
+[Refresh a column](/feature-engineering/refresh-column).
+
+## Keep state in a class {#classes}
+
+A function that loads a model or opens a client should not do it for every
+row. Decorate a class instead: its `__init__` does the expensive setup once,
+and `__call__` handles each row or batch.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionClassDefine}
+</CodeBlock>
+
+Registering the class does not construct it. `@udf` reads the signature of
+`__init__` and packages the source, so the client never loads the model. On
+the cluster, each instance of the function calls `__init__` once. It then calls
+`__call__` for every row or batch it processes, and `close()`, if defined, once
+when it retires. Import heavy packages inside `__init__`, as above, so only the
+worker needs them installed, and declare them in `pip`.
+
+State belongs to one instance. An instance reuses it across every batch it
+serves, but instances do not share it, so each one holds its own copy of the
+model. Plan memory, or a GPU, for one copy per instance.
+
+The annotated parameters of `__init__` are the function's initialization
+fields. Their values come from each binding rather than from the function, so
+one registered version can run with different settings on different columns:
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionClassApply}
+</CodeBlock>
+
+Pass the application to `add_columns` as [above](#apply). Initialization values
+are fixed for every row of a binding and take booleans, integers, floats,
+strings, and lists or structs of them. A parameter with a default may be
+omitted. Initialization values are stored with the binding, so keep
+credentials out of them: pass `secrets=[EnvVarSecret(...)]` to
+`create_function` and read the variable in `__init__`.
+
+Calling the decorated class in your own process constructs it, the same as an
+undecorated class, so local tests can create an instance and call it directly.
+
+## Read and produce blobs {#blobs}
+
+A Function can bind a [Blob v2 column](/management/table#managed-blobs) and
+return another blob. In row mode, a top-level blob parameter arrives as Python
+`bytes`, or `None` for a nullable input, after the worker has read the
+payload. Return bytes and let the destination table store the Managed
+payload and descriptor.
+
+The rest of this section extracts a frame from a stored video and captions
+it, continuing as one example across chaining, persisting and incremental
+reads below. `videos` holds raw clips in a `video` Blob v2 column; `frames`
+names one timestamp per clip to extract, with a `selected` flag to skip some:
+
+<CodeGroup>
+```python Python icon="python"
+import lancedb
+import pyarrow as pa
+
+videos = db.create_table("videos", schema=pa.schema([
+    pa.field("id", pa.utf8(), nullable=False),
+    lancedb.blob("video", nullable=False),
+]))
+frames = db.create_table("frames", [
+    {"frame_id": 1, "video_id": "clip-1", "ts": 0.5, "selected": True},
+    {"frame_id": 2, "video_id": "clip-1", "ts": 1.5, "selected": True},
+])
+```
+</CodeGroup>
+
+### Produce a blob {#produce-blobs}
+
+Declare blob inputs and outputs explicitly. `extract_frame` reads one frame
+out of a video at a timestamp and returns it as a JPEG, without loading the
+whole clip first -- see [Read a blob incrementally](#incremental) below for
+how the `video: BlobReader` parameter does that:
+
+<CodeGroup>
+```python Python icon="python"
+from datetime import timedelta
+
+from lancedb import BlobReader, col
+from lancedb.functions import udf
+
+@udf(
+    name="extract_frame",
+    gpu=True,
+    pip=["av==13.1.0", "pillow==11.0.0"],
+    input_schema=pa.schema([
+        lancedb.blob("video"),
+        pa.field("ts", pa.float64(), nullable=False),
+    ]),
+    output_schema=lancedb.blob("jpeg", nullable=False),
+)
+def extract_frame(video: BlobReader, ts: float) -> bytes:
+    ...  # decode the frame at ts, encode as JPEG, return its bytes
+
+version = db.create_function_async(extract_frame).wait(timeout=timedelta(minutes=15))
+```
+</CodeGroup>
+
+An empty byte string is a filled result. A scalar output cannot be nullable,
+because a physical NULL marks an unfilled computed row. To return a nullable
+blob as a value, use a named-struct output schema with a nullable blob field;
+the struct itself records whether the result has been filled. Read a nested
+blob with `table.fetch_blobs("payload.image", hits)`.
+
+<Warning>
+`output_schema=lancedb.blob(...)` is what makes a persisted result Blob v2
+rather than plain Arrow `binary`. Returning `bytes` from a function whose
+output type is inferred from a bare annotation, with no explicit
+`lancedb.blob(...)` output schema, persists as ordinary `binary`: the column
+still holds the right bytes, but it skips the Managed storage path, descriptor
+reads, and `fetch_blobs`. Declare it explicitly on every function whose output
+should be a blob, not just the first one in a chain.
+</Warning>
+
+### Chain a Function on its output {#chain}
+
+A second Function can bind a blob another Function produced. Register
+`caption` the same way, consuming a blob instead of producing one:
+
+<CodeGroup>
+```python Python icon="python"
+@udf(gpu=True, pip=["transformers==4.47.0"])
+def caption(jpeg: bytes) -> str:
+    ...  # run a vision-language model over the JPEG, return one sentence
+
+caption_version = db.create_function_async(caption).wait(timeout=timedelta(minutes=15))
+```
+</CodeGroup>
+
+Compose both in one SQL statement over a join, instead of applying each as
+its own column. The join supplies `video` and `ts` from two different
+tables, and `caption` reads `extract_frame`'s result as it is computed,
+before anything is written:
+
+<CodeGroup>
+```sql SQL
+SELECT f.frame_id, extract_frame(v.video, f.ts) AS jpeg,
+       caption(extract_frame(v.video, f.ts)) AS caption
+FROM videos v JOIN frames f ON v.id = f.video_id
+WHERE f.selected = true
+```
+</CodeGroup>
+
+[`EXPLAIN`](/sql/dql/explain) on a query like this shows `RemoteTake`: the
+blob is read once, where the worker runs, and never pulled into the query
+node first.
+
+### Persist it as a column, or a materialized view {#persist}
+
+Apply the same chained expression with `add_columns` to persist it as an
+ordinary table column:
+
+<CodeGroup>
+```python Python icon="python"
+table.add_columns({"jpeg": extract_frame(video=col("video"), ts=col("ts"))})
+result = table.refresh_column_async("jpeg").wait(timeout=timedelta(minutes=15))
+assert result.rows_failed == 0
+
+hits = table.search().select(["frame_id", "jpeg"]).with_row_id(True).to_arrow()
+values = table.fetch_blobs("jpeg", hits).to_pylist()
+```
+</CodeGroup>
+
+Or wrap the join and both Functions in a
+[materialized view](/sql/ddl/materialized-view) instead, so the extracted
+frame and its caption stay current as new videos and frames arrive. See
+[Automatic refresh](/feature-engineering/refresh-column#automatic) for
+keeping either one fresh without calling refresh yourself.
+
+On deployments that support computed-column inputs, another Function can
+bind to `col("jpeg")` directly, the same as the SQL join above does through
+its own expression. Refresh the producer first, then the consumer. Once
+outputs are current, a later refresh fills appended rows. A filtered
+refresh preserves payload references for unselected Managed outputs. An
+unfiltered refresh can recompute a whole fragment when it cannot establish
+that the fragment's outputs are current.
+
+Function output blobs follow the same compaction and cleanup lifecycle as
+ingested Managed blobs. Retained versions continue to own their payloads;
+cleanup reclaims an object only after its retained references are gone.
+
+### Read a blob incrementally {#incremental}
+
+Annotate a row Function parameter with `BlobReader` to read a Blob v2 input
+incrementally, the way `extract_frame` above does, instead of materializing
+the whole payload first. The signature selects the access mode without
+another registration option. A minimal example, reading only the first MP4
+box type without loading the rest of the video:
+
+<CodeGroup>
+```python Python icon="python"
+from lancedb import BlobReader, udf
+
+
+@udf
+def first_box_type(video: BlobReader) -> bytes:
+    video.seek(4)
+    return video.read(4)
+```
+</CodeGroup>
+
+The worker passes a seekable reader backed by the stored blob --
+`video.seekable()` is `True`. `read(size)` reads from the current cursor;
+`read_range(offset, length)` reads a byte range without moving it, the same
+bytes a `seek(offset)` followed by `read(length)` would read. `size()`
+returns the payload size without reading it. Each row call receives its own
+reader, which closes when the call returns or raises. Do not retain it for
+another invocation.
+
+Use `video: bytes` when the Function needs the complete payload. Bytes inputs
+materialize before invocation and remain subject to eager input limits.
+Reader inputs keep the unread payload out of the input batch, but calling
+`video.read()` without a size loads all remaining bytes in Python. Reader
+inputs are supported in row mode. Return values remain ordinary values such
+as `bytes`; this feature does not add streamed outputs.
+
+## Declare the environment {#environment}
+
+The function runs on the Enterprise service, not in your application, so its
+dependencies are part of its definition:
+
+| | |
+| --- | --- |
+| `pip` | requirements for the function's execution environment |
+| `conda`, `conda_channels` | conda packages instead of pip; channels in priority order |
+| `env` | environment variables |
+| `python_version` | Python major/minor for the execution environment, defaulting to yours |
+| `gpu` | whether every execution requires a GPU |
+
+<CodeGroup>
+```python Python icon="python"
+@udf(gpu=True)
+def extract_frame(video: BlobReader, ts: float) -> bytes:
+    ...  # runs only on a GPU-capable worker
+```
+</CodeGroup>
+
+These are part of the **immutable function version**. Changing a dependency
+produces a new version rather than altering the one already registered, so a
+column filled by version 1 is unaffected by version 2.
+
+Declaring them is not optional bookkeeping. If the worker environment differs
+from the one the function was written against, the failures are among the
+hardest to diagnose in the system, because the error rarely names the cause.
+
+### Symptoms of an environment mismatch {#mismatch-symptoms}
+
+| Symptom | Likely cause |
+| --- | --- |
+| `TypeError: Enum.__new__() missing 1 required positional argument` | `attrs` version mismatch |
+| `TypeError: Can't instantiate abstract class` | package structure differs between versions |
+| `ArrowInvalid: cannot cast`, or serialization errors | NumPy 1.x against 2.x |
+| `ModuleNotFoundError` on the worker | package installed locally but not declared |
+| Model loading failures | PyTorch version mismatch |
+| Permission denied | an API key present locally but absent from `env` |
+
+The packages worth pinning explicitly, because a mismatch in them produces the
+errors above rather than a clear one: **numpy, torch, pyarrow, attrs,
+pydantic**.
+
+<Note>
+The client version defaults `python_version`, so a function registered from a
+3.11 environment runs on 3.11 unless you say otherwise. That default is usually
+right and occasionally surprising. Pin it when the function is sensitive to it.
+</Note>
+
+## Remote calls and credentials {#secrets}
+
+A function that calls an external API needs a credential without putting it
+in the function's source or its `env` map in plain text. A Secret is a
+database-scoped named credential; `db.create_secret` stores the value once,
+and an `EnvVarSecret` binds it to the environment variable the function
+reads. Binding is a registration-time decision, passed to
+`create_function_async`, not to `@udf`:
+
+<CodeGroup>
+```python Python icon="python"
+import os
+
+from lancedb import EnvVarSecret
+
+db.create_secret("openai-prod", os.environ["OPENAI_API_KEY"])
+
+@udf
+def embed(text: str) -> list[float]:
+    import os
+
+    from openai import OpenAI
+
+    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    response = client.embeddings.create(input=text, model="text-embedding-3-small")
+    return response.data[0].embedding
+
+version = db.create_function_async(
+    embed,
+    secrets=[EnvVarSecret(secret_name="openai-prod", env_variable="OPENAI_API_KEY")],
+).wait()
+```
+</CodeGroup>
+
+No API returns a Secret's value, and it never appears in the function's
+registration: `embed` reads `OPENAI_API_KEY` the way it always did, and the
+binding is what puts a value there. A mistyped Secret name is caught at
+registration; a mistyped environment variable name surfaces only on the
+first rows, since nothing records which variables a function reads.
+
+## Failure handling {#failures}
+
+A function that raises fails the job. There is no per-row retry or skip policy
+in the function definition: `@udf` takes no error-handling parameter, so a
+function that calls a flaky external service should handle that itself, inside
+the function body.
+
+Letting the job fail is the other option: fix the cause and refresh again. The
+next refresh [skips rows that are filled and current](/feature-engineering/refresh-column#idempotent),
+but how much of the failed job's work was kept is not guaranteed, so do not
+count on the retry costing only the rows that did not complete.
+
+## What gets packaged {#packaging}
+
+<Warning>
+The artifact is a **snapshot**: the function source, plus exactly the
+module-level names it references (modules as imports, importable classes and
+functions as imports, literals inlined).
+
+Code that reaches the module namespace another way is rejected where it can be
+seen and unsupported where it cannot: `globals()`, `eval`, `sys.modules`,
+`builtins`. Closures and a non-standard `__builtins__` are rejected outright.
+</Warning>
+
+In practice this means a function should be self-contained: take its inputs as
+arguments, import what it needs at module level, and avoid capturing state from
+the surrounding scope.
+
+Pass `code=[module, ...]` to ship additional helper modules into the same
+image, for logic the function imports but that does not belong inlined into
+it -- a model-loading helper shared by several Functions, for example.
+Continuing `caption` from [above](#chain), with its model-loading code
+factored into a sibling module instead of inlined:
+
+<CodeGroup>
+```python Python icon="python"
+import caption_worker  # a sibling module with the model-loading logic
+
+@udf(gpu=True, code=[caption_worker])
+def caption(jpeg: bytes) -> str:
+    return caption_worker.run(jpeg)
+```
+</CodeGroup>
+
+Each module in `code` is captured and shipped the same way the function
+itself is: as source, snapshotted at registration.
+
+## Drop it {#drop}
+
+`db.drop_function(name, version=...)` drops the function's name and the object
+it is bound to; `version` must be a version that exists. It returns `False` if
+the name was already gone. Deleting the object's content can finish after the
+call returns, as a [background job](/maintenance/background-jobs).
+`drop_function_async` returns `(dropped, job)`, where `job` is a query-backed
+handle. Waiting confirms catalog
+removal; physical cleanup can continue afterward.
+
+A deployment refuses the drop unless it also allows changes to a function's
+lifecycle, which is a separate setting, off by default even where Functions are
+enabled.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Computed columns" icon="table-columns" href="/feature-engineering/refresh-column">
+    Refresh semantics, and the SQL alternative.
+  </Card>
+  <Card title="Embedding functions" icon="vector-square" href="/embedding">
+    Built-in embedding providers, which need no registration.
+  </Card>
+</CardGroup>

@@ -1,0 +1,232 @@
+---
+title: "Create a computed column"
+sidebarTitle: "Create Computed Column"
+description: "Declare a column from a SQL expression. Nothing is evaluated until you refresh it."
+icon: table-columns
+keywords: ["computed columns", "add_columns", "transforms", "schema"]
+availability:
+  embedded: available
+  enterprise: available
+---
+
+import {
+    PySchemaAddSetup,
+    TsSchemaAddSetup,
+    RsSchemaAddSetup,
+    PyAddColumnsCalculated,
+    TsAddColumnsCalculated,
+    RsAddColumnsCalculated,
+} from '/snippets/tables.mdx';
+
+Lance can write a new column without rewriting the columns already in the
+table. That matters most on a table that also holds large images, video or
+embeddings, where rewriting everything just to add one small derived field
+would be wasteful. See [Lance format](/basics/lance) for the storage model
+this relies on.
+
+A computed column is how LanceDB formalizes that capability for feature
+engineering specifically: instead of writing the derived values immediately,
+it is declared with an expression and starts with no values. Declaring it is
+cheap on any table size, because nothing is evaluated until
+[a refresh](/feature-engineering/refresh-column) asks for it.
+
+<Note>
+In the 0.41 SDK release, computed-column declaration and refresh in LanceDB Embedded require a
+source build with the `experimental-functions` Cargo feature. Published Python
+and TypeScript packages leave it disabled. LanceDB Enterprise operations
+do not require this feature. Ordinary eager `add_columns` transforms remain available.
+</Note>
+
+## Add a computed column {#declare}
+
+```python
+import lancedb
+
+db = lancedb.connect("./.lancedb")
+table = db.create_table("computed_demo", [{"x": 1}, {"x": 2}])
+
+table.add_columns(computed={"doubled": "x * 2"})
+# AddColumnsResult(version=2)
+```
+
+That commits a new table version with the column present and empty. It is an
+ordinary table version, so the usual [versioning](/management/table#versioning) applies,
+including that you can travel back to before the column existed.
+
+## Compute now or on refresh {#computed-vs-transforms}
+
+`add_columns` takes either, and the difference matters:
+
+- **SQL expressions in `transforms`** are evaluated *now*, for every row, as
+  part of the call. Good for a small table, or a column you want populated
+  immediately.
+  {/* Draft for the Functions release:
+  A `FunctionApplication` passed through `transforms` instead
+  declares empty Function-bound columns, which a refresh fills; that needs a
+  deployment with Functions enabled, and the embedded library refuses it. */}
+- **`computed`** stores the expression and evaluates nothing. The column is
+  committed empty and filled later by
+  [`refresh_column`](/feature-engineering/refresh-column).
+
+`computed` and `transforms` cannot be combined in one call. Reach for `computed` when the table is
+large enough that you would rather control when the work happens.
+
+Automatic refresh is on by default for each computed column, and takes effect
+when your Enterprise deployment enables its refresh scheduler. Until then, and in
+LanceDB Embedded, which never refreshes on a schedule, call
+[`refresh_column`](/feature-engineering/refresh-column) yourself. Pass
+`auto_refresh_enabled=False` to opt a column out, or
+`auto_refresh_interval_seconds` to set how often it refreshes:
+
+```python
+table.add_columns(
+    computed={"doubled": "x * 2"},
+    auto_refresh_interval_seconds=300,
+)
+```
+
+See [Automatic refresh](/feature-engineering/refresh-column#automatic) for the
+full behavior, including how to change the setting later.
+
+An eager `transforms` call looks like this, starting from a small product
+table:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PySchemaAddSetup}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsSchemaAddSetup}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsSchemaAddSetup}
+    </CodeBlock>
+</CodeGroup>
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyAddColumnsCalculated}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsAddColumnsCalculated}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsAddColumnsCalculated}
+    </CodeBlock>
+</CodeGroup>
+
+For feature engineering on large existing tables, group related derived
+features into one `add_columns` call instead of running many separate
+writes: this creates one new table version for the schema change and
+computes every new column from the existing rows in it, rather than growing
+the table's version history with many small updates.
+
+<Info>
+`add_columns` does not accept Python callables, batch UDFs, or PyArrow
+`RecordBatch` iterators for populating new columns, whether through
+`transforms` or `computed`. New column values must be defined with SQL
+expressions, or added as NULL columns from an Arrow field or schema. If your
+transformation cannot be expressed in SQL, compute the values outside
+`add_columns` before writing them back through another workflow.
+</Info>
+
+## The expression {#expressions}
+
+The expression is SQL, evaluated over the row. It can reference any column in
+the table, including another computed column:
+
+```python
+table.add_columns(computed={
+    "power_score": "cast(x as double) / 2.0",
+    "is_strong":   "power_score > 0.5",
+})
+```
+
+Declaration order is dependency order: a computed column may reference one
+declared earlier in the same mapping, but not one declared after it.
+
+The functions available are the ones the
+[SQL dialect](/sql/functions) documents.
+
+A literal in the expression has to fit the column it meets: `x / 2.0` is
+refused when `x` is an integer column, so write `cast(x as double) / 2.0`.
+
+<Warning>
+In LanceDB Enterprise, keep the expression to top-level columns. A column
+refresh can fail on an expression that reads a field inside a struct, such as
+`stats.magic + stats.strength`, which the embedded library computes. Try a new
+expression on a small table first.
+</Warning>
+
+## Change columns used by an expression {#input-constraints}
+
+<Warning>
+While a computed column's declaration references another column, that column
+cannot be renamed, retyped, or dropped. Drop the computed column first
+if you need to change one of its inputs.
+</Warning>
+
+This is worth knowing before deriving a column from something you expect to
+reshape later. Dropping the computed column releases the constraint.
+
+## Filling with Python instead of SQL {#functions}
+
+<Badge color="red">Enterprise</Badge>
+
+When the value cannot be expressed in SQL (an embedding, a model call, an
+image decode), [Geneva](/geneva), the feature engineering package for LanceDB
+Enterprise, fills the column with a Python function instead.
+
+{/*
+Draft for the Functions release. Replaces the paragraph above:
+
+When the value cannot be expressed in SQL -- an embedding, a model call, an
+image decode -- the column is filled by a registered
+[function](/management/function) instead of an expression. Declaring it looks
+the same; what differs is what fills it. It needs a deployment with Functions
+enabled.
+
+The call passed to `add_columns` is the tell: a SQL expression in `computed`
+is a string, keyed by the column name --
+
+<CodeGroup>
+```python Python icon="python"
+table.add_columns(computed={"caption_length": "length(caption)"})
+```
+</CodeGroup>
+
+-- while a Function application is the registered version itself, called with
+its parameters bound to source columns through `col(...)`, keyed the same way
+but passed positionally rather than through `computed`:
+
+<CodeGroup>
+```python Python icon="python"
+table.add_columns({"caption": caption_version(jpeg=col("jpeg"))})
+```
+</CodeGroup>
+
+Both accept the same `auto_refresh_enabled` and `auto_refresh_interval_seconds`
+options, and both refresh and toggle the same way; see
+[Refresh a computed column](/feature-engineering/refresh-column#automatic).
+*/}
+
+## Related guides {#next}
+
+<CardGroup cols={2}>
+  <Card title="Refresh a computed column" icon="arrows-rotate" href="/feature-engineering/refresh-column">
+    Fill the rows that lack values.
+  </Card>
+  <Card title="Geneva" icon="layer-group" href="/geneva">
+    Fill a column with Python on LanceDB Enterprise.
+  </Card>
+  {/*
+  Draft for the Functions release. Replaces the Geneva card above:
+  <Card title="Functions" icon="code" href="/management/function">
+    Fill a column with Python.
+  </Card>
+  */}
+</CardGroup>

@@ -37,6 +37,8 @@ The following tokenizers are available:
 
 "raw" - Raw tokenizer. This tokenizer does not split the text into tokens and indexes the entire text as a single token.
 
+"code" - Code tokenizer. This tokenizer keeps snake_case and camelCase identifiers as single tokens.
+
 "icu" - ICU dictionary-based word segmentation.
 
 "icu/split" - ICU segmentation with simple-style delimiter splitting.

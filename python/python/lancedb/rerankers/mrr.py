@@ -97,7 +97,12 @@ class MRRReranker(Reranker):
             weighted_mrr = self.weight_vector * vector_rr + self.weight_fts * fts_rr
             final_mrr_scores[result_id] = weighted_mrr
 
-        combined_results = self.merge_results(vector_results, fts_results)
+        # With return_score="all", a row found by both searches must keep its
+        # `_distance` and its `_score`.
+        if self.score == "all":
+            combined_results = self._merge_and_keep_scores(vector_results, fts_results)
+        else:
+            combined_results = self.merge_results(vector_results, fts_results)
         combined_row_ids = combined_results["_rowid"].to_pylist()
         relevance_scores = [final_mrr_scores[row_id] for row_id in combined_row_ids]
         combined_results = combined_results.append_column(

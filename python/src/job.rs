@@ -81,6 +81,11 @@ impl Job {
         self.inner.id().map(str::to_string)
     }
 
+    #[getter]
+    pub fn job_type(&self) -> Option<String> {
+        self.inner.job_type()
+    }
+
     pub fn status(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(
@@ -151,7 +156,7 @@ impl Job {
 }
 
 /// A row from `Connection.list_jobs`: one server-side job.
-#[pyclass(get_all, skip_from_py_object)]
+#[pyclass(module = "lancedb._lancedb", get_all, skip_from_py_object)]
 #[derive(Clone)]
 pub struct JobInfo {
     job_id: String,
@@ -184,7 +189,7 @@ impl From<lancedb::database::JobInfo> for JobInfo {
 }
 
 /// The server's account of why a job failed.
-#[pyclass(get_all, skip_from_py_object)]
+#[pyclass(module = "lancedb._lancedb", get_all, skip_from_py_object)]
 #[derive(Clone)]
 pub struct JobFailureInfo {
     phase: Option<String>,
@@ -203,7 +208,7 @@ impl JobFailureInfo {
 }
 
 /// The server-side record behind a `Job` handle.
-#[pyclass(get_all, skip_from_py_object)]
+#[pyclass(module = "lancedb._lancedb", get_all, skip_from_py_object)]
 #[derive(Clone)]
 pub struct JobDescription {
     job_id: String,

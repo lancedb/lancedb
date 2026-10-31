@@ -19,6 +19,7 @@ above.
 """
 
 import ctypes
+import hashlib
 import heapq
 import logging
 import os
@@ -40,6 +41,7 @@ from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 
 from .permutation import (
     Permutation,
+    PermutationBuilder,
     Transforms,
     permutation_builder,
     _drop_base_version,
@@ -482,6 +484,21 @@ class StreamingDataset(IterableDataset):
         default) rows are shuffled using ``shuffle_seed`` and ``epoch``.
         When ``False`` rows are divided into splits sequentially in storage
         order, which can be useful for deterministic debugging or evaluation.
+        Ignored when ``split_strategy`` is provided.
+    split_strategy:
+        Escape hatch for any ``PermutationBuilder`` split strategy this class
+        doesn't otherwise expose a dedicated parameter for -- ``split_hash``,
+        ``split_calculated``, ``bootstrap_sample`` (uniform sampling with
+        replacement), or any strategy added later.  A callable that receives a
+        fresh ``PermutationBuilder`` for ``table`` and returns a configured one;
+        it is called and ``.execute()``'d directly, taking over permutation
+        construction entirely.  When provided, ``shuffle``, ``shuffle_seed``,
+        ``epoch``, and ``shuffle_clump_size`` are ignored -- the callable is
+        solely responsible for how rows are split and ordered.  For example,
+        ``split_strategy=lambda b: b.bootstrap_sample(10_000, fixed=num_splits,
+        seed=42)`` draws 10,000 samples with replacement, divided evenly across
+        ``num_splits`` splits.
+        Cannot be combined with ``block_size``.
     shuffle_seed:
         Base seed for the random permutation.  Combined with ``epoch`` so
         each epoch produces a different ordering.  Pass ``None`` to generate
@@ -499,13 +516,16 @@ class StreamingDataset(IterableDataset):
         storage) at the cost of higher memory usage per split buffer.  Defaults
         to ``DEFAULT_READ_BATCH_SIZE`` (64).
     io_queue_depth:
-        Number of I/O batches to keep in flight per split.  Higher values
-        overlap storage latency with transform and training compute at the cost
-        of more memory and threads.  Must be greater than zero.  Defaults to
-        ``DEFAULT_PREFETCH_BATCHES`` (4).  In 2-phase mode (``block_size``
-        set) this also sizes each split's background block-prefetch depth:
-        up to this many upcoming blocks may be fetched in the background
-        ahead of actually being needed.
+        Number of fetched batches to keep ahead of the transform stage per
+        split: this bounds the combined count of in-flight fetches and
+        already-fetched batches still waiting for a transform slot.  Higher
+        values overlap storage latency with transform and training compute
+        at the cost of more memory and threads, but I/O stops running ahead
+        once this many batches are buffered, applying backpressure when the
+        transform stage (or ``transform_queue_depth``) is the bottleneck.
+        Must be greater than zero.  Defaults to ``DEFAULT_PREFETCH_BATCHES``
+        (4).  In 2-phase mode (``block_size`` set) this also sizes each split's
+        background block-prefetch depth.
     columns:
         Optional list of column names to read.  When set, only those columns
         are fetched from storage; all others are omitted.  ``None`` (the
@@ -654,6 +674,16 @@ class StreamingDataset(IterableDataset):
         capping peak memory when the consumer (e.g. a GPU training step) is
         slower than the transform stage.  Must be greater than zero.
         ``None`` (the default) imposes no limit.
+    connection_factory:
+        Optional picklable function that takes the table name and returns an
+        open LanceDB table.  When set, pickling the dataset (as DataLoader
+        workers do under the ``spawn`` and ``forkserver`` start methods)
+        replaces the table's reopen state with its name, and each worker calls
+        the factory with that name to reopen the table.  The factory itself is
+        pickled too, so credentials stay out of the pickle only if the factory
+        loads them in the worker, for example from the environment, instead of
+        capturing them.  ``None`` (the default) pickles the table's own reopen
+        state instead.
     worker_info_override:
         If set, used in place of ``torch.utils.data.get_worker_info()`` to
         determine the DataLoader worker assignment.  Intended for unit tests
@@ -668,6 +698,9 @@ class StreamingDataset(IterableDataset):
         *,
         num_splits: Optional[int] = None,
         shuffle: bool = True,
+        split_strategy: Optional[
+            Callable[[PermutationBuilder], PermutationBuilder]
+        ] = None,
         shuffle_seed: Optional[int] = 0,
         epoch: int = 0,
         rank: int = 0,
@@ -728,6 +761,8 @@ class StreamingDataset(IterableDataset):
                 raise ValueError("window_blocks must be at least 1")
             if max_shuffle_distance is not None and max_shuffle_distance <= 0:
                 raise ValueError("max_shuffle_distance must be greater than 0")
+            if split_strategy is not None:
+                raise ValueError("split_strategy cannot be combined with block_size")
             if shuffle_clump_size is not None:
                 raise ValueError(
                     "shuffle_clump_size is ignored when block_size is set "
@@ -908,7 +943,7 @@ class StreamingDataset(IterableDataset):
                     f"a non-default branch ({self._pinned_branch!r}); check "
                     "out the default branch before constructing StreamingDataset"
                 )
-            # An LSM write spec means some acknowledged writes only exist in
+            # An RTE write spec means some acknowledged writes only exist in
             # the MemWAL, not yet flushed into the base table that the native
             # scanner/take paths below read; a version pin can't see them, so
             # reads here would silently omit them with no error.  1-phase
@@ -917,13 +952,13 @@ class StreamingDataset(IterableDataset):
             # row ids in its read path either, but reads positionally, so it
             # fails differently (stale values, not a missing-row-id error)
             # and needs its own explicit check.
-            if table.get_lsm_write_spec() is not None:
+            if table.get_rte_spec() is not None:
                 raise ValueError(
-                    "block_size does not yet support a table with an LSM "
+                    "block_size does not yet support a table with an RTE "
                     "write spec set; unflushed MemWAL rows are not visible "
                     "to a version-pinned read, so block reads could "
                     "silently miss acknowledged writes. Call "
-                    "table.checkpoint_lsm() and table.unset_lsm_write_spec() "
+                    "table.checkpoint_rte() and table.disable_rte() "
                     "first, or construct StreamingDataset without block_size"
                 )
             self._pinned_version = table.version
@@ -1048,6 +1083,10 @@ class StreamingDataset(IterableDataset):
             # table machinery; a block permutation has no such need.
             self._block_perm: list[int] = block_order
             self._perm_table = None
+            # Block mode has no PermutationBuilder output to fingerprint.
+            # These fields still drive common checkpoint code.
+            self._uses_split_strategy = False
+            self._perm_fingerprint_cache: Optional[str] = None
 
             # window_blocks is the primary residency knob: by default,
             # max_shuffle_distance (the displacement bound that actually
@@ -1066,13 +1105,53 @@ class StreamingDataset(IterableDataset):
             builder = permutation_builder(table)
             if filter is not None:
                 builder = builder.filter(filter)
-            if shuffle:
+            if split_strategy is not None:
+                # Escape hatch: lets any PermutationBuilder split strategy drive
+                # this dataset without a bespoke parameter for each strategy.
+                self._perm_table = split_strategy(builder).execute()
+                # _rank_splits assumes split ids are exactly 0..num_splits-1.
+                split_value_counts = (
+                    self._perm_table.to_arrow().column("split_id").value_counts()
+                )
+                counts_by_split = dict(
+                    zip(
+                        split_value_counts.field("values").to_pylist(),
+                        split_value_counts.field("counts").to_pylist(),
+                    )
+                )
+                expected_splits = set(range(num_splits))
+                if set(counts_by_split) != expected_splits:
+                    raise ValueError(
+                        f"split_strategy produced split ids {sorted(counts_by_split)}, "
+                        f"but num_splits={num_splits} requires exactly "
+                        f"{{0, ..., {num_splits - 1}}}. Pass num_splits matching the "
+                        "strategy's own split count (e.g. `fixed=num_splits` on "
+                        "bootstrap_sample/split_random/etc.)."
+                    )
+                # Round-robin iteration assumes every split has the same row count.
+                if len(set(counts_by_split.values())) > 1:
+                    raise ValueError(
+                        f"split_strategy produced unequal split sizes "
+                        f"{counts_by_split} (split id -> row count). Every split must "
+                        "have the same row count. Use `fixed=num_splits` rather than "
+                        "`ratios`/`counts`/weighted `split_hash`, which can produce "
+                        "unequal sizes, or split unevenly-sized groups into separate "
+                        "StreamingDatasets instead."
+                    )
+            elif shuffle:
                 perm_seed = shuffle_seed + epoch * _EPOCH_PRIME
                 self._perm_table = builder.split_random(
                     fixed=num_splits, seed=perm_seed, clump_size=shuffle_clump_size
                 ).execute()
             else:
-                self._perm_table = builder.split_sequential(fixed=num_splits).execute()
+                self._perm_table = builder.split_sequential(
+                    fixed=num_splits
+                ).execute()
+            # Only split_strategy needs a fingerprint: the built-in strategies
+            # are pinned by shuffle_seed/num_splits, while row ids can change
+            # across compaction.
+            self._uses_split_strategy = split_strategy is not None
+            self._perm_fingerprint_cache: Optional[str] = None
 
         if self._blocks_per_epoch == "auto":
             self._blocks_per_epoch = self._estimate_blocks_per_epoch()
@@ -1558,8 +1637,17 @@ class StreamingDataset(IterableDataset):
             io_pending[i].append((abs_start, io_pool.submit(_io_call, perm_i, indices)))
 
         def _fill_io(i: int) -> None:
+            # Budget covers both in-flight fetches (io_pending) and batches
+            # that have already landed but are still waiting for a transform
+            # slot (raw_batches).  Without raw_batches in the count, a slow
+            # transform stage never applies backpressure to Stage 1: each
+            # completed fetch is drained into raw_batches and immediately
+            # replaced by a new one, so I/O keeps racing arbitrarily far
+            # ahead of the transform stage instead of merely overlapping
+            # storage latency with it.
             while (
-                len(io_pending[i]) < io_queue_depth and fetch_head[i] < split_sizes[i]
+                len(io_pending[i]) + len(raw_batches[i]) < io_queue_depth
+                and fetch_head[i] < split_sizes[i]
             ):
                 _submit_io(i)
 
@@ -2134,11 +2222,51 @@ class StreamingDataset(IterableDataset):
                 )
         return state
 
+    @property
+    def _perm_fingerprint(self) -> str:
+        """Cheap identity check for the built permutation, computed once and cached
+        (``_perm_table`` never changes after construction).
+
+        Only meaningful -- and only recorded in a checkpoint -- for the
+        ``split_strategy`` path (see ``_checkpoint_snapshot``): ``num_splits``/
+        ``shuffle_seed`` alone cannot detect a `load_state_dict` resuming saved
+        per-split progress against a *different* permutation than the one that
+        produced it, since a ``split_strategy`` callable ignores ``shuffle_seed``
+        entirely -- e.g. a ``bootstrap_sample`` with no seed (or any changed
+        callable) can rebuild a completely different permutation on the next run
+        while ``shuffle_seed`` keeps its same default value and the existing check
+        passes anyway. ``split_random``/``split_sequential`` are already fully
+        pinned by ``shuffle_seed``/``num_splits`` and must *not* additionally be
+        fingerprinted: this hashes physical row ids, which are not stable across
+        compaction by default, so checking it on those paths would reject an
+        otherwise-valid resume after the table gets compacted between save and
+        load even though the seeded permutation itself is unchanged.
+        """
+        if self._perm_fingerprint_cache is None:
+            arrow_tbl = self._perm_table.to_arrow()
+            hasher = hashlib.sha256()
+            hasher.update(str(arrow_tbl.num_rows).encode())
+            for name in ("row_id", "split_id"):
+                column = arrow_tbl.column(name).combine_chunks()
+                hasher.update(column.to_numpy(zero_copy_only=False).tobytes())
+            self._perm_fingerprint_cache = hasher.hexdigest()
+        return self._perm_fingerprint_cache
+
     def _checkpoint_snapshot(self) -> dict:
+        # Only recorded for split_strategy: split_random/split_sequential are
+        # already fully pinned by shuffle_seed/num_splits below, and row ids are not
+        # stable across compaction by default, so fingerprinting them unconditionally
+        # would reject an otherwise-valid resume after the table got compacted.
+        perm_fingerprint = (
+            {"perm_fingerprint": self._perm_fingerprint}
+            if (self._uses_split_strategy)
+            else {}
+        )
         if self._pack_sequences is not None:
             return {
                 "shuffle_seed": self._shuffle_seed,
                 "num_splits": self._num_splits,
+                **perm_fingerprint,
                 "epoch": self._epoch,
                 "pack_sequences": self._pack_sequences,
                 "eos_id": self._eos_id,
@@ -2159,6 +2287,7 @@ class StreamingDataset(IterableDataset):
         return {
             "shuffle_seed": self._shuffle_seed,
             "num_splits": self._num_splits,
+            **perm_fingerprint,
             "epoch": self._epoch,
             "samples_consumed_per_split": samples,
             "positions_consumed_per_split": positions,
@@ -2288,8 +2417,16 @@ class StreamingDataset(IterableDataset):
 
         Raises ``ValueError`` if ``num_splits`` or ``shuffle_seed`` differ
         from the checkpoint, since a different split structure or shuffle order
-        makes mid-epoch resumption meaningless.  Packed checkpoints
-        pin ``pack_sequences``, ``eos_id``, ``pad_id``,
+        makes mid-epoch resumption meaningless. Also raises if the checkpoint
+        was built with ``split_strategy`` and records a permutation fingerprint
+        that does not match the current dataset's permutation -- this catches a
+        changed or non-deterministically-reseeded ``split_strategy`` that
+        ``num_splits``/``shuffle_seed`` alone cannot detect, since ``shuffle_seed``
+        is unused on that path. Checkpoints from ``split_random``/
+        ``split_sequential`` never carry this fingerprint (row ids are not stable
+        across compaction, so it would reject an otherwise-valid resume), and
+        continue to rely on ``shuffle_seed``/``num_splits`` alone as before.
+        Packed checkpoints pin ``pack_sequences``, ``eos_id``, ``pad_id``,
         ``blocks_per_epoch``, and ``epoch``.
         """
         if state["num_splits"] != self._num_splits:
@@ -2301,6 +2438,24 @@ class StreamingDataset(IterableDataset):
             raise ValueError(
                 f"shuffle_seed mismatch: checkpoint has {state['shuffle_seed']}, "
                 f"current dataset has {self._shuffle_seed}"
+            )
+        checkpoint_fingerprint = state.get("perm_fingerprint")
+        if checkpoint_fingerprint is not None and self._perm_table is None:
+            raise ValueError(
+                "permutation mismatch: the checkpoint records a split_strategy "
+                "fingerprint, but this block_size dataset has no permutation table"
+            )
+        if (
+            checkpoint_fingerprint is not None
+            and checkpoint_fingerprint != self._perm_fingerprint
+        ):
+            raise ValueError(
+                "permutation mismatch: this checkpoint was saved against a "
+                "different permutation (e.g. a split_strategy that resamples "
+                "differently between runs, such as bootstrap_sample with no "
+                "seed, or a changed callable) than the current dataset built. "
+                "Resuming would apply saved per-split positions to the wrong "
+                "rows."
             )
         self._consumer_checkpoint_requires_uniform = False
 
@@ -2403,6 +2558,10 @@ class StreamingDataset(IterableDataset):
         first = states[0]
         packed = "pack_buffers" in first
         config_keys = ["shuffle_seed", "num_splits", "epoch"]
+        if "perm_fingerprint" in first:
+            # Absent only in checkpoints saved before this key existed; skip rather
+            # than KeyError so old checkpoints keep merging.
+            config_keys.append("perm_fingerprint")
         if packed:
             config_keys.extend(
                 ["pack_sequences", "eos_id", "pad_id", "blocks_per_epoch"]
@@ -2412,6 +2571,8 @@ class StreamingDataset(IterableDataset):
             if ("pack_buffers" in state) != packed:
                 raise ValueError("cannot merge packed and unpacked state dicts")
             for key in config_keys:
+                if key not in state:
+                    continue
                 if state[key] != first[key]:
                     raise ValueError(
                         f"{key} mismatch across state dicts: "

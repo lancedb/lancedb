@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use crate::storage_integration::{CreateStorageIntegrationRequest, StorageIntegrationInfo};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -20,23 +21,36 @@ use lance_namespace::models::{
 
 use crate::Error;
 use crate::database::{
-    CloneTableRequest, CreateTableMode, CreateTableRequest, Database, DatabaseOptions, JobInfo,
-    OpenTableRequest, ReadConsistency, TableNamesRequest,
+    CloneTableRequest, CreateTableMode, CreateTableRequest, Database, DatabaseOptions,
+    ExecuteQueryRequest, JobInfo, OpenTableRequest, ReadConsistency, TableNamesRequest,
 };
 use crate::error::Result;
 use crate::function::{FunctionRegistrationRequest, FunctionVersion};
+use crate::graph::{PropertyGraphDefinition, PropertyGraphDescription};
 use crate::job::Job;
-use crate::remote::job::{RemoteJob, job_state_to_client};
+use crate::listing::{ListingOptions, ListingPage};
+use crate::materialized_view::CreateMaterializedViewRequest;
+use crate::remote::job::{PauseJobResponse, RemoteJob, ResumeJobResponse, job_state_to_client};
 use crate::remote::util::stream_as_body;
+use crate::secrets::SecretInfo;
 use crate::table::BaseTable;
+use crate::utils::{
+    validate_database_name, validate_function_name, validate_namespace,
+    validate_property_graph_name, validate_table_name, validate_view_name,
+};
+use crate::view::ViewDescription;
 
 use super::client::{
-    ClientConfig, HeaderProvider, HttpSend, RequestResultExt, RestfulLanceDbClient, Sender,
+    ClientConfig, HeaderProvider, HttpSend, ID_DELIMITER, RequestResultExt, RestfulLanceDbClient,
+    Sender,
 };
 use super::sql::SqlClient;
+use super::sql::materialized_view::quote_identifier;
+use super::storage_integration as integration_sql;
 use super::table::RemoteTable;
 use super::util::parse_server_version;
 use super::{ARROW_STREAM_CONTENT_TYPE, extract_job_id};
+use futures::TryStreamExt;
 
 // Request structure for the remote clone table API
 #[derive(serde::Serialize)]
@@ -103,7 +117,7 @@ pub const OPT_REMOTE_SQL_HOST_OVERRIDE: &str = "remote_database_sql_host_overrid
 
 #[derive(Clone, Debug, Default)]
 pub struct RemoteDatabaseOptions {
-    /// The LanceDB Cloud API key
+    /// The LanceDB Enterprise or LanceDB Cloud (legacy) API key
     pub api_key: Option<String>,
     /// The LanceDB Cloud region
     pub region: Option<String>,
@@ -173,11 +187,11 @@ impl RemoteDatabaseOptionsBuilder {
         }
     }
 
-    /// Set the LanceDB Cloud API key
+    /// Set the LanceDB Enterprise or LanceDB Cloud (legacy) API key
     ///
     /// # Arguments
     ///
-    /// * `api_key` - The LanceDB Cloud API key
+    /// * `api_key` - The API key
     pub fn api_key(mut self, api_key: String) -> Self {
         self.options.api_key = Some(api_key);
         self
@@ -206,8 +220,10 @@ impl RemoteDatabaseOptionsBuilder {
 
 #[derive(Debug)]
 pub struct RemoteDatabase<S: HttpSend = Sender> {
-    client: RestfulLanceDbClient<S>,
-    table_cache: Cache<String, Arc<RemoteTable<S>>>,
+    pub(super) client: RestfulLanceDbClient<S>,
+    // Cache existence and server capabilities, not mutable per-handle table state.
+    table_cache: Cache<String, ServerVersion>,
+    db_name: String,
     uri: String,
     /// Headers to pass to the namespace client for authentication
     namespace_headers: HashMap<String, String>,
@@ -215,6 +231,7 @@ pub struct RemoteDatabase<S: HttpSend = Sender> {
     /// TLS configuration for mTLS support
     tls_config: Option<super::client::TlsConfig>,
     sql_client: Option<SqlClient>,
+    is_catalog_root: bool,
 }
 
 #[derive(Clone)]
@@ -278,6 +295,12 @@ pub struct RemoteHostOverrides {
 }
 
 impl RemoteDatabase {
+    pub(crate) fn authz(&self) -> Arc<dyn crate::authz::Authorization> {
+        Arc::new(super::authz::RemoteAuthorization {
+            client: self.client.clone(),
+        })
+    }
+
     pub(crate) fn try_new(
         uri: &str,
         api_key: &str,
@@ -288,6 +311,77 @@ impl RemoteDatabase {
         read_consistency_interval: Option<std::time::Duration>,
     ) -> Result<Self> {
         let parsed = super::client::parse_db_url(uri)?;
+        if parsed.db_name.is_empty() && host_overrides.rest.is_none() {
+            return Err(Error::InvalidInput {
+                message:
+                    "A host override is required when connecting to the storage root with 'db://'"
+                        .to_string(),
+            });
+        }
+        Self::try_new_with_identity(
+            uri,
+            api_key,
+            region,
+            host_overrides,
+            client_config,
+            options,
+            read_consistency_interval,
+            parsed,
+        )
+    }
+
+    pub(crate) fn for_catalog(
+        endpoint: &str,
+        name: Option<&str>,
+        options: &super::catalog::RemoteCatalogOptions,
+    ) -> Result<Self> {
+        if let Some(name) = name {
+            validate_database_name(name)?;
+        }
+        let scope = super::catalog::ScopedHeaderProvider {
+            provider: options.client_config.header_provider.clone(),
+            database: name.map(str::to_string),
+        };
+        let mut config = options.client_config.clone();
+        scope.apply(&mut config.extra_headers);
+        config.header_provider = Some(Arc::new(scope));
+        let uri = name
+            .map(|name| format!("db://{}", urlencoding::encode(name)))
+            .unwrap_or_else(|| endpoint.to_string());
+        let mut db = Self::try_new_with_identity(
+            &uri,
+            options.api_key.as_deref().unwrap_or(""),
+            "us-east-1",
+            RemoteHostOverrides {
+                rest: Some(endpoint.to_string()),
+                sql: options.sql_host_override.clone(),
+            },
+            config,
+            RemoteOptions::default(),
+            options.read_consistency_interval,
+            super::client::ParsedDbUrl {
+                db_name: name.unwrap_or("").to_string(),
+                db_prefix: None,
+            },
+        )?;
+        if name.is_none() {
+            db.sql_client = None;
+            db.is_catalog_root = true;
+        }
+        Ok(db)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn try_new_with_identity(
+        uri: &str,
+        api_key: &str,
+        region: &str,
+        host_overrides: RemoteHostOverrides,
+        client_config: ClientConfig,
+        options: RemoteOptions,
+        read_consistency_interval: Option<std::time::Duration>,
+        parsed: super::client::ParsedDbUrl,
+    ) -> Result<Self> {
         let sql_client = SqlClient::new(
             parsed.db_name.clone(),
             parsed.db_prefix.clone(),
@@ -300,7 +394,7 @@ impl RemoteDatabase {
             api_key,
             region,
             &parsed.db_name,
-            host_overrides.rest.is_some(),
+            host_overrides.rest.is_some() && !parsed.db_name.is_empty(),
             &options,
             parsed.db_prefix.as_deref(),
             &client_config,
@@ -342,22 +436,56 @@ impl RemoteDatabase {
         Ok(Self {
             client,
             table_cache,
+            db_name: parsed.db_name,
             uri: uri.to_owned(),
             namespace_headers,
             namespace_context_provider,
             tls_config: client_config.tls_config,
             sql_client: Some(sql_client),
+            is_catalog_root: false,
         })
     }
 }
 
 impl<S: HttpSend> RemoteDatabase<S> {
+    // A catalog's root namespaces are database names, which may contain slashes.
+    fn namespace_identifier(&self, namespace: &[String]) -> Result<String> {
+        match namespace.first() {
+            None => Ok(ID_DELIMITER.to_string()),
+            Some(first) => {
+                if self.is_catalog_root {
+                    // When dealing with the catalog root, the first component is a
+                    // database name. Those need to be validated differently because
+                    // they can contain slashes. Also, we need to use percent encoding
+                    // for the slashes.
+                    validate_database_name(first)?;
+                    validate_namespace(&namespace[1..])?;
+                    Ok(namespace
+                        .iter()
+                        .map(|component| urlencoding::encode(component).into_owned())
+                        .collect::<Vec<_>>()
+                        .join(ID_DELIMITER))
+                } else {
+                    // If we're not dealing with the catalog root, build the namespace identifier in the
+                    // usual way.
+                    build_namespace_identifier(namespace)
+                }
+            }
+        }
+    }
+
+    fn sql_client(&self) -> Result<&SqlClient> {
+        self.sql_client.as_ref().ok_or_else(|| Error::NotSupported {
+            message: "SQL is unavailable for this remote database client".into(),
+        })
+    }
+
     async fn submit_drop_table(
         &self,
         name: &str,
         namespace_path: &[String],
     ) -> Result<(String, Response)> {
-        let identifier = build_table_identifier(name, namespace_path, &self.client.id_delimiter);
+        let identifier = build_table_identifier(name, namespace_path)?;
         let cache_key = build_cache_key(name, namespace_path);
         let req = self.client.post(&format!("/v1/table/{}/drop/", identifier));
         let (request_id, resp) = self.client.send(req).await?;
@@ -381,8 +509,7 @@ impl<S: HttpSend> RemoteDatabase<S> {
         &self,
         request: &TableNamesRequest,
     ) -> Result<(Vec<String>, ServerVersion)> {
-        let namespace_id =
-            build_namespace_identifier(&request.namespace_path, &self.client.id_delimiter);
+        let namespace_id = build_namespace_identifier(&request.namespace_path)?;
         let path = format!("/v1/namespace/{}/table/list", namespace_id);
 
         let mut names = Vec::new();
@@ -440,12 +567,19 @@ mod test_utils {
             Self {
                 client,
                 table_cache: Cache::new(0),
+                db_name: "default".to_string(),
                 uri: "http://localhost".to_string(),
                 namespace_headers: HashMap::new(),
                 namespace_context_provider: None,
                 tls_config: None,
                 sql_client: None,
+                is_catalog_root: false,
             }
+        }
+
+        pub(in crate::remote) fn with_sql_client(mut self, client: SqlClient) -> Self {
+            self.sql_client = Some(client);
+            self
         }
 
         pub fn new_mock_with_config<F, T>(handler: F, config: ClientConfig) -> Self
@@ -463,11 +597,13 @@ mod test_utils {
             Self {
                 client,
                 table_cache: Cache::new(0),
+                db_name: "default".to_string(),
                 uri: "http://localhost".to_string(),
                 namespace_headers: config.extra_headers.clone(),
                 namespace_context_provider,
                 tls_config: config.tls_config.clone(),
                 sql_client: None,
+                is_catalog_root: false,
             }
         }
     }
@@ -489,23 +625,44 @@ impl From<&CreateTableMode> for &'static str {
     }
 }
 
-fn build_table_identifier(name: &str, namespace: &[String], delimiter: &str) -> String {
+fn build_compound_identifier(name: &str, namespace: &[String]) -> Result<String> {
+    validate_namespace(namespace)?;
+    let mut identifier = namespace.join("$");
     if !namespace.is_empty() {
-        let mut parts = namespace.to_vec();
-        parts.push(name.to_string());
-        parts.join(delimiter)
+        identifier.push('$');
+    }
+    identifier.push_str(name);
+    Ok(identifier)
+}
+
+/// Build a full path to a table. Note that we do not need to percent-encode
+/// this when using it in a URL because the validation functions ensure that
+/// only URL-safe characters are present.
+fn build_table_identifier(name: &str, namespace: &[String]) -> Result<String> {
+    validate_table_name(name)?;
+    build_compound_identifier(name, namespace)
+}
+
+/// Translate an array of namespace components into a namespace string.
+/// Note that we do not need to percent-encode this when using it in a URL
+/// because validate_namespace ensures that only URL-safe characters are
+/// present.
+fn build_namespace_identifier(namespace: &[String]) -> Result<String> {
+    validate_namespace(namespace)?;
+    if namespace.is_empty() {
+        // According to the namespace spec, use delimiter to represent root namespace
+        Ok(ID_DELIMITER.to_string())
     } else {
-        name.to_string()
+        Ok(namespace.join(ID_DELIMITER))
     }
 }
 
-fn build_namespace_identifier(namespace: &[String], delimiter: &str) -> String {
-    if namespace.is_empty() {
-        // According to the namespace spec, use delimiter to represent root namespace
-        delimiter.to_string()
-    } else {
-        namespace.join(delimiter)
-    }
+/// Build a full path to a property graph. Note that we do not need to
+/// percent-encode this when using it in a URL because the validation functions
+/// ensure that only URL-safe characters are present.
+fn build_property_graph_identifier(name: &str, namespace: &[String]) -> Result<String> {
+    validate_property_graph_name(name)?;
+    build_compound_identifier(name, namespace)
 }
 
 /// Build a secure cache key using length prefixes.
@@ -553,26 +710,12 @@ struct RemoteListJobsResponse {
 }
 
 #[derive(serde::Deserialize)]
-struct RemoteListedFunctionVersion {
-    definition: FunctionVersion,
-}
-
-#[derive(serde::Deserialize)]
-struct RemoteListFunctionsResponse {
+struct RemoteListPropertyGraphsResponse {
     #[serde(default)]
-    functions: Vec<RemoteListedFunctionVersion>,
+    property_graphs: Vec<String>,
     #[serde(default)]
     page_token: Option<String>,
 }
-
-#[derive(serde::Deserialize)]
-struct RemoteDropFunctionResponse {
-    dropped: bool,
-}
-
-/// Bound on `list_jobs` page walking; a warning is logged when the listing
-/// is truncated at this many pages.
-const MAX_LIST_JOBS_PAGES: usize = 100;
 
 #[async_trait]
 impl<S: HttpSend> Database for RemoteDatabase<S> {
@@ -582,93 +725,429 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
 
     async fn read_consistency(&self) -> Result<ReadConsistency> {
         Err(Error::NotSupported {
-            message: "Getting the read consistency of a remote database is not yet supported"
+            message: "Getting the read consistency is not yet supported in LanceDB Distributed"
                 .to_string(),
         })
+    }
+
+    async fn create_materialized_view_async(
+        &self,
+        request: CreateMaterializedViewRequest,
+    ) -> Result<Job> {
+        if request.with_no_data {
+            return Err(Error::NotSupported {
+                message:
+                    "materialized views in LanceDB Distributed must be populated during creation"
+                        .to_string(),
+            });
+        }
+        if let Some(seconds) = request.auto_refresh_interval_seconds
+            && (!seconds.is_finite() || seconds <= 0.0)
+        {
+            return Err(Error::InvalidInput {
+                message: "auto_refresh_interval_seconds must be positive, finite seconds".into(),
+            });
+        }
+        validate_table_name(&request.name)?;
+        validate_namespace(&request.namespace_path)?;
+        let client = self
+            .sql_client
+            .as_ref()
+            .ok_or_else(|| Error::NotSupported {
+                message: "SQL is unavailable for this remote database client".into(),
+            })?;
+        let mut options = Vec::new();
+        if let Some(enabled) = request.auto_refresh_enabled {
+            options.push(format!("auto_refresh_enabled = {enabled}"));
+        }
+        if let Some(seconds) = request.auto_refresh_interval_seconds {
+            options.push(format!("auto_refresh_interval_seconds = {seconds}"));
+        }
+        let name = request.name.replace('"', "\"\"");
+        let options = if options.is_empty() {
+            String::new()
+        } else {
+            format!(" WITH ({})", options.join(", "))
+        };
+        client
+            .submit_as_job(
+                format!(
+                    "CREATE MATERIALIZED VIEW \"{name}\"{options} AS {}",
+                    request.query
+                ),
+                request.namespace_path,
+                || async { Ok(()) },
+            )
+            .await
+    }
+
+    async fn drop_materialized_view_async(
+        &self,
+        name: &str,
+        namespace_path: &[String],
+    ) -> Result<Job> {
+        validate_table_name(name)?;
+        validate_namespace(namespace_path)?;
+        let client = self
+            .sql_client
+            .as_ref()
+            .ok_or_else(|| Error::NotSupported {
+                message: "SQL is unavailable for this remote database client".into(),
+            })?;
+        let cache = self.table_cache.clone();
+        let key = build_cache_key(name, namespace_path);
+        client
+            .submit_as_job(
+                format!("DROP MATERIALIZED VIEW {}", quote_identifier(name)),
+                namespace_path.to_vec(),
+                move || async move {
+                    cache.remove(&key).await;
+                    Ok(())
+                },
+            )
+            .await
+    }
+
+    async fn list_materialized_views(
+        &self,
+        namespace_path: &[String],
+        options: ListingOptions,
+    ) -> Result<ListingPage<String>> {
+        self.sql_client
+            .as_ref()
+            .ok_or_else(|| Error::NotSupported {
+                message: "SQL is unavailable for this remote database client".into(),
+            })?
+            .list_materialized_views(namespace_path, options)
+            .await
     }
 
     async fn create_function_async(
         &self,
         request: FunctionRegistrationRequest,
+        namespace_path: &[String],
     ) -> Result<Job<FunctionVersion>> {
-        let req = self.client.post("/v1/functions/create").json(&request);
-        let (request_id, response) = self.client.send(req).await?;
-        let response = self.client.check_response(&request_id, response).await?;
-        let status = response.status();
-        let body = response.text().await.err_to_http(request_id.clone())?;
-        let job_id = extract_job_id(&body).ok_or_else(|| Error::Http {
-            source: "Function registration response did not contain a valid job_id".into(),
-            request_id,
-            status_code: Some(status),
-        })?;
-        Ok(Job::new_typed(Box::new(RemoteJob::new(
-            self.client.clone(),
-            job_id,
-        ))))
+        validate_function_name(&request.name)?;
+        validate_namespace(namespace_path)?;
+        self.sql_client()?
+            .register_function(request, namespace_path)
+            .await
     }
 
-    async fn get_function(&self, name: &str, version: &str) -> Result<FunctionVersion> {
+    async fn get_function(
+        &self,
+        name: &str,
+        version: &str,
+        namespace_path: &[String],
+    ) -> Result<FunctionVersion> {
+        validate_function_name(name)?;
+        validate_namespace(namespace_path)?;
+        self.sql_client()?
+            .describe_function(name, version, namespace_path)
+            .await
+    }
+
+    async fn list_functions(
+        &self,
+        namespace_path: &[String],
+        options: ListingOptions,
+    ) -> Result<ListingPage<FunctionVersion>> {
+        validate_namespace(namespace_path)?;
+        self.sql_client()?
+            .list_functions(namespace_path, options)
+            .await
+    }
+
+    async fn drop_function(
+        &self,
+        name: &str,
+        version: &str,
+        namespace_path: &[String],
+    ) -> Result<bool> {
+        validate_function_name(name)?;
+        validate_namespace(namespace_path)?;
+        let (dropped, job) = self
+            .sql_client()?
+            .drop_function(name, version, namespace_path)
+            .await?;
+        job.wait().await?;
+        Ok(dropped)
+    }
+
+    async fn drop_function_async(
+        &self,
+        name: &str,
+        version: &str,
+        namespace_path: &[String],
+    ) -> Result<(bool, Job)> {
+        validate_function_name(name)?;
+        validate_namespace(namespace_path)?;
+        self.sql_client()?
+            .drop_function(name, version, namespace_path)
+            .await
+    }
+
+    async fn create_storage_integration(
+        &self,
+        name: &str,
+        request: CreateStorageIntegrationRequest,
+        namespace_path: &[String],
+    ) -> Result<StorageIntegrationInfo> {
+        let sql = integration_sql::create_sql(name, namespace_path, &request)?;
+        let result = self
+            .execute_query_async(ExecuteQueryRequest {
+                query: sql,
+                default_namespace_path: namespace_path.to_vec(),
+                parameters: None,
+            })
+            .await?;
+        integration_sql::decode_info(&result.reader().await?.try_collect::<Vec<_>>().await?)
+    }
+
+    async fn describe_storage_integration(
+        &self,
+        name: &str,
+        namespace_path: &[String],
+    ) -> Result<StorageIntegrationInfo> {
+        let name = integration_sql::object_name(name, namespace_path)?;
+        let result = self
+            .execute_query_async(ExecuteQueryRequest {
+                query: format!("DESCRIBE STORAGE INTEGRATION {name}"),
+                default_namespace_path: namespace_path.to_vec(),
+                parameters: None,
+            })
+            .await?;
+        integration_sql::decode_info(&result.reader().await?.try_collect::<Vec<_>>().await?)
+    }
+
+    async fn list_storage_integrations(
+        &self,
+        namespace_path: &[String],
+        options: ListingOptions,
+    ) -> Result<ListingPage<String>> {
+        validate_namespace(namespace_path)?;
+        let result = self
+            .execute_query_async(ExecuteQueryRequest {
+                query: "SHOW STORAGE INTEGRATIONS".into(),
+                default_namespace_path: namespace_path.to_vec(),
+                parameters: None,
+            })
+            .await?;
+        let mut names =
+            integration_sql::decode_names(&result.reader().await?.try_collect::<Vec<_>>().await?)?;
+        if let Some(token) = options.page_token {
+            names.retain(|name| name > &token);
+        }
+        let mut page_token = None;
+        if let Some(limit) = options.page_limit
+            && names.len() > limit as usize
+        {
+            names.truncate(limit as usize);
+            page_token = names.last().cloned();
+        }
+        Ok(ListingPage {
+            items: names,
+            page_token,
+        })
+    }
+
+    async fn drop_storage_integration(&self, name: &str, namespace_path: &[String]) -> Result<()> {
+        let name = integration_sql::object_name(name, namespace_path)?;
+        let result = self
+            .execute_query_async(ExecuteQueryRequest {
+                query: format!("DROP STORAGE INTEGRATION {name}"),
+                default_namespace_path: namespace_path.to_vec(),
+                parameters: None,
+            })
+            .await?;
+        result.reader().await?.try_collect::<Vec<_>>().await?;
+        Ok(())
+    }
+
+    async fn create_secret(
+        &self,
+        name: &str,
+        value: &str,
+        namespace_path: &[String],
+    ) -> Result<()> {
+        crate::utils::validate_secret_name(name)?;
+        validate_namespace(namespace_path)?;
+        self.sql_client()?
+            .write_secret(name, value, namespace_path, true)
+            .await
+    }
+    async fn alter_secret(&self, name: &str, value: &str, namespace_path: &[String]) -> Result<()> {
+        crate::utils::validate_secret_name(name)?;
+        validate_namespace(namespace_path)?;
+        self.sql_client()?
+            .write_secret(name, value, namespace_path, false)
+            .await
+    }
+    async fn list_secrets(
+        &self,
+        namespace_path: &[String],
+        options: ListingOptions,
+    ) -> Result<ListingPage<String>> {
+        validate_namespace(namespace_path)?;
+        self.sql_client()?
+            .list_secrets(namespace_path, options)
+            .await
+    }
+    async fn drop_secret(&self, name: &str, namespace_path: &[String]) -> Result<()> {
+        crate::utils::validate_secret_name(name)?;
+        validate_namespace(namespace_path)?;
+        self.sql_client()?.drop_secret(name, namespace_path).await
+    }
+    async fn describe_secret(&self, name: &str, namespace_path: &[String]) -> Result<SecretInfo> {
+        crate::utils::validate_secret_name(name)?;
+        validate_namespace(namespace_path)?;
+        self.sql_client()?
+            .describe_secret(name, namespace_path)
+            .await
+    }
+
+    async fn create_view(
+        &self,
+        name: &str,
+        query: &str,
+        namespace_path: &[String],
+    ) -> Result<ViewDescription> {
+        validate_view_name(name)?;
+        validate_namespace(namespace_path)?;
+        self.sql_client()?
+            .create_view(name, query, namespace_path)
+            .await
+    }
+    async fn describe_view(
+        &self,
+        name: &str,
+        namespace_path: &[String],
+    ) -> Result<ViewDescription> {
+        validate_view_name(name)?;
+        validate_namespace(namespace_path)?;
+        self.sql_client()?.describe_view(name, namespace_path).await
+    }
+    async fn drop_view(&self, name: &str, namespace_path: &[String]) -> Result<()> {
+        self.drop_view_async(name, namespace_path)
+            .await?
+            .wait()
+            .await
+    }
+    async fn drop_view_async(&self, name: &str, namespace_path: &[String]) -> Result<Job> {
+        validate_view_name(name)?;
+        validate_namespace(namespace_path)?;
+        self.sql_client()?
+            .submit_as_job(
+                format!("DROP VIEW {}", quote_identifier(name)),
+                namespace_path.to_vec(),
+                || async { Ok(()) },
+            )
+            .await
+    }
+    async fn list_views(
+        &self,
+        namespace_path: &[String],
+        options: ListingOptions,
+    ) -> Result<ListingPage<String>> {
+        validate_namespace(namespace_path)?;
+        self.sql_client()?.list_views(namespace_path, options).await
+    }
+
+    async fn create_property_graph(
+        &self,
+        name: &str,
+        definition: &PropertyGraphDefinition,
+        namespace_path: &[String],
+    ) -> Result<PropertyGraphDescription> {
+        let graph_id = build_property_graph_identifier(name, namespace_path)?;
         let req = self
             .client
-            .post("/v1/functions/describe")
-            .json(&serde_json::json!({
-                "name": name,
-                "version": version,
-            }));
+            .post(&format!("/v1/property_graph/{graph_id}/create"))
+            .json(definition);
         let (request_id, response) = self.client.send(req).await?;
         let response = self.client.check_response(&request_id, response).await?;
         response.json().await.err_to_http(request_id)
     }
 
-    async fn list_functions(&self) -> Result<Vec<FunctionVersion>> {
-        let mut functions = Vec::new();
-        let mut page_token: Option<String> = None;
-        let mut seen_page_tokens = HashSet::new();
-        loop {
-            let mut body = serde_json::json!({ "include_definition": true });
-            if let Some(token) = &page_token {
-                body["page_token"] = serde_json::Value::String(token.clone());
-            }
-            let req = self.client.post("/v1/functions/list").json(&body);
-            let (request_id, response) = self.client.send(req).await?;
-            let response = self.client.check_response(&request_id, response).await?;
-            let status = response.status();
-            let response: RemoteListFunctionsResponse =
-                response.json().await.err_to_http(request_id.clone())?;
-            functions.extend(
-                response
-                    .functions
-                    .into_iter()
-                    .map(|listed| listed.definition),
-            );
-            let Some(next_page_token) = response.page_token.filter(|token| !token.is_empty())
-            else {
-                break;
-            };
-            if !seen_page_tokens.insert(next_page_token.clone()) {
-                return Err(Error::Http {
-                    source: "Function listing response repeated a page_token".into(),
-                    request_id,
-                    status_code: Some(status),
-                });
-            }
-            page_token = Some(next_page_token);
-        }
-        Ok(functions)
-    }
-
-    async fn drop_function(&self, name: &str, version: &str) -> Result<bool> {
+    async fn describe_property_graph(
+        &self,
+        name: &str,
+        namespace_path: &[String],
+    ) -> Result<PropertyGraphDescription> {
+        let graph_id = build_property_graph_identifier(name, namespace_path)?;
         let req = self
             .client
-            .post("/v1/functions/drop")
-            .json(&serde_json::json!({
-                "name": name,
-                "version": version,
-            }));
+            .post(&format!("/v1/property_graph/{graph_id}/describe"))
+            .json(&serde_json::json!({}));
         let (request_id, response) = self.client.send(req).await?;
         let response = self.client.check_response(&request_id, response).await?;
-        let response: RemoteDropFunctionResponse = response.json().await.err_to_http(request_id)?;
-        Ok(response.dropped)
+        response.json().await.err_to_http(request_id)
+    }
+
+    async fn drop_property_graph(&self, name: &str, namespace_path: &[String]) -> Result<()> {
+        self.drop_property_graph_async(name, namespace_path)
+            .await?
+            .wait()
+            .await
+    }
+
+    async fn drop_property_graph_async(
+        &self,
+        name: &str,
+        namespace_path: &[String],
+    ) -> Result<Job> {
+        let graph_id = build_property_graph_identifier(name, namespace_path)?;
+        let req = self
+            .client
+            .post(&format!("/v1/property_graph/{graph_id}/drop"));
+        let (request_id, response) = self.client.send(req).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        let status = response.status();
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        match status {
+            // Nothing was bound to the name, so nothing is being deleted.
+            StatusCode::OK => Ok(Job::new_done()),
+            StatusCode::ACCEPTED => {
+                let job_id = extract_job_id(&body).ok_or_else(|| Error::Http {
+                    source: "property graph drop response did not contain a valid job_id".into(),
+                    request_id,
+                    status_code: Some(status),
+                })?;
+                Ok(Job::new(Box::new(RemoteJob::new(
+                    self.client.clone(),
+                    job_id,
+                ))))
+            }
+            _ => Err(Error::Http {
+                source: "property graph drop must return 200 OK or 202 Accepted".into(),
+                request_id,
+                status_code: Some(status),
+            }),
+        }
+    }
+
+    async fn list_property_graphs(
+        &self,
+        namespace_path: &[String],
+        options: ListingOptions,
+    ) -> Result<ListingPage<String>> {
+        let namespace_id = build_namespace_identifier(namespace_path)?;
+        let path = format!("/v1/namespace/{namespace_id}/property_graph/list");
+        let mut req = self.client.get(&path);
+        if let Some(token) = options.page_token {
+            req = req.query(&[("page_token", token)]);
+        }
+        if let Some(limit) = options.page_limit {
+            req = req.query(&[("limit", limit)]);
+        }
+        let (request_id, response) = self.client.send(req).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        let response: RemoteListPropertyGraphsResponse =
+            response.json().await.err_to_http(request_id)?;
+        Ok(ListingPage {
+            items: response.property_graphs,
+            page_token: response.page_token,
+        })
     }
 
     async fn open_job(&self, job_id: &str) -> Result<Job> {
@@ -685,38 +1164,33 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         }
     }
 
-    async fn list_jobs(&self) -> Result<Vec<JobInfo>> {
-        let mut out = Vec::new();
-        let mut page_token: Option<String> = None;
-        for page in 0..MAX_LIST_JOBS_PAGES {
-            let mut body = serde_json::json!({});
-            if let Some(token) = &page_token {
-                body["page_token"] = serde_json::Value::String(token.clone());
-            }
-            let req = self.client.post("/v1/jobs/list").json(&body);
-            let (request_id, rsp) = self.client.send(req).await?;
-            let rsp = self.client.check_response(&request_id, rsp).await?;
-            let body: RemoteListJobsResponse = rsp.json().await.err_to_http(request_id)?;
-            out.extend(body.jobs.into_iter().map(|row| JobInfo {
+    async fn list_jobs(&self, options: ListingOptions) -> Result<ListingPage<JobInfo>> {
+        let mut body = serde_json::json!({});
+        if let Some(token) = options.page_token {
+            body["page_token"] = token.into();
+        }
+        if let Some(limit) = options.page_limit {
+            body["limit"] = limit.into();
+        }
+        let req = self.client.post("/v1/jobs/list").json(&body);
+        let (request_id, rsp) = self.client.send(req).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let response: RemoteListJobsResponse = rsp.json().await.err_to_http(request_id)?;
+        let items = response
+            .jobs
+            .into_iter()
+            .map(|row| JobInfo {
                 job_id: row.job_id,
                 table: row.table,
                 job_type: row.job_type,
                 state: job_state_to_client(&row.state),
                 created_at_millis: row.created_at_millis,
-            }));
-            page_token = body.page_token;
-            if page_token.is_none() {
-                break;
-            }
-            if page + 1 == MAX_LIST_JOBS_PAGES {
-                log::warn!(
-                    "list_jobs truncated after {} pages ({} jobs)",
-                    MAX_LIST_JOBS_PAGES,
-                    out.len()
-                );
-            }
-        }
-        Ok(out)
+            })
+            .collect();
+        Ok(ListingPage {
+            items,
+            page_token: response.page_token,
+        })
     }
 
     async fn cancel_job(&self, job_id: &str) -> Result<bool> {
@@ -735,18 +1209,58 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         }
     }
 
-    async fn execute_query_async(
-        &self,
-        query: &str,
-        default_namespace_path: &[String],
-    ) -> Result<crate::sql::Query> {
+    async fn pause_job(&self, job_id: &str) -> Result<crate::database::PauseJobStatus> {
+        let req = self
+            .client
+            .post("/v1/jobs/pause")
+            .json(&serde_json::json!({ "job_id": job_id }));
+        let (request_id, rsp) = self.client.send(req).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let body: PauseJobResponse = rsp.json().await.err_to_http(request_id)?;
+        Ok(if body.paused {
+            crate::database::PauseJobStatus::Pausing
+        } else if body.committing {
+            crate::database::PauseJobStatus::Committing
+        } else {
+            crate::database::PauseJobStatus::AlreadyPaused
+        })
+    }
+
+    async fn resume_job(&self, job_id: &str) -> Result<crate::database::ResumeJobStatus> {
+        let req = self
+            .client
+            .post("/v1/jobs/resume")
+            .json(&serde_json::json!({ "job_id": job_id }));
+        let (request_id, rsp) = self.client.send(req).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let body: ResumeJobResponse = rsp.json().await.err_to_http(request_id)?;
+        Ok(if body.resumed {
+            crate::database::ResumeJobStatus::Resumed
+        } else if body.still_pausing {
+            crate::database::ResumeJobStatus::StillPausing
+        } else {
+            crate::database::ResumeJobStatus::NotPaused
+        })
+    }
+
+    async fn check_sql_connection(&self) -> Result<()> {
+        self.sql_client
+            .as_ref()
+            .ok_or_else(|| Error::NotSupported {
+                message: "SQL is unavailable for this remote database client".into(),
+            })?
+            .check_connection()
+            .await
+    }
+
+    async fn execute_query_async(&self, request: ExecuteQueryRequest) -> Result<crate::sql::Query> {
         let client = self
             .sql_client
             .as_ref()
             .ok_or_else(|| Error::NotSupported {
                 message: "SQL is unavailable for this remote database client".to_string(),
             })?;
-        client.submit(query, default_namespace_path).await
+        client.execute(request).await
     }
 
     async fn describe_query(&self, query_id: uuid::Uuid) -> Result<crate::sql::QueryDescription> {
@@ -760,48 +1274,64 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
+        // A zero limit is an empty listing, even on servers that reject limit=0.
+        if request.limit == Some(0) {
+            return Ok(Vec::new());
+        }
         let (tables, version) = if request.namespace_path.is_empty() {
             // The flat route resumes after a table name and orders by name, which is exactly
-            // what `start_after` means, so the server does the paging.
-            let mut req = self.client.get("/v1/table/");
-            if let Some(limit) = request.limit {
-                req = req.query(&[("limit", limit)]);
+            // what `start_after` means. Subsequent cursors come from the server and may be
+            // opaque. Follow them until the requested limit or the end of the listing.
+            let mut tables = Vec::new();
+            let mut version = None;
+            let mut page_token = request.start_after.clone();
+            let mut seen_tokens = HashSet::new();
+            if let Some(ref token) = page_token {
+                seen_tokens.insert(token.clone());
             }
-            if let Some(ref start_after) = request.start_after {
-                req = req.query(&[("page_token", start_after)]);
+            loop {
+                let mut req = self.client.get("/v1/table/");
+                if let Some(limit) = request.limit {
+                    req = req.query(&[("limit", limit as usize - tables.len())]);
+                }
+                if let Some(ref token) = page_token {
+                    req = req.query(&[("page_token", token)]);
+                }
+                let (request_id, rsp) = self.client.send_with_retry(req, None, true).await?;
+                let rsp = self.client.check_response(&request_id, rsp).await?;
+                if version.is_none() {
+                    version = Some(parse_server_version(&request_id, &rsp)?);
+                }
+                let response: ListTablesResponse = rsp.json().await.err_to_http(request_id)?;
+                tables.extend(response.tables);
+                if let Some(limit) = request.limit
+                    && tables.len() >= limit as usize
+                {
+                    tables.truncate(limit as usize);
+                    break;
+                }
+                // Empty or repeated tokens must not restart the listing or loop forever.
+                match response.page_token.filter(|token| !token.is_empty()) {
+                    Some(token) if seen_tokens.insert(token.clone()) => page_token = Some(token),
+                    _ => break,
+                }
             }
-            let (request_id, rsp) = self.client.send_with_retry(req, None, true).await?;
-            let rsp = self.client.check_response(&request_id, rsp).await?;
-            let version = parse_server_version(&request_id, &rsp)?;
-            let tables = rsp
-                .json::<ListTablesResponse>()
-                .await
-                .err_to_http(request_id)?
-                .tables;
-            (tables, version)
+            (tables, version.unwrap_or_default())
         } else {
             self.table_names_in_namespace(&request).await?
         };
 
         for table in &tables {
-            let table_identifier =
-                build_table_identifier(table, &request.namespace_path, &self.client.id_delimiter);
+            build_table_identifier(table, &request.namespace_path)?;
             let cache_key = build_cache_key(table, &request.namespace_path);
-            let remote_table = Arc::new(RemoteTable::new(
-                self.client.clone(),
-                table.clone(),
-                request.namespace_path.clone(),
-                table_identifier.clone(),
-                version.clone(),
-            ));
-            self.table_cache.insert(cache_key, remote_table).await;
+            self.table_cache.insert(cache_key, version.clone()).await;
         }
         Ok(tables)
     }
 
     async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
         let namespace_parts = request.id.as_deref().unwrap_or(&[]);
-        let namespace_id = build_namespace_identifier(namespace_parts, &self.client.id_delimiter);
+        let namespace_id = self.namespace_identifier(namespace_parts)?;
         let mut req = self
             .client
             .get(&format!("/v1/namespace/{}/table/list", namespace_id));
@@ -821,30 +1351,38 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         // Cache the tables for future use
         let namespace_vec = namespace_parts.to_vec();
         for table in &response.tables {
-            let table_identifier =
-                build_table_identifier(table, &namespace_vec, &self.client.id_delimiter);
+            build_table_identifier(table, &namespace_vec)?;
             let cache_key = build_cache_key(table, &namespace_vec);
-            let remote_table = Arc::new(RemoteTable::new(
-                self.client.clone(),
-                table.clone(),
-                namespace_vec.clone(),
-                table_identifier.clone(),
-                version.clone(),
-            ));
-            self.table_cache.insert(cache_key, remote_table).await;
+            self.table_cache.insert(cache_key, version.clone()).await;
         }
 
         Ok(response)
     }
 
     async fn create_table(&self, mut request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
+        // The remote create endpoint does not transmit Lance write parameters.
+        // Reject them before consuming data or issuing a request, especially
+        // for overwrite: silently using the server's format can lose intent.
+        for (option, provided) in [
+            (
+                "write_options (including storage_options)",
+                request.write_options.lance_write_params.is_some(),
+            ),
+            ("location", request.location.is_some()),
+            ("namespace_client", request.namespace_client.is_some()),
+        ] {
+            if provided {
+                return Err(Error::NotSupported {
+                    message: format!(
+                        "{option} is not supported for table creation in LanceDB Distributed"
+                    ),
+                });
+            }
+        }
+        let data_schema = request.data.schema();
         let body = stream_as_body(request.data.scan_as_stream())?;
 
-        let identifier = build_table_identifier(
-            &request.name,
-            &request.namespace_path,
-            &self.client.id_delimiter,
-        );
+        let identifier = build_table_identifier(&request.name, &request.namespace_path)?;
         let req = self
             .client
             .post(&format!("/v1/table/{}/create/", identifier))
@@ -872,7 +1410,17 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                             managed_versioning: None,
                         };
                         let req = (callback)(req);
-                        self.open_table(req).await
+                        let table = self.open_table(req).await?;
+                        let table_schema = table.schema().await?;
+
+                        if table_schema.as_ref() != data_schema.as_ref() {
+                            return Err(Error::Schema {
+                                message: "Provided schema does not match existing table schema"
+                                    .to_string(),
+                            });
+                        }
+
+                        Ok(table)
                     }
 
                     // This should not happen, as we explicitly set the mode to overwrite and the server
@@ -896,30 +1444,25 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         }
         let rsp = self.client.check_response(&request_id, rsp).await?;
         let version = parse_server_version(&request_id, &rsp)?;
-        let table_identifier = build_table_identifier(
-            &request.name,
-            &request.namespace_path,
-            &self.client.id_delimiter,
-        );
+        let table_identifier = build_table_identifier(&request.name, &request.namespace_path)?;
         let cache_key = build_cache_key(&request.name, &request.namespace_path);
-        let table = Arc::new(RemoteTable::new(
+        let table = Arc::new(RemoteTable::new_with_sql_client(
             self.client.clone(),
+            self.db_name.clone(),
             request.name.clone(),
             request.namespace_path.clone(),
             table_identifier,
-            version,
+            version.clone(),
+            self.sql_client.clone(),
         ));
-        self.table_cache.insert(cache_key, table.clone()).await;
+        self.table_cache.insert(cache_key, version).await;
 
         Ok(table)
     }
 
     async fn clone_table(&self, request: CloneTableRequest) -> Result<Arc<dyn BaseTable>> {
-        let table_identifier = build_table_identifier(
-            &request.target_table_name,
-            &request.target_namespace_path,
-            &self.client.id_delimiter,
-        );
+        let table_identifier =
+            build_table_identifier(&request.target_table_name, &request.target_namespace_path)?;
 
         let remote_request = RemoteCloneTableRequest {
             source_location: request.source_uri,
@@ -947,30 +1490,67 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
 
         let version = parse_server_version(&request_id, &rsp)?;
         let cache_key = build_cache_key(&request.target_table_name, &request.target_namespace_path);
-        let table = Arc::new(RemoteTable::new(
+        let table = Arc::new(RemoteTable::new_with_sql_client(
             self.client.clone(),
+            self.db_name.clone(),
             request.target_table_name.clone(),
             request.target_namespace_path.clone(),
             table_identifier,
-            version,
+            version.clone(),
+            self.sql_client.clone(),
         ));
-        self.table_cache.insert(cache_key, table.clone()).await;
+        self.table_cache.insert(cache_key, version).await;
 
         Ok(table)
     }
 
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
-        let identifier = build_table_identifier(
-            &request.name,
-            &request.namespace_path,
-            &self.client.id_delimiter,
-        );
+        // Validate before looking in the cache as well as before sending HTTP.
+        for (option, provided) in [
+            ("index_cache_size", request.index_cache_size.is_some()),
+            (
+                "lance_read_params (including storage_options)",
+                request.lance_read_params.is_some(),
+            ),
+            ("location", request.location.is_some()),
+            ("namespace_client", request.namespace_client.is_some()),
+            ("managed_versioning", request.managed_versioning.is_some()),
+        ] {
+            if provided {
+                return Err(Error::NotSupported {
+                    message: format!(
+                        "{option} is not supported for table access in LanceDB Distributed"
+                    ),
+                });
+            }
+        }
+        let identifier = build_table_identifier(&request.name, &request.namespace_path)?;
         let cache_key = build_cache_key(&request.name, &request.namespace_path);
 
-        // We describe the table to confirm it exists before moving on.
-        if let Some(table) = self.table_cache.get(&cache_key).await {
-            Ok(table.clone())
+        // Every open gets its own checkout, schema cache, and freshness state.
+        if let Some(version) = self.table_cache.get(&cache_key).await {
+            // A cached version can outlive a drop from another connection. Verify that
+            // the table still exists before returning a handle for it.
+            let req = self
+                .client
+                .post(&format!("/v1/table/{}/describe/", identifier))
+                .json(&serde_json::json!({}));
+            let (request_id, rsp) = self.client.send_with_retry(req, None, true).await?;
+            let rsp =
+                RemoteTable::<S>::handle_table_not_found(&request.name, rsp, &request_id).await?;
+            self.client.check_response(&request_id, rsp).await?;
+
+            Ok(Arc::new(RemoteTable::new_with_sql_client(
+                self.client.clone(),
+                self.db_name.clone(),
+                request.name,
+                request.namespace_path,
+                identifier,
+                version,
+                self.sql_client.clone(),
+            )))
         } else {
+            // Describe the table to confirm it exists before moving on.
             let req = self
                 .client
                 .post(&format!("/v1/table/{}/describe/", identifier));
@@ -980,17 +1560,14 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             let rsp = self.client.check_response(&request_id, rsp).await?;
             let version = parse_server_version(&request_id, &rsp)?;
             let describe_body = rsp.text().await.ok();
-            let table_identifier = build_table_identifier(
-                &request.name,
-                &request.namespace_path,
-                &self.client.id_delimiter,
-            );
-            let table = Arc::new(RemoteTable::new(
+            let table = Arc::new(RemoteTable::new_with_sql_client(
                 self.client.clone(),
+                self.db_name.clone(),
                 request.name.clone(),
                 request.namespace_path.clone(),
-                table_identifier,
-                version,
+                identifier,
+                version.clone(),
+                self.sql_client.clone(),
             ));
             // This describe already carries the schema, so hand it to the table
             // instead of making the first schema read fetch it again. A version or
@@ -998,8 +1575,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             if let Some(body) = &describe_body {
                 table.seed_schema(body);
             }
-            let cache_key = build_cache_key(&request.name, &request.namespace_path);
-            self.table_cache.insert(cache_key, table.clone()).await;
+            self.table_cache.insert(cache_key, version).await;
             Ok(table)
         }
     }
@@ -1011,8 +1587,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         cur_namespace_path: &[String],
         new_namespace_path: &[String],
     ) -> Result<()> {
-        let current_identifier =
-            build_table_identifier(current_name, cur_namespace_path, &self.client.id_delimiter);
+        let current_identifier = build_table_identifier(current_name, cur_namespace_path)?;
         let current_cache_key = build_cache_key(current_name, cur_namespace_path);
         let new_cache_key = build_cache_key(new_name, new_namespace_path);
 
@@ -1063,12 +1638,21 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         })
     }
 
+    #[allow(deprecated)]
     async fn drop_all_tables(&self, namespace_path: &[String]) -> Result<()> {
-        // TODO: Implement namespace-aware drop_all_tables
-        let _namespace_path = namespace_path; // Suppress unused warning for now
-        Err(crate::Error::NotSupported {
-            message: "Dropping all tables is not currently supported in the remote API".to_string(),
-        })
+        let tables = self
+            .table_names(TableNamesRequest {
+                namespace_path: namespace_path.to_vec(),
+                start_after: None,
+                limit: None,
+            })
+            .await?;
+
+        for table in tables {
+            self.drop_table(&table, namespace_path).await?;
+        }
+
+        Ok(())
     }
 
     async fn list_namespaces(
@@ -1076,7 +1660,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         request: ListNamespacesRequest,
     ) -> Result<ListNamespacesResponse> {
         let namespace_parts = request.id.as_deref().unwrap_or(&[]);
-        let namespace_id = build_namespace_identifier(namespace_parts, &self.client.id_delimiter);
+        let namespace_id = self.namespace_identifier(namespace_parts)?;
         let mut req = self
             .client
             .get(&format!("/v1/namespace/{}/list", namespace_id));
@@ -1098,7 +1682,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         request: CreateNamespaceRequest,
     ) -> Result<CreateNamespaceResponse> {
         let namespace_parts = request.id.as_deref().unwrap_or(&[]);
-        let namespace_id = build_namespace_identifier(namespace_parts, &self.client.id_delimiter);
+        let namespace_id = self.namespace_identifier(namespace_parts)?;
         let mut req = self
             .client
             .post(&format!("/v1/namespace/{}/create", namespace_id));
@@ -1113,7 +1697,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         }
 
         let body = CreateNamespaceRequestBody {
-            mode: request.mode.as_ref().map(|m| format!("{:?}", m)),
+            mode: request.mode,
             properties: request.properties,
         };
 
@@ -1121,12 +1705,15 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let (request_id, resp) = self.client.send(req).await?;
         let resp = self.client.check_response(&request_id, resp).await?;
 
+        if resp.status() == StatusCode::NO_CONTENT {
+            return Ok(CreateNamespaceResponse::default());
+        }
         resp.json().await.err_to_http(request_id)
     }
 
     async fn drop_namespace(&self, request: DropNamespaceRequest) -> Result<DropNamespaceResponse> {
         let namespace_parts = request.id.as_deref().unwrap_or(&[]);
-        let namespace_id = build_namespace_identifier(namespace_parts, &self.client.id_delimiter);
+        let namespace_id = self.namespace_identifier(namespace_parts)?;
         let mut req = self
             .client
             .post(&format!("/v1/namespace/{}/drop", namespace_id));
@@ -1141,14 +1728,17 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         }
 
         let body = DropNamespaceRequestBody {
-            mode: request.mode.as_ref().map(|m| format!("{:?}", m)),
-            behavior: request.behavior.as_ref().map(|b| format!("{:?}", b)),
+            mode: request.mode,
+            behavior: request.behavior,
         };
 
         req = req.json(&body);
         let (request_id, resp) = self.client.send(req).await?;
         let resp = self.client.check_response(&request_id, resp).await?;
 
+        if resp.status() == StatusCode::NO_CONTENT {
+            return Ok(DropNamespaceResponse::default());
+        }
         resp.json().await.err_to_http(request_id)
     }
 
@@ -1157,7 +1747,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         request: DescribeNamespaceRequest,
     ) -> Result<DescribeNamespaceResponse> {
         let namespace_parts = request.id.as_deref().unwrap_or(&[]);
-        let namespace_id = build_namespace_identifier(namespace_parts, &self.client.id_delimiter);
+        let namespace_id = self.namespace_identifier(namespace_parts)?;
         let req = self
             .client
             .post(&format!("/v1/namespace/{}/describe", namespace_id))
@@ -1176,7 +1766,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     async fn namespace_client(&self) -> Result<Arc<dyn lance_namespace::LanceNamespace>> {
         // Create a RestNamespace pointing to the same remote host with the same authentication headers
         let mut builder = lance_namespace_impls::RestNamespaceBuilder::new(self.client.host())
-            .delimiter(&self.client.id_delimiter)
+            .delimiter(ID_DELIMITER)
             .headers(self.namespace_headers.clone());
 
         if let Some(context_provider) = &self.namespace_context_provider {
@@ -1212,7 +1802,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
 
         let mut properties = HashMap::new();
         properties.insert("uri".to_string(), self.client.host().to_string());
-        properties.insert("delimiter".to_string(), self.client.id_delimiter.clone());
+        properties.insert("delimiter".to_string(), ID_DELIMITER.to_string());
         for (key, value) in &self.namespace_headers {
             properties.insert(format!("header.{}", key), value.clone());
         }
@@ -1262,21 +1852,61 @@ impl From<StorageOptions> for RemoteOptions {
 #[cfg(test)]
 mod tests {
     use super::{NamespaceHeaderProviderContext, build_cache_key};
+    use crate::listing::{Listing, ListingOptions};
+    use futures::TryStreamExt;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, OnceLock};
+    use std::sync::{Arc, Mutex, OnceLock};
 
     use arrow_array::{Int32Array, RecordBatch};
     use arrow_schema::{DataType, Field, Schema};
     use lance_namespace_impls::{DynamicContextProvider, OperationInfo};
+    use rstest::rstest;
 
     use crate::connection::ConnectBuilder;
+    use crate::database::Database;
+    use crate::graph::{EdgeTable, Endpoint, NodeTable, PropertyGraphDefinition};
+    use crate::materialized_view::CreateMaterializedViewRequest;
     use crate::{
         Connection, Error,
         database::CreateTableMode,
         job::JobEventsRequest,
         remote::{ARROW_STREAM_CONTENT_TYPE, ClientConfig, HeaderProvider, JSON_CONTENT_TYPE},
     };
+
+    #[tokio::test]
+    async fn test_catalog_namespace_identifier_validates_all_namespace_components() {
+        let mut db = super::RemoteDatabase::new_mock(|_| -> http::Response<String> {
+            panic!("identifier validation must not send a request")
+        });
+        db.is_catalog_root = true;
+
+        for (path, expected) in [
+            (vec![], "$"),
+            (vec!["team/search"], "team%2Fsearch"),
+            (vec!["team/search", "ns"], "team%2Fsearch$ns"),
+            (vec!["team/search", "ns", "child"], "team%2Fsearch$ns$child"),
+        ] {
+            let path = path.into_iter().map(String::from).collect::<Vec<_>>();
+            assert_eq!(db.namespace_identifier(&path).unwrap(), expected);
+        }
+
+        for path in [
+            vec!["../search"],
+            vec!["team/search", "bad/name"],
+            vec!["team/search", "ns", "bad/name"],
+            vec!["team/search", "public", "child"],
+        ] {
+            let path = path.into_iter().map(String::from).collect::<Vec<_>>();
+            assert!(
+                matches!(
+                    db.namespace_identifier(&path),
+                    Err(Error::InvalidInput { .. })
+                ),
+                "accepted {path:?}"
+            );
+        }
+    }
 
     #[test]
     fn test_cache_key_security() {
@@ -1367,6 +1997,117 @@ mod tests {
         assert_eq!(names, vec!["table1", "table2"]);
     }
 
+    #[rstest::rstest]
+    #[case(None, None)]
+    #[case(Some("t009"), None)]
+    #[case(None, Some(200))]
+    #[case(Some("t009"), Some(15))]
+    #[tokio::test]
+    async fn test_table_names_follows_server_pages(
+        #[case] start_after: Option<&str>,
+        #[case] limit: Option<u32>,
+    ) {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::GET);
+            assert_eq!(request.url().path(), "/v1/table/");
+            let query: HashMap<_, _> = request.url().query_pairs().collect();
+            let start = query
+                .get("page_token")
+                .map(|token| token[1..4].parse::<usize>().unwrap() + 1)
+                .unwrap_or(0);
+            let limit = query
+                .get("limit")
+                .map(|limit| limit.parse::<usize>().unwrap())
+                .unwrap_or(10);
+            // A server may return a short page even when more tables remain.
+            let end = (start + limit.min(10)).min(130);
+            let tables: Vec<_> = (start..end).map(|i| format!("t{i:03}")).collect();
+            let page_token = (end < 130).then(|| format!("t{:03}.lance/", end - 1));
+            http::Response::builder()
+                .status(200)
+                .body(serde_json::json!({"tables": tables, "page_token": page_token}).to_string())
+                .unwrap()
+        });
+        let mut op = conn.table_names();
+        if let Some(start_after) = start_after {
+            op = op.start_after(start_after);
+        }
+        if let Some(limit) = limit {
+            op = op.limit(limit);
+        }
+        let start = if start_after.is_some() { 10 } else { 0 };
+        let end = limit.map(|limit| (start + limit).min(130)).unwrap_or(130);
+        let expected: Vec<_> = (start..end).map(|i| format!("t{i:03}")).collect();
+        assert_eq!(op.execute().await.unwrap(), expected);
+    }
+
+    #[rstest::rstest]
+    #[case(vec![])]
+    #[case(vec!["ns".to_string()])]
+    #[tokio::test]
+    async fn test_table_listing_zero_limit_never_sends_a_request(#[case] namespace: Vec<String>) {
+        let conn = Connection::new_with_handler(|_| -> http::Response<String> {
+            panic!("a zero limit must not be sent to the server")
+        });
+        assert!(
+            conn.table_names()
+                .namespace(namespace.clone())
+                .limit(0)
+                .execute()
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let mut listing = conn.list_tables(&namespace, ListingOptions::default().page_limit(0));
+        assert!(listing.next_page().await.is_err());
+    }
+
+    #[rstest::rstest]
+    #[case(vec![], "/v1/namespace/$/table/list")]
+    #[case(vec!["ns".to_string()], "/v1/namespace/ns/table/list")]
+    #[tokio::test]
+    async fn test_list_tables_default_page_size(
+        #[case] namespace: Vec<String>,
+        #[case] path: &'static str,
+    ) {
+        let conn = Connection::new_with_handler(move |request| {
+            assert_eq!(request.url().path(), path);
+            let query: HashMap<_, _> = request.url().query_pairs().collect();
+            assert_eq!(query.get("limit").map(|limit| limit.as_ref()), Some("100"));
+            let start = match query.get("page_token") {
+                None => 0,
+                Some(token) => {
+                    assert_eq!(token, "opaque-token");
+                    100
+                }
+            };
+            let end = (start + 100).min(130);
+            let tables: Vec<_> = (start..end).map(|i| format!("t{i:03}")).collect();
+            http::Response::builder()
+                .status(200)
+                .body(
+                    serde_json::json!({
+                        "tables": tables,
+                        "page_token": (end < 130).then_some("opaque-token")
+                    })
+                    .to_string(),
+                )
+                .unwrap()
+        });
+        let mut first_listing = conn.list_tables(&namespace, ListingOptions::default());
+        let first = first_listing.next_page().await.unwrap().unwrap();
+        assert_eq!(first.items.len(), 100);
+        assert_eq!(first.page_token.as_deref(), Some("opaque-token"));
+        let mut second_listing = conn.list_tables(
+            &namespace,
+            ListingOptions::default().page_token(first.page_token.unwrap()),
+        );
+        let second = second_listing.next_page().await.unwrap().unwrap();
+        let expected: Vec<_> = (100..130).map(|i| format!("t{i:03}")).collect();
+        assert_eq!(second.items, expected);
+        assert!(second.page_token.is_none());
+    }
+
     #[tokio::test]
     async fn test_table_names_in_a_namespace_never_invents_a_page_token() {
         // The namespace route's token belongs to the store, so `table_names` cannot build one
@@ -1412,8 +2153,11 @@ mod tests {
         assert_eq!(names, vec!["widgets"]);
     }
 
+    #[rstest::rstest]
+    #[case(vec![])]
+    #[case(vec!["ns".to_string()])]
     #[tokio::test]
-    async fn test_table_names_in_a_namespace_stops_on_a_repeated_token() {
+    async fn test_table_names_stops_on_a_repeated_token(#[case] namespace: Vec<String>) {
         // A server that handed back the token it was given would never finish the walk.
         let conn = Connection::new_with_handler(|_request| {
             http::Response::builder()
@@ -1424,7 +2168,7 @@ mod tests {
 
         let names = conn
             .table_names()
-            .namespace(vec!["ns".to_string()])
+            .namespace(namespace)
             .execute()
             .await
             .unwrap();
@@ -1433,8 +2177,11 @@ mod tests {
         assert_eq!(names, vec!["a", "a"]);
     }
 
+    #[rstest::rstest]
+    #[case(vec![])]
+    #[case(vec!["ns".to_string()])]
     #[tokio::test]
-    async fn test_table_names_in_a_namespace_stops_on_an_empty_token() {
+    async fn test_table_names_stops_on_an_empty_token(#[case] namespace: Vec<String>) {
         // An empty token ends the listing. Sending it back would ask a server that reads it
         // as "start from the beginning" for the first page a second time, and every name on
         // that page would be collected twice.
@@ -1454,7 +2201,7 @@ mod tests {
 
         let names = conn
             .table_names()
-            .namespace(vec!["ns".to_string()])
+            .namespace(namespace)
             .execute()
             .await
             .unwrap();
@@ -1500,14 +2247,98 @@ mod tests {
         let table = conn.open_table("table1").execute().await.unwrap();
         assert_eq!(table.name(), "table1");
 
-        // Storage options should be ignored.
-        let table = conn
+        // Per-table storage options must not be silently ignored.
+        let result = conn
             .open_table("table1")
             .storage_option("key", "value")
             .execute()
-            .await
-            .unwrap();
-        assert_eq!(table.name(), "table1");
+            .await;
+        assert!(matches!(result, Err(Error::NotSupported { message })
+            if message.contains("storage_options")));
+    }
+
+    #[tokio::test]
+    async fn test_open_table_checks_that_a_cached_table_still_exists() {
+        let describe_calls = Arc::new(AtomicUsize::new(0));
+        let calls = describe_calls.clone();
+        let mut db = super::RemoteDatabase::new_mock(move |request| {
+            assert_eq!(request.url().path(), "/v1/table/table1/describe/");
+            match calls.fetch_add(1, Ordering::SeqCst) {
+                0 => http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version": 1}"#.to_string())
+                    .unwrap(),
+                1 => http::Response::builder()
+                    .status(404)
+                    .body("table not found".to_string())
+                    .unwrap(),
+                call => panic!("unexpected describe call: {call}"),
+            }
+        });
+        db.table_cache = moka::future::Cache::new(10);
+        let conn = Connection::new(
+            Arc::new(db),
+            Arc::new(crate::embeddings::MemoryRegistry::new()),
+        );
+
+        conn.open_table("table1").execute().await.unwrap();
+        let result = conn.open_table("table1").execute().await;
+
+        assert!(matches!(result, Err(Error::TableNotFound { .. })));
+        assert_eq!(describe_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_open_table_checkout_is_independent_per_handle() {
+        let latest = Arc::new(AtomicUsize::new(2));
+        let current = latest.clone();
+        let mut db = super::RemoteDatabase::new_mock(move |request| {
+            let body = match request.url().path() {
+                "/v1/table/table1/describe/" => {
+                    let requested_version = request
+                        .body()
+                        .and_then(|body| body.as_bytes())
+                        .and_then(|body| serde_json::from_slice::<serde_json::Value>(body).ok())
+                        .and_then(|body| body["version"].as_u64());
+                    let version =
+                        requested_version.unwrap_or_else(|| current.load(Ordering::SeqCst) as u64);
+                    serde_json::json!({
+                        "version": version,
+                        "schema": {"fields": [
+                            {"name": "id", "type": {"type": "int32"}, "nullable": false}
+                        ]}
+                    })
+                    .to_string()
+                }
+                "/v1/table/table1/insert/" => {
+                    let version = current.fetch_add(1, Ordering::SeqCst) + 1;
+                    serde_json::json!({"version": version}).to_string()
+                }
+                path => panic!("unexpected request path: {path}"),
+            };
+            http::Response::builder().status(200).body(body).unwrap()
+        });
+        db.table_cache = moka::future::Cache::new(10);
+        let conn = Connection::new(
+            Arc::new(db),
+            Arc::new(crate::embeddings::MemoryRegistry::new()),
+        );
+
+        let writer = conn.open_table("table1").execute().await.unwrap();
+        let reader = conn.open_table("table1").execute().await.unwrap();
+        reader.checkout(1).await.unwrap();
+
+        assert_eq!(reader.version().await.unwrap(), 1);
+        assert_eq!(writer.version().await.unwrap(), 2);
+
+        let data = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![3]))],
+        )
+        .unwrap();
+        assert_eq!(writer.add(data).execute().await.unwrap().version, 3);
+        assert_eq!(writer.version().await.unwrap(), 3);
+        assert_eq!(reader.version().await.unwrap(), 1);
     }
 
     #[tokio::test]
@@ -1647,6 +2478,195 @@ mod tests {
         );
     }
 
+    #[rstest]
+    #[case("new_table_data_storage_version", "2.0")]
+    #[case("new_table_enable_v2_manifest_paths", "false")]
+    #[case("bogus_option_xyz", "1")]
+    #[tokio::test]
+    async fn test_create_rejects_local_storage_options(#[case] key: &str, #[case] value: &str) {
+        let conn = Connection::new_with_handler(|_| -> http::Response<&'static str> {
+            panic!("must not send a create request")
+        });
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let data = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        for builder in [
+            conn.create_table("table1", data),
+            conn.create_empty_table("table1", schema),
+        ] {
+            let result = builder
+                .mode(CreateTableMode::Overwrite)
+                .storage_option(key, value)
+                .execute()
+                .await;
+            assert!(matches!(result, Err(Error::NotSupported { message })
+                if message.contains("write_options") && message.contains("LanceDB Distributed")));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_rejects_local_write_params_and_location() {
+        let conn = Connection::new_with_handler(|_| -> http::Response<&'static str> {
+            panic!("must not send a create request")
+        });
+        let schema = Arc::new(Schema::empty());
+        for builder in [
+            conn.create_empty_table("table1", schema.clone())
+                .write_options(crate::table::WriteOptions {
+                    lance_write_params: Some(lance::dataset::WriteParams::default()),
+                }),
+            conn.create_empty_table("table1", schema)
+                .location("/tmp/elsewhere"),
+        ] {
+            assert!(matches!(
+                builder.execute().await,
+                Err(Error::NotSupported { .. })
+            ));
+        }
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_open_rejects_local_options_even_when_cached(#[values(false, true)] cached: bool) {
+        let mut db = super::RemoteDatabase::new_mock(|request| {
+            assert_eq!(request.url().path(), "/v1/table/table1/create/");
+            http::Response::builder().status(200).body("").unwrap()
+        });
+        db.table_cache = moka::future::Cache::new(10);
+        let table_cache = db.table_cache.clone();
+        let conn = Connection::new(
+            Arc::new(db),
+            Arc::new(crate::embeddings::MemoryRegistry::new()),
+        );
+        if cached {
+            conn.create_empty_table("table1", Arc::new(Schema::empty()))
+                .execute()
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            table_cache
+                .get(&build_cache_key("table1", &[]))
+                .await
+                .is_some(),
+            cached
+        );
+        for (option, builder) in [
+            (
+                "index_cache_size",
+                conn.open_table("table1").index_cache_size(10),
+            ),
+            (
+                "storage_options",
+                conn.open_table("table1").storage_option("x", "y"),
+            ),
+            ("location", conn.open_table("table1").location("/tmp/zzz")),
+            (
+                "managed_versioning",
+                conn.open_table("table1").managed_versioning(false),
+            ),
+            (
+                "lance_read_params",
+                conn.open_table("table1")
+                    .lance_read_params(Default::default()),
+            ),
+        ] {
+            let result = builder.execute().await;
+            assert!(matches!(result, Err(Error::NotSupported { message })
+                if message.contains(option) && message.contains("LanceDB Distributed")));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_connect_rejects_local_options() {
+        for (option, builder) in [
+            (
+                "manifest_enabled",
+                ConnectBuilder::new("db://dev").manifest_enabled(true),
+            ),
+            (
+                "namespace_client_properties",
+                ConnectBuilder::new("db://dev").namespace_client_properties([("root", "/tmp/db")]),
+            ),
+        ] {
+            let result = builder.api_key("fake").region("us-east-1").execute().await;
+            assert!(matches!(result, Err(Error::NotSupported { message })
+                if message.contains(option) && message.contains("LanceDB Distributed")));
+        }
+    }
+
+    #[rstest]
+    #[case::matching(Field::new("a", DataType::Int32, false), true)]
+    #[case::different_name(Field::new("x", DataType::Int32, false), false)]
+    #[case::different_type(Field::new("a", DataType::Int64, false), false)]
+    #[case::different_nullability(Field::new("a", DataType::Int32, true), false)]
+    #[tokio::test]
+    async fn test_create_table_exist_ok_validates_schema(
+        #[case] existing_field: Field,
+        #[case] matches: bool,
+        #[values(false, true)] empty: bool,
+        #[values(false, true)] cached: bool,
+    ) {
+        let existing_schema = Schema::new(vec![existing_field]);
+        let description = serde_json::json!({
+            "version": 1,
+            "schema": lance::arrow::json::JsonSchema::try_from(&existing_schema).unwrap(),
+        })
+        .to_string();
+        let mut db = super::RemoteDatabase::new_mock(move |request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            match request.url().path() {
+                "/v1/table/table1/create/" => {
+                    assert_eq!(request.url().query(), Some("mode=exist_ok"));
+                    http::Response::builder()
+                        .status(400)
+                        .body("Table table1 already exists".to_string())
+                        .unwrap()
+                }
+                "/v1/table/table1/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(description.clone())
+                    .unwrap(),
+                path => panic!("unexpected path: {path}"),
+            }
+        });
+        db.table_cache = moka::future::Cache::new(10);
+        let conn = Connection::new(
+            Arc::new(db),
+            Arc::new(crate::embeddings::MemoryRegistry::new()),
+        );
+        if cached {
+            conn.open_table("table1").execute().await.unwrap();
+        }
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let builder = if empty {
+            conn.create_empty_table("table1", schema.clone())
+        } else {
+            let data = RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+            )
+            .unwrap();
+            conn.create_table("table1", data)
+        };
+        let result = builder
+            .mode(CreateTableMode::exist_ok(|b| b))
+            .execute()
+            .await;
+        if matches {
+            let table = result.unwrap();
+            assert_eq!(table.name(), "table1");
+            assert_eq!(table.schema().await.unwrap(), schema);
+        } else {
+            assert!(matches!(result, Err(Error::Schema { message })
+                if message == "Provided schema does not match existing table schema"));
+        }
+    }
+
     #[tokio::test]
     async fn test_create_table_modes() {
         let test_cases = [
@@ -1686,7 +2706,14 @@ mod tests {
                 .status(400)
                 .body("Table table1 already exists")
                 .unwrap(),
-            "/v1/table/table1/describe/" => http::Response::builder().status(200).body("").unwrap(),
+            "/v1/table/table1/describe/" => http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"version": 1, "schema": {"fields": [
+                        {"name": "a", "type": {"type": "int32"}, "nullable": false}
+                    ]}}"#,
+                )
+                .unwrap(),
             _ => {
                 panic!("unexpected path: {:?}", request.url().path());
             }
@@ -1746,6 +2773,174 @@ mod tests {
         });
         conn.drop_table("table1", &[]).await.unwrap();
         // NOTE: the API will return 200 even if the table does not exist. So we shouldn't expect 404.
+    }
+
+    #[tokio::test]
+    async fn test_drop_all_tables() {
+        let dropped_paths = Arc::new(Mutex::new(Vec::new()));
+        let dropped_paths_in_handler = Arc::clone(&dropped_paths);
+        let conn = Connection::new_with_handler(move |request| match request.url().path() {
+            "/v1/table/" => {
+                assert_eq!(request.method(), &reqwest::Method::GET);
+                assert_eq!(request.url().query(), None);
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"tables":["table1","table2"]}"#.to_string())
+                    .unwrap()
+            }
+            "/v1/table/table1/drop/" | "/v1/table/table2/drop/" => {
+                assert_eq!(request.method(), &reqwest::Method::POST);
+                assert_eq!(request.url().query(), None);
+                assert!(request.body().is_none());
+                dropped_paths_in_handler
+                    .lock()
+                    .unwrap()
+                    .push(request.url().path().to_string());
+                http::Response::builder()
+                    .status(200)
+                    .body(String::new())
+                    .unwrap()
+            }
+            path => panic!("unexpected request path: {path}"),
+        });
+
+        conn.drop_all_tables(&[]).await.unwrap();
+
+        let mut actual = dropped_paths.lock().unwrap().clone();
+        actual.sort();
+        assert_eq!(
+            actual,
+            vec!["/v1/table/table1/drop/", "/v1/table/table2/drop/"]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_drop_all_tables_with_namespace() {
+        let dropped_paths = Arc::new(Mutex::new(Vec::new()));
+        let dropped_paths_in_handler = Arc::clone(&dropped_paths);
+        let conn = Connection::new_with_handler(move |request| match request.url().path() {
+            "/v1/namespace/ns1$ns2/table/list" => {
+                assert_eq!(request.method(), &reqwest::Method::GET);
+                assert_eq!(request.url().query(), None);
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"tables":["table1","table2"]}"#.to_string())
+                    .unwrap()
+            }
+            "/v1/table/ns1$ns2$table1/drop/" | "/v1/table/ns1$ns2$table2/drop/" => {
+                assert_eq!(request.method(), &reqwest::Method::POST);
+                assert_eq!(request.url().query(), None);
+                assert!(request.body().is_none());
+                dropped_paths_in_handler
+                    .lock()
+                    .unwrap()
+                    .push(request.url().path().to_string());
+                http::Response::builder()
+                    .status(200)
+                    .body(String::new())
+                    .unwrap()
+            }
+            path => panic!("unexpected request path: {path}"),
+        });
+
+        conn.drop_all_tables(&["ns1".to_string(), "ns2".to_string()])
+            .await
+            .unwrap();
+
+        let mut actual = dropped_paths.lock().unwrap().clone();
+        actual.sort();
+        assert_eq!(
+            actual,
+            vec![
+                "/v1/table/ns1$ns2$table1/drop/",
+                "/v1/table/ns1$ns2$table2/drop/"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_drop_all_tables_follows_server_pages() {
+        let listing_page = Arc::new(AtomicUsize::new(0));
+        let listing_page_in_handler = Arc::clone(&listing_page);
+        let dropped_paths = Arc::new(Mutex::new(Vec::new()));
+        let dropped_paths_in_handler = Arc::clone(&dropped_paths);
+        let conn = Connection::new_with_handler(move |request| match request.url().path() {
+            "/v1/table/" => {
+                assert_eq!(request.method(), &reqwest::Method::GET);
+                match listing_page_in_handler.fetch_add(1, Ordering::SeqCst) {
+                    0 => {
+                        assert_eq!(request.url().query(), None);
+                        http::Response::builder()
+                            .status(200)
+                            .body(
+                                r#"{"tables":["table1"],"page_token":"opaque-token"}"#.to_string(),
+                            )
+                            .unwrap()
+                    }
+                    1 => {
+                        let query: HashMap<_, _> = request.url().query_pairs().collect();
+                        assert_eq!(
+                            query.get("page_token").map(|token| token.as_ref()),
+                            Some("opaque-token")
+                        );
+                        http::Response::builder()
+                            .status(200)
+                            .body(r#"{"tables":["table2"]}"#.to_string())
+                            .unwrap()
+                    }
+                    _ => panic!("table listing requested too many pages"),
+                }
+            }
+            "/v1/table/table1/drop/" | "/v1/table/table2/drop/" => {
+                assert_eq!(request.method(), &reqwest::Method::POST);
+                dropped_paths_in_handler
+                    .lock()
+                    .unwrap()
+                    .push(request.url().path().to_string());
+                http::Response::builder()
+                    .status(200)
+                    .body(String::new())
+                    .unwrap()
+            }
+            path => panic!("unexpected request path: {path}"),
+        });
+
+        conn.drop_all_tables(&[]).await.unwrap();
+
+        assert_eq!(listing_page.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            *dropped_paths.lock().unwrap(),
+            vec!["/v1/table/table1/drop/", "/v1/table/table2/drop/"]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_drop_all_tables_propagates_listing_error() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::GET);
+            assert_eq!(request.url().path(), "/v1/table/");
+            http::Response::builder()
+                .status(500)
+                .body("internal server error".to_string())
+                .unwrap()
+        });
+
+        let error = conn.drop_all_tables(&[]).await.unwrap_err();
+        assert!(matches!(error, Error::Retry { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_drop_all_tables_with_no_tables() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::GET);
+            assert_eq!(request.url().path(), "/v1/table/");
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"tables":[]}"#.to_string())
+                .unwrap()
+        });
+
+        conn.drop_all_tables(&[]).await.unwrap();
     }
 
     #[tokio::test]
@@ -1896,7 +3091,11 @@ mod tests {
 
             http::Response::builder()
                 .status(200)
-                .body(r#"{"tables": ["ns1$ns2$table1", "ns1$ns2$table2"]}"#)
+                // A namespace listing names the tables in that namespace; the
+                // namespace is the route, not part of each name. The client
+                // joins the two itself to build each table's identifier, so a
+                // listing that repeated the namespace would be joined twice.
+                .body(r#"{"tables": ["table1", "table2"]}"#)
                 .unwrap()
         });
         let names = conn
@@ -1905,7 +3104,7 @@ mod tests {
             .execute()
             .await
             .unwrap();
-        assert_eq!(names, vec!["ns1$ns2$table1", "ns1$ns2$table2"]);
+        assert_eq!(names, vec!["table1", "table2"]);
     }
 
     #[tokio::test]
@@ -2493,14 +3692,9 @@ mod tests {
             assert!(table.is_ok(), "Failed to create table: {:?}", table.err());
 
             // List tables in the child namespace
-            let list_response = conn
-                .list_tables(ListTablesRequest {
-                    id: Some(namespace.clone()),
-                    ..Default::default()
-                })
-                .await
-                .expect("Failed to list tables");
-            assert_eq!(list_response.tables, vec!["test_table"]);
+            let list_response = conn.list_tables(&namespace, ListingOptions::default());
+            let names = list_response.try_collect::<Vec<_>>().await.unwrap();
+            assert_eq!(names, vec!["test_table"]);
 
             // Get namespace client and verify it can also list tables
             let namespace_client = conn.namespace_client().await.unwrap();
@@ -2567,18 +3761,108 @@ mod tests {
             }
 
             // List tables in the child namespace
-            let list_response = conn
-                .list_tables(ListTablesRequest {
-                    id: Some(namespace.clone()),
-                    ..Default::default()
-                })
-                .await
-                .unwrap();
-            assert_eq!(list_response.tables.len(), 3);
-            assert!(list_response.tables.contains(&"table1".to_string()));
-            assert!(list_response.tables.contains(&"table2".to_string()));
-            assert!(list_response.tables.contains(&"table3".to_string()));
+            let list_response = conn.list_tables(&namespace, ListingOptions::default());
+            let names = list_response.try_collect::<Vec<_>>().await.unwrap();
+            assert_eq!(names.len(), 3);
+            assert!(names.contains(&"table1".to_string()));
+            assert!(names.contains(&"table2".to_string()));
+            assert!(names.contains(&"table3".to_string()));
         }
+    }
+
+    #[tokio::test]
+    async fn test_resource_listings_are_lazy_and_forward_pagination() {
+        async fn check<T: Unpin + std::fmt::Debug>(mut items: Listing<T>, count: Arc<AtomicUsize>) {
+            assert_eq!(count.load(Ordering::SeqCst), 0);
+            assert_eq!(items.num_page_results(), 0);
+            assert_eq!(items.page_token(), Some("start/token"));
+            assert!(items.try_next().await.unwrap().is_some());
+            assert_eq!(items.num_page_results(), 1);
+            assert_eq!(items.page_token(), Some("empty"));
+            assert!(items.try_next().await.unwrap().is_some());
+            assert_eq!(count.load(Ordering::SeqCst), 1);
+            assert!(items.try_next().await.unwrap().is_some());
+            assert_eq!(count.load(Ordering::SeqCst), 3);
+            assert_eq!(items.num_page_results(), 1);
+            assert_eq!(items.page_token(), None);
+            assert!(items.try_next().await.unwrap().is_some());
+            assert!(items.try_next().await.unwrap().is_none());
+            assert!(items.try_next().await.unwrap().is_none());
+        }
+        for resource in ["property_graph", "jobs"] {
+            let count = Arc::new(AtomicUsize::new(0));
+            let conn = Connection::new_with_handler({
+                let count = count.clone();
+                move |request| {
+                    let page = count.fetch_add(1, Ordering::SeqCst);
+                    assert!(page < 3);
+                    let token = ["start/token", "empty", "last"][page];
+                    if resource == "jobs" {
+                        assert_eq!(request.url().path(), "/v1/jobs/list");
+                        let body: serde_json::Value =
+                            serde_json::from_slice(request.body().unwrap().as_bytes().unwrap())
+                                .unwrap();
+                        assert_eq!(body, serde_json::json!({"page_token": token, "limit": 2}));
+                    } else {
+                        let ns = "team";
+                        assert_eq!(
+                            request.url().path(),
+                            format!("/v1/namespace/{ns}/{resource}/list")
+                        );
+                        let query = request.url().query_pairs().collect::<HashMap<_, _>>();
+                        assert_eq!(query.get("page_token").unwrap(), token);
+                        assert_eq!(query.get("limit").unwrap(), "2");
+                    }
+                    let (key, item) = match resource {
+                        "secret" => ("secrets", serde_json::json!({"name": "a"})),
+                        "property_graph" => ("property_graphs", serde_json::json!("a")),
+                        "jobs" => (
+                            "jobs",
+                            serde_json::json!({"job_id": "a", "table": "t", "job_type": "create_index", "state": "in_progress", "created_at_millis": 1}),
+                        ),
+                        _ => ("views", serde_json::json!("a")),
+                    };
+                    let items = if page == 1 {
+                        vec![]
+                    } else {
+                        vec![item.clone(), item]
+                    };
+                    http::Response::builder().status(200).body(serde_json::json!({key: items, "page_token": (["empty", "last", ""][page])}).to_string()).unwrap()
+                }
+            });
+            let options = ListingOptions::default()
+                .page_token("start/token")
+                .page_limit(2);
+            let namespace = vec!["team".to_owned()];
+            match resource {
+                "secret" => check(conn.list_secrets(&namespace, options), count).await,
+                "view" => check(conn.list_views(&namespace, options), count).await,
+                "property_graph" => {
+                    check(conn.list_property_graphs(&namespace, options), count).await
+                }
+                _ => check(conn.list_jobs(options), count).await,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_list_jobs_does_not_truncate_after_100_pages() {
+        let conn = Connection::new_with_handler(|request| {
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            let page: u32 = body["page_token"].as_str().unwrap_or("0").parse().unwrap();
+            http::Response::builder().status(200).body(serde_json::json!({
+                "jobs": [{"job_id": page.to_string(), "table": "t", "job_type": "create_index", "state": "in_progress", "created_at_millis": 1}],
+                "page_token": (page < 110).then(|| (page + 1).to_string()),
+            }).to_string()).unwrap()
+        });
+        let jobs = conn
+            .list_jobs(Default::default())
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(jobs.len(), 111);
+        assert_eq!(jobs.last().unwrap().job_id, "110");
     }
 
     #[tokio::test]
@@ -2610,7 +3894,11 @@ mod tests {
                 }
             }
         });
-        let jobs = conn.list_jobs().await.unwrap();
+        let jobs = conn
+            .list_jobs(Default::default())
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
         assert_eq!(jobs.len(), 3);
         assert_eq!(jobs[0].job_id, "job-1");
         assert_eq!(jobs[0].table, "t1");
@@ -2620,6 +3908,34 @@ mod tests {
         assert_eq!(jobs[1].created_at_millis, 2000);
         assert_eq!(jobs[2].job_id, "job-3");
         assert_eq!(jobs[2].state, "failed");
+    }
+
+    #[tokio::test]
+    async fn test_list_jobs_rejects_a_page_token_cycle() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let seen = requests.clone();
+        let conn = Connection::new_with_handler(move |request| {
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            match seen.fetch_add(1, Ordering::SeqCst) {
+                0 => assert!(body.get("page_token").is_none()),
+                _ => assert_eq!(body["page_token"], "loop"),
+            }
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"jobs": [], "page_token": "loop"}"#)
+                .unwrap()
+        });
+
+        let mut items = conn.list_jobs(Default::default());
+        let error = (&mut items).try_collect::<Vec<_>>().await.unwrap_err();
+        assert!(
+            matches!(&error, Error::Runtime { message } if message.contains("repeated a page_token")),
+            "got {error:?}"
+        );
+        assert!(items.page_token().is_some());
+        assert!(items.try_next().await.unwrap().is_none());
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
@@ -2681,6 +3997,45 @@ mod tests {
         assert!(
             matches!(&err, Error::JobNotFound { job_id } if job_id == "nope"),
             "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pause_and_resume_job() {
+        use crate::database::{PauseJobStatus, ResumeJobStatus};
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.url().path(), "/v1/jobs/pause");
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"job_id": "job-1", "paused": true}"#)
+                .unwrap()
+        });
+        assert_eq!(
+            conn.pause_job("job-1").await.unwrap(),
+            PauseJobStatus::Pausing
+        );
+
+        let conn = Connection::new_with_handler(|_| {
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"job_id": "job-1", "paused": false, "committing": true}"#)
+                .unwrap()
+        });
+        assert_eq!(
+            conn.pause_job("job-1").await.unwrap(),
+            PauseJobStatus::Committing
+        );
+
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.url().path(), "/v1/jobs/resume");
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"job_id": "job-1", "resumed": false, "still_pausing": true}"#)
+                .unwrap()
+        });
+        assert_eq!(
+            conn.resume_job("job-1").await.unwrap(),
+            ResumeJobStatus::StillPausing
         );
     }
 
@@ -2781,190 +4136,145 @@ mod tests {
         assert_eq!(batches[0].schema(), schema);
     }
 
+    /// A component that is not a legal Secret component never reaches a
+    /// transport. Before the identifier was checked here, each of these decided
+    /// the route instead of the name: `a/b` and `../jobs` left `/v1/secret/`
+    /// entirely, carrying a create body that holds a credential, and `a$b` read
+    /// as the namespace `a` and the name `b`.
     #[tokio::test]
-    async fn test_create_function_async_sends_canonical_request_and_decodes_typed_job() {
-        const REQUEST: &str = include_str!(
-            "../../tests/fixtures/first_class_functions/v1/remote_function_registration_request.json"
-        );
-        const FUNCTION_JOB: &str =
-            include_str!("../../tests/fixtures/first_class_functions/v1/remote_function_job.json");
-        let expected: serde_json::Value = serde_json::from_str(REQUEST).unwrap();
-        let conn = Connection::new_with_handler(move |request| match request.url().path() {
-            "/v1/functions/create" => {
-                assert_eq!(request.method(), &reqwest::Method::POST);
-                let body: serde_json::Value =
-                    serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
-                assert_eq!(body, expected);
+    async fn test_an_illegal_component_never_reaches_the_transport() {
+        use std::sync::{Arc, Mutex};
+        for name in [
+            "../jobs",
+            "a/b",
+            "a$b",
+            "with space",
+            "q?x",
+            "a#b",
+            "a%2Fb",
+            "",
+        ] {
+            let reached = Arc::new(Mutex::new(false));
+            let flag = reached.clone();
+            let conn = Connection::new_with_handler(move |_| {
+                *flag.lock().unwrap() = true;
+                http::Response::builder().status(200).body("{}").unwrap()
+            });
+            let error = conn
+                .create_secret(name, "sk-live-0001", &[])
+                .await
+                .expect_err("an illegal component must be refused");
+            assert!(!*reached.lock().unwrap(), "{name:?} reached the transport");
+            assert!(
+                error.to_string().contains("secret name"),
+                "{name:?}: {error}"
+            );
+        }
+    }
+
+    /// `.` and `..` pass the character set and still cannot address anything:
+    /// URL parsing resolves them as relative segments, and after
+    /// percent-decoding, so no spelling of either survives.
+    #[tokio::test]
+    async fn test_a_relative_segment_component_is_refused() {
+        use std::sync::{Arc, Mutex};
+        // The percent-encoded spellings are caught a step earlier, by the
+        // character set: `%` is not a character a Secret component may hold.
+        // They reach the relative-segment rule only where there is no charset
+        // to catch them first -- see the Function case below.
+        for component in [".", ".."] {
+            let reached = Arc::new(Mutex::new(false));
+            let flag = reached.clone();
+            let conn = Connection::new_with_handler(move |_| {
+                *flag.lock().unwrap() = true;
                 http::Response::builder()
-                    .status(202)
-                    .body(r#"{"job_id":"job-function-1"}"#)
+                    .status(200)
+                    .body(r#"{"secrets":[]}"#)
                     .unwrap()
-            }
-            "/v1/jobs/describe" => http::Response::builder()
-                .status(200)
-                .body(FUNCTION_JOB)
-                .unwrap(),
-            path => panic!("unexpected path: {path}"),
-        });
-        let request = crate::function::FunctionRegistrationRequest::from_json(REQUEST).unwrap();
-        let job = conn.create_function_async(request).await.unwrap();
-        assert_eq!(job.id(), Some("job-function-1"));
-        let version = job.wait().await.unwrap();
-        assert_eq!(version.name(), "embed");
-        assert_eq!(version.version(), "fv_01K3EXACT");
-    }
-
-    #[tokio::test]
-    async fn test_get_function_requires_and_sends_exact_version() {
-        const VERSION: &str = include_str!(
-            "../../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
-        );
-        let conn = Connection::new_with_handler(|request| {
-            assert_eq!(request.method(), &reqwest::Method::POST);
-            assert_eq!(request.url().path(), "/v1/functions/describe");
-            let body: serde_json::Value =
-                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
-            assert_eq!(
-                body,
-                serde_json::json!({"name": "embed", "version": "fv_01K3EXACT"})
+            });
+            let by_name = conn
+                .drop_secret(component, &[])
+                .await
+                .expect_err("a dot-only name must be refused");
+            assert!(
+                by_name.to_string().contains("Illegal secret name"),
+                "{by_name}"
             );
-            http::Response::builder().status(200).body(VERSION).unwrap()
-        });
-        let version = conn.get_function("embed", "fv_01K3EXACT").await.unwrap();
-        assert_eq!(version.name(), "embed");
-        assert_eq!(version.version(), "fv_01K3EXACT");
-    }
 
-    #[tokio::test]
-    async fn test_list_functions_requests_definitions_and_paginates() {
-        const VERSION: &str = include_str!(
-            "../../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
-        );
-        let version: serde_json::Value = serde_json::from_str(VERSION).unwrap();
-        let page = Arc::new(AtomicUsize::new(0));
-        let conn = Connection::new_with_handler(move |request| {
-            assert_eq!(request.method(), &reqwest::Method::POST);
-            assert_eq!(request.url().path(), "/v1/functions/list");
-            let body: serde_json::Value =
-                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
-            assert_eq!(body["include_definition"], true);
-            match page.fetch_add(1, Ordering::SeqCst) {
-                0 => {
-                    assert!(body.get("page_token").is_none());
-                    http::Response::builder()
-                        .status(200)
-                        .body(r#"{"functions": [], "page_token": "next"}"#.to_string())
-                        .unwrap()
-                }
-                _ => {
-                    assert_eq!(body["page_token"], "next");
-                    http::Response::builder()
-                        .status(200)
-                        .body(
-                            serde_json::json!({
-                                "functions": [{
-                                    "name": "embed",
-                                    "version": "fv_01K3EXACT",
-                                    "definition": version.clone(),
-                                }],
-                            })
-                            .to_string(),
-                        )
-                        .unwrap()
-                }
-            }
-        });
-        let functions = conn.list_functions().await.unwrap();
-        assert_eq!(functions.len(), 1);
-        assert_eq!(functions[0].name(), "embed");
-        assert_eq!(functions[0].version(), "fv_01K3EXACT");
-    }
-
-    #[tokio::test]
-    async fn test_list_functions_stops_on_an_empty_page_token() {
-        let requests = Arc::new(AtomicUsize::new(0));
-        let seen = requests.clone();
-        let conn = Connection::new_with_handler(move |request| {
-            seen.fetch_add(1, Ordering::SeqCst);
-            let body: serde_json::Value =
-                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
-            assert!(body.get("page_token").is_none());
-            http::Response::builder()
-                .status(200)
-                .body(r#"{"functions": [], "page_token": ""}"#)
-                .unwrap()
-        });
-
-        let functions = conn.list_functions().await.unwrap();
-        assert!(functions.is_empty());
-        assert_eq!(requests.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn test_list_functions_rejects_a_page_token_cycle() {
-        let page = Arc::new(AtomicUsize::new(0));
-        let requests = page.clone();
-        let conn = Connection::new_with_handler(move |request| {
-            let body: serde_json::Value =
-                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
-            let next_page_token = match page.fetch_add(1, Ordering::SeqCst) {
-                0 => {
-                    assert!(body.get("page_token").is_none());
-                    "one"
-                }
-                1 => {
-                    assert_eq!(body["page_token"], "one");
-                    "two"
-                }
-                2 => {
-                    assert_eq!(body["page_token"], "two");
-                    "one"
-                }
-                page => panic!("unexpected page: {page}"),
-            };
-            http::Response::builder()
-                .status(200)
-                .body(
-                    serde_json::json!({
-                        "functions": [],
-                        "page_token": next_page_token,
-                    })
-                    .to_string(),
-                )
-                .unwrap()
-        });
-
-        let error = conn.list_functions().await.unwrap_err();
-        assert!(
-            matches!(
-                &error,
-                Error::Http {
-                    status_code: Some(http::StatusCode::OK),
-                    ..
-                }
-            ),
-            "got {error:?}"
-        );
-        assert_eq!(requests.load(Ordering::SeqCst), 3);
-    }
-
-    #[tokio::test]
-    async fn test_drop_function_sends_exact_version_and_decodes_replay() {
-        let conn = Connection::new_with_handler(|request| {
-            assert_eq!(request.method(), &reqwest::Method::POST);
-            assert_eq!(request.url().path(), "/v1/functions/drop");
-            let body: serde_json::Value =
-                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
-            assert_eq!(
-                body,
-                serde_json::json!({"name": "embed", "version": "fv_01K3EXACT"})
+            let by_segment = conn
+                .list_secrets(&[component.to_string()], Default::default())
+                .try_collect::<Vec<_>>()
+                .await
+                .expect_err("a dot-only namespace segment must be refused");
+            assert!(
+                by_segment
+                    .to_string()
+                    .contains("Illegal namespace component"),
+                "{by_segment}"
             );
-            http::Response::builder()
-                .status(200)
-                .body(r#"{"dropped":false}"#)
-                .unwrap()
+            assert!(
+                !*reached.lock().unwrap(),
+                "{component:?} reached the transport"
+            );
+        }
+    }
+
+    /// A table name is joined into the route the same way a Secret's is, so the
+    /// same two failures are reachable: a dot-only name leaves the table route
+    /// entirely, and a name holding the delimiter is indistinguishable from a
+    /// namespace boundary.
+    #[tokio::test]
+    async fn test_a_table_name_cannot_choose_its_own_route() {
+        use std::sync::{Arc, Mutex};
+        for name in ["..", ".", "../jobs", "a/b", "a$b"] {
+            let reached = Arc::new(Mutex::new(false));
+            let flag = reached.clone();
+            let conn = Connection::new_with_handler(move |_| {
+                *flag.lock().unwrap() = true;
+                http::Response::builder().status(200).body("{}").unwrap()
+            });
+            let error = conn
+                .drop_table(name, &[])
+                .await
+                .expect_err("an unaddressable table name must be refused");
+            assert!(!*reached.lock().unwrap(), "{name:?} reached the transport");
+            assert!(!error.to_string().is_empty(), "{name:?}");
+        }
+    }
+
+    /// The namespace half of the same join.
+    #[tokio::test]
+    async fn test_a_namespace_segment_cannot_choose_its_own_route() {
+        use std::sync::{Arc, Mutex};
+        for segment in ["..", "a$b", ""] {
+            let reached = Arc::new(Mutex::new(false));
+            let flag = reached.clone();
+            let conn = Connection::new_with_handler(move |_| {
+                *flag.lock().unwrap() = true;
+                http::Response::builder().status(200).body("{}").unwrap()
+            });
+            let error = conn
+                .drop_table("t", &[segment.to_string()])
+                .await
+                .expect_err("an unaddressable namespace segment must be refused");
+            assert!(
+                !*reached.lock().unwrap(),
+                "{segment:?} reached the transport"
+            );
+            assert!(!error.to_string().is_empty(), "{segment:?}");
+        }
+    }
+
+    /// Slashes belong to catalog database names, not table namespace segments.
+    #[tokio::test]
+    async fn test_a_namespace_segment_outside_the_charset_is_refused() {
+        let conn = Connection::new_with_handler(|_| -> http::Response<String> {
+            panic!("invalid namespace reached the transport")
         });
-        assert!(!conn.drop_function("embed", "fv_01K3EXACT").await.unwrap());
+        assert!(matches!(
+            conn.drop_table("t", &["team/search".to_string()]).await,
+            Err(Error::InvalidInput { .. })
+        ));
     }
 
     #[tokio::test]
@@ -2983,7 +4293,7 @@ mod tests {
             http::Response::builder()
                 .status(200)
                 .body(format!(
-                    r#"{{"job_id": "job-1", "job_type": "create_function", "job_state": "{}", "creation_ms": 1, "result": {{"name": "embed", "version": "fv_1"}}}}"#,
+                    r#"{{"job_id": "job-1", "job_type": "create_function", "job_state": "{}", "creation_ms": 1, "result": {{"name": "embed", "version": "1"}}}}"#,
                     state
                 ))
                 .unwrap()
@@ -2996,5 +4306,271 @@ mod tests {
         job.wait().await.unwrap();
         assert_eq!(job.status().await.unwrap(), "finished");
         assert!(polls.load(Ordering::SeqCst) >= 4);
+    }
+    #[tokio::test]
+    async fn test_create_materialized_view_validates_before_submission() {
+        let db = super::RemoteDatabase::new_mock(|_| -> http::Response<String> {
+            panic!("materialized-view creation must not send REST requests")
+        });
+        for seconds in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let result = db
+                .create_materialized_view_async(CreateMaterializedViewRequest {
+                    name: "adults".into(),
+                    namespace_path: vec![],
+                    query: "SELECT * FROM people".into(),
+                    with_no_data: false,
+                    auto_refresh_enabled: None,
+                    auto_refresh_interval_seconds: Some(seconds),
+                })
+                .await;
+            assert!(matches!(result, Err(Error::InvalidInput { .. })));
+        }
+    }
+
+    /// The node table names its properties and the edge table leaves them
+    /// out, which means every column.
+    fn social_graph() -> PropertyGraphDefinition {
+        PropertyGraphDefinition {
+            nodes: vec![NodeTable::new("person", "person_id", "Person").properties(["name"])],
+            edges: vec![EdgeTable::new(
+                "knows",
+                "KNOWS",
+                Endpoint::new("src_id", "person", "person_id"),
+                Endpoint::new("dst_id", "person", "person_id"),
+            )],
+        }
+    }
+
+    /// `social_graph` as create resolves it: each table's properties listed,
+    /// the key and endpoint columns among them.
+    fn resolved_social_graph() -> PropertyGraphDefinition {
+        let mut graph = social_graph();
+        graph.nodes[0].properties = Some(vec!["person_id".into(), "name".into()]);
+        graph.edges[0].properties = Some(vec!["src_id".into(), "dst_id".into(), "since".into()]);
+        graph
+    }
+
+    fn property_graph_body(name: &str, namespace: &[&str]) -> String {
+        let mut body = serde_json::to_value(resolved_social_graph()).unwrap();
+        let fields = body.as_object_mut().unwrap();
+        fields.insert("name".into(), name.into());
+        fields.insert("namespace".into(), namespace.into());
+        body.to_string()
+    }
+
+    #[tokio::test]
+    async fn test_create_property_graph_posts_the_definition_and_returns_the_resolved_one() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(
+                request.url().path(),
+                "/v1/property_graph/analytics$social/create"
+            );
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            // The name and its namespace address the graph in the path, so the
+            // body is the definition alone.
+            assert_eq!(
+                body,
+                serde_json::json!({
+                    "nodes": [{"table": "person", "key": "person_id", "label": "Person",
+                               "properties": ["name"]}],
+                    "edges": [{"table": "knows", "label": "KNOWS",
+                               "source": {"column": "src_id",
+                                          "references": {"table": "person",
+                                                         "column": "person_id"}},
+                               "destination": {"column": "dst_id",
+                                               "references": {"table": "person",
+                                                              "column": "person_id"}}}]
+                })
+            );
+            http::Response::builder()
+                .status(200)
+                .body(property_graph_body("social", &["analytics"]))
+                .unwrap()
+        });
+        let graph = conn
+            .create_property_graph("social", &social_graph(), &["analytics".into()])
+            .await
+            .unwrap();
+        assert_eq!(graph.name, "social");
+        assert_eq!(graph.namespace_path, vec!["analytics".to_string()]);
+        assert_eq!(graph.definition, resolved_social_graph());
+    }
+
+    #[tokio::test]
+    async fn test_describe_and_drop_address_the_property_graph_in_the_path() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/property_graph/social/describe");
+            assert_eq!(request.body().unwrap().as_bytes().unwrap(), b"{}");
+            http::Response::builder()
+                .status(200)
+                .body(property_graph_body("social", &[]))
+                .unwrap()
+        });
+        let graph = conn.describe_property_graph("social", &[]).await.unwrap();
+        assert!(graph.namespace_path.is_empty());
+        assert_eq!(graph.definition, resolved_social_graph());
+
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(
+                request.url().path(),
+                "/v1/property_graph/analytics$social/drop"
+            );
+            assert!(request.body().is_none(), "{:?}", request.body());
+            http::Response::builder().status(200).body("{}").unwrap()
+        });
+        conn.drop_property_graph("social", &["analytics".into()])
+            .await
+            .unwrap();
+    }
+
+    /// An accepted drop hands back the job deleting the definition, and the
+    /// waiting `drop_property_graph` waits on it.
+    #[tokio::test]
+    async fn test_drop_property_graph_waits_for_the_cleanup_job() {
+        let db = super::RemoteDatabase::new_mock(|_| {
+            http::Response::builder()
+                .status(202)
+                .body(r#"{"job_id":"j1-pg-drop"}"#)
+                .unwrap()
+        });
+        let job = db.drop_property_graph_async("social", &[]).await.unwrap();
+        assert_eq!(job.id(), Some("j1-pg-drop"));
+
+        let requests = Arc::new(AtomicUsize::new(0));
+        let conn = Connection::new_with_handler({
+            let requests = requests.clone();
+            move |request| match (
+                requests.fetch_add(1, Ordering::SeqCst),
+                request.url().path(),
+            ) {
+                (0, "/v1/property_graph/social/drop") => http::Response::builder()
+                    .status(202)
+                    .body(r#"{"job_id":"j1-pg-drop"}"#)
+                    .unwrap(),
+                (1, "/v1/jobs/describe") => {
+                    let body: serde_json::Value =
+                        serde_json::from_slice(request.body().unwrap().as_bytes().unwrap())
+                            .unwrap();
+                    assert_eq!(body, serde_json::json!({"job_id": "j1-pg-drop"}));
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"job_id":"j1-pg-drop","job_state":"DONE"}"#)
+                        .unwrap()
+                }
+                (n, path) => panic!("unexpected request {n}: {path}"),
+            }
+        });
+        conn.drop_property_graph("social", &[]).await.unwrap();
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_drop_property_graph_rejects_an_unexpected_response() {
+        let db = super::RemoteDatabase::new_mock(|_| {
+            http::Response::builder().status(200).body("{}").unwrap()
+        });
+        let job = db.drop_property_graph_async("social", &[]).await.unwrap();
+        assert_eq!(job.id(), None);
+        job.wait().await.unwrap();
+
+        for (status, body, expected) in [
+            (202, "{}", "valid job_id"),
+            (202, r#"{"job_id":""}"#, "valid job_id"),
+            (204, "", "200 OK or 202 Accepted"),
+        ] {
+            let db = super::RemoteDatabase::new_mock(move |_| {
+                http::Response::builder().status(status).body(body).unwrap()
+            });
+            let error = db
+                .drop_property_graph_async("social", &[])
+                .await
+                .err()
+                .unwrap();
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+    }
+
+    /// A graph the database does not hold is the service's 404, kept as the
+    /// status of the error so a caller can tell it from a refused request.
+    #[tokio::test]
+    async fn test_a_missing_property_graph_reports_not_found() {
+        let conn = Connection::new_with_handler(|_| {
+            http::Response::builder()
+                .status(404)
+                .body("property graph 'social' not found")
+                .unwrap()
+        });
+        let not_found = |error: Error| {
+            assert!(
+                matches!(
+                    error,
+                    Error::Http {
+                        status_code: Some(http::StatusCode::NOT_FOUND),
+                        ..
+                    }
+                ),
+                "{error:?}"
+            );
+        };
+        not_found(
+            conn.describe_property_graph("social", &[])
+                .await
+                .unwrap_err(),
+        );
+        not_found(conn.drop_property_graph("social", &[]).await.unwrap_err());
+    }
+
+    #[tokio::test]
+    async fn test_list_property_graphs_walks_pages() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::GET);
+            assert_eq!(request.url().path(), "/v1/namespace/$/property_graph/list");
+            let page = request
+                .url()
+                .query_pairs()
+                .find(|(key, _)| key == "page_token")
+                .map(|(_, value)| value.into_owned());
+            let body = match page.as_deref() {
+                None => r#"{"property_graphs":["social"],"page_token":"p2"}"#,
+                Some("p2") => r#"{"property_graphs":["payments"]}"#,
+                Some(other) => panic!("unexpected page token: {other}"),
+            };
+            http::Response::builder().status(200).body(body).unwrap()
+        });
+        assert_eq!(
+            conn.list_property_graphs(&[], Default::default())
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap(),
+            vec!["social".to_string(), "payments".to_string()]
+        );
+    }
+
+    /// A name carrying the delimiter would split back apart as a different
+    /// graph, so it is refused before it reaches a route.
+    #[tokio::test]
+    async fn test_property_graph_names_that_would_resplit_are_refused() {
+        let conn = Connection::new_with_handler(|_| -> http::Response<String> {
+            panic!("an invalid identifier must not reach the service")
+        });
+        for (name, namespace) in [
+            ("analytics$social", vec![]),
+            ("social", vec!["ana$lytics".to_string()]),
+            ("", vec![]),
+            ("..", vec![]),
+        ] {
+            let error = match conn.describe_property_graph(name, &namespace).await {
+                Ok(_) => panic!("accepted {name:?} in {namespace:?}"),
+                Err(error) => error.to_string(),
+            };
+            assert!(
+                error.contains("property graph name") || error.contains("namespace component"),
+                "{error}"
+            );
+        }
     }
 }
