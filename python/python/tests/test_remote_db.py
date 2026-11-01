@@ -2931,7 +2931,7 @@ def test_query_sync_text_embedding(query_type, vector_column_name):
     assert len(queries) == (2 if query_type == "hybrid" else 1)
 
 
-@pytest.mark.parametrize("query_type", ["auto", "vector", "hybrid"])
+@pytest.mark.parametrize("query_type", ["vector", "hybrid"])
 def test_query_sync_ambiguous_vector_columns(query_type):
     config = EmbeddingFunctionConfig(
         source_column="text",
@@ -2952,6 +2952,29 @@ def test_query_sync_ambiguous_vector_columns(query_type):
         with pytest.raises(ValueError, match=r"Candidates: \['v1', 'v2'\]"):
             table.search("puppy", query_type=query_type).to_list()
     assert queries == []
+
+
+def test_query_sync_auto_string_uses_the_embedded_column():
+    """With several vector columns, an auto string query uses the one that has
+    an embedding function instead of raising, as vector and hybrid still do."""
+    config = EmbeddingFunctionConfig(
+        source_column="text",
+        vector_column="v1",
+        function=MockTextEmbeddingFunction.create(),
+    )
+    queries = []
+
+    def handler(body):
+        queries.append(body)
+        return pa.table({"id": [1]})
+
+    with query_test_table(
+        handler,
+        vector_columns={"v1": 10, "v2": 10},
+        embedding_functions=[config],
+    ) as table:
+        assert table.search("puppy").to_list() == [{"id": 1}]
+    assert [q["vector_column"] for q in queries] == ["v1"]
 
 
 @pytest.mark.parametrize("vector_column, dim", [("v1", 3), ("v2", 4)])

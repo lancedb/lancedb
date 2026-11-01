@@ -2393,7 +2393,10 @@ class Table(ABC):
             the table schema
 
             - If the table has multiple vector columns then the *vector_column_name*
-            needs to be specified. Otherwise, an error is raised.
+            needs to be specified. Otherwise, an error is raised, except for a
+            string query with query_type "auto": it uses the one vector column
+            that has an embedding function, or runs as full text search if no
+            vector column has one.
         query_type: str
             *default "auto"*.
             Acceptable types are: "vector", "fts", "hybrid", or "auto"
@@ -4713,7 +4716,10 @@ class LanceTable(Table):
             the table schema
 
             - If the table has multiple vector columns then the *vector_column_name*
-            needs to be specified. Otherwise, an error is raised.
+            needs to be specified. Otherwise, an error is raised, except for a
+            string query with query_type "auto": it uses the one vector column
+            that has an embedding function, or runs as full text search if no
+            vector column has one.
         query_type: str, default "auto"
             "vector", "fts", or "auto"
             If "auto" then the query type is inferred from the query;
@@ -6875,7 +6881,10 @@ class AsyncTable:
             the table schema
 
             - If the table has multiple vector columns then the *vector_column_name*
-            needs to be specified. Otherwise, an error is raised.
+            needs to be specified. Otherwise, an error is raised, except for a
+            string query with query_type "auto": it uses the one vector column
+            that has an embedding function, or runs as full text search if no
+            vector column has one.
         query_type: str
             *default "auto"*.
             Acceptable types are: "vector", "fts", "hybrid", or "auto"
