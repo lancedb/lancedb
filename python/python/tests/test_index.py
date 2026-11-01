@@ -271,7 +271,10 @@ async def test_create_ngram_index(db_async):
     assert stats.num_indexed_rows == await table.count_rows()
     assert stats.num_unindexed_rows == 0
 
-    # The index accelerates substring predicates.
+    # The index accelerates substring predicates without changing their results.
+    result = await table.query().where("contains(text, 'cat')").to_arrow()
+    assert sorted(result["id"].to_pylist()) == [0, 1, 2, 4]
+
     plan = await table.query().where("contains(text, 'cat')").explain_plan()
     assert "ScalarIndexQuery" in plan
 
