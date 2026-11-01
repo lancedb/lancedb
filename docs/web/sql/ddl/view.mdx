@@ -30,10 +30,14 @@ FROM "documents" AS t1
 INNER JOIN "categories" AS t2 ON t1.ints = t2.ints
 ```
 
-The statement returns one UTF-8 `definition` column containing JSON with the
-view name, namespace, original query, default database and namespace, and its
-Arrow schema resolved at creation time. `DESCRIBE VIEW "recent_matches"`
-returns the same metadata shape. Anything the
+The statement returns one row with UTF-8 `name`, `query`, and `schema` columns.
+`query` contains the stored query, including any declared column aliases, and
+`schema` contains its Arrow schema as JSON. The schema metadata keys
+`lancedb::view::default_db` and `lancedb::view::default_namespace` identify the
+defining database and namespace. The root namespace is `public`; nested
+namespace components are separated by `$`.
+
+`DESCRIBE VIEW "recent_matches"` returns the same metadata shape. Anything the
 [dialect](/sql/functions) supports can define one: joins, predicates,
 aggregates, window functions.
 
