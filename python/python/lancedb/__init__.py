@@ -19,6 +19,7 @@ from ._lancedb import FtsToken
 from ._lancedb import FunctionErrorFragment as FunctionErrorFragment
 from ._lancedb import FunctionErrorRecord as FunctionErrorRecord
 from ._lancedb import FunctionErrors as FunctionErrors
+from ._lancedb import GpuClass as GpuClass
 from ._lancedb import RTEWriteSpec
 from ._lancedb import tokenize as _tokenize
 from .common import URI, sanitize_uri

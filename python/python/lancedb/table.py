@@ -3078,7 +3078,12 @@ class Table(ABC):
 
     @abstractmethod
     def refresh_column(
-        self, column: str, *, batch_size: Optional[int] = None
+        self,
+        column: str,
+        *,
+        batch_size: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> "RefreshColumnResult":
         """
         Fill the rows of a computed column that hold no value yet.
@@ -3103,6 +3108,14 @@ class Table(ABC):
             Maximum rows per Function call on the remote server. Must be
             greater than zero. None uses the server default. Has no effect on
             local expression-backed columns.
+        gpu_class: str, optional
+            GPU class for Function workers. Must be a lowercase name of 1-63
+            letters, digits, or hyphens, without a leading or trailing hyphen.
+            None keeps the Function's registered class or the deployment
+            default. LanceDB Distributed only.
+        gpu_count: int, optional
+            Positive GPUs per Function worker. None leaves the server's
+            aggregate GPU budget unchanged. LanceDB Distributed only.
 
         Returns
         -------
@@ -3113,7 +3126,12 @@ class Table(ABC):
 
     @abstractmethod
     def refresh_column_async(
-        self, column: str, *, batch_size: Optional[int] = None
+        self,
+        column: str,
+        *,
+        batch_size: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> Job[RefreshColumnJobResult]:
         """
         Like :meth:`refresh_column`, but returns a handle to the refresh job
@@ -3137,6 +3155,14 @@ class Table(ABC):
             greater than zero. None uses the server default. Lower this for
             slow Functions to stay within the executor's per-call deadline.
             Has no effect on local expression-backed columns.
+        gpu_class: str, optional
+            GPU class for Function workers. Must be a lowercase name of 1-63
+            letters, digits, or hyphens, without a leading or trailing hyphen.
+            None keeps the Function's registered class or the deployment
+            default. LanceDB Distributed only.
+        gpu_count: int, optional
+            Positive GPUs per Function worker. None leaves the server's
+            aggregate GPU budget unchanged. LanceDB Distributed only.
 
         Returns
         -------
@@ -5176,22 +5202,46 @@ class LanceTable(Table):
         )
 
     def refresh_column(
-        self, column: str, *, batch_size: Optional[int] = None
+        self,
+        column: str,
+        *,
+        batch_size: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> "RefreshColumnResult":
         """Fill a computed column's unfilled rows and recompute those whose
         inputs changed. See
         [`AsyncTable.refresh_column`][lancedb.AsyncTable.refresh_column]."""
-        return LOOP.run(self._table.refresh_column(column, batch_size=batch_size))
+        return LOOP.run(
+            self._table.refresh_column(
+                column,
+                batch_size=batch_size,
+                gpu_class=gpu_class,
+                gpu_count=gpu_count,
+            )
+        )
 
     def refresh_column_async(
-        self, column: str, *, batch_size: Optional[int] = None
+        self,
+        column: str,
+        *,
+        batch_size: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> Job[RefreshColumnJobResult]:
         """Fill a computed column's unfilled rows and recompute those whose
         inputs changed, returning a handle to the refresh job. See
         [`Table.refresh_column_async`][lancedb.table.Table.refresh_column_async].
         """
         return Job(
-            LOOP.run(self._table.refresh_column_async(column, batch_size=batch_size))
+            LOOP.run(
+                self._table.refresh_column_async(
+                    column,
+                    batch_size=batch_size,
+                    gpu_class=gpu_class,
+                    gpu_count=gpu_count,
+                )
+            )
         )
 
     def function_errors(
@@ -7451,7 +7501,12 @@ class AsyncTable:
             return await self._inner.add_columns(list(transforms.items()))
 
     async def refresh_column(
-        self, column: str, *, batch_size: Optional[int] = None
+        self,
+        column: str,
+        *,
+        batch_size: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> RefreshColumnResult:
         """
         Fill the rows of a computed column that hold no value yet.
@@ -7476,13 +7531,26 @@ class AsyncTable:
             Maximum rows per Function call on the remote server. Must be
             greater than zero. None uses the server default. Has no effect on
             local expression-backed columns.
+        gpu_class: str, optional
+            GPU class for Function workers. Must be a lowercase name of 1-63
+            letters, digits, or hyphens, without a leading or trailing hyphen.
+            None keeps the Function's registered class or the deployment
+            default. LanceDB Distributed only.
+        gpu_count: int, optional
+            Positive GPUs per Function worker. None leaves the server's
+            aggregate GPU budget unchanged. LanceDB Distributed only.
 
         Returns
         -------
         RefreshColumnResult
             The number of rows filled and the new version of the table.
         """
-        return await self._inner.refresh_column(column, batch_size=batch_size)
+        return await self._inner.refresh_column(
+            column,
+            batch_size=batch_size,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
+        )
 
     async def function_errors(
         self,
@@ -7528,7 +7596,12 @@ class AsyncTable:
         )
 
     async def refresh_column_async(
-        self, column: str, *, batch_size: Optional[int] = None
+        self,
+        column: str,
+        *,
+        batch_size: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> AsyncJob[RefreshColumnJobResult]:
         """
         Like :meth:`refresh_column`, but returns a handle to the refresh job
@@ -7552,6 +7625,14 @@ class AsyncTable:
             greater than zero. None uses the server default. Lower this for
             slow Functions to stay within the executor's per-call deadline.
             Has no effect on local expression-backed columns.
+        gpu_class: str, optional
+            GPU class for Function workers. Must be a lowercase name of 1-63
+            letters, digits, or hyphens, without a leading or trailing hyphen.
+            None keeps the Function's registered class or the deployment
+            default. LanceDB Distributed only.
+        gpu_count: int, optional
+            Positive GPUs per Function worker. None leaves the server's
+            aggregate GPU budget unchanged. LanceDB Distributed only.
 
         Returns
         -------
@@ -7575,7 +7656,12 @@ class AsyncTable:
         'finished'
         """
         return _typed_job(
-            await self._inner.refresh_column_async(column, batch_size=batch_size),
+            await self._inner.refresh_column_async(
+                column,
+                batch_size=batch_size,
+                gpu_class=gpu_class,
+                gpu_count=gpu_count,
+            ),
             RefreshColumnJobResult.from_json,
         )
 

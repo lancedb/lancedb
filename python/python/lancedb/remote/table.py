@@ -1108,14 +1108,40 @@ class RemoteTable(Table):
             )
         )
 
-    def refresh_column(self, column: str, *, batch_size: Optional[int] = None):
-        return LOOP.run(self._table.refresh_column(column, batch_size=batch_size))
+    def refresh_column(
+        self,
+        column: str,
+        *,
+        batch_size: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
+    ):
+        return LOOP.run(
+            self._table.refresh_column(
+                column,
+                batch_size=batch_size,
+                gpu_class=gpu_class,
+                gpu_count=gpu_count,
+            )
+        )
 
     def refresh_column_async(
-        self, column: str, *, batch_size: Optional[int] = None
+        self,
+        column: str,
+        *,
+        batch_size: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> Job[RefreshColumnResult]:
         return Job(
-            LOOP.run(self._table.refresh_column_async(column, batch_size=batch_size))
+            LOOP.run(
+                self._table.refresh_column_async(
+                    column,
+                    batch_size=batch_size,
+                    gpu_class=gpu_class,
+                    gpu_count=gpu_count,
+                )
+            )
         )
 
     def function_errors(

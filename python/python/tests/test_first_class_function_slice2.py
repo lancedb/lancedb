@@ -534,13 +534,14 @@ def test_udf_image_requires_digest_reference(image):
 
 
 def test_udf_gpu_marker_uses_gpu_runtime():
-    @udf(pip=["cupy-cuda12x"], gpu=True)
+    @udf(pip=["cupy-cuda12x"], gpu=True, gpu_class="a10g")
     def double_on_gpu(value: int) -> int:
         return value * 2
 
     request = json.loads(double_on_gpu.registration_request.to_canonical_json())
     assert request["runtime"]["kind"] == "python_v2"
     assert request["runtime"]["gpu"] is True
+    assert request["runtime"]["gpu_class"] == "a10g"
 
     @udf(pip=["pyarrow"])
     def cpu_function(value: int) -> int:
@@ -551,6 +552,7 @@ def test_udf_gpu_marker_uses_gpu_runtime():
     ]
     assert cpu_runtime["kind"] == "python"
     assert "gpu" not in cpu_runtime
+    assert "gpu_class" not in cpu_runtime
 
     def identity(value: int) -> int:
         return value
@@ -558,6 +560,11 @@ def test_udf_gpu_marker_uses_gpu_runtime():
     for invalid in [None, 0, 1, -1, 1.5, "", "true", "1", "H100"]:
         with pytest.raises(ValueError, match="gpu must be a boolean"):
             udf(name="invalid_gpu", gpu=invalid)(identity)
+    for invalid in ["H100", "a_b", "-a10g", "a10g-", "a" * 64]:
+        with pytest.raises(ValueError, match="gpu_class"):
+            udf(name="invalid_gpu_class", gpu=True, gpu_class=invalid)(identity)
+    with pytest.raises(ValueError, match="requires gpu=True"):
+        udf(name="gpu_class_without_gpu", gpu_class="a10g")(identity)
 
     base_runtime = {
         "kind": "python_v2",
@@ -566,9 +573,17 @@ def test_udf_gpu_marker_uses_gpu_runtime():
     }
     runtime = PythonRuntimeSpec.model_validate({**base_runtime, "gpu": True})
     assert runtime.gpu is True
+    runtime = PythonRuntimeSpec.model_validate(
+        {**base_runtime, "gpu": True, "gpu_class": "a10g"}
+    )
+    assert runtime.gpu_class == "a10g"
     for invalid in [False, 1, 0, "", "true", "1", "H100"]:
         with pytest.raises(ValueError, match="runtime.gpu must be true"):
             PythonRuntimeSpec.model_validate({**base_runtime, "gpu": invalid})
+    with pytest.raises(ValueError, match="gpu_class"):
+        PythonRuntimeSpec.model_validate(
+            {**base_runtime, "gpu": True, "gpu_class": "H100"}
+        )
 
 
 def test_unknown_runtime_discards_payload_before_known_field_validation():

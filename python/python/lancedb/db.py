@@ -104,6 +104,7 @@ if TYPE_CHECKING:
     from .pydantic import LanceModel
 
     from ._lancedb import Connection as LanceDbConnection
+    from ._lancedb import GpuClass
     from ._lancedb import JobInfo
     from .common import DATA, URI
     from .embeddings import EmbeddingFunctionConfig
@@ -1347,6 +1348,21 @@ class DBConnection(EnforceOverrides):
         `open_table` does for a missing table.
         """
         raise NotImplementedError("open_job is not supported for this connection type")
+
+    def list_gpu_classes(self) -> List[GpuClass]:
+        """List the operator-configured Function GPU classes.
+
+        Each record names the class and reports its configured GPU model,
+        memory, per-worker GPU limit, and CPU, memory, and ephemeral-storage
+        limits. This describes configured hardware, not current free capacity.
+
+        LanceDB Distributed only; the principal needs System Usage permission.
+        Raises ``NotImplementedError`` when the server predates
+        ``GET /v1/gpu/classes``.
+        """
+        raise NotImplementedError(
+            "GPU class discovery is not supported for this connection type"
+        )
 
     def list_jobs(
         self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
@@ -3449,6 +3465,12 @@ class AsyncConnection(object):
         [DBConnection.open_job][lancedb.db.DBConnection.open_job].
         """
         return AsyncJob(await self._inner.open_job(job_id))
+
+    async def list_gpu_classes(self) -> List[GpuClass]:
+        """List configured Function GPU classes. See
+        [DBConnection.list_gpu_classes][lancedb.db.DBConnection.list_gpu_classes].
+        """
+        return await self._inner.list_gpu_classes()
 
     async def create_function_async(
         self,

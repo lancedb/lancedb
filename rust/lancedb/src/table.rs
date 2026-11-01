@@ -1958,9 +1958,12 @@ impl Table {
     /// Like [`Table::refresh_column`], with explicit refresh options.
     ///
     /// [`RefreshColumnOptions::batch_size()`] caps rows per Function call in
-    /// LanceDB Distributed and must be greater than zero when set. It has no
-    /// effect on expression-backed columns in LanceDB Embedded. Remote refreshes
-    /// require [`Table::refresh_column_async_with_options`].
+    /// LanceDB Distributed and must be greater than zero when set.
+    /// [`RefreshColumnOptions::gpu_class()`] selects a GPU pool and
+    /// [`RefreshColumnOptions::gpu_count()`] requests GPUs per worker. These
+    /// options have no effect on expression-backed columns in LanceDB
+    /// Embedded. Remote refreshes require
+    /// [`Table::refresh_column_async_with_options`].
     ///
     /// ```
     /// # use lancedb::{Table, table::RefreshColumnOptions};
@@ -2015,15 +2018,23 @@ impl Table {
     ///
     /// Set [`RefreshColumnOptions::batch_size()`] to cap the rows each remote
     /// Function call receives, for example to keep slow Functions within the
-    /// executor's per-call deadline. An unset batch size uses the server default;
-    /// zero is rejected before submitting a job. Embedded expression refreshes
-    /// ignore the batch size.
+    /// executor's per-call deadline. Set
+    /// [`RefreshColumnOptions::gpu_class()`] and
+    /// [`RefreshColumnOptions::gpu_count()`] to override the registered GPU
+    /// class or request more GPUs per Function worker. Unset values use the
+    /// Function and server defaults; zero counts and malformed class names are
+    /// rejected before submitting a job. Embedded expression refreshes ignore
+    /// all three options.
     ///
     /// ```
     /// # use lancedb::{Table, table::RefreshColumnOptions};
     /// # async fn refresh(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
     /// let job = table.refresh_column_async_with_options(
-    ///     "quality", RefreshColumnOptions::default().batch_size(8),
+    ///     "quality",
+    ///     RefreshColumnOptions::default()
+    ///         .batch_size(8)
+    ///         .gpu_class("a10g")
+    ///         .gpu_count(2),
     /// ).await?;
     /// let result = job.wait().await?;
     /// # Ok(())

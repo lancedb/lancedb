@@ -19,6 +19,47 @@ use crate::{Error, Result};
 /// Semantic Function type for a Blob v2 value.
 pub const FUNCTION_BLOB_V2_TYPE: &str = "blob_v2";
 
+/// Configured placement-independent hardware and worker limits of a Function
+/// GPU class.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct GpuClass {
+    /// Stable class name accepted by Function registration and refresh options.
+    pub name: String,
+    /// Kubernetes extended resource requested by this class.
+    pub resource_name: String,
+    /// Human-readable GPU model, when configured by the operator.
+    pub gpu_model: Option<String>,
+    /// Usable memory of one GPU in the class, in bytes.
+    pub gpu_memory_bytes: Option<u64>,
+    /// Maximum GPUs one worker in this class may request.
+    pub max_gpu_count_per_worker: Option<u32>,
+    /// CPU limit for a worker in this class, in millicores.
+    pub cpu_millis: Option<u64>,
+    /// Memory limit for a worker in this class, in bytes.
+    pub memory_bytes: Option<u64>,
+    /// Ephemeral-storage limit for a worker in this class, in bytes.
+    pub ephemeral_storage_bytes: Option<u64>,
+}
+
+pub(crate) const GPU_CLASS_NAME_ERROR: &str = "gpu_class must be a lowercase name of at most 63 letters, digits, or hyphens, and cannot start or end with a hyphen";
+
+pub(crate) fn validate_gpu_class_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || name.len() > 63
+        || name.starts_with('-')
+        || name.ends_with('-')
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        return Err(Error::InvalidInput {
+            message: GPU_CLASS_NAME_ERROR.to_string(),
+        });
+    }
+    Ok(())
+}
+
 fn invalid_json(error: impl std::fmt::Display) -> Error {
     Error::InvalidInput {
         message: format!("invalid remote Function JSON: {error}"),
@@ -260,6 +301,7 @@ pub enum PythonRuntimeSpec {
     ///         system_packages: Vec::new(),
     ///     },
     ///     env: BTreeMap::new(),
+    ///     gpu_class: Some("a10g".to_string()),
     /// };
     /// assert!(runtime.requires_gpu());
     /// ```
@@ -267,6 +309,8 @@ pub enum PythonRuntimeSpec {
         python_version: String,
         environment: PythonEnvironmentSpec,
         env: BTreeMap<String, String>,
+        /// Operator-defined GPU class; absent uses the deployment default.
+        gpu_class: Option<String>,
     },
     /// A runtime kind introduced by a newer server.
     ///
@@ -317,6 +361,14 @@ impl PythonRuntimeSpec {
     pub fn requires_gpu(&self) -> bool {
         matches!(self, Self::PythonV2 { .. })
     }
+
+    /// Operator-defined GPU class, or `None` to use the deployment default.
+    pub fn gpu_class(&self) -> Option<&str> {
+        match self {
+            Self::PythonV2 { gpu_class, .. } => gpu_class.as_deref(),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -327,6 +379,8 @@ struct PythonRuntimeV1Wire {
     env: BTreeMap<String, String>,
     #[serde(default)]
     gpu: Option<Value>,
+    #[serde(default)]
+    gpu_class: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -336,6 +390,8 @@ struct PythonRuntimeV2Wire {
     #[serde(default)]
     env: BTreeMap<String, String>,
     gpu: bool,
+    #[serde(default)]
+    gpu_class: Option<String>,
 }
 
 impl<'de> Deserialize<'de> for PythonRuntimeSpec {
@@ -356,6 +412,11 @@ impl<'de> Deserialize<'de> for PythonRuntimeSpec {
                         "python runtime with gpu requires kind='python_v2'",
                     ));
                 }
+                if wire.gpu_class.is_some() {
+                    return Err(de::Error::custom(
+                        "python runtime with gpu_class requires kind='python_v2'",
+                    ));
+                }
                 Ok(Self::Python {
                     python_version: wire.python_version,
                     environment: wire.environment,
@@ -368,10 +429,14 @@ impl<'de> Deserialize<'de> for PythonRuntimeSpec {
                 if !wire.gpu {
                     return Err(de::Error::custom("runtime.gpu must be true"));
                 }
+                if let Some(gpu_class) = wire.gpu_class.as_deref() {
+                    validate_gpu_class_name(gpu_class).map_err(de::Error::custom)?;
+                }
                 Ok(Self::PythonV2 {
                     python_version: wire.python_version,
                     environment: wire.environment,
                     env: wire.env,
+                    gpu_class: wire.gpu_class,
                 })
             }
             _ => Ok(Self::Unrecognized { kind }),
@@ -390,6 +455,8 @@ impl Serialize for PythonRuntimeSpec {
             env: &'a BTreeMap<String, String>,
             #[serde(skip_serializing_if = "Option::is_none")]
             gpu: Option<bool>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            gpu_class: Option<&'a str>,
         }
 
         #[derive(Serialize)]
@@ -408,18 +475,21 @@ impl Serialize for PythonRuntimeSpec {
                 environment,
                 env,
                 gpu: None,
+                gpu_class: None,
             }
             .serialize(serializer),
             Self::PythonV2 {
                 python_version,
                 environment,
                 env,
+                gpu_class,
             } => PythonRuntimeRef {
                 kind: "python_v2",
                 python_version,
                 environment,
                 env,
                 gpu: Some(true),
+                gpu_class: gpu_class.as_deref(),
             }
             .serialize(serializer),
             Self::Unrecognized { kind } => UnrecognizedRuntimeRef { kind }.serialize(serializer),
@@ -473,6 +543,9 @@ pub struct FunctionVersion {
     created_at_millis: i64,
     metadata: BTreeMap<String, String>,
     disabled: bool,
+    /// Operator-defined GPU class declared at registration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    gpu_class: Option<String>,
 }
 
 impl FunctionVersion {
@@ -525,6 +598,11 @@ impl FunctionVersion {
     /// ```
     pub fn source_digest(&self) -> Option<&str> {
         self.source_digest.as_deref()
+    }
+
+    /// Operator-defined GPU class declared at registration.
+    pub fn gpu_class(&self) -> Option<&str> {
+        self.gpu_class.as_deref()
     }
 
     pub fn signature(&self) -> &FunctionSignature {
@@ -979,14 +1057,26 @@ mod conda_environment_tests {
             super::canonical_json(&runtime).unwrap(),
             r#"{"environment":{"kind":"pip"},"gpu":true,"kind":"python_v2","python_version":"3.12"}"#
         );
+        let runtime: PythonRuntimeSpec = serde_json::from_str(
+            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":true,"gpu_class":"a10g"}"#,
+        )
+        .unwrap();
+        assert_eq!(runtime.gpu_class(), Some("a10g"));
+        assert_eq!(
+            super::canonical_json(&runtime).unwrap(),
+            r#"{"environment":{"kind":"pip"},"gpu":true,"gpu_class":"a10g","kind":"python_v2","python_version":"3.12"}"#
+        );
 
         for invalid in [
             r#"{"kind":"python","python_version":"3.12","environment":{"kind":"pip"},"gpu":true}"#,
+            r#"{"kind":"python","python_version":"3.12","environment":{"kind":"pip"},"gpu_class":"a10g"}"#,
             r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"}}"#,
             r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":1}"#,
             r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":false}"#,
             r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":"true"}"#,
             r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":"H100"}"#,
+            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":true,"gpu_class":"H100"}"#,
+            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":true,"gpu_class":"-bad"}"#,
         ] {
             assert!(serde_json::from_str::<PythonRuntimeSpec>(invalid).is_err());
         }
@@ -1037,6 +1127,12 @@ mod tests {
             }
             assert_eq!(FunctionVersion::from_json(&encoded).unwrap(), version);
         }
+
+        document["gpu_class"] = serde_json::json!("a10g");
+        let version = FunctionVersion::from_json(&document.to_string()).unwrap();
+        assert_eq!(version.gpu_class(), Some("a10g"));
+        let encoded: Value = serde_json::from_str(&version.to_canonical_json().unwrap()).unwrap();
+        assert_eq!(encoded["gpu_class"], "a10g");
     }
 
     #[test]
