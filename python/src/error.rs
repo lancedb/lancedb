@@ -162,7 +162,7 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
 
 fn http_from_rust_error(
     py: Python<'_>,
-    err: &dyn std::error::Error,
+    err: &(dyn std::error::Error + 'static),
     request_id: &str,
     status_code: Option<u16>,
 ) -> PyResult<PyErr> {
