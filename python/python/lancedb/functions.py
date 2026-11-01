@@ -16,7 +16,7 @@ import builtins
 import base64
 import functools
 import hashlib
-import importlib
+import importlib.util
 import inspect
 import symtable
 import json
@@ -1493,6 +1493,28 @@ def _module_locations(module: types.ModuleType) -> tuple[str, ...]:
     return tuple(os.path.realpath(path) for path in getattr(module, "__path__", ()))
 
 
+def _module_locations_for_name(module_name: str) -> tuple[str, ...]:
+    """Where a top-level module would be imported from, without importing it
+    when it is not already loaded."""
+    import os
+
+    top = module_name.partition(".")[0]
+    module = sys.modules.get(top)
+    if module is not None:
+        return _module_locations(module)
+    try:
+        spec = importlib.util.find_spec(top)
+    except (AttributeError, ImportError, ValueError):
+        return ()
+    if spec is None:
+        return ()
+    if spec.submodule_search_locations:
+        return tuple(os.path.realpath(path) for path in spec.submodule_search_locations)
+    if spec.origin and spec.origin not in {"built-in", "frozen"}:
+        return (os.path.realpath(spec.origin),)
+    return ()
+
+
 class _SourcePackager:
     """Builds the entry module of a Function artifact.
 
@@ -1509,6 +1531,7 @@ class _SourcePackager:
         self._definitions: list[str] = []
         self._packaged: set[int] = set()
         self._names: dict[str, Any] = {}
+        self._warned_imports: set[str] = set()
 
     def package(self, target: Any, signature: FunctionSignature) -> str:
         entry = self._definition(target, entry=True, signature=signature)
@@ -1541,6 +1564,7 @@ class _SourcePackager:
             raise ValueError(
                 f"@udf cannot package dynamic namespace access: {dynamic!r}"
             )
+        self._warn_unshipped_direct_imports(definition)
         self._packaged.add(id(target))
         self._claim(target.__name__, ("definition", id(target)))
         if reader_name is not None:
@@ -1681,13 +1705,14 @@ class _SourcePackager:
             or top in sys.stdlib_module_names
             or top in sys.builtin_module_names
             or _normalized_distribution(top) in self._requirements
+            or top in self._warned_imports
         ):
             return
-        module = sys.modules.get(top)
-        locations = () if module is None else _module_locations(module)
+        locations = _module_locations_for_name(top)
         roots = _installed_roots()
         if not locations or any(location.startswith(roots) for location in locations):
             return
+        self._warned_imports.add(top)
         warnings.warn(
             f"@udf source imports {module_name!r} from {locations[0]}, a local "
             "module the Function's environment may not be able to import; ship "
@@ -1695,6 +1720,22 @@ class _SourcePackager:
             "pip/conda",
             UserWarning,
         )
+
+    def _warn_unshipped_direct_imports(
+        self, definition: Union[ast.FunctionDef, ast.ClassDef]
+    ) -> None:
+        """Warn for body imports that resolve to local, undeclared source.
+
+        Imports from site-packages are deliberately not guessed about: the
+        declared distribution name need not match the imported module, and the
+        client cannot inspect the remote base image.
+        """
+        for node in ast.walk(definition):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    self._require_importable(alias.name)
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                self._require_importable(node.module)
 
 
 def _code_files(modules: Sequence[Any]) -> tuple[dict[str, str], frozenset[str]]:
@@ -2184,9 +2225,15 @@ def udf(
       imported normally, so helpers shared by several Functions live in one
       place.
 
-    A reference to a module in a local source tree that is neither shipped
-    with ``code`` nor named by a declared package draws a warning at
-    registration, because the worker will most likely fail to import it.
+    A module imported by the packaged source -- including a direct ``import``
+    inside a function or method body -- draws a warning at registration when
+    it resolves to local source outside ``code`` and no declared requirement
+    matches the imported module name. The client cannot reliably validate
+    imports provided only by the base image: ``pip``/``conda`` distribution
+    names need not match the modules they install, and the client does not
+    know the contents of a built or custom image. Declare every third-party
+    import in ``pip`` or ``conda`` even when it happens to be installed on the
+    registration host.
     Closures, lambdas, nested definitions, mutable module-level
     objects, code that reaches the module namespace another way
     (``globals()``/``eval``, ``sys.modules``, ``builtins``), and a

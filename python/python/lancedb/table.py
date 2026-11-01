@@ -3217,6 +3217,30 @@ class Table(ABC):
             ``records``, ``fragments`` and ``truncated``, the last saying
             whether the listing stopped at its limit.
 
+        Each record identifies its row with ``fragment_id``, ``row_offset``
+        and the physical ``row_address`` (``(fragment_id << 32) |
+        row_offset``). To retry the recorded rows, collect the non-null
+        addresses before the table is compacted or rewritten and run the
+        SQL refresh:
+
+        .. code-block:: python
+
+            errors = table.function_errors(column="embedding")
+            addresses = sorted(
+                record.row_address
+                for record in errors.records
+                if record.row_address is not None
+            )
+            if addresses:
+                address_list = ", ".join(str(address) for address in addresses)
+                database.execute_query(
+                    f"REFRESH COLUMN embedding ON {table.name()} "
+                    f"WHERE _rowaddr IN ({address_list})"
+                )
+
+        Records whose per-row detail was capped have no address and appear
+        only in ``fragments``; they cannot be selected individually here.
+
         Examples
         --------
         >>> errors = table.function_errors(column="embedding")  # doctest: +SKIP
@@ -7582,6 +7606,30 @@ class AsyncTable:
         FunctionErrors
             ``records``, ``fragments`` and ``truncated``, the last saying
             whether the listing stopped at its limit.
+
+        Each record identifies its row with ``fragment_id``, ``row_offset``
+        and the physical ``row_address`` (``(fragment_id << 32) |
+        row_offset``). To retry the recorded rows, collect the non-null
+        addresses before the table is compacted or rewritten and run the
+        SQL refresh:
+
+        .. code-block:: python
+
+            errors = await table.function_errors(column="embedding")
+            addresses = sorted(
+                record.row_address
+                for record in errors.records
+                if record.row_address is not None
+            )
+            if addresses:
+                address_list = ", ".join(str(address) for address in addresses)
+                await database.execute_query(
+                    f"REFRESH COLUMN embedding ON {table.name()} "
+                    f"WHERE _rowaddr IN ({address_list})"
+                )
+
+        Records whose per-row detail was capped have no address and appear
+        only in ``fragments``; they cannot be selected individually here.
 
         Examples
         --------
