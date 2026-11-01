@@ -69,9 +69,10 @@ pub struct RefreshColumnOptions {
     /// `None` keeps the Function's registered class, or the deployment default
     /// when the Function does not declare one.
     pub gpu_class: Option<String>,
-    /// Positive GPU count per Function worker in LanceDB Distributed.
+    /// Positive aggregate GPU budget for Function workers in LanceDB
+    /// Distributed.
     ///
-    /// `None` leaves the server's aggregate GPU budget unchanged.
+    /// `None` leaves the server's configured budget unchanged.
     pub gpu_count: Option<u32>,
 }
 
@@ -88,7 +89,7 @@ impl RefreshColumnOptions {
         self
     }
 
-    /// Request `gpu_count` GPUs per Function worker.
+    /// Request an aggregate GPU budget of `gpu_count`.
     pub fn gpu_count(mut self, gpu_count: u32) -> Self {
         self.gpu_count = Some(gpu_count);
         self

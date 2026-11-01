@@ -361,6 +361,7 @@ class PythonRuntimeSpec(_RemoteValue):
             object.__setattr__(self, "environment", None)
             object.__setattr__(self, "env", None)
             object.__setattr__(self, "gpu", None)
+            object.__setattr__(self, "gpu_class", None)
         return self
 
 
@@ -2292,8 +2293,8 @@ def udf(
         Operator-defined GPU class for every execution of this Function, such
         as ``"a10g"`` or ``"h100"``. Requires ``gpu=True`` and follows the
         lowercase 63-character DNS-label rule. The class is part of the
-        immutable Function version; per-refresh worker GPU counts are selected
-        through ``refresh_column`` instead of registration.
+        immutable Function version; per-refresh aggregate GPU budgets are
+        selected through ``refresh_column`` instead of registration.
     code : sequence of module, optional
         Top-level modules or packages whose importable ``.py`` files ship
         with the Function and are importable by their own names.

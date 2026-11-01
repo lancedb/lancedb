@@ -588,7 +588,11 @@ def test_udf_gpu_marker_uses_gpu_runtime():
 
 def test_unknown_runtime_discards_payload_before_known_field_validation():
     for payload in [
-        {"kind": "python_v3", "gpu": {"model": "H100"}},
+        {
+            "kind": "python_v3",
+            "gpu": {"model": "H100"},
+            "gpu_class": "a10g",
+        },
         {"kind": "python_v3", "resources": []},
         {
             "kind": "python_v3",

@@ -3114,8 +3114,9 @@ class Table(ABC):
             None keeps the Function's registered class or the deployment
             default. LanceDB Distributed only.
         gpu_count: int, optional
-            Positive GPUs per Function worker. None leaves the server's
-            aggregate GPU budget unchanged. LanceDB Distributed only.
+            Positive aggregate GPU budget for Function workers. None leaves
+            the server's configured budget unchanged. LanceDB Distributed
+            only.
 
         Returns
         -------
@@ -3161,8 +3162,9 @@ class Table(ABC):
             None keeps the Function's registered class or the deployment
             default. LanceDB Distributed only.
         gpu_count: int, optional
-            Positive GPUs per Function worker. None leaves the server's
-            aggregate GPU budget unchanged. LanceDB Distributed only.
+            Positive aggregate GPU budget for Function workers. None leaves
+            the server's configured budget unchanged. LanceDB Distributed
+            only.
 
         Returns
         -------
@@ -7561,8 +7563,9 @@ class AsyncTable:
             None keeps the Function's registered class or the deployment
             default. LanceDB Distributed only.
         gpu_count: int, optional
-            Positive GPUs per Function worker. None leaves the server's
-            aggregate GPU budget unchanged. LanceDB Distributed only.
+            Positive aggregate GPU budget for Function workers. None leaves
+            the server's configured budget unchanged. LanceDB Distributed
+            only.
 
         Returns
         -------
@@ -7679,8 +7682,9 @@ class AsyncTable:
             None keeps the Function's registered class or the deployment
             default. LanceDB Distributed only.
         gpu_count: int, optional
-            Positive GPUs per Function worker. None leaves the server's
-            aggregate GPU budget unchanged. LanceDB Distributed only.
+            Positive aggregate GPU budget for Function workers. None leaves
+            the server's configured budget unchanged. LanceDB Distributed
+            only.
 
         Returns
         -------
