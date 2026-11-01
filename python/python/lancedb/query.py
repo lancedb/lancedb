@@ -125,13 +125,15 @@ def _rows_to_models(model: type[T], rows: List[dict]) -> List[T]:
         name: field.validation_alias or field.alias
         for name, field in model.model_fields.items()
     }
-    validate_by_name = model.model_config.get("validate_by_name", False)
+    accepts_by_name = model.model_config.get("validate_by_name", False) or (
+        model.model_config.get("populate_by_name", False)
+    )
     # Every top-level key some field reads, including the first step of an
     # AliasPath and each choice of an AliasChoices.
     alias_keys = {}
     for name, alias in aliases.items():
         keys = _top_level_alias_keys(alias)
-        if not keys or validate_by_name:
+        if not keys or accepts_by_name:
             keys.add(name)
         alias_keys[name] = keys
     readers = {}
