@@ -7,7 +7,13 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from typing import Dict, Optional, Union, Any, List, Iterable, TYPE_CHECKING
 
-from ._lancedb import __version__ as __version__
+from packaging.version import Version as _Version
+
+from ._lancedb import __version__ as _native_version
+
+# Match Python package metadata without requiring the lancedb distribution.
+__version__ = str(_Version(_native_version))
+
 from ._lancedb import connect as lancedb_connect
 from ._lancedb import FtsToken
 from ._lancedb import FunctionErrorFragment as FunctionErrorFragment

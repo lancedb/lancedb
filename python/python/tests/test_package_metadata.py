@@ -2,11 +2,24 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import importlib
+import importlib.metadata
 import re
 import sys
 from pathlib import Path
 
 import pytest
+
+
+@pytest.mark.parametrize("distribution", ["lancedb", "lancedb-compat"])
+def test_version_matches_package_metadata(distribution):
+    import lancedb
+
+    try:
+        package_version = importlib.metadata.version(distribution)
+    except importlib.metadata.PackageNotFoundError:
+        pytest.skip(f"{distribution} is not installed")
+
+    assert lancedb.__version__ == package_version
 
 
 @pytest.mark.parametrize("name", ["JobInfo", "JobDescription", "JobFailureInfo"])
