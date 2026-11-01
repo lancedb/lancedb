@@ -11,13 +11,20 @@ import http.server
 import json
 from urllib.parse import parse_qs, unquote, urlparse
 import pytest
+import builtins
+import copy
 import pyarrow as pa
 import lancedb
+from lance.namespace import DirectoryNamespace, LanceNamespace
 from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
 from utils import start_server_thread
 from lancedb.listing import AsyncListing, Listing
 from lancedb.materialized_view import DEFINITION_FORMAT, DEFINITION_META_KEY
-from lancedb.namespace import _MAX_QUERY_K, _query_to_namespace_request
+from lancedb.namespace import (
+    _MAX_QUERY_K,
+    LanceNamespaceDBConnection,
+    _query_to_namespace_request,
+)
 from lancedb.query import Query
 from lancedb.table import AsyncTable, LanceTable
 
@@ -1360,3 +1367,56 @@ def test_namespace_request_rejects_search_effort(effort):
         _query_to_namespace_request(
             ["test"], Query(vector=[1.0, 0.0], search_effort=effort)
         )
+
+
+class AttributeAccessNamespace(LanceNamespace):
+    """A Python namespace that reads request fields as attributes.
+
+    Python implementations such as ``lance_namespace_impls.glue.GlueNamespace``
+    read requests like pydantic models (``request.id``), and expect omitted
+    optional fields to be ``None``. This fake records what it read and then
+    delegates to ``DirectoryNamespace`` so the test runs locally.
+    """
+
+    def __init__(self, root: str):
+        self._inner = DirectoryNamespace(root=root)
+        self.seen = {}
+
+    def namespace_id(self) -> str:
+        return f"AttributeAccessNamespace[{self._inner.namespace_id()}]"
+
+    def list_tables(self, request):
+        self.seen["list_tables"] = request
+        _ = request.id
+        _ = request.page_token
+        return self._inner.list_tables(request)
+
+    def describe_table(self, request):
+        self.seen["describe_table"] = request
+        _ = request.id
+        # Optional field omitted by the Rust side; must read as None.
+        assert request.load_detailed_metadata is None
+        return self._inner.describe_table(request)
+
+
+def test_python_namespace_attribute_access(tmp_path):
+    root = str(tmp_path)
+    data = pa.table({"id": [1, 2, 3], "text": ["alpha", "beta", "gamma"]})
+    lancedb.connect_namespace("dir", {"root": root}).create_table("t", data)
+
+    ns = AttributeAccessNamespace(root)
+    db = LanceNamespaceDBConnection(ns)
+
+    assert list(db.list_tables()) == ["t"]
+    assert db.open_table("t").to_arrow().to_pylist() == data.to_pylist()
+
+    # Mapping access and model_dump() keep working.
+    request = ns.seen["describe_table"]
+    assert isinstance(request, builtins._DictWithModelDump)
+    assert request["id"] == request.id == ["t"]
+    assert request.model_dump() == dict(request)
+    assert "load_detailed_metadata" not in request
+
+    # Missing dunder lookups still raise, so copy/hasattr probes work.
+    assert not hasattr(request, "__missing_dunder__")
+    assert copy.deepcopy(request) == request
