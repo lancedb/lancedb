@@ -367,6 +367,17 @@ def tokenize(
     applies: False for ``code`` and ``ngram``, True otherwise. ``analyzer`` and the
     code flags (``split_identifiers``, ``split_on_numerics``, ``preserve_original``
     and ``index_operators``) behave as they do on :class:`lancedb.index.FTS`.
+
+    Examples
+    --------
+    Inspect the subwords produced by the code analyzer:
+
+    >>> import lancedb
+    >>> tokens = lancedb.tokenize(
+    ...     "parseHTTPRequest", analyzer="code", split_identifiers=True
+    ... )
+    >>> [token.text for token in tokens]
+    ['parse', 'http', 'request']
     """
 
     return _tokenize(
