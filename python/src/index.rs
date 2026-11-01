@@ -584,6 +584,11 @@ mod tests {
     memory_limit = 2048
     num_workers = 7
     document_granularity = 'row'
+    analyzer = None
+    split_identifiers = None
+    split_on_numerics = None
+    preserve_original = None
+    index_operators = None
 
 config = FTS()",
                 None,
