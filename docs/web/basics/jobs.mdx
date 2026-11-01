@@ -147,8 +147,9 @@ physical cleanup continues separately.
 
 Remote Secret create, alter, list, describe, and drop use the SQL query backend.
 The synchronous APIs wait on query completion internally. Create and alter bind
-the credential as a parameter to `CREATE SECRET name AS $1` or
-`ALTER SECRET name AS $1`, keeping it out of SQL text. Results contain only
+the credential as a parameter to
+`CREATE SECRET name TYPE = GENERIC_STRING SECRET_STRING = $1` or
+`ALTER SECRET name SET SECRET_STRING = $1`, keeping it out of SQL text. Results contain only
 completion status or Secret names and timestamps; they never return credential
 values. SQL `DESCRIBE SECRET` additionally exposes rotation history.
 

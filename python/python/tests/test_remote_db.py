@@ -18,10 +18,11 @@ import sys
 import textwrap
 import threading
 import time
+from urllib.parse import parse_qs, urlparse
 from unittest.mock import MagicMock, patch
 import uuid
-from urllib.parse import parse_qs, urlparse
 from packaging.version import Version
+from lance_namespace.errors import TableNotFoundError
 
 import lancedb
 import numpy as np
@@ -42,7 +43,12 @@ from lancedb.query import (
     MatchQuery,
 )
 from lancedb.remote import ClientConfig
-from lancedb.remote.errors import HttpError, RetryError
+from lancedb.remote.errors import (
+    AlreadyExistsError,
+    HttpError,
+    NamespaceNotFoundError,
+    RetryError,
+)
 import pytest
 import pyarrow as pa
 from utils import start_server_thread
@@ -54,6 +60,9 @@ def make_mock_http_handler(handler):
             handler(self)
 
         def do_POST(self):
+            handler(self)
+
+        def do_PUT(self):
             handler(self)
 
     return MockLanceDBHandler
@@ -122,6 +131,73 @@ async def mock_lancedb_connection_async(handler, **client_config):
 
 
 @pytest.fixture
+def missing_table_handler(cached, namespace_path):
+    request_ids = []
+
+    def handler(request):
+        identifier = "$".join(namespace_path + ["missing"])
+        assert request.path == f"/v1/table/{identifier}/describe/"
+        request_ids.append(request.headers["x-request-id"])
+        status = 200 if cached and len(request_ids) == 1 else 404
+        request.send_response(status)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(b"{}" if status == 200 else b"table does not exist")
+
+    return handler, request_ids
+
+
+@pytest.mark.parametrize("cached", [False, True])
+@pytest.mark.parametrize("namespace_path", [[], ["ns"]])
+def test_remote_open_missing_table(cached, namespace_path, missing_table_handler):
+    handler, request_ids = missing_table_handler
+    with mock_lancedb_connection(handler) as db:
+        if cached:
+            db.open_table("missing", namespace_path=namespace_path)
+        with pytest.raises(TableNotFoundError) as exc_info:
+            db.open_table("missing", namespace_path=namespace_path)
+
+    error = exc_info.value
+    assert isinstance(error, ValueError)
+    assert isinstance(error, HttpError)
+    assert str(error) == "Table 'missing' was not found"
+    assert error.status_code == 404
+    assert error.request_id == request_ids[-1]
+    assert error.is_transport_error is False
+    assert error.request_id
+    assert isinstance(error.__cause__, HttpError)
+    assert error.__cause__.request_id == error.request_id
+    assert error.__cause__.status_code == 404
+    assert "table does not exist" in str(error.__cause__)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cached", [False, True])
+@pytest.mark.parametrize("namespace_path", [[], ["ns"]])
+async def test_async_remote_open_missing_table(
+    cached, namespace_path, missing_table_handler
+):
+    handler, request_ids = missing_table_handler
+    async with mock_lancedb_connection_async(handler) as db:
+        if cached:
+            await db.open_table("missing", namespace_path=namespace_path)
+        with pytest.raises(TableNotFoundError) as exc_info:
+            await db.open_table("missing", namespace_path=namespace_path)
+
+    error = exc_info.value
+    assert isinstance(error, ValueError)
+    assert isinstance(error, HttpError)
+    assert str(error) == "Table 'missing' was not found"
+    assert error.status_code == 404
+    assert error.request_id == request_ids[-1]
+    assert error.request_id
+    assert isinstance(error.__cause__, HttpError)
+    assert error.__cause__.request_id == error.request_id
+    assert error.__cause__.status_code == 404
+    assert "table does not exist" in str(error.__cause__)
+
+
+@pytest.fixture
 def existence_handler(method, identifier, status):
     def handler(request):
         resource = "namespace" if method == "namespace_exists" else "table"
@@ -187,6 +263,112 @@ async def test_async_remote_exists(method, identifier, status, existence_handler
             with pytest.raises(HttpError) as exc_info:
                 await getattr(db, method)(identifier)
             assert exc_info.value.status_code == status
+
+
+def test_remote_describe_namespace_typed_not_found():
+    request_ids = []
+
+    def handler(request):
+        assert request.command == "POST"
+        assert request.path == "/v1/namespace/parent$child/describe"
+        request_ids.append(request.headers["x-request-id"])
+        request.send_response(404)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(
+            json.dumps(
+                {
+                    "code": 5,
+                    "error": "Namespace not found",
+                    "error_code": "not_found",
+                    "resource": {
+                        "kind": "namespace",
+                        "name": "child",
+                        "namespace_path": ["parent"],
+                    },
+                }
+            ).encode()
+        )
+
+    with mock_lancedb_connection(handler) as db:
+        with pytest.raises(NamespaceNotFoundError) as exc_info:
+            db.describe_namespace(["parent", "child"])
+
+    error = exc_info.value
+    assert isinstance(error, HttpError)
+    assert error.error_code == "not_found"
+    assert error.resource_kind == "namespace"
+    assert error.resource_name == "child"
+    assert error.namespace_path == ("parent",)
+    assert error.status_code == 404
+    assert error.request_id == request_ids[-1]
+
+
+def test_remote_create_namespace_typed_already_exists():
+    requests = []
+
+    def handler(request):
+        requests.append(request.path)
+        assert request.command == "POST"
+        assert request.path == "/v1/namespace/parent$child/create"
+        request.send_response(409)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(
+            json.dumps(
+                {
+                    "code": 6,
+                    "error": "Namespace already exists",
+                    "error_code": "already_exists",
+                    "resource": {
+                        "kind": "namespace",
+                        "name": "child",
+                        "namespace_path": ["parent"],
+                    },
+                }
+            ).encode()
+        )
+
+    with mock_lancedb_connection(handler) as db:
+        with pytest.raises(AlreadyExistsError) as exc_info:
+            db.create_namespace(["parent", "child"])
+
+    error = exc_info.value
+    assert error.error_code == "already_exists"
+    assert error.resource_kind == "namespace"
+    assert error.resource_name == "child"
+    assert error.namespace_path == ("parent",)
+    assert error.status_code == 409
+    assert error.is_transport_error is False
+    assert len(requests) == 1
+
+
+def test_remote_legacy_namespace_error_stays_generic_http_error():
+    def handler(request):
+        assert request.path == "/v1/namespace/parent$child/describe"
+        request.send_response(404)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(
+            json.dumps(
+                {
+                    "code": 5,
+                    "error": "Namespace not found",
+                }
+            ).encode()
+        )
+
+    with mock_lancedb_connection(handler) as db:
+        with pytest.raises(HttpError) as exc_info:
+            db.describe_namespace(["parent", "child"])
+
+    error = exc_info.value
+    assert type(error) is HttpError
+    assert error.error_code is None
+    assert error.resource_kind is None
+    assert error.resource_name is None
+    assert error.namespace_path is None
+    assert error.status_code == 404
 
 
 @pytest.mark.parametrize("table_id", [[], ["invalid/name"]])
@@ -1537,7 +1719,14 @@ def test_remote_create_index_async_returns_job():
         job.cancel()
 
 
-def test_remote_refresh_async_returns_typed_terminal_result():
+@pytest.mark.asyncio
+@pytest.mark.parametrize("async_table", [False, True])
+@pytest.mark.parametrize(
+    "refresh_kwargs", [{}, {"batch_size": None}, {"batch_size": 1}, {"batch_size": 8}]
+)
+async def test_remote_refresh_async_returns_typed_terminal_result(
+    async_table, refresh_kwargs
+):
     terminal_result = {
         "rows_assigned": 12,
         "rows_failed": 0,
@@ -1550,7 +1739,10 @@ def test_remote_refresh_async_returns_typed_terminal_result():
         content_len = int(request.headers.get("Content-Length", 0))
         body = request.rfile.read(content_len) if content_len > 0 else b""
         if request.path == "/v1/table/test/backfill_column":
-            assert json.loads(body)["column"] == "derived"
+            expected = {"column": "derived"}
+            if refresh_kwargs.get("batch_size") is not None:
+                expected["batch_size"] = refresh_kwargs["batch_size"]
+            assert json.loads(body) == expected
             request.send_response(202)
             request.send_header("Content-Type", "application/json")
             request.end_headers()
@@ -1599,11 +1791,18 @@ def test_remote_refresh_async_returns_typed_terminal_result():
             request.send_response(404)
             request.end_headers()
 
-    with mock_lancedb_connection(handler) as db:
-        table = db.create_table("test", [{"id": 1}])
-        job = table.refresh_column_async("derived")
-        assert job.id == "refresh-1"
-        result = job.wait(timeout=timedelta(seconds=30))
+    if async_table:
+        async with mock_lancedb_connection_async(handler) as db:
+            table = await db.create_table("test", [{"id": 1}])
+            job = await table.refresh_column_async("derived", **refresh_kwargs)
+            assert job.id == "refresh-1"
+            result = await job.wait(timeout=timedelta(seconds=30))
+    else:
+        with mock_lancedb_connection(handler) as db:
+            table = db.create_table("test", [{"id": 1}])
+            job = table.refresh_column_async("derived", **refresh_kwargs)
+            assert job.id == "refresh-1"
+            result = job.wait(timeout=timedelta(seconds=30))
 
     assert isinstance(result, lancedb.RefreshColumnResult)
     assert result.model_dump() == terminal_result
@@ -2472,6 +2671,118 @@ def test_checkpoint_rte_sync():
     with lsm_test_table(lsm_handler) as table:
         assert table.checkpoint_rte() is None
         assert called == ["flush_rte", "get_rte_stats"]
+
+
+@contextlib.contextmanager
+def table_overrides_test_table(overrides_handler):
+    def handler(request):
+        parsed = urlparse(request.path)
+        if parsed.path in (
+            "/admin/table/overrides",
+            "/admin/table/overrides/reset",
+        ):
+            overrides_handler(request, parsed)
+        elif parsed.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b'{"version": 1, "schema": {"fields": []}}')
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        yield db.open_table("test")
+
+
+def assert_table_overrides_query(parsed):
+    query = parse_qs(parsed.query)
+    assert query == {"db": ["dev"], "table": ["test"]}
+
+
+def test_remote_table_exposes_table_overrides_methods():
+    from lancedb.remote.table import RemoteTable
+
+    for name in (
+        "get_table_overrides",
+        "update_table_overrides",
+        "reset_table_overrides",
+    ):
+        assert hasattr(RemoteTable, name)
+
+
+def test_get_table_overrides_sync_remote_table():
+    def overrides_handler(request, parsed):
+        assert request.command == "GET"
+        assert parsed.path == "/admin/table/overrides"
+        assert_table_overrides_query(parsed)
+        send_json(request, {"job_types": {"cleanup": {"enabled": False}}})
+
+    with table_overrides_test_table(overrides_handler) as table:
+        assert table.get_table_overrides() == {
+            "job_types": {"cleanup": {"enabled": False}}
+        }
+
+
+def test_update_table_overrides_sync_remote_table_merges_existing_fields():
+    calls = []
+
+    def overrides_handler(request, parsed):
+        calls.append(request.command)
+        assert parsed.path == "/admin/table/overrides"
+        if request.command == "GET":
+            assert_table_overrides_query(parsed)
+            send_json(
+                request,
+                {
+                    "job_types": {
+                        "compaction": {"enabled": True},
+                        "reindex_vector": {"table": {"num_workers": 3}},
+                    },
+                    "unknown": {"keep": True},
+                },
+            )
+        elif request.command == "PUT":
+            body = read_json_body(request)
+            assert body["db"] == "dev"
+            assert body["namespace"] == []
+            assert body["table"] == "test"
+            assert body["overrides"] == {
+                "job_types": {
+                    "compaction": {"enabled": True},
+                    "cleanup": {"enabled": False},
+                    "reindex_vector": {"table": {"num_workers": 3}},
+                },
+                "unknown": {"keep": True},
+            }
+            send_json(request, body["overrides"])
+        else:
+            raise AssertionError(f"unexpected method: {request.command}")
+
+    with table_overrides_test_table(overrides_handler) as table:
+        assert table.update_table_overrides(
+            job_types={"cleanup": {"enabled": False}}
+        ) == {
+            "job_types": {
+                "compaction": {"enabled": True},
+                "cleanup": {"enabled": False},
+                "reindex_vector": {"table": {"num_workers": 3}},
+            },
+            "unknown": {"keep": True},
+        }
+
+    assert calls == ["GET", "PUT"]
+
+
+def test_reset_table_overrides_sync_remote_table():
+    def overrides_handler(request, parsed):
+        assert request.command == "POST"
+        assert parsed.path == "/admin/table/overrides/reset"
+        assert_table_overrides_query(parsed)
+        send_json(request, {})
+
+    with table_overrides_test_table(overrides_handler) as table:
+        assert table.reset_table_overrides() == {}
 
 
 @contextlib.contextmanager

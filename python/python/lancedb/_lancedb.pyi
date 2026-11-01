@@ -13,6 +13,7 @@ from .index import (
     Bitmap,
     LabelList,
     Fm,
+    NGram,
     HnswPq,
     HnswSq,
     HnswFlat,
@@ -497,6 +498,7 @@ class Table:
             Bitmap,
             LabelList,
             Fm,
+            NGram,
             FTS,
         ],
         replace: Optional[bool],
@@ -519,6 +521,7 @@ class Table:
             Bitmap,
             LabelList,
             Fm,
+            NGram,
             FTS,
         ],
         replace: Optional[bool],
@@ -557,8 +560,12 @@ class Table:
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[int] = None,
     ) -> AddColumnsResult: ...
-    async def refresh_column(self, column: str) -> RefreshColumnResult: ...
-    async def refresh_column_async(self, column: str) -> Job: ...
+    async def refresh_column(
+        self, column: str, *, batch_size: Optional[int] = None
+    ) -> RefreshColumnResult: ...
+    async def refresh_column_async(
+        self, column: str, *, batch_size: Optional[int] = None
+    ) -> Job: ...
     async def function_errors(
         self,
         job_id: Optional[str] = None,
@@ -593,6 +600,9 @@ class Table:
     async def enable_rte(self, spec: RTEWriteSpec) -> None: ...
     async def disable_rte(self) -> None: ...
     async def get_rte_spec(self) -> Optional[RTEWriteSpec]: ...
+    async def get_table_overrides(self) -> str: ...
+    async def update_table_overrides(self, overrides_json: str) -> str: ...
+    async def reset_table_overrides(self) -> str: ...
     # WAL-PK-FUSION: delete both.
     def hybrid_pk_fusion_learned(self) -> bool: ...
     def note_hybrid_pk_fusion(self) -> None: ...

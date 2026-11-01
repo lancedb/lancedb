@@ -75,6 +75,13 @@ async def test_wait_disconnection_timeout_explains_how_to_reconnect(wait_job):
     [
         HttpError("unauthorized", "req-1", 401),
         HttpError("not found", "req-1", 404),
+        HttpError(
+            "secret not found",
+            "req-1",
+            404,
+            error_code="not_found",
+            resource_kind="secret",
+        ),
         HttpError("failed to parse job description", "req-1"),
         RetryError("service unavailable", "req-1", 3, 0, 0, 3, 3, 3, 503),
         JobFailedError("worker failed"),

@@ -81,6 +81,85 @@ if TYPE_CHECKING:
         from typing_extensions import Self
 
 T = TypeVar("T", bound="LanceModel")
+
+
+def _top_level_alias_key(alias: Any) -> str | None:
+    if isinstance(alias, str):
+        return alias
+    if isinstance(alias, pydantic.AliasPath) and alias.path:
+        key = alias.path[0]
+        return key if isinstance(key, str) else None
+    return None
+
+
+def _top_level_alias_keys(alias: Any) -> set[str]:
+    options = alias.choices if isinstance(alias, pydantic.AliasChoices) else (alias,)
+    return {
+        key for option in options if (key := _top_level_alias_key(option)) is not None
+    }
+
+
+def _single_component_alias(alias: Any) -> str | None:
+    # AliasChoices validates against the first matching source, so only use
+    # its first option as a field-name fallback.
+    option = alias.choices[0] if isinstance(alias, pydantic.AliasChoices) else alias
+    if isinstance(option, pydantic.AliasPath) and len(option.path) != 1:
+        # A nested path needs a structured payload; do not infer one here.
+        return None
+    return _top_level_alias_key(option)
+
+
+def _rows_to_models(model: type[T], rows: List[dict]) -> List[T]:
+    """Build ``model`` instances from result rows.
+
+    A table created from a LanceModel stores each field under its name, while
+    pydantic validates an aliased field by its alias. Pass a row's value under
+    the alias when the row has the field name but none of the aliases, so a
+    model with aliases can read the tables it wrote; rows keyed by any alias
+    still work.
+    """
+    if model.model_config.get("validate_by_alias", True) is False:
+        # Name-only validation: pydantic reads field names and ignores aliases.
+        return [model(**row) for row in rows]
+    aliases = {
+        name: field.validation_alias or field.alias
+        for name, field in model.model_fields.items()
+    }
+    # populate_by_name is the pre-2.11 spelling; an explicit new flag wins.
+    accepts_by_name = model.model_config.get(
+        "validate_by_name",
+        model.model_config.get("populate_by_name", False),
+    )
+    # Every top-level key some field reads, including the first step of an
+    # AliasPath and each choice of an AliasChoices.
+    alias_keys = {}
+    for name, alias in aliases.items():
+        keys = _top_level_alias_keys(alias)
+        if not keys or accepts_by_name:
+            keys.add(name)
+        alias_keys[name] = keys
+    readers = {}
+    for name, keys in alias_keys.items():
+        for key in keys:
+            readers.setdefault(key, set()).add(name)
+    renames = {
+        name: target
+        for name, alias in aliases.items()
+        if (target := _single_component_alias(alias)) is not None
+        # Do not move a source that another field reads.
+        and target != name
+        and not (readers.get(name, set()) - {name})
+        # Do not add a source that another field accepts. Introducing a shared
+        # alias key could change that field's Pydantic selection.
+        and not (readers.get(target, set()) - {name})
+    }
+    for row in rows:
+        for name, target in renames.items():
+            if name in row and not any(key in row for key in alias_keys[name]):
+                row[target] = row.pop(name)
+    return [model(**row) for row in rows]
+
+
 AnalyzePlanDistributedMetrics = Literal["aggregate", "per_worker", "full"]
 _SYNC_VECTOR_QUERY_TYPES = (list, tuple, np.ndarray, pa.Array, pa.ChunkedArray)
 
@@ -1340,7 +1419,7 @@ class LanceQueryBuilder(ABC):
         -------
         List[LanceModel]
         """
-        return [model(**row) for row in self.to_arrow(timeout=timeout).to_pylist()]
+        return _rows_to_models(model, self.to_arrow(timeout=timeout).to_pylist())
 
     def to_polars(self, *, timeout: Optional[timedelta] = None) -> "pl.DataFrame":
         """
@@ -3770,9 +3849,9 @@ class AsyncQueryBase(object):
         -------
         list[LanceModel]
         """
-        return [
-            model(**row) for row in (await self.to_arrow(timeout=timeout)).to_pylist()
-        ]
+        return _rows_to_models(
+            model, (await self.to_arrow(timeout=timeout)).to_pylist()
+        )
 
     async def explain_plan(self, verbose: Optional[bool] = False):
         """Return the execution plan for this query.

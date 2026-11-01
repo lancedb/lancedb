@@ -223,6 +223,7 @@ pub struct RemoteDatabase<S: HttpSend = Sender> {
     pub(super) client: RestfulLanceDbClient<S>,
     // Cache existence and server capabilities, not mutable per-handle table state.
     table_cache: Cache<String, ServerVersion>,
+    db_name: String,
     uri: String,
     /// Headers to pass to the namespace client for authentication
     namespace_headers: HashMap<String, String>,
@@ -435,6 +436,7 @@ impl RemoteDatabase {
         Ok(Self {
             client,
             table_cache,
+            db_name: parsed.db_name,
             uri: uri.to_owned(),
             namespace_headers,
             namespace_context_provider,
@@ -565,6 +567,7 @@ mod test_utils {
             Self {
                 client,
                 table_cache: Cache::new(0),
+                db_name: "default".to_string(),
                 uri: "http://localhost".to_string(),
                 namespace_headers: HashMap::new(),
                 namespace_context_provider: None,
@@ -594,6 +597,7 @@ mod test_utils {
             Self {
                 client,
                 table_cache: Cache::new(0),
+                db_name: "default".to_string(),
                 uri: "http://localhost".to_string(),
                 namespace_headers: config.extra_headers.clone(),
                 namespace_context_provider,
@@ -1444,6 +1448,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let cache_key = build_cache_key(&request.name, &request.namespace_path);
         let table = Arc::new(RemoteTable::new_with_sql_client(
             self.client.clone(),
+            self.db_name.clone(),
             request.name.clone(),
             request.namespace_path.clone(),
             table_identifier,
@@ -1487,6 +1492,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let cache_key = build_cache_key(&request.target_table_name, &request.target_namespace_path);
         let table = Arc::new(RemoteTable::new_with_sql_client(
             self.client.clone(),
+            self.db_name.clone(),
             request.target_table_name.clone(),
             request.target_namespace_path.clone(),
             table_identifier,
@@ -1536,6 +1542,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
 
             Ok(Arc::new(RemoteTable::new_with_sql_client(
                 self.client.clone(),
+                self.db_name.clone(),
                 request.name,
                 request.namespace_path,
                 identifier,
@@ -1555,6 +1562,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             let describe_body = rsp.text().await.ok();
             let table = Arc::new(RemoteTable::new_with_sql_client(
                 self.client.clone(),
+                self.db_name.clone(),
                 request.name.clone(),
                 request.namespace_path.clone(),
                 identifier,

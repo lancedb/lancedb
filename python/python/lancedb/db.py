@@ -394,6 +394,13 @@ class DBConnection(EnforceOverrides):
         aws_access_key_id_secret: Optional[Union[str, SecretReference]] = None,
         aws_secret_access_key_secret: Optional[Union[str, SecretReference]] = None,
         aws_region: Optional[str] = None,
+        storage_provider: Literal["S3", "AZURE", "GCP", "HUGGINGFACE"] = "S3",
+        azure_storage_account: Optional[str] = None,
+        azure_tenant_id_secret: Optional[Union[str, SecretReference]] = None,
+        azure_client_id_secret: Optional[Union[str, SecretReference]] = None,
+        azure_client_secret_secret: Optional[Union[str, SecretReference]] = None,
+        gcp_credentials_json_secret: Optional[Union[str, SecretReference]] = None,
+        huggingface_token_secret: Optional[Union[str, SecretReference]] = None,
         namespace_path: Optional[List[str]] = None,
     ) -> StorageIntegrationInfo:
         raise NotImplementedError
@@ -1011,7 +1018,9 @@ class DBConnection(EnforceOverrides):
         """List every published immutable Function version in a namespace.
 
         Functions in child namespaces are not included. Results are ordered by
-        Function name then version. LanceDB Embedded connections raise
+        Function name then numeric version. Remote connections use
+        ``SHOW FUNCTIONS HISTORY`` to include every revision.
+        LanceDB Embedded connections raise
         ``NotImplementedError``.
 
         Examples
@@ -1037,13 +1046,15 @@ class DBConnection(EnforceOverrides):
         version: str,
         namespace_path: Optional[List[str]] = None,
     ) -> bool:
-        """Drop a Function name and the object it was bound to.
+        """Drop one published Function revision, preserving its siblings.
 
-        The requested version must exist in the currently named object. Returns
-        True when the catalog binding was removed and False when it was absent.
-        Physical cleanup continues in the background; use
-        :meth:`drop_function_async` to access the query job. Local connections
-        raise NotImplementedError.
+        Returns True when the revision was removed and False for a repeated drop
+        or a missing name. A revision never published under an existing name is
+        an error. Dropping the last visible revision releases the name and
+        schedules physical cleanup in the background. Use
+        :meth:`drop_function_async` to
+        access the query job, whose completion confirms catalog removal of the
+        revision. Local connections raise NotImplementedError.
         """
         raise NotImplementedError(
             "Function catalog operations are not supported for this connection type"
@@ -1056,11 +1067,13 @@ class DBConnection(EnforceOverrides):
         version: str,
         namespace_path: Optional[List[str]] = None,
     ) -> Tuple[bool, Job]:
-        """Drop a Function binding and return its SQL query job.
+        """Drop one Function revision and return its SQL query job.
 
-        The boolean reports catalog removal. The job has type ``query`` and its
-        ID is the SQL query UUID. Repeated waits confirm that completion;
-        physical cleanup continues in the background. LanceDB Embedded
+        The boolean reports removal of the requested revision from the catalog;
+        sibling revisions and their grants remain available. The job has type
+        ``query`` and its ID is the SQL query UUID. Repeated waits confirm that
+        revision's removal. Only the last visible revision's drop releases the
+        name and schedules background object cleanup. LanceDB Embedded
         connections raise NotImplementedError.
         """
         raise NotImplementedError(
@@ -2243,6 +2256,13 @@ class LanceDBConnection(DBConnection):
         aws_access_key_id_secret: Optional[Union[str, SecretReference]] = None,
         aws_secret_access_key_secret: Optional[Union[str, SecretReference]] = None,
         aws_region: Optional[str] = None,
+        storage_provider: Literal["S3", "AZURE", "GCP", "HUGGINGFACE"] = "S3",
+        azure_storage_account: Optional[str] = None,
+        azure_tenant_id_secret: Optional[Union[str, SecretReference]] = None,
+        azure_client_id_secret: Optional[Union[str, SecretReference]] = None,
+        azure_client_secret_secret: Optional[Union[str, SecretReference]] = None,
+        gcp_credentials_json_secret: Optional[Union[str, SecretReference]] = None,
+        huggingface_token_secret: Optional[Union[str, SecretReference]] = None,
         namespace_path: Optional[List[str]] = None,
     ) -> StorageIntegrationInfo:
         return LOOP.run(
@@ -2253,6 +2273,13 @@ class LanceDBConnection(DBConnection):
                 aws_access_key_id_secret=aws_access_key_id_secret,
                 aws_secret_access_key_secret=aws_secret_access_key_secret,
                 aws_region=aws_region,
+                storage_provider=storage_provider,
+                azure_storage_account=azure_storage_account,
+                azure_tenant_id_secret=azure_tenant_id_secret,
+                azure_client_id_secret=azure_client_id_secret,
+                azure_client_secret_secret=azure_client_secret_secret,
+                gcp_credentials_json_secret=gcp_credentials_json_secret,
+                huggingface_token_secret=huggingface_token_secret,
                 namespace_path=namespace_path,
             )
         )
@@ -3494,7 +3521,13 @@ class AsyncConnection(object):
         version: str,
         namespace_path: Optional[List[str]] = None,
     ) -> bool:
-        """Drop a Function name and the object it was bound to."""
+        """Drop one published Function revision, preserving its siblings.
+
+        Returns True when the requested revision was removed and False for a
+        repeated drop or a missing name. A revision never published under an
+        existing name is an error. Only the last visible revision's removal
+        releases the name and schedules background object cleanup.
+        """
         return await self._inner.drop_function(name, version, namespace_path)
 
     async def drop_function_async(
@@ -3504,11 +3537,13 @@ class AsyncConnection(object):
         version: str,
         namespace_path: Optional[List[str]] = None,
     ) -> Tuple[bool, AsyncJob]:
-        """Drop a Function binding and return its SQL query job.
+        """Drop one Function revision and return its SQL query job.
 
-        The boolean reports catalog removal. The job has type ``query`` and its
-        ID is the SQL query UUID. Repeated waits confirm that completion;
-        physical cleanup continues in the background.
+        The boolean reports removal of the requested revision from the catalog;
+        sibling revisions and their grants remain available. The job has type
+        ``query`` and its ID is the SQL query UUID. Repeated waits confirm that
+        revision's removal. Only the last visible revision's drop releases the
+        name and schedules background object cleanup.
         """
         dropped, job = await self._inner.drop_function_async(
             name, version, namespace_path
@@ -3524,29 +3559,109 @@ class AsyncConnection(object):
         aws_access_key_id_secret: Optional[Union[str, SecretReference]] = None,
         aws_secret_access_key_secret: Optional[Union[str, SecretReference]] = None,
         aws_region: Optional[str] = None,
+        storage_provider: Literal["S3", "AZURE", "GCP", "HUGGINGFACE"] = "S3",
+        azure_storage_account: Optional[str] = None,
+        azure_tenant_id_secret: Optional[Union[str, SecretReference]] = None,
+        azure_client_id_secret: Optional[Union[str, SecretReference]] = None,
+        azure_client_secret_secret: Optional[Union[str, SecretReference]] = None,
+        gcp_credentials_json_secret: Optional[Union[str, SecretReference]] = None,
+        huggingface_token_secret: Optional[Union[str, SecretReference]] = None,
         namespace_path: Optional[List[str]] = None,
     ) -> StorageIntegrationInfo:
-        """Register database-owned S3 access using a role or two Secret references.
+        """Register cloud storage access using database-owned credential Secrets.
 
         ``namespace_path`` follows Secret naming rules. A SecretReference can name
         another database; a string names a root Secret in this database.
+        For Azure, set ``storage_provider="AZURE"``, ``azure_storage_account``,
+        and Secret references for tenant ID, client ID and client secret.
+        For GCP, set ``storage_provider="GCP"`` and ``gcp_credentials_json_secret``
+        to a Secret containing the application credentials JSON file content.
+        For Hugging Face, set ``storage_provider="HUGGINGFACE"`` and
+        optionally set ``huggingface_token_secret`` to a Secret containing the
+        token; omitting it selects anonymous access at the default rate limits.
         Registration returns setup instructions without verifying storage access.
         """
-        role_mode = aws_role_arn is not None
-        key_mode = (
-            aws_access_key_id_secret is not None
-            and aws_secret_access_key_secret is not None
+        azure_options = (
+            azure_tenant_id_secret,
+            azure_client_id_secret,
+            azure_client_secret_secret,
         )
-        if role_mode == key_mode or (
-            role_mode
-            and (
-                aws_access_key_id_secret is not None
-                or aws_secret_access_key_secret is not None
-            )
-        ):
+        if storage_provider != "HUGGINGFACE" and huggingface_token_secret is not None:
             raise ValueError(
-                "Specify either aws_role_arn or both AWS credential Secret references"
+                "Hugging Face options require storage_provider HUGGINGFACE"
             )
+        if storage_provider != "GCP" and gcp_credentials_json_secret is not None:
+            raise ValueError("GCP credential options require storage_provider GCP")
+        if storage_provider == "HUGGINGFACE":
+            if any(
+                value is not None
+                for value in azure_options
+                + (
+                    azure_storage_account,
+                    aws_role_arn,
+                    aws_access_key_id_secret,
+                    aws_secret_access_key_secret,
+                    aws_region,
+                    gcp_credentials_json_secret,
+                )
+            ):
+                raise ValueError("Hugging Face cannot contain other cloud options")
+        elif storage_provider == "GCP":
+            if gcp_credentials_json_secret is None:
+                raise ValueError("GCP requires gcp_credentials_json_secret")
+            if azure_storage_account is not None or any(
+                value is not None
+                for value in azure_options
+                + (
+                    aws_role_arn,
+                    aws_access_key_id_secret,
+                    aws_secret_access_key_secret,
+                    aws_region,
+                )
+            ):
+                raise ValueError("GCP integrations cannot contain AWS or Azure options")
+        elif storage_provider == "AZURE":
+            if not azure_storage_account or any(
+                value is None for value in azure_options
+            ):
+                raise ValueError(
+                    "Azure requires a storage account and "
+                    "all three credential Secret references"
+                )
+            if any(
+                value is not None
+                for value in (
+                    aws_role_arn,
+                    aws_access_key_id_secret,
+                    aws_secret_access_key_secret,
+                    aws_region,
+                )
+            ):
+                raise ValueError("Azure integrations cannot contain AWS options")
+        elif storage_provider == "S3":
+            if azure_storage_account is not None or any(
+                value is not None for value in azure_options
+            ):
+                raise ValueError("S3 integrations cannot contain Azure options")
+            role_mode = aws_role_arn is not None
+            key_mode = (
+                aws_access_key_id_secret is not None
+                and aws_secret_access_key_secret is not None
+            )
+            if role_mode == key_mode or (
+                role_mode
+                and (
+                    aws_access_key_id_secret is not None
+                    or aws_secret_access_key_secret is not None
+                )
+            ):
+                raise ValueError(
+                    "Specify either aws_role_arn or "
+                    "both AWS credential Secret references"
+                )
+
+        else:
+            raise ValueError("storage_provider must be S3, AZURE, GCP or HUGGINGFACE")
 
         def reference(value):
             if value is None:
@@ -3560,10 +3675,16 @@ class AsyncConnection(object):
             return asdict(value)
 
         request = {
-            "storage_provider": "S3",
+            "storage_provider": storage_provider,
             "storage_prefix": storage_prefix,
             "aws_role_arn": aws_role_arn,
             "aws_region": aws_region,
+            "azure_storage_account": azure_storage_account,
+            "azure_tenant_id_secret": reference(azure_tenant_id_secret),
+            "azure_client_id_secret": reference(azure_client_id_secret),
+            "azure_client_secret_secret": reference(azure_client_secret_secret),
+            "gcp_credentials_json_secret": reference(gcp_credentials_json_secret),
+            "huggingface_token_secret": reference(huggingface_token_secret),
             "aws_access_key_id_secret": reference(aws_access_key_id_secret),
             "aws_secret_access_key_secret": reference(aws_secret_access_key_secret),
         }

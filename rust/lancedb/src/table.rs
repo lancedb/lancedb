@@ -42,6 +42,7 @@ use lance_table::io::commit::CommitHandler;
 use lance_table::io::commit::ManifestNamingScheme;
 use lance_table::io::commit::external_manifest::ExternalManifestCommitHandler;
 use serde::{Deserialize, Serialize};
+pub type TableOverrides = serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::format;
 use std::path::Path;
@@ -110,7 +111,7 @@ pub use lance_index::optimize::OptimizeOptions;
 pub use optimize::{
     CompactionMode, CompactionOptions, IndexRemapMode, OptimizeAction, OptimizeStats,
 };
-pub use refresh::RefreshColumnResult;
+pub use refresh::{RefreshColumnOptions, RefreshColumnResult};
 pub use rte_stats::{MemtableStats, RTEStats, SsTableStats, TableShardStats};
 pub use schema_evolution::{
     AddColumnsResult, AlterColumnsResult, DropColumnsResult, FieldMetadataUpdate,
@@ -710,6 +711,34 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "get_rte_spec is not supported on this table type".into(),
         })
     }
+    /// Read Enterprise table overrides.
+    ///
+    /// The default implementation returns `NotSupported`; Enterprise remote
+    /// tables override it.
+    async fn get_table_overrides(&self) -> Result<TableOverrides> {
+        Err(Error::NotSupported {
+            message: "get_table_overrides is supported only on remote Enterprise tables".into(),
+        })
+    }
+    /// Merge Enterprise table overrides into the currently stored object.
+    ///
+    /// The default implementation returns `NotSupported`; Enterprise remote
+    /// tables override it.
+    async fn update_table_overrides(&self, _overrides: TableOverrides) -> Result<TableOverrides> {
+        Err(Error::NotSupported {
+            message: "update_table_overrides is supported only on remote Enterprise tables".into(),
+        })
+    }
+    /// Clear Enterprise table overrides.
+    ///
+    /// The default implementation returns `NotSupported`; Enterprise remote
+    /// tables override it.
+    async fn reset_table_overrides(&self) -> Result<TableOverrides> {
+        Err(Error::NotSupported {
+            message: "reset_table_overrides is supported only on remote Enterprise tables".into(),
+        })
+    }
+
     /// Whether a hybrid query on this table has already been told it cannot
     /// join its legs on `_rowid`.
     ///
@@ -735,6 +764,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// the only cost of being late to notice is a base-only read that is still
     /// correct.
     fn note_hybrid_pk_fusion(&self) {}
+
     /// Freeze every table shard's active memtable into an SSTable.
     ///
     /// The default implementation returns `NotSupported`.
@@ -849,6 +879,16 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "this operation is only supported on LanceDB Embedded".into(),
         })
     }
+    /// Refresh with options; expression-backed local refreshes ignore the
+    /// Function batch size.
+    async fn refresh_column_with_options(
+        &self,
+        column: &str,
+        options: RefreshColumnOptions,
+    ) -> Result<RefreshColumnResult> {
+        options.validate()?;
+        self.refresh_column(column).await
+    }
     /// Fill a computed column's unfilled rows and recompute those whose
     /// inputs changed, returning a [`Job`] tracking the operation.
     async fn refresh_column_async(
@@ -858,6 +898,15 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         Err(Error::NotSupported {
             message: "this operation is only supported on LanceDB Embedded".into(),
         })
+    }
+    /// Start a refresh job with options.
+    async fn refresh_column_async_with_options(
+        &self,
+        column: &str,
+        options: RefreshColumnOptions,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
+        options.validate()?;
+        self.refresh_column_async(column).await
     }
     /// The per-row errors Function refreshes recorded on this table; see
     /// [`Table::function_errors`]. The default returns `NotSupported`.
@@ -1906,6 +1955,33 @@ impl Table {
         self.inner.refresh_column(column.as_ref()).await
     }
 
+    /// Like [`Table::refresh_column`], with explicit refresh options.
+    ///
+    /// [`RefreshColumnOptions::batch_size()`] caps rows per Function call in
+    /// LanceDB Distributed and must be greater than zero when set. It has no
+    /// effect on expression-backed columns in LanceDB Embedded. Remote refreshes
+    /// require [`Table::refresh_column_async_with_options`].
+    ///
+    /// ```
+    /// # use lancedb::{Table, table::RefreshColumnOptions};
+    /// # async fn refresh(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let result = table.refresh_column_with_options(
+    ///     "doubled", RefreshColumnOptions::default(),
+    /// ).await?;
+    /// println!("filled {} rows", result.rows_filled);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn refresh_column_with_options(
+        &self,
+        column: impl AsRef<str>,
+        options: RefreshColumnOptions,
+    ) -> Result<RefreshColumnResult> {
+        self.inner
+            .refresh_column_with_options(column.as_ref(), options)
+            .await
+    }
+
     /// Like [`Table::refresh_column`], but returns a [`Job`] tracking the
     /// operation instead of blocking until it completes.
     ///
@@ -1933,6 +2009,34 @@ impl Table {
         column: impl AsRef<str>,
     ) -> Result<Job<crate::function::RefreshColumnResult>> {
         self.inner.refresh_column_async(column.as_ref()).await
+    }
+
+    /// Like [`Table::refresh_column_async`], with explicit refresh options.
+    ///
+    /// Set [`RefreshColumnOptions::batch_size()`] to cap the rows each remote
+    /// Function call receives, for example to keep slow Functions within the
+    /// executor's per-call deadline. An unset batch size uses the server default;
+    /// zero is rejected before submitting a job. Embedded expression refreshes
+    /// ignore the batch size.
+    ///
+    /// ```
+    /// # use lancedb::{Table, table::RefreshColumnOptions};
+    /// # async fn refresh(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let job = table.refresh_column_async_with_options(
+    ///     "quality", RefreshColumnOptions::default().batch_size(8),
+    /// ).await?;
+    /// let result = job.wait().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn refresh_column_async_with_options(
+        &self,
+        column: impl AsRef<str>,
+        options: RefreshColumnOptions,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
+        self.inner
+            .refresh_column_async_with_options(column.as_ref(), options)
+            .await
     }
 
     /// The per-row errors Function refreshes recorded on this table: the
@@ -2108,6 +2212,33 @@ impl Table {
     /// ```
     pub async fn get_rte_spec(&self) -> Result<Option<RTEWriteSpec>> {
         self.inner.get_rte_spec().await
+    }
+
+    /// Read Enterprise table overrides for this table.
+    ///
+    /// Table overrides configure Enterprise-managed background behavior such as
+    /// automatic compaction, cleanup, and reindex execution. Local tables return
+    /// `NotSupported` because they do not have an Enterprise background planner
+    /// consuming these overrides.
+    pub async fn get_table_overrides(&self) -> Result<TableOverrides> {
+        self.inner.get_table_overrides().await
+    }
+
+    /// Merge Enterprise table overrides into the current stored overrides.
+    ///
+    /// This method uses patch semantics: fields present in `overrides` are
+    /// recursively merged into the existing table overrides and unrelated fields
+    /// are preserved.
+    pub async fn update_table_overrides(
+        &self,
+        overrides: TableOverrides,
+    ) -> Result<TableOverrides> {
+        self.inner.update_table_overrides(overrides).await
+    }
+
+    /// Clear Enterprise table overrides for this table.
+    pub async fn reset_table_overrides(&self) -> Result<TableOverrides> {
+        self.inner.reset_table_overrides().await
     }
 
     /// Converge this table's RTE write path into its base table.
