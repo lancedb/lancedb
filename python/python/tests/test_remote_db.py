@@ -2,6 +2,8 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 from concurrent.futures import ThreadPoolExecutor
 import contextlib
+import copy
+from dataclasses import replace
 from datetime import timedelta
 import http.server
 import io
@@ -15,9 +17,9 @@ import sys
 import textwrap
 import threading
 import time
+from urllib.parse import parse_qs, urlparse
 from unittest.mock import MagicMock, patch
 import uuid
-from urllib.parse import parse_qs, urlparse
 from packaging.version import Version
 from lance_namespace.errors import TableNotFoundError
 
@@ -25,6 +27,14 @@ import lancedb
 import numpy as np
 from lancedb.conftest import MockNonNormTextEmbeddingFunction, MockTextEmbeddingFunction
 from lancedb.embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
+from lancedb.graph import (
+    AsyncPropertyGraph,
+    EdgeTable,
+    Endpoint,
+    NodeTable,
+    PropertyGraph,
+    PropertyGraphDescription,
+)
 from lancedb.query import (
     AsyncQuery,
     ColumnOrdering,
@@ -46,6 +56,9 @@ def make_mock_http_handler(handler):
         def do_POST(self):
             handler(self)
 
+        def do_PUT(self):
+            handler(self)
+
     return MockLanceDBHandler
 
 
@@ -57,7 +70,7 @@ def test_connect_rejects_invalid_cloud_dns_hostname(db_name):
 
 @contextlib.contextmanager
 def mock_lancedb_connection(handler, **client_config):
-    with http.server.HTTPServer(
+    with http.server.ThreadingHTTPServer(
         ("127.0.0.1", 0), make_mock_http_handler(handler)
     ) as server:
         port = server.server_address[1]
@@ -1147,36 +1160,49 @@ async def test_remote_to_lance_rejection(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "method, kwargs",
+    "method, kwargs, list_path, table_prefix",
     [
-        ("drop_all_tables", {}),
-        ("drop_all_tables", {"namespace_path": []}),
-        ("drop_all_tables", {"namespace_path": ["team"]}),
-        ("drop_database", {}),
+        ("drop_all_tables", {}, "/v1/table/", ""),
+        ("drop_all_tables", {"namespace_path": []}, "/v1/table/", ""),
+        (
+            "drop_all_tables",
+            {"namespace_path": ["team"]},
+            "/v1/namespace/team/table/list",
+            "team$",
+        ),
+        ("drop_database", {}, "/v1/table/", ""),
     ],
 )
-async def test_remote_drop_all_tables_not_supported(method, kwargs):
+async def test_remote_drop_all_tables(method, kwargs, list_path, table_prefix):
     requests = []
+    drop_paths = {
+        f"/v1/table/{table_prefix}table1/drop/",
+        f"/v1/table/{table_prefix}table2/drop/",
+    }
 
     def handler(request):
-        requests.append(request.path)
-        request.send_response(500)
-        request.end_headers()
+        requests.append((request.command, request.path))
+        if request.command == "GET":
+            assert request.path == list_path
+            send_json(request, {"tables": ["table1", "table2"]})
+            return
+
+        assert request.command == "POST"
+        assert request.path in drop_paths
+        send_json(request, {})
 
     with mock_lancedb_connection(handler) as db:
-        with pytest.raises(NotImplementedError) as sync_error:
-            getattr(db, method)(**kwargs)
+        getattr(db, method)(**kwargs)
 
     async with mock_lancedb_connection_async(handler) as db:
-        with pytest.raises(NotImplementedError) as async_error:
-            await getattr(db, method)(**kwargs)
+        await getattr(db, method)(**kwargs)
 
-    assert "Dropping all tables is not currently supported in the remote API" in str(
-        sync_error.value
-    )
-    assert "drop_table" in str(sync_error.value)
-    assert str(sync_error.value) == str(async_error.value)
-    assert requests == []
+    expected_requests = [
+        ("GET", list_path),
+        ("POST", f"/v1/table/{table_prefix}table1/drop/"),
+        ("POST", f"/v1/table/{table_prefix}table2/drop/"),
+    ]
+    assert requests == expected_requests * 2
 
 
 def test_table_to_pandas_not_supported():
@@ -1561,7 +1587,14 @@ def test_remote_create_index_async_returns_job():
         job.cancel()
 
 
-def test_remote_refresh_async_returns_typed_terminal_result():
+@pytest.mark.asyncio
+@pytest.mark.parametrize("async_table", [False, True])
+@pytest.mark.parametrize(
+    "refresh_kwargs", [{}, {"batch_size": None}, {"batch_size": 1}, {"batch_size": 8}]
+)
+async def test_remote_refresh_async_returns_typed_terminal_result(
+    async_table, refresh_kwargs
+):
     terminal_result = {
         "rows_assigned": 12,
         "rows_failed": 0,
@@ -1574,7 +1607,10 @@ def test_remote_refresh_async_returns_typed_terminal_result():
         content_len = int(request.headers.get("Content-Length", 0))
         body = request.rfile.read(content_len) if content_len > 0 else b""
         if request.path == "/v1/table/test/backfill_column":
-            assert json.loads(body)["column"] == "derived"
+            expected = {"column": "derived"}
+            if refresh_kwargs.get("batch_size") is not None:
+                expected["batch_size"] = refresh_kwargs["batch_size"]
+            assert json.loads(body) == expected
             request.send_response(202)
             request.send_header("Content-Type", "application/json")
             request.end_headers()
@@ -1623,11 +1659,18 @@ def test_remote_refresh_async_returns_typed_terminal_result():
             request.send_response(404)
             request.end_headers()
 
-    with mock_lancedb_connection(handler) as db:
-        table = db.create_table("test", [{"id": 1}])
-        job = table.refresh_column_async("derived")
-        assert job.id == "refresh-1"
-        result = job.wait(timeout=timedelta(seconds=30))
+    if async_table:
+        async with mock_lancedb_connection_async(handler) as db:
+            table = await db.create_table("test", [{"id": 1}])
+            job = await table.refresh_column_async("derived", **refresh_kwargs)
+            assert job.id == "refresh-1"
+            result = await job.wait(timeout=timedelta(seconds=30))
+    else:
+        with mock_lancedb_connection(handler) as db:
+            table = db.create_table("test", [{"id": 1}])
+            job = table.refresh_column_async("derived", **refresh_kwargs)
+            assert job.id == "refresh-1"
+            result = job.wait(timeout=timedelta(seconds=30))
 
     assert isinstance(result, lancedb.RefreshColumnResult)
     assert result.model_dump() == terminal_result
@@ -2388,6 +2431,118 @@ def test_checkpoint_rte_sync():
     with lsm_test_table(lsm_handler) as table:
         assert table.checkpoint_rte() is None
         assert called == ["flush_rte", "get_rte_stats"]
+
+
+@contextlib.contextmanager
+def table_overrides_test_table(overrides_handler):
+    def handler(request):
+        parsed = urlparse(request.path)
+        if parsed.path in (
+            "/admin/table/overrides",
+            "/admin/table/overrides/reset",
+        ):
+            overrides_handler(request, parsed)
+        elif parsed.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b'{"version": 1, "schema": {"fields": []}}')
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        yield db.open_table("test")
+
+
+def assert_table_overrides_query(parsed):
+    query = parse_qs(parsed.query)
+    assert query == {"db": ["dev"], "table": ["test"]}
+
+
+def test_remote_table_exposes_table_overrides_methods():
+    from lancedb.remote.table import RemoteTable
+
+    for name in (
+        "get_table_overrides",
+        "update_table_overrides",
+        "reset_table_overrides",
+    ):
+        assert hasattr(RemoteTable, name)
+
+
+def test_get_table_overrides_sync_remote_table():
+    def overrides_handler(request, parsed):
+        assert request.command == "GET"
+        assert parsed.path == "/admin/table/overrides"
+        assert_table_overrides_query(parsed)
+        send_json(request, {"job_types": {"cleanup": {"enabled": False}}})
+
+    with table_overrides_test_table(overrides_handler) as table:
+        assert table.get_table_overrides() == {
+            "job_types": {"cleanup": {"enabled": False}}
+        }
+
+
+def test_update_table_overrides_sync_remote_table_merges_existing_fields():
+    calls = []
+
+    def overrides_handler(request, parsed):
+        calls.append(request.command)
+        assert parsed.path == "/admin/table/overrides"
+        if request.command == "GET":
+            assert_table_overrides_query(parsed)
+            send_json(
+                request,
+                {
+                    "job_types": {
+                        "compaction": {"enabled": True},
+                        "reindex_vector": {"table": {"num_workers": 3}},
+                    },
+                    "unknown": {"keep": True},
+                },
+            )
+        elif request.command == "PUT":
+            body = read_json_body(request)
+            assert body["db"] == "dev"
+            assert body["namespace"] == []
+            assert body["table"] == "test"
+            assert body["overrides"] == {
+                "job_types": {
+                    "compaction": {"enabled": True},
+                    "cleanup": {"enabled": False},
+                    "reindex_vector": {"table": {"num_workers": 3}},
+                },
+                "unknown": {"keep": True},
+            }
+            send_json(request, body["overrides"])
+        else:
+            raise AssertionError(f"unexpected method: {request.command}")
+
+    with table_overrides_test_table(overrides_handler) as table:
+        assert table.update_table_overrides(
+            job_types={"cleanup": {"enabled": False}}
+        ) == {
+            "job_types": {
+                "compaction": {"enabled": True},
+                "cleanup": {"enabled": False},
+                "reindex_vector": {"table": {"num_workers": 3}},
+            },
+            "unknown": {"keep": True},
+        }
+
+    assert calls == ["GET", "PUT"]
+
+
+def test_reset_table_overrides_sync_remote_table():
+    def overrides_handler(request, parsed):
+        assert request.command == "POST"
+        assert parsed.path == "/admin/table/overrides/reset"
+        assert_table_overrides_query(parsed)
+        send_json(request, {})
+
+    with table_overrides_test_table(overrides_handler) as table:
+        assert table.reset_table_overrides() == {}
 
 
 @contextlib.contextmanager
@@ -4639,55 +4794,215 @@ def test_remote_job_handle_reports_its_own_detail():
         }
 
 
-def test_view_crud_addresses_its_own_routes():
-    # The view verbs are their own routes, and the schema comes back in the
-    # namespace spec's JSON encoding, decoded into a pyarrow schema.
-    paths = []
+def _property_graph_handler(calls, respond):
+    """A mock route handler recording ``(method, path, body)`` and answering
+    with the ``(status, body)`` that ``respond(path, body)`` returns, as JSON."""
 
     def handler(request):
-        paths.append((request.command, request.path))
-        if request.path.endswith("/view/list"):
-            body = {"views": ["adults"]}
-        elif request.path.endswith("/drop"):
-            body = {}
-        else:
-            body = {
-                "name": "adults",
-                "namespace": ["analytics"],
-                "query": "SELECT name FROM people",
-                "default_database": "dev",
-                "default_namespace": ["analytics"],
-                "schema": {
-                    "fields": [
-                        {"name": "name", "nullable": True, "type": {"type": "utf8"}}
-                    ]
-                },
-            }
-        request.send_response(200)
+        length = int(request.headers.get("Content-Length") or 0)
+        raw = request.rfile.read(length) if length else b""
+        body = json.loads(raw) if raw else None
+        calls.append((request.command, request.path, body))
+        status, payload = respond(request.path, body)
+        request.send_response(status)
         request.send_header("Content-Type", "application/json")
         request.end_headers()
-        request.wfile.write(json.dumps(body).encode())
+        request.wfile.write(json.dumps(payload).encode())
 
-    with mock_lancedb_connection(handler) as db:
-        view = db.create_view(
-            "adults", "SELECT name FROM people", namespace_path=["analytics"]
+    return handler
+
+
+SOCIAL_NODES = [
+    NodeTable("person", key="person_id", label="Person", properties=["name"])
+]
+SOCIAL_EDGES = [
+    EdgeTable(
+        "knows",
+        label="KNOWS",
+        source=Endpoint("src_id", references=("person", "person_id")),
+        destination=Endpoint("dst_id", references=("person", "person_id")),
+    )
+]
+# The create body for the tables above. The edge table leaves its properties
+# out, which means every column.
+SOCIAL_DEFINITION = {
+    "nodes": [
+        {
+            "table": "person",
+            "key": "person_id",
+            "label": "Person",
+            "properties": ["name"],
+        }
+    ],
+    "edges": [
+        {
+            "table": "knows",
+            "label": "KNOWS",
+            "source": {
+                "column": "src_id",
+                "references": {"table": "person", "column": "person_id"},
+            },
+            "destination": {
+                "column": "dst_id",
+                "references": {"table": "person", "column": "person_id"},
+            },
+        }
+    ],
+}
+# Create resolves each table's properties, the key and endpoint columns always
+# among them.
+RESOLVED_NODES = [replace(SOCIAL_NODES[0], properties=["person_id", "name"])]
+RESOLVED_EDGES = [replace(SOCIAL_EDGES[0], properties=["src_id", "dst_id", "since"])]
+
+
+def _social_description(namespace):
+    described = copy.deepcopy(SOCIAL_DEFINITION)
+    described["nodes"][0]["properties"] = RESOLVED_NODES[0].properties
+    described["edges"][0]["properties"] = RESOLVED_EDGES[0].properties
+    return {"name": "social", "namespace": namespace, **described}
+
+
+def test_property_graph_crud_addresses_its_own_routes():
+    # The definition is the create body and describe posts an empty object.
+    # An accepted drop hands back its cleanup job, which drop waits on.
+    calls = []
+
+    def respond(path, body):
+        if path.startswith("/v1/namespace/analytics/property_graph/list"):
+            if "page_token=p2" in path:
+                return 200, {"property_graphs": ["payments"]}
+            return 200, {"property_graphs": ["social"], "page_token": "p2"}
+        if path.endswith("/drop"):
+            return 202, {"job_id": "j1-pg-drop"}
+        if path == "/v1/jobs/describe":
+            return 200, {"job_id": body["job_id"], "job_state": "DONE"}
+        return 200, _social_description(["analytics"])
+
+    with mock_lancedb_connection(_property_graph_handler(calls, respond)) as db:
+        graph = db.create_property_graph(
+            "social", SOCIAL_NODES, SOCIAL_EDGES, namespace_path=["analytics"]
         )
-        assert view.name == "adults"
-        assert view.namespace_path == ["analytics"]
-        assert view.query == "SELECT name FROM people"
-        assert view.default_database == "dev"
-        assert view.default_namespace_path == ["analytics"]
-        assert view.schema == pa.schema([pa.field("name", pa.utf8(), nullable=True)])
+        assert isinstance(graph, PropertyGraph)
+        assert (graph.name, graph.namespace_path) == ("social", ["analytics"])
+        assert graph.describe() == PropertyGraphDescription(
+            name="social",
+            namespace_path=["analytics"],
+            nodes=RESOLVED_NODES,
+            edges=RESOLVED_EDGES,
+        )
 
-        described = db.describe_view("adults", namespace_path=["analytics"])
-        assert described.schema == view.schema
+        opened = db.open_property_graph("social", namespace_path=["analytics"])
+        assert (opened.name, opened.namespace_path) == ("social", ["analytics"])
 
-        assert list(db.list_views(namespace_path=["analytics"])) == ["adults"]
-        db.drop_view("adults", namespace_path=["analytics"])
+        graphs = db.list_property_graphs(namespace_path=["analytics"], page_limit=1)
+        assert list(graphs) == ["social", "payments"]
 
-    assert paths == [
-        ("POST", "/v1/view/analytics$adults/create"),
-        ("POST", "/v1/view/analytics$adults/describe"),
-        ("GET", "/v1/namespace/analytics/view/list"),
-        ("POST", "/v1/view/analytics$adults/drop"),
+        db.drop_property_graph("social", namespace_path=["analytics"])
+
+    assert calls == [
+        ("POST", "/v1/property_graph/analytics$social/create", SOCIAL_DEFINITION),
+        ("POST", "/v1/property_graph/analytics$social/describe", {}),
+        ("POST", "/v1/property_graph/analytics$social/describe", {}),
+        ("GET", "/v1/namespace/analytics/property_graph/list?limit=1", None),
+        (
+            "GET",
+            "/v1/namespace/analytics/property_graph/list?page_token=p2&limit=1",
+            None,
+        ),
+        ("POST", "/v1/property_graph/analytics$social/drop", None),
+        ("POST", "/v1/jobs/describe", {"job_id": "j1-pg-drop"}),
     ]
+
+
+@pytest.mark.asyncio
+async def test_async_property_graph_handles():
+    calls = []
+
+    def respond(path, body):
+        if path.endswith("/property_graph/list"):
+            return 200, {"property_graphs": ["social"]}
+        if path.endswith("/drop"):
+            return 200, {}
+        return 200, _social_description([])
+
+    async with mock_lancedb_connection_async(
+        _property_graph_handler(calls, respond)
+    ) as db:
+        graph = await db.create_property_graph("social", SOCIAL_NODES)
+        assert isinstance(graph, AsyncPropertyGraph)
+        described = await graph.describe()
+        assert (described.namespace_path, described.nodes) == ([], RESOLVED_NODES)
+
+        opened = await db.open_property_graph("social")
+        assert isinstance(opened, AsyncPropertyGraph)
+        assert [name async for name in db.list_property_graphs()] == ["social"]
+        await db.drop_property_graph("social")
+
+    assert calls == [
+        (
+            "POST",
+            "/v1/property_graph/social/create",
+            {"nodes": SOCIAL_DEFINITION["nodes"], "edges": []},
+        ),
+        ("POST", "/v1/property_graph/social/describe", {}),
+        ("POST", "/v1/property_graph/social/describe", {}),
+        ("GET", "/v1/namespace/$/property_graph/list", None),
+        ("POST", "/v1/property_graph/social/drop", None),
+    ]
+
+
+def test_a_missing_property_graph_is_not_found():
+    # Opening describes the graph, so a name no graph holds fails there.
+    calls = []
+
+    def respond(path, body):
+        return 404, {"error": "property graph 'social' not found"}
+
+    with mock_lancedb_connection(_property_graph_handler(calls, respond)) as db:
+        with pytest.raises(HttpError) as missing:
+            db.open_property_graph("social")
+        assert missing.value.status_code == 404
+        with pytest.raises(HttpError) as missing:
+            db.drop_property_graph("social")
+        assert missing.value.status_code == 404
+
+    assert calls == [
+        ("POST", "/v1/property_graph/social/describe", {}),
+        ("POST", "/v1/property_graph/social/drop", None),
+    ]
+
+
+def test_a_property_graph_takes_node_and_edge_tables():
+    # A definition of the wrong shape is refused before any request is made.
+    calls = []
+    with mock_lancedb_connection(
+        _property_graph_handler(calls, lambda path, body: (200, {}))
+    ) as db:
+        with pytest.raises(TypeError, match="nodes are NodeTable"):
+            db.create_property_graph("social", SOCIAL_EDGES)
+        with pytest.raises(TypeError, match="not NodeTable"):
+            db.create_property_graph("social", SOCIAL_NODES, SOCIAL_NODES)
+        with pytest.raises(TypeError, match="are Endpoint, not tuple"):
+            db.create_property_graph(
+                "social",
+                SOCIAL_NODES,
+                [replace(SOCIAL_EDGES[0], source=("person", "person_id"))],
+            )
+        with pytest.raises(TypeError, match="not a string"):
+            db.create_property_graph(
+                "social", [replace(SOCIAL_NODES[0], properties="name")]
+            )
+    assert calls == []
+
+
+def test_local_connections_refuse_property_graphs(tmp_path):
+    db = lancedb.connect(tmp_path)
+    refused = "Property graph operations are not supported"
+    with pytest.raises(NotImplementedError, match=refused):
+        db.create_property_graph("social", SOCIAL_NODES, SOCIAL_EDGES)
+    with pytest.raises(NotImplementedError, match=refused):
+        db.open_property_graph("social")
+    with pytest.raises(NotImplementedError, match=refused):
+        list(db.list_property_graphs())
+    with pytest.raises(NotImplementedError, match=refused):
+        db.drop_property_graph("social")
