@@ -33,6 +33,78 @@ def mock_embed_func(input_data):
     return [np.random.randn(128).tolist() for _ in range(len(input_data))]
 
 
+@pytest.fixture
+def embedding_schema():
+    func = MockTextEmbeddingFunction.create()
+
+    class Doc(LanceModel):
+        id: int
+        text: str = func.SourceField()
+        vector: Vector(func.ndims()) = func.VectorField()
+
+    return Doc
+
+
+@pytest.mark.parametrize("column", ["text", "vector", "`text`", "`vector`"])
+@pytest.mark.parametrize("operation", ["rename", "drop"])
+def test_embedding_columns_schema_evolution(
+    tmp_path, embedding_schema, column, operation
+):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("docs", schema=embedding_schema)
+    table.add([{"id": 1, "text": "hello"}])
+    schema, version = table.schema, table.version
+
+    with pytest.raises(ValueError, match="used by an embedding function"):
+        if operation == "rename":
+            table.alter_columns(
+                {"path": "id", "rename": "doc_id"},
+                {"path": column, "rename": "renamed"},
+            )
+        else:
+            table.drop_columns(["id", column])
+
+    assert table.schema == schema
+    assert table.version == version
+    assert table.embedding_functions["vector"].source_column == "text"
+    reopened = db.open_table("docs")
+    reopened.add([{"id": 2, "text": "world"}])
+    assert reopened.count_rows() == 2
+    assert reopened.to_arrow()["vector"].null_count == 0
+
+    # Columns outside the embedding binding can still evolve.
+    reopened.alter_columns({"path": "id", "rename": "doc_id"})
+    reopened.drop_columns(["doc_id"])
+    reopened.add([{"text": "again"}])
+    assert reopened.count_rows() == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("column", ["text", "vector"])
+@pytest.mark.parametrize("operation", ["rename", "drop"])
+async def test_async_embedding_columns_schema_evolution(
+    tmp_path, embedding_schema, column, operation
+):
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("docs", schema=embedding_schema)
+    await table.add([{"id": 1, "text": "hello"}])
+    schema, version = await table.schema(), await table.version()
+
+    with pytest.raises(ValueError, match="used by an embedding function"):
+        if operation == "rename":
+            await table.alter_columns({"path": column, "rename": "renamed"})
+        else:
+            await table.drop_columns([column])
+
+    assert await table.schema() == schema
+    assert await table.version() == version
+    assert (await table.embedding_functions())["vector"].source_column == "text"
+    reopened = await db.open_table("docs")
+    await reopened.add([{"id": 2, "text": "world"}])
+    assert await reopened.count_rows() == 2
+    assert (await reopened.to_arrow())["vector"].null_count == 0
+
+
 def test_embedding_function(tmp_path):
     registry = EmbeddingFunctionRegistry.get_instance()
 
