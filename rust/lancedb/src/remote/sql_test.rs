@@ -2637,9 +2637,16 @@ async fn function_listing_uses_bounded_sql_and_scoped_version_cursors() {
     let mut second: serde_json::Value = serde_json::from_str(VERSION).unwrap();
     second["version"] = serde_json::json!("2");
     let second = second.to_string();
+    let mut tenth: serde_json::Value = serde_json::from_str(VERSION).unwrap();
+    tenth["version"] = serde_json::json!("10");
+    let tenth = tenth.to_string();
     let result = RecordBatch::try_from_iter(vec![(
         "definition",
-        Arc::new(StringArray::from(vec![VERSION, second.as_str()])) as ArrayRef,
+        Arc::new(StringArray::from(vec![
+            VERSION,
+            second.as_str(),
+            tenth.as_str(),
+        ])) as ArrayRef,
     )])
     .unwrap();
     let service = TestSqlService {
@@ -2648,6 +2655,10 @@ async fn function_listing_uses_bounded_sql_and_scoped_version_cursors() {
         result,
         ..Default::default()
     };
+    service.result_overrides.lock().unwrap().insert(
+        "SHOW FUNCTIONS HISTORY WITH (limit = 3, include_definition = true, after_name = 'embed', after_version = '2')".into(),
+        RecordBatch::try_from_iter(vec![("definition", Arc::new(StringArray::from(vec![tenth.as_str()])) as ArrayRef)]).unwrap(),
+    );
     let statements = service.statements.clone();
     let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
     let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
@@ -2657,29 +2668,36 @@ async fn function_listing_uses_bounded_sql_and_scoped_version_cursors() {
     let first = db
         .list_functions(
             &["team".into()],
-            crate::listing::ListingOptions::default().page_limit(1),
+            crate::listing::ListingOptions::default().page_limit(2),
         )
         .await
         .unwrap();
-    assert_eq!(first.items.len(), 1);
+    assert_eq!(
+        first
+            .items
+            .iter()
+            .map(|item| item.version())
+            .collect::<Vec<_>>(),
+        ["1", "2"]
+    );
     let token = first.page_token.unwrap();
     let second = db
         .list_functions(
             &["team".into()],
             crate::listing::ListingOptions::default()
-                .page_limit(1)
+                .page_limit(2)
                 .page_token(token.clone()),
         )
         .await
         .unwrap();
     assert_eq!(second.items.len(), 1);
-    assert_eq!(second.items[0].version(), "2");
+    assert_eq!(second.items[0].version(), "10");
     assert!(second.page_token.is_none());
     assert!(
         db.list_functions(
             &["other".into()],
             crate::listing::ListingOptions::default()
-                .page_limit(1)
+                .page_limit(2)
                 .page_token(token)
         )
         .await
@@ -2687,8 +2705,8 @@ async fn function_listing_uses_bounded_sql_and_scoped_version_cursors() {
     );
     let seen = statements.lock().unwrap();
     assert_eq!(seen.len(), 2);
-    assert!(seen[0].contains("limit = 2"));
-    assert!(seen[1].contains("after_version = '1'"));
+    assert!(seen[0].starts_with("SHOW FUNCTIONS HISTORY WITH (limit = 3,"));
+    assert!(seen[1].contains("after_version = '2'"));
     shutdown.send(()).unwrap();
 }
 
