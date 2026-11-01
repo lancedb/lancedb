@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use super::{
-    SqlClient,
-    materialized_view::quote_identifier,
-    objects::{definition, strings},
-};
+use super::{SqlClient, materialized_view::quote_identifier, objects::strings};
 use crate::{
     database::ExecuteQueryRequest,
     error::{Error, Result},
@@ -13,10 +9,38 @@ use crate::{
     secrets::SecretInfo,
     utils::{validate_namespace, validate_secret_name},
 };
-use arrow_array::{RecordBatch, StringArray};
+use arrow_array::{Array, Int64Array, RecordBatch, StringArray};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures::TryStreamExt;
 use std::sync::Arc;
+fn secret_info(batches: Vec<RecordBatch>) -> Result<SecretInfo> {
+    if batches.iter().map(RecordBatch::num_rows).sum::<usize>() != 1 {
+        return Err(Error::Runtime {
+            message: "DESCRIBE SECRET must return exactly one row".into(),
+        });
+    }
+    let batch = batches.iter().find(|batch| batch.num_rows() == 1).unwrap();
+    let timestamp = |name: &str| -> Result<i64> {
+        let values = batch
+            .column_by_name(name)
+            .and_then(|column| column.as_any().downcast_ref::<Int64Array>())
+            .ok_or_else(|| Error::Runtime {
+                message: format!("DESCRIBE SECRET is missing INT64 column '{name}'"),
+            })?;
+        if values.is_null(0) {
+            return Err(Error::Runtime {
+                message: format!("DESCRIBE SECRET contains null '{name}'"),
+            });
+        }
+        Ok(values.value(0))
+    };
+    Ok(SecretInfo {
+        name: strings(&batches, "name")?.remove(0),
+        created_at_millis: timestamp("created_at_millis")?,
+        updated_at_millis: timestamp("updated_at_millis")?,
+    })
+}
+
 impl SqlClient {
     pub(in crate::remote) async fn write_secret(
         &self,
@@ -37,9 +61,14 @@ impl SqlClient {
         self.object_job(
             ExecuteQueryRequest {
                 query: format!(
-                    "{} SECRET {} AS $1",
+                    "{} SECRET {} {}SECRET_STRING = $1",
                     if create { "CREATE" } else { "ALTER" },
-                    quote_identifier(name)
+                    quote_identifier(name),
+                    if create {
+                        "TYPE = GENERIC_STRING "
+                    } else {
+                        "SET "
+                    }
                 ),
                 default_namespace_path: namespace.to_vec(),
                 parameters: Some(parameters),
@@ -63,7 +92,7 @@ impl SqlClient {
                 default_namespace_path: namespace.to_vec(),
                 parameters: None,
             },
-            definition,
+            secret_info,
         )
         .await?
         .wait()
@@ -152,5 +181,42 @@ impl SqlClient {
             None
         };
         Ok(ListingPage { items, page_token })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow_array::ArrayRef;
+
+    #[test]
+    fn decodes_native_secret_metadata() {
+        let batch = RecordBatch::try_from_iter(vec![
+            (
+                "name",
+                Arc::new(StringArray::from(vec!["api-key"])) as ArrayRef,
+            ),
+            (
+                "created_at_millis",
+                Arc::new(Int64Array::from(vec![10])) as ArrayRef,
+            ),
+            (
+                "updated_at_millis",
+                Arc::new(Int64Array::from(vec![20])) as ArrayRef,
+            ),
+        ])
+        .unwrap();
+        let info = secret_info(vec![batch.clone()]).unwrap();
+        assert_eq!(info.name, "api-key");
+        assert_eq!(info.created_at_millis, 10);
+        assert_eq!(info.updated_at_millis, 20);
+        assert!(secret_info(vec![]).is_err());
+        assert!(secret_info(vec![batch.clone(), batch]).is_err());
+        let missing = RecordBatch::try_from_iter(vec![(
+            "name",
+            Arc::new(StringArray::from(vec!["api-key"])) as ArrayRef,
+        )])
+        .unwrap();
+        assert!(secret_info(vec![missing]).is_err());
     }
 }

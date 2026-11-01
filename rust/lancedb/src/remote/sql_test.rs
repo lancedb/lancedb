@@ -2419,8 +2419,11 @@ async fn secret_writes_bind_credentials_and_never_put_them_in_sql() {
         );
         let seen = exchanges.lock().unwrap();
         assert_eq!(seen.len(), 2);
-        assert_eq!(seen[0].0, "CREATE SECRET \"api-key\" AS $1");
-        assert_eq!(seen[1].0, "ALTER SECRET \"api-key\" AS $1");
+        assert_eq!(
+            seen[0].0,
+            "CREATE SECRET \"api-key\" TYPE = GENERIC_STRING SECRET_STRING = $1"
+        );
+        assert_eq!(seen[1].0, "ALTER SECRET \"api-key\" SET SECRET_STRING = $1");
         assert_eq!(
             seen[0]
                 .1
@@ -2450,11 +2453,20 @@ async fn secret_writes_bind_credentials_and_never_put_them_in_sql() {
 }
 #[tokio::test]
 async fn secret_description_uses_the_sql_metadata_projection() {
-    let definition = r#"{"name":"api-key","created_at_millis":1,"updated_at_millis":2,"history":[{"generation":2,"at_millis":2}]}"#;
-    let result = RecordBatch::try_from_iter(vec![(
-        "definition",
-        Arc::new(StringArray::from(vec![definition])) as ArrayRef,
-    )])
+    let result = RecordBatch::try_from_iter(vec![
+        (
+            "name",
+            Arc::new(StringArray::from(vec!["api-key"])) as ArrayRef,
+        ),
+        (
+            "created_at_millis",
+            Arc::new(arrow_array::Int64Array::from(vec![1])) as ArrayRef,
+        ),
+        (
+            "updated_at_millis",
+            Arc::new(arrow_array::Int64Array::from(vec![2])) as ArrayRef,
+        ),
+    ])
     .unwrap();
     let service = TestSqlService {
         adaptive: true,
