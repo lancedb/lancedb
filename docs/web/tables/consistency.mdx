@@ -27,7 +27,7 @@ In **LanceDB Embedded**, a table handle sees its own committed writes. By defaul
 not automatically check for changes made through other handles or processes.
 Use a read consistency interval or `checkout_latest()` to pick up those changes.
 
-In **LanceDB Distributed** (provided by LanceDB Enterprise), readers use the
+In **LanceDB Enterprise**, readers use the
 service's configured freshness policy.
 A connection can request fresher data. When a read must include a completed
 write, use a zero interval or call `checkout_latest()` after the write, with a
