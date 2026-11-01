@@ -92,6 +92,13 @@ def _top_level_alias_key(alias: Any) -> str | None:
     return None
 
 
+def _top_level_alias_keys(alias: Any) -> set[str]:
+    options = alias.choices if isinstance(alias, pydantic.AliasChoices) else (alias,)
+    return {
+        key for option in options if (key := _top_level_alias_key(option)) is not None
+    }
+
+
 def _single_component_alias(alias: Any) -> str | None:
     # AliasChoices validates against the first matching source, so only use
     # its first option as a field-name fallback.
@@ -107,8 +114,9 @@ def _rows_to_models(model: type[T], rows: List[dict]) -> List[T]:
 
     A table created from a LanceModel stores each field under its name, while
     pydantic validates an aliased field by its alias. Pass a row's value under
-    the alias when the row has the field name but not the alias, so a model
-    with aliases can read the tables it wrote; rows keyed by alias still work.
+    the alias when the row has the field name but none of the aliases, so a
+    model with aliases can read the tables it wrote; rows keyed by any alias
+    still work.
     """
     if model.model_config.get("validate_by_alias", True) is False:
         # Name-only validation: pydantic reads field names and ignores aliases.
@@ -119,12 +127,8 @@ def _rows_to_models(model: type[T], rows: List[dict]) -> List[T]:
     }
     # Every top-level key some field reads, including the first step of an
     # AliasPath and each choice of an AliasChoices.
-    taken = set()
-    for alias in aliases.values():
-        for option in getattr(alias, "choices", [alias]):
-            key = _top_level_alias_key(option)
-            if key is not None:
-                taken.add(key)
+    alias_keys = {name: _top_level_alias_keys(alias) for name, alias in aliases.items()}
+    taken = set().union(*alias_keys.values())
     renames = {
         name: target
         for name, alias in aliases.items()
@@ -134,9 +138,9 @@ def _rows_to_models(model: type[T], rows: List[dict]) -> List[T]:
         and name not in taken
     }
     for row in rows:
-        for name, alias in renames.items():
-            if name in row and alias not in row:
-                row[alias] = row.pop(name)
+        for name, target in renames.items():
+            if name in row and not any(key in row for key in alias_keys[name]):
+                row[target] = row.pop(name)
     return [model(**row) for row in rows]
 
 
