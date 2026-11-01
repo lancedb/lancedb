@@ -6071,6 +6071,7 @@ dependencies = [
  "pyo3",
  "pyo3-async-runtimes",
  "pyo3-build-config",
+ "reqwest 0.13.5",
  "serde",
  "serde_json",
  "snafu 0.8.9",

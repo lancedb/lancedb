@@ -41,14 +41,21 @@ print(job.status())
     results it committed before stopping.
 
 In Python, `job.status()` reports the current state and `job.wait()` waits for
-completion, raising if the job fails or is cancelled. If `job.wait()` times out, the client stops waiting.
-The timeout does not cancel the server job.
+completion, raising if the job fails or is cancelled. Both `Job.wait()` and
+`AsyncJob.wait()` retry transient connection and read errors with capped
+exponential backoff within the caller's timeout. Without a timeout, retries
+continue indefinitely.
+
+If the timeout expires while disconnected, the wait raises `ConnectionError`
+with the job ID and instructions to resume waiting. A timeout while connected
+raises `TimeoutError`. The job may still be running; timing out does not cancel it.
 
 ```python
 from datetime import timedelta
 from lancedb.exceptions import JobFailedError, JobCancelledError
 
 job = tbl.create_index_async("vector", replace=True)
+job_id = job.id  # Save the ID to reopen an Enterprise registry job later.
 
 try:
     result = job.wait(timeout=timedelta(minutes=10))
@@ -56,9 +63,22 @@ except JobFailedError:
     print(f"job failed: {job.failure}")
 except JobCancelledError:
     print("job was cancelled")
+except ConnectionError as exc:
+    print(exc)  # The job may still be running on the server.
 except TimeoutError:
     print(f"still running: {job.status()}")
 ```
+
+After connectivity returns, reopen an Enterprise registry job by its saved ID
+and continue waiting on the existing operation:
+
+```python
+job = db.open_job(job_id)
+result = job.wait(timeout=timedelta(minutes=10))
+```
+
+For SQL-backed jobs, call `wait()` again on the original handle. These jobs
+cannot be reopened with `db.open_job()`; see [SQL-backed job handles](#sql-backed-job-handles).
 
 <span id="inspecting" />
 <span id="events" />

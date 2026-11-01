@@ -61,6 +61,15 @@ def test_pickle_http_error():
     assert str(restored) == "not found"
     assert restored.request_id == "req-789"
     assert restored.status_code == 404
+    assert restored.is_transport_error is False
+
+
+def test_pickle_http_transport_error():
+    err = HttpError("connection reset", "req-789", is_transport_error=True)
+    restored = pickle.loads(pickle.dumps(err))
+    assert isinstance(restored, HttpError)
+    assert restored.is_transport_error is True
+    assert restored.request_id == "req-789"
 
 
 @pytest.mark.parametrize(
@@ -93,6 +102,7 @@ def test_http_error_structured_resource_error(
     assert err.namespace_path == ("parent", "child")
     assert err.request_id == "req-structured"
     assert err.status_code == status_code
+    assert err.is_transport_error is False
 
 
 @pytest.mark.parametrize(
@@ -131,7 +141,10 @@ def test_http_error_without_known_structured_fields_stays_generic(
         (AlreadyExistsError, "already_exists", "namespace"),
     ],
 )
-def test_pickle_structured_http_error(exception_type, error_code, resource_kind):
+@pytest.mark.parametrize("is_transport_error", [False, True])
+def test_pickle_structured_http_error(
+    exception_type, error_code, resource_kind, is_transport_error
+):
     err = HttpError(
         "resource request failed",
         "req-pickle",
@@ -140,6 +153,7 @@ def test_pickle_structured_http_error(exception_type, error_code, resource_kind)
         resource_kind,
         "resource-name",
         ["parent"],
+        is_transport_error=is_transport_error,
     )
     assert type(err) is exception_type
 
@@ -152,6 +166,7 @@ def test_pickle_structured_http_error(exception_type, error_code, resource_kind)
     assert restored.namespace_path == ("parent",)
     assert restored.request_id == "req-pickle"
     assert restored.status_code == err.status_code
+    assert restored.is_transport_error is is_transport_error
 
 
 def test_pickle_table_not_found_error():

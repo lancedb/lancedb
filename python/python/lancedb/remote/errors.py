@@ -54,6 +54,9 @@ class HttpError(LanceDBClientError):
         The name of the resource reported by the server, if available.
     namespace_path: tuple[str, ...]
         The parent namespace path of the resource, if available.
+    is_transport_error: bool
+        Whether the request failed while connecting, sending, or reading, rather
+        than because of an HTTP status or an invalid response payload.
     """
 
     def __new__(
@@ -65,6 +68,7 @@ class HttpError(LanceDBClientError):
         resource_kind: Optional[str] = None,
         resource_name: Optional[str] = None,
         namespace_path: Optional[tuple[str, ...]] = None,
+        is_transport_error: bool = False,
     ):
         if cls is HttpError:
             mapped_cls = _http_error_class(error_code, resource_kind)
@@ -81,8 +85,10 @@ class HttpError(LanceDBClientError):
         resource_kind: Optional[str] = None,
         resource_name: Optional[str] = None,
         namespace_path: Optional[tuple[str, ...]] = None,
+        is_transport_error: bool = False,
     ):
         super().__init__(message, request_id, status_code)
+        self.is_transport_error = is_transport_error
         self.error_code = error_code
         self.resource_kind = resource_kind
         self.resource_name = resource_name
@@ -101,6 +107,7 @@ class HttpError(LanceDBClientError):
                 self.resource_kind,
                 self.resource_name,
                 self.namespace_path,
+                self.is_transport_error,
             ),
         )
 
