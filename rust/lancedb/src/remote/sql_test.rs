@@ -2682,12 +2682,22 @@ async fn function_listing_uses_bounded_sql_and_scoped_version_cursors() {
 
 #[tokio::test]
 async fn view_create_and_describe_return_metadata_through_sql() {
-    let definition = r#"{"name":"adults","namespace":["team"],"query":"SELECT name FROM people","default_database":"db","default_namespace":["team"],"schema":{"fields":[{"name":"name","nullable":true,"type":{"type":"utf8"}}]}}"#;
+    let schema = r#"{"fields":[{"name":"name","nullable":true,"type":{"type":"utf8"}}],"metadata":{"lancedb::view::default_db":"db","lancedb::view::default_namespace":"team"}}"#;
     for defer in [false, true] {
-        let result = RecordBatch::try_from_iter(vec![(
-            "definition",
-            Arc::new(StringArray::from(vec![definition])) as ArrayRef,
-        )])
+        let result = RecordBatch::try_from_iter(vec![
+            (
+                "name",
+                Arc::new(StringArray::from(vec!["adults"])) as ArrayRef,
+            ),
+            (
+                "query",
+                Arc::new(StringArray::from(vec!["SELECT name FROM people"])) as ArrayRef,
+            ),
+            (
+                "schema",
+                Arc::new(StringArray::from(vec![schema])) as ArrayRef,
+            ),
+        ])
         .unwrap();
         let service = TestSqlService {
             adaptive: true,
