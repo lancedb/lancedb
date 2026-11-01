@@ -69,9 +69,8 @@ SHOW VIEWS
 SHOW VIEWS IN "analytics" WHERE name > 'previous_view' LIMIT 100
 ```
 
-`SHOW VIEWS` returns ascending `name` values and a nullable `location` column.
-Locations are populated only when the deployment exposes catalog locations.
-The `name` cursor is scoped to the selected namespace.
+`SHOW VIEWS` returns ascending `name` values. The `name` cursor is scoped to
+the selected namespace.
 
 Object commands retain their small results in shared storage even when general
 query-result copying is disabled, so asynchronous polling can use any query node.
