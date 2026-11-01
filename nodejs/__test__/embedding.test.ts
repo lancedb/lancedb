@@ -18,6 +18,7 @@ import {
   tableFromIPC,
 } from "../lancedb/arrow";
 import { EmbeddingFunction, LanceSchema } from "../lancedb/embedding";
+import { retryWithExponentialBackoff } from "../lancedb/embedding/embedding_function";
 import { getRegistry, register } from "../lancedb/embedding/registry";
 
 const testOpenAIInteg = process.env.OPENAI_API_KEY == null ? test.skip : test;
@@ -586,5 +587,79 @@ describe("embedding functions", () => {
     expect(
       [...parsed.values()].map(({ vectorColumn }) => vectorColumn).sort(),
     ).toEqual(["vector_a", "vector_b"]);
+  });
+});
+
+describe("retryWithExponentialBackoff", () => {
+  it("should return immediately on success", async () => {
+    const result = await retryWithExponentialBackoff(async () => 42, {
+      maxRetries: 3,
+    });
+    expect(result).toBe(42);
+  });
+
+  it("should retry and eventually succeed", async () => {
+    let calls = 0;
+    const result = await retryWithExponentialBackoff(
+      async () => {
+        calls += 1;
+        if (calls < 3) {
+          throw new Error("transient failure");
+        }
+        return "ok";
+      },
+      { maxRetries: 5, initialDelay: 0.001, jitter: false },
+    );
+    expect(result).toBe("ok");
+    expect(calls).toBe(3);
+  });
+
+  it("should throw after exceeding maxRetries", async () => {
+    await expect(
+      retryWithExponentialBackoff(
+        async () => {
+          throw new Error("always fails");
+        },
+        { maxRetries: 2, initialDelay: 0.001, jitter: false },
+      ),
+    ).rejects.toThrow("Maximum number of retries (2) exceeded.");
+  });
+
+  it("should not retry on AuthenticationError", async () => {
+    class AuthenticationError extends Error {
+      constructor() {
+        super("Invalid API key");
+        Object.defineProperty(this, "constructor", {
+          value: { name: "AuthenticationError" },
+        });
+      }
+    }
+    let calls = 0;
+    await expect(
+      retryWithExponentialBackoff(
+        async () => {
+          calls += 1;
+          throw new AuthenticationError();
+        },
+        { maxRetries: 5, initialDelay: 0.001 },
+      ),
+    ).rejects.toThrow("Invalid API key");
+    expect(calls).toBe(1);
+  });
+
+  it("should not retry on 401/403 status codes", async () => {
+    let calls = 0;
+    const error = new Error("Forbidden") as Error & { status: number };
+    error.status = 403;
+    await expect(
+      retryWithExponentialBackoff(
+        async () => {
+          calls += 1;
+          throw error;
+        },
+        { maxRetries: 5, initialDelay: 0.001 },
+      ),
+    ).rejects.toThrow("Forbidden");
+    expect(calls).toBe(1);
   });
 });
