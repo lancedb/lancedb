@@ -10673,6 +10673,7 @@ mod tests {
                 .status(200)
                 .body(
                     r#"{"records": [{"job_id": "j-7", "fragment_id": 3, "row_offset": 9,
+                        "row_address": 12884901897,
                         "column": "embedding", "function": "embed", "function_version": "2",
                         "table_version": 11, "error_type": "ValueError",
                         "error_message": "bad input 'x'", "created_at_millis": 1700000000000}],
@@ -10698,6 +10699,7 @@ mod tests {
                 job_id: "j-7".into(),
                 fragment_id: 3,
                 row_offset: Some(9),
+                row_address: Some(12_884_901_897),
                 column: "embedding".into(),
                 function: "embed".into(),
                 function_version: "2".into(),
@@ -10717,6 +10719,22 @@ mod tests {
             }]
         );
         assert!(errors.truncated);
+
+        // Servers before row_address omit it; the record still decodes.
+        let legacy: FunctionErrorRecord = serde_json::from_value(serde_json::json!({
+            "job_id": "j-6",
+            "fragment_id": 2,
+            "row_offset": null,
+            "column": "embedding",
+            "function": "embed",
+            "function_version": "1",
+            "table_version": 10,
+            "error_type": "ValueError",
+            "error_message": "fragment reached the record cap",
+            "created_at_millis": 1_700_000_000_000_i64,
+        }))
+        .unwrap();
+        assert!(legacy.row_address.is_none());
 
         // No filter sends no filter, and an empty listing reads as such.
         let table = Table::new_with_handler("my_table", |request| {

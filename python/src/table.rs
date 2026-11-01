@@ -596,6 +596,7 @@ pub struct FunctionErrorRecord {
     pub job_id: String,
     pub fragment_id: u64,
     pub row_offset: Option<u32>,
+    pub row_address: Option<u64>,
     pub column: String,
     pub function: String,
     pub function_version: String,
@@ -608,12 +609,19 @@ pub struct FunctionErrorRecord {
 #[pymethods]
 impl FunctionErrorRecord {
     pub fn __repr__(&self) -> String {
+        let row_offset = self
+            .row_offset
+            .map_or_else(|| "None".to_string(), |value| value.to_string());
+        let row_address = self
+            .row_address
+            .map_or_else(|| "None".to_string(), |value| value.to_string());
         format!(
-            "FunctionErrorRecord(job_id={:?}, fragment_id={}, row_offset={:?}, column={:?}, \
-             error_type={:?}, error_message={:?})",
+            "FunctionErrorRecord(job_id={:?}, fragment_id={}, row_offset={}, row_address={}, \
+             column={:?}, error_type={:?}, error_message={:?})",
             self.job_id,
             self.fragment_id,
-            self.row_offset,
+            row_offset,
+            row_address,
             self.column,
             self.error_type,
             self.error_message
@@ -627,6 +635,7 @@ impl From<lancedb::function::FunctionErrorRecord> for FunctionErrorRecord {
             job_id: record.job_id,
             fragment_id: record.fragment_id,
             row_offset: record.row_offset,
+            row_address: record.row_address,
             column: record.column,
             function: record.function,
             function_version: record.function_version,

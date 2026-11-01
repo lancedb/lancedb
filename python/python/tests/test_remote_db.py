@@ -1685,6 +1685,7 @@ def test_remote_function_errors_lists_the_rows_a_refresh_skipped():
                 "job_id": "j-7",
                 "fragment_id": 3,
                 "row_offset": 9,
+                "row_address": 12884901897,
                 "column": "embedding",
                 "function": "embed",
                 "function_version": "2",
@@ -1735,7 +1736,13 @@ def test_remote_function_errors_lists_the_rows_a_refresh_skipped():
     assert errors.truncated is True
     assert [r.error_message for r in errors.records] == ["bad input 'x'"]
     assert errors.records[0].row_offset == 9
+    assert errors.records[0].row_address == 12884901897
     assert errors.records[0].function_version == "2"
+    assert repr(errors.records[0]) == (
+        'FunctionErrorRecord(job_id="j-7", fragment_id=3, row_offset=9, '
+        'row_address=12884901897, column="embedding", '
+        'error_type="ValueError", error_message="bad input \'x\'")'
+    )
     assert (errors.fragments[0].rows_skipped, errors.fragments[0].rows_recorded) == (
         500,
         100,
@@ -4702,6 +4709,9 @@ def test_remote_connection_jobs_surface():
         assert job.state == "failed"
         assert job.spec == {"column": "vec"}
         assert job.failure.message == "worker died"
+        assert repr(job.failure) == (
+            'JobFailureInfo(phase="execute", message="worker died", retryable=True)'
+        )
         assert job.status() == "failed"
         with pytest.raises(JobFailedError, match="worker died"):
             job.wait(timeout=timedelta(seconds=5))
