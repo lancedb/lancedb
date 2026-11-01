@@ -725,7 +725,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
 
     async fn read_consistency(&self) -> Result<ReadConsistency> {
         Err(Error::NotSupported {
-            message: "Getting the read consistency is not yet supported in LanceDB Distributed"
+            message: "Getting the read consistency is not yet supported in LanceDB Enterprise"
                 .to_string(),
         })
     }
@@ -737,7 +737,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         if request.with_no_data {
             return Err(Error::NotSupported {
                 message:
-                    "materialized views in LanceDB Distributed must be populated during creation"
+                    "materialized views in LanceDB Enterprise must be populated during creation"
                         .to_string(),
             });
         }
@@ -1374,7 +1374,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             if provided {
                 return Err(Error::NotSupported {
                     message: format!(
-                        "{option} is not supported for table creation in LanceDB Distributed"
+                        "{option} is not supported for table creation in LanceDB Enterprise"
                     ),
                 });
             }
@@ -1519,7 +1519,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             if provided {
                 return Err(Error::NotSupported {
                     message: format!(
-                        "{option} is not supported for table access in LanceDB Distributed"
+                        "{option} is not supported for table access in LanceDB Enterprise"
                     ),
                 });
             }
@@ -2503,7 +2503,7 @@ mod tests {
                 .execute()
                 .await;
             assert!(matches!(result, Err(Error::NotSupported { message })
-                if message.contains("write_options") && message.contains("LanceDB Distributed")));
+                if message.contains("write_options") && message.contains("LanceDB Enterprise")));
         }
     }
 
@@ -2576,7 +2576,7 @@ mod tests {
         ] {
             let result = builder.execute().await;
             assert!(matches!(result, Err(Error::NotSupported { message })
-                if message.contains(option) && message.contains("LanceDB Distributed")));
+                if message.contains(option) && message.contains("LanceDB Enterprise")));
         }
     }
 
@@ -2594,7 +2594,7 @@ mod tests {
         ] {
             let result = builder.api_key("fake").region("us-east-1").execute().await;
             assert!(matches!(result, Err(Error::NotSupported { message })
-                if message.contains(option) && message.contains("LanceDB Distributed")));
+                if message.contains(option) && message.contains("LanceDB Enterprise")));
         }
     }
 

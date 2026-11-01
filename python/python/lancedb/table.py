@@ -1577,7 +1577,7 @@ class Table(ABC):
     def to_lance(self, **kwargs) -> lance.LanceDataset:
         """Return a LanceDB Embedded table as a lance.LanceDataset.
 
-        LanceDB Distributed tables cannot be opened as Lance datasets by the
+        LanceDB Enterprise tables cannot be opened as Lance datasets by the
         client. Use
         ``table.search().to_arrow()`` to read them through the server.
 
@@ -1590,7 +1590,7 @@ class Table(ABC):
     def to_polars(self, batch_size=None) -> "pl.LazyFrame":
         """Return the table as a Polars LazyFrame.
 
-        In LanceDB Distributed, use ``table.search().to_polars()`` to convert query
+        In LanceDB Enterprise, use ``table.search().to_polars()`` to convert query
         results to a Polars DataFrame.
 
         Parameters
@@ -2571,7 +2571,7 @@ class Table(ABC):
 
         Blobs inside lists cannot be fetched by row id yet.
 
-        LanceDB Distributed limits each request to 1024 row IDs and 64 MiB of blob
+        LanceDB Enterprise limits each request to 1024 row IDs and 64 MiB of blob
         bytes. The client splits requests automatically and reads an individual
         larger blob through the Range route. This method still materializes all
         bytes in memory; for large values use :meth:`fetch_blob_files`.
@@ -2598,7 +2598,7 @@ class Table(ABC):
         results are returned.
 
         Row IDs can be obtained from a query with ``with_row_id(True)``.
-        LanceDB Distributed reads the requested ranges through version-pinned blob
+        LanceDB Enterprise reads the requested ranges through version-pinned blob
         handles using HTTP byte-range requests.
         """
 
@@ -2615,7 +2615,7 @@ class Table(ABC):
         a ``list[int]``, an integer Arrow array or chunked array, or a query
         ``pyarrow.Table`` carrying row identity via ``_rowid`` or a
         ``_lance_row_id`` field on the blob descriptor. Null blob values return
-        ``None``. LanceDB Distributed requires server version 0.5.0 or newer.
+        ``None``. LanceDB Enterprise requires server version 0.5.0 or newer.
 
         ``_rowid`` values stay valid after compaction when the table has stable
         row ids.
@@ -2852,7 +2852,7 @@ class Table(ABC):
 
         Notes
         -----
-        This function is not available in LanceDB Distributed, which manages
+        This function is not available in LanceDB Enterprise, which manages
         cleanup for you automatically.
         """
 
@@ -2874,7 +2874,7 @@ class Table(ABC):
 
         Notes
         -----
-        This function is not available in LanceDB Distributed, which manages
+        This function is not available in LanceDB Enterprise, which manages
         compaction for you automatically.
         """
 
@@ -2961,7 +2961,7 @@ class Table(ABC):
         Specify exactly one of ``column`` or ``index_name``.
 
         Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
-        rebuilt in the client process from index metadata. In LanceDB Distributed,
+        rebuilt in the client process from index metadata. In LanceDB Enterprise,
         this means the same tokenizer model files must also exist locally
         (under ``LANCE_LANGUAGE_MODEL_HOME``) and must match the files the
         server uses. A mismatch cannot be detected: the returned tokens may
@@ -3018,11 +3018,11 @@ class Table(ABC):
             named-struct application expands its ordered result fields as one
             atomic binding; aliases come from ``rename(columns=...)``.
             Function columns are supported only in LanceDB
-            Distributed.
+            Enterprise.
         computed: Dict[str, str], optional
             LanceDB Embedded declaration and refresh require a source build with the
             ``experimental-functions`` Cargo feature, which published packages
-            do not enable. LanceDB Distributed operations remain available.
+            do not enable. LanceDB Enterprise operations remain available.
 
             A mapping from output column names to SQL expressions derives each
             output field from its expression. A direct projection of a Blob v2
@@ -3041,7 +3041,7 @@ class Table(ABC):
             While a declaration reads a column, that column cannot be renamed,
             retyped or dropped.
 
-            In LanceDB Distributed the expression is planned by the
+            In LanceDB Enterprise the expression is planned by the
             server, and the refresh runs as a server job -- see
             [`refresh_column_async`][lancedb.table.Table.refresh_column_async].
             Cannot be combined with ``transforms``.
@@ -3172,7 +3172,7 @@ class Table(ABC):
         A refresh running under a skip policy records each row it skipped
         with the input that failed and the error. This lists those records,
         newest job first, plus a summary for any fragment whose per-row
-        detail was capped. LanceDB Distributed only; reading errors
+        detail was capped. LanceDB Enterprise only; reading errors
         needs read access to the table, since a message carries the value
         that failed.
 
@@ -4235,7 +4235,7 @@ class LanceTable(Table):
 
         This is a hint to the database that the given columns will be accessed
         in the future and the database should prefetch the data if possible.
-        Currently only supported in LanceDB Distributed.
+        Currently only supported in LanceDB Enterprise.
 
         This call initiates prewarming and returns once the request is accepted.
         It is idempotent and safe to call from multiple clients concurrently.
@@ -5126,7 +5126,7 @@ class LanceTable(Table):
         Specify exactly one of ``column`` or ``index_name``.
 
         Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
-        rebuilt in the client process from index metadata. In LanceDB Distributed,
+        rebuilt in the client process from index metadata. In LanceDB Enterprise,
         this means the same tokenizer model files must also exist locally
         (under ``LANCE_LANGUAGE_MODEL_HOME``) and must match the files the
         server uses. A mismatch cannot be detected: the returned tokens may
@@ -6190,7 +6190,7 @@ class AsyncTable:
     async def to_lance(self, **kwargs) -> lance.LanceDataset:
         """Return the Lance dataset backing a LanceDB Embedded table.
 
-        LanceDB Distributed tables cannot be opened as Lance datasets by the
+        LanceDB Enterprise tables cannot be opened as Lance datasets by the
         client. Use
         [to_arrow][lancedb.table.AsyncTable.to_arrow] or
         [query][lancedb.table.AsyncTable.query] to read them through the server.
@@ -6212,7 +6212,7 @@ class AsyncTable:
         """
         if not self._inner._is_native():
             raise NotImplementedError(
-                "to_lance() is not supported in LanceDB Distributed; "
+                "to_lance() is not supported in LanceDB Enterprise; "
                 "query the server instead"
             )
 
@@ -6245,7 +6245,7 @@ class AsyncTable:
         Parameters
         ----------
         blob_mode: str, default "lazy"
-            Controls how Lance blob columns are returned. LanceDB Distributed supports
+            Controls how Lance blob columns are returned. LanceDB Enterprise supports
             "descriptions"; "bytes" and "lazy" are not yet supported.
         **kwargs
             Forwarded to PyArrow / Lance pandas conversion.
@@ -6492,7 +6492,7 @@ class AsyncTable:
 
         This is a hint to the database that the given columns will be accessed
         in the future and the database should prefetch the data if possible.
-        Currently only supported in LanceDB Distributed.
+        Currently only supported in LanceDB Enterprise.
 
         This call initiates prewarming and returns once the request is accepted.
         It is idempotent and safe to call from multiple clients concurrently.
@@ -6536,7 +6536,7 @@ class AsyncTable:
         """
         Get the table URI (storage location).
 
-        In LanceDB Distributed, this fetches the location from the server via describe.
+        In LanceDB Enterprise, this fetches the location from the server via describe.
         In LanceDB Embedded, this returns the dataset URI.
 
         Returns
@@ -7329,11 +7329,11 @@ class AsyncTable:
             named-struct application expands its ordered result fields as one
             atomic binding; aliases come from ``rename(columns=...)``.
             Function columns are supported only in LanceDB
-            Distributed.
+            Enterprise.
         computed: Dict[str, str], optional
             LanceDB Embedded declaration and refresh require a source build with the
             ``experimental-functions`` Cargo feature, which published packages
-            do not enable. LanceDB Distributed operations remain available.
+            do not enable. LanceDB Enterprise operations remain available.
 
             A mapping from output column names to SQL expressions derives each
             output field from its expression. A direct projection of a Blob v2
@@ -7351,13 +7351,13 @@ class AsyncTable:
             While a declaration reads a column, that column cannot be renamed,
             retyped or dropped.
 
-            In LanceDB Distributed the expression is planned by
+            In LanceDB Enterprise the expression is planned by
             the server. Cannot be combined with ``transforms``.
 
         auto_refresh_enabled: bool, optional
             Enable automatic refresh for each computed output declared by this
             call. Defaults to True. LanceDB Embedded stores the setting; automatic
-            scheduling requires LanceDB Distributed.
+            scheduling requires LanceDB Enterprise.
         auto_refresh_interval_seconds: int, optional
             Positive minimum seconds after a successful refresh before another
             automatic refresh is eligible. When omitted, the server determines when
@@ -7496,7 +7496,7 @@ class AsyncTable:
         A refresh running under a skip policy records each row it skipped
         with the input that failed and the error. This lists those records,
         newest job first, plus a summary for any fragment whose per-row
-        detail was capped. LanceDB Distributed only; reading errors
+        detail was capped. LanceDB Enterprise only; reading errors
         needs read access to the table, since a message carries the value
         that failed.
 
@@ -7972,7 +7972,7 @@ class AsyncTable:
         Specify exactly one of ``column`` or ``index_name``.
 
         Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
-        rebuilt in the client process from index metadata. In LanceDB Distributed,
+        rebuilt in the client process from index metadata. In LanceDB Enterprise,
         this means the same tokenizer model files must also exist locally
         (under ``LANCE_LANGUAGE_MODEL_HOME``) and must match the files the
         server uses. A mismatch cannot be detected: the returned tokens may

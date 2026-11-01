@@ -72,7 +72,7 @@ are wrappers around the Rust library.
 * `node`: **Deprecated** Typescript package source code
 * `java`: Java package source code
 * `docs/src`: SDK reference, built with mkdocs
-* `docs/web`: website guides for LanceDB Embedded and the APIs used by both Embedded and Distributed
+* `docs/web`: website guides for LanceDB Embedded and the APIs used by both Embedded and Enterprise
 * `docs/web-tests`: the tests the documentation's code examples are extracted from
 
 ## Documentation
@@ -84,13 +84,13 @@ it is ready for readers.
 ### Choose the right place
 
 - `docs/web/` holds website guides for LanceDB Embedded and the APIs used by both
-  Embedded and Distributed.
+  Embedded and Enterprise.
 - `docs/src/` holds the SDK reference. See [docs/README.md](docs/README.md) for
   its build and API-generation instructions.
 - `docs/web-tests/` and `rust/lancedb/tests/` hold tests used to generate the
   website's code examples.
 
-Document SDK APIs here, and explain which operations work in Embedded and Distributed.
+Document SDK APIs here, and explain which operations work in Embedded and Enterprise.
 Put Enterprise-specific deployment and operating instructions in the Enterprise
 documentation.
 

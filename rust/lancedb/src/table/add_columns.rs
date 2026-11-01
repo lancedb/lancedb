@@ -70,9 +70,9 @@ impl AddColumnsBuilder {
     /// expression names it.
     ///
     /// LanceDB Embedded declaration and refresh require the `experimental-functions`
-    /// Cargo feature. LanceDB Distributed operations do not require this feature.
+    /// Cargo feature. LanceDB Enterprise operations do not require this feature.
     ///
-    /// In LanceDB Distributed the expression is planned by the
+    /// In LanceDB Enterprise the expression is planned by the
     /// server, and the refresh runs as a server job -- see
     /// [`Table::refresh_column_async`](super::Table::refresh_column_async).
     ///

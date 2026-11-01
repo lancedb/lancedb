@@ -681,7 +681,7 @@ class DBConnection(EnforceOverrides):
 
         LanceDB Embedded creation and refresh require a source build with the
         ``experimental-functions`` Cargo feature. Published packages leave it
-        disabled; LanceDB Distributed operations remain available.
+        disabled; LanceDB Enterprise operations remain available.
 
         The view is populated before creation returns. Pass
         ``with_no_data=True`` to create only its definition and empty backing
@@ -705,11 +705,11 @@ class DBConnection(EnforceOverrides):
         with_no_data: bool, default False
             Skip the initial refresh and leave the backing table empty.
         auto_refresh_enabled: bool, optional
-            Enable or disable automatic refresh in LanceDB Distributed.
+            Enable or disable automatic refresh in LanceDB Enterprise.
             When omitted, the server determines whether automatic refresh is enabled.
             LanceDB Embedded does not support automatic refresh.
         auto_refresh_interval_seconds: float, optional
-            Positive, finite refresh interval in seconds in LanceDB Distributed.
+            Positive, finite refresh interval in seconds in LanceDB Enterprise.
             When omitted, the server determines when to refresh.
 
         Returns
@@ -735,7 +735,7 @@ class DBConnection(EnforceOverrides):
         """Submit materialized-view creation and return its job.
 
         The job may already be complete in LanceDB Embedded. In LanceDB
-        Distributed, creation
+        Enterprise, creation
         submits CREATE MATERIALIZED VIEW through the SQL server. Its job has
         ``job_type == "query"`` and ``id`` identifies the connection-scoped
         query. Registry event history is unavailable.
@@ -775,7 +775,7 @@ class DBConnection(EnforceOverrides):
     ) -> None:
         """Drop a materialized view.
 
-        In LanceDB Distributed, drops wait for the SQL command to remove the
+        In LanceDB Enterprise, drops wait for the SQL command to remove the
         catalog binding.
         Physical cleanup continues in the background.
         """
@@ -789,7 +789,7 @@ class DBConnection(EnforceOverrides):
         """Start dropping a materialized view and return its job.
 
         The job may already be complete in LanceDB Embedded. In LanceDB
-        Distributed, jobs have
+        Enterprise, jobs have
         type ``query`` and use the SQL query ID as ``id``. Waiting confirms
         catalog removal; physical cleanup continues in the background.
         """
@@ -1915,7 +1915,7 @@ class LanceDBConnection(DBConnection):
 
         LanceDB Embedded creation and refresh require a source build with the
         ``experimental-functions`` Cargo feature. Published packages leave it
-        disabled; LanceDB Distributed operations remain available.
+        disabled; LanceDB Enterprise operations remain available.
         See
         [DBConnection.create_materialized_view][lancedb.DBConnection.create_materialized_view].
 
@@ -2535,12 +2535,12 @@ class AsyncConnection(object):
     To obtain a connection you can use the [connect_async][lancedb.connect_async]
     function.
 
-    This could be a LanceDB Embedded connection (using lance) or a LanceDB Distributed
-    connection (e.g. for connecting to LanceDB Enterprise)
+    This could be a LanceDB Embedded connection (using Lance) or a connection
+    to LanceDB Enterprise.
 
     Embedded connections do not currently hold any open resources but they may do so in
     the future (for example, for shared cache or connections to catalog services)
-    Distributed connections represent an open connection to the server.  The
+    Enterprise connections represent an open connection to the server.  The
     [close][lancedb.db.AsyncConnection.close] method can be used to release any
     underlying resources eagerly.  The connection can also be used as a context manager.
 
@@ -3177,7 +3177,7 @@ class AsyncConnection(object):
 
         LanceDB Embedded creation and refresh require a source build with the
         ``experimental-functions`` Cargo feature. Published packages leave it
-        disabled; LanceDB Distributed operations remain available.
+        disabled; LanceDB Enterprise operations remain available.
         See
         [DBConnection.create_materialized_view][lancedb.DBConnection.create_materialized_view].
         """
@@ -3212,7 +3212,7 @@ class AsyncConnection(object):
         """Submit materialized-view creation and return its job.
 
         Wait for the returned job before opening or querying the view. In LanceDB
-        Distributed, creation uses SQL; ``job_type`` is ``"query"`` and ``id``
+        Enterprise, creation uses SQL; ``job_type`` is ``"query"`` and ``id``
         identifies that query on this connection.
         """
         source, native_options = await self._materialized_view_source(
@@ -3266,7 +3266,7 @@ class AsyncConnection(object):
     ) -> None:
         """Drop a materialized view.
 
-        In LanceDB Distributed, drops wait for the SQL command to remove the
+        In LanceDB Enterprise, drops wait for the SQL command to remove the
         catalog binding.
         Physical cleanup continues in the background.
         """
@@ -3282,7 +3282,7 @@ class AsyncConnection(object):
     ) -> AsyncJob[None]:
         """Start dropping a materialized view and return its job.
 
-        In LanceDB Distributed, the job has type ``query`` and its ID identifies
+        In LanceDB Enterprise, the job has type ``query`` and its ID identifies
         the SQL query. Await :meth:`AsyncJob.wait` for catalog removal; physical
         cleanup continues in the background.
         """

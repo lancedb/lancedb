@@ -104,7 +104,7 @@ def _tls_config_to_dict(config: Optional[TlsConfig]) -> Optional[dict[str, Any]]
 def _client_config_to_dict(config: ClientConfig) -> dict[str, Any]:
     if config.header_provider is not None:
         raise ValueError(
-            "Cannot serialize a LanceDB Distributed connection with a header_provider. "
+            "Cannot serialize a LanceDB Enterprise connection with a header_provider. "
             "Use static api_key/extra_headers or provide a worker-side "
             "connection factory instead."
         )
@@ -249,16 +249,16 @@ class RemoteDBConnection(DBConnection):
 
     @property
     def session(self) -> Optional["Session"]:
-        """LanceDB Distributed connections do not expose a local cache session."""
+        """LanceDB Enterprise connections do not expose a local cache session."""
         raise NotImplementedError(
-            "session is not supported by LanceDB Distributed connections"
+            "session is not supported by LanceDB Enterprise connections"
         )
 
     @property
     def read_consistency_interval(self) -> Optional[timedelta]:
-        """LanceDB Distributed connections do not expose a read consistency interval."""
+        """LanceDB Enterprise connections do not expose a read consistency interval."""
         raise NotImplementedError(
-            "read_consistency_interval is not supported by LanceDB Distributed "
+            "read_consistency_interval is not supported by LanceDB Enterprise "
             "connections"
         )
 
@@ -667,11 +667,11 @@ class RemoteDBConnection(DBConnection):
             The embedding functions to store in the table schema and use to
             generate vectors when creating the table or adding data.
         storage_options: dict, optional
-            Not supported in LanceDB Distributed. Raises NotImplementedError.
+            Not supported in LanceDB Enterprise. Raises NotImplementedError.
         data_storage_version: str, optional
-            Not supported in LanceDB Distributed. Raises NotImplementedError.
+            Not supported in LanceDB Enterprise. Raises NotImplementedError.
         enable_v2_manifest_paths: bool, optional
-            Not supported in LanceDB Distributed. Raises NotImplementedError.
+            Not supported in LanceDB Enterprise. Raises NotImplementedError.
 
         Returns
         -------
@@ -745,7 +745,7 @@ class RemoteDBConnection(DBConnection):
             if value is not None:
                 raise NotImplementedError(
                     f"{option} is not supported for table creation in "
-                    "LanceDB Distributed"
+                    "LanceDB Enterprise"
                 )
         if exist_ok:
             if mode == "create":
@@ -1306,7 +1306,7 @@ class RemoteDBConnection(DBConnection):
         default_namespace_path: Optional[List[str]] = None,
         parameters: Optional[QueryParameters] = None,
     ) -> SqlQuery:
-        """Start executing SQL through this LanceDB Distributed connection.
+        """Start executing SQL through this LanceDB Enterprise connection.
 
         Unqualified tables use this connection's database and the
         ``["public"]`` namespace by default. Fully qualified table names may

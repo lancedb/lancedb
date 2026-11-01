@@ -46,7 +46,7 @@ impl CreateTableBuilder {
 
     /// Apply the given write options when writing the initial data
     ///
-    /// LanceDB Distributed connections reject explicit Lance write parameters with
+    /// LanceDB Enterprise connections reject explicit Lance write parameters with
     /// [`Error::NotSupported`] instead of silently using server defaults.
     pub fn write_options(mut self, write_options: WriteOptions) -> Self {
         self.request.write_options = write_options;
@@ -73,7 +73,7 @@ impl CreateTableBuilder {
 
     /// Set multiple options for the storage layer.
     ///
-    /// Table-level storage options are not supported by LanceDB Distributed connections.
+    /// Table-level storage options are not supported by LanceDB Enterprise connections.
     ///
     /// Options already set on the connection will be inherited by the table,
     /// but can be overridden here.
