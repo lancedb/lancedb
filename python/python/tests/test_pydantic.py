@@ -808,6 +808,29 @@ def test_aliased_lance_model_reads_back_its_own_table(mem_db):
     assert item.user_id == 1
 
 
+@pytest.mark.parametrize(
+    "validation_alias",
+    [
+        pydantic.AliasChoices("userId"),
+        pydantic.AliasPath("userId"),
+    ],
+    ids=["alias-choices", "alias-path"],
+)
+def test_aliased_lance_model_with_complex_validation_alias_reads_back_its_own_table(
+    mem_db, validation_alias
+):
+    class Item(LanceModel):
+        user_id: int = Field(validation_alias=validation_alias)
+        vector: Vector(2)
+
+    tbl = mem_db.create_table("aliased_items", schema=Item)
+    tbl.add([Item(userId=1, vector=[0.1, 0.2])])
+    assert tbl.schema.names == ["user_id", "vector"]
+
+    [item] = tbl.search().to_pydantic(Item)
+    assert item.user_id == 1
+
+
 def test_aliased_lance_model_with_name_only_validation(mem_db):
     class Item(LanceModel):
         model_config = pydantic.ConfigDict(
@@ -859,6 +882,30 @@ async def test_aliased_lance_model_reads_back_its_own_table_async(mem_db_async):
 
     tbl = await mem_db_async.create_table("aliased_items", schema=Item)
     await tbl.add([Item(userId=1, vector=[0.1, 0.2])])
+
+    [item] = await tbl.vector_search([0.1, 0.2]).limit(1).to_pydantic(Item)
+    assert item.user_id == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "validation_alias",
+    [
+        pydantic.AliasChoices("userId"),
+        pydantic.AliasPath("userId"),
+    ],
+    ids=["alias-choices", "alias-path"],
+)
+async def test_aliased_lance_model_with_complex_validation_alias_reads_back_async(
+    mem_db_async, validation_alias
+):
+    class Item(LanceModel):
+        user_id: int = Field(validation_alias=validation_alias)
+        vector: Vector(2)
+
+    tbl = await mem_db_async.create_table("aliased_items", schema=Item)
+    await tbl.add([Item(userId=1, vector=[0.1, 0.2])])
+    assert (await tbl.schema()).names == ["user_id", "vector"]
 
     [item] = await tbl.vector_search([0.1, 0.2]).limit(1).to_pydantic(Item)
     assert item.user_id == 1

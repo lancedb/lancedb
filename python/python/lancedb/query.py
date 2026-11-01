@@ -83,6 +83,25 @@ if TYPE_CHECKING:
 T = TypeVar("T", bound="LanceModel")
 
 
+def _top_level_alias_key(alias: Any) -> str | None:
+    if isinstance(alias, str):
+        return alias
+    if isinstance(alias, pydantic.AliasPath) and alias.path:
+        key = alias.path[0]
+        return key if isinstance(key, str) else None
+    return None
+
+
+def _single_component_alias(alias: Any) -> str | None:
+    # AliasChoices validates against the first matching source, so only use
+    # its first option as a field-name fallback.
+    option = alias.choices[0] if isinstance(alias, pydantic.AliasChoices) else alias
+    if isinstance(option, pydantic.AliasPath) and len(option.path) != 1:
+        # A nested path needs a structured payload; do not infer one here.
+        return None
+    return _top_level_alias_key(option)
+
+
 def _rows_to_models(model: type[T], rows: List[dict]) -> List[T]:
     """Build ``model`` instances from result rows.
 
@@ -103,14 +122,16 @@ def _rows_to_models(model: type[T], rows: List[dict]) -> List[T]:
     taken = set()
     for alias in aliases.values():
         for option in getattr(alias, "choices", [alias]):
-            key = option.path[0] if isinstance(option, pydantic.AliasPath) else option
-            if isinstance(key, str):
+            key = _top_level_alias_key(option)
+            if key is not None:
                 taken.add(key)
     renames = {
-        name: alias
+        name: target
         for name, alias in aliases.items()
+        if (target := _single_component_alias(alias)) is not None
         # A name that is also another field's alias keeps that meaning.
-        if isinstance(alias, str) and alias != name and name not in taken
+        and target != name
+        and name not in taken
     }
     for row in rows:
         for name, alias in renames.items():
