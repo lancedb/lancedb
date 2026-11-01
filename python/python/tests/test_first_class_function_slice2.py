@@ -31,6 +31,7 @@ from lancedb.functions import (
     SecretReference,
     UdfDefinition,
     _canonical_arrow_type,
+    _exact_arrow_type,
     _GRAMMAR_PRIMITIVES,
     udf,
 )
@@ -1192,6 +1193,48 @@ def test_struct_blob_signature_supports_multiple_struct_levels():
     encoded = json.loads(blob_size.registration_request.signature.inputs[0].arrow_type)
     blob = encoded["fields"][0]["type"]["fields"][0]["type"]["fields"][0]
     assert blob["metadata"]["ARROW:extension:name"] == "lance.blob.v2"
+
+
+@pytest.mark.parametrize(
+    "data_type",
+    [
+        pa.list_(lancedb.blob("item", nullable=False)),
+        pa.large_list(lancedb.blob("item", nullable=False)),
+        pa.list_(pa.struct([lancedb.blob("image", nullable=False)])),
+    ],
+)
+def test_blob_output_accepts_list_ancestors(data_type):
+    @udf(
+        input_schema=pa.schema([lancedb.blob("video", nullable=False)]),
+        output_schema=pa.field("frames", data_type, nullable=False),
+    )
+    def extract_frames(video: bytes) -> list:
+        return [video]
+
+    output = extract_frames.registration_request.signature.output
+    assert json.loads(output.arrow_type) == _exact_arrow_type(
+        data_type, collection_blobs=True
+    )
+    assert "lance.blob.v2" in output.arrow_type
+
+
+@pytest.mark.parametrize(
+    "data_type",
+    [
+        pa.map_(pa.string(), lancedb.blob("value", nullable=False).type),
+        pa.list_(lancedb.blob("item", nullable=False), 2),
+        pa.list_(pa.list_(lancedb.blob("item", nullable=False), 2)),
+    ],
+)
+def test_blob_output_rejects_map_and_fixed_size_list_ancestors(data_type):
+    with pytest.raises(TypeError, match="nested under collection types"):
+
+        @udf(
+            input_schema=pa.schema([pa.field("id", pa.int64(), nullable=False)]),
+            output_schema=pa.field("frames", data_type, nullable=False),
+        )
+        def frames(id: int) -> dict:
+            return {}
 
 
 @pytest.mark.parametrize(
