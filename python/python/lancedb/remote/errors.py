@@ -70,7 +70,7 @@ class HttpError(LanceDBClientError):
             mapped_cls = _http_error_class(error_code, resource_kind)
             if mapped_cls is not None:
                 cls = mapped_cls
-        return super().__new__(cls)
+        return RuntimeError.__new__(cls)
 
     def __init__(
         self,
@@ -110,7 +110,7 @@ def _http_error_class(
 ) -> Optional[type[HttpError]]:
     if error_code == "already_exists":
         return AlreadyExistsError
-    if error_code != "not_found":
+    if error_code != "not_found" or resource_kind is None:
         return None
     return {
         "secret": SecretNotFoundError,
