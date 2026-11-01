@@ -721,9 +721,11 @@ impl Connection {
 
     /// Remove one published Function revision, preserving sibling revisions and their grants.
     ///
-    /// Returns `true` when the requested revision was removed and `false` when
-    /// it was absent. Only the last visible revision's removal releases the name
-    /// and schedules object cleanup. LanceDB Embedded databases return [`Error::NotSupported`].
+    /// Returns `true` when the requested revision was removed and `false` for
+    /// a repeated drop or a missing name. A revision never published under an
+    /// existing name is an error. Only the last visible revision's removal
+    /// releases the name and schedules object cleanup. LanceDB Embedded databases
+    /// return [`Error::NotSupported`].
     pub async fn drop_function(
         &self,
         name: impl AsRef<str>,

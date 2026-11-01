@@ -1048,9 +1048,11 @@ class DBConnection(EnforceOverrides):
     ) -> bool:
         """Drop one published Function revision, preserving its siblings.
 
-        Returns True when the revision was removed and False when it was absent.
-        Dropping the last visible revision releases the name and schedules
-        physical cleanup in the background. Use :meth:`drop_function_async` to
+        Returns True when the revision was removed and False for a repeated drop
+        or a missing name. A revision never published under an existing name is
+        an error. Dropping the last visible revision releases the name and
+        schedules physical cleanup in the background. Use
+        :meth:`drop_function_async` to
         access the query job, whose completion confirms catalog removal of the
         revision. Local connections raise NotImplementedError.
         """
@@ -3521,9 +3523,10 @@ class AsyncConnection(object):
     ) -> bool:
         """Drop one published Function revision, preserving its siblings.
 
-        Returns True when the requested revision was removed and False when it
-        was absent. Only the last visible revision's removal releases the name
-        and schedules background object cleanup.
+        Returns True when the requested revision was removed and False for a
+        repeated drop or a missing name. A revision never published under an
+        existing name is an error. Only the last visible revision's removal
+        releases the name and schedules background object cleanup.
         """
         return await self._inner.drop_function(name, version, namespace_path)
 

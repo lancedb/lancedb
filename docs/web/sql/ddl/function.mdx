@@ -129,7 +129,8 @@ DROP removes only the requested revision from lookup and listing. Other
 published revisions and their grants remain available. Dropping the last visible
 revision releases the name and object binding; physical cleanup continues
 separately. The result reports `dropped` or `not_found`. `IF EXISTS` allows a
-missing revision.
+missing name or a repeated drop of a previously published revision. A revision
+that was never published under an existing name is an error.
 
 All function object commands retain shared results even when general query-result
 copying is disabled, so asynchronous polling can resume on another query node.

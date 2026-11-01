@@ -566,7 +566,8 @@ itself is: as source, snapshotted at registration.
 
 `db.drop_function(name, version=...)` removes only that published revision from
 lookup and listing, preserving other revisions and their grants. It returns
-`False` if that revision was already gone. The last visible revision's drop
+`False` for a repeated drop or a name that is already gone. A revision never
+published under an existing name is an error. The last visible revision's drop
 releases the name and schedules object cleanup, which can finish after the call
 returns as a [background job](/maintenance/background-jobs).
 `drop_function_async` returns `(dropped, job)`, where `job` is a query-backed
