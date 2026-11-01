@@ -752,6 +752,14 @@ so the fetch APIs cannot read their bytes yet.
 
 ::: lancedb.remote.errors.TableNotFoundError
 
+::: lancedb.remote.errors.SecretNotFoundError
+
+::: lancedb.remote.errors.FunctionNotFoundError
+
+::: lancedb.remote.errors.NamespaceNotFoundError
+
+::: lancedb.remote.errors.AlreadyExistsError
+
 ::: lancedb.exceptions.MissingValueError
 
 ::: lancedb.exceptions.MissingColumnError
