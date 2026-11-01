@@ -178,7 +178,7 @@ impl OpenTableBuilder {
 
     /// Advanced parameters that can be used to customize table reads
     ///
-    /// LanceDB Distributed connections reject these parameters with [`Error::NotSupported`].
+    /// LanceDB Enterprise connections reject these parameters with [`Error::NotSupported`].
     ///
     /// If set, these will take precedence over any overlapping `OpenTableOptions` options
     pub fn lance_read_params(mut self, params: ReadParams) -> Self {
@@ -337,7 +337,7 @@ pub struct CloneTableBuilder {
     request: CloneTableRequest,
 }
 
-/// Builder for asynchronously executing a SQL statement on a LanceDB Distributed database.
+/// Builder for asynchronously executing a SQL statement on a LanceDB Enterprise database.
 pub struct ExecuteQueryAsyncBuilder {
     parent: Arc<dyn Database>,
     request: ExecuteQueryRequest,
@@ -501,7 +501,7 @@ impl Connection {
         &self.internal
     }
 
-    /// Start executing SQL on a LanceDB Distributed database.
+    /// Start executing SQL on a LanceDB Enterprise database.
     ///
     /// The query can reference tables in other databases with SQL dot notation.
     /// Use [`ExecuteQueryAsyncBuilder::default_namespace_path`] to avoid qualifying
@@ -1187,7 +1187,7 @@ impl Connection {
 
     /// Rename a table in the database.
     ///
-    /// This is only supported in LanceDB Distributed.
+    /// This is only supported in LanceDB Enterprise.
     pub async fn rename_table(
         &self,
         old_name: impl AsRef<str>,
@@ -1391,7 +1391,7 @@ impl Connection {
     /// For ListingDatabase, it is the equivalent DirectoryNamespace.
     /// For RemoteDatabase, it is the equivalent RestNamespace.
     ///
-    /// LanceDB Distributed connections using dynamic headers forward them through the
+    /// LanceDB Enterprise connections using dynamic headers forward them through the
     /// namespace client's per-request context provider.
     pub async fn namespace_client(&self) -> Result<Arc<dyn lance_namespace::LanceNamespace>> {
         self.internal.namespace_client().await
@@ -1402,7 +1402,7 @@ impl Connection {
     /// - impl_type: "dir" for DirectoryNamespace, "rest" for RestNamespace
     /// - properties: configuration properties for the namespace
     ///
-    /// LanceDB Distributed connections using dynamic headers cannot be exported because the
+    /// LanceDB Enterprise connections using dynamic headers cannot be exported because the
     /// namespace client config only carries static headers.
     pub async fn namespace_client_config(
         &self,
@@ -1729,7 +1729,7 @@ impl ConnectBuilder {
 
     /// Enable or disable manifest-backed directory namespace mode for local
     /// native connections.
-    /// LanceDB Distributed connections reject enabling this option with [`Error::NotSupported`].
+    /// LanceDB Enterprise connections reject enabling this option with [`Error::NotSupported`].
     ///
     /// When enabled, the connection uses the directory namespace database
     /// directly for all table operations and forces
@@ -1765,7 +1765,7 @@ impl ConnectBuilder {
     }
 
     /// Set a custom session for object stores and caching.
-    /// LanceDB Distributed connections reject this option with [`Error::NotSupported`].
+    /// LanceDB Enterprise connections reject this option with [`Error::NotSupported`].
     ///
     /// By default, a new session with default configuration will be created.
     /// This method allows you to provide a custom session with your own
@@ -1808,7 +1808,7 @@ impl ConnectBuilder {
             if provided {
                 return Err(Error::NotSupported {
                     message: format!(
-                        "{option} is not supported for LanceDB Distributed connections"
+                        "{option} is not supported for LanceDB Enterprise connections"
                     ),
                 });
             }

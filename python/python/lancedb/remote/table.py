@@ -126,7 +126,7 @@ class RemoteTable(Table):
     def _serialized_connection_state(self) -> str:
         if self._connection_state is None:
             raise RuntimeError(
-                "Cannot reopen this LanceDB Distributed table because it does not "
+                "Cannot reopen this LanceDB Enterprise table because it does not "
                 "carry serialized connection state"
             )
         if callable(self._connection_state):
@@ -273,23 +273,23 @@ class RemoteTable(Table):
         return LOOP.run(self._table.list_versions())
 
     def to_arrow(self, *, blob_mode: BlobMode = "lazy") -> pa.Table:
-        """to_arrow() is not supported in LanceDB Distributed."""
+        """to_arrow() is not supported in LanceDB Enterprise."""
         validate_blob_mode(blob_mode)
         raise NotImplementedError(
-            "to_arrow() is not supported in LanceDB Distributed. "
+            "to_arrow() is not supported in LanceDB Enterprise. "
             "Use table.search().to_arrow() instead."
         )
 
     def to_pandas(self, blob_mode: BlobMode = "lazy", **kwargs):
-        """to_pandas() is not supported in LanceDB Distributed."""
+        """to_pandas() is not supported in LanceDB Enterprise."""
         validate_blob_mode(blob_mode)
         raise NotImplementedError(
-            "to_pandas() is not supported in LanceDB Distributed. "
+            "to_pandas() is not supported in LanceDB Enterprise. "
             "Use table.search().to_pandas() instead."
         )
 
     def to_lance(self, **kwargs) -> "lance.LanceDataset":
-        """Direct Lance dataset access is not supported in LanceDB Distributed.
+        """Direct Lance dataset access is not supported in LanceDB Enterprise.
 
         Use ``table.search().to_arrow()`` to read query results through the server.
         """
@@ -298,7 +298,7 @@ class RemoteTable(Table):
     def to_polars(self, batch_size=None) -> "pl.LazyFrame":
         """Use ``table.search().to_polars()`` to read query results."""
         raise NotImplementedError(
-            "to_polars() is not supported in LanceDB Distributed. "
+            "to_polars() is not supported in LanceDB Enterprise. "
             "Use table.search().to_polars() instead."
         )
 
@@ -331,7 +331,7 @@ class RemoteTable(Table):
         """Tokenize a query using the tokenizer configured on an FTS index.
 
         Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
-        rebuilt in the client process from index metadata. In LanceDB Distributed,
+        rebuilt in the client process from index metadata. In LanceDB Enterprise,
         this means the same tokenizer model files must also exist locally
         (under ``LANCE_LANGUAGE_MODEL_HOME``) and must match the files the
         server uses. A mismatch cannot be detected: the returned tokens may
@@ -638,7 +638,7 @@ class RemoteTable(Table):
 
             if accelerator is not None:
                 logging.warning(
-                    "GPU accelerator is not supported in LanceDB Distributed "
+                    "GPU accelerator is not supported in LanceDB Enterprise "
                     "and will be ignored."
                 )
 
@@ -743,7 +743,7 @@ class RemoteTable(Table):
             capped at the number of CPU cores. Lower this if bulk ingestion is
             using too much memory.
         allow_external_blob_outside_bases: bool, default False
-            Not supported in LanceDB Distributed. Setting this raises.
+            Not supported in LanceDB Enterprise. Setting this raises.
 
         Returns
         -------
@@ -1048,20 +1048,20 @@ class RemoteTable(Table):
         delete_unverified: bool = False,
     ):
         """
-        cleanup_old_versions() is a no-op in LanceDB Distributed.
+        cleanup_old_versions() is a no-op in LanceDB Enterprise.
         """
         warnings.warn(
-            "cleanup_old_versions() is a no-op in LanceDB Distributed.",
+            "cleanup_old_versions() is a no-op in LanceDB Enterprise.",
             stacklevel=2,
         )
         pass
 
     def compact_files(self, *args, **kwargs):
         """
-        compact_files() is a no-op in LanceDB Distributed.
+        compact_files() is a no-op in LanceDB Enterprise.
         """
         warnings.warn(
-            "compact_files() is a no-op in LanceDB Distributed.",
+            "compact_files() is a no-op in LanceDB Enterprise.",
             stacklevel=2,
         )
         pass
@@ -1074,7 +1074,7 @@ class RemoteTable(Table):
         retrain: bool = False,
         compaction_options: Optional[CompactionOptions] = None,
     ):
-        """optimize() is not supported in LanceDB Distributed."""
+        """optimize() is not supported in LanceDB Enterprise."""
         return LOOP.run(
             self._table.optimize(
                 cleanup_older_than=cleanup_older_than,
@@ -1200,7 +1200,7 @@ class RemoteTable(Table):
         )
 
     def close_rte_writers(self) -> None:
-        """No-op in LanceDB Distributed (no local shard writers)."""
+        """No-op in LanceDB Enterprise (no local shard writers)."""
         return LOOP.run(self._table.close_rte_writers())
 
     @_deprecated_keyword("index_name", "name")
@@ -1229,7 +1229,7 @@ class RemoteTable(Table):
 
         This is a hint to the database that the given columns will be accessed
         in the future and the database should prefetch the data if possible.
-        Currently only supported in LanceDB Distributed.
+        Currently only supported in LanceDB Enterprise.
 
         This call initiates prewarming and returns once the request is accepted.
         It is idempotent and safe to call from multiple clients concurrently.
@@ -1258,7 +1258,7 @@ class RemoteTable(Table):
     def uri(self) -> str:
         """The table URI (storage location).
 
-        In LanceDB Distributed, this fetches the location from the server via describe.
+        In LanceDB Enterprise, this fetches the location from the server via describe.
         """
         return LOOP.run(self._table.uri())
 

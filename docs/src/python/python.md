@@ -27,7 +27,7 @@ connect, per-table storage and write options on create, and `index_cache_size`,
 Omit these options to use server-managed storage and caching. Connection-level
 `storage_options` supported by an Enterprise deployment remain available.
 
-The synchronous LanceDB Distributed `create_table` uses the same positional order as the
+The synchronous LanceDB Enterprise `create_table` uses the same positional order as the
 LanceDB Embedded API: `name, data, schema, mode, exist_ok, on_bad_vectors, fill_value,
 embedding_functions`. Prefer keyword arguments for optional parameters.
 
@@ -259,7 +259,7 @@ async for entry in catalog.authz.list_acls(subject=Subject.role("reader")):
 
 ## Remote SQL
 
-Submit SQL against a LanceDB Distributed database through the connection.
+Submit SQL against a LanceDB Enterprise database through the connection.
 The connected database and `default_namespace_path=["public"]` are used for
 unqualified tables. Fully qualified references can still query other databases
 and namespaces available to the same deployment. `execute_query` returns a
@@ -340,24 +340,24 @@ listing a storage directory.
 
 ## Tables (Synchronous)
 
-LanceDB Embedded and LanceDB Distributed tables use the same arguments for index creation, deletion,
+LanceDB Embedded and LanceDB Enterprise tables use the same arguments for index creation, deletion,
 index statistics, and search. For example, `table.delete(where="id = 1")`,
 `table.create_index("cosine", 2)` (the deprecated vector API), and
 `table.search([1.0, 1.0], fast_search=True)` work with either backend.
 `fast_search=True` excludes rows that have not been indexed.
 
 `create_scalar_index` defaults to `replace=True` on both backends. Both scalar
-and full-text index creation accept `wait_timeout`. LanceDB Distributed maintenance methods
+and full-text index creation accept `wait_timeout`. LanceDB Enterprise maintenance methods
 accept the LanceDB Embedded options: cleanup and compaction warn that they are no-ops,
 while `optimize` reports an unsupported operation. Removed Tantivy options
 produce the same explanatory errors on both backends.
 
-The old LanceDB Distributed keyword names `predicate` for `delete`, `index_name` for
+The old LanceDB Enterprise keyword names `predicate` for `delete`, `index_name` for
 `drop_index`, `index_uuid` for `index_stats`, and `column` for `create_fts_index`
 remain available with deprecation warnings. Use `where`, `name`, `index_name`,
 and `field_names`, respectively. For positional calls, use the argument order
 documented by `Table` below; specify index options by keyword when migrating
-code that used the former LanceDB Distributed-only argument order.
+code that used the former LanceDB Enterprise-only argument order.
 
 ::: lancedb.table.Table
 
@@ -464,11 +464,11 @@ scoped to each invocation and support `read`, `readinto`, `seek`, `tell`,
 In the 0.41 SDK release, LanceDB Embedded materialized-view creation and refresh require a
 source build with the `experimental-functions` Cargo feature. Published Python
 packages leave it disabled. Opening, reading, listing and dropping existing views
-remain available, as do LanceDB Distributed operations. The same feature
+remain available, as do LanceDB Enterprise operations. The same feature
 requirement applies to LanceDB Embedded SQL computed-column declaration and refresh; ordinary
 eager `add_columns` transforms remain available.
 
-In LanceDB Distributed, creation accepts `auto_refresh_enabled` and
+In LanceDB Enterprise, creation accepts `auto_refresh_enabled` and
 `auto_refresh_interval_seconds`:
 
 ```python
@@ -674,7 +674,7 @@ For external blob references, construct the descriptor struct described by
 [blob][lancedb.schema.blob], then wrap it with `pa.ExtensionArray.from_storage`.
 Inline `data` and external `uri` representations are mutually exclusive.
 
-LanceDB Distributed SQL returns blob bytes by default. Select `blob_descriptor(video)` to
+LanceDB Enterprise SQL returns blob bytes by default. Select `blob_descriptor(video)` to
 return an openable reference instead, then use
 [`open_blob_file`][lancedb.table.Table.open_blob_file] or the lazy iterable
 [`open_blob_files`][lancedb.table.Table.open_blob_files]:
@@ -691,7 +691,7 @@ for row in rows.to_pylist():
             frame = extract_frame(video, row["timestamp"])
 ```
 
-This example uses a LanceDB Distributed SQL connection that produces source-bearing
+This example uses a LanceDB Enterprise SQL connection that produces source-bearing
 descriptors. The descriptor contains `kind`, `position`, `size`, `blob_id`,
 `blob_uri`, and a `source` struct with `uri`, `version`, `committed_at_micros`,
 `branch`, `column`, `row_reference`, and `row_is_address`. The opener verifies
@@ -723,7 +723,7 @@ async for video in async_videos.open_blob_files(rows["video"]):
 ```
 
 Payload bytes load on reads. Opening an external blob with unspecified size
-can issue a metadata-only HEAD request. LanceDB Distributed reads use authenticated range
+can issue a metadata-only HEAD request. LanceDB Enterprise reads use authenticated range
 requests that validate the captured URI and commit timestamp.
 
 Blobs inside lists can be written and queried as descriptors. They are omitted

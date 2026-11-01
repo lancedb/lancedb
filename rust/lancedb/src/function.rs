@@ -799,7 +799,7 @@ impl_json!(FunctionBinding);
 /// refresh [`crate::Job`].
 ///
 /// LanceDB Embedded refresh jobs produce this value in process. LanceDB
-/// Distributed decodes the same value from the durable job's terminal payload.
+/// Enterprise decodes the same value from the durable job's terminal payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RefreshColumnResult {
     /// Rows assigned a value by this refresh.

@@ -58,7 +58,7 @@ use crate::{Error, Result};
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct RefreshColumnOptions {
-    /// Maximum rows per Function call in LanceDB Distributed.
+    /// Maximum rows per Function call in LanceDB Enterprise.
     ///
     /// Must be greater than zero. `None` uses the server default. This has no
     /// effect on expression-backed columns in LanceDB Embedded.
@@ -396,7 +396,7 @@ fn declared_expression(dataset: &Dataset, column: &str) -> Result<String> {
     match declaration.kind {
         ComputedColumnKind::Sql { expression } => Ok(expression),
         ComputedColumnKind::Function { .. } => Err(Error::NotSupported {
-            message: "registered Function columns are refreshed only by a LanceDB Distributed job"
+            message: "registered Function columns are refreshed only by a LanceDB Enterprise job"
                 .into(),
         }),
         ComputedColumnKind::Unrecognized { kind } => Err(Error::NotSupported {
