@@ -3,7 +3,7 @@
 The LanceDB Java SDK provides a convenient way to interact with LanceDB Enterprise deployments using the Lance REST Namespace API.
 
 !!! note
-    The Java SDK currently connects to LanceDB Enterprise or LanceDB Cloud (legacy).
+    The Java SDK currently only connects to LanceDB Enterprise or LanceDB Cloud (legacy).
     LanceDB Embedded support is a work in progress. Check [LANCEDB-2848](https://github.com/lancedb/lancedb/issues/2848) for the latest progress.
 
 ## Installation
