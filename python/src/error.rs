@@ -28,12 +28,32 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
             Err(err) => match err {
                 LanceError::InvalidInput { .. }
                 | LanceError::InvalidTableName { .. }
-                | LanceError::TableNotFound { .. }
                 | LanceError::NotAMaterializedView { .. }
                 | LanceError::Schema { .. }
                 | LanceError::DatabaseNotFound { .. }
                 | LanceError::DatabaseAlreadyExists { .. }
                 | LanceError::TableAlreadyExists { .. } => self.value_error(),
+                LanceError::TableNotFound { source, .. } => {
+                    let Some(LanceError::Http {
+                        request_id,
+                        status_code,
+                        ..
+                    }) = source.downcast_ref::<LanceError>()
+                    else {
+                        return self.value_error();
+                    };
+                    Python::attach(|py| {
+                        let cls = py
+                            .import(intern!(py, "lancedb.remote.errors"))?
+                            .getattr(intern!(py, "TableNotFoundError"))?;
+                        let status_code = status_code.map(|s| s.as_u16());
+                        let py_err = cls.call1((err.to_string(), request_id, status_code))?;
+                        let cause =
+                            http_from_rust_error(py, source.as_ref(), request_id, status_code)?;
+                        py_err.setattr(intern!(py, "__cause__"), cause)?;
+                        Err(PyErr::from_value(py_err))
+                    })
+                }
                 LanceError::CreateDir { .. } => self.os_error(),
                 LanceError::ObjectStore { .. } => Err(PyIOError::new_err(err.to_string())),
                 LanceError::NotSupported { .. } => {
