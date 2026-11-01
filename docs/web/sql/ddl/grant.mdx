@@ -1,0 +1,77 @@
+---
+title: "Grant"
+sidebarTitle: "Grant"
+description: "GRANT and REVOKE: privileges on Secrets and Functions."
+icon: user-lock
+keywords: ["grant", "revoke", "privileges", "authorization", "sql", "ownership"]
+---
+
+<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
+
+```sql
+GRANT <privilege>[, ...] ON { SECRET | FUNCTION } <name> TO <grantee>[, ...]
+GRANT <privilege>[, ...] ON SCHEMA <namespace> TO <grantee>[, ...]
+REVOKE <privilege>[, ...] ON ... FROM <grantee>[, ...]
+```
+
+```sql
+GRANT USAGE, UPDATE ON SECRET api_key TO ROLE readers, writers
+GRANT CREATE FUNCTION ON SCHEMA analytics TO ROLE data_science
+REVOKE USAGE ON FUNCTION embed FROM ROLE readers
+```
+
+## Privileges {#privileges}
+
+| Privilege | Allows |
+| --- | --- |
+| `OWNERSHIP` | everything on the object |
+| `USAGE` | using it: binding a Secret's value, calling a Function |
+| `UPDATE` | changing it |
+| `CREATE SECRET` | creating a Secret inside a `SCHEMA` |
+| `CREATE FUNCTION` | creating a Function inside a `SCHEMA` |
+
+<Warning>
+`OWNERSHIP` cannot be revoked, only granted to someone else, which transfers
+it: an object always has exactly one owner. `GRANT OWNERSHIP` is refused with
+more than one grantee for the same reason.
+</Warning>
+
+These are a subset of the full privilege model; see
+[Authorization](/governance/authorization#privileges) for privileges on
+tables, views and namespaces, which this statement does not grant.
+
+## Grantees {#grantees}
+
+```sql
+<grantee> ::= [ ROLE ] <role> | [ { USER | GROUP } ] { <name> | ID '<id>' }
+```
+
+```sql
+GRANT USAGE ON SECRET api_key TO ROLE readers, USER alice, GROUP ID 'g1'
+```
+
+A grantee is a role, or a user or group named by its identity-directory name
+or its directory ID. A grantee with no leading `ROLE`/`USER`/`GROUP` keyword
+takes the kind of the one before it, so `TO ROLE a, b` names two roles --
+but the first grantee in the list always needs its keyword. An unquoted name
+is folded to lowercase before it is looked up; a quoted name is looked up
+exactly as written.
+
+## Naming the target {#targets}
+
+A `SECRET` or `FUNCTION` target can be qualified with its namespace and
+database, the same as anywhere else: `SECRET analytics.api_key`,
+`SECRET db1.analytics.api_key`. A `SCHEMA` target is the namespace itself.
+There is no `TABLE` target: table privileges are granted through
+[Authorization](/governance/authorization), not this statement.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Authorization" icon="user-shield" href="/governance/authorization">
+    The full privilege model, and how creation privileges resolve upward.
+  </Card>
+  <Card title="Namespace" icon="folder-tree" href="/sql/ddl/namespace">
+    Creating the schemas these privileges apply to.
+  </Card>
+</CardGroup>

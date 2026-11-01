@@ -5,10 +5,8 @@ description: "Create, open, list and drop a table whose contents are defined by 
 icon: table
 keywords: ["materialized view", "create_materialized_view", "catalog", "ddl"]
 availability:
-  oss: available
+  embedded: unavailable
   enterprise: available
-  summary: >-
-    Both offerings support materialized views. See [Enterprise compatibility](#deployment) for connection and server requirements.
 ---
 
 A materialized view is a table whose contents are defined by a query over
@@ -19,10 +17,10 @@ The result is an ordinary table: queryable, indexable, searchable, and present
 in `table_names()`. Nothing about reading it is special.
 
 This page covers creating and managing one. Keeping it current is
-[Refresh a materialized view](/feature-engineering/materialized-views).
+[Refresh a materialized view](/feature-engineering/refresh-materialized-view).
 
 <Note>
-In SQL, see [`REFRESH MATERIALIZED VIEW`](/sql/dml/refresh#refresh-materialized-view) and [`SHOW MATERIALIZED VIEWS`](/sql/ddl/materialized-view#show).
+In SQL, see [`REFRESH MATERIALIZED VIEW`](/sql/dml/refresh-materialized-view) and [`SHOW MATERIALIZED VIEWS`](/sql/ddl/materialized-view#show).
 </Note>
 
 ## Create a materialized view {#create}
@@ -30,25 +28,25 @@ In SQL, see [`REFRESH MATERIALIZED VIEW`](/sql/dml/refresh#refresh-materialized-
 <CodeGroup>
 ```python Python icon="python"
 view = db.create_materialized_view(
-    "recent_docs",
-    source="documents",
-    select=["id", "title", "embedding"],
-    where="created_at > TIMESTAMP '2026-01-01 00:00:00'",
+    "frames_captioned",
+    source="frames",
+    select=["frame_id", "video_id", "ts", "caption"],
+    where="selected = true",
 )
 ```
 
 ```typescript TypeScript icon="square-js"
-const view = await db.createMaterializedView("recent_docs", "documents", {
-  select: ["id", "title", "embedding"],
-  where: "created_at > TIMESTAMP '2026-01-01 00:00:00'",
+const view = await db.createMaterializedView("frames_captioned", "frames", {
+  select: ["frame_id", "video_id", "ts", "caption"],
+  where: "selected = true",
 });
 ```
 </CodeGroup>
 
-`source` names the table the view reads. With Python SDK 0.40.0, create that
-table with stable row IDs before creating the view. The
-[complete example](/feature-engineering/materialized-views#create-and-refresh)
-shows the setup. `select`, `where` and `limit` define the query.
+`source` names the table the view reads — here, a `frames` table with a
+`caption` column, filtered to the frames selected for captioning. See
+[Create a materialized view](/feature-engineering/materialized-views#create)
+for the full walkthrough. `select`, `where` and `limit` define the query.
 
 ## Open, list and drop views {#manage}
 
@@ -59,6 +57,30 @@ shows the setup. `select`, `where` and `limit` define the query.
 | list | `list_materialized_views` | `listMaterializedViews` | `SHOW MATERIALIZED VIEWS` |
 | refresh | `refresh` | `refresh` | `REFRESH MATERIALIZED VIEW` |
 | drop | `drop_table` | `dropTable` | `DROP TABLE` |
+
+<Badge color="red">Enterprise</Badge> Creating, refreshing and dropping a
+materialized view each have an async, job-returning counterpart --
+`create_materialized_view_async`, `view.refresh_async()`,
+`drop_materialized_view_async` -- the same pattern as
+[`refresh_column_async`](/feature-engineering/refresh-column#async): each
+returns a [job](/basics/jobs) you `wait()` on instead of blocking. The async
+counterpart of the example [above](#create):
+
+<CodeGroup>
+```python Python icon="python"
+from datetime import timedelta
+
+job = db.create_materialized_view_async(
+    "frames_captioned", source="frames",
+    select=["frame_id", "video_id", "ts", "caption"], where="selected = true",
+)
+view = job.wait(timeout=timedelta(minutes=15))
+```
+</CodeGroup>
+
+`create_materialized_view_async` also accepts `auto_refresh_enabled` and
+`auto_refresh_interval_seconds`; see
+[Automatic refresh](/feature-engineering/refresh-materialized-view#auto-refresh).
 
 <Note>
 On a local database, `list_materialized_views` reads table schemas to find
@@ -78,16 +100,14 @@ That also means dropping one removes stored rows, unlike dropping a
 
 ## Enterprise compatibility {#deployment}
 
-Enterprise supports creating and refreshing materialized views on the
-Enterprise service. Use the SDK version supported by your deployment, or the
-[SQL interface](/sql/ddl/materialized-view). See
-[Enterprise refreshes](/feature-engineering/materialized-views#availability)
-for compatibility considerations when upgrading an existing pipeline.
+Enterprise supports creating and refreshing materialized views on remote
+compute. Use the SDK version supported by your deployment, or the
+[SQL interface](/sql/ddl/materialized-view).
 
 ## Related guides {#next}
 
 <CardGroup cols={2}>
-  <Card title="Refresh a materialized view" icon="arrows-rotate" href="/feature-engineering/materialized-views">
+  <Card title="Refresh a materialized view" icon="arrows-rotate" href="/feature-engineering/refresh-materialized-view">
     How a refresh works, and what it writes.
   </Card>
   <Card title="Views" icon="eye" href="/management/view">

@@ -4,9 +4,10 @@ sidebarTitle: "Scalar Functions"
 description: "The per-row function set: math, string, regex, date/time, array, struct, and what Lance adds."
 icon: calculator
 keywords: ["scalar functions", "string functions", "math functions", "regex", "array functions", "json"]
+availability:
+  embedded: unavailable
+  enterprise: available
 ---
-
-<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 Functions that take a value and return a value, one row at a time. The set is
 based on DataFusion's registration plus Lance and deployment-specific
@@ -98,6 +99,21 @@ functions supported by your deployment and inspect SQL
 index-backed plan. See [SQL vector search](/basics/sql#no-vector-sql).
 </Warning>
 
+A third, optional argument is a comma-separated options string. `metric`
+selects `l2` (default, alias `euclidean`), `cosine`, or `dot`; the
+index-search rewrite also reads `nprobes` and `use_index`:
+
+```sql
+SELECT id FROM documents
+ORDER BY distance(embedding, ARRAY[0.1, 0.2, 0.3], 'metric=cosine,nprobes=20')
+LIMIT 10
+
+-- Force a flat scan, bypassing the index:
+SELECT id FROM documents
+ORDER BY exact_distance(embedding, ARRAY[0.1, 0.2, 0.3], 'use_index=false')
+LIMIT 10
+```
+
 ## Structs and fields {#structs}
 
 ```text
@@ -145,6 +161,44 @@ semantics and the simple tokenizer.
 **Index-accelerated.** When the column has a full-text index that suits the
 query, the planner uses it instead of scanning, which is the reason to prefer
 it over `LIKE` for keyword tests.
+
+### `ivf_partition(vector, ...)` {#ivf-partition}
+
+```sql
+SELECT ivf_partition(embedding, selection => 'random', count => 100, seed => 42) AS partition,
+       array_agg(id) AS ids
+FROM documents
+GROUP BY partition
+```
+
+Assigns each row to one of `count` IVF-style partitions over `vector`, using
+the named arguments `selection` (partition-center strategy; `'random'` is
+sampled with `seed`) and `seed`. Grouping by its result buckets rows by
+vector proximity without building or querying a vector index — useful for
+blocking a large table into comparable chunks, such as before a pairwise
+similarity pass.
+
+### `blob_descriptor(column)` {#blob-descriptor}
+
+```sql
+SELECT id, blob_descriptor(video) AS descriptor FROM videos
+```
+
+A [BlobV2](/management/table#managed-blobs) column's bytes are not fetched by
+a plain `SELECT`: that already returns `large_binary`, the same as any other
+binary column. `blob_descriptor` instead returns a small struct describing
+where the payload lives, without reading it. Pass one row's descriptor to
+the SDK's blob file reader to open that payload directly:
+
+```python
+rows = db.execute_query("SELECT id, blob_descriptor(video) AS descriptor FROM videos").read_all().to_pylist()
+with table.open_blob_file(rows[0]["descriptor"]) as reader:
+    payload = reader.read()
+```
+
+A descriptor is pinned to the table version it was read at: it keeps
+resolving correctly even after the table is appended to and checked out to a
+newer version.
 
 ### JSON accessors {#json}
 

@@ -84,8 +84,8 @@ found and what each target supports.
 
 ### Get started with the LanceDB agent plugin {#get-started-with-the-lancedb-agent-plugin}
 
-This tutorial uses the Camelot dataset from the [quickstart](/quickstart), with
-a portrait added for each character. Each LanceDB row contains validated
+This tutorial uses a small Camelot dataset of characters from Arthurian legend,
+with a portrait for each character. Each LanceDB row contains validated
 metadata and raw JPEG bytes. Text, images, and any embeddings you add later
 remain in the same table.
 
@@ -166,7 +166,7 @@ embedded retrieval library. A simple prompt like this should work:
 Use the lancedb plugin to ingest the dataset in `data/` into a LanceDB
 Embedded table.
 
-# If using enterprise
+# If using LanceDB Enterprise
 Use the lancedb plugin to ingest the dataset in `data/` into a LanceDB
 Enterprise table using the connection information in `.env`.
 ```
@@ -273,7 +273,7 @@ private deployment, or platform-managed operations. The data format and the core
 table API stay the same, so the pipeline's table and search code carries over:
 the agent connects to an Enterprise `db://` table, leaves maintenance to the
 deployment instead of calling `optimize()`, and submits long-running work as
-jobs. See [Moving to LanceDB Enterprise](/basics/sdk#moving-to-enterprise).
+[jobs](/basics/jobs).
 
 ## What agents are good at here {#workflows}
 

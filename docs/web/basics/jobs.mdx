@@ -5,11 +5,8 @@ description: "Track background work from submission to completion."
 icon: hourglass-half
 keywords: ["job", "background", "progress", "events", "cancel"]
 availability:
-  oss: available
+  embedded: available
   enterprise: available
-  summary: >-
-    Job handles track operations in LanceDB Embedded and LanceDB Enterprise. Enterprise also
-    supports listing server jobs, reopening them by ID and reading their events.
 ---
 
 ## Job handles {#convention}
@@ -26,6 +23,14 @@ so check its status before
 waiting or requesting cancellation. See the operation's API reference for when
 the method returns.
 
+```python
+job = tbl.create_index_async("vector", replace=True)
+
+print(job.id)
+print(job.job_type)
+print(job.status())
+```
+
 ## Submit and wait for a job {#waiting}
 
 1. **Submit the operation.** Keep the returned job handle. For an Enterprise
@@ -38,6 +43,22 @@ the method returns.
 In Python, `job.status()` reports the current state and `job.wait()` waits for
 completion, raising if the job fails or is cancelled. If `job.wait()` times out, the client stops waiting.
 The timeout does not cancel the server job.
+
+```python
+from datetime import timedelta
+from lancedb.exceptions import JobFailedError, JobCancelledError
+
+job = tbl.create_index_async("vector", replace=True)
+
+try:
+    result = job.wait(timeout=timedelta(minutes=10))
+except JobFailedError:
+    print(f"job failed: {job.failure}")
+except JobCancelledError:
+    print("job was cancelled")
+except TimeoutError:
+    print(f"still running: {job.status()}")
+```
 
 <span id="inspecting" />
 <span id="events" />
@@ -53,6 +74,24 @@ The timeout does not cancel the server job.
 
 Reopening a job retrieves the existing operation; it does not restart failed
 work. Treat the ID as an opaque identifier and pass it unchanged to the jobs API.
+
+```python
+job = db.open_job(job_id)  # raises JobNotFoundError if unknown
+job.refresh()              # pull the latest status from the server
+print(job.status())
+
+events = job.events(limit=100)
+print(events.to_pylist())
+
+job.cancel()
+```
+
+List jobs on a connection, paging through the results:
+
+```python
+for info in db.list_jobs(page_limit=50):
+    print(info.job_id, info.job_type, info.state)
+```
 
 Event responses have [row limits](/basics/limits#jobs). An explicit limit can
 request more than the default, but it does not guarantee a complete event
@@ -80,6 +119,24 @@ and `cancel()`. Synchronous creation, refresh, and drop wait on the same SQL
 execution before returning. A completed DROP means the catalog binding has been
 removed; physical cleanup continues in the background.
 
+Remote function registration also returns a SQL query job. The SQL operation
+submits the durable image build and waits for catalog publication before returning
+the immutable FunctionVersion. `drop_function_async()` returns the catalog-removal
+boolean together with a query job; waiting on that handle confirms removal while
+physical cleanup continues separately.
+
+Remote Secret create, alter, list, describe, and drop use the SQL query backend.
+The synchronous APIs wait on query completion internally. Create and alter bind
+the credential as a parameter to `CREATE SECRET name AS $1` or
+`ALTER SECRET name AS $1`, keeping it out of SQL text. Results contain only
+completion status or Secret names and timestamps; they never return credential
+values. SQL `DESCRIBE SECRET` additionally exposes rotation history.
+
+Remote view creation, description, listing, and drop also use SQL. Creation
+returns the stored definition and schema from the same SQL execution.
+`drop_view_async()` returns a query job: waiting confirms catalog removal while
+physical cleanup continues in the background.
+
 The existing `job.job_type` identifies query-backed handles as `"query"` from
 submission, and `job.id` contains the connection-scoped SQL query UUID string.
 Use `describe_query(job.id)` on the submitting connection to inspect the query.
@@ -97,7 +154,7 @@ workers. That placement does not change the handle's query-backed identity.
 ## Learn more {#next}
 
 - [Build and repair indexes](/indexing/reindexing): submit index work.
-- [Column refresh](/feature-engineering/refresh-column): populate derived values.
+- [Refresh a computed column](/feature-engineering/refresh-column): populate derived values.
 - [Background jobs](/maintenance/background-jobs): understand Enterprise maintenance.
 - [SQL job commands](/sql/ddl/job): list jobs and inspect errors.
 - [SDKs](/basics/sdk): find the job API for your client.

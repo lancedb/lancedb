@@ -386,7 +386,7 @@ def test_custom_stop_words_list(table):
     assert [token.text for token in tokens] == ["the", "data"]
     empty_tokens = ldb.tokenize("the lance data", stem=False, custom_stop_words=[])
     assert [token.text for token in empty_tokens] == ["the", "lance", "data"]
-    with pytest.raises(TypeError, match=r"custom_stop_words.*int"):
+    with pytest.raises(TypeError, match=r"'int' object is not an instance of 'str'"):
         ldb.tokenize(
             "the lance data",
             custom_stop_words=["lance", 42],

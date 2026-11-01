@@ -4,12 +4,8 @@ sidebarTitle: "FTS Index"
 description: "Create and tune BM25-based full-text search indexes in LanceDB."
 icon: "book"
 availability:
-  oss: available
+  embedded: available
   enterprise: available
-  summary: >-
-    Full-text indexes are built in the embedded library and in LanceDB Enterprise.
-    The embedded library builds the index before the call returns; a
-    deployment builds it in the background.
 ---
 import { PyFtsIndexAsync as FtsIndexAsync, PyFtsIndexCreate as FtsIndexCreate, PyFtsIndexNested as FtsIndexNested, PyFtsIndexWait as FtsIndexWait } from '/snippets/indexing.mdx';
 

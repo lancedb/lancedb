@@ -1731,12 +1731,13 @@ describe("When creating an index", () => {
       config: Index.ivfFlat({ numPartitions: 2, targetPartitionSize: 100 }),
     });
 
+    // Lance records the target size the partition count implies: 300 rows / 2.
     const indices = await tbl.listIndices();
     expect(
       (indices[0].indexDetails as Record<string, unknown>)[
         "target_partition_size"
       ],
-    ).toBeUndefined();
+    ).toBe(150);
   });
 
   it("should allow me to replace (or not) an existing index", async () => {
@@ -4970,6 +4971,44 @@ describe("column name options", () => {
   test("can filter on columns with different names", async () => {
     const results = await table.query().where("`camelCase` = 1").toArray();
     expect(results[0].camelCase).toBe(1);
+  });
+
+  test("can filter on an unquoted camelCase column", async () => {
+    const results = await table.query().where("camelCase = 1").toArray();
+    expect(results[0].camelCase).toBe(1);
+  });
+
+  test("can update and delete by camelCase column", async () => {
+    await table.update({ where: "camelCase = 1", values: { camelCase: 2 } });
+    expect(await table.query().where("camelCase = 2").toArray()).toHaveLength(
+      1,
+    );
+    await table.delete("camelCase = 2");
+    expect(await table.countRows()).toBe(0);
+  });
+
+  test("can mergeInsert on a camelCase join key", async () => {
+    await table
+      .mergeInsert("camelCase")
+      .whenMatchedUpdateAll()
+      .whenNotMatchedInsertAll()
+      .execute([
+        { camelCase: 1, vector: [0.3, 0.4] },
+        { camelCase: 5, vector: [0.5, 0.6] },
+      ]);
+    expect(await table.countRows()).toBe(2);
+    const inserted = await table.query().where("camelCase = 5").toArray();
+    expect(inserted).toHaveLength(1);
+  });
+
+  test("can reference a camelCase column in addColumns sql", async () => {
+    await table.addColumns([{ name: "doubled", valueSql: "camelCase * 2" }]);
+    const results = await table.query().select(["doubled"]).toArray();
+    expect(results[0].doubled).toBe(2);
+  });
+
+  test("can createIndex on a camelCase column", async () => {
+    await table.createIndex("camelCase");
   });
 
   test("can make multiple vector queries in one go", async () => {

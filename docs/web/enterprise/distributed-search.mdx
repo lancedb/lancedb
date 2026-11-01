@@ -4,17 +4,14 @@ sidebarTitle: "Distributed search"
 description: "How LanceDB Enterprise distributes index execution and table-data reads."
 icon: "network-wired"
 availability:
-  oss: unavailable
+  embedded: unavailable
   enterprise: available
-  summary: >-
-    LanceDB Enterprise distributes index execution and table-data reads across
-    executors. LanceDB Embedded executes searches in the application process.
 ---
 
 Distributed search spreads index execution, table-data reads, and caching across
 multiple serving machines in LanceDB Enterprise. Query nodes plan queries and
-combine results. Executors cache index structures and table data and execute
-the distributed work. See [Enterprise architecture](/enterprise/architecture).
+combine results. Plan executors cache index structures and table data and execute
+the remote work. See [Architecture](/index#architecture).
 
 ## Embedded search {#embedded-search}
 
