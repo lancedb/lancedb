@@ -867,6 +867,12 @@ pub struct FunctionErrorRecord {
     /// detail was capped and only the fragment summary remains.
     #[serde(default)]
     pub row_offset: Option<u32>,
+    /// Portable physical row address, `(fragment_id << 32) | row_offset`.
+    ///
+    /// `None` when the record covers a fragment rather than one row, or when
+    /// an older server does not report row addresses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row_address: Option<u64>,
     /// The column being computed.
     pub column: String,
     /// The Function that failed.
