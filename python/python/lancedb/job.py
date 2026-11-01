@@ -27,6 +27,28 @@ __all__ = [
 ]
 
 
+def _timeout_message(
+    job_id: Optional[str], timeout: timedelta, job_type: Optional[str]
+) -> str:
+    seconds = f"{timeout.total_seconds():g}"
+    unit = "second" if seconds == "1" else "seconds"
+    if job_id is None:
+        return (
+            f"operation still running after {seconds} {unit}; "
+            "it continues on the server"
+        )
+    if job_type == "query":
+        return (
+            f"query {job_id!r} still running after {seconds} {unit}; "
+            "it continues on the server; keep this handle to continue waiting"
+        )
+    return (
+        f"job {job_id!r} still running after {seconds} {unit}; "
+        "it continues on the server; "
+        f"reattach with db.open_job({job_id!r}).wait()"
+    )
+
+
 class AsyncJob(Generic[T]):
     """A handle to an operation that may still be running.
 
@@ -79,6 +101,11 @@ class AsyncJob(Generic[T]):
         If the timeout expires while disconnected, raises `ConnectionError`
         instead, with the job ID and instructions to resume waiting. The job
         may still be running; timing out does not cancel it.
+
+        The timeout error identifies the job and explains that it continues on
+        the server. Registry jobs include the ``db.open_job(id).wait()``
+        reattach call; SQL query handles must be kept because their IDs cannot
+        be reopened through the registry jobs API.
         """
         if self._inner is None:
             return cast(T, None)
@@ -111,9 +138,13 @@ class AsyncJob(Generic[T]):
                 result = await asyncio.wait_for(
                     wait_with_retries(), timeout.total_seconds()
                 )
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError as error:
             if last_error is None:
-                raise
+                if timeout is None:
+                    raise
+                raise TimeoutError(
+                    _timeout_message(self.id, timeout, self.job_type)
+                ) from error
             identity = f"job {self.id!r}" if self.id is not None else "the operation"
             if self.id is not None and self.job_type != "query":
                 reconnect = (
@@ -320,6 +351,11 @@ class Job(Generic[T]):
         Transient connection and read errors are retried within that timeout;
         if it expires while disconnected, raises `ConnectionError` with
         instructions to reconnect. Timing out does not cancel the job.
+
+        The timeout error identifies the job and explains that it continues on
+        the server. Registry jobs include the ``db.open_job(id).wait()``
+        reattach call; SQL query handles must be kept because their IDs cannot
+        be reopened through the registry jobs API.
 
         See :meth:`AsyncJob.wait`.
         """

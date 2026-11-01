@@ -107,7 +107,7 @@ async def test_wait_running_job_timeout_is_not_a_connection_error(wait_job):
 
     inner = MagicMock(id="job-1")
     inner.wait = AsyncMock(side_effect=running)
-    with pytest.raises(asyncio.TimeoutError):
+    with pytest.raises(TimeoutError):
         await wait_job(inner, timedelta(milliseconds=10))
     inner.cancel.assert_not_called()
 
@@ -141,13 +141,14 @@ async def test_wait_retries_without_a_timeout_and_caps_backoff(wait_job, monkeyp
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("job_type", [None, "query"])
 async def test_wait_timeout_after_recovery_is_not_a_connection_error(
-    wait_job, monkeypatch
+    wait_job, monkeypatch, job_type
 ):
     async def running():
         await asyncio.Event().wait()
 
-    inner = MagicMock(id="job-1", job_type=None)
+    inner = MagicMock(id="job-1", job_type=job_type)
     inner.wait = AsyncMock()
 
     async def wait():
@@ -159,8 +160,16 @@ async def test_wait_timeout_after_recovery_is_not_a_connection_error(
     inner.status = AsyncMock(return_value="running")
     monkeypatch.setattr("lancedb.job.asyncio.sleep", AsyncMock())
 
-    with pytest.raises(asyncio.TimeoutError):
+    with pytest.raises(TimeoutError) as exc:
         await wait_job(inner, timedelta(milliseconds=10))
+    message = str(exc.value)
+    assert "still running after 0.01 seconds" in message
+    assert "continues on the server" in message
+    if job_type == "query":
+        assert "keep this handle to continue waiting" in message
+        assert "db.open_job" not in message
+    else:
+        assert "db.open_job('job-1').wait()" in message
     assert inner.status.await_count == 1
     assert inner.wait.await_count == 2
 
@@ -211,3 +220,59 @@ async def test_query_wait_disconnection_does_not_suggest_open_job(wait_job):
     assert "query-1" in str(exc.value)
     assert "this job handle" in str(exc.value)
     assert "open_job" not in str(exc.value)
+
+
+class _PendingJob:
+    id = "job-timeout"
+    job_type = None
+
+    async def wait(self):
+        await asyncio.sleep(60)
+
+
+class _PendingQuery:
+    id = "query-timeout"
+    job_type = "query"
+
+    async def wait(self):
+        await asyncio.sleep(60)
+
+
+def _assert_timeout(error: TimeoutError) -> None:
+    message = str(error)
+    assert "job 'job-timeout' still running after 0.01 seconds" in message
+    assert "continues on the server" in message
+    assert "db.open_job('job-timeout').wait()" in message
+
+
+@pytest.mark.asyncio
+async def test_async_job_wait_timeout_explains_reattach():
+    job = AsyncJob(_PendingJob())
+
+    with pytest.raises(TimeoutError) as exc_info:
+        await job.wait(timeout=timedelta(seconds=0.01))
+
+    _assert_timeout(exc_info.value)
+
+
+def test_job_wait_timeout_explains_reattach():
+    job = Job(AsyncJob(_PendingJob()))
+
+    with pytest.raises(TimeoutError) as exc_info:
+        job.wait(timeout=timedelta(seconds=0.01))
+
+    _assert_timeout(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_query_wait_timeout_requires_keeping_original_handle():
+    job = AsyncJob(_PendingQuery())
+
+    with pytest.raises(TimeoutError) as exc_info:
+        await job.wait(timeout=timedelta(seconds=0.01))
+
+    message = str(exc_info.value)
+    assert "query 'query-timeout' still running after 0.01 seconds" in message
+    assert "continues on the server" in message
+    assert "keep this handle to continue waiting" in message
+    assert "db.open_job" not in message
