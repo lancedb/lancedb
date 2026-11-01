@@ -133,6 +133,7 @@ pub struct OpenTableBuilder {
     parent: Arc<dyn Database>,
     request: OpenTableRequest,
     embedding_registry: Arc<dyn EmbeddingRegistry>,
+    merge_insert_source_collect_threshold_bytes: Option<usize>,
     branch: Option<String>,
     version: Option<u64>,
 }
@@ -155,6 +156,7 @@ impl OpenTableBuilder {
                 managed_versioning: None,
             },
             embedding_registry,
+            merge_insert_source_collect_threshold_bytes: None,
             branch: None,
             version: None,
         }
@@ -309,7 +311,10 @@ impl OpenTableBuilder {
     /// Open the table
     pub async fn execute(self) -> Result<Table> {
         let table = self.parent.open_table(self.request).await?;
-        let table = Table::new_with_embedding_registry(table, self.parent, self.embedding_registry);
+        let table = Table::new_with_embedding_registry(table, self.parent, self.embedding_registry)
+            .with_merge_insert_source_collect_threshold_bytes(
+                self.merge_insert_source_collect_threshold_bytes,
+            );
         // "main" is the default branch, so treat it as no branch.
         let branch = self.branch.filter(|b| b.as_str() != MAIN_BRANCH);
         match branch {
@@ -472,6 +477,7 @@ impl CloneTableBuilder {
 pub struct Connection {
     internal: Arc<dyn Database>,
     embedding_registry: Arc<dyn EmbeddingRegistry>,
+    merge_insert_source_collect_threshold_bytes: Option<usize>,
 }
 
 impl std::fmt::Display for Connection {
@@ -488,6 +494,7 @@ impl Connection {
         Self {
             internal,
             embedding_registry,
+            merge_insert_source_collect_threshold_bytes: None,
         }
     }
 
@@ -586,6 +593,9 @@ impl Connection {
             name.into(),
             initial_data,
         )
+        .merge_insert_source_collect_threshold_bytes(
+            self.merge_insert_source_collect_threshold_bytes,
+        )
     }
 
     /// Create an empty table with a given schema
@@ -614,11 +624,14 @@ impl Connection {
     /// existence. Uncommitted files or a physical `<name>.lance` directory alone do not
     /// make a table openable.
     pub fn open_table(&self, name: impl Into<String>) -> OpenTableBuilder {
-        OpenTableBuilder::new(
+        let mut builder = OpenTableBuilder::new(
             self.internal.clone(),
             name.into(),
             self.embedding_registry.clone(),
-        )
+        );
+        builder.merge_insert_source_collect_threshold_bytes =
+            self.merge_insert_source_collect_threshold_bytes;
+        builder
     }
 
     /// Clone a table in the database
@@ -1520,6 +1533,7 @@ pub struct ConnectRequest {
 pub struct ConnectBuilder {
     request: ConnectRequest,
     embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
+    merge_insert_source_collect_threshold_bytes: Option<usize>,
     #[cfg(feature = "remote")]
     oauth_config: Option<crate::remote::OAuthConfig>,
 }
@@ -1543,6 +1557,7 @@ impl ConnectBuilder {
                 session: None,
             },
             embedding_registry: None,
+            merge_insert_source_collect_threshold_bytes: None,
             #[cfg(feature = "remote")]
             oauth_config: None,
         }
@@ -1664,6 +1679,15 @@ impl ConnectBuilder {
     /// Provide a custom [`EmbeddingRegistry`] to use for this connection.
     pub fn embedding_registry(mut self, registry: Arc<dyn EmbeddingRegistry>) -> Self {
         self.embedding_registry = Some(registry);
+        self
+    }
+
+    /// Default for [`MergeInsertBuilder::source_collect_threshold_bytes`] on
+    /// tables opened or created through this connection.
+    ///
+    /// [`MergeInsertBuilder::source_collect_threshold_bytes`]: crate::table::merge::MergeInsertBuilder::source_collect_threshold_bytes
+    pub fn merge_insert_source_collect_threshold_bytes(mut self, bytes: usize) -> Self {
+        self.merge_insert_source_collect_threshold_bytes = Some(bytes);
         self
     }
 
@@ -1880,6 +1904,8 @@ impl ConnectBuilder {
             embedding_registry: self
                 .embedding_registry
                 .unwrap_or_else(|| Arc::new(MemoryRegistry::new())),
+            merge_insert_source_collect_threshold_bytes: self
+                .merge_insert_source_collect_threshold_bytes,
         })
     }
 
@@ -1904,6 +1930,8 @@ impl ConnectBuilder {
                 embedding_registry: self
                     .embedding_registry
                     .unwrap_or_else(|| Arc::new(MemoryRegistry::new())),
+                merge_insert_source_collect_threshold_bytes: self
+                    .merge_insert_source_collect_threshold_bytes,
             })
         } else {
             let internal = Arc::new(ListingDatabase::connect_with_options(&self.request).await?);
@@ -1912,6 +1940,8 @@ impl ConnectBuilder {
                 embedding_registry: self
                     .embedding_registry
                     .unwrap_or_else(|| Arc::new(MemoryRegistry::new())),
+                merge_insert_source_collect_threshold_bytes: self
+                    .merge_insert_source_collect_threshold_bytes,
             })
         }
     }
@@ -1949,6 +1979,7 @@ pub struct ConnectNamespaceBuilder {
     namespace_client_properties: HashMap<String, String>,
     read_consistency_interval: Option<std::time::Duration>,
     embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
+    merge_insert_source_collect_threshold_bytes: Option<usize>,
     session: Option<Arc<lance::session::Session>>,
     pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
 }
@@ -1962,6 +1993,7 @@ impl ConnectNamespaceBuilder {
             namespace_client_properties: HashMap::new(),
             read_consistency_interval: None,
             embedding_registry: None,
+            merge_insert_source_collect_threshold_bytes: None,
             session: None,
             pushdown_operations: HashSet::new(),
         }
@@ -2031,6 +2063,15 @@ impl ConnectNamespaceBuilder {
         self
     }
 
+    /// Default for [`MergeInsertBuilder::source_collect_threshold_bytes`] on
+    /// tables opened or created through this connection.
+    ///
+    /// [`MergeInsertBuilder::source_collect_threshold_bytes`]: crate::table::merge::MergeInsertBuilder::source_collect_threshold_bytes
+    pub fn merge_insert_source_collect_threshold_bytes(mut self, bytes: usize) -> Self {
+        self.merge_insert_source_collect_threshold_bytes = Some(bytes);
+        self
+    }
+
     /// Set a custom session for object stores and caching.
     ///
     /// By default, a new session with default configuration will be created.
@@ -2092,6 +2133,8 @@ impl ConnectNamespaceBuilder {
             embedding_registry: self
                 .embedding_registry
                 .unwrap_or_else(|| Arc::new(MemoryRegistry::new())),
+            merge_insert_source_collect_threshold_bytes: self
+                .merge_insert_source_collect_threshold_bytes,
         })
     }
 }
@@ -2124,6 +2167,7 @@ mod test_utils {
             Self {
                 internal,
                 embedding_registry: Arc::new(MemoryRegistry::new()),
+                merge_insert_source_collect_threshold_bytes: None,
             }
         }
 
@@ -2140,6 +2184,7 @@ mod test_utils {
             Self {
                 internal,
                 embedding_registry: Arc::new(MemoryRegistry::new()),
+                merge_insert_source_collect_threshold_bytes: None,
             }
         }
     }

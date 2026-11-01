@@ -3263,13 +3263,7 @@ mod tests {
         merge
             .when_matched_update_all(None)
             .when_not_matched_insert_all();
-        let err = merge
-            .execute(Box::new(arrow_array::RecordBatchIterator::new(
-                vec![Ok(batch.clone())],
-                batch.schema(),
-            )))
-            .await
-            .unwrap_err();
+        let err = merge.execute(batch.clone()).await.unwrap_err();
         assert!(matches!(err, Error::InvalidInput { .. }));
 
         // The append that omits the column still works.
@@ -3565,7 +3559,7 @@ mod tests {
     )]
     async fn test_unset_with_retained_lsm_rows_cannot_admit_a_declaration() {
         use crate::table::RTEWriteSpec;
-        use arrow_array::{Int64Array, RecordBatchIterator};
+        use arrow_array::Int64Array;
 
         let tmp_dir = tempfile::tempdir().unwrap();
         let conn = connect(tmp_dir.path().to_str().unwrap())
@@ -3597,10 +3591,7 @@ mod tests {
             .when_matched_update_all(None)
             .when_not_matched_insert_all()
             .use_rte(true);
-        merge
-            .execute(Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema)))
-            .await
-            .unwrap();
+        merge.execute(batch).await.unwrap();
         // The RTE holds the written rows, so unsetting it is refused.
         table.disable_rte().await.unwrap_err();
 

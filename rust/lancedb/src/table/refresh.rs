@@ -1870,13 +1870,7 @@ mod tests {
             .when_matched_update_all(None)
             .when_not_matched_insert_all()
             .use_rte(true);
-        merge
-            .execute(Box::new(arrow_array::RecordBatchIterator::new(
-                vec![Ok(batch)],
-                schema,
-            )))
-            .await
-            .unwrap();
+        merge.execute(batch).await.unwrap();
         // The RTE holds the written rows, so unsetting it is refused.
         table.disable_rte().await.unwrap_err();
         super::super::computed_columns::add_foreign_kind(&table, "doubled", "sql").await;
