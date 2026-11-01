@@ -167,6 +167,17 @@ def test_function_version_preserves_source_digest(source_digest):
         version.source_digest = "sha256:changed"
 
 
+def test_function_version_exposes_registered_gpu_class():
+    value = job_result("remote_function_job.json")
+    legacy = FunctionVersion.from_json(json.dumps(value))
+    assert legacy.gpu_class is None
+
+    value["gpu_class"] = "a10g"
+    version = FunctionVersion.from_json(json.dumps(value))
+    assert version.gpu_class == "a10g"
+    assert json.loads(version.to_canonical_json())["gpu_class"] == "a10g"
+
+
 def test_function_version_binds_named_columns_as_one_immutable_application():
     version = FunctionVersion.from_json(
         json.dumps(job_result("remote_function_job.json"))

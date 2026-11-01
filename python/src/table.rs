@@ -42,12 +42,30 @@ use pyo3::{
 
 mod scannable;
 
-fn refresh_column_options(batch_size: Option<i64>) -> PyResult<RefreshColumnOptions> {
+fn refresh_column_options(
+    batch_size: Option<i64>,
+    gpu_class: Option<String>,
+    gpu_count: Option<i64>,
+) -> PyResult<RefreshColumnOptions> {
     let mut options = RefreshColumnOptions::default();
     options.batch_size = batch_size
         .map(usize::try_from)
         .transpose()
         .map_err(|_| PyValueError::new_err("batch_size must be greater than zero"))?;
+    options.gpu_class = gpu_class;
+    options.gpu_count = gpu_count
+        .map(|count| {
+            u32::try_from(count)
+                .ok()
+                .filter(|count| *count > 0)
+                .ok_or_else(|| {
+                    PyValueError::new_err(
+                        "gpu_count must be a positive integer no greater than u32::MAX",
+                    )
+                })
+        })
+        .transpose()?;
+    options.validate().infer_error()?;
     Ok(options)
 }
 
@@ -2080,13 +2098,15 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, *, batch_size=None))]
+    #[pyo3(signature = (column, *, batch_size=None, gpu_class=None, gpu_count=None))]
     pub fn refresh_column(
         self_: PyRef<'_, Self>,
         column: String,
         batch_size: Option<i64>,
+        gpu_class: Option<String>,
+        gpu_count: Option<i64>,
     ) -> PyResult<Bound<'_, PyAny>> {
-        let options = refresh_column_options(batch_size)?;
+        let options = refresh_column_options(batch_size, gpu_class, gpu_count)?;
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let result = inner
@@ -2097,13 +2117,15 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, *, batch_size=None))]
+    #[pyo3(signature = (column, *, batch_size=None, gpu_class=None, gpu_count=None))]
     pub fn refresh_column_async(
         self_: PyRef<'_, Self>,
         column: String,
         batch_size: Option<i64>,
+        gpu_class: Option<String>,
+        gpu_count: Option<i64>,
     ) -> PyResult<Bound<'_, PyAny>> {
-        let options = refresh_column_options(batch_size)?;
+        let options = refresh_column_options(batch_size, gpu_class, gpu_count)?;
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let job = inner
