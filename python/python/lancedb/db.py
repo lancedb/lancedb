@@ -1018,7 +1018,9 @@ class DBConnection(EnforceOverrides):
         """List every published immutable Function version in a namespace.
 
         Functions in child namespaces are not included. Results are ordered by
-        Function name then version. LanceDB Embedded connections raise
+        Function name then numeric version. Remote connections use
+        ``SHOW FUNCTIONS HISTORY`` to include every revision.
+        LanceDB Embedded connections raise
         ``NotImplementedError``.
 
         Examples
@@ -1044,13 +1046,13 @@ class DBConnection(EnforceOverrides):
         version: str,
         namespace_path: Optional[List[str]] = None,
     ) -> bool:
-        """Drop a Function name and the object it was bound to.
+        """Drop one published Function revision, preserving its siblings.
 
-        The requested version must exist in the currently named object. Returns
-        True when the catalog binding was removed and False when it was absent.
-        Physical cleanup continues in the background; use
-        :meth:`drop_function_async` to access the query job. Local connections
-        raise NotImplementedError.
+        Returns True when the revision was removed and False when it was absent.
+        Dropping the last visible revision releases the name and schedules
+        physical cleanup in the background. Use :meth:`drop_function_async` to
+        access the query job, whose completion confirms catalog removal of the
+        revision. Local connections raise NotImplementedError.
         """
         raise NotImplementedError(
             "Function catalog operations are not supported for this connection type"

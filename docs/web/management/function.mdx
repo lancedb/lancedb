@@ -564,13 +564,14 @@ itself is: as source, snapshotted at registration.
 
 ## Drop it {#drop}
 
-`db.drop_function(name, version=...)` drops the function's name and the object
-it is bound to; `version` must be a version that exists. It returns `False` if
-the name was already gone. Deleting the object's content can finish after the
-call returns, as a [background job](/maintenance/background-jobs).
+`db.drop_function(name, version=...)` removes only that published revision from
+lookup and listing, preserving other revisions and their grants. It returns
+`False` if that revision was already gone. The last visible revision's drop
+releases the name and schedules object cleanup, which can finish after the call
+returns as a [background job](/maintenance/background-jobs).
 `drop_function_async` returns `(dropped, job)`, where `job` is a query-backed
-handle. Waiting confirms catalog
-removal; physical cleanup can continue afterward.
+handle. Waiting confirms the revision's catalog removal; physical cleanup can
+continue afterward.
 
 A deployment refuses the drop unless it also allows changes to a function's
 lifecycle, which is a separate setting, off by default even where Functions are

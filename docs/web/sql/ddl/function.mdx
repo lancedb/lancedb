@@ -107,12 +107,15 @@ from it.
 
 ```sql
 SHOW FUNCTIONS
-SHOW FUNCTIONS IN "analytics" WITH (name = 'embed', limit = 100)
-SHOW FUNCTIONS WITH (after_name = 'embed', after_version = '1', limit = 100)
+SHOW FUNCTIONS HISTORY IN "analytics" WITH (name = 'embed', limit = 100)
+SHOW FUNCTIONS HISTORY WITH (after_name = 'embed', after_version = '1', limit = 100)
 ```
 
-Rows are ordered lexicographically by name and version. `after_name` and
-`after_version` must be supplied together for keyset pagination. `limit` bounds
+`SHOW FUNCTIONS` returns the highest published numeric revision for each name.
+Add `HISTORY` to list every published revision, as Python's `list_functions()`
+does. Rows are ordered by name and numeric revision, so `2` comes before `10`.
+`after_name` and `after_version` must be supplied together for keyset pagination.
+`limit` bounds
 the response; `include_definition = false` omits the optional definition JSON.
 
 ## DROP FUNCTION {#drop}
@@ -122,9 +125,11 @@ DROP FUNCTION embed WITH (version = '1')
 DROP FUNCTION IF EXISTS embed WITH (version = '1')
 ```
 
-`version` must identify an existing revision. DROP releases the function name
-and its object binding; physical cleanup continues separately. The result
-reports `dropped` or `not_found`. `IF EXISTS` allows a missing name.
+DROP removes only the requested revision from lookup and listing. Other
+published revisions and their grants remain available. Dropping the last visible
+revision releases the name and object binding; physical cleanup continues
+separately. The result reports `dropped` or `not_found`. `IF EXISTS` allows a
+missing revision.
 
 All function object commands retain shared results even when general query-result
 copying is disabled, so asynchronous polling can resume on another query node.
