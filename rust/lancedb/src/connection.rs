@@ -684,8 +684,8 @@ impl Connection {
     /// List every published immutable Function version in `namespace_path` of
     /// the remote catalog. Functions in child namespaces are not included.
     ///
-    /// Results are ordered by Function name then version. LanceDB Embedded databases return
-    /// [`Error::NotSupported`].
+    /// Results are ordered by Function name then numeric version, using
+    /// `SHOW FUNCTIONS HISTORY`. LanceDB Embedded databases return [`Error::NotSupported`].
     ///
     /// # Example
     ///
@@ -719,11 +719,11 @@ impl Connection {
         })
     }
 
-    /// Remove the current Function name binding, retaining the object history.
+    /// Remove one published Function revision, preserving sibling revisions and their grants.
     ///
-    /// Returns `true` when the server appended a Dropped transition and
-    /// `false` for an idempotent replay. LanceDB Embedded databases return
-    /// [`Error::NotSupported`].
+    /// Returns `true` when the requested revision was removed and `false` when
+    /// it was absent. Only the last visible revision's removal releases the name
+    /// and schedules object cleanup. LanceDB Embedded databases return [`Error::NotSupported`].
     pub async fn drop_function(
         &self,
         name: impl AsRef<str>,
@@ -735,11 +735,13 @@ impl Connection {
             .await
     }
 
-    /// Drop a Function binding and return its SQL query handle.
+    /// Drop one Function revision and return its SQL query handle.
     ///
-    /// The boolean reports catalog removal. The query job retains its query ID,
-    /// and repeated waits confirm completion. Physical cleanup continues in the
-    /// background. Local databases return [`Error::NotSupported`].
+    /// The boolean reports removal of the requested revision from the catalog.
+    /// Sibling revisions and their grants remain available. The query job retains
+    /// its query ID, and repeated waits confirm that revision's removal. Dropping
+    /// the last visible revision releases the name and schedules background object
+    /// cleanup. Local databases return [`Error::NotSupported`].
     pub async fn drop_function_async(
         &self,
         name: impl AsRef<str>,

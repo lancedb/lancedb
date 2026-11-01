@@ -1065,11 +1065,13 @@ class DBConnection(EnforceOverrides):
         version: str,
         namespace_path: Optional[List[str]] = None,
     ) -> Tuple[bool, Job]:
-        """Drop a Function binding and return its SQL query job.
+        """Drop one Function revision and return its SQL query job.
 
-        The boolean reports catalog removal. The job has type ``query`` and its
-        ID is the SQL query UUID. Repeated waits confirm that completion;
-        physical cleanup continues in the background. LanceDB Embedded
+        The boolean reports removal of the requested revision from the catalog;
+        sibling revisions and their grants remain available. The job has type
+        ``query`` and its ID is the SQL query UUID. Repeated waits confirm that
+        revision's removal. Only the last visible revision's drop releases the
+        name and schedules background object cleanup. LanceDB Embedded
         connections raise NotImplementedError.
         """
         raise NotImplementedError(
@@ -3517,7 +3519,12 @@ class AsyncConnection(object):
         version: str,
         namespace_path: Optional[List[str]] = None,
     ) -> bool:
-        """Drop a Function name and the object it was bound to."""
+        """Drop one published Function revision, preserving its siblings.
+
+        Returns True when the requested revision was removed and False when it
+        was absent. Only the last visible revision's removal releases the name
+        and schedules background object cleanup.
+        """
         return await self._inner.drop_function(name, version, namespace_path)
 
     async def drop_function_async(
@@ -3527,11 +3534,13 @@ class AsyncConnection(object):
         version: str,
         namespace_path: Optional[List[str]] = None,
     ) -> Tuple[bool, AsyncJob]:
-        """Drop a Function binding and return its SQL query job.
+        """Drop one Function revision and return its SQL query job.
 
-        The boolean reports catalog removal. The job has type ``query`` and its
-        ID is the SQL query UUID. Repeated waits confirm that completion;
-        physical cleanup continues in the background.
+        The boolean reports removal of the requested revision from the catalog;
+        sibling revisions and their grants remain available. The job has type
+        ``query`` and its ID is the SQL query UUID. Repeated waits confirm that
+        revision's removal. Only the last visible revision's drop releases the
+        name and schedules background object cleanup.
         """
         dropped, job = await self._inner.drop_function_async(
             name, version, namespace_path
