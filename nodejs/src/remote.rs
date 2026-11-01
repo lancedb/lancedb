@@ -276,7 +276,7 @@ impl TryFrom<OAuthConfig> for lancedb::remote::oauth::OAuthConfig {
                 }
                 OAuthFlow::AuthorizationCode(options)
             }
-            "device_code" => OAuthFlow::DeviceCode,
+            "device_code" => OAuthFlow::DeviceCode(Default::default()),
             "azure_managed_identity" => OAuthFlow::AzureManagedIdentity {
                 client_id: config.managed_identity_client_id,
             },
@@ -560,7 +560,7 @@ mod tests {
         let converted = lancedb::remote::oauth::OAuthConfig::try_from(config).unwrap();
         assert!(matches!(
             converted.flow,
-            lancedb::remote::oauth::OAuthFlow::DeviceCode
+            lancedb::remote::oauth::OAuthFlow::DeviceCode(options) if !options.use_pkce
         ));
     }
 

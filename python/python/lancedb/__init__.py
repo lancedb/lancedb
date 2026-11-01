@@ -7,7 +7,13 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from typing import Dict, Optional, Union, Any, List, Iterable, Literal, TYPE_CHECKING
 
-from ._lancedb import __version__ as __version__
+from packaging.version import Version as _Version
+
+from ._lancedb import __version__ as _native_version
+
+# Match Python package metadata without requiring the lancedb distribution.
+__version__ = str(_Version(_native_version))
+
 from ._lancedb import connect as lancedb_connect
 from ._lancedb import FtsToken
 from ._lancedb import FunctionErrorFragment as FunctionErrorFragment
@@ -41,12 +47,14 @@ from .functions import (
 )
 from .secrets import EnvVarSecret as EnvVarSecret
 from .secrets import SecretInfo as SecretInfo
+from .storage_integration import StorageIntegrationInfo as StorageIntegrationInfo
 from .materialized_view import (
     AsyncMaterializedView,
     MaterializedView,
     MaterializedViewDefinition,
 )
 from .view import ViewDescription as ViewDescription
+from .graph import PropertyGraph, PropertyGraphDescription
 from .table import AsyncTable, CompactionOptions, Table
 from .types import BaseTokenizerType
 from ._lancedb import Session
@@ -614,6 +622,8 @@ __all__ = [
     "MaterializedView",
     "MaterializedViewDefinition",
     "ViewDescription",
+    "PropertyGraph",
+    "PropertyGraphDescription",
     "connect",
     "connect_async",
     "tokenize",

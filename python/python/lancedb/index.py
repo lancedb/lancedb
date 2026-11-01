@@ -109,6 +109,28 @@ class Fm:
 
 
 @dataclass
+class NGram:
+    """Describe an NGram index configuration.
+
+    An `NGram` index is a scalar index on a UTF-8 string column that
+    accelerates substring filters such as `contains(col, 'needle')`, along
+    with some `LIKE` and regular-expression predicates. It tokenizes values
+    into overlapping character n-grams (using Lance's default trigram
+    parameters) and narrows a scan to the rows that share the query's n-grams;
+    the exact predicate is then evaluated on those candidates, so the results
+    are the same with or without the index.
+
+    Unlike the `Fm` index, which matches arbitrary substrings of the raw
+    bytes, `NGram` is trigram based, so a query shorter than the n-gram length
+    cannot be served by the index.
+
+    For example, it works with `text`, `description`, `comment`, etc.
+    """
+
+    pass
+
+
+@dataclass
 class FTS:
     """Describe a FTS index configuration.
 
@@ -954,4 +976,5 @@ __all__ = [
     "Bitmap",
     "LabelList",
     "Fm",
+    "NGram",
 ]

@@ -440,8 +440,11 @@ mod tests {
 
     use crate::connect;
     use crate::database::listing::OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS;
-    use crate::index::vector::IvfRqIndexBuilder;
-    use crate::index::{Index, scalar::BTreeIndexBuilder};
+    use crate::index::{
+        Index,
+        scalar::BTreeIndexBuilder,
+        vector::{IvfHnswSqIndexBuilder, IvfRqIndexBuilder},
+    };
     use crate::query::ExecutableQuery;
     use crate::table::{CompactionOptions, OptimizeAction, OptimizeStats};
     use futures::TryStreamExt;
@@ -689,6 +692,68 @@ mod tests {
         all_values.sort();
         let expected: Vec<i32> = (0..600).collect();
         assert_eq!(all_values, expected);
+    }
+
+    #[tokio::test]
+    async fn test_parallel_compaction_reserves_fragment_ids_once() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from_iter_values(0..10))])
+                .unwrap();
+
+        let table = conn
+            .create_table("test_parallel_compaction", batch.clone())
+            .execute()
+            .await
+            .unwrap();
+
+        // Create 64 fragments. With a 20-row target, compaction plans 32 tasks,
+        // which is more than the commit retry limit that used to be exhausted
+        // when each parallel task reserved fragment IDs independently.
+        for _ in 1..64 {
+            table.add(batch.clone()).execute().await.unwrap();
+        }
+
+        // Legacy row IDs require fragment IDs before an index can be remapped.
+        assert!(
+            !table
+                .as_native()
+                .unwrap()
+                .manifest()
+                .await
+                .unwrap()
+                .uses_stable_row_ids()
+        );
+        table
+            .create_index(&["i"], Index::BTree(BTreeIndexBuilder::default()))
+            .execute()
+            .await
+            .unwrap();
+
+        let version_before = table.version().await.unwrap();
+        let stats = table
+            .optimize(OptimizeAction::Compact {
+                options: CompactionOptions {
+                    target_rows_per_fragment: 20,
+                    num_threads: Some(64),
+                    ..Default::default()
+                },
+                remap_options: None,
+            })
+            .await
+            .unwrap()
+            .compaction
+            .unwrap();
+
+        assert_eq!(stats.fragments_removed, 64);
+        assert_eq!(stats.fragments_added, 32);
+        assert_eq!(table.count_rows(None).await.unwrap(), 640);
+        assert_eq!(
+            table.version().await.unwrap(),
+            version_before + 2,
+            "parallel compaction should use one fragment reservation commit and one rewrite commit"
+        );
     }
 
     #[tokio::test]
@@ -1114,6 +1179,60 @@ mod tests {
         all_values.sort();
         let expected: Vec<i32> = (0..400).collect();
         assert_eq!(all_values, expected);
+    }
+
+    #[tokio::test]
+    async fn test_optimize_all_with_hnsw_index() {
+        let conn = connect("memory://").execute().await.unwrap();
+
+        let dimension = 8;
+        let item_field = Arc::new(Field::new("item", DataType::Float32, true));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "vector",
+            DataType::FixedSizeList(item_field.clone(), dimension),
+            false,
+        )]));
+
+        let make_batch = |offset: usize| {
+            let values = Float32Array::from_iter_values(
+                (offset * dimension as usize..(offset + 128) * dimension as usize)
+                    .map(|value| value as f32),
+            );
+            let vectors =
+                FixedSizeListArray::try_new(item_field.clone(), dimension, Arc::new(values), None)
+                    .unwrap();
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(vectors)]).unwrap()
+        };
+
+        let table = conn
+            .create_table("test_hnsw_optimize", make_batch(0))
+            .execute()
+            .await
+            .unwrap();
+        for offset in [128, 256, 384] {
+            table.add(make_batch(offset)).execute().await.unwrap();
+        }
+
+        table
+            .create_index(
+                &["vector"],
+                Index::IvfHnswSq(IvfHnswSqIndexBuilder::default()),
+            )
+            .execute()
+            .await
+            .unwrap();
+
+        let stats = table.optimize(OptimizeAction::All).await.unwrap();
+        assert!(stats.compaction.unwrap().fragments_removed > 0);
+
+        let indices = table.list_indices().await.unwrap();
+        assert_eq!(indices.len(), 1);
+        assert_eq!(indices[0].index_type, crate::index::IndexType::IvfHnswSq);
+
+        let index_stats = table.index_stats(&indices[0].name).await.unwrap().unwrap();
+        assert_eq!(index_stats.num_indexed_rows, 512);
+        assert_eq!(index_stats.num_unindexed_rows, 0);
+        assert_eq!(table.count_rows(None).await.unwrap(), 512);
     }
 
     #[tokio::test]

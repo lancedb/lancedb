@@ -71,6 +71,7 @@ from .index import (
     IvfRq,
     LabelList,
     Fm,
+    NGram,
     HnswPq,
     HnswSq,
     HnswFlat,
@@ -284,6 +285,7 @@ IndexConfigType = Union[
     Bitmap,
     LabelList,
     Fm,
+    NGram,
     FTS,
 ]
 
@@ -1883,7 +1885,7 @@ class Table(ABC):
         config : IndexConfigType, optional
             The index configuration object. If provided, uses the new unified API.
             Can be one of: IvfFlat, IvfPq, IvfSq, IvfRq, HnswPq, HnswSq,
-            BTree, Bitmap, LabelList, Fm, FTS.
+            BTree, Bitmap, LabelList, Fm, NGram, FTS.
         replace : bool, default True
             Whether to replace an existing index on this column.
         wait_timeout : timedelta, optional
@@ -1930,6 +1932,27 @@ class Table(ABC):
         raise NotImplementedError(
             "create_index_async is not supported for this table type"
         )
+
+    def get_table_overrides(self) -> dict[str, Any]:
+        """Read Enterprise table overrides for this table.
+
+        Table overrides configure Enterprise-managed background behavior such as
+        automatic compaction, cleanup, and reindex execution. This method is
+        supported only on remote Enterprise tables.
+        """
+        raise NotImplementedError
+
+    def update_table_overrides(self, **overrides: Any) -> dict[str, Any]:
+        """Merge Enterprise table overrides into the current table overrides.
+
+        Only fields supplied in ``overrides`` are changed; unrelated existing
+        overrides are preserved by the remote service update flow.
+        """
+        raise NotImplementedError
+
+    def reset_table_overrides(self) -> dict[str, Any]:
+        """Clear Enterprise table overrides for this table."""
+        raise NotImplementedError
 
     def drop_index(self, name: str) -> None:
         """
@@ -3054,7 +3077,9 @@ class Table(ABC):
         """
 
     @abstractmethod
-    def refresh_column(self, column: str) -> "RefreshColumnResult":
+    def refresh_column(
+        self, column: str, *, batch_size: Optional[int] = None
+    ) -> "RefreshColumnResult":
         """
         Fill the rows of a computed column that hold no value yet.
 
@@ -3066,14 +3091,18 @@ class Table(ABC):
         by the next one, and rows whose inputs changed since they were computed
         are recomputed; everything else is left as it is.
 
-        LanceDB Embedded only. In LanceDB Distributed, a refresh runs as a
-        server job, through
+        Supported for local tables only. For remote tables, a refresh runs as
+        a server job, through
         [`refresh_column_async`][lancedb.table.Table.refresh_column_async].
 
         Parameters
         ----------
         column: str
             The name of the computed column to fill.
+        batch_size: int, optional
+            Maximum rows per Function call on the remote server. Must be
+            greater than zero. None uses the server default. Has no effect on
+            local expression-backed columns.
 
         Returns
         -------
@@ -3083,20 +3112,31 @@ class Table(ABC):
         """
 
     @abstractmethod
-    def refresh_column_async(self, column: str) -> Job[RefreshColumnJobResult]:
+    def refresh_column_async(
+        self, column: str, *, batch_size: Optional[int] = None
+    ) -> Job[RefreshColumnJobResult]:
         """
         Like :meth:`refresh_column`, but returns a handle to the refresh job
         instead of blocking until it completes.
 
-        LanceDB Embedded refresh requires a source build with
-        ``experimental-functions``.
-        LanceDB Distributed jobs do not require this feature.
+        Local refresh requires a source build with ``experimental-functions``.
+        Remote jobs do not require this feature.
 
         The job may already be complete when returned; callers must not assume
         the column is filled until :meth:`Job.wait` returns. Invalid input --
         an unknown column, or one that is not computed -- raises here rather
-        than failing the job. In LanceDB Embedded the job runs in-process; in
-        LanceDB Distributed it is the server's backfill job.
+        than failing the job. For local tables, the job runs in-process; for
+        remote tables, it is the server's backfill job.
+
+        Parameters
+        ----------
+        column: str
+            The name of the computed column to fill.
+        batch_size: int, optional
+            Maximum rows per Function call on the remote server. Must be
+            greater than zero. None uses the server default. Lower this for
+            slow Functions to stay within the executor's per-call deadline.
+            Has no effect on local expression-backed columns.
 
         Returns
         -------
@@ -3984,7 +4024,7 @@ class LanceTable(Table):
         config : IndexConfigType, optional
             The index configuration object. If provided, uses the new unified API.
             Can be one of: IvfFlat, IvfPq, IvfSq, IvfRq, HnswPq, HnswSq,
-            BTree, Bitmap, LabelList, Fm, FTS.
+            BTree, Bitmap, LabelList, Fm, NGram, FTS.
         replace : bool, default True
             Whether to replace an existing index on this column.
         wait_timeout : timedelta, optional
@@ -5135,18 +5175,24 @@ class LanceTable(Table):
             )
         )
 
-    def refresh_column(self, column: str) -> "RefreshColumnResult":
+    def refresh_column(
+        self, column: str, *, batch_size: Optional[int] = None
+    ) -> "RefreshColumnResult":
         """Fill a computed column's unfilled rows and recompute those whose
         inputs changed. See
         [`AsyncTable.refresh_column`][lancedb.AsyncTable.refresh_column]."""
-        return LOOP.run(self._table.refresh_column(column))
+        return LOOP.run(self._table.refresh_column(column, batch_size=batch_size))
 
-    def refresh_column_async(self, column: str) -> Job[RefreshColumnJobResult]:
+    def refresh_column_async(
+        self, column: str, *, batch_size: Optional[int] = None
+    ) -> Job[RefreshColumnJobResult]:
         """Fill a computed column's unfilled rows and recompute those whose
         inputs changed, returning a handle to the refresh job. See
         [`Table.refresh_column_async`][lancedb.table.Table.refresh_column_async].
         """
-        return Job(LOOP.run(self._table.refresh_column_async(column)))
+        return Job(
+            LOOP.run(self._table.refresh_column_async(column, batch_size=batch_size))
+        )
 
     def function_errors(
         self,
@@ -5192,6 +5238,36 @@ class LanceTable(Table):
         """Read the installed RTEWriteSpec, or ``None``. See
         [`AsyncTable.get_rte_spec`][lancedb.AsyncTable.get_rte_spec]."""
         return LOOP.run(self._table.get_rte_spec())
+
+    def get_table_overrides(self) -> dict[str, Any]:
+        """Read Enterprise table overrides for this table.
+
+        Table overrides configure Enterprise-managed background behavior such as
+        automatic compaction, cleanup, and reindex execution. This method is
+        supported only on remote Enterprise tables.
+        """
+        return LOOP.run(self._table.get_table_overrides())
+
+    def update_table_overrides(self, **overrides: Any) -> dict[str, Any]:
+        """Merge Enterprise table overrides into the current table overrides.
+
+        Only fields supplied in ``overrides`` are changed; unrelated overrides
+        from the current read snapshot are preserved.
+
+        Examples
+        --------
+        >>> table.update_table_overrides(  # doctest: +SKIP
+        ...     job_types={
+        ...         "compaction": {"enabled": True},
+        ...         "cleanup": {"enabled": False},
+        ...     }
+        ... )
+        """
+        return LOOP.run(self._table.update_table_overrides(**overrides))
+
+    def reset_table_overrides(self) -> dict[str, Any]:
+        """Clear Enterprise table overrides for this table."""
+        return LOOP.run(self._table.reset_table_overrides())
 
     def checkpoint_rte(self) -> None:
         """Synchronous version of
@@ -5942,6 +6018,37 @@ class AsyncTable:
         """
         return await self._inner.get_rte_spec()
 
+    async def get_table_overrides(self) -> dict[str, Any]:
+        """Read Enterprise table overrides for this table.
+
+        Table overrides configure Enterprise-managed background behavior such as
+        automatic compaction, cleanup, and reindex execution. This method is
+        supported only on remote Enterprise tables.
+        """
+        return json.loads(await self._inner.get_table_overrides())
+
+    async def update_table_overrides(self, **overrides: Any) -> dict[str, Any]:
+        """Merge Enterprise table overrides into the current table overrides.
+
+        Only fields supplied in ``overrides`` are changed; unrelated overrides
+        from the current read snapshot are preserved.
+
+        Examples
+        --------
+        >>> await table.update_table_overrides(  # doctest: +SKIP
+        ...     job_types={
+        ...         "compaction": {"enabled": True},
+        ...         "cleanup": {"enabled": False},
+        ...     }
+        ... )
+        """
+        encoded = json.dumps(overrides)
+        return json.loads(await self._inner.update_table_overrides(encoded))
+
+    async def reset_table_overrides(self) -> dict[str, Any]:
+        """Clear Enterprise table overrides for this table."""
+        return json.loads(await self._inner.reset_table_overrides())
+
     # WAL-PK-FUSION: delete both hooks.
     def _hybrid_pk_fusion_learned(self) -> bool:
         """See [`Table._hybrid_pk_fusion_learned`][lancedb.table.Table]."""
@@ -6215,6 +6322,7 @@ class AsyncTable:
                 Bitmap,
                 LabelList,
                 Fm,
+                NGram,
                 FTS,
             ]
         ] = None,
@@ -6268,12 +6376,13 @@ class AsyncTable:
                     Bitmap,
                     LabelList,
                     Fm,
+                    NGram,
                     FTS,
                 ),
             ):
                 raise TypeError(
                     "config must be an instance of IvfSq, IvfPq, IvfRq, HnswPq, HnswSq,"
-                    " BTree, Bitmap, LabelList, Fm, or FTS, but got "
+                    " BTree, Bitmap, LabelList, Fm, NGram, or FTS, but got "
                     + str(type(config))
                 )
         try:
@@ -6311,6 +6420,7 @@ class AsyncTable:
                 Bitmap,
                 LabelList,
                 Fm,
+                NGram,
                 FTS,
             ]
         ] = None,
@@ -7340,7 +7450,9 @@ class AsyncTable:
         else:
             return await self._inner.add_columns(list(transforms.items()))
 
-    async def refresh_column(self, column: str) -> RefreshColumnResult:
+    async def refresh_column(
+        self, column: str, *, batch_size: Optional[int] = None
+    ) -> RefreshColumnResult:
         """
         Fill the rows of a computed column that hold no value yet.
 
@@ -7352,21 +7464,25 @@ class AsyncTable:
         by the next one, and rows whose inputs changed since they were computed
         are recomputed; everything else is left as it is.
 
-        LanceDB Embedded only. In LanceDB Distributed, a refresh runs as a
-        server job, through
+        Supported for local tables only. For remote tables, a refresh runs as
+        a server job, through
         [`refresh_column_async`][lancedb.table.Table.refresh_column_async].
 
         Parameters
         ----------
         column: str
             The name of the computed column to fill.
+        batch_size: int, optional
+            Maximum rows per Function call on the remote server. Must be
+            greater than zero. None uses the server default. Has no effect on
+            local expression-backed columns.
 
         Returns
         -------
         RefreshColumnResult
             The number of rows filled and the new version of the table.
         """
-        return await self._inner.refresh_column(column)
+        return await self._inner.refresh_column(column, batch_size=batch_size)
 
     async def function_errors(
         self,
@@ -7412,22 +7528,30 @@ class AsyncTable:
         )
 
     async def refresh_column_async(
-        self, column: str
+        self, column: str, *, batch_size: Optional[int] = None
     ) -> AsyncJob[RefreshColumnJobResult]:
         """
         Like :meth:`refresh_column`, but returns a handle to the refresh job
         instead of blocking until it completes.
 
-        LanceDB Embedded refresh requires a source build with
-        ``experimental-functions``.
-        LanceDB Distributed jobs do not require this feature.
+        Local refresh requires a source build with ``experimental-functions``.
+        Remote jobs do not require this feature.
 
         The job may already be complete when returned; callers must not assume
         the column is filled until :meth:`AsyncJob.wait` resolves. Invalid
         input -- an unknown column, or one that is not computed -- raises here
-        rather than failing the job. In LanceDB Embedded the job runs
-        in-process; in LanceDB Distributed it is the server's
-        backfill job.
+        rather than failing the job. For local tables, the job runs in-process;
+        for remote tables, it is the server's backfill job.
+
+        Parameters
+        ----------
+        column: str
+            The name of the computed column to fill.
+        batch_size: int, optional
+            Maximum rows per Function call on the remote server. Must be
+            greater than zero. None uses the server default. Lower this for
+            slow Functions to stay within the executor's per-call deadline.
+            Has no effect on local expression-backed columns.
 
         Returns
         -------
@@ -7451,7 +7575,7 @@ class AsyncTable:
         'finished'
         """
         return _typed_job(
-            await self._inner.refresh_column_async(column),
+            await self._inner.refresh_column_async(column, batch_size=batch_size),
             RefreshColumnJobResult.from_json,
         )
 
@@ -7965,6 +8089,7 @@ class IndexStatistics:
         "BTREE",
         "BITMAP",
         "LABEL_LIST",
+        "NGRAM",
     ]
     distance_type: Optional[Literal["l2", "cosine", "dot"]] = None
     num_indices: Optional[int] = None

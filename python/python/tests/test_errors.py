@@ -4,9 +4,16 @@
 import pickle
 
 import pytest
+from lance_namespace.errors import ErrorCode
+from lance_namespace.errors import TableNotFoundError as NamespaceTableNotFoundError
 
 from lancedb.db import DBConnection
-from lancedb.remote.errors import HttpError, LanceDBClientError, RetryError
+from lancedb.remote.errors import (
+    HttpError,
+    LanceDBClientError,
+    RetryError,
+    TableNotFoundError,
+)
 from lancedb.table import Table
 
 
@@ -49,6 +56,19 @@ def test_pickle_http_error():
     assert isinstance(restored, HttpError)
     assert str(restored) == "not found"
     assert restored.request_id == "req-789"
+    assert restored.status_code == 404
+
+
+def test_pickle_table_not_found_error():
+    err = TableNotFoundError("Table 'missing' was not found", "req-missing", 404)
+    restored = pickle.loads(pickle.dumps(err))
+    assert isinstance(restored, TableNotFoundError)
+    assert isinstance(restored, NamespaceTableNotFoundError)
+    assert isinstance(restored, ValueError)
+    assert isinstance(restored, HttpError)
+    assert restored.code == ErrorCode.TABLE_NOT_FOUND
+    assert str(restored) == "Table 'missing' was not found"
+    assert restored.request_id == "req-missing"
     assert restored.status_code == 404
 
 
