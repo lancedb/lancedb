@@ -889,6 +889,25 @@ def test_field_name_read_by_another_fields_alias_choices_or_path(
     assert item.model_dump() == {"record_id": 42, "id": -1}
 
 
+def test_field_name_fallback_does_not_change_another_fields_alias_choice(mem_db):
+    class Item(LanceModel):
+        value: int = Field(
+            default=0, validation_alias=pydantic.AliasChoices("id", "valueId")
+        )
+        record_id: int = Field(
+            default=-1, validation_alias=pydantic.AliasChoices("id", "recordId")
+        )
+
+    row = {"value": 1, "recordId": 42}
+    assert Item(**row).model_dump() == {"value": 0, "record_id": 42}
+    tbl = mem_db.create_table("shared_alias_items", data=[row])
+
+    [arrow_row] = tbl.search().to_arrow().to_pylist()
+    assert arrow_row == row
+    [item] = tbl.search().to_pydantic(Item)
+    assert item.model_dump() == {"value": 0, "record_id": 42}
+
+
 @pytest.mark.asyncio
 async def test_aliased_lance_model_reads_back_its_own_table_async(mem_db_async):
     class Item(LanceModel):
@@ -942,6 +961,28 @@ async def test_lower_priority_alias_takes_precedence_over_field_name_async(
     assert Item(**arrow_row).user_id == 2
     [item] = await (await tbl.search()).to_pydantic(Item)
     assert item.user_id == 2
+
+
+@pytest.mark.asyncio
+async def test_field_name_fallback_does_not_change_another_fields_alias_choice_async(
+    mem_db_async,
+):
+    class Item(LanceModel):
+        value: int = Field(
+            default=0, validation_alias=pydantic.AliasChoices("id", "valueId")
+        )
+        record_id: int = Field(
+            default=-1, validation_alias=pydantic.AliasChoices("id", "recordId")
+        )
+
+    row = {"value": 1, "recordId": 42}
+    assert Item(**row).model_dump() == {"value": 0, "record_id": 42}
+    tbl = await mem_db_async.create_table("shared_alias_items", data=[row])
+
+    [arrow_row] = (await (await tbl.search()).to_arrow()).to_pylist()
+    assert arrow_row == row
+    [item] = await (await tbl.search()).to_pydantic(Item)
+    assert item.model_dump() == {"value": 0, "record_id": 42}
 
 
 def test_enum_types():

@@ -125,17 +125,29 @@ def _rows_to_models(model: type[T], rows: List[dict]) -> List[T]:
         name: field.validation_alias or field.alias
         for name, field in model.model_fields.items()
     }
+    validate_by_name = model.model_config.get("validate_by_name", False)
     # Every top-level key some field reads, including the first step of an
     # AliasPath and each choice of an AliasChoices.
-    alias_keys = {name: _top_level_alias_keys(alias) for name, alias in aliases.items()}
-    taken = set().union(*alias_keys.values())
+    alias_keys = {}
+    for name, alias in aliases.items():
+        keys = _top_level_alias_keys(alias)
+        if not keys or validate_by_name:
+            keys.add(name)
+        alias_keys[name] = keys
+    readers = {}
+    for name, keys in alias_keys.items():
+        for key in keys:
+            readers.setdefault(key, set()).add(name)
     renames = {
         name: target
         for name, alias in aliases.items()
         if (target := _single_component_alias(alias)) is not None
-        # A name that is also another field's alias keeps that meaning.
+        # Do not move a source that another field reads.
         and target != name
-        and name not in taken
+        and not (readers.get(name, set()) - {name})
+        # Do not add a source that another field accepts. Introducing a shared
+        # alias key could change that field's Pydantic selection.
+        and not (readers.get(target, set()) - {name})
     }
     for row in rows:
         for name, target in renames.items():
