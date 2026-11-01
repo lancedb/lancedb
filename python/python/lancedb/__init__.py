@@ -299,11 +299,11 @@ def connect(
             raise ValueError(f"Unknown keyword arguments: {unknown_kwargs}")
         if session is not None:
             raise NotImplementedError(
-                "session is not supported for LanceDB Distributed connections"
+                "session is not supported for LanceDB Enterprise connections"
             )
         if manifest_enabled:
             raise NotImplementedError(
-                "manifest_enabled is not supported for LanceDB Distributed connections"
+                "manifest_enabled is not supported for LanceDB Enterprise connections"
             )
         if api_key is None:
             api_key = os.environ.get("LANCEDB_API_KEY")

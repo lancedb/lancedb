@@ -653,7 +653,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn prewarm_index(&self, name: &str) -> Result<()>;
     /// Prewarm data for the table.
     ///
-    /// Currently only supported in LanceDB Distributed.
+    /// Currently only supported in LanceDB Enterprise.
     /// If `columns` is `None`, all columns are prewarmed.
     async fn prewarm_data(&self, columns: Option<Vec<String>>) -> Result<()>;
     /// Get statistics about the index.
@@ -848,7 +848,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// Declare computed columns, each defined by a SQL expression.
     ///
     /// Where the declaration is planned depends on the backend: a LanceDB Embedded
-    /// table validates and types the expression itself, while a LanceDB Distributed
+    /// table validates and types the expression itself, while a LanceDB Enterprise
     /// table sends the expression for the server to plan.
     async fn add_computed_columns(
         &self,
@@ -867,7 +867,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         _options: computed_columns::ComputedColumnOptions,
     ) -> Result<AddColumnsResult> {
         Err(Error::NotSupported {
-            message: "Function columns are supported only in LanceDB Distributed".into(),
+            message: "Function columns are supported only in LanceDB Enterprise".into(),
         })
     }
     /// Fill a computed column's unfilled rows and recompute those whose
@@ -915,7 +915,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         _request: &crate::function::FunctionErrorsRequest,
     ) -> Result<crate::function::FunctionErrors> {
         Err(Error::NotSupported {
-            message: "per-row Function errors are recorded only in LanceDB Distributed".into(),
+            message: "per-row Function errors are recorded only in LanceDB Enterprise".into(),
         })
     }
     /// Alter columns in the table.
@@ -1042,7 +1042,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// [`FieldMetadataUpdate::remove`] deletes a key and
     /// [`FieldMetadataUpdate::replace`] swaps the field's whole map.
     ///
-    /// The default returns `NotSupported`; Lance-backed and LanceDB Distributed tables override it.
+    /// The default returns `NotSupported`; Lance-backed and LanceDB Enterprise tables override it.
     async fn update_field_metadata(
         &self,
         _updates: &[FieldMetadataUpdate],
@@ -1313,7 +1313,7 @@ impl Table {
     ///
     /// Native tables support both legacy blob v1 and blob v2 columns.
     /// Output matches `row_ids` in length and order. Null blobs are null;
-    /// valid empty blobs contain empty byte strings. LanceDB Distributed limits individual
+    /// valid empty blobs contain empty byte strings. LanceDB Enterprise limits individual
     /// requests to 1024 row ids and 64 MiB of blob bytes; the client
     /// splits requests and reads a single larger blob through the Range route.
     /// This method still materializes all bytes in memory, so prefer
@@ -1365,7 +1365,7 @@ impl Table {
     /// ranges for the same blob. The output has the same length and order as
     /// the requests. Null blobs produce null output slots; empty ranges on
     /// non-null blobs produce empty byte strings.
-    /// LanceDB Distributed tables read through version-pinned [`BlobFile`] handles using
+    /// LanceDB Enterprise tables read through version-pinned [`BlobFile`] handles using
     /// HTTP byte-range requests.
     ///
     /// `_rowid` values stay valid after compaction when the table has stable
@@ -1624,7 +1624,7 @@ impl Table {
     }
 
     /// See [Table::create_index]
-    /// In LanceDB Distributed, this allows an optional wait_timeout to poll until asynchronous indexing is complete
+    /// In LanceDB Enterprise, this allows an optional wait_timeout to poll until asynchronous indexing is complete
     pub fn create_index_with_timeout(
         &self,
         columns: &[impl AsRef<str>],
@@ -1910,7 +1910,7 @@ impl Table {
         error_if_tagged_old_versions: Option<bool>,
     ) -> Result<OptimizeStats> {
         let native = self.as_native().ok_or_else(|| Error::NotSupported {
-            message: "optimize is not supported in LanceDB Distributed.".into(),
+            message: "optimize is not supported in LanceDB Enterprise.".into(),
         })?;
         let prune = optimize::cleanup_old_versions_before(
             native,
@@ -1940,7 +1940,7 @@ impl Table {
     /// [`freshness`](crate::table::freshness)); everything else is left as
     /// it is.
     ///
-    /// LanceDB Embedded only: in LanceDB Distributed a refresh runs as a server job, through
+    /// LanceDB Embedded only: in LanceDB Enterprise a refresh runs as a server job, through
     /// [`Table::refresh_column_async`].
     ///
     /// ```
@@ -1958,7 +1958,7 @@ impl Table {
     /// Like [`Table::refresh_column`], with explicit refresh options.
     ///
     /// [`RefreshColumnOptions::batch_size()`] caps rows per Function call in
-    /// LanceDB Distributed and must be greater than zero when set. It has no
+    /// LanceDB Enterprise and must be greater than zero when set. It has no
     /// effect on expression-backed columns in LanceDB Embedded. Remote refreshes
     /// require [`Table::refresh_column_async_with_options`].
     ///
@@ -1991,7 +1991,7 @@ impl Table {
     /// both expression-backed and Function-backed columns. Invalid input
     /// -- an unknown column, or one that is not computed -- is reported by
     /// this call rather than by the job. In LanceDB Embedded the job runs as an
-    /// in-process task; in LanceDB Distributed it is the server's
+    /// in-process task; in LanceDB Enterprise it is the server's
     /// backfill job.
     ///
     /// ```
@@ -2045,7 +2045,7 @@ impl Table {
     /// capped. Filter by job or column through the request; a listing that
     /// hit its limit reports [`FunctionErrors::truncated`].
     ///
-    /// LanceDB Distributed only, and the caller needs read access
+    /// LanceDB Enterprise only, and the caller needs read access
     /// to the table, since a message carries the value that failed.
     ///
     /// ```
@@ -2425,7 +2425,7 @@ impl Table {
     /// Tokenize a full-text search query using the tokenizer configured on an FTS index.
     ///
     /// Model-backed tokenizers such as `jieba/*` and `lindera/*` are rebuilt in
-    /// the client process from index metadata. In LanceDB Distributed, this means the
+    /// the client process from index metadata. In LanceDB Enterprise, this means the
     /// same tokenizer model files must also exist locally, and must match the
     /// files the server uses: the client cannot detect a mismatch, so it may
     /// return tokens the server's index never produces. If the model files are
@@ -2463,7 +2463,7 @@ impl Table {
     ///
     /// The column must have exactly one FTS index. Model-backed tokenizers such
     /// as `jieba/*` and `lindera/*` are rebuilt in the client process from
-    /// index metadata. In LanceDB Distributed, this means the same tokenizer model
+    /// index metadata. In LanceDB Enterprise, this means the same tokenizer model
     /// files must also exist locally, and must match the files the server uses
     /// (see [`Self::tokenize`]).
     pub async fn tokenize_with_column(&self, query: &str, column: &str) -> Result<Vec<FtsToken>> {
@@ -2552,7 +2552,7 @@ impl Table {
     /// Get the table URI (storage location)
     ///
     /// Returns the full storage location of the table (e.g., S3/GCS path).
-    /// In LanceDB Distributed, this fetches the location from the server via describe.
+    /// In LanceDB Enterprise, this fetches the location from the server via describe.
     pub async fn uri(&self) -> Result<String> {
         self.inner.uri().await
     }
@@ -2597,7 +2597,7 @@ impl Table {
 
     /// Drop an index from the table.
     ///
-    /// Note: This is not yet available in LanceDB Distributed.
+    /// Note: This is not yet available in LanceDB Enterprise.
     ///
     /// This does not delete the index from disk, it just removes it from the table.
     /// To delete the index, run [`Self::optimize()`] after dropping the index.
@@ -2630,7 +2630,7 @@ impl Table {
     /// This is a hint to the database that the given columns will be accessed in
     /// the future and the database should prefetch the data if possible.  This
     /// can reduce cold-start latency for subsequent queries.  Currently only
-    /// supported in LanceDB Distributed.
+    /// supported in LanceDB Enterprise.
     ///
     /// This call initiates prewarming and returns once the request is accepted.
     /// It is idempotent and safe to call from multiple clients concurrently —
@@ -3827,7 +3827,7 @@ impl BaseTable for NativeTable {
 
     async fn prewarm_data(&self, _columns: Option<Vec<String>>) -> Result<()> {
         Err(Error::NotSupported {
-            message: "prewarm_data is currently only supported in LanceDB Distributed.".into(),
+            message: "prewarm_data is currently only supported in LanceDB Enterprise.".into(),
         })
     }
 
@@ -4465,7 +4465,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            matches!(&err, Error::NotSupported { message } if message.contains("LanceDB Distributed")),
+            matches!(&err, Error::NotSupported { message } if message.contains("LanceDB Enterprise")),
             "{err:?}"
         );
     }

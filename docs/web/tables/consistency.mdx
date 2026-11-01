@@ -27,7 +27,7 @@ In **LanceDB Embedded**, a table handle sees its own committed writes. By defaul
 not automatically check for changes made through other handles or processes.
 Use a read consistency interval or `checkout_latest()` to pick up those changes.
 
-In **LanceDB Distributed** (provided by LanceDB Enterprise), readers use the
+In **LanceDB Enterprise**, readers use the
 service's configured freshness policy.
 A connection can request fresher data. When a read must include a completed
 write, use a zero interval or call `checkout_latest()` after the write, with a
@@ -38,13 +38,13 @@ client and server that support these freshness controls.
 Set `read_consistency_interval` when connecting. This controls when reads
 pick up newer table versions; it does not change how writes commit.
 
-| Setting | Embedded | Distributed |
+| Setting | Embedded | Enterprise |
 | --- | --- | --- |
 | **Unset** | Keep the open table version until explicitly refreshed or changed by that handle. | Use the service's configured freshness policy. |
 | **Zero** | Check for the latest committed version on every read. | Request the latest committed version on every read. |
 | **Non-zero interval** | Check for updates on a read once the interval since the last check has elapsed. | Request data no older than the interval allows; the service may return fresher data. |
 
-`checkout_latest()` explicitly refreshes an Embedded table handle. On Distributed it
+`checkout_latest()` explicitly refreshes an Embedded table handle. On Enterprise it
 asks subsequent reads on that handle to reflect data at least as recent as the
 refresh request. To read a fixed historical version instead, use
 [table versioning](/management/table#versioning).

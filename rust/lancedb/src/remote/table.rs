@@ -612,7 +612,7 @@ impl<S: HttpSend> RemoteTable<S> {
         // Warn if train=false is specified since it's not meaningful
         if !index.train {
             log::warn!(
-                "train=false has no effect in LanceDB Distributed. The index will be created empty and automatically populated in the background."
+                "train=false has no effect in LanceDB Enterprise. The index will be created empty and automatically populated in the background."
             );
         }
 
@@ -666,7 +666,7 @@ impl<S: HttpSend> RemoteTable<S> {
             }
             Index::IvfHnswPq(_) => {
                 return Err(Error::NotSupported {
-                    message: "IVF_HNSW_PQ is not supported in LanceDB Distributed. Please use IVF_HNSW_SQ instead.".into(),
+                    message: "IVF_HNSW_PQ is not supported in LanceDB Enterprise. Please use IVF_HNSW_SQ instead.".into(),
                 });
             }
         };
@@ -1113,7 +1113,7 @@ impl<S: HttpSend> RemoteTable<S> {
                 QueryFilter::Datafusion(expr) => expr_to_sql_string(expr)?,
                 QueryFilter::Substrait(_) => {
                     return Err(Error::NotSupported {
-                        message: "Substrait filters are not supported in LanceDB Distributed"
+                        message: "Substrait filters are not supported in LanceDB Enterprise"
                             .to_string(),
                     });
                 }
@@ -1163,7 +1163,7 @@ impl<S: HttpSend> RemoteTable<S> {
         if let Some(full_text_search) = &params.full_text_search {
             if full_text_search.wand_factor.is_some() {
                 return Err(Error::NotSupported {
-                    message: "Wand factor is not supported in LanceDB Distributed.".into(),
+                    message: "Wand factor is not supported in LanceDB Enterprise.".into(),
                 });
             }
 
@@ -3560,7 +3560,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn optimize(&self, _action: OptimizeAction) -> Result<OptimizeStats> {
         self.check_mutable().await?;
         Err(Error::NotSupported {
-            message: "optimize is not supported in LanceDB Distributed.".into(),
+            message: "optimize is not supported in LanceDB Enterprise.".into(),
         })
     }
     async fn add_columns(
@@ -6701,7 +6701,7 @@ mod tests {
             match result.unwrap_err() {
                 Error::NotSupported { message } => assert_eq!(
                     message,
-                    format!("{operation} is not supported in LanceDB Distributed.")
+                    format!("{operation} is not supported in LanceDB Enterprise.")
                 ),
                 error => panic!("expected not-supported error, got {error}"),
             }
@@ -6729,7 +6729,7 @@ mod tests {
             .unwrap_err();
         assert_not_supported_error(
             error,
-            "IVF_HNSW_PQ is not supported in LanceDB Distributed. Please use IVF_HNSW_SQ instead.",
+            "IVF_HNSW_PQ is not supported in LanceDB Enterprise. Please use IVF_HNSW_SQ instead.",
         );
     }
 
