@@ -34,6 +34,7 @@ from urllib.parse import urlparse
 from lancedb.scannable import _hf_batches, _register_optional_converters, to_scannable
 
 from . import __version__
+from ._lancedb import _parse_field_path
 from ._blob import (
     BlobFile,
     _normalize_blob_descriptor,
@@ -2767,6 +2768,11 @@ class Table(ABC):
         Either `values` or `values_sql` must be provided. You cannot provide
         both.
 
+        Embeddings are not computed by this method. Updating an embedding source
+        column requires providing all associated vector columns in the same call;
+        otherwise a ValueError is raised. Use `merge_insert` to recompute embeddings
+        automatically.
+
         Parameters
         ----------
         where: str or [Expr][lancedb.expr.Expr], optional
@@ -4870,6 +4876,11 @@ class LanceTable(Table):
         """
         This can be used to update zero to all rows depending on how many
         rows match the where clause.
+
+        Embeddings are not computed by this method. Updating an embedding source
+        column requires providing all associated vector columns in the same call;
+        otherwise a ValueError is raised. Use `merge_insert` to recompute embeddings
+        automatically.
 
         Parameters
         ----------
@@ -7247,6 +7258,11 @@ class AsyncTable:
         If a filter is provided with `where` then only rows matching the
         filter will be updated.  Otherwise all rows will be updated.
 
+        Embeddings are not computed by this method. Updating an embedding source
+        column requires providing all associated vector columns in the same call;
+        otherwise a ValueError is raised. Use `merge_insert` to recompute embeddings
+        automatically.
+
         Parameters
         ----------
         updates: dict, optional
@@ -7295,6 +7311,26 @@ class AsyncTable:
 
         if updates is not None:
             updates_sql = {k: value_to_sql(v) for k, v in updates.items()}
+
+        # Only the column mappings are needed here. Restoring embedding functions
+        # could load models even for updates that provide their own vectors.
+        schema = await self.schema()
+        configs = json.loads((schema.metadata or {}).get(b"embedding_functions", b"[]"))
+        if configs:
+            # Metadata names are literal top-level fields; targets may be quoted.
+            updated_columns = {tuple(_parse_field_path(name)) for name in updates_sql}
+            for config in configs:
+                source_column = config["source_column"]
+                vector_column = config["vector_column"]
+                source_updated = (source_column,) in updated_columns
+                vector_updated = (vector_column,) in updated_columns
+                if source_updated and not vector_updated:
+                    raise ValueError(
+                        f"Updating embedding source column {source_column!r} requires "
+                        f"updating vector column {vector_column!r} in the same call. "
+                        "Provide both columns or use merge_insert "
+                        "to recompute embeddings."
+                    )
 
         predicate = where.to_sql() if isinstance(where, Expr) else where
         return await self._inner.update(updates_sql, predicate)

@@ -29,6 +29,8 @@ from .types import BaseTokenizerType
 
 _experimental_functions_enabled: bool
 
+def _parse_field_path(path: str) -> List[str]: ...
+
 IvfHnswPq: type[HnswPq] = HnswPq
 IvfHnswSq: type[HnswSq] = HnswSq
 IvfHnswFlat: type[HnswFlat] = HnswFlat
