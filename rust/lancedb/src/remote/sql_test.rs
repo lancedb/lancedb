@@ -2419,8 +2419,11 @@ async fn secret_writes_bind_credentials_and_never_put_them_in_sql() {
         );
         let seen = exchanges.lock().unwrap();
         assert_eq!(seen.len(), 2);
-        assert_eq!(seen[0].0, "CREATE SECRET \"api-key\" AS $1");
-        assert_eq!(seen[1].0, "ALTER SECRET \"api-key\" AS $1");
+        assert_eq!(
+            seen[0].0,
+            "CREATE SECRET \"api-key\" TYPE = GENERIC_STRING SECRET_STRING = $1"
+        );
+        assert_eq!(seen[1].0, "ALTER SECRET \"api-key\" SET SECRET_STRING = $1");
         assert_eq!(
             seen[0]
                 .1
