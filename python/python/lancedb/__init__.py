@@ -370,14 +370,14 @@ def tokenize(
 
     Examples
     --------
-    Inspect the subwords produced by the code analyzer:
+    Inspect the identifier and subwords produced by the code analyzer:
 
     >>> import lancedb
     >>> tokens = lancedb.tokenize(
     ...     "parseHTTPRequest", analyzer="code", split_identifiers=True
     ... )
     >>> [token.text for token in tokens]
-    ['parse', 'http', 'request']
+    ['parsehttprequest', 'parse', 'http', 'request']
     """
 
     return _tokenize(
