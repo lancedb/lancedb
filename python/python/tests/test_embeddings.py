@@ -631,6 +631,22 @@ def test_openai_unknown_model_without_dim_raises_clear_error():
         func.ndims()
 
 
+@pytest.mark.parametrize(
+    ("name", "dim", "expected_dim"),
+    [
+        ("text-embedding-ada-002", None, 1536),
+        ("text-embedding-ada-002", 512, 1536),
+        ("text-embedding-3-large", None, 3072),
+        ("text-embedding-3-large", 1024, 1024),
+        ("text-embedding-3-small", None, 1536),
+        ("text-embedding-3-small", 512, 512),
+    ],
+)
+def test_openai_known_model_ndims(name, dim, expected_dim):
+    func = get_registry().get("openai").create(name=name, dim=dim)
+    assert func.ndims() == expected_dim
+
+
 @patch("time.sleep")
 def test_openai_no_retry_on_401(mock_sleep):
     """
