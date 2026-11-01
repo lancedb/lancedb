@@ -5797,6 +5797,54 @@ mod tests {
         assert_eq!(data[0].as_ref().unwrap(), &expected_data);
     }
 
+    #[tokio::test]
+    async fn test_query_preserves_st_dwithin_filter() {
+        const FILTER: &str = "ST_DWithin(ST_Point(x, y), ST_Point(0.0, 0.0), 2.0)";
+        let expected_data = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1, 2]))],
+        )
+        .unwrap();
+        let response_data = expected_data.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            let body = request_body_json(&request);
+            assert_eq!(body["filter"], FILTER);
+
+            http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                .body(write_ipc_file(&response_data))
+                .unwrap()
+        });
+
+        let batches = table
+            .query()
+            .only_if(FILTER)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let batch = concat_batches(&batches[0].schema(), &batches).unwrap();
+        assert_eq!(batch["id"].as_primitive::<Int32Type>().values(), &[1, 2]);
+
+        let batches = table
+            .query()
+            .nearest_to(&[0.0, 0.0])
+            .unwrap()
+            .only_if(FILTER)
+            .limit(2)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let batch = concat_batches(&batches[0].schema(), &batches).unwrap();
+        assert_eq!(batch["id"].as_primitive::<Int32Type>().values(), &[1, 2]);
+    }
+
     fn schema_describe_response(schema: &Schema) -> http::Response<String> {
         let json_schema = JsonSchema::try_from(schema).unwrap();
         http::Response::builder()

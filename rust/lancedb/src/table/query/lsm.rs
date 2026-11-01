@@ -416,11 +416,13 @@ fn base_scanner(
                 let df_schema = schema.clone().to_dfschema().map_err(|error| {
                     enrich_filter_error(error, &schema, "Failed to create DFSchema")
                 })?;
-                let expr = SessionContext::new()
-                    .parse_sql_expr(sql, &df_schema)
-                    .map_err(|error| {
-                        enrich_filter_error(error, &schema, "Failed to parse filter expression")
-                    })?;
+                let ctx = SessionContext::new();
+                // Match the native scanner's SQL environment so the same
+                // lowered filter functions resolve on the RTE read path.
+                lance_datafusion::udf::register_functions(&ctx);
+                let expr = ctx.parse_sql_expr(sql, &df_schema).map_err(|error| {
+                    enrich_filter_error(error, &schema, "Failed to parse filter expression")
+                })?;
                 scanner.filter_expr(expr)
             }
             QueryFilter::Datafusion(expr) => scanner.filter_expr(expr.clone()),

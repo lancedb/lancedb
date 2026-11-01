@@ -26,6 +26,7 @@ on:
       - .github/workflows/npm-publish.yml
       - Cargo.toml # Change in dependency frequently breaks builds
       - Cargo.lock
+      - nodejs/Cargo.toml
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

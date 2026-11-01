@@ -49,7 +49,7 @@ libc = "0.2"
 pyo3-build-config = "0.29"
 
 [features]
-default = ["remote", "lancedb/aws", "lancedb/gcs", "lancedb/azure", "lancedb/dynamodb", "lancedb/oss", "lancedb/huggingface", "lancedb/cos", "lancedb/goosefs", "lancedb/metrics-otel"]
+default = ["remote", "lancedb/aws", "lancedb/gcs", "lancedb/azure", "lancedb/dynamodb", "lancedb/oss", "lancedb/huggingface", "lancedb/cos", "lancedb/goosefs", "lancedb/geo", "lancedb/metrics-otel"]
 fp16kernels = ["lancedb/fp16kernels"]
 remote = ["lancedb/remote"]
 experimental-functions = ["lancedb/experimental-functions"]
