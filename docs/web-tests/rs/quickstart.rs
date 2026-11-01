@@ -169,6 +169,35 @@ async fn main() {
     // --8<-- [end:quickstart_create_table]
     assert_eq!(table.count_rows(None).await.unwrap(), 3);
 
+    // --8<-- [start:quickstart_create_indexes]
+    use lancedb::index::Index;
+    use lancedb::index::scalar::BTreeIndexBuilder;
+    use lancedb::index::vector::IvfPqIndexBuilder;
+
+    table
+        .create_index(&["embedding"], Index::IvfPq(IvfPqIndexBuilder::default()))
+        .execute()
+        .await
+        .unwrap();
+    table
+        .create_index(
+            &["stats.motion"],
+            Index::BTree(BTreeIndexBuilder::default()),
+        )
+        .execute()
+        .await
+        .unwrap();
+    // --8<-- [end:quickstart_create_indexes]
+    let mut index_names: Vec<_> = table
+        .list_indices()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|index| index.name)
+        .collect();
+    index_names.sort();
+    assert_eq!(index_names, ["embedding_idx", "stats.motion_idx"]);
+
     // --8<-- [start:quickstart_add_data]
     let more_data = vec![Frame {
         frame_id: "4".to_string(),

@@ -122,6 +122,14 @@ async function createFrames(db: lancedb.Connection) {
   // --8<-- [end:quickstart_create_table]
   expect(await table.countRows()).toBe(3);
 
+  // --8<-- [start:quickstart_create_indexes]
+  await table.createIndex("embedding", { config: lancedb.Index.ivfPq() });
+  await table.createIndex("stats.motion", { config: lancedb.Index.btree() });
+  // --8<-- [end:quickstart_create_indexes]
+  expect((await table.listIndices()).map((index) => index.name).sort()).toEqual(
+    ["embedding_idx", "stats.motion_idx"],
+  );
+
   // --8<-- [start:quickstart_add_data]
   await table.add([
     {
@@ -243,7 +251,10 @@ describe.each(connections)("quickstart (%s)", (connection) => {
           );
           // --8<-- [end:quickstart_multimodal_bytes]
           expect(await multimodalTable.countRows()).toBe(1);
-          const [row] = await multimodalTable.query().select(["image"]).toArray();
+          const [row] = await multimodalTable
+            .query()
+            .select(["image"])
+            .toArray();
           expect(Buffer.from(row.image)).toEqual(fs.readFileSync(IMAGE));
         } finally {
           process.chdir(cwd);
