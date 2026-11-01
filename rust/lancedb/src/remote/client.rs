@@ -1224,45 +1224,52 @@ pub mod test_utils {
 mod tests {
     #[tokio::test]
     async fn check_response_extracts_structured_resource_error() {
-        use super::*;
         use crate::remote::client::test_utils::client_with_handler;
 
         let client =
             client_with_handler(|_| http::Response::builder().status(404).body("").unwrap());
-        let body = serde_json::json!({
-            "code": 4,
-            "error": "Not found: Secret \"openai\" not found in namespace [\"analytics\"]",
-            "error_code": "not_found",
-            "resource": {
-                "kind": "secret",
-                "name": "openai",
-                "namespace_path": ["analytics"],
-            },
-        })
-        .to_string();
-        let response = http::Response::builder()
-            .status(404)
-            .body(body.clone())
-            .unwrap()
-            .into();
+        let cases = [
+            (404, "not_found", "secret", "openai"),
+            (404, "not_found", "function", "embed"),
+            (404, "not_found", "namespace", "child"),
+            (409, "already_exists", "namespace", "analytics"),
+        ];
 
-        let error = client
-            .check_response("request-1", response)
-            .await
-            .unwrap_err();
-        let details = error
-            .http_error_details()
-            .expect("structured HTTP error details");
-        assert_eq!(details.error_code, "not_found");
-        assert_eq!(details.resource_kind, "secret");
-        assert_eq!(details.resource_name, "openai");
-        assert_eq!(details.namespace_path, ["analytics"]);
-        assert!(error.to_string().contains(&body));
+        for (status, error_code, resource_kind, resource_name) in cases {
+            let body = serde_json::json!({
+                "code": if error_code == "not_found" { 5 } else { 6 },
+                "error": format!("{resource_kind} {resource_name} error"),
+                "error_code": error_code,
+                "resource": {
+                    "kind": resource_kind,
+                    "name": resource_name,
+                    "namespace_path": ["analytics"],
+                },
+            })
+            .to_string();
+            let response = http::Response::builder()
+                .status(status)
+                .body(body.clone())
+                .unwrap()
+                .into();
+
+            let error = client
+                .check_response("request-1", response)
+                .await
+                .unwrap_err();
+            let details = error
+                .http_error_details()
+                .expect("structured HTTP error details");
+            assert_eq!(details.error_code, error_code);
+            assert_eq!(details.resource_kind, resource_kind);
+            assert_eq!(details.resource_name, resource_name);
+            assert_eq!(details.namespace_path, ["analytics"]);
+            assert!(error.to_string().contains(&body));
+        }
     }
 
     #[tokio::test]
     async fn check_response_keeps_legacy_body_as_generic_http_error() {
-        use super::*;
         use crate::remote::client::test_utils::client_with_handler;
 
         let client =
@@ -1291,7 +1298,6 @@ mod tests {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        use super::*;
         use crate::remote::client::test_utils::client_with_handler;
 
         let attempts = Arc::new(AtomicUsize::new(0));

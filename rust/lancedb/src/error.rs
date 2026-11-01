@@ -15,6 +15,7 @@ pub(crate) type BoxError = Box<dyn std::error::Error + Send + Sync>;
 /// Stable resource details carried by a structured remote HTTP error.
 #[cfg(feature = "remote")]
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct HttpErrorDetails {
     /// Machine-readable error code from the server.
     pub error_code: String,
