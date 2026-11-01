@@ -1960,8 +1960,8 @@ impl Table {
     /// [`RefreshColumnOptions::batch_size()`] caps rows per Function call in
     /// LanceDB Distributed and must be greater than zero when set.
     /// [`RefreshColumnOptions::gpu_class()`] selects a GPU pool and
-    /// [`RefreshColumnOptions::gpu_count()`] requests GPUs per worker. These
-    /// options have no effect on expression-backed columns in LanceDB
+    /// [`RefreshColumnOptions::gpu_count()`] sets the aggregate GPU budget.
+    /// These options have no effect on expression-backed columns in LanceDB
     /// Embedded. Remote refreshes require
     /// [`Table::refresh_column_async_with_options`].
     ///
@@ -2021,10 +2021,10 @@ impl Table {
     /// executor's per-call deadline. Set
     /// [`RefreshColumnOptions::gpu_class()`] and
     /// [`RefreshColumnOptions::gpu_count()`] to override the registered GPU
-    /// class or request more GPUs per Function worker. Unset values use the
-    /// Function and server defaults; zero counts and malformed class names are
-    /// rejected before submitting a job. Embedded expression refreshes ignore
-    /// all three options.
+    /// class or set an aggregate GPU budget for Function workers. Unset values
+    /// use the Function and server defaults; zero counts and malformed class
+    /// names are rejected before submitting a job. Embedded expression
+    /// refreshes ignore all three options.
     ///
     /// ```
     /// # use lancedb::{Table, table::RefreshColumnOptions};

@@ -182,6 +182,29 @@ alternatives rather than a pair. `batch_size` controls how many rows a worker
 takes at a time, and `error_policy = 'skip'` continues past rows that fail
 rather than failing the job.
 
+For a column filled by a registered Function, the Python job API can override
+the Function's GPU placement for this refresh:
+
+```python
+classes = db.list_gpu_classes()
+gpu_class = next(gpu.name for gpu in classes if gpu.gpu_model == "NVIDIA H100")
+
+job = table.refresh_column_async(
+    "embedding",
+    gpu_class=gpu_class,
+    gpu_count=4,
+    batch_size=32,
+)
+```
+
+`gpu_count` is the aggregate GPU budget for the refresh's Function workers,
+not a request for that many GPUs per worker. It must be positive.
+`gpu_class` must name a class returned by `list_gpu_classes()`; class names
+are lowercase DNS labels. Omit either option to use the Function's registered
+class or the server's configured budget. `list_gpu_classes()` requires System
+Usage permission, and raises `NotImplementedError` when the server predates
+GPU class discovery.
+
 ## When a refresh fails {#failures}
 
 What a failure keeps depends on where the refresh ran. `refresh_column` in your
