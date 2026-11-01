@@ -4,10 +4,8 @@ sidebarTitle: Full-Text Search (FTS)
 description: "Find records by words, phrases or partial matches using a full-text index."
 icon: "book"
 availability:
-  oss: available
+  embedded: available
   enterprise: available
-  summary: >-
-    Full-text search is available in LanceDB Embedded and LanceDB Enterprise.
 ---
 
 import {
@@ -747,6 +745,50 @@ const multiMatchBoostingResults = await table.query()
   .toArray();
 ```
 </CodeGroup>
+
+### Search Columns as One Field {#combined-fields-search}
+
+`MultiMatchQuery` scores each column on its own and keeps the best match.
+`CombinedFieldsQuery` treats the columns as one field (BM25F), so with the `AND`
+operator a row matches when every term appears in at least one of the columns.
+The query below finds `car` in `text` and `merrily` in `text2`, returning rows 1
+and 3. The same query with `MultiMatchQuery` returns no rows, because neither
+column contains both words on its own.
+
+Every column must use the same tokenizer configuration. The two indexes in this
+example are built with the same `FTS` settings. Boosts work as they do for
+`MultiMatchQuery`: one weight per column, each at least 1.
+
+<CodeGroup>
+```python Python icon="python"
+from lancedb.query import CombinedFieldsQuery, FullTextOperator
+
+# Every term must appear in at least one of the two columns
+combined_results = (
+    table.search(
+        CombinedFieldsQuery("car merrily", ["text", "text2"], operator=FullTextOperator.AND),
+    )
+    .select(["id", "text", "text2", "_score"])
+    .limit(100)
+    .to_arrow().to_pandas()
+)
+
+# Weight matches in text2 twice as much as matches in text
+combined_boosting_results = (
+    table.search(
+        CombinedFieldsQuery("car merrily", ["text", "text2"], boosts=[1.0, 2.0]),
+    )
+    .select(["id", "text", "text2", "_score"])
+    .limit(100)
+    .to_arrow().to_pandas()
+)
+```
+</CodeGroup>
+
+The typed `CombinedFieldsQuery` convenience class and this example are specific
+to the Python SDK. Rust applications can construct the core query type exposed
+by `lancedb::index::scalar`. TypeScript and Java do not yet provide typed
+convenience entry points for this query.
 
 
 ### Boolean Queries {#boolean-queries}

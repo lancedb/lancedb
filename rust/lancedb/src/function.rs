@@ -224,6 +224,10 @@ pub struct PythonEnvironmentSpec {
     pub modules: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+    /// Debian packages (`name` or `name=version`) added to the Function's
+    /// image before its Python environment is installed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub system_packages: Vec<String>,
 }
 
 /// Reproducible Python runtime definition understood by Sophon.
@@ -253,6 +257,7 @@ pub enum PythonRuntimeSpec {
     ///         path: None,
     ///         modules: Vec::new(),
     ///         image: None,
+    ///         system_packages: Vec::new(),
     ///     },
     ///     env: BTreeMap::new(),
     /// };
@@ -554,9 +559,12 @@ pub struct FunctionArtifactContent {
 
 /// Internal execution adapter selected for a Python callable artifact.
 ///
-/// The adapter converts the public scalar callable to the Arrow batch ABI
-/// used by the remote executor. It is part of the request envelope, not a
-/// public batch-UDF authoring mode.
+/// This is part of the executor request envelope, not the user-facing UDF
+/// authoring mode. For version 1, the executor selects vectorized execution
+/// when every callable parameter is annotated as `pyarrow.Array`; it passes one
+/// Arrow array per declared input and requires an Arrow array matching the
+/// declared output. Other callables are invoked row by row. Both modes use the
+/// same internal adapter kind.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PythonAdapterSpec {
     pub kind: String,
@@ -936,6 +944,27 @@ mod conda_environment_tests {
         let pip: PythonEnvironmentSpec =
             serde_json::from_str(r#"{"kind":"pip","packages":["numpy"]}"#).unwrap();
         assert!(!serde_json::to_string(&pip).unwrap().contains("channels"));
+    }
+
+    #[test]
+    fn system_packages_round_trip_and_stay_absent_when_empty() {
+        let apt: PythonEnvironmentSpec = serde_json::from_str(
+            r#"{"kind":"pip","packages":["torchcodec"],"system_packages":["libavutil58"]}"#,
+        )
+        .unwrap();
+        assert_eq!(apt.system_packages, ["libavutil58"]);
+        assert!(
+            serde_json::to_string(&apt)
+                .unwrap()
+                .contains(r#""system_packages":["libavutil58"]"#)
+        );
+        let pip: PythonEnvironmentSpec =
+            serde_json::from_str(r#"{"kind":"pip","packages":["numpy"]}"#).unwrap();
+        assert!(
+            !serde_json::to_string(&pip)
+                .unwrap()
+                .contains("system_packages")
+        );
     }
 
     #[test]

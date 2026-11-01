@@ -5,12 +5,8 @@ description: "The object most operations act on: creating, opening, renaming, cl
 icon: table
 keywords: ["table", "create_table", "open_table", "clone", "rename", "drop"]
 availability:
-  oss: available
+  embedded: available
   enterprise: available
-  summary: >-
-    Tables are created, evolved, versioned and dropped in the embedded library
-    and in LanceDB Enterprise. Renaming, cloning, dropping every table and pruning old
-    versions differ between the two.
 ---
 
 import {
@@ -953,8 +949,8 @@ First, let's create a sample table with product data to demonstrate schema evolu
 
 <Note>
 Columns derived from existing data (SQL expressions over other columns) are
-covered in [Data evolution](/feature-engineering/data-evolution), because
-deriving values is a feature-engineering job rather than a schema one.
+covered in [Create a computed column](/feature-engineering/add-computed-column),
+because deriving values is a feature-engineering job rather than a schema one.
 </Note>
 
 #### Add columns with default values {#schema-add-columns-with-default-values}

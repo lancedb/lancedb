@@ -4,12 +4,8 @@ sidebarTitle: "Scalar Index"
 description: "Learn how to use scalar indexes in LanceDB for efficient metadata filtering and query optimization."
 icon: "tree"
 availability:
-  oss: available
+  embedded: available
   enterprise: available
-  summary: >-
-    Scalar indexes are built in the embedded library and in LanceDB Enterprise. A
-    deployment builds them in the background and keeps most of them up to date
-    itself; in the embedded library you update them with `optimize()`.
 ---
 
 import {
@@ -34,7 +30,7 @@ LanceDB supports four types of scalar indexes:
 
 - `BTREE`: Stores column data in sorted order for binary search. Best for columns with many unique values.
 - `BITMAP`: Uses bitmaps to track value presence. Ideal for columns with few unique values (e.g., categories, tags).
-- `LABEL_LIST`: Special index for `List<T>` and `LargeList<T>` columns of primitive values supporting `array_contains_all` and `array_contains_any` queries.
+- `LABEL_LIST`: Special index for `List<T>` and `LargeList<T>` columns of primitive values supporting `array_has_all` and `array_has_any` queries.
 - `FM`: FM-Index over string or binary columns that accelerates substring search via `contains(col, 'needle')`.
 
 <Tip title="Working with scalar indices">
@@ -112,22 +108,6 @@ Scalar indexes can also speed up scans containing a vector search or full text s
     {ScalarIndexPrefilter}
     </CodeBlock>
 </CodeGroup>
-
-## Indexing nested fields
-
-Scalar indexes can target a scalar field inside a struct by passing its full dotted path. The path is preserved end to end: it's the value you pass to `create_scalar_index`, it's what `list_indices()` reports under `columns`, and it's the column reference you use in filter predicates.
-
-```python
-# Schema: pa.struct([pa.field("user_id", pa.int32())]) stored under the `metadata` column.
-table.create_scalar_index("metadata.user_id", name="metadata_user_id_idx")
-
-# The same dotted path works in WHERE clauses.
-table.search().where("metadata.user_id = 42").limit(1).to_list()
-```
-
-<Note>
-Nested paths follow Lance field-path semantics: dot-separate each struct field from root to leaf (for example, `metadata.author.name`). The same convention applies to FTS and vector indexes.
-</Note>
 
 ## FM-Index for substring search
 
@@ -250,7 +230,9 @@ named `user.id` nested inside `metadata`), wrap that segment in backticks so
 LanceDB can tell the dot apart from the path separator: `` metadata.`user.id` ``.
 
 `list_indices()` echoes the same canonical path back, so the column you pass in
-round-trips through index metadata regardless of nesting depth or escaping.
+round-trips through index metadata regardless of nesting depth or escaping. Use the
+same path in filter predicates, for example `metadata.user_id = 42`. FTS and vector
+indexes follow the same path convention.
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">

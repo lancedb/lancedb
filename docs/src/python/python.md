@@ -42,6 +42,12 @@ table names. `db.list_tables().tables` is a list of the first page; `limit`
 controls its page size and `page_token` resumes at a saved token. The same
 patterns apply to `list_namespaces()`. Other resource listings use `page_limit`.
 
+Resource listings (`list_storage_integrations`, `list_secrets`, `list_views`, `list_jobs`, `list_functions`, and
+`list_materialized_views`) return lazy iterators. Use `list(db.list_views())` to
+collect synchronous results, or `[name async for name in db.list_views()]` with
+an asynchronous connection. `page_limit` controls each request, and `page_token`
+resumes a listing. Drain the iterator's cached results before saving its token.
+
 ::: lancedb.listing.Listing
 
 ::: lancedb.listing.TableListing
@@ -162,6 +168,11 @@ registered functions, for example,
 namespace. These objects identify resources for ACL operations; a secret object
 contains the credential's name, not its value.
 
+Storage integration objects identify database-owned storage configuration, for
+example `Object.storage_integration(database="default", name="raw")`. Pass
+`namespace_path` for nested namespaces. Their keyspace is separate from Secrets,
+Functions, and relations; the wire name is `storage_integration:default:public$raw`.
+
 More object types may be added in the future.
 
 ### Access control lists
@@ -204,6 +215,27 @@ for privilege in [Privilege.CREATE_SECRET, Privilege.CREATE_FUNCTION]:
 
 Both privileges also accept their string names in synchronous and asynchronous
 ACL methods.
+
+Storage integration creation requires `CREATE_STORAGE_INTEGRATION` on its containing
+namespace, together with database and namespace `USAGE`:
+
+```python
+catalog.authz.add_acl(
+    object=Object.namespace(database="default"),
+    subject=Subject.role("developer"),
+    privilege=Privilege.CREATE_STORAGE_INTEGRATION,
+)
+catalog.authz.add_acl(
+    object=Object.storage_integration(database="default", name="raw"),
+    subject=Subject.role("reader"),
+    privilege=Privilege.USAGE,
+)
+```
+
+Creation grants ownership to the creator. Describing an integration requires
+`USAGE` on that integration; dropping it requires `OWNERSHIP`. Listing integrations
+requires `USAGE` on the selected database and namespace. Describing and dropping
+also require parent `USAGE` grants. Manage these grants through `catalog.authz`.
 
 By default, the `list_acls` function lists all the access control entries in
 the system. By adding a function parameter, the output is filtered to just ACLs
@@ -461,6 +493,31 @@ automatic scheduling requests.
 
 ::: lancedb.view.ViewDescription
 
+## Property Graphs
+
+A property graph is defined over tables of its namespace: which tables hold
+nodes and which hold edges, each node table's key and label, and the node keys
+each edge table's source and destination columns reference -- the shape of
+SQL/PGQ's `CREATE PROPERTY GRAPH`. It stores no rows of its own; a query reads
+its tables as nodes and edges through SQL `GRAPH_TABLE`.
+
+Create one with
+[create_property_graph][lancedb.db.DBConnection.create_property_graph], and
+manage it with
+[open_property_graph][lancedb.db.DBConnection.open_property_graph],
+[list_property_graphs][lancedb.db.DBConnection.list_property_graphs] and
+[drop_property_graph][lancedb.db.DBConnection.drop_property_graph].
+
+::: lancedb.graph.NodeTable
+
+::: lancedb.graph.EdgeTable
+
+::: lancedb.graph.Endpoint
+
+::: lancedb.graph.PropertyGraph
+
+::: lancedb.graph.PropertyGraphDescription
+
 ## Expressions
 
 Type-safe expression builder for filters and projections. Use these instead
@@ -507,6 +564,8 @@ and combined with [BooleanQuery][lancedb.query.BooleanQuery].
 ::: lancedb.query.BoostQuery
 
 ::: lancedb.query.MultiMatchQuery
+
+::: lancedb.query.CombinedFieldsQuery
 
 ::: lancedb.query.BooleanQuery
 
@@ -587,6 +646,34 @@ with `search().with_row_id(True).to_arrow()` and pass the result to the fetch AP
 One missing or deleted row ID rejects the entire blob-read batch; the APIs do
 not return partial results.
 
+To construct inline Blob V2 arrays for ingestion in record batches, use
+[blob_array][lancedb.schema.blob_array]. It accepts bytes and `None`, preserving
+the distinction between an empty blob (`b""`) and a null blob:
+
+```python
+import pyarrow as pa
+from lancedb.schema import blob, blob_array
+
+schema = pa.schema([pa.field("video_id", pa.string()), blob("video")])
+batch = pa.RecordBatch.from_arrays(
+    [pa.array(["a", "b", "c"]), blob_array([b"abc", None, b""])],
+    schema=schema,
+)
+table = db.create_table("videos", data=iter([batch]), schema=schema)
+table.add(iter([batch]))
+```
+
+`create_table(..., schema=...)` also casts plain binary values into blob columns
+declared in the schema. `table.add(...)` casts them using the table's schema.
+These conversions apply to Python rows and plain binary Arrow columns.
+PyArrow's `RecordBatch.from_pylist(..., schema=...)` cannot convert raw bytes
+into the blob extension type; use `blob_array` and `RecordBatch.from_arrays`
+when constructing batches explicitly.
+
+For external blob references, construct the descriptor struct described by
+[blob][lancedb.schema.blob], then wrap it with `pa.ExtensionArray.from_storage`.
+Inline `data` and external `uri` representations are mutually exclusive.
+
 LanceDB Distributed SQL returns blob bytes by default. Select `blob_descriptor(video)` to
 return an openable reference instead, then use
 [`open_blob_file`][lancedb.table.Table.open_blob_file] or the lazy iterable
@@ -645,6 +732,8 @@ so the fetch APIs cannot read their bytes yet.
 
 ::: lancedb.blob
 
+::: lancedb.schema.blob_array
+
 ::: lancedb._blob.BlobFile
     options:
       show_root_full_path: false
@@ -688,6 +777,27 @@ so the fetch APIs cannot read their bytes yet.
 ## PyTorch
 
 ::: lancedb.streaming.StreamingDataset
+
+When a transform fails for some rows, fill mode replaces each failed row in place:
+
+```python
+dataset = StreamingDataset(
+    table,
+    num_splits=8,
+    transform=transform,
+    on_transform_error="fill",
+    fill_value={"id": -1, "vector": [0.0, 0.0]},
+)
+for row in dataset:
+    train(row)
+print(dataset.rows_filled)
+```
+
+The placeholder must have the same structure as a successful transform output.
+Pass `repair(exc, row_batch) -> row` instead of `fill_value` to construct a
+replacement from the failed one-row Arrow batch. Keep the repair deterministic
+when using elastic training or checkpoints. Fill mode preserves split lengths
+and sample positions.
 
 ::: lancedb.streaming.StreamingDataLoader
 
@@ -776,6 +886,14 @@ Table hold your actual data as a collection of records / rows.
 
 ::: lancedb.materialized_view.AsyncMaterializedView
 
+## Property Graphs (Asynchronous)
+
+`AsyncConnection` returns this handle from
+[create_property_graph][lancedb.db.AsyncConnection.create_property_graph] and
+[open_property_graph][lancedb.db.AsyncConnection.open_property_graph].
+
+::: lancedb.graph.AsyncPropertyGraph
+
 ## Indices (Asynchronous)
 
 Indices can be created on a table to speed up queries. This section
@@ -819,3 +937,196 @@ rows nearest to a query vector and can be created with the
 ::: lancedb.query.AsyncTakeQuery
     options:
       inherited_members: true
+
+## Storage integrations
+
+::: lancedb.storage_integration.StorageIntegrationInfo
+
+::: lancedb.storage_integration.SecretReference
+
+Integrations belong to a database and follow the same namespace-path naming rules
+as Secrets, with their own keyspace. Use a regular database under the cluster root for storage configuration needed
+before opening an external database. `default` is a convention; no database with
+that name is required or created automatically. The system database is read-only.
+Client methods execute SQL through the existing SQL transport.
+
+```python
+catalog = lancedb.connect_catalog("https://my-server.example", api_key="secret")
+db = catalog.connect_database("default")
+integration = db.create_storage_integration(
+    "raw", "s3://customer-bucket/raw/",
+    aws_role_arn="arn:aws:iam::123456789012:role/lancedb-access",
+)
+print(integration.configuration_instructions)
+integration = db.describe_storage_integration("raw")
+for name in db.list_storage_integrations():
+    print(name)
+db.drop_storage_integration("raw")
+```
+
+Static credentials use two existing, single-value Secrets instead of a role:
+
+```python
+from lancedb.storage_integration import SecretReference
+
+integration = db.create_storage_integration(
+    "raw", "s3://customer-bucket/raw/",
+    aws_access_key_id_secret=SecretReference("s3-key-id", database="default"),
+    aws_secret_access_key_secret=SecretReference("s3-secret-key", database="default"),
+)
+```
+
+Pass `namespace_path` on the object APIs and Secret references to select a namespace.
+A string Secret reference selects the root namespace of the integration's database.
+Cross-database references require `USAGE` on the source database, namespace, and
+Secret. Role and static-credential modes are mutually exclusive. Credential values
+are never included in integration metadata.
+
+`configuration_instructions` is one sentence of display guidance whose wording may
+change. Use the structured identity and policy fields for programmatic access.
+Registration does not verify AWS access. `AsyncConnection` provides the same methods;
+await create, describe, and drop, and use `async for` for listing.
+
+
+### Azure storage integrations
+
+Create three Secrets containing the Azure tenant ID, client ID and client secret in an ordinary database. Reference their names when registering Azure Blob access:
+
+```python
+integration = db.create_storage_integration(
+    "customer_blobs",
+    "az://customer-data/raw/",
+    storage_provider="AZURE",
+    azure_storage_account="customeraccount",
+    azure_tenant_id_secret="azure_tenant",
+    azure_client_id_secret="azure_client",
+    azure_client_secret_secret="azure_credential",
+)
+print(integration.configuration_instructions)
+```
+
+Use `SecretReference` to qualify another database or namespace. Sync and async connections use the same options. Secret values are never part of integration metadata. Azure supports service principal client credentials; managed identity, account key and SAS authentication are not integration modes.
+
+The equivalent SQL is:
+
+```sql
+CREATE STORAGE INTEGRATION customer_blobs
+    STORAGE_PROVIDER = 'AZURE'
+    STORAGE_PREFIX = 'az://customer-data/raw/'
+    STORAGE_AZURE_STORAGE_ACCOUNT = 'customeraccount'
+    STORAGE_AZURE_TENANT_ID_SECRET = public.azure_tenant
+    STORAGE_AZURE_CLIENT_ID_SECRET = public.azure_client
+    STORAGE_AZURE_CLIENT_SECRET_SECRET = public.azure_credential;
+DESCRIBE STORAGE INTEGRATION customer_blobs;
+SHOW STORAGE INTEGRATIONS;
+DROP STORAGE INTEGRATION customer_blobs;
+```
+
+Registration returns setup instructions and leaves `access_verified` false. It stores an account-qualified prefix such as `az://customer-data@customeraccount.blob.core.windows.net/raw/`.
+
+### GCP storage integrations
+
+Create one Secret containing the complete GCP application credentials JSON file
+content, then reference its name when registering Google Cloud Storage access:
+
+```python
+from pathlib import Path
+
+db.create_secret("gcp_credentials", Path("credentials.json").read_text())
+integration = db.create_storage_integration(
+    "customer_gcs",
+    "gs://customer-data/raw/",
+    storage_provider="GCP",
+    gcp_credentials_json_secret="gcp_credentials",
+)
+print(integration.configuration_instructions)
+```
+
+The equivalent SQL references the existing Secret:
+
+```sql
+CREATE STORAGE INTEGRATION customer_gcs
+    STORAGE_PROVIDER = 'GCP'
+    STORAGE_PREFIX = 'gs://customer-data/raw/'
+    GCP_CREDENTIALS_JSON_SECRET = public.gcp_credentials;
+DESCRIBE STORAGE INTEGRATION customer_gcs;
+SHOW STORAGE INTEGRATIONS;
+DROP STORAGE INTEGRATION customer_gcs;
+```
+
+`gcp_credentials_json_secret` names a Secret; pass the file content to
+`create_secret`, not to `create_storage_integration`. Use `SecretReference` to
+qualify another database or namespace. Sync and async connections accept the same
+options. The service interprets the stored JSON when accessing storage; registration
+does not validate its credentials format or verify access, and leaves
+`access_verified` false. Integration metadata contains the Secret reference, never
+its JSON content. GCP options cannot be combined with AWS or Azure options.
+
+
+### Hugging Face storage integrations
+
+Store a Hugging Face token as one Secret, then register the repository prefix
+with the existing integration methods. Only the Secret name is part of the
+integration configuration:
+
+```python
+import os
+
+from lancedb.storage_integration import SecretReference
+
+db.create_secret("hf_token", os.environ["HF_TOKEN"])
+info = db.create_storage_integration(
+    "private_hub",
+    "hf://datasets/acme/private/raw/",
+    storage_provider="HUGGINGFACE",
+    huggingface_token_secret=SecretReference("hf_token"),
+)
+print(info.configuration_instructions)
+info = db.describe_storage_integration("private_hub")
+names = list(db.list_storage_integrations())
+db.drop_storage_integration("private_hub")
+```
+
+The equivalent SQL references the existing Secret:
+
+```sql
+CREATE STORAGE INTEGRATION private_hub
+    STORAGE_PROVIDER = 'HUGGINGFACE'
+    STORAGE_PREFIX = 'hf://datasets/acme/private/raw/'
+    HUGGINGFACE_TOKEN_SECRET = public.hf_token;
+DESCRIBE STORAGE INTEGRATION private_hub;
+SHOW STORAGE INTEGRATIONS;
+SELECT * FROM 'hf://datasets/acme/private/raw/*.parquet' LIMIT 10;
+DROP STORAGE INTEGRATION private_hub;
+```
+
+Omit the token Secret for anonymous access at Hugging Face's default anonymous
+rate limits. A tokenless integration does not use a cluster's Hugging Face token:
+
+```python
+info = db.create_storage_integration(
+    "public_hub", "hf://datasets/acme/public/raw/",
+    storage_provider="HUGGINGFACE",
+)
+```
+
+```sql
+CREATE STORAGE INTEGRATION public_hub
+    STORAGE_PROVIDER = 'HUGGINGFACE'
+    STORAGE_PREFIX = 'hf://datasets/acme/public/raw/';
+```
+
+When provided, the Secret must contain the token itself, with repository read
+permission.
+Cross-database and namespace references use the same `SecretReference` rules as
+other integrations. Sync and async APIs accept the same options. Registration
+returns one sentence of instructions and leaves `access_verified` false; it does
+not contact Hugging Face. Metadata contains the Secret reference, never its value.
+Hugging Face options cannot be combined with AWS, Azure or GCP options.
+
+Repository prefixes use `hf://datasets/<owner>/<repo>[/<path>]` or
+`hf://models/<owner>/<repo>[/<path>]`. An optional `@revision` follows the repository
+name; omitting it allows matching reads of any revision. Prefixes must be concrete
+paths without wildcards or traversal. This integration does not make Hugging Face
+a writable database location for `ATTACH DATABASE`. Dataset SQL sources select a
+matching integration automatically, with no integration argument in the query.

@@ -283,6 +283,7 @@ class PythonEnvironmentSpec(_RemoteValue):
     path: Optional[str] = None
     modules: tuple[str, ...] = ()
     image: Optional[str] = None
+    system_packages: tuple[str, ...] = ()
 
 
 class PythonRuntimeSpec(_RemoteValue):
@@ -682,6 +683,8 @@ class RefreshColumnResult(_RemoteValue):
 
 
 _FUNCTION_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# Digest-pinned only; the server checks the host and repository grammar.
+_IMAGE_REFERENCE = re.compile(r"^[^/@\s]+/[^@\s]+@sha256:[0-9a-f]{64}$")
 
 _FUNCTION_BLOB_V2_TYPE = "blob_v2"
 _ARROW_EXTENSION_NAME_KEY = "ARROW:extension:name"
@@ -1838,7 +1841,11 @@ class UdfDefinition:
     Instances are created with :func:`udf`. Calling an instance executes the
     original Python function, or constructs the original class, which keeps
     local unit testing ordinary. Remote execution adapts the callable to the
-    internal Arrow batch ABI described by the registration artifact.
+    internal Arrow batch ABI described by the registration artifact. By
+    default it invokes the callable once per row. A callable whose parameters
+    are all annotated as ``pyarrow.Array`` receives whole Arrow arrays and
+    returns a ``pyarrow.Array`` instead. This authoring choice is independent
+    of the internal artifact adapter in the registration request.
     """
 
     def __init__(
@@ -1854,6 +1861,8 @@ class UdfDefinition:
         gpu: bool = False,
         conda: tuple[str, ...] = (),
         conda_channels: tuple[str, ...] = (),
+        apt: tuple[str, ...] = (),
+        image: Optional[str] = None,
         code: tuple[types.ModuleType, ...] = (),
     ):
         is_class = inspect.isclass(function)
@@ -1869,14 +1878,31 @@ class UdfDefinition:
         if conda_channels and not conda:
             raise ValueError("conda_channels requires conda packages")
         packages = tuple(sorted(set(conda if conda else pip)))
-        if any(not package or package != package.strip() for package in packages):
+        system_packages = tuple(sorted(set(apt)))
+        if any(
+            not package or package != package.strip()
+            for package in packages + system_packages
+        ):
             raise ValueError("package requirements must be non-empty and trimmed")
+        if image is not None and not _IMAGE_REFERENCE.fullmatch(image):
+            raise ValueError(
+                f"Function image {image!r} must be host/repository@sha256:<digest>"
+            )
         if conda:
             environment_spec = PythonEnvironmentSpec(
-                kind="conda", packages=packages, channels=tuple(conda_channels)
+                kind="conda",
+                packages=packages,
+                channels=tuple(conda_channels),
+                image=image,
+                system_packages=system_packages,
             )
         else:
-            environment_spec = PythonEnvironmentSpec(kind="pip", packages=packages)
+            environment_spec = PythonEnvironmentSpec(
+                kind="pip",
+                packages=packages,
+                image=image,
+                system_packages=system_packages,
+            )
         environment = dict(env)
         if any(
             not isinstance(key, str) or not isinstance(value, str)
@@ -2045,6 +2071,8 @@ def udf(
     gpu: bool = False,
     conda: tuple[str, ...] | list[str] = (),
     conda_channels: tuple[str, ...] | list[str] = (),
+    apt: tuple[str, ...] | list[str] = (),
+    image: Optional[str] = None,
     code: Sequence[types.ModuleType] = (),
 ) -> Callable[[Callable[..., Any]], UdfDefinition]: ...
 
@@ -2061,6 +2089,8 @@ def udf(
     gpu: bool = False,
     conda: tuple[str, ...] | list[str] = (),
     conda_channels: tuple[str, ...] | list[str] = (),
+    apt: tuple[str, ...] | list[str] = (),
+    image: Optional[str] = None,
     code: Sequence[types.ModuleType] = (),
 ):
     """Prepare a Python function or class for remote Function registration.
@@ -2131,7 +2161,10 @@ def udf(
     Parameters
     ----------
     function : function or class, optional
-        The synchronous callable, or the class whose instances are called.
+        The synchronous callable, or the class whose instances are called. For
+        a function, annotate every parameter as ``pyarrow.Array`` to opt into
+        vectorized execution; a matching return annotation documents that the
+        callable returns an Arrow array.
     name : str, optional
         The remote Function name. Defaults to the callable name.
         Must start with an ASCII letter or underscore and contain only ASCII
@@ -2150,6 +2183,16 @@ def udf(
         Conda packages for the remote environment, instead of ``pip``.
     conda_channels : sequence of str, optional
         Conda channels in priority order; requires ``conda``.
+    apt : sequence of str, optional
+        Debian packages (``"name"`` or ``"name=version"``) added to the remote
+        image before the Python environment, for shared libraries pip and
+        conda cannot provide, such as FFmpeg's for ``torchcodec``. Packages
+        are unpacked without running their maintainer scripts. Works with
+        ``pip`` or ``conda``; requires image execution.
+    image : str, optional
+        A digest-pinned registry image (``"host/repository@sha256:<digest>"``)
+        the remote environment is built on instead of the default base. Pip
+        requirements install only what the image lacks.
     env : mapping of str to str, optional
         Environment variables included in the Function definition. Not for
         credentials -- these are ordinary configuration, stored with the
@@ -2205,6 +2248,18 @@ def udf(
     3.0
     >>> [field.name for field in scale.registration_request.signature.initialization]
     ['factor', 'offset']
+    >>> import lancedb
+    >>> @udf(
+    ...     input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
+    ...     output_schema=lancedb.blob("copy", nullable=False),
+    ... )
+    ... def copy_blobs(image: pa.Array) -> pa.Array:
+    ...     return image
+
+    Blob v2 input is exposed as ``pyarrow.LargeBinaryArray`` in vectorized
+    mode (and as ``bytes`` in row mode). Return a ``LargeBinaryArray`` with the
+    declared nullability. Use :func:`lancedb.blob` in the explicit schemas;
+    plain ``pyarrow.large_binary()`` does not carry Blob v2 semantics.
     """
 
     def decorate(target: Any) -> UdfDefinition:
@@ -2219,6 +2274,8 @@ def udf(
             gpu=gpu,
             conda=tuple(conda),
             conda_channels=tuple(conda_channels),
+            apt=tuple(apt),
+            image=image,
             code=tuple(code),
         )
 
