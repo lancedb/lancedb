@@ -304,8 +304,12 @@ def _pydantic_type_to_arrow_type(tp: Any, field: FieldInfo) -> pa.DataType:
             # Map Enum to the Arrow type of its value.
             # For string-valued enums, use dictionary encoding for efficiency.
             # For integer enums, use the native type.
-            # Fall back to utf8 for mixed-type or empty enums.
             value_types = {type(m.value) for m in tp}
+            if len(value_types) > 1:
+                raise TypeError(
+                    f"Converting Pydantic Enum {tp.__name__} to Arrow Type: "
+                    "all enum values must have the same type."
+                )
             if len(value_types) == 1:
                 value_type = value_types.pop()
                 if value_type is str:
@@ -435,7 +439,8 @@ def pydantic_to_schema(model: Type[pydantic.BaseModel]) -> pa.Schema:
         an Arrow list, so all its elements must have the same type, as in
         ``Tuple[int, int]`` or ``Tuple[float, ...]``; for a fixed set of fields
         with different types, such as ``Tuple[int, str]``, use a nested
-        ``LanceModel`` (an Arrow struct) instead.
+        ``LanceModel`` (an Arrow struct) instead. Enum values must also all
+        have the same type.
 
     Examples
     --------

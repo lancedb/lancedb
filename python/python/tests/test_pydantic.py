@@ -1117,6 +1117,36 @@ def test_enum_types():
     assert schema.field("opt_status").nullable
 
 
+@pytest.mark.parametrize("container", ["field", "optional", "list", "nested"])
+@pytest.mark.parametrize("values", [("text", 7), (1, 2.5), (False, "no")])
+def test_mixed_enum_values_are_rejected(container, values):
+    Mixed = Enum("Mixed", {"FIRST": values[0], "SECOND": values[1]})
+
+    class Nested(pydantic.BaseModel):
+        value: Mixed
+
+    annotation = {
+        "field": Mixed,
+        "optional": Optional[Mixed],
+        "list": List[Mixed],
+        "nested": Nested,
+    }[container]
+    model = pydantic.create_model("Model", value=(annotation, ...))
+
+    with pytest.raises(TypeError, match="Enum.*Mixed.*same type"):
+        pydantic_to_schema(model)
+
+
+def test_empty_enum_schema_is_unchanged():
+    class Empty(Enum):
+        pass
+
+    class Model(pydantic.BaseModel):
+        value: Empty
+
+    assert pydantic_to_schema(Model).field("value").type == pa.utf8()
+
+
 def test_plain_enum_values_are_written(mem_db):
     """Members of an Enum without a str/int mixin are written as their values."""
 
