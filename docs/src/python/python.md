@@ -748,9 +748,44 @@ so the fetch APIs cannot read their bytes yet.
 
 ## Exceptions
 
+Remote HTTP responses with structured resource details raise a subclass of
+`HttpError`. Older servers that omit those details raise plain `HttpError`, so
+`except HttpError` remains a compatible catch-all:
+
+```python
+from lancedb.remote.errors import (
+    AlreadyExistsError,
+    FunctionNotFoundError,
+    HttpError,
+    NamespaceNotFoundError,
+    SecretNotFoundError,
+)
+
+try:
+    db.describe_namespace(["analytics"])
+except (SecretNotFoundError, FunctionNotFoundError, NamespaceNotFoundError) as error:
+    print(error.error_code, error.resource_kind, error.resource_name)
+except AlreadyExistsError as error:
+    print("resource already exists:", error.resource_name)
+except HttpError as error:
+    print("request failed:", error.request_id, error.status_code)
+```
+
+Secret and function lifecycle APIs currently use Flight SQL and may still raise
+`RuntimeError`. The typed subclasses cover HTTP failures, including dependency
+errors during column refresh.
+
 ::: lancedb.remote.errors.HttpError
 
 ::: lancedb.remote.errors.TableNotFoundError
+
+::: lancedb.remote.errors.SecretNotFoundError
+
+::: lancedb.remote.errors.FunctionNotFoundError
+
+::: lancedb.remote.errors.NamespaceNotFoundError
+
+::: lancedb.remote.errors.AlreadyExistsError
 
 ::: lancedb.exceptions.MissingValueError
 

@@ -42,7 +42,12 @@ from lancedb.query import (
     MatchQuery,
 )
 from lancedb.remote import ClientConfig
-from lancedb.remote.errors import HttpError, RetryError
+from lancedb.remote.errors import (
+    AlreadyExistsError,
+    HttpError,
+    NamespaceNotFoundError,
+    RetryError,
+)
 import pytest
 import pyarrow as pa
 from utils import start_server_thread
@@ -256,6 +261,111 @@ async def test_async_remote_exists(method, identifier, status, existence_handler
             with pytest.raises(HttpError) as exc_info:
                 await getattr(db, method)(identifier)
             assert exc_info.value.status_code == status
+
+
+def test_remote_describe_namespace_typed_not_found():
+    request_ids = []
+
+    def handler(request):
+        assert request.command == "POST"
+        assert request.path == "/v1/namespace/parent$child/describe"
+        request_ids.append(request.headers["x-request-id"])
+        request.send_response(404)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(
+            json.dumps(
+                {
+                    "code": 5,
+                    "error": "Namespace not found",
+                    "error_code": "not_found",
+                    "resource": {
+                        "kind": "namespace",
+                        "name": "child",
+                        "namespace_path": ["parent"],
+                    },
+                }
+            ).encode()
+        )
+
+    with mock_lancedb_connection(handler) as db:
+        with pytest.raises(NamespaceNotFoundError) as exc_info:
+            db.describe_namespace(["parent", "child"])
+
+    error = exc_info.value
+    assert isinstance(error, HttpError)
+    assert error.error_code == "not_found"
+    assert error.resource_kind == "namespace"
+    assert error.resource_name == "child"
+    assert error.namespace_path == ("parent",)
+    assert error.status_code == 404
+    assert error.request_id == request_ids[-1]
+
+
+def test_remote_create_namespace_typed_already_exists():
+    requests = []
+
+    def handler(request):
+        requests.append(request.path)
+        assert request.command == "POST"
+        assert request.path == "/v1/namespace/parent$child/create"
+        request.send_response(409)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(
+            json.dumps(
+                {
+                    "code": 6,
+                    "error": "Namespace already exists",
+                    "error_code": "already_exists",
+                    "resource": {
+                        "kind": "namespace",
+                        "name": "child",
+                        "namespace_path": ["parent"],
+                    },
+                }
+            ).encode()
+        )
+
+    with mock_lancedb_connection(handler) as db:
+        with pytest.raises(AlreadyExistsError) as exc_info:
+            db.create_namespace(["parent", "child"])
+
+    error = exc_info.value
+    assert error.error_code == "already_exists"
+    assert error.resource_kind == "namespace"
+    assert error.resource_name == "child"
+    assert error.namespace_path == ("parent",)
+    assert error.status_code == 409
+    assert len(requests) == 1
+
+
+def test_remote_legacy_namespace_error_stays_generic_http_error():
+    def handler(request):
+        assert request.path == "/v1/namespace/parent$child/describe"
+        request.send_response(404)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(
+            json.dumps(
+                {
+                    "code": 5,
+                    "error": "Namespace not found",
+                }
+            ).encode()
+        )
+
+    with mock_lancedb_connection(handler) as db:
+        with pytest.raises(HttpError) as exc_info:
+            db.describe_namespace(["parent", "child"])
+
+    error = exc_info.value
+    assert type(error) is HttpError
+    assert error.error_code is None
+    assert error.resource_kind is None
+    assert error.resource_name is None
+    assert error.namespace_path is None
+    assert error.status_code == 404
 
 
 @pytest.mark.parametrize("table_id", [[], ["invalid/name"]])
