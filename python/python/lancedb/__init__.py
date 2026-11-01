@@ -5,7 +5,7 @@
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
-from typing import Dict, Optional, Union, Any, List, Iterable, TYPE_CHECKING
+from typing import Dict, Optional, Union, Any, List, Iterable, Literal, TYPE_CHECKING
 
 from packaging.version import Version as _Version
 
@@ -353,13 +353,31 @@ def tokenize(
     ngram_min_length: int = 3,
     ngram_max_length: int = 3,
     prefix_only: bool = False,
+    analyzer: Optional[Literal["text", "code"]] = None,
+    split_identifiers: Optional[bool] = None,
+    split_on_numerics: Optional[bool] = None,
+    preserve_original: Optional[bool] = None,
+    index_operators: Optional[bool] = None,
 ) -> Iterable[FtsToken]:
     """Tokenize a full-text search query using an explicit tokenizer.
 
     This does not require an FTS index. The tokenizer options match
     :class:`lancedb.index.FTS`. ``custom_stop_words`` accepts a list of strings.
     When ``stem`` or ``remove_stop_words`` is None, the base tokenizer's default
-    applies: False for ``code`` and ``ngram``, True otherwise.
+    applies: False for ``code`` and ``ngram``, True otherwise. ``analyzer`` and the
+    code flags (``split_identifiers``, ``split_on_numerics``, ``preserve_original``
+    and ``index_operators``) behave as they do on :class:`lancedb.index.FTS`.
+
+    Examples
+    --------
+    Inspect the identifier and subwords produced by the code analyzer:
+
+    >>> import lancedb
+    >>> tokens = lancedb.tokenize(
+    ...     "parseHTTPRequest", analyzer="code", split_identifiers=True
+    ... )
+    >>> [token.text for token in tokens]
+    ['parsehttprequest', 'parse', 'http', 'request']
     """
 
     return _tokenize(
@@ -375,6 +393,11 @@ def tokenize(
         ngram_min_length=ngram_min_length,
         ngram_max_length=ngram_max_length,
         prefix_only=prefix_only,
+        analyzer=analyzer,
+        split_identifiers=split_identifiers,
+        split_on_numerics=split_on_numerics,
+        preserve_original=preserve_original,
+        index_operators=index_operators,
     )
 
 

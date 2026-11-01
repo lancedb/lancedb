@@ -14,7 +14,7 @@ use crate::{
     connection::Connection,
     error::PythonErrorExt,
     expr::PyExpr,
-    index::{IndexConfig, extract_index_params},
+    index::{CodeAnalyzerOptions, IndexConfig, extract_index_params},
     query::{Query, TakeQuery},
     table::scannable::PyScannable,
 };
@@ -1003,7 +1003,12 @@ impl From<LanceDbFtsToken> for FtsToken {
     ascii_folding = true,
     ngram_min_length = 3,
     ngram_max_length = 3,
-    prefix_only = false
+    prefix_only = false,
+    analyzer = None,
+    split_identifiers = None,
+    split_on_numerics = None,
+    preserve_original = None,
+    index_operators = None
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn tokenize(
@@ -1019,7 +1024,20 @@ pub fn tokenize(
     ngram_min_length: u32,
     ngram_max_length: u32,
     prefix_only: bool,
+    analyzer: Option<String>,
+    split_identifiers: Option<bool>,
+    split_on_numerics: Option<bool>,
+    preserve_original: Option<bool>,
+    index_operators: Option<bool>,
 ) -> PyResult<Vec<FtsToken>> {
+    let code_options = CodeAnalyzerOptions {
+        analyzer,
+        split_identifiers,
+        split_on_numerics,
+        preserve_original,
+        index_operators,
+    };
+    let base_tokenizer = code_options.resolve_base_tokenizer(base_tokenizer)?;
     let mut params = FtsIndexBuilder::default()
         .base_tokenizer(base_tokenizer)
         .language(&language)
@@ -1042,6 +1060,7 @@ pub fn tokenize(
     if let Some(remove_stop_words) = remove_stop_words {
         params = params.remove_stop_words(remove_stop_words);
     }
+    let params = code_options.apply(params);
     let tokens = lancedb_tokenize(&query, &params).infer_error()?;
     Ok(tokens.into_iter().map(FtsToken::from).collect())
 }
