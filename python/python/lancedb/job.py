@@ -28,13 +28,14 @@ __all__ = [
 
 def _timeout_message(job_id: Optional[str], timeout: timedelta) -> str:
     seconds = f"{timeout.total_seconds():g}"
+    unit = "second" if seconds == "1" else "seconds"
     if job_id is None:
         return (
-            f"operation still running after {seconds} seconds; "
+            f"operation still running after {seconds} {unit}; "
             "it continues on the server"
         )
     return (
-        f"job {job_id!r} still running after {seconds} seconds; "
+        f"job {job_id!r} still running after {seconds} {unit}; "
         "it continues on the server; "
         f"reattach with db.open_job({job_id!r}).wait()"
     )
