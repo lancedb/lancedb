@@ -125,8 +125,10 @@ def _rows_to_models(model: type[T], rows: List[dict]) -> List[T]:
         name: field.validation_alias or field.alias
         for name, field in model.model_fields.items()
     }
-    accepts_by_name = model.model_config.get("validate_by_name", False) or (
-        model.model_config.get("populate_by_name", False)
+    # populate_by_name is the pre-2.11 spelling; an explicit new flag wins.
+    accepts_by_name = model.model_config.get(
+        "validate_by_name",
+        model.model_config.get("populate_by_name", False),
     )
     # Every top-level key some field reads, including the first step of an
     # AliasPath and each choice of an AliasChoices.

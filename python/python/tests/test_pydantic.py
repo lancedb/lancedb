@@ -879,6 +879,29 @@ def test_aliased_lance_model_with_populate_by_name(mem_db):
     assert item.user_id == 42
 
 
+@pytest.mark.skipif(
+    Version(pydantic.VERSION) < Version("2.11"),
+    reason="validate_by_name requires pydantic>=2.11",
+)
+def test_explicit_validate_by_name_false_overrides_populate_by_name(mem_db):
+    class Item(LanceModel):
+        model_config = pydantic.ConfigDict(
+            populate_by_name=True,
+            validate_by_name=False,
+        )
+        user_id: int = Field(default=0, alias="userId")
+
+    tbl = mem_db.create_table("validate_by_name_precedence_items", schema=Item)
+    item = Item(userId=42)
+    assert item.user_id == 42
+    tbl.add([item])
+    assert tbl.schema.names == ["user_id"]
+    assert tbl.search().to_arrow().to_pylist() == [{"user_id": 42}]
+
+    [item] = tbl.search().to_pydantic(Item)
+    assert item.user_id == 42
+
+
 def test_field_name_fallback_preserves_populate_by_name_reader(mem_db):
     class Item(LanceModel):
         model_config = pydantic.ConfigDict(populate_by_name=True)
@@ -1038,6 +1061,34 @@ async def test_field_name_fallback_preserves_populate_by_name_reader_async(
     assert arrow_row == row
     [item] = await (await tbl.search()).to_pydantic(Item)
     assert item.model_dump() == {"value": 1, "id": -1}
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    Version(pydantic.VERSION) < Version("2.11"),
+    reason="validate_by_name requires pydantic>=2.11",
+)
+async def test_explicit_validate_by_name_false_overrides_populate_by_name_async(
+    mem_db_async,
+):
+    class Item(LanceModel):
+        model_config = pydantic.ConfigDict(
+            populate_by_name=True,
+            validate_by_name=False,
+        )
+        user_id: int = Field(default=0, alias="userId")
+
+    tbl = await mem_db_async.create_table(
+        "validate_by_name_precedence_items", schema=Item
+    )
+    item = Item(userId=42)
+    assert item.user_id == 42
+    await tbl.add([item])
+    assert (await tbl.schema()).names == ["user_id"]
+    assert (await (await tbl.search()).to_arrow()).to_pylist() == [{"user_id": 42}]
+
+    [item] = await (await tbl.search()).to_pydantic(Item)
+    assert item.user_id == 42
 
 
 def test_enum_types():
