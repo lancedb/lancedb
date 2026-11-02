@@ -417,6 +417,7 @@ fn is_signature_hex(value: &str) -> bool {
     value.len() == 16 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+#[cfg(test)]
 fn encode_legacy_sidecar(map: &SignatureMap) -> Result<Vec<u8>> {
     let mut bytes = Vec::with_capacity(9 + map.len() * 12);
     bytes.extend_from_slice(SIDECAR_MAGIC);
