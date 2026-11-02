@@ -663,11 +663,6 @@ pub struct FunctionArtifactRequest {
     pub adapter: PythonAdapterSpec,
 }
 
-/// Stable request envelope for remote immutable Function registration.
-///
-/// Credential values deliberately have no field here. The only secret-shaped
-/// thing a client sends is `secret_bindings`: the name of a Secret the
-/// database already holds, which Sophon resolves inside the remote runtime.
 fn deserialize_batch_size<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
 where
     D: Deserializer<'de>,
@@ -696,6 +691,11 @@ where
     Ok(value)
 }
 
+/// Stable request envelope for remote immutable Function registration.
+///
+/// Credential values deliberately have no field here. The only secret-shaped
+/// thing a client sends is `secret_bindings`: the name of a Secret the
+/// database already holds, which Sophon resolves inside the remote runtime.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FunctionRegistrationRequest {
     pub name: String,
