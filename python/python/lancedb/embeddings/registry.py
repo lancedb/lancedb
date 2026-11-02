@@ -30,7 +30,7 @@ def _embedding_column_pairs(
         return pairs
 
     serialized = metadata.get(
-        b"embedding_function_columns", metadata.get("embedding_function_columns")
+        b"embedding_functions", metadata.get("embedding_functions")
     )
     if serialized is not None:
         if isinstance(serialized, bytes):

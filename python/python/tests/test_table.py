@@ -3038,7 +3038,7 @@ async def test_update_embedding_source_requires_native_vector_metadata(
 
     metadata = table_schema.metadata or {}
     assert b"lancedb::column_definitions" in metadata
-    assert b"embedding_function_columns" not in metadata
+    assert b"embedding_functions" not in metadata
 
     async def update(values):
         if async_api:
