@@ -6,6 +6,7 @@ on:
       - main
   pull_request:
     paths:
+      - .github/actions/setup-private-lance/**
       - Cargo.toml
       - Cargo.lock
       - rust-toolchain.toml
@@ -46,6 +47,9 @@ jobs:
         with:
           fetch-depth: 0
           lfs: true
+      - uses: ./.github/actions/setup-private-lance
+        with:
+          token: ${{ secrets.ROBOT_TOKEN }}
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -71,6 +75,9 @@ jobs:
         with:
           fetch-depth: 0
           lfs: true
+      - uses: ./.github/actions/setup-private-lance
+        with:
+          token: ${{ secrets.ROBOT_TOKEN }}
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -100,6 +107,9 @@ jobs:
         with:
           fetch-depth: 0
           lfs: true
+      - uses: ./.github/actions/setup-private-lance
+        with:
+          token: ${{ secrets.ROBOT_TOKEN }}
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -144,6 +154,9 @@ jobs:
         with:
           fetch-depth: 0
           lfs: true
+      - uses: ./.github/actions/setup-private-lance
+        with:
+          token: ${{ secrets.ROBOT_TOKEN }}
       - name: Install protobuf
         run: |
           sudo apt update
@@ -181,6 +194,9 @@ jobs:
         with:
           fetch-depth: 0
           lfs: true
+      - uses: ./.github/actions/setup-private-lance
+        with:
+          token: ${{ secrets.ROBOT_TOKEN }}
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -218,6 +234,9 @@ jobs:
         with:
           fetch-depth: 0
           lfs: true
+      - uses: ./.github/actions/setup-private-lance
+        with:
+          token: ${{ secrets.ROBOT_TOKEN }}
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -240,7 +259,7 @@ jobs:
   min-deps:
     name: "Minimum dependencies"
     timeout-minutes: 60
-    runs-on: "ubuntu-24.04"
+    runs-on: ubuntu-2404-8x-x64
     defaults:
       run:
         shell: bash
@@ -250,6 +269,9 @@ jobs:
         with:
           fetch-depth: 0
           lfs: true
+      - uses: ./.github/actions/setup-private-lance
+        with:
+          token: ${{ secrets.ROBOT_TOKEN }}
       - name: Install dependencies
         run: |
           sudo apt update

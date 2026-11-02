@@ -6,6 +6,7 @@ on:
       - main
   pull_request:
     paths:
+      - .github/actions/setup-private-lance/**
       - Cargo.toml
       - Cargo.lock
       - rust-toolchain.toml
@@ -37,8 +38,11 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-private-lance
+        with:
+          token: ${{ secrets.ROBOT_TOKEN }}
       - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - name: Read the pinned Lance tag
+      - name: Read the pinned Lance revision
         id: lance
         run: |
           python3 - <<'PYTHON'
@@ -47,14 +51,17 @@ jobs:
           from pathlib import Path
 
           manifest = tomllib.loads(Path("Cargo.toml").read_text())
-          tag = manifest["workspace"]["dependencies"]["lance"]["tag"]
+          lance = manifest["workspace"]["dependencies"]["lance"]
+          revision = lance.get("rev") or lance["tag"]
+          repository = lance["git"].removeprefix("https://github.com/").removesuffix(".git")
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-              output.write(f"tag={tag}\n")
+              output.write(f"revision={revision}\nrepository={repository}\n")
           PYTHON
       - uses: actions/checkout@v6
         with:
-          repository: lance-format/lance
-          ref: ${{ steps.lance.outputs.tag }}
+          repository: ${{ steps.lance.outputs.repository }}
+          ref: ${{ steps.lance.outputs.revision }}
+          token: ${{ secrets.ROBOT_TOKEN }}
           path: local-lance
       - name: Resolve a downstream workspace with a local Lance override
         run: |
@@ -72,7 +79,7 @@ jobs:
           lancedb = { path = "../rust/lancedb", default-features = false }
           lance-arrow = { path = "../local-lance/rust/lance-arrow" }
 
-          [patch."https://github.com/lance-format/lance.git"]
+          [patch."https://github.com/lancedb/lance-internal-fork.git"]
           lance-arrow = { path = "../local-lance/rust/lance-arrow" }
           TOML
           cargo metadata --manifest-path downstream/Cargo.toml --format-version 1 > downstream/graph.json
@@ -103,6 +110,9 @@ jobs:
         with:
           fetch-depth: 0
           lfs: true
+      - uses: ./.github/actions/setup-private-lance
+        with:
+          token: ${{ secrets.ROBOT_TOKEN }}
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: rustfmt, clippy
@@ -130,12 +140,15 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-private-lance
+        with:
+          token: ${{ secrets.ROBOT_TOKEN }}
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check advisories bans licenses sources
 
   build-no-lock:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-2404-8x-x64
     timeout-minutes: 30
     env:
       # Need up-to-date compilers for kernels
@@ -143,6 +156,9 @@ jobs:
       CXX: clang++
     steps:
       - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-private-lance
+        with:
+          token: ${{ secrets.ROBOT_TOKEN }}
       # Building without a lock file often requires the latest Rust version since downstream
       # dependencies may have updated their minimum Rust version.
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -185,6 +201,9 @@ jobs:
         with:
           fetch-depth: 0
           lfs: true
+      - uses: ./.github/actions/setup-private-lance
+        with:
+          token: ${{ secrets.ROBOT_TOKEN }}
       - uses: Swatinem/rust-cache@v2
         with:
           # Restore everywhere, but only save from main. Per-PR saves are
@@ -244,13 +263,16 @@ jobs:
     env:
       CC: clang-18
       CXX: clang++-18
-      GH_TOKEN: ${{ github.token }}
+      GH_TOKEN: ${{ secrets.ROBOT_TOKEN }}
       SOPHON_READ_TOKEN: ${{ secrets.SOPHON_READ_TOKEN }}
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           lfs: true
+      - uses: ./.github/actions/setup-private-lance
+        with:
+          token: ${{ secrets.ROBOT_TOKEN }}
       - uses: Swatinem/rust-cache@v2
         with:
           # Remote tests use a different feature graph from the main Linux
@@ -282,6 +304,9 @@ jobs:
         with:
           fetch-depth: 0
           lfs: true
+      - uses: ./.github/actions/setup-private-lance
+        with:
+          token: ${{ secrets.ROBOT_TOKEN }}
       - name: CPU features
         run: sysctl -a | grep cpu
       - uses: Swatinem/rust-cache@v2
@@ -317,6 +342,9 @@ jobs:
         working-directory: rust/lancedb
     steps:
       - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-private-lance
+        with:
+          token: ${{ secrets.ROBOT_TOKEN }}
       - name: Set target
         run: rustup target add ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
@@ -354,6 +382,9 @@ jobs:
         working-directory: rust/lancedb
     steps:
       - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-private-lance
+        with:
+          token: ${{ secrets.ROBOT_TOKEN }}
       - name: Set target
         run: rustup target add aarch64-pc-windows-msvc
       - uses: Swatinem/rust-cache@v2
@@ -391,6 +422,9 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: true
+      - uses: ./.github/actions/setup-private-lance
+        with:
+          token: ${{ secrets.ROBOT_TOKEN }}
       - name: Install dependencies
         run: |
           sudo apt update
