@@ -715,8 +715,9 @@ pub struct FunctionRegistrationRequest {
         deserialize_with = "deserialize_batch_size"
     )]
     pub batch_size: Option<u32>,
-    /// Deadline for one invocation batch, in seconds. It does not govern
-    /// Function initialization.
+    /// Deadline for each Python call, in seconds: one row for scalar Functions
+    /// and one batch for vectorized Functions. It does not govern Function
+    /// initialization.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",

@@ -76,11 +76,12 @@ def encode(value: float) -> float:
 </CodeGroup>
 
 `batch_size` is the maximum number of input rows in a batch; execution may use
-fewer. `row_timeout_seconds` bounds one invocation batch and does not include a
-Function instance's `__init__`. Both values are fixed into the registered
-version and apply to direct calls, computed columns, and materialized-view
-refreshes. When omitted, the service chooses batches adaptively and applies its
-default row budget.
+fewer. `row_timeout_seconds` bounds each Python call: one row for scalar
+Functions and one batch for vectorized Functions. It does not include a Function
+instance's `__init__`. Both values are fixed into the registered version and
+apply to direct calls, computed columns, and materialized-view refreshes. When
+omitted, the service chooses batches adaptively and applies its default per-call
+budget.
 
 ## Connect and create a table {#table}
 

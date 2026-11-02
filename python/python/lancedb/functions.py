@@ -2331,9 +2331,10 @@ def udf(
         between 1 and 4294967295. Remote execution may use smaller batches.
         When omitted, the service chooses the batch size adaptively.
     row_timeout_seconds : float, optional
-        Positive, finite deadline in seconds for processing one invocation
-        batch. This does not govern class initialization. When omitted, the
-        service applies its default row budget.
+        Positive, finite deadline in seconds for each Python call: one row for
+        scalar Functions and one batch for vectorized Functions. This does not
+        govern class initialization. When omitted, the service applies its
+        default per-call budget.
     gpu : bool, default False
         Whether every remote execution requires a GPU. The execution platform
         selects one compatible GPU for each worker. The requirement is part of
