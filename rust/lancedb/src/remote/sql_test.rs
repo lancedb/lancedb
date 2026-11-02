@@ -2360,6 +2360,37 @@ async fn function_creation_and_description_use_sql_query_handles() {
         shutdown.send(()).unwrap();
     }
 }
+
+#[tokio::test]
+async fn function_creation_rejects_invalid_execution_controls_before_sql() {
+    const REQUEST: &str = include_str!(
+        "../../tests/fixtures/first_class_function/v1/remote_function_controlled_registration_request.json"
+    );
+    let service = TestSqlService::default();
+    let statements = service.statements.clone();
+    let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let db = RemoteDatabase::new_mock(|request| -> http::Response<String> {
+        panic!("unexpected REST request: {}", request.url().path());
+    })
+    .with_sql_client(client.clone());
+
+    for timeout in [f64::NAN, f64::INFINITY, -1.0] {
+        let mut request = crate::function::FunctionRegistrationRequest::from_json(REQUEST).unwrap();
+        request.row_timeout_seconds = Some(timeout);
+        let error = db.create_function_async(request, &[]).await.unwrap_err();
+        assert!(
+            matches!(error, Error::InvalidInput { message } if message.contains("row_timeout_seconds"))
+        );
+    }
+
+    let mut request = crate::function::FunctionRegistrationRequest::from_json(REQUEST).unwrap();
+    request.batch_size = Some(0);
+    let error = db.create_function_async(request, &[]).await.unwrap_err();
+    assert!(matches!(error, Error::InvalidInput { message } if message.contains("batch_size")));
+    assert!(statements.lock().unwrap().is_empty());
+    shutdown.send(()).unwrap();
+}
+
 #[tokio::test]
 async fn function_drop_keeps_the_query_id_and_reports_catalog_removal() {
     for (status, expected) in [("dropped", true), ("not_found", false)] {

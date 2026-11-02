@@ -669,11 +669,7 @@ where
 {
     let value = Option::<u32>::deserialize(deserializer)
         .map_err(|error| de::Error::custom(format!("batch_size: {error}")))?;
-    if value == Some(0) {
-        return Err(de::Error::custom(
-            "batch_size must be between 1 and u32::MAX",
-        ));
-    }
+    validate_batch_size_value(value).map_err(de::Error::custom)?;
     Ok(value)
 }
 
@@ -683,12 +679,22 @@ where
 {
     let value = Option::<f64>::deserialize(deserializer)
         .map_err(|error| de::Error::custom(format!("row_timeout_seconds: {error}")))?;
-    if value.is_some_and(|seconds| !seconds.is_finite() || seconds <= 0.0) {
-        return Err(de::Error::custom(
-            "row_timeout_seconds must be positive and finite",
-        ));
-    }
+    validate_row_timeout_value(value).map_err(de::Error::custom)?;
     Ok(value)
+}
+
+fn validate_batch_size_value(value: Option<u32>) -> std::result::Result<(), &'static str> {
+    if value == Some(0) {
+        return Err("batch_size must be between 1 and u32::MAX");
+    }
+    Ok(())
+}
+
+fn validate_row_timeout_value(value: Option<f64>) -> std::result::Result<(), &'static str> {
+    if value.is_some_and(|seconds| !seconds.is_finite() || seconds <= 0.0) {
+        return Err("row_timeout_seconds must be positive and finite");
+    }
+    Ok(())
 }
 
 /// Stable request envelope for remote immutable Function registration.
@@ -724,7 +730,28 @@ pub struct FunctionRegistrationRequest {
     pub secret_bindings: Vec<SecretBinding>,
 }
 
-impl_json!(FunctionRegistrationRequest);
+impl FunctionRegistrationRequest {
+    /// Decode a registration request supplied by an SDK language binding.
+    pub fn from_json(json: &str) -> Result<Self> {
+        from_json(json)
+    }
+
+    /// Encode the known client contract with bytewise-sorted JSON keys.
+    pub fn to_canonical_json(&self) -> Result<String> {
+        self.validate()?;
+        canonical_json(self)
+    }
+
+    /// Reject explicit execution controls that cannot be submitted safely.
+    pub fn validate(&self) -> Result<()> {
+        let invalid_input = |message: &'static str| Error::InvalidInput {
+            message: message.to_string(),
+        };
+        validate_batch_size_value(self.batch_size).map_err(invalid_input)?;
+        validate_row_timeout_value(self.row_timeout_seconds).map_err(invalid_input)?;
+        Ok(())
+    }
+}
 
 /// Exact FunctionVersion reference embedded in applications and bindings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
