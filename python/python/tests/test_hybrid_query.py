@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import random
 from unittest import mock
 
 import lancedb
@@ -12,7 +13,6 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pytest
 import pytest_asyncio
-import random
 
 from lancedb.index import BTree, FTS, IvfPq
 from lancedb.table import AsyncTable, Table
@@ -356,6 +356,45 @@ def test_hybrid_query_top_result_stable_across_limits(tmpdir_factory):
         return result[0]["id"]
 
     assert top_id(1) == top_id(3) == top_id(10)
+
+
+@pytest.mark.asyncio
+async def test_async_hybrid_query_top_result_stable_across_limits(tmpdir_factory):
+    # Async mirror of test_hybrid_query_top_result_stable_across_limits:
+    # regression test for #4758. The top result of a hybrid search must not
+    # depend on `limit`. The async path previously had no behavioral
+    # assertion for this — only the explain-plan fetch=50 check — so a
+    # regression on this side would have slipped through.
+    rng = np.random.default_rng(0)
+    random.seed(0)
+    words = "alpha beta gamma delta epsilon zeta eta theta iota kappa".split()
+    rows = [
+        {
+            "id": i,
+            "text": " ".join(random.choice(words) for _ in range(12)),
+            "vector": rng.random(16).astype("float32"),
+        }
+        for i in range(300)
+    ]
+    tmp_path = str(tmpdir_factory.mktemp("data"))
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("t", data=rows)
+    await table.create_index("text", config=FTS(with_position=False))
+
+    query_vec = rng.random(16).astype("float32")
+
+    async def top_id(limit):
+        result = await (
+            table.query()
+            .nearest_to(query_vec)
+            .nearest_to_text("alpha beta gamma")
+            .limit(limit)
+            .to_list()
+        )
+        assert len(result) == limit
+        return result[0]["id"]
+
+    assert await top_id(1) == await top_id(3) == await top_id(10)
 
 
 @pytest.mark.parametrize(
