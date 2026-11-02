@@ -46,9 +46,93 @@ class HttpError(LanceDBClientError):
     status_code: int
         The HTTP status code of the response. May be None if the request
         failed before the response was received.
+    error_code: str
+        A machine-readable error code reported by the server, if available.
+    resource_kind: str
+        The kind of resource reported by the server, if available.
+    resource_name: str
+        The name of the resource reported by the server, if available.
+    namespace_path: tuple[str, ...]
+        The parent namespace path of the resource, if available.
     """
 
-    pass
+    def __new__(
+        cls,
+        message: str,
+        request_id: str,
+        status_code: Optional[int] = None,
+        error_code: Optional[str] = None,
+        resource_kind: Optional[str] = None,
+        resource_name: Optional[str] = None,
+        namespace_path: Optional[tuple[str, ...]] = None,
+    ):
+        if cls is HttpError:
+            mapped_cls = _http_error_class(error_code, resource_kind)
+            if mapped_cls is not None:
+                cls = mapped_cls
+        return RuntimeError.__new__(cls)
+
+    def __init__(
+        self,
+        message: str,
+        request_id: str,
+        status_code: Optional[int] = None,
+        error_code: Optional[str] = None,
+        resource_kind: Optional[str] = None,
+        resource_name: Optional[str] = None,
+        namespace_path: Optional[tuple[str, ...]] = None,
+    ):
+        super().__init__(message, request_id, status_code)
+        self.error_code = error_code
+        self.resource_kind = resource_kind
+        self.resource_name = resource_name
+        self.namespace_path = (
+            tuple(namespace_path) if namespace_path is not None else None
+        )
+
+    def __reduce__(self) -> tuple[type, tuple]:
+        return (
+            self.__class__,
+            (
+                str(self),
+                self.request_id,
+                self.status_code,
+                self.error_code,
+                self.resource_kind,
+                self.resource_name,
+                self.namespace_path,
+            ),
+        )
+
+
+def _http_error_class(
+    error_code: Optional[str], resource_kind: Optional[str]
+) -> Optional[type[HttpError]]:
+    if error_code == "already_exists":
+        return AlreadyExistsError
+    if error_code != "not_found" or resource_kind is None:
+        return None
+    return {
+        "secret": SecretNotFoundError,
+        "function": FunctionNotFoundError,
+        "namespace": NamespaceNotFoundError,
+    }.get(resource_kind)
+
+
+class SecretNotFoundError(HttpError):
+    """A remote secret was not found."""
+
+
+class FunctionNotFoundError(HttpError):
+    """A remote function was not found."""
+
+
+class NamespaceNotFoundError(HttpError):
+    """A remote namespace was not found."""
+
+
+class AlreadyExistsError(HttpError):
+    """A remote resource already exists."""
 
 
 class TableNotFoundError(HttpError, ValueError, _NamespaceTableNotFoundError):

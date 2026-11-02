@@ -42,12 +42,30 @@ use pyo3::{
 
 mod scannable;
 
-fn refresh_column_options(batch_size: Option<i64>) -> PyResult<RefreshColumnOptions> {
+fn refresh_column_options(
+    batch_size: Option<i64>,
+    gpu_class: Option<String>,
+    gpu_count: Option<i64>,
+) -> PyResult<RefreshColumnOptions> {
     let mut options = RefreshColumnOptions::default();
     options.batch_size = batch_size
         .map(usize::try_from)
         .transpose()
         .map_err(|_| PyValueError::new_err("batch_size must be greater than zero"))?;
+    options.gpu_class = gpu_class;
+    options.gpu_count = gpu_count
+        .map(|count| {
+            u32::try_from(count)
+                .ok()
+                .filter(|count| *count > 0)
+                .ok_or_else(|| {
+                    PyValueError::new_err(
+                        "gpu_count must be a positive integer no greater than u32::MAX",
+                    )
+                })
+        })
+        .transpose()?;
+    options.validate().infer_error()?;
     Ok(options)
 }
 
@@ -596,6 +614,7 @@ pub struct FunctionErrorRecord {
     pub job_id: String,
     pub fragment_id: u64,
     pub row_offset: Option<u32>,
+    pub row_address: Option<u64>,
     pub column: String,
     pub function: String,
     pub function_version: String,
@@ -608,12 +627,19 @@ pub struct FunctionErrorRecord {
 #[pymethods]
 impl FunctionErrorRecord {
     pub fn __repr__(&self) -> String {
+        let row_offset = self
+            .row_offset
+            .map_or_else(|| "None".to_string(), |value| value.to_string());
+        let row_address = self
+            .row_address
+            .map_or_else(|| "None".to_string(), |value| value.to_string());
         format!(
-            "FunctionErrorRecord(job_id={:?}, fragment_id={}, row_offset={:?}, column={:?}, \
-             error_type={:?}, error_message={:?})",
+            "FunctionErrorRecord(job_id={:?}, fragment_id={}, row_offset={}, row_address={}, \
+             column={:?}, error_type={:?}, error_message={:?})",
             self.job_id,
             self.fragment_id,
-            self.row_offset,
+            row_offset,
+            row_address,
             self.column,
             self.error_type,
             self.error_message
@@ -627,6 +653,7 @@ impl From<lancedb::function::FunctionErrorRecord> for FunctionErrorRecord {
             job_id: record.job_id,
             fragment_id: record.fragment_id,
             row_offset: record.row_offset,
+            row_address: record.row_address,
             column: record.column,
             function: record.function,
             function_version: record.function_version,
@@ -2090,13 +2117,15 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, *, batch_size=None))]
+    #[pyo3(signature = (column, *, batch_size=None, gpu_class=None, gpu_count=None))]
     pub fn refresh_column(
         self_: PyRef<'_, Self>,
         column: String,
         batch_size: Option<i64>,
+        gpu_class: Option<String>,
+        gpu_count: Option<i64>,
     ) -> PyResult<Bound<'_, PyAny>> {
-        let options = refresh_column_options(batch_size)?;
+        let options = refresh_column_options(batch_size, gpu_class, gpu_count)?;
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let result = inner
@@ -2107,13 +2136,15 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, *, batch_size=None))]
+    #[pyo3(signature = (column, *, batch_size=None, gpu_class=None, gpu_count=None))]
     pub fn refresh_column_async(
         self_: PyRef<'_, Self>,
         column: String,
         batch_size: Option<i64>,
+        gpu_class: Option<String>,
+        gpu_count: Option<i64>,
     ) -> PyResult<Bound<'_, PyAny>> {
-        let options = refresh_column_options(batch_size)?;
+        let options = refresh_column_options(batch_size, gpu_class, gpu_count)?;
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let job = inner

@@ -2461,6 +2461,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             version: u64,
             timestamp: Option<DateTime<Utc>>,
             timestamp_millis: Option<i64>,
+            manifest_size: Option<u64>,
             #[serde(default)]
             metadata: std::collections::BTreeMap<String, String>,
         }
@@ -2506,6 +2507,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                     version: entry.version,
                     timestamp,
                     metadata: entry.metadata,
+                    manifest_size: entry.manifest_size,
                 })
             })
             .collect()
@@ -3793,6 +3795,12 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let mut body = serde_json::json!({ "column": column });
         if let Some(batch_size) = options.batch_size {
             body["batch_size"] = serde_json::json!(batch_size);
+        }
+        if let Some(gpu_class) = options.gpu_class {
+            body["gpu_class"] = serde_json::json!(gpu_class);
+        }
+        if let Some(gpu_count) = options.gpu_count {
+            body["gpu_count"] = serde_json::json!(gpu_count);
         }
         self.apply_branch_body(&mut body);
         let request = self
@@ -9502,11 +9510,13 @@ mod tests {
                 version: 1,
                 timestamp: "2024-01-01T00:00:00Z".parse().unwrap(),
                 metadata: Default::default(),
+                manifest_size: Some(1024),
             };
             let version2 = lance::dataset::Version {
                 version: 2,
                 timestamp: "2024-02-01T00:00:00Z".parse().unwrap(),
                 metadata: Default::default(),
+                manifest_size: None,
             };
             let response_body = serde_json::json!({
                 "versions": [
@@ -9525,6 +9535,7 @@ mod tests {
         let versions = table.list_versions().await.unwrap();
         assert_eq!(versions.len(), 2);
         assert_eq!(versions[0].version, 1);
+        assert_eq!(versions[0].manifest_size, Some(1024));
         assert_eq!(
             versions[0].timestamp,
             "2024-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
@@ -9534,7 +9545,7 @@ mod tests {
             versions[1].timestamp,
             "2024-02-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
         );
-        // assert_eq!(versions, expected);
+        assert_eq!(versions[1].manifest_size, None);
     }
 
     /// Namespace-backed servers report `timestamp_millis` instead of
@@ -9576,6 +9587,7 @@ mod tests {
             "2024-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
         );
         assert!(versions[0].metadata.is_empty());
+        assert_eq!(versions[0].manifest_size, None);
         assert_eq!(versions[1].version, 2);
         assert_eq!(
             versions[1].timestamp,
@@ -10580,12 +10592,74 @@ mod tests {
             .create_branch("exp", Ref::Version(None, None))
             .await
             .unwrap();
-        let options = RefreshColumnOptions { batch_size };
+        let options = RefreshColumnOptions {
+            batch_size,
+            ..Default::default()
+        };
         let job = branch
             .refresh_column_async_with_options("quality", options)
             .await
             .unwrap();
         assert_eq!(job.id(), Some("j-42"));
+    }
+
+    #[tokio::test]
+    async fn test_refresh_column_async_gpu_placement_options() {
+        use crate::table::RefreshColumnOptions;
+
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/backfill_column");
+            assert_eq!(
+                request_body_json(&request),
+                serde_json::json!({
+                    "column": "quality",
+                    "gpu_class": "a10g",
+                    "gpu_count": 2,
+                })
+            );
+            http::Response::builder()
+                .status(202)
+                .body(r#"{"job_id": "j-gpu"}"#)
+                .unwrap()
+        });
+        let options = RefreshColumnOptions::default()
+            .gpu_class("a10g")
+            .gpu_count(2);
+        let job = table
+            .refresh_column_async_with_options("quality", options)
+            .await
+            .unwrap();
+        assert_eq!(job.id(), Some("j-gpu"));
+    }
+
+    #[tokio::test]
+    async fn test_refresh_column_rejects_invalid_gpu_options_before_request() {
+        use crate::table::RefreshColumnOptions;
+
+        let table = Table::new_with_handler("my_table", |_| -> http::Response<String> {
+            panic!("invalid GPU options must not send a request")
+        });
+        for (options, expected) in [
+            (
+                RefreshColumnOptions::default().gpu_class("A10G"),
+                "gpu_class",
+            ),
+            (
+                RefreshColumnOptions::default().gpu_class("-a10g"),
+                "gpu_class",
+            ),
+            (RefreshColumnOptions::default().gpu_count(0), "gpu_count"),
+        ] {
+            let error = table
+                .refresh_column_async_with_options("quality", options)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(&error, Error::InvalidInput { message } if message.contains(expected)),
+                "{error:?}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -10695,6 +10769,7 @@ mod tests {
                 .status(200)
                 .body(
                     r#"{"records": [{"job_id": "j-7", "fragment_id": 3, "row_offset": 9,
+                        "row_address": 12884901897,
                         "column": "embedding", "function": "embed", "function_version": "2",
                         "table_version": 11, "error_type": "ValueError",
                         "error_message": "bad input 'x'", "created_at_millis": 1700000000000}],
@@ -10720,6 +10795,7 @@ mod tests {
                 job_id: "j-7".into(),
                 fragment_id: 3,
                 row_offset: Some(9),
+                row_address: Some(12_884_901_897),
                 column: "embedding".into(),
                 function: "embed".into(),
                 function_version: "2".into(),
@@ -10739,6 +10815,22 @@ mod tests {
             }]
         );
         assert!(errors.truncated);
+
+        // Servers before row_address omit it; the record still decodes.
+        let legacy: FunctionErrorRecord = serde_json::from_value(serde_json::json!({
+            "job_id": "j-6",
+            "fragment_id": 2,
+            "row_offset": null,
+            "column": "embedding",
+            "function": "embed",
+            "function_version": "1",
+            "table_version": 10,
+            "error_type": "ValueError",
+            "error_message": "fragment reached the record cap",
+            "created_at_millis": 1_700_000_000_000_i64,
+        }))
+        .unwrap();
+        assert!(legacy.row_address.is_none());
 
         // No filter sends no filter, and an empty listing reads as such.
         let table = Table::new_with_handler("my_table", |request| {

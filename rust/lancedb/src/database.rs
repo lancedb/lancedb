@@ -29,6 +29,7 @@ use lance_namespace::models::{
 
 use crate::data::scannable::Scannable;
 use crate::error::Result;
+use crate::function::GpuClass;
 use crate::graph::{PropertyGraphDefinition, PropertyGraphDescription};
 use crate::job::Job;
 use crate::listing::{ListingOptions, ListingPage};
@@ -305,6 +306,12 @@ fn function_catalog_not_supported<T>() -> Result<T> {
     })
 }
 
+fn gpu_class_catalog_not_supported<T>() -> Result<T> {
+    Err(crate::error::Error::NotSupported {
+        message: "GPU class discovery is supported only by LanceDB Distributed".to_string(),
+    })
+}
+
 fn secret_catalog_not_supported<T>() -> Result<T> {
     Err(crate::error::Error::NotSupported {
         message: "Secret operations are not supported by this database".to_string(),
@@ -376,6 +383,10 @@ pub trait Database:
         _namespace_path: &[String],
     ) -> Result<crate::job::Job<crate::function::FunctionVersion>> {
         function_catalog_not_supported()
+    }
+    /// List the operator-configured GPU classes available to Function workers.
+    async fn list_gpu_classes(&self) -> Result<Vec<GpuClass>> {
+        gpu_class_catalog_not_supported()
     }
     /// Create a materialized view through a remote catalog and return its
     /// initial-population job. Local connections use the native declaration
