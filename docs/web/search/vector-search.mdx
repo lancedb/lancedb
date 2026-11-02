@@ -48,6 +48,7 @@ import {
 
 import { PyVectorSearch, TsVectorSearchBody, TsVectorSearchTail } from '/snippets/search_examples.mdx';
 import { RsExampleBody as RsVectorSearchBody, RsExampleTail as RsVectorSearchTail } from '/snippets/search_vector_search.mdx';
+import { PyVectorIndexAuto, PyVectorIndexSearchEffort, PyVectorIndexFixedProbes } from '/snippets/indexing.mdx';
 
 Vector search finds similar items by comparing their embeddings: numerical
 representations of text, images, audio or other data. An embedding model maps
@@ -247,21 +248,86 @@ The supported values are:
 
 Only the Rust SDK sets `approx_mode`; the Python and TypeScript SDKs do not expose it. You can change `approx_mode` per query without rebuilding the index. For RQ indexes built with `num_bits=1`, `normal` uses the same one-bit scoring path as `fast`. If you also set `refine_factor`, LanceDB first uses `approx_mode` while finding candidates, then reranks the selected candidates on full vectors.
 
-### Tuning `nprobes`
+### Tuning `nprobes` {#tuning-nprobes}
 
-- `nprobes` controls how many partitions are searched at query time.
-- `nprobes` improves candidate recall, but does not by itself make `_distance` exact.
-- The default probe selection is a starting point. Measure recall and latency for your data before overriding it.
-- In most cases, leave `nprobes` unset and use the auto-tuned value.
-- Only tune `nprobes` manually when recall is below your target, or when you need even higher performance for your workload.
-- If recall is too low, increase `nprobes` gradually, but after a certain threshold, increasing `nprobes` yields only marginal accuracy gains.
-- If you need higher performance and have recall headroom, decrease `nprobes` gradually.
+For IVF vector indices, start with **Auto** by leaving the probe settings unset.
+LanceDB chooses how many partitions to search to balance recall and latency. It
+can search further if a filter leaves too few results, within any limits you set.
 
-For filtered ANN searches, you can also set `minimum_nprobes` and `maximum_nprobes`. LanceDB starts
-with the minimum and can scan more partitions up to the maximum if the filter leaves too few
-candidates. Calling `nprobes(n)` fixes both values to `n`, which disables that adaptive behavior.
-Whether a deployment honors this range depends on its version; one that does not searches exactly
-`minimum_nprobes` partitions.
+The examples below assume `table` has an IVF index and `query_vector` uses the
+same embedding model and dimension as its vectors.
+
+<CodeBlock filename="Python" language="python" icon="python">
+{PyVectorIndexAuto}
+</CodeBlock>
+
+#### Adjust speed and recall {#search-effort-and-probe-bounds}
+
+Use `search_effort` to tune how much work a search does. It accepts values from
+`0` to `1`; `0.5` uses Auto. Increase it to search more partitions when recall is
+too low, or decrease it when you can trade some recall for lower latency.
+`search_effort(0.95)` does **not** mean 95% recall.
+
+<CodeBlock filename="Python" language="python" icon="python">
+{PyVectorIndexSearchEffort}
+</CodeBlock>
+
+Measure the effect on your queries. Higher effort may add latency without
+improving recall. With no maximum set, `search_effort(1)` searches all partitions
+and can be expensive. In TypeScript, the method is named `searchEffort`.
+
+#### Set probe limits {#probes-per-segment}
+
+Use explicit probe counts when you have measured a suitable range for your
+workload:
+
+| Parameter | When to use it |
+| :--- | :--- |
+| `minimum_nprobes` | Set a lower bound on how many partitions to search. Auto may search more from the start. |
+| `maximum_nprobes` | Cap the number of partitions searched, including additional searches needed to fill the result count. A low cap can reduce recall or return fewer results than requested. |
+| `nprobes` | Search a fixed number of partitions instead of using Auto. Useful for comparing settings in a benchmark. |
+
+Counts apply **per index segment**, not to the entire query. With many segments,
+more probes can mean substantially more data reads and cache-fill writes. A
+probe cap is not a limit on total latency or I/O.
+
+Use positive counts and keep the minimum no larger than the maximum. Leave the
+maximum unset to allow further searching as needed. If filtered queries return
+too few results, raise or remove that cap; see the
+[bounded-search example](/indexing/vector-index#probe-limits-example).
+
+<CodeBlock filename="Python" language="python" icon="python">
+{PyVectorIndexFixedProbes}
+</CodeBlock>
+
+Prefer choosing either effort or a fixed count. If both are set, explicit
+`search_effort` overrides `nprobes`. Explicit min/max bounds still apply;
+setting them equal fixes the count.
+
+#### Check result quality {#measure-auto-probe-recall}
+
+Auto was tuned toward roughly **95% average recall** in benchmark tests. That
+is a starting point, not a guarantee for your data or every query. Returning
+`k` results also does not mean they are the true nearest `k` neighbors.
+
+[Measure recall](/indexing/vector-index#measuring-vector-recall) on representative
+queries against an exact search with the same metric and filter. Test the settings
+you intend to use: an Auto search capped at 50 probes can search fewer partitions
+than fixed `nprobes(50)`, so the two can have different recall.
+
+If more probes stop improving quality, try increasing `refine_factor` or using
+a higher-precision index. More probes do not remove quantization error, and
+refinement can only rerank the candidates the search finds.
+
+<Note>
+The Python examples use APIs available in LanceDB 0.41.0. Remote queries need
+server support too. Older clients may send fixed probe settings by default;
+upgrading the server alone does not switch those requests to Auto.
+
+Auto's calibration covers `l2`, `cosine` and `dot` searches up to `k=100000`.
+For Hamming or larger requests, measure quality and latency on your workload
+before relying on the defaults.
+</Note>
 
 ### Vector Search with Prefiltering
 

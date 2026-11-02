@@ -182,6 +182,10 @@ class FTS:
     >>> from lancedb.query import DocumentGranularity
     >>> config = FTS(document_granularity=DocumentGranularity.LIST_ELEMENT)
 
+    Create an index that splits code identifiers into searchable subwords:
+
+    >>> config = FTS(analyzer="code", split_identifiers=True)
+
     Attributes
     ----------
     with_position : bool, default False
@@ -243,6 +247,28 @@ class FTS:
         ``LIST_ELEMENT`` treats each element of the deepest list on the indexed
         field path as one document and returns its physical coordinates in
         ``_doc_index`` for matching queries.
+    analyzer : {"text", "code"}, optional
+        ``"code"`` selects the code analyzer. ``"text"`` selects a text-family
+        analyzer with the selected ``base_tokenizer``; it does not reset an
+        explicit compatible tokenizer to ``"simple"``. ``None`` infers the
+        analyzer from ``base_tokenizer``. ``"code"`` cannot be combined with a
+        ``base_tokenizer`` other than ``"simple"`` (the default) or ``"code"``.
+        ``"text"`` cannot be combined with ``"code"``.
+    split_identifiers : bool, optional
+        Split code identifiers such as ``camelCase`` and ``snake_case`` into
+        subwords. Setting this to True requires the code analyzer. The default
+        is False, so ``analyzer="code"`` alone keeps identifiers whole.
+    split_on_numerics : bool, optional
+        Split identifier subwords at letter and number boundaries, for example
+        ``utf8`` into ``utf`` and ``8``. The code analyzer default is True, but
+        this only takes effect when ``split_identifiers=True``.
+    preserve_original : bool, optional
+        Also index the complete identifier next to its subwords. The code
+        analyzer default is True, but this only takes effect when
+        ``split_identifiers=True``.
+    index_operators : bool, optional
+        Index code operators such as ``::``, ``->`` and ``!=``. The code
+        analyzer default is False.
 
     Notes
     -----
@@ -268,6 +294,11 @@ class FTS:
     memory_limit: Optional[int] = None
     num_workers: Optional[int] = None
     document_granularity: DocumentGranularity = DocumentGranularity.ROW
+    analyzer: Optional[Literal["text", "code"]] = None
+    split_identifiers: Optional[bool] = None
+    split_on_numerics: Optional[bool] = None
+    preserve_original: Optional[bool] = None
+    index_operators: Optional[bool] = None
 
 
 @dataclass

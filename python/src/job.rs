@@ -200,10 +200,20 @@ pub struct JobFailureInfo {
 #[pymethods]
 impl JobFailureInfo {
     fn __repr__(&self) -> String {
-        format!(
-            "JobFailureInfo(phase={:?}, message={:?}, retryable={:?})",
-            self.phase, self.message, self.retryable
-        )
+        let phase = self
+            .phase
+            .as_ref()
+            .map_or_else(|| "None".to_string(), |value| format!("{value:?}"));
+        let message = self
+            .message
+            .as_ref()
+            .map_or_else(|| "None".to_string(), |value| format!("{value:?}"));
+        let retryable = match self.retryable {
+            Some(true) => "True",
+            Some(false) => "False",
+            None => "None",
+        };
+        format!("JobFailureInfo(phase={phase}, message={message}, retryable={retryable})")
     }
 }
 

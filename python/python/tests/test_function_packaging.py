@@ -388,6 +388,7 @@ def test_code_packages_ship_as_a_bundle_and_version_with_their_source(
 
     def define():
         sys.modules.pop("fx_helpers_functions", None)
+        importlib.invalidate_caches()
         return importlib.import_module("fx_helpers_functions").limited
 
     first = define()
@@ -454,6 +455,7 @@ def test_local_module_outside_code_warns_at_registration(tmp_path, helper_packag
                 """
             )
         )
+        importlib.invalidate_caches()
         return getattr(importlib.import_module(name), name)
 
     with pytest.warns(UserWarning, match=r"local module.*code=\[fx_local\]"):
@@ -465,6 +467,44 @@ def test_local_module_outside_code_warns_at_registration(tmp_path, helper_packag
         warnings.simplefilter("error")
         installed = define("fx_uses_installed", "pip=['fx-local==1.0']")
     assert "from fx_local import normalize" in artifact(installed).decode()
+
+
+def test_local_module_imported_in_function_body_warns_at_registration(
+    tmp_path, helper_package
+):
+    """A direct import inside the packaged definition is checked too."""
+    helper_package(
+        "fx_body_local",
+        {"__init__.py": "def normalize(value):\n    return value\n"},
+    )
+    sys.modules.pop("fx_body_local", None)
+
+    def define(name, options):
+        (tmp_path / f"{name}.py").write_text(
+            textwrap.dedent(
+                f"""
+                from lancedb import udf
+
+
+                @udf({options})
+                def {name}(value: int) -> int:
+                    import fx_body_local
+
+                    return fx_body_local.normalize(value)
+                """
+            )
+        )
+        importlib.invalidate_caches()
+        return getattr(importlib.import_module(name), name)
+
+    with pytest.warns(UserWarning, match=r"local module.*code=\[fx_body_local\]"):
+        local = define("fx_body_uses_local", "")
+    assert "import fx_body_local" in artifact(local).decode()
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        installed = define("fx_body_uses_installed", "pip=['fx-body-local==1.0']")
+    assert "import fx_body_local" in artifact(installed).decode()
 
 
 MMLB_HELPERS = {
@@ -527,6 +567,7 @@ def test_shared_helpers_construct_state_on_every_path(tmp_path, helper_package):
     initialized through the same helper, so neither path can skip it."""
     helper_package("fx_mmlb", MMLB_HELPERS)
     (tmp_path / "fx_mmlb_functions.py").write_text(MMLB_FUNCTIONS)
+    importlib.invalidate_caches()
     functions = importlib.import_module("fx_mmlb_functions")
 
     signatures = [

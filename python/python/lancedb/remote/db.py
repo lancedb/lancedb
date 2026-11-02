@@ -49,7 +49,7 @@ from ..storage_integration import SecretReference, StorageIntegrationInfo
 from ..view import ViewDescription
 
 if TYPE_CHECKING:
-    from .._lancedb import JobInfo, Session
+    from .._lancedb import GpuClass, JobInfo, Session
 from ..embeddings import EmbeddingFunctionConfig
 from lance_namespace import (
     LanceNamespace,
@@ -957,6 +957,13 @@ class RemoteDBConnection(DBConnection):
         [DBConnection.open_job][lancedb.db.DBConnection.open_job].
         """
         return Job(LOOP.run(self._conn.open_job(job_id)))
+
+    @override
+    def list_gpu_classes(self) -> List[GpuClass]:
+        """List configured Function GPU classes. See
+        [DBConnection.list_gpu_classes][lancedb.db.DBConnection.list_gpu_classes].
+        """
+        return LOOP.run(self._conn.list_gpu_classes())
 
     @override
     def create_function_async(

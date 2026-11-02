@@ -67,6 +67,11 @@ def tokenize(
     ngram_min_length: int = 3,
     ngram_max_length: int = 3,
     prefix_only: bool = False,
+    analyzer: Optional[Literal["text", "code"]] = None,
+    split_identifiers: Optional[bool] = None,
+    split_on_numerics: Optional[bool] = None,
+    preserve_original: Optional[bool] = None,
+    index_operators: Optional[bool] = None,
 ) -> List["FtsToken"]: ...
 
 class PyExpr:
@@ -112,6 +117,16 @@ class Session:
     @property
     def approx_num_items(self) -> int: ...
 
+class GpuClass:
+    name: str
+    resource_name: str
+    gpu_model: Optional[str]
+    gpu_memory_bytes: Optional[int]
+    max_gpu_count_per_worker: Optional[int]
+    cpu_millis: Optional[int]
+    memory_bytes: Optional[int]
+    ephemeral_storage_bytes: Optional[int]
+
 class Connection(object):
     uri: str
     async def is_open(self): ...
@@ -153,6 +168,7 @@ class Connection(object):
         limit: Optional[int],
     ) -> list[str]: ...  # Deprecated: Use list_tables instead
     async def open_job(self, job_id: str) -> Job: ...
+    async def list_gpu_classes(self) -> list[GpuClass]: ...
     async def create_function_async(
         self, request_json: str, namespace_path: Optional[List[str]] = None
     ) -> Job: ...
@@ -561,10 +577,20 @@ class Table:
         auto_refresh_interval_seconds: Optional[int] = None,
     ) -> AddColumnsResult: ...
     async def refresh_column(
-        self, column: str, *, batch_size: Optional[int] = None
+        self,
+        column: str,
+        *,
+        batch_size: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> RefreshColumnResult: ...
     async def refresh_column_async(
-        self, column: str, *, batch_size: Optional[int] = None
+        self,
+        column: str,
+        *,
+        batch_size: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> Job: ...
     async def function_errors(
         self,
@@ -947,6 +973,7 @@ class FunctionErrorRecord:
     job_id: str
     fragment_id: int
     row_offset: Optional[int]
+    row_address: Optional[int]
     column: str
     function: str
     function_version: str

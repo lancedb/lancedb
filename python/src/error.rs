@@ -2,13 +2,13 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use pyo3::{
-    PyErr, PyResult, Python,
+    Bound, PyAny, PyErr, PyResult, Python,
     exceptions::{PyIOError, PyNotImplementedError, PyOSError, PyRuntimeError, PyValueError},
     intern,
     types::{PyAnyMethods, PyNone},
 };
 
-use lancedb::error::Error as LanceError;
+use lancedb::error::{Error as LanceError, HttpErrorDetails};
 
 pub trait PythonErrorExt<T> {
     /// Convert to a python error based on the Lance error type
@@ -65,14 +65,13 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
                     status_code,
                 } => Python::attach(|py| {
                     let message = err.to_string();
-                    let http_err_cls = py
-                        .import(intern!(py, "lancedb.remote.errors"))?
-                        .getattr(intern!(py, "HttpError"))?;
-                    let err = http_err_cls.call1((
+                    let err = new_py_http_error(
+                        py,
                         message,
                         request_id,
                         status_code.map(|s| s.as_u16()),
-                    ))?;
+                        err.http_error_details(),
+                    )?;
 
                     if let Some(cause) = source.source() {
                         // The HTTP error already includes the first cause. But
@@ -163,13 +162,15 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
 
 fn http_from_rust_error(
     py: Python<'_>,
-    err: &dyn std::error::Error,
+    err: &(dyn std::error::Error + 'static),
     request_id: &str,
     status_code: Option<u16>,
 ) -> PyResult<PyErr> {
     let message = err.to_string();
-    let http_err_cls = py.import("lancedb.remote.errors")?.getattr("HttpError")?;
-    let py_err = http_err_cls.call1((message, request_id, status_code))?;
+    let details = err
+        .downcast_ref::<LanceError>()
+        .and_then(LanceError::http_error_details);
+    let py_err = new_py_http_error(py, message, request_id, status_code, details)?;
 
     // Reset the traceback since it doesn't provide additional information.
     let py_err = py_err.call_method1(intern!(py, "with_traceback"), (PyNone::get(py),))?;
@@ -180,4 +181,29 @@ fn http_from_rust_error(
     }
 
     Ok(PyErr::from_value(py_err))
+}
+
+fn new_py_http_error<'py>(
+    py: Python<'py>,
+    message: String,
+    request_id: &str,
+    status_code: Option<u16>,
+    details: Option<&HttpErrorDetails>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let error_code = details.map(|details| details.error_code.as_str());
+    let resource_kind = details.map(|details| details.resource_kind.as_str());
+    let resource_name = details.map(|details| details.resource_name.as_str());
+    let namespace_path = details.map(|details| details.namespace_path.clone());
+
+    py.import("lancedb.remote.errors")?
+        .getattr("HttpError")?
+        .call1((
+            message,
+            request_id,
+            status_code,
+            error_code,
+            resource_kind,
+            resource_name,
+            namespace_path,
+        ))
 }
