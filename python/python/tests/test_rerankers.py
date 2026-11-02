@@ -28,6 +28,7 @@ from lancedb.rerankers import (
     WatsonxReranker,
 )
 from lancedb.table import LanceTable
+from lancedb.rerankers.base import Reranker
 
 
 def get_test_table(tmp_path):
@@ -356,6 +357,19 @@ def test_mrr_reranker(tmp_path):
     # Test with duplicate results
     result_deduped = reranker.rerank_multivector([rs1, rs2, rs1])
     assert len(result_deduped) == len(result)
+
+
+@pytest.mark.parametrize("deduplicate", [False, True])
+def test_base_reranker_multivector_empty_input(deduplicate):
+    class VectorReranker(Reranker):
+        def rerank_hybrid(self, query, vector_results, fts_results):
+            raise AssertionError("should not rerank")
+
+        def rerank_vector(self, query, vector_results):
+            raise AssertionError("should not rerank")
+
+    with pytest.raises(ValueError, match="vector_results must not be empty"):
+        VectorReranker().rerank_multivector([], None, deduplicate=deduplicate)
 
 
 def test_mrr_reranker_empty_input():
