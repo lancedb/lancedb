@@ -38,7 +38,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - name: Read the pinned Lance tag
+      - name: Read the pinned Lance revision
         id: lance
         run: |
           python3 - <<'PYTHON'
@@ -47,14 +47,17 @@ jobs:
           from pathlib import Path
 
           manifest = tomllib.loads(Path("Cargo.toml").read_text())
-          tag = manifest["workspace"]["dependencies"]["lance"]["tag"]
+          lance = manifest["workspace"]["dependencies"]["lance"]
+          revision = lance.get("rev") or lance["tag"]
+          repository = lance["git"].removeprefix("https://github.com/").removesuffix(".git")
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-              output.write(f"tag={tag}\n")
+              output.write(f"revision={revision}\nrepository={repository}\n")
           PYTHON
       - uses: actions/checkout@v6
         with:
-          repository: lance-format/lance
-          ref: ${{ steps.lance.outputs.tag }}
+          repository: ${{ steps.lance.outputs.repository }}
+          ref: ${{ steps.lance.outputs.revision }}
+          token: ${{ secrets.ROBOT_TOKEN }}
           path: local-lance
       - name: Resolve a downstream workspace with a local Lance override
         run: |
@@ -72,7 +75,7 @@ jobs:
           lancedb = { path = "../rust/lancedb", default-features = false }
           lance-arrow = { path = "../local-lance/rust/lance-arrow" }
 
-          [patch."https://github.com/lance-format/lance.git"]
+          [patch."https://github.com/lancedb/lance-internal-fork.git"]
           lance-arrow = { path = "../local-lance/rust/lance-arrow" }
           TOML
           cargo metadata --manifest-path downstream/Cargo.toml --format-version 1 > downstream/graph.json
