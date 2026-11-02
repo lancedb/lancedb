@@ -70,7 +70,11 @@ fn get_dict_with_model_dump_class(py: Python<'_>) -> PyResult<Bound<'_, PyAny>> 
     py.run(
         c"class DictWithModelDump(dict):
     def model_dump(self):
-        return dict(self)",
+        return dict(self)
+    def __getattr__(self, name):
+        if name.startswith('__'):
+            raise AttributeError(name)
+        return self.get(name)",
         None,
         Some(&locals),
     )?;

@@ -18,7 +18,7 @@ class SecretReference:
 
 @dataclass(frozen=True)
 class StorageIntegrationInfo:
-    """Registered S3 configuration and policies to give to your AWS administrator.
+    """Registered cloud configuration and setup instructions.
 
     ``configuration_instructions`` is a single sentence of setup guidance for
     display; its wording may change. Use the structured identity and policy fields
@@ -30,7 +30,7 @@ class StorageIntegrationInfo:
     name: str
     database: str
     namespace_path: list[str]
-    storage_provider: Literal["S3"]
+    storage_provider: Literal["S3", "AZURE", "GCP", "HUGGINGFACE"]
     storage_prefix: str
     aws_region: Optional[str]
     aws_account_id: str
@@ -39,14 +39,28 @@ class StorageIntegrationInfo:
     created_at_millis: int
     access_verified: bool
     trust_policy: Optional[Dict[str, Any]]
-    permissions_policy: Dict[str, Any]
+    permissions_policy: Optional[Dict[str, Any]]
     configuration_instructions: str
     aws_role_arn: Optional[str] = None
     aws_access_key_id_secret: Optional[SecretReference] = None
     aws_secret_access_key_secret: Optional[SecretReference] = None
+    azure_storage_account: Optional[str] = None
+    azure_tenant_id_secret: Optional[SecretReference] = None
+    azure_client_id_secret: Optional[SecretReference] = None
+    azure_client_secret_secret: Optional[SecretReference] = None
+    gcp_credentials_json_secret: Optional[SecretReference] = None
+    huggingface_token_secret: Optional[SecretReference] = None
 
     def __post_init__(self):
-        for field in ("aws_access_key_id_secret", "aws_secret_access_key_secret"):
+        for field in (
+            "aws_access_key_id_secret",
+            "aws_secret_access_key_secret",
+            "azure_tenant_id_secret",
+            "azure_client_id_secret",
+            "azure_client_secret_secret",
+            "gcp_credentials_json_secret",
+            "huggingface_token_secret",
+        ):
             value = getattr(self, field)
             if isinstance(value, dict):
                 object.__setattr__(self, field, SecretReference(**value))

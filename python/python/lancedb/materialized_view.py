@@ -6,7 +6,7 @@ maintained by refresh. See ``DBConnection.create_materialized_view``.
 
 LanceDB Embedded creation and refresh require the ``experimental-functions``
 Cargo feature in a source build. Published packages disable it. Opening, reading,
-listing and dropping existing views and LanceDB Distributed operations remain
+listing and dropping existing views and LanceDB Enterprise operations remain
 available.
 """
 
@@ -189,12 +189,12 @@ class AsyncMaterializedView:
     ) -> "RefreshMaterializedViewResult":
         """Recompute the view from its source.
 
-        In LanceDB Distributed, ``full=True`` forces a rebuild; otherwise the
+        In LanceDB Enterprise, ``full=True`` forces a rebuild; otherwise the
         server chooses the refresh mode. LanceDB Embedded views always rebuild,
         and ``source_version`` selects a source version instead of the latest.
-        LanceDB Distributed SQL refreshes do not support source-version pinning.
+        LanceDB Enterprise SQL refreshes do not support source-version pinning.
 
-        LanceDB Distributed results leave ``mode``, ``rows_written``, and
+        LanceDB Enterprise results leave ``mode``, ``rows_written``, and
         ``source_version`` as ``None`` because the SQL job adapter does not expose
         these metrics.
         """
@@ -208,7 +208,7 @@ class AsyncMaterializedView:
         """Submit a refresh and return its job without waiting.
 
         The job may already be complete in LanceDB Embedded. In LanceDB
-        Distributed, refreshes are submitted through the SQL service. Options and
+        Enterprise, refreshes are submitted through the SQL service. Options and
         result metrics follow
         [refresh][lancedb.materialized_view.AsyncMaterializedView.refresh].
         """

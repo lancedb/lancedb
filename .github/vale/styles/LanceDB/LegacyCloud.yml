@@ -1,5 +1,5 @@
 extends: existence
-message: "'%s' is the legacy hosted service. Unless the text is specific to it, write 'LanceDB Enterprise' or 'LanceDB Distributed'."
+message: "'%s' is the legacy hosted service. Unless the text is specific to it, write 'LanceDB Enterprise'."
 link: https://github.com/lancedb/docs/blob/main/STYLE.md#names
 level: suggestion
 ignorecase: false
@@ -13,8 +13,8 @@ tests:
   - name: suggests checking each LanceDB Cloud mention
     input: Connect to LanceDB Cloud with an API key. Cloud/Enterprise users get the cache.
     want: |
-      1:12:LanceDB.LegacyCloud:'LanceDB Cloud' is the legacy hosted service. Unless the text is specific to it, write 'LanceDB Enterprise' or 'LanceDB Distributed'.
-      1:43:LanceDB.LegacyCloud:'Cloud/Enterprise' is the legacy hosted service. Unless the text is specific to it, write 'LanceDB Enterprise' or 'LanceDB Distributed'.
+      1:12:LanceDB.LegacyCloud:'LanceDB Cloud' is the legacy hosted service. Unless the text is specific to it, write 'LanceDB Enterprise'.
+      1:43:LanceDB.LegacyCloud:'Cloud/Enterprise' is the legacy hosted service. Unless the text is specific to it, write 'LanceDB Enterprise'.
   - name: leaves other clouds and code alone
     input: |
       Deploy into your own cloud account on Google Cloud. Pass `LanceDB Cloud` as a literal.

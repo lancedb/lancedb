@@ -7,7 +7,7 @@ use arrow_array::{
 use serde_json::Value;
 
 use crate::storage_integration::{
-    CreateStorageIntegrationRequest, SecretReference, StorageIntegrationInfo,
+    CreateStorageIntegrationRequest, SecretReference, StorageIntegrationInfo, StorageProvider,
 };
 use crate::utils::{validate_database_name, validate_namespace, validate_secret_name};
 use crate::{Error, Result};
@@ -54,6 +54,120 @@ pub(super) fn create_sql(
     namespace: &[String],
     request: &CreateStorageIntegrationRequest,
 ) -> Result<String> {
+    if request.storage_provider != StorageProvider::HuggingFace
+        && request.huggingface_token_secret.is_some()
+    {
+        return Err(invalid(
+            "Hugging Face credential options require storage_provider HUGGINGFACE",
+        ));
+    }
+    if request.storage_provider == StorageProvider::HuggingFace {
+        if request.aws_role_arn.is_some()
+            || request.aws_access_key_id_secret.is_some()
+            || request.aws_secret_access_key_secret.is_some()
+            || request.aws_region.is_some()
+            || request.azure_storage_account.is_some()
+            || request.azure_tenant_id_secret.is_some()
+            || request.azure_client_id_secret.is_some()
+            || request.azure_client_secret_secret.is_some()
+            || request.gcp_credentials_json_secret.is_some()
+        {
+            return Err(invalid(
+                "Hugging Face integrations cannot contain AWS, Azure or GCP options",
+            ));
+        }
+        let mut sql = format!(
+            "CREATE STORAGE INTEGRATION {} STORAGE_PROVIDER = 'HUGGINGFACE' STORAGE_PREFIX = {}",
+            object_name(name, namespace)?,
+            literal(&request.storage_prefix)
+        );
+        if let Some(reference) = &request.huggingface_token_secret {
+            sql.push_str(&format!(
+                " HUGGINGFACE_TOKEN_SECRET = {}",
+                secret_name(reference)?
+            ));
+        }
+        return Ok(sql);
+    }
+    if request.storage_provider != StorageProvider::Gcp
+        && request.gcp_credentials_json_secret.is_some()
+    {
+        return Err(invalid(
+            "GCP credential options require storage_provider GCP",
+        ));
+    }
+    if request.storage_provider == StorageProvider::Gcp {
+        if request.aws_role_arn.is_some()
+            || request.aws_access_key_id_secret.is_some()
+            || request.aws_secret_access_key_secret.is_some()
+            || request.aws_region.is_some()
+            || request.azure_storage_account.is_some()
+            || request.azure_tenant_id_secret.is_some()
+            || request.azure_client_id_secret.is_some()
+            || request.azure_client_secret_secret.is_some()
+        {
+            return Err(invalid(
+                "GCP integrations cannot contain AWS or Azure options",
+            ));
+        }
+        let reference = request
+            .gcp_credentials_json_secret
+            .as_ref()
+            .ok_or_else(|| invalid("GCP integrations require gcp_credentials_json_secret"))?;
+        return Ok(format!(
+            "CREATE STORAGE INTEGRATION {} STORAGE_PROVIDER = 'GCP' STORAGE_PREFIX = {} GCP_CREDENTIALS_JSON_SECRET = {}",
+            object_name(name, namespace)?,
+            literal(&request.storage_prefix),
+            secret_name(reference)?
+        ));
+    }
+    if request.storage_provider == StorageProvider::Azure {
+        if request.aws_role_arn.is_some()
+            || request.aws_access_key_id_secret.is_some()
+            || request.aws_secret_access_key_secret.is_some()
+            || request.aws_region.is_some()
+        {
+            return Err(invalid("Azure integrations cannot contain AWS options"));
+        }
+        let account = request
+            .azure_storage_account
+            .as_ref()
+            .filter(|account| !account.is_empty())
+            .ok_or_else(|| invalid("Azure integrations require azure_storage_account"))?;
+        let mut sql = format!(
+            "CREATE STORAGE INTEGRATION {} STORAGE_PROVIDER = 'AZURE' STORAGE_PREFIX = {} STORAGE_AZURE_STORAGE_ACCOUNT = {}",
+            object_name(name, namespace)?,
+            literal(&request.storage_prefix),
+            literal(account)
+        );
+        for (key, reference) in [
+            (
+                "STORAGE_AZURE_TENANT_ID_SECRET",
+                &request.azure_tenant_id_secret,
+            ),
+            (
+                "STORAGE_AZURE_CLIENT_ID_SECRET",
+                &request.azure_client_id_secret,
+            ),
+            (
+                "STORAGE_AZURE_CLIENT_SECRET_SECRET",
+                &request.azure_client_secret_secret,
+            ),
+        ] {
+            let reference = reference.as_ref().ok_or_else(|| {
+                invalid("Azure integrations require all three credential Secret references")
+            })?;
+            sql.push_str(&format!(" {key} = {}", secret_name(reference)?));
+        }
+        return Ok(sql);
+    }
+    if request.azure_storage_account.is_some()
+        || request.azure_tenant_id_secret.is_some()
+        || request.azure_client_id_secret.is_some()
+        || request.azure_client_secret_secret.is_some()
+    {
+        return Err(invalid("S3 integrations cannot contain Azure options"));
+    }
     let mut sql = format!(
         "CREATE STORAGE INTEGRATION {} STORAGE_PROVIDER = 'S3' STORAGE_PREFIX = {}",
         object_name(name, namespace)?,
@@ -122,6 +236,11 @@ pub(super) fn decode_info(batches: &[RecordBatch]) -> Result<StorageIntegrationI
             "namespace_path"
                 | "aws_access_key_id_secret"
                 | "aws_secret_access_key_secret"
+                | "azure_tenant_id_secret"
+                | "azure_client_id_secret"
+                | "azure_client_secret_secret"
+                | "gcp_credentials_json_secret"
+                | "huggingface_token_secret"
                 | "trust_policy"
                 | "permissions_policy"
         ) && let Some(json) = value.as_str()
@@ -184,6 +303,50 @@ mod tests {
     }
 
     #[test]
+    fn gcp_sql_accepts_one_secret_object_and_rejects_mixed_modes() {
+        let mut request = CreateStorageIntegrationRequest::gcp(
+            "gs://customer-data/raw/",
+            SecretReference::new("gcp")
+                .with_database("shared")
+                .with_namespace(vec!["credentials".into()]),
+        );
+        let sql = create_sql("gcs", &[], &request).unwrap();
+        assert!(sql.contains("STORAGE_PROVIDER = 'GCP'"));
+        assert!(sql.contains("GCP_CREDENTIALS_JSON_SECRET = \"shared\".\"credentials\".\"gcp\""));
+        assert!(!sql.contains("STORAGE_AWS"));
+        request.aws_region = Some("us-east-1".into());
+        assert!(create_sql("gcs", &[], &request).is_err());
+        request.aws_region = None;
+        request.gcp_credentials_json_secret = None;
+        assert!(create_sql("gcs", &[], &request).is_err());
+    }
+
+    #[test]
+    fn azure_sql_uses_only_explicit_account_and_three_secret_objects() {
+        let reference = SecretReference::new("credential")
+            .with_database("shared")
+            .with_namespace(vec!["credentials".into()]);
+        let mut config = CreateStorageIntegrationRequest::azure(
+            "az://container/raw/",
+            "customeraccount",
+            reference.clone(),
+            reference.clone(),
+            reference,
+        );
+        let sql = create_sql("blobs", &[], &config).unwrap();
+        assert!(sql.contains("STORAGE_PROVIDER = 'AZURE'"));
+        assert!(sql.contains("STORAGE_AZURE_STORAGE_ACCOUNT = 'customeraccount'"));
+        assert!(sql.contains(
+            "STORAGE_AZURE_CLIENT_SECRET_SECRET = \"shared\".\"credentials\".\"credential\""
+        ));
+        assert!(!sql.contains("STORAGE_AWS"));
+        config.azure_tenant_id_secret = None;
+        assert!(create_sql("blobs", &[], &config).is_err());
+        config.aws_region = Some("us-east-1".into());
+        assert!(create_sql("blobs", &[], &config).is_err());
+    }
+
+    #[test]
     fn sql_metadata_rejects_missing_rows_and_invalid_json() {
         assert!(decode_info(&[]).is_err());
         let batch = RecordBatch::try_from_iter([(
@@ -196,6 +359,34 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("namespace_path")
+        );
+    }
+}
+
+#[cfg(test)]
+mod huggingface_tests {
+    use super::*;
+
+    #[test]
+    fn huggingface_renders_optional_secret_and_rejects_mixed_auth() {
+        let mut request =
+            CreateStorageIntegrationRequest::huggingface("hf://datasets/acme/private/raw/")
+                .with_huggingface_token_secret(
+                    SecretReference::new("token")
+                        .with_database("shared")
+                        .with_namespace(vec!["credentials".into()]),
+                );
+        let sql = create_sql("hub", &[], &request).unwrap();
+        assert!(sql.contains("STORAGE_PROVIDER = 'HUGGINGFACE'"));
+        assert!(sql.contains("HUGGINGFACE_TOKEN_SECRET = \"shared\".\"credentials\".\"token\""));
+        request.gcp_credentials_json_secret = Some(SecretReference::new("gcp"));
+        assert!(create_sql("hub", &[], &request).is_err());
+        request.gcp_credentials_json_secret = None;
+        request.huggingface_token_secret = None;
+        assert!(
+            !create_sql("hub", &[], &request)
+                .unwrap()
+                .contains("HUGGINGFACE_TOKEN_SECRET")
         );
     }
 }

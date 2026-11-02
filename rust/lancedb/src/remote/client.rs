@@ -10,7 +10,7 @@ use reqwest::{
 use std::{collections::HashMap, future::Future, str::FromStr, sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
 
-use crate::error::{Error, Result};
+use crate::error::{Error, HttpErrorSource, Result};
 use crate::remote::db::RemoteOptions;
 use crate::remote::retry::{ResolvedRetryConfig, RetryCounter};
 use crate::utils::validate_database_name;
@@ -824,6 +824,11 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         self.client.post(full_uri)
     }
 
+    pub fn put(&self, uri: &str) -> RequestBuilder {
+        let full_uri = format!("{}{}", self.host, uri);
+        self.client.put(full_uri)
+    }
+
     /// Apply dynamic headers from the header provider if configured
     pub(crate) async fn apply_dynamic_headers(&self, mut request: Request) -> Result<Request> {
         if let Some(ref provider) = self.header_provider {
@@ -952,6 +957,11 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
                         .check_response(&retry_counter.request_id, response)
                         .await
                         .unwrap_err();
+                    // A structured resource error is a domain result, not a
+                    // transient failure. Retrying it would hide the typed error.
+                    if source.http_error_details().is_some() {
+                        return Err(source);
+                    }
                     retry_counter.increment_request_failures(source)?;
                 }
                 Err(err) if err.is_connect() => {
@@ -1028,13 +1038,15 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             Ok(response)
         } else {
             let response_text = response.text().await.ok();
-            let message = if let Some(response_text) = response_text {
-                format!("{}: {}", status, response_text)
-            } else {
-                status.to_string()
+            let source = match response_text {
+                Some(response_text) => HttpErrorSource::new(
+                    format!("{}: {}", status, response_text),
+                    Some(&response_text),
+                ),
+                None => HttpErrorSource::new(status.to_string(), None),
             };
             Err(Error::Http {
-                source: message.into(),
+                source: Box::new(source),
                 request_id: request_id.into(),
                 status_code: Some(status),
             })
@@ -1210,6 +1222,120 @@ pub mod test_utils {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn check_response_extracts_structured_resource_error() {
+        use crate::remote::client::test_utils::client_with_handler;
+
+        let client =
+            client_with_handler(|_| http::Response::builder().status(404).body("").unwrap());
+        let cases = [
+            (404, "not_found", "secret", "openai"),
+            (404, "not_found", "function", "embed"),
+            (404, "not_found", "namespace", "child"),
+            (409, "already_exists", "namespace", "analytics"),
+        ];
+
+        for (status, error_code, resource_kind, resource_name) in cases {
+            let body = serde_json::json!({
+                "code": if error_code == "not_found" { 5 } else { 6 },
+                "error": format!("{resource_kind} {resource_name} error"),
+                "error_code": error_code,
+                "resource": {
+                    "kind": resource_kind,
+                    "name": resource_name,
+                    "namespace_path": ["analytics"],
+                },
+            })
+            .to_string();
+            let response = http::Response::builder()
+                .status(status)
+                .body(body.clone())
+                .unwrap()
+                .into();
+
+            let error = client
+                .check_response("request-1", response)
+                .await
+                .unwrap_err();
+            let details = error
+                .http_error_details()
+                .expect("structured HTTP error details");
+            assert_eq!(details.error_code, error_code);
+            assert_eq!(details.resource_kind, resource_kind);
+            assert_eq!(details.resource_name, resource_name);
+            assert_eq!(details.namespace_path, ["analytics"]);
+            assert!(error.to_string().contains(&body));
+        }
+    }
+
+    #[tokio::test]
+    async fn check_response_keeps_legacy_body_as_generic_http_error() {
+        use crate::remote::client::test_utils::client_with_handler;
+
+        let client =
+            client_with_handler(|_| http::Response::builder().status(404).body("").unwrap());
+        let body = serde_json::json!({
+            "code": 4,
+            "error": "Not found: Secret \"openai\" does not exist",
+        })
+        .to_string();
+        let response = http::Response::builder()
+            .status(404)
+            .body(body.clone())
+            .unwrap()
+            .into();
+
+        let error = client
+            .check_response("request-1", response)
+            .await
+            .unwrap_err();
+        assert!(error.http_error_details().is_none());
+        assert!(error.to_string().contains(&body));
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_does_not_retry_structured_resource_error() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use crate::remote::client::test_utils::client_with_handler;
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let handler_attempts = Arc::clone(&attempts);
+        let client = client_with_handler(move |_| {
+            handler_attempts.fetch_add(1, Ordering::Relaxed);
+            http::Response::builder()
+                .status(409)
+                .body(
+                    serde_json::json!({
+                        "code": 6,
+                        "error": "already exists",
+                        "error_code": "already_exists",
+                        "resource": {
+                            "kind": "namespace",
+                            "name": "analytics",
+                            "namespace_path": [],
+                        },
+                    })
+                    .to_string(),
+                )
+                .unwrap()
+        });
+
+        let request = client.client.post("http://localhost/");
+        let error = client
+            .send_with_retry(request, None, true)
+            .await
+            .unwrap_err();
+
+        assert_eq!(attempts.load(Ordering::Relaxed), 1);
+        let details = error
+            .http_error_details()
+            .expect("structured HTTP error details");
+        assert_eq!(details.error_code, "already_exists");
+        assert_eq!(details.resource_kind, "namespace");
+    }
+
     #[tokio::test]
     async fn test_http_timeout_error_is_actionable() {
         use super::*;
