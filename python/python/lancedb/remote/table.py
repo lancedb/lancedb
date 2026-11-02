@@ -206,7 +206,8 @@ class RemoteTable(Table):
         LOOP.run(self._table.replace_field_metadata(field_name, new_metadata))
 
     def __repr__(self) -> str:
-        return f"RemoteTable({self.db_name}.{self.name})"
+        identifier = "$".join([*self._namespace_path, self.name])
+        return f"RemoteTable({self.db_name}.{identifier})"
 
     @property
     def schema(self) -> pa.Schema:

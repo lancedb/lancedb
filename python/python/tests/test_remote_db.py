@@ -146,6 +146,65 @@ def missing_table_handler(cached, namespace_path):
     return handler, request_ids
 
 
+@pytest.mark.parametrize(
+    "namespace_path,name,identifier",
+    [
+        pytest.param(None, "test", "test", id="default-root"),
+        pytest.param([], "test", "test", id="explicit-root"),
+        pytest.param(["analytics"], "test", "analytics$test", id="namespace"),
+        pytest.param(
+            ["analytics", "features"],
+            "test",
+            "analytics$features$test",
+            id="nested",
+        ),
+        pytest.param(
+            ["Team.Images", "raw-items"],
+            "frame.info",
+            "Team.Images$raw-items$frame.info",
+            id="sql-quoted-names",
+        ),
+    ],
+)
+def test_remote_table_repr_namespace(namespace_path, name, identifier):
+    requests = []
+    path = f"/v1/table/{identifier}/describe/"
+
+    def handler(request):
+        requests.append(request.path)
+        assert request.path == path
+        send_json(request, {})
+
+    expected = f"RemoteTable(dev.{identifier})"
+    with mock_lancedb_connection(handler) as db:
+        table = db.open_table(name, namespace_path=namespace_path)
+        assert table.name == name
+        assert repr(table) == expected
+        restored = pickle.loads(pickle.dumps(table))
+
+    # A diagnostic repr must work from cached identity without reopening the handle.
+    assert repr(restored) == expected
+    assert requests == [path]
+
+
+@pytest.mark.asyncio
+async def test_async_remote_table_repr_namespace():
+    requests = []
+    path = "/v1/table/analytics$features$frame.info/describe/"
+
+    def handler(request):
+        requests.append(request.path)
+        assert request.path == path
+        send_json(request, {})
+
+    async with mock_lancedb_connection_async(handler) as db:
+        table = await db.open_table(
+            "frame.info", namespace_path=["analytics", "features"]
+        )
+        assert repr(table) == "RemoteTable(analytics$features$frame.info)"
+        assert requests == [path]
+
+
 @pytest.mark.parametrize("cached", [False, True])
 @pytest.mark.parametrize("namespace_path", [[], ["ns"]])
 def test_remote_open_missing_table(cached, namespace_path, missing_table_handler):
