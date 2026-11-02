@@ -101,9 +101,9 @@ hf-hub = { workspace = true, optional = true, features = [
     "tokio",
     "ureq",
 ] }
-candle-core = { version = "0.9.1", optional = true }
-candle-transformers = { version = "0.9.1", optional = true }
-candle-nn = { version = "0.9.1", optional = true }
+candle-core = { version = "0.11.1", optional = true }
+candle-transformers = { version = "0.11.1", optional = true }
+candle-nn = { version = "0.11.1", optional = true }
 tokenizers = { version = "0.19.1", optional = true }
 semver = { workspace = true }
 roaring = "0.11.4"
