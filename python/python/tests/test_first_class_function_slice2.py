@@ -101,9 +101,7 @@ def test_udf_execution_controls_match_shared_registration_golden():
     )(normalize_score.__wrapped__)
     assert (
         controlled.registration_request.to_canonical_json()
-        == (
-            FIXTURES / "remote_function_controlled_registration_request.canonical.json"
-        )
+        == (FIXTURES / "remote_function_controlled_registration_request.canonical.json")
         .read_text()
         .strip()
     )
@@ -137,8 +135,11 @@ def test_udf_execution_controls_apply_to_vectorized_functions():
     ],
 )
 def test_udf_execution_controls_require_their_positive_ranges(options, field):
+    def identity(value: int) -> int:
+        return value
+
     with pytest.raises(ValueError, match=field):
-        udf(**options)(lambda value: value)
+        udf(**options)(identity)
 
 
 @pytest.mark.parametrize(

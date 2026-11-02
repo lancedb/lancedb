@@ -668,12 +668,55 @@ pub struct FunctionArtifactRequest {
 /// Credential values deliberately have no field here. The only secret-shaped
 /// thing a client sends is `secret_bindings`: the name of a Secret the
 /// database already holds, which Sophon resolves inside the remote runtime.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+fn deserialize_batch_size<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<u32>::deserialize(deserializer)
+        .map_err(|error| de::Error::custom(format!("batch_size: {error}")))?;
+    if value == Some(0) {
+        return Err(de::Error::custom(
+            "batch_size must be between 1 and u32::MAX",
+        ));
+    }
+    Ok(value)
+}
+
+fn deserialize_row_timeout<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<f64>::deserialize(deserializer)
+        .map_err(|error| de::Error::custom(format!("row_timeout_seconds: {error}")))?;
+    if value.is_some_and(|seconds| !seconds.is_finite() || seconds <= 0.0) {
+        return Err(de::Error::custom(
+            "row_timeout_seconds must be positive and finite",
+        ));
+    }
+    Ok(value)
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FunctionRegistrationRequest {
     pub name: String,
     pub artifact: FunctionArtifactRequest,
     pub signature: FunctionSignature,
     pub runtime: PythonRuntimeSpec,
+    /// Maximum rows in one execution batch; the executor may use fewer.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_batch_size"
+    )]
+    pub batch_size: Option<u32>,
+    /// Deadline for one invocation batch, in seconds. It does not govern
+    /// Function initialization.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_row_timeout"
+    )]
+    pub row_timeout_seconds: Option<f64>,
     /// Declared environment variable name to the Secret it binds. A binding is
     /// a reference: whether the Secret exists is answered when a column is
     /// declared against this version, not here.

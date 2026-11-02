@@ -65,6 +65,23 @@ fields: whether a row has a result at all is the struct's own validity, which
 Enterprise keeps in a separate internal column when it expands the result into
 sibling columns, so a null field is a value rather than a missing row.
 
+Registration can also cap each execution batch and set its row deadline:
+
+<CodeGroup>
+```python Python icon="python"
+@udf(batch_size=32, row_timeout_seconds=90)
+def encode(value: float) -> float:
+    return value
+```
+</CodeGroup>
+
+`batch_size` is the maximum number of input rows in a batch; execution may use
+fewer. `row_timeout_seconds` bounds one invocation batch and does not include a
+Function instance's `__init__`. Both values are fixed into the registered
+version and apply to direct calls, computed columns, and materialized-view
+refreshes. When omitted, the service chooses batches adaptively and applies its
+default row budget.
+
 ## Connect and create a table {#table}
 
 The remaining steps run against your Enterprise deployment. Replace the database
