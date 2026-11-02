@@ -3559,11 +3559,46 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         Ok(())
     }
-    async fn optimize(&self, _action: OptimizeAction) -> Result<OptimizeStats> {
+    /// Only `OptimizeAction::Compact` without a custom `remap_options` is
+    /// supported remotely: it submits a durable compaction job through
+    /// `POST /v1/table/{id}/optimize`, the same atomic, single-worker,
+    /// index-safe path the server uses for its own automatic compaction.
+    /// The job runs asynchronously, so this returns as soon as it is
+    /// accepted rather than once it completes, and `OptimizeStats` carries
+    /// no detail -- the server does not report per-job compaction metrics
+    /// over this endpoint. `OptimizeAction::All`, `::Prune`, and `::Index`
+    /// remain unsupported remotely: there is no server endpoint yet for
+    /// version pruning or index optimization.
+    async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats> {
         self.check_mutable().await?;
-        Err(Error::NotSupported {
-            message: "optimize is not supported in LanceDB Enterprise.".into(),
-        })
+        let OptimizeAction::Compact { remap_options, .. } = &action else {
+            return Err(Error::NotSupported {
+                message: "optimize is only supported in LanceDB Enterprise for \
+                          OptimizeAction::Compact; version pruning and index \
+                          optimization are not yet supported remotely."
+                    .into(),
+            });
+        };
+        if remap_options.is_some() {
+            return Err(Error::NotSupported {
+                message: "a custom index remap strategy is not supported in LanceDB \
+                          Enterprise; omit remap_options to use the server's managed, \
+                          index-safe compaction path."
+                    .into(),
+            });
+        }
+
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/optimize/", self.identifier));
+        let mut body = serde_json::json!({});
+        self.apply_branch_body(&mut body);
+        let request = request.json(&body);
+
+        let (request_id, response) = self.send(request, true).await?;
+        self.check_table_response(&request_id, response).await?;
+
+        Ok(OptimizeStats::default())
     }
     async fn add_columns(
         &self,
@@ -4261,6 +4296,7 @@ mod tests {
     };
     use crate::remote::JSON_CONTENT_TYPE;
     use crate::remote::db::DEFAULT_SERVER_VERSION;
+    use crate::table::optimize::CompactionOptions;
     use crate::utils::background_cache::clock;
     use crate::{
         DistanceType, Error, Table,
@@ -8635,6 +8671,108 @@ mod tests {
             .unwrap();
         job.wait().await.unwrap();
         job.cancel().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_optimize_compact_submits_job() {
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/optimize/");
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+            assert_eq!(body, serde_json::json!({}));
+            http::Response::builder()
+                .status(202)
+                .body(r#"{"job_id": "job-optimize-1"}"#.to_string())
+                .unwrap()
+        });
+
+        let stats = table
+            .optimize(OptimizeAction::Compact {
+                options: CompactionOptions::default(),
+                remap_options: None,
+            })
+            .await
+            .unwrap();
+
+        // The server does not report per-job compaction metrics over this
+        // endpoint, so a successful remote compaction carries no detail.
+        assert!(stats.compaction.is_none());
+        assert!(stats.prune.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_optimize_compact_sends_branch() {
+        use lance::dataset::refs::Ref;
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/branches/create/" => http::Response::builder()
+                    .status(200)
+                    .body(b"{}".to_vec())
+                    .unwrap(),
+                "/v1/table/my_table/optimize/" => {
+                    let body = request_body_json(&request);
+                    assert_eq!(body["branch"], "dev");
+                    http::Response::builder()
+                        .status(202)
+                        .body(br#"{"job_id": "job-optimize-2"}"#.to_vec())
+                        .unwrap()
+                }
+                path => panic!("unexpected request path: {path}"),
+            });
+
+        let branch = table
+            .create_branch("dev", Ref::Version(None, None))
+            .await
+            .unwrap();
+
+        branch
+            .optimize(OptimizeAction::Compact {
+                options: CompactionOptions::default(),
+                remap_options: None,
+            })
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_optimize_rejects_custom_remap_options() {
+        let table = Table::new_with_handler("my_table", move |_| -> http::Response<String> {
+            panic!("a custom remap strategy must be rejected before any request is sent")
+        });
+
+        let error = table
+            .optimize(OptimizeAction::Compact {
+                options: CompactionOptions::default(),
+                remap_options: Some(Arc::new(lance::dataset::optimize::IgnoreRemap::default())),
+            })
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, Error::NotSupported { .. }));
+        assert!(error.to_string().contains("remap"));
+    }
+
+    #[tokio::test]
+    async fn test_optimize_rejects_all_prune_and_index() {
+        for action in [
+            OptimizeAction::All,
+            OptimizeAction::Prune {
+                older_than: None,
+                delete_unverified: None,
+                error_if_tagged_old_versions: None,
+            },
+            OptimizeAction::Index(Default::default()),
+        ] {
+            let table = Table::new_with_handler("my_table", move |_| -> http::Response<String> {
+                panic!(
+                    "an unsupported remote optimize action must be rejected before any request is sent"
+                )
+            });
+
+            let error = table.optimize(action).await.unwrap_err();
+            assert!(matches!(error, Error::NotSupported { .. }));
+        }
     }
 
     #[tokio::test]
