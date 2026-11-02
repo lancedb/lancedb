@@ -82,6 +82,7 @@ url = "2"
 num-traits = "0.2"
 oauth2 = { version = "5.0", default-features = false }
 regex = "1.10"
+reqwest = { version = "0.13.0", default-features = false }
 semver = "1.0.25"
 serde = "1"
 serde_json = { version = "1", features = ["preserve_order"] }
