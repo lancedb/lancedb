@@ -137,7 +137,7 @@ def test_function_execution_controls_through_sql_and_materialized_view():
 
         direct = row_batch_sizes(source_name)
         assert len(direct) == 8
-        assert max(direct) <= 2
+        assert all(1 <= size <= 2 for size in direct)
 
         view = conn.create_materialized_view(
             view_name,
@@ -149,7 +149,7 @@ def test_function_execution_controls_through_sql_and_materialized_view():
             for row in view.table.search().select(["observed"]).to_list()
         ]
         assert len(initial_view) == 8
-        assert max(initial_view) <= 2
+        assert all(1 <= size <= 2 for size in initial_view)
 
         table.add(
             pa.table(
@@ -163,7 +163,7 @@ def test_function_execution_controls_through_sql_and_materialized_view():
             for row in view.table.search().select(["observed"]).to_list()
         ]
         assert len(refreshed) == 12
-        assert max(refreshed) <= 2
+        assert all(1 <= size <= 2 for size in refreshed)
     finally:
         drop_table_if_present(view_name)
         drop_table_if_present(source_name)
