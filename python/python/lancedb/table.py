@@ -3112,10 +3112,10 @@ class Table(ABC):
             GPU class for Function workers. Must be a lowercase name of 1-63
             letters, digits, or hyphens, without a leading or trailing hyphen.
             None keeps the Function's registered class or the deployment
-            default. LanceDB Distributed only.
+            default. LanceDB Enterprise only.
         gpu_count: int, optional
             Positive aggregate GPU budget for Function workers. None leaves
-            the server's configured budget unchanged. LanceDB Distributed
+            the server's configured budget unchanged. LanceDB Enterprise
             only.
 
         Returns
@@ -3160,10 +3160,10 @@ class Table(ABC):
             GPU class for Function workers. Must be a lowercase name of 1-63
             letters, digits, or hyphens, without a leading or trailing hyphen.
             None keeps the Function's registered class or the deployment
-            default. LanceDB Distributed only.
+            default. LanceDB Enterprise only.
         gpu_count: int, optional
             Positive aggregate GPU budget for Function workers. None leaves
-            the server's configured budget unchanged. LanceDB Distributed
+            the server's configured budget unchanged. LanceDB Enterprise
             only.
 
         Returns
@@ -7561,10 +7561,10 @@ class AsyncTable:
             GPU class for Function workers. Must be a lowercase name of 1-63
             letters, digits, or hyphens, without a leading or trailing hyphen.
             None keeps the Function's registered class or the deployment
-            default. LanceDB Distributed only.
+            default. LanceDB Enterprise only.
         gpu_count: int, optional
             Positive aggregate GPU budget for Function workers. None leaves
-            the server's configured budget unchanged. LanceDB Distributed
+            the server's configured budget unchanged. LanceDB Enterprise
             only.
 
         Returns
@@ -7680,10 +7680,10 @@ class AsyncTable:
             GPU class for Function workers. Must be a lowercase name of 1-63
             letters, digits, or hyphens, without a leading or trailing hyphen.
             None keeps the Function's registered class or the deployment
-            default. LanceDB Distributed only.
+            default. LanceDB Enterprise only.
         gpu_count: int, optional
             Positive aggregate GPU budget for Function workers. None leaves
-            the server's configured budget unchanged. LanceDB Distributed
+            the server's configured budget unchanged. LanceDB Enterprise
             only.
 
         Returns

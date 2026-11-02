@@ -64,13 +64,13 @@ pub struct RefreshColumnOptions {
     /// Must be greater than zero. `None` uses the server default. This has no
     /// effect on expression-backed columns in LanceDB Embedded.
     pub batch_size: Option<usize>,
-    /// GPU class for Function workers in LanceDB Distributed.
+    /// GPU class for Function workers in LanceDB Enterprise.
     ///
     /// `None` keeps the Function's registered class, or the deployment default
     /// when the Function does not declare one.
     pub gpu_class: Option<String>,
     /// Positive aggregate GPU budget for Function workers in LanceDB
-    /// Distributed.
+    /// Enterprise.
     ///
     /// `None` leaves the server's configured budget unchanged.
     pub gpu_count: Option<u32>,

@@ -308,7 +308,7 @@ fn function_catalog_not_supported<T>() -> Result<T> {
 
 fn gpu_class_catalog_not_supported<T>() -> Result<T> {
     Err(crate::error::Error::NotSupported {
-        message: "GPU class discovery is supported only by LanceDB Distributed".to_string(),
+        message: "GPU class discovery is supported only by LanceDB Enterprise".to_string(),
     })
 }
 

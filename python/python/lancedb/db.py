@@ -1356,7 +1356,7 @@ class DBConnection(EnforceOverrides):
         memory, per-worker GPU limit, and CPU, memory, and ephemeral-storage
         limits. This describes configured hardware, not current free capacity.
 
-        LanceDB Distributed only; the principal needs System Usage permission.
+        LanceDB Enterprise only; the principal needs System Usage permission.
         Raises ``NotImplementedError`` when the server predates
         ``GET /v1/gpu/classes``.
         """

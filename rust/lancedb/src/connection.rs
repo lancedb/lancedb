@@ -1252,7 +1252,7 @@ impl Connection {
     ///
     /// The result describes configured hardware, not current free capacity.
     /// The principal needs System Usage permission. LanceDB Embedded and
-    /// older Distributed servers without `GET /v1/gpu/classes` return
+    /// older Enterprise servers without `GET /v1/gpu/classes` return
     /// [`Error::NotSupported`].
     pub async fn list_gpu_classes(&self) -> Result<Vec<GpuClass>> {
         self.database().list_gpu_classes().await
