@@ -377,11 +377,64 @@ code that used the former LanceDB Enterprise-only argument order.
 
 ## Functions and Jobs
 
+A decorated `udf` definition is also a local callable. Call a decorated function
+directly with row inputs, or call a decorated class with its initialization fields
+and then call the returned instance; call `close()` if the class defines it. This
+path uses the current Python environment and does not create a registered
+`FunctionVersion`, build the declared remote runtime, resolve Secrets, or execute
+the remote Arrow adapter. A registered `FunctionVersion` call instead binds
+`col(...)` inputs and returns a remote `FunctionApplication`.
+
+```python
+from lancedb import udf
+
+
+@udf
+def normalize(text: str) -> str:
+    return text.strip().lower()
+
+
+@udf
+class Scale:
+    def __init__(self, factor: float):
+        self.factor = factor
+
+    def __call__(self, value: float) -> float:
+        return value * self.factor
+
+    def close(self) -> None:
+        self.factor = 0.0
+
+
+assert normalize(" Hello ") == "hello"
+scaler = Scale(factor=2.0)
+assert scaler(3.0) == 6.0
+scaler.close()
+```
+
 Annotate a blob input with `lancedb.BlobReader` for lazy, seekable access, or
 with `bytes` to materialize its contents before the Function runs. Reader
 inputs infer the Blob V2 type without an explicit input schema. Readers are
 scoped to each invocation and support `read`, `readinto`, `seek`, `tell`,
-`size`, and cursor-independent `read_range`.
+`size`, and cursor-independent `read_range`. For a local test or another
+engine, construct `BlobReader(read_range, size)` with a callback over an
+in-memory bytes fixture or the engine's byte-range reader; `read_range` does
+not advance the cursor.
+
+```python
+from lancedb import BlobReader
+
+payload = b"0123456789"
+
+
+def read_range(offset: int, length: int) -> bytes:
+    return payload[offset : offset + length]
+
+
+with BlobReader(read_range, len(payload)) as reader:
+    assert reader.read_range(6, 4) == b"6789"
+    assert reader.tell() == 0
+```
 
 ::: lancedb.BlobReader
 
