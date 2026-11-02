@@ -2364,7 +2364,7 @@ async fn function_creation_and_description_use_sql_query_handles() {
 #[tokio::test]
 async fn function_creation_rejects_invalid_execution_controls_before_sql() {
     const REQUEST: &str = include_str!(
-        "../../tests/fixtures/first_class_function/v1/remote_function_controlled_registration_request.json"
+        "../../tests/fixtures/first_class_functions/v1/remote_function_controlled_registration_request.json"
     );
     let service = TestSqlService::default();
     let statements = service.statements.clone();
