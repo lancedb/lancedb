@@ -77,7 +77,7 @@ reader = db.execute_query(
 ```
 
 ```sql SQL icon="database"
-CREATE SECRET hf_token WITH (value = '<your-hugging-face-token>')
+CREATE SECRET hf_token TYPE = GENERIC_STRING SECRET_STRING = '<your-hugging-face-token>'
 
 CREATE STORAGE INTEGRATION private_hub
     STORAGE_PROVIDER = 'HUGGINGFACE'
