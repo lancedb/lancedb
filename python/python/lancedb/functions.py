@@ -2361,12 +2361,12 @@ def udf(
     ... def copy_blobs(image: pa.Array) -> pa.Array:
     ...     return image
 
-    **Local execution.** The returned definition is callable with the
-    decorated signature. Calling a function definition runs the original
-    function in the current Python environment. Calling a class definition
-    with its initialization arguments constructs one instance; call that
-    instance for row inputs, reuse it as needed, and call ``close`` if it
-    defines that method. This path does not create a registered
+    **Local execution.** A function definition is callable with its decorated
+    input signature and runs the original function in the current Python
+    environment. A class definition is called with its initialization
+    arguments and constructs one instance; call that instance for row inputs,
+    reuse it as needed, and call ``close`` if it defines that method. This path
+    does not create a registered
     [FunctionVersion][lancedb.functions.FunctionVersion], build the declared
     remote environment, resolve Secrets, or run the remote Arrow adapter or
     sandbox. A registered ``FunctionVersion`` call is different: it binds
