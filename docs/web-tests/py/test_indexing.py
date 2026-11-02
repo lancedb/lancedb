@@ -193,23 +193,22 @@ def test_vector_index_nprobes(tmp_db):
     query_vector = data[123]["vector"]
 
     # --8<-- [start:vector_index_auto]
-    # Use Auto with no fixed probe count or explicit bounds.
+    # Start with Auto.
     auto = table.search(query_vector).limit(10).to_arrow()
     # --8<-- [end:vector_index_auto]
 
     # --8<-- [start:vector_index_search_effort]
-    # Increase initial search effort; 0.75 is not a recall target.
+    # Search more partitions to try to improve recall.
     higher_effort = table.search(query_vector).search_effort(0.75).limit(10).to_arrow()
     # --8<-- [end:vector_index_search_effort]
 
     # --8<-- [start:vector_index_fixed_probes]
-    # Search 20 partitions per segment, without result-count expansion.
+    # Use a fixed probe count.
     fixed = table.search(query_vector).nprobes(20).limit(10).to_arrow()
     # --8<-- [end:vector_index_fixed_probes]
 
     # --8<-- [start:vector_index_nprobes]
-    # Bound Auto to 10-50 partitions per segment (if available).
-    # The initial search can exceed 10; further search also respects 50.
+    # Let Auto choose between 10 and 50 partitions per segment, if available.
     filtered = (
         table.search(query_vector)
         .minimum_nprobes(10)

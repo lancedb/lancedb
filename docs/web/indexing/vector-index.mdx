@@ -143,12 +143,12 @@ Learn how to configure, build, and search LanceDB vector indexes, including buil
 | Parameter | Description |
 | :--- | :--- |
 | `limit` | Number of results to return (the `k` in `k-ANN`). |
-| `nprobes` | A positive fixed probe count per index segment when used alone. Explicit `search_effort` overrides it; explicit min/max bounds override the corresponding fixed bound. Leave probe settings unset to use Auto. |
-| `search_effort` | A finite value in `[0, 1]` controlling the initial probe budget. `0.5` selects Auto, `0` starts at the minimum and `1` starts at the maximum (all partitions if unbounded). This is not a recall percentage. |
-| `minimum_nprobes` | Positive lower bound for the initial search per segment, limited by available partitions. Auto can start above it, even without a filter. |
-| `maximum_nprobes` | Upper bound for both initial and further probing per segment, not for the whole query. Leave unset to allow all partitions as needed. To clear an explicit cap, use `0` in Python/TypeScript or `None` in Rust. |
+| `nprobes` | Search a fixed number of partitions per index segment. Leave unset to use Auto. |
+| `search_effort` | A value from `0` to `1` for tuning recall and latency. `0.5` uses Auto; higher values search more partitions. This is not a recall percentage. |
+| `minimum_nprobes` | Minimum number of partitions to search per segment. Auto may search more from the start. |
+| `maximum_nprobes` | Maximum number of partitions to search per segment. Leave unset to allow further searching when needed. A low cap can reduce recall or return fewer results than requested. |
 | `ef` | HNSW search-time exploration factor. Start around `1.5 * k` and increase up to `10 * k` for higher recall. |
-| `refine_factor` | Reads full vectors and reranks selected candidates. A factor of `25` requests up to `25 * k` candidates before refinement. It can recover recall lost to quantized ranking, but not neighbors excluded from that candidate set. Measure the recall gain and I/O cost. |
+| `refine_factor` | Rerank candidates using full vectors to improve accuracy. A factor of `25` requests up to `25 * k` candidates. Higher values read more data; measure the recall gain and latency cost. |
 | `distance_range(lower_bound, upper_bound)` | Return only rows whose distance falls within `[lower_bound, upper_bound)`. Either bound is optional. Useful for near-duplicate detection or "close-enough" matching. |
 | `bypass_vector_index()` | Ignore the ANN index entirely and perform an exact (flat) scan. Can be used to measure ANN `recall@k`, or to query with a metric the index was not built for (e.g., a non-cosine query on a multivector column). |
 
@@ -175,15 +175,17 @@ older client.
 
 
 <Note>
-**Auto probing and filtered queries.** Auto first chooses an initial budget from
-the metric, `k` and query-to-centroid distances, within explicit bounds. It can
-search further if too few candidate rows are found, for example after filtering
-or deletions. Equal min/max bounds or `nprobes(n)` alone fix the count. Returning
-`k` rows is not a recall guarantee. See [Auto probing and search effort](/search/vector-search#tuning-nprobes)
-for precedence, calibration limits, per-segment work and client/server requirements.
+Start with Auto, then measure recall and latency before changing probe settings.
+If you set both `search_effort` and `nprobes`, effort takes precedence. Explicit
+min/max bounds still apply; equal bounds fix the count. See
+[tuning vector search](/search/vector-search#tuning-nprobes) for examples and
+guidance on choosing these controls.
 </Note>
 
-Here is an example of a vector search exercising several of the above parameters.
+<span id="probe-limits-example"></span>
+
+For a filtered search, you can let Auto choose within a range. The maximum also
+limits further searching if too few matches are found:
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
