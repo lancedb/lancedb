@@ -1299,6 +1299,11 @@ class RemoteTable(Table):
     def take_row_ids(
         self, row_ids: list[int], *, with_row_id: bool = False
     ) -> LanceTakeQueryBuilder:
+        """Take rows by row ID without guaranteeing request order.
+
+        See [Table.take_row_ids][lancedb.table.Table.take_row_ids] for row-ID
+        stability, missing rows, and alignment guidance.
+        """
         builder = LanceTakeQueryBuilder(self._table.take_row_ids(row_ids))
         if with_row_id:
             builder.with_row_id()

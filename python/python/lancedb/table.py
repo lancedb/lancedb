@@ -2516,9 +2516,9 @@ class Table(ABC):
         Row ids are not stable and are relative to the current version of the table.
         They can change due to compaction and updates.
 
-        No guarantees are made regarding the order in which results are returned.  If
-        you desire an output order that matches the order of the given ids, you will
-        need to add the row id column to the output and align it yourself.
+        No guarantees are made regarding the order in which results are returned.
+        If you need an output order that matches the order of the given row IDs,
+        include the row ID column and align the rows yourself.
 
         Unlike offsets, row ids are not 0-indexed and no assumptions should be made
         about the possible range of row ids.  In order to use this method you must
@@ -2529,6 +2529,21 @@ class Table(ABC):
 
         There is an ongoing effort to make row ids stable which is tracked at
         https://github.com/lancedb/lancedb/issues/1120
+
+        The example below restores the first occurrence of each requested row ID.
+        It omits IDs that no longer exist and assumes each returned ``_rowid``
+        appears at most once, which is the current take behavior:
+
+        .. code-block:: python
+
+            requested = [7, 2, 7, 9]
+            unique = list(dict.fromkeys(requested))
+            rows = table.take_row_ids(unique, with_row_id=True).to_arrow()
+            by_id = {
+                row_id: i for i, row_id in enumerate(rows["_rowid"].to_pylist())
+            }
+            rows = rows.take([by_id[row_id] for row_id in unique if row_id in by_id])
+            rows = rows.drop_columns(["_rowid"])
 
         Parameters
         ----------
@@ -3684,6 +3699,11 @@ class LanceTable(Table):
     def take_row_ids(
         self, row_ids: list[int], *, with_row_id: bool = False
     ) -> LanceTakeQueryBuilder:
+        """Take rows by row ID without guaranteeing request order.
+
+        See [Table.take_row_ids][lancedb.table.Table.take_row_ids] for row-ID
+        stability, missing rows, and alignment guidance.
+        """
         builder = LanceTakeQueryBuilder(self._table.take_row_ids(row_ids))
         if with_row_id:
             builder.with_row_id()
@@ -7895,6 +7915,10 @@ class AsyncTable:
 
         Row ids are not stable and are relative to the current version of the table.
         They can change due to compaction and updates.
+
+        No guarantees are made regarding the order in which results are returned.
+        If you need an output order that matches the order of the given row IDs,
+        include the row ID column and align the rows yourself.
 
         Unlike offsets, row ids are not 0-indexed and no assumptions should be made
         about the possible range of row ids.  In order to use this method you must

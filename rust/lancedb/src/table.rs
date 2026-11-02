@@ -1857,9 +1857,10 @@ impl Table {
     /// There is an ongoing effort to make row ids stable which is tracked at
     /// https://github.com/lancedb/lancedb/issues/1120
     ///
-    /// No guarantees are made regarding the order in which results are returned.  If you
-    /// desire an output order that matches the order of the given ids, you will need
-    /// to add the row id column to the output and align it yourself.
+    /// No guarantees are made regarding the order in which results are returned. If
+    /// you need an output order that matches the order of the given row IDs, include
+    /// the row ID column and align the rows yourself.
+    ///
     /// Parameters
     /// ----------
     /// row_ids: list[int]
