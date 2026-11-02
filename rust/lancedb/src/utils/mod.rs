@@ -128,7 +128,7 @@ pub fn validate_table_name(name: &str) -> Result<()> {
     {
         return Err(Error::InvalidTableName {
             name: sanitize(name),
-            reason: "Only alphanumeric characters, dashes, underscores, and\
+            reason: "Only alphanumeric characters, dashes, underscores, and \
                 periods are allowed in table names."
                 .to_string(),
         });
@@ -1065,6 +1065,15 @@ mod tests {
         assert!(validate_table_name("my/table").is_err());
         assert!(validate_table_name("my@table").is_err());
         assert!(validate_table_name("name with space").is_err());
+    }
+
+    #[test]
+    fn test_validate_table_name_invalid_character_message() {
+        let err = validate_table_name("my/table").unwrap_err().to_string();
+        assert!(
+            err.contains("underscores, and periods are allowed"),
+            "unexpected message: {err}"
+        );
     }
 
     #[test]

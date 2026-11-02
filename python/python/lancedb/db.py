@@ -104,6 +104,7 @@ if TYPE_CHECKING:
     from .pydantic import LanceModel
 
     from ._lancedb import Connection as LanceDbConnection
+    from ._lancedb import GpuClass
     from ._lancedb import JobInfo
     from .common import DATA, URI
     from .embeddings import EmbeddingFunctionConfig
@@ -1018,7 +1019,9 @@ class DBConnection(EnforceOverrides):
         """List every published immutable Function version in a namespace.
 
         Functions in child namespaces are not included. Results are ordered by
-        Function name then version. LanceDB Embedded connections raise
+        Function name then numeric version. Remote connections use
+        ``SHOW FUNCTIONS HISTORY`` to include every revision.
+        LanceDB Embedded connections raise
         ``NotImplementedError``.
 
         Examples
@@ -1044,13 +1047,15 @@ class DBConnection(EnforceOverrides):
         version: str,
         namespace_path: Optional[List[str]] = None,
     ) -> bool:
-        """Drop a Function name and the object it was bound to.
+        """Drop one published Function revision, preserving its siblings.
 
-        The requested version must exist in the currently named object. Returns
-        True when the catalog binding was removed and False when it was absent.
-        Physical cleanup continues in the background; use
-        :meth:`drop_function_async` to access the query job. Local connections
-        raise NotImplementedError.
+        Returns True when the revision was removed and False for a repeated drop
+        or a missing name. A revision never published under an existing name is
+        an error. Dropping the last visible revision releases the name and
+        schedules physical cleanup in the background. Use
+        :meth:`drop_function_async` to
+        access the query job, whose completion confirms catalog removal of the
+        revision. Local connections raise NotImplementedError.
         """
         raise NotImplementedError(
             "Function catalog operations are not supported for this connection type"
@@ -1063,11 +1068,13 @@ class DBConnection(EnforceOverrides):
         version: str,
         namespace_path: Optional[List[str]] = None,
     ) -> Tuple[bool, Job]:
-        """Drop a Function binding and return its SQL query job.
+        """Drop one Function revision and return its SQL query job.
 
-        The boolean reports catalog removal. The job has type ``query`` and its
-        ID is the SQL query UUID. Repeated waits confirm that completion;
-        physical cleanup continues in the background. LanceDB Embedded
+        The boolean reports removal of the requested revision from the catalog;
+        sibling revisions and their grants remain available. The job has type
+        ``query`` and its ID is the SQL query UUID. Repeated waits confirm that
+        revision's removal. Only the last visible revision's drop releases the
+        name and schedules background object cleanup. LanceDB Embedded
         connections raise NotImplementedError.
         """
         raise NotImplementedError(
@@ -1341,6 +1348,21 @@ class DBConnection(EnforceOverrides):
         `open_table` does for a missing table.
         """
         raise NotImplementedError("open_job is not supported for this connection type")
+
+    def list_gpu_classes(self) -> List[GpuClass]:
+        """List the operator-configured Function GPU classes.
+
+        Each record names the class and reports its configured GPU model,
+        memory, per-worker GPU limit, and CPU, memory, and ephemeral-storage
+        limits. This describes configured hardware, not current free capacity.
+
+        LanceDB Distributed only; the principal needs System Usage permission.
+        Raises ``NotImplementedError`` when the server predates
+        ``GET /v1/gpu/classes``.
+        """
+        raise NotImplementedError(
+            "GPU class discovery is not supported for this connection type"
+        )
 
     def list_jobs(
         self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
@@ -3444,6 +3466,12 @@ class AsyncConnection(object):
         """
         return AsyncJob(await self._inner.open_job(job_id))
 
+    async def list_gpu_classes(self) -> List[GpuClass]:
+        """List configured Function GPU classes. See
+        [DBConnection.list_gpu_classes][lancedb.db.DBConnection.list_gpu_classes].
+        """
+        return await self._inner.list_gpu_classes()
+
     async def create_function_async(
         self,
         definition: UdfDefinition,
@@ -3515,7 +3543,13 @@ class AsyncConnection(object):
         version: str,
         namespace_path: Optional[List[str]] = None,
     ) -> bool:
-        """Drop a Function name and the object it was bound to."""
+        """Drop one published Function revision, preserving its siblings.
+
+        Returns True when the requested revision was removed and False for a
+        repeated drop or a missing name. A revision never published under an
+        existing name is an error. Only the last visible revision's removal
+        releases the name and schedules background object cleanup.
+        """
         return await self._inner.drop_function(name, version, namespace_path)
 
     async def drop_function_async(
@@ -3525,11 +3559,13 @@ class AsyncConnection(object):
         version: str,
         namespace_path: Optional[List[str]] = None,
     ) -> Tuple[bool, AsyncJob]:
-        """Drop a Function binding and return its SQL query job.
+        """Drop one Function revision and return its SQL query job.
 
-        The boolean reports catalog removal. The job has type ``query`` and its
-        ID is the SQL query UUID. Repeated waits confirm that completion;
-        physical cleanup continues in the background.
+        The boolean reports removal of the requested revision from the catalog;
+        sibling revisions and their grants remain available. The job has type
+        ``query`` and its ID is the SQL query UUID. Repeated waits confirm that
+        revision's removal. Only the last visible revision's drop releases the
+        name and schedules background object cleanup.
         """
         dropped, job = await self._inner.drop_function_async(
             name, version, namespace_path

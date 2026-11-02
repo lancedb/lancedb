@@ -71,6 +71,7 @@ from .index import (
     IvfRq,
     LabelList,
     Fm,
+    NGram,
     HnswPq,
     HnswSq,
     HnswFlat,
@@ -284,6 +285,7 @@ IndexConfigType = Union[
     Bitmap,
     LabelList,
     Fm,
+    NGram,
     FTS,
 ]
 
@@ -1883,7 +1885,7 @@ class Table(ABC):
         config : IndexConfigType, optional
             The index configuration object. If provided, uses the new unified API.
             Can be one of: IvfFlat, IvfPq, IvfSq, IvfRq, HnswPq, HnswSq,
-            BTree, Bitmap, LabelList, Fm, FTS.
+            BTree, Bitmap, LabelList, Fm, NGram, FTS.
         replace : bool, default True
             Whether to replace an existing index on this column.
         wait_timeout : timedelta, optional
@@ -3076,7 +3078,12 @@ class Table(ABC):
 
     @abstractmethod
     def refresh_column(
-        self, column: str, *, batch_size: Optional[int] = None
+        self,
+        column: str,
+        *,
+        batch_size: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> "RefreshColumnResult":
         """
         Fill the rows of a computed column that hold no value yet.
@@ -3101,6 +3108,15 @@ class Table(ABC):
             Maximum rows per Function call on the remote server. Must be
             greater than zero. None uses the server default. Has no effect on
             local expression-backed columns.
+        gpu_class: str, optional
+            GPU class for Function workers. Must be a lowercase name of 1-63
+            letters, digits, or hyphens, without a leading or trailing hyphen.
+            None keeps the Function's registered class or the deployment
+            default. LanceDB Distributed only.
+        gpu_count: int, optional
+            Positive aggregate GPU budget for Function workers. None leaves
+            the server's configured budget unchanged. LanceDB Distributed
+            only.
 
         Returns
         -------
@@ -3111,7 +3127,12 @@ class Table(ABC):
 
     @abstractmethod
     def refresh_column_async(
-        self, column: str, *, batch_size: Optional[int] = None
+        self,
+        column: str,
+        *,
+        batch_size: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> Job[RefreshColumnJobResult]:
         """
         Like :meth:`refresh_column`, but returns a handle to the refresh job
@@ -3135,6 +3156,15 @@ class Table(ABC):
             greater than zero. None uses the server default. Lower this for
             slow Functions to stay within the executor's per-call deadline.
             Has no effect on local expression-backed columns.
+        gpu_class: str, optional
+            GPU class for Function workers. Must be a lowercase name of 1-63
+            letters, digits, or hyphens, without a leading or trailing hyphen.
+            None keeps the Function's registered class or the deployment
+            default. LanceDB Distributed only.
+        gpu_count: int, optional
+            Positive aggregate GPU budget for Function workers. None leaves
+            the server's configured budget unchanged. LanceDB Distributed
+            only.
 
         Returns
         -------
@@ -3188,6 +3218,30 @@ class Table(ABC):
         FunctionErrors
             ``records``, ``fragments`` and ``truncated``, the last saying
             whether the listing stopped at its limit.
+
+        Each record identifies its row with ``fragment_id``, ``row_offset``
+        and the physical ``row_address`` (``(fragment_id << 32) |
+        row_offset``). To retry the recorded rows, collect the non-null
+        addresses before the table is compacted or rewritten and run the
+        SQL refresh:
+
+        .. code-block:: python
+
+            errors = table.function_errors(column="embedding")
+            addresses = sorted(
+                record.row_address
+                for record in errors.records
+                if record.row_address is not None
+            )
+            if addresses:
+                address_list = ", ".join(str(address) for address in addresses)
+                database.execute_query(
+                    f"REFRESH COLUMN embedding ON {table.name()} "
+                    f"WHERE _rowaddr IN ({address_list})"
+                )
+
+        Records whose per-row detail was capped have no address and appear
+        only in ``fragments``; they cannot be selected individually here.
 
         Examples
         --------
@@ -4022,7 +4076,7 @@ class LanceTable(Table):
         config : IndexConfigType, optional
             The index configuration object. If provided, uses the new unified API.
             Can be one of: IvfFlat, IvfPq, IvfSq, IvfRq, HnswPq, HnswSq,
-            BTree, Bitmap, LabelList, Fm, FTS.
+            BTree, Bitmap, LabelList, Fm, NGram, FTS.
         replace : bool, default True
             Whether to replace an existing index on this column.
         wait_timeout : timedelta, optional
@@ -5174,22 +5228,46 @@ class LanceTable(Table):
         )
 
     def refresh_column(
-        self, column: str, *, batch_size: Optional[int] = None
+        self,
+        column: str,
+        *,
+        batch_size: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> "RefreshColumnResult":
         """Fill a computed column's unfilled rows and recompute those whose
         inputs changed. See
         [`AsyncTable.refresh_column`][lancedb.AsyncTable.refresh_column]."""
-        return LOOP.run(self._table.refresh_column(column, batch_size=batch_size))
+        return LOOP.run(
+            self._table.refresh_column(
+                column,
+                batch_size=batch_size,
+                gpu_class=gpu_class,
+                gpu_count=gpu_count,
+            )
+        )
 
     def refresh_column_async(
-        self, column: str, *, batch_size: Optional[int] = None
+        self,
+        column: str,
+        *,
+        batch_size: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> Job[RefreshColumnJobResult]:
         """Fill a computed column's unfilled rows and recompute those whose
         inputs changed, returning a handle to the refresh job. See
         [`Table.refresh_column_async`][lancedb.table.Table.refresh_column_async].
         """
         return Job(
-            LOOP.run(self._table.refresh_column_async(column, batch_size=batch_size))
+            LOOP.run(
+                self._table.refresh_column_async(
+                    column,
+                    batch_size=batch_size,
+                    gpu_class=gpu_class,
+                    gpu_count=gpu_count,
+                )
+            )
         )
 
     def function_errors(
@@ -6320,6 +6398,7 @@ class AsyncTable:
                 Bitmap,
                 LabelList,
                 Fm,
+                NGram,
                 FTS,
             ]
         ] = None,
@@ -6373,12 +6452,13 @@ class AsyncTable:
                     Bitmap,
                     LabelList,
                     Fm,
+                    NGram,
                     FTS,
                 ),
             ):
                 raise TypeError(
                     "config must be an instance of IvfSq, IvfPq, IvfRq, HnswPq, HnswSq,"
-                    " BTree, Bitmap, LabelList, Fm, or FTS, but got "
+                    " BTree, Bitmap, LabelList, Fm, NGram, or FTS, but got "
                     + str(type(config))
                 )
         try:
@@ -6416,6 +6496,7 @@ class AsyncTable:
                 Bitmap,
                 LabelList,
                 Fm,
+                NGram,
                 FTS,
             ]
         ] = None,
@@ -7446,7 +7527,12 @@ class AsyncTable:
             return await self._inner.add_columns(list(transforms.items()))
 
     async def refresh_column(
-        self, column: str, *, batch_size: Optional[int] = None
+        self,
+        column: str,
+        *,
+        batch_size: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> RefreshColumnResult:
         """
         Fill the rows of a computed column that hold no value yet.
@@ -7471,13 +7557,27 @@ class AsyncTable:
             Maximum rows per Function call on the remote server. Must be
             greater than zero. None uses the server default. Has no effect on
             local expression-backed columns.
+        gpu_class: str, optional
+            GPU class for Function workers. Must be a lowercase name of 1-63
+            letters, digits, or hyphens, without a leading or trailing hyphen.
+            None keeps the Function's registered class or the deployment
+            default. LanceDB Distributed only.
+        gpu_count: int, optional
+            Positive aggregate GPU budget for Function workers. None leaves
+            the server's configured budget unchanged. LanceDB Distributed
+            only.
 
         Returns
         -------
         RefreshColumnResult
             The number of rows filled and the new version of the table.
         """
-        return await self._inner.refresh_column(column, batch_size=batch_size)
+        return await self._inner.refresh_column(
+            column,
+            batch_size=batch_size,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
+        )
 
     async def function_errors(
         self,
@@ -7510,6 +7610,30 @@ class AsyncTable:
             ``records``, ``fragments`` and ``truncated``, the last saying
             whether the listing stopped at its limit.
 
+        Each record identifies its row with ``fragment_id``, ``row_offset``
+        and the physical ``row_address`` (``(fragment_id << 32) |
+        row_offset``). To retry the recorded rows, collect the non-null
+        addresses before the table is compacted or rewritten and run the
+        SQL refresh:
+
+        .. code-block:: python
+
+            errors = await table.function_errors(column="embedding")
+            addresses = sorted(
+                record.row_address
+                for record in errors.records
+                if record.row_address is not None
+            )
+            if addresses:
+                address_list = ", ".join(str(address) for address in addresses)
+                await database.execute_query(
+                    f"REFRESH COLUMN embedding ON {table.name()} "
+                    f"WHERE _rowaddr IN ({address_list})"
+                )
+
+        Records whose per-row detail was capped have no address and appear
+        only in ``fragments``; they cannot be selected individually here.
+
         Examples
         --------
         >>> errors = await table.function_errors(column="embedding")  # doctest: +SKIP
@@ -7523,7 +7647,12 @@ class AsyncTable:
         )
 
     async def refresh_column_async(
-        self, column: str, *, batch_size: Optional[int] = None
+        self,
+        column: str,
+        *,
+        batch_size: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> AsyncJob[RefreshColumnJobResult]:
         """
         Like :meth:`refresh_column`, but returns a handle to the refresh job
@@ -7547,6 +7676,15 @@ class AsyncTable:
             greater than zero. None uses the server default. Lower this for
             slow Functions to stay within the executor's per-call deadline.
             Has no effect on local expression-backed columns.
+        gpu_class: str, optional
+            GPU class for Function workers. Must be a lowercase name of 1-63
+            letters, digits, or hyphens, without a leading or trailing hyphen.
+            None keeps the Function's registered class or the deployment
+            default. LanceDB Distributed only.
+        gpu_count: int, optional
+            Positive aggregate GPU budget for Function workers. None leaves
+            the server's configured budget unchanged. LanceDB Distributed
+            only.
 
         Returns
         -------
@@ -7570,7 +7708,12 @@ class AsyncTable:
         'finished'
         """
         return _typed_job(
-            await self._inner.refresh_column_async(column, batch_size=batch_size),
+            await self._inner.refresh_column_async(
+                column,
+                batch_size=batch_size,
+                gpu_class=gpu_class,
+                gpu_count=gpu_count,
+            ),
             RefreshColumnJobResult.from_json,
         )
 
@@ -8084,6 +8227,7 @@ class IndexStatistics:
         "BTREE",
         "BITMAP",
         "LABEL_LIST",
+        "NGRAM",
     ]
     distance_type: Optional[Literal["l2", "cosine", "dot"]] = None
     num_indices: Optional[int] = None

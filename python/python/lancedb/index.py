@@ -109,6 +109,28 @@ class Fm:
 
 
 @dataclass
+class NGram:
+    """Describe an NGram index configuration.
+
+    An `NGram` index is a scalar index on a UTF-8 string column that
+    accelerates substring filters such as `contains(col, 'needle')`, along
+    with some `LIKE` and regular-expression predicates. It tokenizes values
+    into overlapping character n-grams (using Lance's default trigram
+    parameters) and narrows a scan to the rows that share the query's n-grams;
+    the exact predicate is then evaluated on those candidates, so the results
+    are the same with or without the index.
+
+    Unlike the `Fm` index, which matches arbitrary substrings of the raw
+    bytes, `NGram` is trigram based, so a query shorter than the n-gram length
+    cannot be served by the index.
+
+    For example, it works with `text`, `description`, `comment`, etc.
+    """
+
+    pass
+
+
+@dataclass
 class FTS:
     """Describe a FTS index configuration.
 
@@ -159,6 +181,10 @@ class FTS:
 
     >>> from lancedb.query import DocumentGranularity
     >>> config = FTS(document_granularity=DocumentGranularity.LIST_ELEMENT)
+
+    Create an index that splits code identifiers into searchable subwords:
+
+    >>> config = FTS(analyzer="code", split_identifiers=True)
 
     Attributes
     ----------
@@ -221,6 +247,28 @@ class FTS:
         ``LIST_ELEMENT`` treats each element of the deepest list on the indexed
         field path as one document and returns its physical coordinates in
         ``_doc_index`` for matching queries.
+    analyzer : {"text", "code"}, optional
+        ``"code"`` selects the code analyzer. ``"text"`` selects a text-family
+        analyzer with the selected ``base_tokenizer``; it does not reset an
+        explicit compatible tokenizer to ``"simple"``. ``None`` infers the
+        analyzer from ``base_tokenizer``. ``"code"`` cannot be combined with a
+        ``base_tokenizer`` other than ``"simple"`` (the default) or ``"code"``.
+        ``"text"`` cannot be combined with ``"code"``.
+    split_identifiers : bool, optional
+        Split code identifiers such as ``camelCase`` and ``snake_case`` into
+        subwords. Setting this to True requires the code analyzer. The default
+        is False, so ``analyzer="code"`` alone keeps identifiers whole.
+    split_on_numerics : bool, optional
+        Split identifier subwords at letter and number boundaries, for example
+        ``utf8`` into ``utf`` and ``8``. The code analyzer default is True, but
+        this only takes effect when ``split_identifiers=True``.
+    preserve_original : bool, optional
+        Also index the complete identifier next to its subwords. The code
+        analyzer default is True, but this only takes effect when
+        ``split_identifiers=True``.
+    index_operators : bool, optional
+        Index code operators such as ``::``, ``->`` and ``!=``. The code
+        analyzer default is False.
 
     Notes
     -----
@@ -246,6 +294,11 @@ class FTS:
     memory_limit: Optional[int] = None
     num_workers: Optional[int] = None
     document_granularity: DocumentGranularity = DocumentGranularity.ROW
+    analyzer: Optional[Literal["text", "code"]] = None
+    split_identifiers: Optional[bool] = None
+    split_on_numerics: Optional[bool] = None
+    preserve_original: Optional[bool] = None
+    index_operators: Optional[bool] = None
 
 
 @dataclass
@@ -930,4 +983,5 @@ __all__ = [
     "Bitmap",
     "LabelList",
     "Fm",
+    "NGram",
 ]
