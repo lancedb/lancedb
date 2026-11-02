@@ -189,6 +189,8 @@ class Reranker(ABC):
         vector_results = (
             [vector_results] if not isinstance(vector_results, list) else vector_results
         )
+        if not vector_results:
+            raise ValueError("vector_results must not be empty")
 
         # Make sure all elements are of the same type
         if not all(isinstance(v, type(vector_results[0])) for v in vector_results):

@@ -15,6 +15,7 @@ from typing import (
     Dict,
     Iterable,
     List,
+    Literal,
     Optional,
     Sequence,
     Tuple,
@@ -38,6 +39,7 @@ from ..common import DATA
 from lancedb.listing import Listing, NamespaceListing, TableListing
 from ..db import DBConnection, LOOP
 from ..functions import FunctionVersion, UdfDefinition
+from ..graph import EdgeTable, NodeTable, PropertyGraph
 from ..job import AsyncJob, Job
 from ..sql import Query as SqlQuery
 from ..sql import QueryDescription, QueryParameters
@@ -47,7 +49,7 @@ from ..storage_integration import SecretReference, StorageIntegrationInfo
 from ..view import ViewDescription
 
 if TYPE_CHECKING:
-    from .._lancedb import JobInfo, Session
+    from .._lancedb import GpuClass, JobInfo, Session
 from ..embeddings import EmbeddingFunctionConfig
 from lance_namespace import (
     LanceNamespace,
@@ -102,7 +104,7 @@ def _tls_config_to_dict(config: Optional[TlsConfig]) -> Optional[dict[str, Any]]
 def _client_config_to_dict(config: ClientConfig) -> dict[str, Any]:
     if config.header_provider is not None:
         raise ValueError(
-            "Cannot serialize a LanceDB Distributed connection with a header_provider. "
+            "Cannot serialize a LanceDB Enterprise connection with a header_provider. "
             "Use static api_key/extra_headers or provide a worker-side "
             "connection factory instead."
         )
@@ -247,16 +249,16 @@ class RemoteDBConnection(DBConnection):
 
     @property
     def session(self) -> Optional["Session"]:
-        """LanceDB Distributed connections do not expose a local cache session."""
+        """LanceDB Enterprise connections do not expose a local cache session."""
         raise NotImplementedError(
-            "session is not supported by LanceDB Distributed connections"
+            "session is not supported by LanceDB Enterprise connections"
         )
 
     @property
     def read_consistency_interval(self) -> Optional[timedelta]:
-        """LanceDB Distributed connections do not expose a read consistency interval."""
+        """LanceDB Enterprise connections do not expose a read consistency interval."""
         raise NotImplementedError(
-            "read_consistency_interval is not supported by LanceDB Distributed "
+            "read_consistency_interval is not supported by LanceDB Enterprise "
             "connections"
         )
 
@@ -665,11 +667,11 @@ class RemoteDBConnection(DBConnection):
             The embedding functions to store in the table schema and use to
             generate vectors when creating the table or adding data.
         storage_options: dict, optional
-            Not supported in LanceDB Distributed. Raises NotImplementedError.
+            Not supported in LanceDB Enterprise. Raises NotImplementedError.
         data_storage_version: str, optional
-            Not supported in LanceDB Distributed. Raises NotImplementedError.
+            Not supported in LanceDB Enterprise. Raises NotImplementedError.
         enable_v2_manifest_paths: bool, optional
-            Not supported in LanceDB Distributed. Raises NotImplementedError.
+            Not supported in LanceDB Enterprise. Raises NotImplementedError.
 
         Returns
         -------
@@ -743,7 +745,7 @@ class RemoteDBConnection(DBConnection):
             if value is not None:
                 raise NotImplementedError(
                     f"{option} is not supported for table creation in "
-                    "LanceDB Distributed"
+                    "LanceDB Enterprise"
                 )
         if exist_ok:
             if mode == "create":
@@ -910,8 +912,7 @@ class RemoteDBConnection(DBConnection):
     def drop_all_tables(self, namespace_path: Optional[List[str]] = None):
         """Drop all tables from the database.
 
-        The remote API does not currently support this operation. Use
-        ``list_tables()`` and ``drop_table()`` to drop tables individually.
+        Lists the tables in the selected namespace and drops them one at a time.
         """
         LOOP.run(self._conn.drop_all_tables(namespace_path=namespace_path))
 
@@ -956,6 +957,13 @@ class RemoteDBConnection(DBConnection):
         [DBConnection.open_job][lancedb.db.DBConnection.open_job].
         """
         return Job(LOOP.run(self._conn.open_job(job_id)))
+
+    @override
+    def list_gpu_classes(self) -> List[GpuClass]:
+        """List configured Function GPU classes. See
+        [DBConnection.list_gpu_classes][lancedb.db.DBConnection.list_gpu_classes].
+        """
+        return LOOP.run(self._conn.list_gpu_classes())
 
     @override
     def create_function_async(
@@ -1047,6 +1055,13 @@ class RemoteDBConnection(DBConnection):
         aws_access_key_id_secret: Optional[Union[str, SecretReference]] = None,
         aws_secret_access_key_secret: Optional[Union[str, SecretReference]] = None,
         aws_region: Optional[str] = None,
+        storage_provider: Literal["S3", "AZURE", "GCP", "HUGGINGFACE"] = "S3",
+        azure_storage_account: Optional[str] = None,
+        azure_tenant_id_secret: Optional[Union[str, SecretReference]] = None,
+        azure_client_id_secret: Optional[Union[str, SecretReference]] = None,
+        azure_client_secret_secret: Optional[Union[str, SecretReference]] = None,
+        gcp_credentials_json_secret: Optional[Union[str, SecretReference]] = None,
+        huggingface_token_secret: Optional[Union[str, SecretReference]] = None,
         namespace_path: Optional[List[str]] = None,
     ) -> StorageIntegrationInfo:
         return LOOP.run(
@@ -1057,6 +1072,13 @@ class RemoteDBConnection(DBConnection):
                 aws_access_key_id_secret=aws_access_key_id_secret,
                 aws_secret_access_key_secret=aws_secret_access_key_secret,
                 aws_region=aws_region,
+                storage_provider=storage_provider,
+                azure_storage_account=azure_storage_account,
+                azure_tenant_id_secret=azure_tenant_id_secret,
+                azure_client_id_secret=azure_client_id_secret,
+                azure_client_secret_secret=azure_client_secret_secret,
+                gcp_credentials_json_secret=gcp_credentials_json_secret,
+                huggingface_token_secret=huggingface_token_secret,
                 namespace_path=namespace_path,
             )
         )
@@ -1189,6 +1211,61 @@ class RemoteDBConnection(DBConnection):
         )
 
     @override
+    def create_property_graph(
+        self,
+        name: str,
+        nodes: Sequence[NodeTable],
+        edges: Sequence[EdgeTable] = (),
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> PropertyGraph:
+        return PropertyGraph(
+            LOOP.run(
+                self._conn.create_property_graph(
+                    name, nodes, edges, namespace_path=namespace_path
+                )
+            )
+        )
+
+    @override
+    def open_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> PropertyGraph:
+        return PropertyGraph(
+            LOOP.run(
+                self._conn.open_property_graph(name, namespace_path=namespace_path)
+            )
+        )
+
+    @override
+    def drop_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(self._conn.drop_property_graph(name, namespace_path=namespace_path))
+
+    @override
+    def list_property_graphs(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> Listing[str]:
+        """List property graphs.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        return Listing(
+            self._conn.list_property_graphs(
+                namespace_path=namespace_path,
+                page_token=page_token,
+                page_limit=page_limit,
+            )
+        )
+
+    @override
     def list_jobs(
         self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
     ) -> Listing[JobInfo]:
@@ -1236,7 +1313,7 @@ class RemoteDBConnection(DBConnection):
         default_namespace_path: Optional[List[str]] = None,
         parameters: Optional[QueryParameters] = None,
     ) -> SqlQuery:
-        """Start executing SQL through this LanceDB Distributed connection.
+        """Start executing SQL through this LanceDB Enterprise connection.
 
         Unqualified tables use this connection's database and the
         ``["public"]`` namespace by default. Fully qualified table names may

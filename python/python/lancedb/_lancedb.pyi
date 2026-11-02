@@ -13,6 +13,7 @@ from .index import (
     Bitmap,
     LabelList,
     Fm,
+    NGram,
     HnswPq,
     HnswSq,
     HnswFlat,
@@ -27,6 +28,8 @@ from .remote import ClientConfig
 from .types import BaseTokenizerType
 
 _experimental_functions_enabled: bool
+
+def _parse_field_path(path: str) -> List[str]: ...
 
 IvfHnswPq: type[HnswPq] = HnswPq
 IvfHnswSq: type[HnswSq] = HnswSq
@@ -66,6 +69,11 @@ def tokenize(
     ngram_min_length: int = 3,
     ngram_max_length: int = 3,
     prefix_only: bool = False,
+    analyzer: Optional[Literal["text", "code"]] = None,
+    split_identifiers: Optional[bool] = None,
+    split_on_numerics: Optional[bool] = None,
+    preserve_original: Optional[bool] = None,
+    index_operators: Optional[bool] = None,
 ) -> List["FtsToken"]: ...
 
 class PyExpr:
@@ -111,6 +119,16 @@ class Session:
     @property
     def approx_num_items(self) -> int: ...
 
+class GpuClass:
+    name: str
+    resource_name: str
+    gpu_model: Optional[str]
+    gpu_memory_bytes: Optional[int]
+    max_gpu_count_per_worker: Optional[int]
+    cpu_millis: Optional[int]
+    memory_bytes: Optional[int]
+    ephemeral_storage_bytes: Optional[int]
+
 class Connection(object):
     uri: str
     async def is_open(self): ...
@@ -152,6 +170,7 @@ class Connection(object):
         limit: Optional[int],
     ) -> list[str]: ...  # Deprecated: Use list_tables instead
     async def open_job(self, job_id: str) -> Job: ...
+    async def list_gpu_classes(self) -> list[GpuClass]: ...
     async def create_function_async(
         self, request_json: str, namespace_path: Optional[List[str]] = None
     ) -> Job: ...
@@ -219,6 +238,25 @@ class Connection(object):
         self, name: str, namespace_path: Optional[List[str]] = None
     ) -> Job: ...
     def list_views(
+        self,
+        namespace_path: Optional[List[str]] = None,
+        *,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> NameListing: ...
+    async def create_property_graph(
+        self,
+        name: str,
+        definition_json: str,
+        namespace_path: Optional[List[str]] = None,
+    ) -> str: ...
+    async def describe_property_graph(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> str: ...
+    async def drop_property_graph(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> None: ...
+    def list_property_graphs(
         self,
         namespace_path: Optional[List[str]] = None,
         *,
@@ -478,6 +516,7 @@ class Table:
             Bitmap,
             LabelList,
             Fm,
+            NGram,
             FTS,
         ],
         replace: Optional[bool],
@@ -500,6 +539,7 @@ class Table:
             Bitmap,
             LabelList,
             Fm,
+            NGram,
             FTS,
         ],
         replace: Optional[bool],
@@ -538,8 +578,22 @@ class Table:
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[int] = None,
     ) -> AddColumnsResult: ...
-    async def refresh_column(self, column: str) -> RefreshColumnResult: ...
-    async def refresh_column_async(self, column: str) -> Job: ...
+    async def refresh_column(
+        self,
+        column: str,
+        *,
+        batch_size: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
+    ) -> RefreshColumnResult: ...
+    async def refresh_column_async(
+        self,
+        column: str,
+        *,
+        batch_size: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
+    ) -> Job: ...
     async def function_errors(
         self,
         job_id: Optional[str] = None,
@@ -574,6 +628,9 @@ class Table:
     async def enable_rte(self, spec: RTEWriteSpec) -> None: ...
     async def disable_rte(self) -> None: ...
     async def get_rte_spec(self) -> Optional[RTEWriteSpec]: ...
+    async def get_table_overrides(self) -> str: ...
+    async def update_table_overrides(self, overrides_json: str) -> str: ...
+    async def reset_table_overrides(self) -> str: ...
     # WAL-PK-FUSION: delete both.
     def hybrid_pk_fusion_learned(self) -> bool: ...
     def note_hybrid_pk_fusion(self) -> None: ...
@@ -918,6 +975,7 @@ class FunctionErrorRecord:
     job_id: str
     fragment_id: int
     row_offset: Optional[int]
+    row_address: Optional[int]
     column: str
     function: str
     function_version: str

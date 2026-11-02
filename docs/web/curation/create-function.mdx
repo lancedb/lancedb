@@ -92,16 +92,26 @@ and remote-API Functions both build on below.
 
 ## GPU: batch inference, loaded once {#gpu}
 
-`gpu=True` requires a GPU-capable worker for every execution. Combined with
-the batch and stateful forms above, a realistic embedding model loads once
-in `__init__` and runs one forward pass per batch, not one per row:
+`db.list_gpu_classes()` lists the GPU classes configured for the deployment.
+Each record reports the operator's hardware description and limits; it does
+not mean a GPU is currently free. Listing requires the System Usage
+permission. Pass a returned class name to `gpu_class` to fix that placement
+in the Function version. `gpu=True` remains required:
 
 <CodeGroup>
 ```python Python icon="python"
 import pyarrow as pa
 from lancedb import udf
 
-@udf(gpu=True, pip=["torch==2.12.0", "sentence-transformers==5.7.0"])
+gpu_class = next(
+    gpu.name for gpu in db.list_gpu_classes() if gpu.gpu_model == "NVIDIA A10G"
+)
+
+@udf(
+    gpu=True,
+    gpu_class=gpu_class,
+    pip=["torch==2.12.0", "sentence-transformers==5.7.0"],
+)
 class embed_text:
     def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
         import torch
@@ -119,6 +129,12 @@ version = db.create_function_async(embed_text).wait()
 table.add_columns({"embedding": version(text=col("caption"))})
 ```
 </CodeGroup>
+
+Older servers that do not implement `GET /v1/gpu/classes` raise
+`NotImplementedError`. Without `gpu_class`, the deployment's default GPU
+class is used. The class is immutable with the Function version; set a
+per-refresh class or aggregate GPU budget through
+[`refresh_column_async`](/feature-engineering/refresh-column#resources).
 
 The model loads once per worker instance, in `__init__`; `__call__` only
 encodes the batch it was handed. Registering the same logic as a plain

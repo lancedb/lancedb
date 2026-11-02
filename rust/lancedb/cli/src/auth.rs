@@ -221,7 +221,7 @@ impl ManagedOidc {
     async fn sdk_config(&self) -> Result<OAuthConfig> {
         let flow = match self.config.flow {
             OidcFlow::ClientCredentials => OAuthFlow::ClientCredentials,
-            OidcFlow::DeviceCode => OAuthFlow::DeviceCode,
+            OidcFlow::DeviceCode => OAuthFlow::DeviceCode(Default::default()),
             OidcFlow::AuthorizationCode => {
                 let mut options = AuthorizationCodeOptions::new();
                 if let Some(uri) = &self.config.redirect_uri {

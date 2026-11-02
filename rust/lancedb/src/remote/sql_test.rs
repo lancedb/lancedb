@@ -1098,6 +1098,7 @@ async fn remote_refresh_omits_unknown_metrics_and_forwards_full() {
     });
     let table = RemoteTable::new_with_sql_client(
         client,
+        "analytics".into(),
         "view".into(),
         vec!["ns".into()],
         "ns$view".into(),
@@ -1204,6 +1205,7 @@ async fn cancelling_remote_refresh_cancels_sql_query() {
     });
     let table = RemoteTable::new_with_sql_client(
         client,
+        "analytics".into(),
         "cancel_view".into(),
         vec![],
         "cancel_view".into(),
@@ -2157,6 +2159,7 @@ async fn remote_describe_materialized_view_preserves_the_sql_definition() {
             client_with_handler(|request| -> http::Response<String> {
                 panic!("unexpected REST request: {}", request.url().path());
             }),
+            "analytics".into(),
             "daily_sales".into(),
             vec!["analytics".into()],
             "analytics$daily_sales".into(),
@@ -2416,8 +2419,11 @@ async fn secret_writes_bind_credentials_and_never_put_them_in_sql() {
         );
         let seen = exchanges.lock().unwrap();
         assert_eq!(seen.len(), 2);
-        assert_eq!(seen[0].0, "CREATE SECRET \"api-key\" AS $1");
-        assert_eq!(seen[1].0, "ALTER SECRET \"api-key\" AS $1");
+        assert_eq!(
+            seen[0].0,
+            "CREATE SECRET \"api-key\" TYPE = GENERIC_STRING SECRET_STRING = $1"
+        );
+        assert_eq!(seen[1].0, "ALTER SECRET \"api-key\" SET SECRET_STRING = $1");
         assert_eq!(
             seen[0]
                 .1
@@ -2447,11 +2453,20 @@ async fn secret_writes_bind_credentials_and_never_put_them_in_sql() {
 }
 #[tokio::test]
 async fn secret_description_uses_the_sql_metadata_projection() {
-    let definition = r#"{"name":"api-key","created_at_millis":1,"updated_at_millis":2,"history":[{"generation":2,"at_millis":2}]}"#;
-    let result = RecordBatch::try_from_iter(vec![(
-        "definition",
-        Arc::new(StringArray::from(vec![definition])) as ArrayRef,
-    )])
+    let result = RecordBatch::try_from_iter(vec![
+        (
+            "name",
+            Arc::new(StringArray::from(vec!["api-key"])) as ArrayRef,
+        ),
+        (
+            "created_at_millis",
+            Arc::new(arrow_array::Int64Array::from(vec![1])) as ArrayRef,
+        ),
+        (
+            "updated_at_millis",
+            Arc::new(arrow_array::Int64Array::from(vec![2])) as ArrayRef,
+        ),
+    ])
     .unwrap();
     let service = TestSqlService {
         adaptive: true,
@@ -2622,9 +2637,16 @@ async fn function_listing_uses_bounded_sql_and_scoped_version_cursors() {
     let mut second: serde_json::Value = serde_json::from_str(VERSION).unwrap();
     second["version"] = serde_json::json!("2");
     let second = second.to_string();
+    let mut tenth: serde_json::Value = serde_json::from_str(VERSION).unwrap();
+    tenth["version"] = serde_json::json!("10");
+    let tenth = tenth.to_string();
     let result = RecordBatch::try_from_iter(vec![(
         "definition",
-        Arc::new(StringArray::from(vec![VERSION, second.as_str()])) as ArrayRef,
+        Arc::new(StringArray::from(vec![
+            VERSION,
+            second.as_str(),
+            tenth.as_str(),
+        ])) as ArrayRef,
     )])
     .unwrap();
     let service = TestSqlService {
@@ -2633,6 +2655,10 @@ async fn function_listing_uses_bounded_sql_and_scoped_version_cursors() {
         result,
         ..Default::default()
     };
+    service.result_overrides.lock().unwrap().insert(
+        "SHOW FUNCTIONS HISTORY WITH (limit = 3, include_definition = true, after_name = 'embed', after_version = '2')".into(),
+        RecordBatch::try_from_iter(vec![("definition", Arc::new(StringArray::from(vec![tenth.as_str()])) as ArrayRef)]).unwrap(),
+    );
     let statements = service.statements.clone();
     let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
     let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
@@ -2642,29 +2668,36 @@ async fn function_listing_uses_bounded_sql_and_scoped_version_cursors() {
     let first = db
         .list_functions(
             &["team".into()],
-            crate::listing::ListingOptions::default().page_limit(1),
+            crate::listing::ListingOptions::default().page_limit(2),
         )
         .await
         .unwrap();
-    assert_eq!(first.items.len(), 1);
+    assert_eq!(
+        first
+            .items
+            .iter()
+            .map(|item| item.version())
+            .collect::<Vec<_>>(),
+        ["1", "2"]
+    );
     let token = first.page_token.unwrap();
     let second = db
         .list_functions(
             &["team".into()],
             crate::listing::ListingOptions::default()
-                .page_limit(1)
+                .page_limit(2)
                 .page_token(token.clone()),
         )
         .await
         .unwrap();
     assert_eq!(second.items.len(), 1);
-    assert_eq!(second.items[0].version(), "2");
+    assert_eq!(second.items[0].version(), "10");
     assert!(second.page_token.is_none());
     assert!(
         db.list_functions(
             &["other".into()],
             crate::listing::ListingOptions::default()
-                .page_limit(1)
+                .page_limit(2)
                 .page_token(token)
         )
         .await
@@ -2672,19 +2705,29 @@ async fn function_listing_uses_bounded_sql_and_scoped_version_cursors() {
     );
     let seen = statements.lock().unwrap();
     assert_eq!(seen.len(), 2);
-    assert!(seen[0].contains("limit = 2"));
-    assert!(seen[1].contains("after_version = '1'"));
+    assert!(seen[0].starts_with("SHOW FUNCTIONS HISTORY WITH (limit = 3,"));
+    assert!(seen[1].contains("after_version = '2'"));
     shutdown.send(()).unwrap();
 }
 
 #[tokio::test]
 async fn view_create_and_describe_return_metadata_through_sql() {
-    let definition = r#"{"name":"adults","namespace":["team"],"query":"SELECT name FROM people","default_database":"db","default_namespace":["team"],"schema":{"fields":[{"name":"name","nullable":true,"type":{"type":"utf8"}}]}}"#;
+    let schema = r#"{"fields":[{"name":"name","nullable":true,"type":{"type":"utf8"}}],"metadata":{"lancedb::view::default_db":"db","lancedb::view::default_namespace":"team"}}"#;
     for defer in [false, true] {
-        let result = RecordBatch::try_from_iter(vec![(
-            "definition",
-            Arc::new(StringArray::from(vec![definition])) as ArrayRef,
-        )])
+        let result = RecordBatch::try_from_iter(vec![
+            (
+                "name",
+                Arc::new(StringArray::from(vec!["adults"])) as ArrayRef,
+            ),
+            (
+                "query",
+                Arc::new(StringArray::from(vec!["SELECT name FROM people"])) as ArrayRef,
+            ),
+            (
+                "schema",
+                Arc::new(StringArray::from(vec![schema])) as ArrayRef,
+            ),
+        ])
         .unwrap();
         let service = TestSqlService {
             adaptive: true,
