@@ -1556,6 +1556,10 @@ fn apply_row_repair(
 /// disjoint accepted repairs compose. Replaying the same accepted transition
 /// is idempotent. Overlapping publications are settled by their data-commit
 /// witnesses; this API deliberately does not invent a second per-row lease.
+///
+/// `verified_version` is the latest version whose publication survival the
+/// caller verified. Finalization refuses to leave that manifest; a concurrent
+/// Restore still conflicts with the metadata commit.
 pub async fn finish_row_repair(
     dataset: &mut Dataset,
     column: &str,
@@ -1564,6 +1568,7 @@ pub async fn finish_row_repair(
     token: &RowStateToken,
     filled_rows: &BTreeMap<u32, RoaringBitmap>,
     skipped_rows: &BTreeMap<u32, RoaringBitmap>,
+    verified_version: Option<u64>,
 ) -> Result<u64> {
     if !is_sha256_hex(&token.intent_digest) {
         return Err(invalid("row repair token is malformed".to_string()));
@@ -1578,6 +1583,11 @@ pub async fn finish_row_repair(
         ));
     }
     dataset.checkout_latest().await?;
+    if verified_version.is_some_and(|version| dataset.version().version != version) {
+        return Err(invalid(
+            "row repair latest version changed after publication verification".to_string(),
+        ));
+    }
     let (mut state, current_digest) = match stored_freshness_state(dataset, column).await {
         StoredFreshnessState::Present {
             state,
@@ -1806,6 +1816,7 @@ mod tests {
             &token,
             &BTreeMap::from([(0, RoaringBitmap::from_iter([1]))]),
             &BTreeMap::from([(0, RoaringBitmap::from_iter([2]))]),
+            None,
         )
         .await
         .unwrap();
@@ -1831,6 +1842,7 @@ mod tests {
                 &token,
                 &BTreeMap::from([(0, RoaringBitmap::from_iter([1]))]),
                 &BTreeMap::from([(0, RoaringBitmap::from_iter([2]))]),
+                None,
             )
             .await
             .unwrap(),
@@ -1864,6 +1876,7 @@ mod tests {
             &token,
             &BTreeMap::from([(0, RoaringBitmap::from_iter([0]))]),
             &BTreeMap::new(),
+            None,
         )
         .await
         .unwrap();
@@ -1911,6 +1924,7 @@ mod tests {
             &token,
             &BTreeMap::from([(0, RoaringBitmap::from_iter([1]))]),
             &BTreeMap::from([(1, RoaringBitmap::from_iter([2]))]),
+            None,
         )
         .await
         .unwrap();
@@ -1963,6 +1977,7 @@ mod tests {
             &first,
             &BTreeMap::from([(0, RoaringBitmap::from_iter([1]))]),
             &BTreeMap::new(),
+            None,
         )
         .await
         .expect_err("a newer dirty intent must fence a non-noop finish");
@@ -1971,6 +1986,62 @@ mod tests {
             "{error}"
         );
         assert_eq!(stored_row_states(&dataset, COLUMN).await, before);
+    }
+
+    #[tokio::test]
+    async fn recovery_rejects_a_restore_after_publication_verification() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dataset = table(dir.path().to_str().unwrap()).await;
+        stamp_all(&mut dataset).await;
+        let definition = definition_version(EXPRESSION);
+        let ids = inputs(&dataset);
+        let repairs = BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([1])))]);
+        let token = begin_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            "accepted-input-basis",
+            &repairs,
+        )
+        .await
+        .unwrap();
+        let intent_version = dataset.version().version;
+        let verified = dataset
+            .update_schema_metadata([("fixture.publication".to_string(), "1".to_string())])
+            .await
+            .unwrap()
+            .version()
+            .version;
+
+        let mut intent = dataset.checkout_version(intent_version).await.unwrap();
+        intent.restore().await.unwrap();
+        let before = stored_row_states(&dataset, COLUMN).await;
+        let error = finish_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            &token,
+            &BTreeMap::from([(0, RoaringBitmap::from_iter([1]))]),
+            &BTreeMap::new(),
+            Some(verified),
+        )
+        .await
+        .expect_err("a restore after verification must fence recovery finalization");
+
+        assert!(
+            error
+                .to_string()
+                .contains("latest version changed after publication verification"),
+            "{error}"
+        );
+        assert_eq!(stored_row_states(&dataset, COLUMN).await, before);
+        assert_eq!(
+            plan(&dataset).await.row_dirty.get(&0),
+            Some(&DirtyRows::Rows(RoaringBitmap::from_iter([1]))),
+            "the recovered row must remain retryable"
+        );
     }
 
     #[tokio::test]
@@ -2000,6 +2071,7 @@ mod tests {
             &token,
             &filled,
             &BTreeMap::new(),
+            None,
         )
         .await
         .unwrap();
@@ -2017,6 +2089,7 @@ mod tests {
                 &token,
                 &filled,
                 &BTreeMap::new(),
+                None,
             )
             .await
             .unwrap(),
@@ -2032,6 +2105,7 @@ mod tests {
             &token,
             &filled,
             &BTreeMap::new(),
+            None,
         )
         .await
         .expect_err("legacy absence cannot prove an accepted generation");
@@ -2070,6 +2144,7 @@ mod tests {
             &token,
             &BTreeMap::from([(0, RoaringBitmap::from_iter([2]))]),
             &BTreeMap::new(),
+            None,
         )
         .await
         .expect_err("a token must not clear rows it did not select");
@@ -2108,6 +2183,7 @@ mod tests {
             &stale,
             &BTreeMap::new(),
             &BTreeMap::from([(0, RoaringBitmap::from_iter([1]))]),
+            None,
         )
         .await
         .unwrap();
@@ -2162,6 +2238,7 @@ mod tests {
             &stale,
             &BTreeMap::new(),
             &BTreeMap::from([(0, RoaringBitmap::from_iter([1]))]),
+            None,
         )
         .await
         .unwrap();
@@ -2291,6 +2368,7 @@ mod tests {
             &token,
             &BTreeMap::new(),
             &BTreeMap::from([(0, RoaringBitmap::from_iter([1]))]),
+            None,
         )
         .await
         .unwrap();
