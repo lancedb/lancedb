@@ -1561,9 +1561,11 @@ fn apply_row_repair(
 /// witnesses; this API deliberately does not invent a second per-row lease.
 ///
 /// `verified_version` is the latest version whose publication survival the
-/// caller verified. Finalization commits field metadata conditionally from
-/// that exact version, so a Restore before or during the commit fails instead
-/// of being rebased underneath the verified publication.
+/// caller verified. With `Some`, finalization commits field metadata
+/// conditionally from that exact version, so a Restore before or during the
+/// commit fails instead of being rebased underneath the verified publication;
+/// with `None`, it uses ordinary metadata-commit semantics and provides no
+/// version fence.
 pub async fn finish_row_repair(
     dataset: &mut Dataset,
     column: &str,
