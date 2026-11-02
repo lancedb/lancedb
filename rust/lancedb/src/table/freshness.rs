@@ -1313,7 +1313,7 @@ pub async fn write_signatures(
         state.basis.clear();
     }
     Ok(
-        write_freshness_state(dataset, column, definition_version, state, false)
+        write_freshness_state(dataset, column, definition_version, state, false, None)
             .await?
             .version,
     )
@@ -1330,6 +1330,7 @@ async fn write_freshness_state(
     definition_version: &str,
     state: FreshnessState,
     retain_empty_sidecar: bool,
+    expected_latest_version: Option<u64>,
 ) -> Result<FreshnessWrite> {
     let state = state.normalize()?;
     let inline_empty = state.signatures.is_empty()
@@ -1360,10 +1361,11 @@ async fn write_freshness_state(
             Some(describes.to_string()),
         ),
     ];
-    dataset
-        .update_field_metadata()
-        .update(column, updates)?
-        .await?;
+    let builder = dataset.update_field_metadata().update(column, updates)?;
+    match expected_latest_version {
+        Some(expected) => builder.with_expected_latest_version(expected).await?,
+        None => builder.await?,
+    };
     Ok(FreshnessWrite {
         version: dataset.version().version,
         intent_digest,
@@ -1485,7 +1487,8 @@ pub async fn begin_row_repair(
         .retain(|fragment_id, _| live.contains(fragment_id));
     freshness.basis = basis.clone();
 
-    let write = write_freshness_state(dataset, column, definition_version, freshness, true).await?;
+    let write =
+        write_freshness_state(dataset, column, definition_version, freshness, true, None).await?;
     let intent_digest = write
         .intent_digest
         .ok_or_else(|| invalid("row repair dirty intent produced no sidecar".to_string()))?;
@@ -1558,8 +1561,9 @@ fn apply_row_repair(
 /// witnesses; this API deliberately does not invent a second per-row lease.
 ///
 /// `verified_version` is the latest version whose publication survival the
-/// caller verified. Finalization refuses to leave that manifest; a concurrent
-/// Restore still conflicts with the metadata commit.
+/// caller verified. Finalization commits field metadata conditionally from
+/// that exact version, so a Restore before or during the commit fails instead
+/// of being rebased underneath the verified publication.
 pub async fn finish_row_repair(
     dataset: &mut Dataset,
     column: &str,
@@ -1642,7 +1646,15 @@ pub async fn finish_row_repair(
         ));
     }
     state.basis = token.basis.clone();
-    let write = write_freshness_state(dataset, column, definition_version, state, true).await?;
+    let write = write_freshness_state(
+        dataset,
+        column,
+        definition_version,
+        state,
+        true,
+        verified_version,
+    )
+    .await?;
     Ok(write.version)
 }
 
