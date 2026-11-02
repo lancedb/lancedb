@@ -148,7 +148,7 @@ jobs:
           command: check advisories bans licenses sources
 
   build-no-lock:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-2404-8x-x64
     timeout-minutes: 30
     env:
       # Need up-to-date compilers for kernels
