@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import json
-from typing import Dict, Optional, Set, Tuple, Type
+from typing import Dict, Mapping, Optional, Set, Tuple, Type, Union
 
 from pydantic import TypeAdapter
 
@@ -14,7 +14,7 @@ from .base import (
 
 
 def _embedding_column_pairs(
-    metadata: Optional[Dict[bytes, bytes]],
+    metadata: Optional[Mapping[Union[bytes, str], Union[bytes, str]]],
 ) -> list[Tuple[str, str]]:
     """Return source/vector pairs without restoring embedding functions."""
     pairs = []
