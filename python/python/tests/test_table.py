@@ -2965,6 +2965,129 @@ async def test_update_embedding_source_with_multiple_vectors(
     assert (await update({"id": "3" if use_sql else 3})).rows_updated == 1
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("async_api", [False, True])
+@pytest.mark.parametrize("source_target", ["text", "`text`"])
+async def test_update_embedding_source_requires_native_vector_metadata(
+    tmp_path, async_api, source_target
+):
+    vector_type = pa.list_(pa.float32(), 2)
+    column_definitions = [
+        {"kind": "Physical"},
+        {"kind": "Physical"},
+        {
+            "kind": {
+                "Embedding": {
+                    "source_column": "text",
+                    "dest_column": "vector",
+                    "embedding_name": "native-explicit",
+                }
+            }
+        },
+        {
+            "kind": {
+                "Embedding": {
+                    "source_column": "text",
+                    "dest_column": None,
+                    "embedding_name": "native-default",
+                }
+            }
+        },
+    ]
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("text", pa.string()),
+            pa.field("vector", vector_type),
+            pa.field("text_embedding", vector_type),
+        ],
+        metadata={
+            b"lancedb::column_definitions": json.dumps(column_definitions).encode()
+        },
+    )
+    data = pa.Table.from_pylist(
+        [
+            {
+                "id": 1,
+                "text": "hello world",
+                "vector": [1.0, 0.0],
+                "text_embedding": [0.0, 1.0],
+            },
+            {
+                "id": 2,
+                "text": "goodbye world",
+                "vector": [0.5, 0.5],
+                "text_embedding": [0.25, 0.75],
+            },
+        ],
+        schema=schema,
+    )
+
+    if async_api:
+        db = await lancedb.connect_async(tmp_path)
+        table = await db.create_table("docs", data)
+        table_schema = await table.schema()
+        before = await table.to_arrow()
+        version = await table.version()
+    else:
+        db = lancedb.connect(tmp_path)
+        table = db.create_table("docs", data)
+        table_schema = table.schema
+        before = table.to_arrow()
+        version = table.version
+
+    metadata = table_schema.metadata or {}
+    assert b"lancedb::column_definitions" in metadata
+    assert b"embedding_function_columns" not in metadata
+
+    async def update(values):
+        if async_api:
+            return await table.update(values, where="id = 1")
+        return table.update(values=values, where="id = 1")
+
+    with pytest.raises(
+        ValueError, match="source column 'text'.*vector column 'vector'"
+    ):
+        await update({source_target: "updated text"})
+
+    if async_api:
+        assert (await table.to_arrow()).equals(before)
+        assert await table.version() == version
+    else:
+        assert table.to_arrow().equals(before)
+        assert table.version == version
+
+    with pytest.raises(
+        ValueError, match="source column 'text'.*vector column 'text_embedding'"
+    ):
+        await update({source_target: "updated text", "vector": [2.0, 3.0]})
+
+    if async_api:
+        assert (await table.to_arrow()).equals(before)
+        assert await table.version() == version
+    else:
+        assert table.to_arrow().equals(before)
+        assert table.version == version
+
+    result = await update(
+        {
+            source_target: "updated text",
+            "vector": [2.0, 3.0],
+            "text_embedding": [4.0, 5.0],
+        }
+    )
+    assert result.rows_updated == 1
+    assert (await update({"vector": [6.0, 7.0]})).rows_updated == 1
+    assert (await update({"id": 99})).rows_updated == 1
+
+    actual = await table.to_arrow() if async_api else table.to_arrow()
+    rows = {row["id"]: row for row in actual.to_pylist()}
+    assert rows[99]["text"] == "updated text"
+    assert np.allclose(rows[99]["vector"], [6.0, 7.0])
+    assert np.allclose(rows[99]["text_embedding"], [4.0, 5.0])
+    assert rows[2]["text"] == "goodbye world"
+
+
 def test_update_expr_filter_literals(mem_db: DBConnection):
     values = ["5", "4.66e-84", "it's"]
     table = mem_db.create_table(

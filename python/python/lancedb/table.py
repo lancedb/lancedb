@@ -63,6 +63,7 @@ import numpy as np
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
+from .embeddings.registry import _embedding_column_pairs
 from .index import (
     BTree,
     IvfFlat,
@@ -7397,13 +7398,11 @@ class AsyncTable:
         # Only the column mappings are needed here. Restoring embedding functions
         # could load models even for updates that provide their own vectors.
         schema = await self.schema()
-        configs = json.loads((schema.metadata or {}).get(b"embedding_functions", b"[]"))
-        if configs:
+        column_pairs = _embedding_column_pairs(schema.metadata)
+        if column_pairs:
             # Metadata names are literal top-level fields; targets may be quoted.
             updated_columns = {tuple(_parse_field_path(name)) for name in updates_sql}
-            for config in configs:
-                source_column = config["source_column"]
-                vector_column = config["vector_column"]
+            for source_column, vector_column in column_pairs:
                 source_updated = (source_column,) in updated_columns
                 vector_updated = (vector_column,) in updated_columns
                 if source_updated and not vector_updated:
