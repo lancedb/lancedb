@@ -4510,33 +4510,68 @@ mod tests {
 
     #[test]
     fn test_blob_children_under_lists_are_output_only() {
-        let frames = ArrowField::new(
-            "frames",
+        let input = crate::blob("image", false);
+        let accepted = [
             DataType::List(Arc::new(crate::blob("item", true))),
-            false,
-        );
-        let json =
-            lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(vec![frames])).unwrap();
-        let raw = serde_json::to_string(json.fields[0].r#type.as_ref()).unwrap();
+            DataType::LargeList(Arc::new(crate::blob("item", true))),
+        ];
+        for data_type in accepted {
+            let output_type = exact_arrow_type(ArrowField::new("frames", data_type, false));
+            let output = serde_json::json!({
+                "kind": "scalar",
+                "arrow_type": output_type,
+                "nullable": false
+            });
+            let application = blob_application(&output.to_string());
+            let plan = plan_function_application(
+                &ArrowSchema::new(vec![input.clone()]),
+                &application,
+                Some("frames"),
+            )
+            .unwrap();
 
-        let field = function_output_field("frames", false, &raw).unwrap();
+            assert_eq!(plan.outputs.len(), 1);
+            assert_eq!(plan.outputs[0].output_name, "frames");
+            assert!(plan.output_schema.fields[0].nullable);
+            let schema =
+                lance_namespace::schema::convert_json_arrow_schema(&plan.output_schema).unwrap();
+            let item = match schema.field(0).data_type() {
+                DataType::List(item) | DataType::LargeList(item) => item,
+                other => panic!("expected a list output, got {other}"),
+            };
+            assert!(item.is_blob_v2());
+        }
 
-        let field = lance_namespace::schema::convert_json_arrow_field(&field).unwrap();
-        let DataType::List(item) = field.data_type() else {
-            panic!("expected a list output, got {}", field.data_type())
-        };
-        assert!(item.is_blob_v2());
-
-        let fixed = ArrowField::new(
-            "frames",
+        let rejected = [
             DataType::FixedSizeList(Arc::new(crate::blob("item", true)), 2),
-            false,
-        );
-        let json =
-            lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(vec![fixed])).unwrap();
-        let raw = serde_json::to_string(json.fields[0].r#type.as_ref()).unwrap();
-        let error = function_output_field("frames", false, &raw).unwrap_err();
-        assert!(error.to_string().contains("nests Blob v2"), "{error}");
+            DataType::Map(
+                Arc::new(ArrowField::new(
+                    "entries",
+                    DataType::Struct(Fields::from(vec![
+                        ArrowField::new("key", DataType::Utf8, false),
+                        crate::blob("value", true),
+                    ])),
+                    false,
+                )),
+                false,
+            ),
+        ];
+        for data_type in rejected {
+            let output_type = exact_arrow_type(ArrowField::new("frames", data_type, false));
+            let output = serde_json::json!({
+                "kind": "scalar",
+                "arrow_type": output_type,
+                "nullable": false
+            });
+            let application = blob_application(&output.to_string());
+            let error = plan_function_application(
+                &ArrowSchema::new(vec![input.clone()]),
+                &application,
+                Some("frames"),
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("nests Blob v2"), "{error}");
+        }
     }
 
     #[test]

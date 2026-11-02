@@ -1256,6 +1256,32 @@ def test_blob_output_rejects_map_and_fixed_size_list_ancestors(data_type):
             return {}
 
 
+def test_blob_output_named_struct_accepts_list_ancestor():
+    frames_type = pa.list_(lancedb.blob("item", nullable=False))
+
+    @udf(
+        input_schema=pa.schema([pa.field("id", pa.int64(), nullable=False)]),
+        output_schema=pa.schema(
+            [
+                pa.field("frames", frames_type, nullable=False),
+                pa.field("count", pa.int64(), nullable=False),
+            ]
+        ),
+    )
+    def extract_frames(id: int) -> dict:
+        return {"frames": [], "count": 0}
+
+    output = extract_frames.registration_request.signature.output
+    assert output.kind == "named_struct"
+    assert [field.name for field in output.fields] == ["frames", "count"]
+    assert json.loads(output.fields[0].arrow_type) == _exact_arrow_type(
+        frames_type, collection_blobs=True
+    )
+    assert "lance.blob.v2" in output.fields[0].arrow_type
+    assert output.fields[1].arrow_type == "int64"
+    assert output.fields[1].nullable is False
+
+
 @pytest.mark.parametrize(
     "data_type",
     [
@@ -1979,6 +2005,86 @@ def test_vectorized_blob_udf_executes_packaged_artifact_and_publishes(tmp_path):
         b"copy:large blob",
         b"copy:",
         b"missing",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("declared_list", "physical_list", "array_type", "declared_name"),
+    [
+        (pa.list_, pa.list_, pa.ListArray, "list"),
+        (pa.large_list, pa.large_list, pa.LargeListArray, "large_list"),
+    ],
+    ids=["list", "large_list"],
+)
+def test_blob_list_output_fresh_artifact_survives_local_reopen(
+    tmp_path, declared_list, physical_list, array_type, declared_name
+):
+    input_type = physical_list(pa.int64())
+    item = lancedb.blob("item", nullable=True)
+
+    @udf(
+        input_schema=pa.schema([pa.field("frames", input_type, nullable=False)]),
+        output_schema=pa.field("frames", declared_list(item), nullable=False),
+    )
+    def extract_frames(frames: pa.Array) -> pa.Array:
+        output_type = (
+            pa.large_list(pa.large_binary())
+            if isinstance(frames, pa.LargeListArray)
+            else pa.list_(pa.large_binary())
+        )
+        return pa.array([[b"abc", None, b""], []], type=output_type)
+
+    request = json.loads(extract_frames.registration_request.to_canonical_json())
+    declared = json.loads(request["signature"]["output"]["arrow_type"])
+    assert declared["type"] == declared_name
+    item_field = declared["fields"][0]
+    assert item_field["metadata"]["ARROW:extension:name"] == "lance.blob.v2"
+
+    result = _execute_registered_array_udf_v1(
+        request,
+        pa.RecordBatch.from_arrays(
+            [pa.array([[0], [1]], type=input_type)],
+            names=["frames"],
+        ),
+    )
+    assert isinstance(result, array_type)
+    assert result.type == physical_list(pa.large_binary())
+    assert result.offsets.to_pylist() == [0, 3, 3]
+    assert result.values.to_pylist() == [b"abc", None, b""]
+    assert result.to_pylist() == [[b"abc", None, b""], []]
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "fresh_artifact_frames",
+        schema=pa.schema(
+            [
+                pa.field("id", pa.int64(), nullable=False),
+                pa.field("frames", declared_list(item), nullable=False),
+            ]
+        ),
+    )
+    table.add(
+        pa.Table.from_arrays(
+            [pa.array([1, 2], type=pa.int64()), result],
+            names=["id", "frames"],
+        )
+    )
+
+    reopened = lancedb.connect(tmp_path).open_table("fresh_artifact_frames")
+    reopened_item = reopened.schema.field("frames").type.value_field
+    assert reopened_item.type.extension_name == "lance.blob.v2"
+    assert reopened.blob_columns() == []
+    hits = reopened.search().limit(2).to_arrow().sort_by([("id", "ascending")])
+    lists = hits["frames"].combine_chunks()
+    assert isinstance(lists, array_type)
+    assert lists.offsets.to_pylist() == [0, 3, 3]
+
+    rows = lists.to_pylist()
+    assert rows[1] == []
+    assert [None if value is None else value["size"] for value in rows[0]] == [
+        3,
+        None,
+        0,
     ]
 
 

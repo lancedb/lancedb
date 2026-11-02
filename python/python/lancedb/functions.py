@@ -2380,7 +2380,9 @@ def udf(
     A Blob v2 field may sit at the top level or inside a struct in inputs and
     outputs. Only outputs may nest it in a list or large list (for example
     ``pa.list_(lancedb.blob("item"))``, returned as a list of ``bytes``);
-    fixed-size lists and maps are not supported.
+    fixed-size lists and maps are not supported. List-nested Blob v2 values
+    are queryable as Blob descriptors, but the row-id blob fetch APIs and
+    ``blob_mode="bytes"`` cannot fetch payloads inside lists.
     """
 
     def decorate(target: Any) -> UdfDefinition:
