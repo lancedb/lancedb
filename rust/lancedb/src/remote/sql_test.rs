@@ -2300,6 +2300,8 @@ async fn function_creation_and_description_use_sql_query_handles() {
     );
     for defer in [false, true] {
         let mut request_json: serde_json::Value = serde_json::from_str(REQUEST).unwrap();
+        request_json["batch_size"] = serde_json::json!(2);
+        request_json["row_timeout_seconds"] = serde_json::json!(0.75);
         request_json["secret_bindings"] = serde_json::json!([{
             "kind": "env",
             "variable": "HF_TOKEN",
