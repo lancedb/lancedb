@@ -2007,12 +2007,14 @@ mod tests {
         .await
         .unwrap();
         let intent_version = dataset.version().version;
-        let verified = dataset
-            .update_schema_metadata([("fixture.publication".to_string(), "1".to_string())])
-            .await
+        let mut publication = dataset.clone();
+        publication
+            .update_field_metadata()
+            .update(COLUMN, [("fixture.publication", "1")])
             .unwrap()
-            .version()
-            .version;
+            .await
+            .unwrap();
+        let verified = publication.version().version;
 
         let mut intent = dataset.checkout_version(intent_version).await.unwrap();
         intent.restore().await.unwrap();
