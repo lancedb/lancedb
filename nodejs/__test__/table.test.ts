@@ -4559,14 +4559,14 @@ describe.each(arrowVersions)(
       ];
       const table = await db.createTable("prewarm_data_test", data);
 
-      // prewarmData is only supported in LanceDB Distributed. We verify the call
+      // prewarmData is only supported in LanceDB Enterprise. We verify the call
       // is wired through napi and surfaces the expected error for both
       // arg shapes (undefined and string[]).
       await expect(table.prewarmData()).rejects.toThrow(
-        "prewarm_data is currently only supported in LanceDB Distributed",
+        "prewarm_data is currently only supported in LanceDB Enterprise",
       );
       await expect(table.prewarmData(["text"])).rejects.toThrow(
-        "prewarm_data is currently only supported in LanceDB Distributed",
+        "prewarm_data is currently only supported in LanceDB Enterprise",
       );
     });
 
@@ -5577,7 +5577,7 @@ describe("computed columns", () => {
     const db = await connect(tmpDir.name);
     const table = await db.createTable("errors_local", [{ x: 1 }]);
     await expect(table.functionErrors()).rejects.toThrow(
-      "recorded only in LanceDB Distributed",
+      "recorded only in LanceDB Enterprise",
     );
   });
 

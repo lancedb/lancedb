@@ -691,7 +691,7 @@ class FunctionBinding(_RemoteValue):
 class RefreshColumnResult(_RemoteValue):
     """Terminal result of an expression-backed or Function-backed refresh Job.
 
-    LanceDB Embedded jobs produce this value in process. LanceDB Distributed
+    LanceDB Embedded jobs produce this value in process. LanceDB Enterprise
     decodes the same value from the durable server-job terminal payload.
     """
 

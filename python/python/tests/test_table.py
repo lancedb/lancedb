@@ -5637,7 +5637,7 @@ def test_function_errors_are_remote_only(tmp_path):
     db = lancedb.connect(tmp_path)
     table = db.create_table("t", [{"x": 1}])
     with pytest.raises(
-        NotImplementedError, match="recorded only in LanceDB Distributed"
+        NotImplementedError, match="recorded only in LanceDB Enterprise"
     ):
         table.function_errors()
 
