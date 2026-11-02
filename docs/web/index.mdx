@@ -86,38 +86,40 @@ your application controls its own compute resources and [table maintenance](/mai
 
 ### 2\. LanceDB Enterprise {#2-lancedb-enterprise}
 
-[LanceDB Enterprise](/enterprise) is a petabyte-scale (and beyond), distributed **multimodal lakehouse** platform
-built for search, curation, feature engineering, and high-throughput training data access workflows on top of the
-same core table abstraction, without building bespoke infrastructure. Applications connect through a LanceDB SDK
-while the service handles requests across a fleet. Enterprise keeps durable table data and index artifacts in
-object storage, independently of the machines serving requests, with query serving, read execution and caching,
-and indexing and background work sized and scaled as separate components, governed by a control plane that manages
-configuration, identity and cluster lifecycle. Caches accelerate reads; they are never the durable source of
-truth. With multiple serving replicas, Enterprise routes traffic to surviving nodes when one fails; losing a cache
-node temporarily raises latency while its replacement warms, rather than causing an outage. See
-[Distributed search](/enterprise/distributed-search) for how query nodes and plan executors divide a request.
+[LanceDB Enterprise](/enterprise) is an exabyte-scale, distributed **multimodal lakehouse** service built on the
+same table abstraction as Embedded, for search, curation, feature engineering, and high-throughput training data
+access. Applications connect through a LanceDB SDK while the service plans and runs work across a fleet: query
+serving, read execution and caching, indexing, and background maintenance scale as separate components, with
+durable table data and index artifacts kept in object storage, independently of the machines serving requests.
+Caches accelerate reads; they are never the durable source of truth. With multiple serving replicas, Enterprise
+routes traffic to surviving nodes when one fails; losing a cache node temporarily raises latency while its
+replacement warms, rather than causing an outage. See [Distributed search](/enterprise/distributed-search),
+[distributed indexing](/enterprise/distributed-indexing), and the other architecture guides linked from the
+comparison table below for how work divides across machines.
 
 Teams choose Enterprise to:
 
+- **Get new capabilities first** -- SQL, Functions, materialized views, and most other features documented
+  throughout these docs land in Enterprise first, often well before they reach Embedded, if they ever do.
 - **Serve growing workloads** -- add query-serving capacity and let Enterprise cache frequently read table data near
   compute as traffic grows.
 - **Reduce operational work** -- let the service handle background [compaction](/maintenance/compaction) and
   [cleanup](/maintenance/cleanup) instead of scheduling them in application code.
 - **Fit deployment requirements** -- run a managed deployment or bring LanceDB into your own cloud account, with
   OpenTelemetry metrics and traces.
-- **Connect data workflows** -- use the same tables for retrieval, curation, and training data access, with
-  [SQL](/basics/sql), [feature engineering](/feature-engineering), and [Geneva](/geneva) feature backfills.
 
-To set up LanceDB Enterprise in your organization, [reach out to us](https://www.lancedb.com/contact).
-
-Sharing a format does not mean an Enterprise deployment automatically opens an existing Embedded database --
-plan how to move or connect your data and configure access for your deployment.
+[Reach out to us](https://www.lancedb.com/contact) to set up LanceDB Enterprise in your organization. Sharing a
+format does not mean an Enterprise deployment automatically opens an existing Embedded database -- plan how to
+move or connect your data.
 
 ### Compare features {#compare}
 
 | Area | Feature | Embedded | Enterprise |
 | --- | --- | :-: | :-: |
-| **Data Ingestion** | [Real Time Engine (streaming writes)](/tables/realtime-engine) | ❌ | ✅ |
+| **Data Ingestion** | [Insert data](/ingestion/insert) | ✅ | ✅ |
+|  | [Merge insert](/ingestion/merge-insert) | ✅ | ✅ |
+|  | [Import (CTAS from object storage or Hugging Face)](/sql/ddl/storage-integration#read-import) | 🚧 | ✅ |
+|  | [Real Time Engine (streaming writes)](/tables/realtime-engine) | ❌ | ✅ |
 | **Semantic Search** | [Vector search](/search/vector-search) | ✅ | ✅ |
 |  | [Full-text search](/search/full-text-search) | ✅ | ✅ |
 |  | [Hybrid search](/search/hybrid-search) | ✅ | ✅ |
@@ -134,6 +136,7 @@ plan how to move or connect your data and configure access for your deployment.
 |  | [Chunking](/curation/chunking) | ❌ | ✅ |
 |  | [Changes since a version](/curation/changes) | ❌ | ✅ |
 | **Feature Engineering** | [Computed columns, with refresh](/feature-engineering/add-computed-column) | ❌ | ✅ |
+|  | [Distributed column refresh](/enterprise/distributed-column-refresh) | ❌ | ✅ |
 |  | [Embedding registry](/embedding) | ✅ | ✅ |
 | **Training** | [PyTorch data loader](/training/data-loading) | ✅ | ✅ |
 |  | [Permutations](/training/permutation) | ✅ | ✅ |
@@ -145,18 +148,22 @@ plan how to move or connect your data and configure access for your deployment.
 |  | [View](/management/view) | ❌ | ✅ |
 |  | [Materialized view](/management/materialized-view) | ❌ | ✅ |
 |  | [Secret](/management/secret) | ❌ | ✅ |
+|  | [Storage integration](/management/storage-integration) | ❌ | ✅ |
 |  | Function | ❌ | ✅ |
 | **Maintenance** | [Vector indexes](/indexing/vector-index) | ✅ | ✅ |
 |  | [Full-text indexes](/indexing/fts-index) | ✅ | ✅ |
 |  | [Scalar indexes](/indexing/scalar-index) | ✅ | ✅ |
 |  | [Compaction and cleanup](/maintenance/compaction) | ✅ | ✅ |
 |  | [Background jobs (managed indexing and maintenance)](/maintenance/background-jobs) | ❌ | ✅ |
-|  | [Distributed indexing](/maintenance/background-jobs) | ❌ | ✅ |
-|  | [Distributed compaction](/maintenance/background-jobs) | ❌ | ✅ |
+|  | [Distributed indexing](/enterprise/distributed-indexing) | ❌ | ✅ |
+|  | [Distributed compaction](/enterprise/distributed-compaction) | ❌ | ✅ |
 |  | [Advanced conflict resolution](/maintenance/background-jobs) | ❌ | ✅ |
 | **Security** | [Authentication](/enterprise/authentication) | ❌ | ✅ |
 |  | [Authorization](/governance/authorization) | ❌ | ✅ |
-| **SQL Reference** | [SQL (Arrow Flight SQL)](/basics/sql) | ❌ | ✅ |
+| **SQL Reference** | [SQL (Arrow Flight SQL)](/basics/sql) | 🚧 | ✅ |
+|  | [Distributed SQL](/enterprise/distributed-sql) | ❌ | ✅ |
+
+🚧 WIP for Embedded: not available today, but on the roadmap.
 
 ## Projects using LanceDB {#projects-using-lancedb}
 
