@@ -28,6 +28,7 @@ impl RRFReranker {
     /// Create a new RRFReranker
     ///
     /// The parameter k is a constant used in the RRF formula (default is 60).
+    /// Each result contributes `1 / (k + rank)`, with ranks starting at 1.
     /// Experiments indicate that k = 60 was near-optimal, but that the choice
     /// is not critical. See paper:
     /// https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf
@@ -84,7 +85,7 @@ impl Reranker for RRFReranker {
 
         let mut rrf_score_map = BTreeMap::new();
         let mut update_score_map = |(i, result_id)| {
-            let score = 1.0 / (i as f32 + self.k);
+            let score = 1.0 / ((i + 1) as f32 + self.k);
             rrf_score_map
                 .entry(result_id)
                 .and_modify(|e| *e += score)
@@ -180,11 +181,12 @@ pub mod test {
         .unwrap();
 
         // scores should be calculated as:
-        // - foo = 1/1        = 1.0
-        // - bar = 1/2 + 1/1  = 1.5
-        // - baz = 1/3        = 0.333
-        // - bean = 1/4 + 1/2 = 0.75
-        // - dog = 1/5 + 1/3  = 0.533
+        // With k = 1 and ranks starting at 1:
+        // - foo = 1/2
+        // - bar = 1/3 + 1/2
+        // - baz = 1/4
+        // - bean = 1/5 + 1/3
+        // - dog = 1/6 + 1/4
         // then we should get the result ranked in descending order
 
         let reranker = RRFReranker::new(1.0);
@@ -205,19 +207,58 @@ pub mod test {
         let names: StringArray = downcast_array(result.column(0));
         assert_eq!(
             names.iter().map(|e| e.unwrap()).collect::<Vec<_>>(),
-            vec!["bar", "foo", "bean", "dog", "baz"]
+            vec!["bar", "bean", "foo", "dog", "baz"]
         );
 
         let ids: UInt64Array = downcast_array(result.column(1));
         assert_eq!(
             ids.iter().map(|e| e.unwrap()).collect::<Vec<_>>(),
-            vec![4, 1, 5, 3, 2]
+            vec![4, 5, 1, 3, 2]
         );
 
         let scores: Float32Array = downcast_array(result.column(2));
         assert_eq!(
             scores.iter().map(|e| e.unwrap()).collect::<Vec<_>>(),
-            vec![1.5, 1.0, 0.75, 1.0 / 5.0 + 1.0 / 3.0, 1.0 / 3.0]
+            vec![
+                1.0 / 3.0 + 1.0 / 2.0,
+                1.0 / 5.0 + 1.0 / 3.0,
+                1.0 / 2.0,
+                1.0 / 6.0 + 1.0 / 4.0,
+                1.0 / 4.0,
+            ]
         );
+    }
+
+    #[tokio::test]
+    async fn test_rrf_default_rank_order() {
+        // Only rows 0 and 1 occur in both lists. Their ranks are (9, 6)
+        // and (2, 14), respectively. Zero-based ranks reverse their order
+        // even with the default k = 60.
+        let vector_ids = vec![2, 1, 3, 4, 5, 6, 7, 8, 0];
+        let fts_ids = vec![9, 10, 11, 12, 13, 0, 14, 15, 16, 17, 18, 19, 20, 1];
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            ROW_ID,
+            DataType::UInt64,
+            false,
+        )]));
+        let vector_results = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(UInt64Array::from(vector_ids))],
+        )
+        .unwrap();
+        let fts_results =
+            RecordBatch::try_new(schema, vec![Arc::new(UInt64Array::from(fts_ids))]).unwrap();
+
+        let result = RRFReranker::default()
+            .rerank_hybrid("", vector_results, fts_results)
+            .await
+            .unwrap();
+        let ids: UInt64Array = downcast_array(result.column_by_name(ROW_ID).unwrap());
+        let scores: Float32Array = downcast_array(result.column_by_name(RELEVANCE_SCORE).unwrap());
+
+        assert_eq!(result.num_rows(), 21);
+        assert_eq!(&ids.values()[..2], &[0, 1]);
+        assert_eq!(scores.value(0), 1.0 / 69.0 + 1.0 / 66.0);
+        assert_eq!(scores.value(1), 1.0 / 62.0 + 1.0 / 74.0);
     }
 }

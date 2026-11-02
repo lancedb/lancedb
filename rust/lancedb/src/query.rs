@@ -3726,10 +3726,13 @@ mod tests {
         let texts = texts.iter().map(|e| e.unwrap()).collect::<HashSet<_>>();
         assert!(texts.contains("cat")); // should be close by vector search
         assert!(texts.contains("b")); // should be close by fts search
+        // Both rows rank first in one of the two search results.
+        let scores = batch["_relevance_score"].as_primitive::<Float32Type>();
+        assert_eq!(scores.values().as_ref(), &[1.0 / 61.0, 1.0 / 61.0]);
 
         // ensure that this works correctly if there are no matching FTS results
         let fts_query = FullTextSearchQuery::new("z".to_string());
-        table
+        let results = table
             .query()
             .full_text_search(fts_query)
             .limit(2)
@@ -3741,6 +3744,12 @@ mod tests {
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
+        let batch = &results[0];
+        let texts = batch["text"].as_string::<i32>();
+        assert_eq!(texts.value(0), "cat");
+        assert_eq!(texts.value(1), "dog");
+        let scores = batch["_relevance_score"].as_primitive::<Float32Type>();
+        assert_eq!(scores.values().as_ref(), &[1.0 / 61.0, 1.0 / 62.0]);
     }
 
     #[tokio::test]
