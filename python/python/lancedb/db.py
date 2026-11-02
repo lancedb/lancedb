@@ -57,7 +57,7 @@ from lance_namespace import (
 from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
 
 from . import __version__
-from ._lancedb import connect as lancedb_connect  # type: ignore
+from ._lancedb import _append_doc_url, connect as lancedb_connect  # type: ignore
 from .functions import FunctionVersion, UdfDefinition
 from .graph import (
     AsyncPropertyGraph,
@@ -718,7 +718,10 @@ class DBConnection(EnforceOverrides):
         MaterializedView
         """
         raise NotImplementedError(
-            "materialized views are not supported on this connection type"
+            _append_doc_url(
+                "materialized views are not supported on this connection type",
+                "materialized_views",
+            )
         )
 
     def create_materialized_view_async(
@@ -743,7 +746,10 @@ class DBConnection(EnforceOverrides):
         Wait for the job before opening or querying the view.
         """
         raise NotImplementedError(
-            "materialized views are not supported on this connection type"
+            _append_doc_url(
+                "materialized views are not supported on this connection type",
+                "materialized_views",
+            )
         )
 
     def open_materialized_view(self, name: str) -> MaterializedView:
@@ -753,7 +759,10 @@ class DBConnection(EnforceOverrides):
         view.
         """
         raise NotImplementedError(
-            "materialized views are not supported on this connection type"
+            _append_doc_url(
+                "materialized views are not supported on this connection type",
+                "materialized_views",
+            )
         )
 
     def list_materialized_views(
@@ -768,7 +777,10 @@ class DBConnection(EnforceOverrides):
         iteration. See [pagination state][lancedb.listing.AsyncListing].
         """
         raise NotImplementedError(
-            "materialized views are not supported on this connection type"
+            _append_doc_url(
+                "materialized views are not supported on this connection type",
+                "materialized_views",
+            )
         )
 
     def drop_materialized_view(
@@ -781,7 +793,10 @@ class DBConnection(EnforceOverrides):
         Physical cleanup continues in the background.
         """
         raise NotImplementedError(
-            "materialized views are not supported on this connection type"
+            _append_doc_url(
+                "materialized views are not supported on this connection type",
+                "materialized_views",
+            )
         )
 
     def drop_materialized_view_async(
@@ -795,7 +810,10 @@ class DBConnection(EnforceOverrides):
         catalog removal; physical cleanup continues in the background.
         """
         raise NotImplementedError(
-            "materialized views are not supported on this connection type"
+            _append_doc_url(
+                "materialized views are not supported on this connection type",
+                "materialized_views",
+            )
         )
 
     def drop_table(self, name: str, namespace_path: Optional[List[str]] = None):
@@ -994,7 +1012,11 @@ class DBConnection(EnforceOverrides):
         LanceDB Embedded connections raise ``NotImplementedError``.
         """
         raise NotImplementedError(
-            "Function catalog operations are not supported for this connection type"
+            _append_doc_url(
+                "Function catalog operations are not supported "
+                "for this connection type",
+                "functions",
+            )
         )
 
     def get_function(
@@ -1006,7 +1028,11 @@ class DBConnection(EnforceOverrides):
     ) -> FunctionVersion:
         """Open one exact immutable Function version from the remote catalog."""
         raise NotImplementedError(
-            "Function catalog operations are not supported for this connection type"
+            _append_doc_url(
+                "Function catalog operations are not supported "
+                "for this connection type",
+                "functions",
+            )
         )
 
     def list_functions(
@@ -1037,7 +1063,11 @@ class DBConnection(EnforceOverrides):
         iteration. See [pagination state][lancedb.listing.AsyncListing].
         """
         raise NotImplementedError(
-            "Function catalog operations are not supported for this connection type"
+            _append_doc_url(
+                "Function catalog operations are not supported "
+                "for this connection type",
+                "functions",
+            )
         )
 
     def drop_function(
@@ -1058,7 +1088,11 @@ class DBConnection(EnforceOverrides):
         revision. Local connections raise NotImplementedError.
         """
         raise NotImplementedError(
-            "Function catalog operations are not supported for this connection type"
+            _append_doc_url(
+                "Function catalog operations are not supported "
+                "for this connection type",
+                "functions",
+            )
         )
 
     def drop_function_async(
@@ -1078,7 +1112,11 @@ class DBConnection(EnforceOverrides):
         connections raise NotImplementedError.
         """
         raise NotImplementedError(
-            "Function catalog operations are not supported for this connection type"
+            _append_doc_url(
+                "Function catalog operations are not supported "
+                "for this connection type",
+                "functions",
+            )
         )
 
     def create_secret(
@@ -1092,7 +1130,10 @@ class DBConnection(EnforceOverrides):
         connections raise ``NotImplementedError``.
         """
         raise NotImplementedError(
-            "Secret operations are not supported for this connection type"
+            _append_doc_url(
+                "Secret operations are not supported for this connection type",
+                "secrets",
+            )
         )
 
     def alter_secret(
@@ -1106,7 +1147,10 @@ class DBConnection(EnforceOverrides):
         before it. LanceDB Embedded connections raise ``NotImplementedError``.
         """
         raise NotImplementedError(
-            "Secret operations are not supported for this connection type"
+            _append_doc_url(
+                "Secret operations are not supported for this connection type",
+                "secrets",
+            )
         )
 
     def list_secrets(
@@ -1127,7 +1171,10 @@ class DBConnection(EnforceOverrides):
         iteration. See [pagination state][lancedb.listing.AsyncListing].
         """
         raise NotImplementedError(
-            "Secret operations are not supported for this connection type"
+            _append_doc_url(
+                "Secret operations are not supported for this connection type",
+                "secrets",
+            )
         )
 
     def drop_secret(
@@ -1141,7 +1188,10 @@ class DBConnection(EnforceOverrides):
         LanceDB Embedded connections raise ``NotImplementedError``.
         """
         raise NotImplementedError(
-            "Secret operations are not supported for this connection type"
+            _append_doc_url(
+                "Secret operations are not supported for this connection type",
+                "secrets",
+            )
         )
 
     def describe_secret(
@@ -1153,7 +1203,10 @@ class DBConnection(EnforceOverrides):
         connections raise ``NotImplementedError``.
         """
         raise NotImplementedError(
-            "Secret operations are not supported for this connection type"
+            _append_doc_url(
+                "Secret operations are not supported for this connection type",
+                "secrets",
+            )
         )
 
     def create_view(
@@ -1178,7 +1231,10 @@ class DBConnection(EnforceOverrides):
         name: string
         """
         raise NotImplementedError(
-            "View operations are not supported for this connection type"
+            _append_doc_url(
+                "View operations are not supported for this connection type",
+                "views",
+            )
         )
 
     def describe_view(
@@ -1192,7 +1248,10 @@ class DBConnection(EnforceOverrides):
         ``NotImplementedError``.
         """
         raise NotImplementedError(
-            "View operations are not supported for this connection type"
+            _append_doc_url(
+                "View operations are not supported for this connection type",
+                "views",
+            )
         )
 
     def drop_view(
@@ -1206,7 +1265,10 @@ class DBConnection(EnforceOverrides):
         LanceDB Embedded connections raise ``NotImplementedError``.
         """
         raise NotImplementedError(
-            "View operations are not supported for this connection type"
+            _append_doc_url(
+                "View operations are not supported for this connection type",
+                "views",
+            )
         )
 
     def drop_view_async(
@@ -1219,7 +1281,10 @@ class DBConnection(EnforceOverrides):
         in the background. Local connections raise ``NotImplementedError``.
         """
         raise NotImplementedError(
-            "View operations are not supported for this connection type"
+            _append_doc_url(
+                "View operations are not supported for this connection type",
+                "views",
+            )
         )
 
     def list_views(
@@ -1240,7 +1305,10 @@ class DBConnection(EnforceOverrides):
         iteration. See [pagination state][lancedb.listing.AsyncListing].
         """
         raise NotImplementedError(
-            "View operations are not supported for this connection type"
+            _append_doc_url(
+                "View operations are not supported for this connection type",
+                "views",
+            )
         )
 
     def create_property_graph(
@@ -1347,7 +1415,12 @@ class DBConnection(EnforceOverrides):
         Raises `JobNotFoundError` when the server has no such job, the way
         `open_table` does for a missing table.
         """
-        raise NotImplementedError("open_job is not supported for this connection type")
+        raise NotImplementedError(
+            _append_doc_url(
+                "open_job is not supported for this connection type",
+                "jobs",
+            )
+        )
 
     def list_gpu_classes(self) -> List[GpuClass]:
         """List the operator-configured Function GPU classes.
@@ -1361,7 +1434,10 @@ class DBConnection(EnforceOverrides):
         ``GET /v1/gpu/classes``.
         """
         raise NotImplementedError(
-            "GPU class discovery is not supported for this connection type"
+            _append_doc_url(
+                "GPU class discovery is not supported for this connection type",
+                "gpu_classes",
+            )
         )
 
     def list_jobs(
@@ -1373,7 +1449,12 @@ class DBConnection(EnforceOverrides):
         ``page_token`` resumes from a saved token. Requests and errors occur during
         iteration. See [pagination state][lancedb.listing.AsyncListing].
         """
-        raise NotImplementedError("list_jobs is not supported for this connection type")
+        raise NotImplementedError(
+            _append_doc_url(
+                "list_jobs is not supported for this connection type",
+                "jobs",
+            )
+        )
 
     def cancel_job(self, job_id: str) -> bool:
         """Request cancellation of a server-side job by id.
@@ -1383,7 +1464,10 @@ class DBConnection(EnforceOverrides):
         success.
         """
         raise NotImplementedError(
-            "cancel_job is not supported for this connection type"
+            _append_doc_url(
+                "cancel_job is not supported for this connection type",
+                "jobs",
+            )
         )
 
     def pause_job(self, job_id: str) -> str:
@@ -1393,7 +1477,12 @@ class DBConnection(EnforceOverrides):
         "pausing", "already_paused", or "committing" -- a job finalizing its
         results cannot be parked; retry shortly.
         """
-        raise NotImplementedError("pause_job is not supported for this connection type")
+        raise NotImplementedError(
+            _append_doc_url(
+                "pause_job is not supported for this connection type",
+                "jobs",
+            )
+        )
 
     def resume_job(self, job_id: str) -> str:
         """Resume a paused server-side job by id.
@@ -1403,7 +1492,10 @@ class DBConnection(EnforceOverrides):
         confirmed yet; retry shortly -- or "not_paused".
         """
         raise NotImplementedError(
-            "resume_job is not supported for this connection type"
+            _append_doc_url(
+                "resume_job is not supported for this connection type",
+                "jobs",
+            )
         )
 
     def execute_query(
@@ -1459,11 +1551,15 @@ class DBConnection(EnforceOverrides):
 
         LanceDB Embedded connections do not support SQL.
         """
-        raise NotImplementedError("SQL is not supported for this connection type")
+        raise NotImplementedError(
+            _append_doc_url("SQL is not supported for this connection type", "sql")
+        )
 
     def describe_query(self, query_id: Union[UUID, str]) -> QueryDescription:
         """Describe a submitted SQL query by its connection-scoped id."""
-        raise NotImplementedError("SQL is not supported for this connection type")
+        raise NotImplementedError(
+            _append_doc_url("SQL is not supported for this connection type", "sql")
+        )
 
 
 class LanceDBConnection(DBConnection):

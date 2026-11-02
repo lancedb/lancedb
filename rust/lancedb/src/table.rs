@@ -55,6 +55,7 @@ use crate::blob::BlobRangeRequest;
 use crate::data::scannable::{PeekedScannable, Scannable, estimate_write_partitions};
 use crate::database::Database;
 use crate::database::read_freshness::TableFreshness;
+use crate::docs::DocLink;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
 use crate::function::FunctionErrorsRequest;
@@ -589,7 +590,8 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         _full: bool,
     ) -> Result<Job<crate::materialized_view::RefreshMaterializedViewResult>> {
         Err(Error::NotSupported {
-            message: "remote materialized-view refresh is not supported on this table type".into(),
+            message: DocLink::MaterializedViews
+                .append_to("remote materialized-view refresh is not supported on this table type"),
         })
     }
     /// Create a read-only handle pinned to the table's current active revision.
@@ -867,7 +869,8 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         _options: computed_columns::ComputedColumnOptions,
     ) -> Result<AddColumnsResult> {
         Err(Error::NotSupported {
-            message: "Function columns are supported only in LanceDB Distributed".into(),
+            message: DocLink::Functions
+                .append_to("Function columns are supported only in LanceDB Distributed"),
         })
     }
     /// Fill a computed column's unfilled rows and recompute those whose
@@ -915,7 +918,8 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         _request: &crate::function::FunctionErrorsRequest,
     ) -> Result<crate::function::FunctionErrors> {
         Err(Error::NotSupported {
-            message: "per-row Function errors are recorded only in LanceDB Distributed".into(),
+            message: DocLink::FunctionErrors
+                .append_to("per-row Function errors are recorded only in LanceDB Distributed"),
         })
     }
     /// Alter columns in the table.
@@ -988,14 +992,16 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// Diff a branch against main. Remote only.
     async fn diff_branch(&self, _from_branch: &str) -> Result<BranchDiff> {
         Err(Error::NotSupported {
-            message: "Branch diffs are only supported on Enterprise tables.".into(),
+            message: DocLink::BranchDiff
+                .append_to("Branch diffs are only supported on Enterprise tables."),
         })
     }
     /// Cherry-pick a branch onto main, or dry-run. Remote only.
     /// HTTP 409 still returns [`Ok`] with [`CherryPickStatus::Failed`].
     async fn cherry_pick(&self, _from_branch: &str, _dry_run: bool) -> Result<CherryPickResult> {
         Err(Error::NotSupported {
-            message: "Cherry-picking branches is only supported on Enterprise tables.".into(),
+            message: DocLink::BranchCherryPick
+                .append_to("Cherry-picking branches is only supported on Enterprise tables."),
         })
     }
     /// The branch this handle is scoped to, or `None` for `main`.
@@ -2960,6 +2966,8 @@ impl NativeTable {
             Err(e) => return Err(e.into()),
         };
 
+        crate::docs::check_table_maintenance_warnings(&dataset, uri).await;
+
         let dataset = DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval);
         let id = Self::build_id(&namespace, name);
 
@@ -3838,7 +3846,8 @@ impl BaseTable for NativeTable {
 
     async fn prewarm_data(&self, _columns: Option<Vec<String>>) -> Result<()> {
         Err(Error::NotSupported {
-            message: "prewarm_data is currently only supported in LanceDB Distributed.".into(),
+            message: DocLink::PrewarmData
+                .append_to("prewarm_data is currently only supported in LanceDB Distributed."),
         })
     }
 
@@ -4264,7 +4273,7 @@ impl BaseTable for NativeTable {
         .await;
         sorted_sizes.sort();
 
-        let small_frag_threshold = 100000;
+        let small_frag_threshold = crate::docs::SMALL_FRAGMENT_ROW_THRESHOLD;
         let num_fragments = sorted_sizes.len();
         let num_small_fragments = sorted_sizes
             .iter()
