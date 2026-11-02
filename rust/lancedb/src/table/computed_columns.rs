@@ -179,16 +179,6 @@ pub const FUNCTION_BINDINGS_VERSION: u32 = 1;
 /// declared before signatures existed.
 pub const SOURCE_SIGNATURE_META_KEY: &str = "computed_refresh.source_signature";
 
-/// Field metadata key referencing the row-level dirty state associated with
-/// [`SOURCE_SIGNATURE_META_KEY`].
-///
-/// The state is kept beside the fragment signatures rather than in the
-/// manifest: a partially refreshed fragment can have an arbitrarily sparse
-/// set of retained values that are no longer current. The sidecar records the
-/// signature digest it belongs to, so a stale or mixed-generation pair is
-/// unreadable and recomputes rather than being treated as clean.
-pub const SOURCE_ROW_STATE_META_KEY: &str = "computed_refresh.row_state";
-
 /// Field metadata key holding the definition digest a column was last
 /// computed under. A change to it makes every row stale.
 pub const DEFINITION_VERSION_META_KEY: &str = "computed_refresh.definition_version";
