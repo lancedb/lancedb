@@ -228,7 +228,57 @@ jobs:
         # Python and TypeScript blob docs tests install preview packages.
         # Those builds are not guaranteed to remain available for more than
         # 6 months, so they stay a manual run. This example uses the workspace crate.
-        run: cargo run --profile ci --all-features -p lancedb-blob-v2-docs --example multimodal --locked
+        run: |
+          set -euo pipefail
+
+          sample_log="$RUNNER_TEMP/blob-v2-disk-samples.log"
+          sampler_fifo="$RUNNER_TEMP/blob-v2-disk-samples.fifo"
+          sampler_pid=""
+
+          sample_disk() {
+            local phase="$1"
+            printf '%s phase=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" "$phase"
+            df -B1 --output=source,fstype,size,used,avail,pcent,target / /home/runner/work || true
+          }
+
+          finish() {
+            status=$?
+            trap - EXIT
+            trap '' INT TERM HUP
+            set +e
+
+            if [[ -n "$sampler_pid" ]]; then
+              kill "$sampler_pid" 2>/dev/null || true
+              wait "$sampler_pid" 2>/dev/null || true
+            fi
+            exec 9>&-
+            rm -f "$sampler_fifo"
+
+            sample_disk after
+            echo "Blob v2 disk samples (UTC, bytes):"
+            cat "$sample_log"
+            exit "$status"
+          }
+          trap finish EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          trap 'exit 129' HUP
+
+          : > "$sample_log"
+          rm -f "$sampler_fifo"
+          mkfifo "$sampler_fifo"
+          exec 9<> "$sampler_fifo"
+
+          sample_disk before
+          (
+            while true; do
+              sample_disk during >> "$sample_log" 2>&1
+              read -r -t 1 -u 9 || true
+            done
+          ) &
+          sampler_pid=$!
+
+          cargo run --profile ci --all-features -p lancedb-blob-v2-docs --example multimodal --locked
 
   remote:
     timeout-minutes: 30
