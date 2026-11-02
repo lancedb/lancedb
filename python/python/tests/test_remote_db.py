@@ -21,6 +21,7 @@ from urllib.parse import parse_qs, urlparse
 from unittest.mock import MagicMock, patch
 import uuid
 from packaging.version import Version
+from lance_namespace.errors import TableNotFoundError
 
 import lancedb
 import numpy as np
@@ -41,7 +42,12 @@ from lancedb.query import (
     MatchQuery,
 )
 from lancedb.remote import ClientConfig
-from lancedb.remote.errors import HttpError, RetryError
+from lancedb.remote.errors import (
+    AlreadyExistsError,
+    HttpError,
+    NamespaceNotFoundError,
+    RetryError,
+)
 import pytest
 import pyarrow as pa
 from utils import start_server_thread
@@ -124,6 +130,72 @@ async def mock_lancedb_connection_async(handler, **client_config):
 
 
 @pytest.fixture
+def missing_table_handler(cached, namespace_path):
+    request_ids = []
+
+    def handler(request):
+        identifier = "$".join(namespace_path + ["missing"])
+        assert request.path == f"/v1/table/{identifier}/describe/"
+        request_ids.append(request.headers["x-request-id"])
+        status = 200 if cached and len(request_ids) == 1 else 404
+        request.send_response(status)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(b"{}" if status == 200 else b"table does not exist")
+
+    return handler, request_ids
+
+
+@pytest.mark.parametrize("cached", [False, True])
+@pytest.mark.parametrize("namespace_path", [[], ["ns"]])
+def test_remote_open_missing_table(cached, namespace_path, missing_table_handler):
+    handler, request_ids = missing_table_handler
+    with mock_lancedb_connection(handler) as db:
+        if cached:
+            db.open_table("missing", namespace_path=namespace_path)
+        with pytest.raises(TableNotFoundError) as exc_info:
+            db.open_table("missing", namespace_path=namespace_path)
+
+    error = exc_info.value
+    assert isinstance(error, ValueError)
+    assert isinstance(error, HttpError)
+    assert str(error) == "Table 'missing' was not found"
+    assert error.status_code == 404
+    assert error.request_id == request_ids[-1]
+    assert error.request_id
+    assert isinstance(error.__cause__, HttpError)
+    assert error.__cause__.request_id == error.request_id
+    assert error.__cause__.status_code == 404
+    assert "table does not exist" in str(error.__cause__)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cached", [False, True])
+@pytest.mark.parametrize("namespace_path", [[], ["ns"]])
+async def test_async_remote_open_missing_table(
+    cached, namespace_path, missing_table_handler
+):
+    handler, request_ids = missing_table_handler
+    async with mock_lancedb_connection_async(handler) as db:
+        if cached:
+            await db.open_table("missing", namespace_path=namespace_path)
+        with pytest.raises(TableNotFoundError) as exc_info:
+            await db.open_table("missing", namespace_path=namespace_path)
+
+    error = exc_info.value
+    assert isinstance(error, ValueError)
+    assert isinstance(error, HttpError)
+    assert str(error) == "Table 'missing' was not found"
+    assert error.status_code == 404
+    assert error.request_id == request_ids[-1]
+    assert error.request_id
+    assert isinstance(error.__cause__, HttpError)
+    assert error.__cause__.request_id == error.request_id
+    assert error.__cause__.status_code == 404
+    assert "table does not exist" in str(error.__cause__)
+
+
+@pytest.fixture
 def existence_handler(method, identifier, status):
     def handler(request):
         resource = "namespace" if method == "namespace_exists" else "table"
@@ -189,6 +261,111 @@ async def test_async_remote_exists(method, identifier, status, existence_handler
             with pytest.raises(HttpError) as exc_info:
                 await getattr(db, method)(identifier)
             assert exc_info.value.status_code == status
+
+
+def test_remote_describe_namespace_typed_not_found():
+    request_ids = []
+
+    def handler(request):
+        assert request.command == "POST"
+        assert request.path == "/v1/namespace/parent$child/describe"
+        request_ids.append(request.headers["x-request-id"])
+        request.send_response(404)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(
+            json.dumps(
+                {
+                    "code": 5,
+                    "error": "Namespace not found",
+                    "error_code": "not_found",
+                    "resource": {
+                        "kind": "namespace",
+                        "name": "child",
+                        "namespace_path": ["parent"],
+                    },
+                }
+            ).encode()
+        )
+
+    with mock_lancedb_connection(handler) as db:
+        with pytest.raises(NamespaceNotFoundError) as exc_info:
+            db.describe_namespace(["parent", "child"])
+
+    error = exc_info.value
+    assert isinstance(error, HttpError)
+    assert error.error_code == "not_found"
+    assert error.resource_kind == "namespace"
+    assert error.resource_name == "child"
+    assert error.namespace_path == ("parent",)
+    assert error.status_code == 404
+    assert error.request_id == request_ids[-1]
+
+
+def test_remote_create_namespace_typed_already_exists():
+    requests = []
+
+    def handler(request):
+        requests.append(request.path)
+        assert request.command == "POST"
+        assert request.path == "/v1/namespace/parent$child/create"
+        request.send_response(409)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(
+            json.dumps(
+                {
+                    "code": 6,
+                    "error": "Namespace already exists",
+                    "error_code": "already_exists",
+                    "resource": {
+                        "kind": "namespace",
+                        "name": "child",
+                        "namespace_path": ["parent"],
+                    },
+                }
+            ).encode()
+        )
+
+    with mock_lancedb_connection(handler) as db:
+        with pytest.raises(AlreadyExistsError) as exc_info:
+            db.create_namespace(["parent", "child"])
+
+    error = exc_info.value
+    assert error.error_code == "already_exists"
+    assert error.resource_kind == "namespace"
+    assert error.resource_name == "child"
+    assert error.namespace_path == ("parent",)
+    assert error.status_code == 409
+    assert len(requests) == 1
+
+
+def test_remote_legacy_namespace_error_stays_generic_http_error():
+    def handler(request):
+        assert request.path == "/v1/namespace/parent$child/describe"
+        request.send_response(404)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(
+            json.dumps(
+                {
+                    "code": 5,
+                    "error": "Namespace not found",
+                }
+            ).encode()
+        )
+
+    with mock_lancedb_connection(handler) as db:
+        with pytest.raises(HttpError) as exc_info:
+            db.describe_namespace(["parent", "child"])
+
+    error = exc_info.value
+    assert type(error) is HttpError
+    assert error.error_code is None
+    assert error.resource_kind is None
+    assert error.resource_name is None
+    assert error.namespace_path is None
+    assert error.status_code == 404
 
 
 @pytest.mark.parametrize("table_id", [[], ["invalid/name"]])
@@ -1523,7 +1700,14 @@ def test_remote_create_index_async_returns_job():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("async_table", [False, True])
 @pytest.mark.parametrize(
-    "refresh_kwargs", [{}, {"batch_size": None}, {"batch_size": 1}, {"batch_size": 8}]
+    "refresh_kwargs",
+    [
+        {},
+        {"batch_size": None},
+        {"batch_size": 1},
+        {"batch_size": 8},
+        {"gpu_class": "a10g", "gpu_count": 2},
+    ],
 )
 async def test_remote_refresh_async_returns_typed_terminal_result(
     async_table, refresh_kwargs
@@ -1543,6 +1727,10 @@ async def test_remote_refresh_async_returns_typed_terminal_result(
             expected = {"column": "derived"}
             if refresh_kwargs.get("batch_size") is not None:
                 expected["batch_size"] = refresh_kwargs["batch_size"]
+            if refresh_kwargs.get("gpu_class") is not None:
+                expected["gpu_class"] = refresh_kwargs["gpu_class"]
+            if refresh_kwargs.get("gpu_count") is not None:
+                expected["gpu_count"] = refresh_kwargs["gpu_count"]
             assert json.loads(body) == expected
             request.send_response(202)
             request.send_header("Content-Type", "application/json")
@@ -1611,6 +1799,66 @@ async def test_remote_refresh_async_returns_typed_terminal_result(
     assert result.version == 8
 
 
+@pytest.mark.parametrize(
+    "refresh_kwargs,message",
+    [
+        ({"gpu_class": "H100"}, "gpu_class"),
+        ({"gpu_class": "-a10g"}, "gpu_class"),
+        ({"gpu_class": "a_b"}, "gpu_class"),
+        ({"gpu_count": 0}, "gpu_count"),
+        ({"gpu_count": -1}, "gpu_count"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_remote_refresh_rejects_invalid_gpu_options_before_request(
+    refresh_kwargs, message
+):
+    backfill_requests = []
+
+    def handler(request):
+        if request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "schema": {
+                            "fields": [
+                                {
+                                    "name": "id",
+                                    "type": {"type": "int64"},
+                                    "nullable": False,
+                                }
+                            ]
+                        },
+                    }
+                ).encode()
+            )
+        elif request.path == "/v1/table/test/backfill_column":
+            backfill_requests.append(request.path)
+            request.send_response(202)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b'{"job_id": "unexpected"}')
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.open_table("test")
+        with pytest.raises(ValueError, match=message):
+            table.refresh_column_async("derived", **refresh_kwargs)
+
+    async with mock_lancedb_connection_async(handler) as db:
+        table = await db.open_table("test")
+        with pytest.raises(ValueError, match=message):
+            await table.refresh_column_async("derived", **refresh_kwargs)
+
+    assert backfill_requests == []
+
+
 def test_remote_function_errors_lists_the_rows_a_refresh_skipped():
     listing = {
         "records": [
@@ -1618,6 +1866,7 @@ def test_remote_function_errors_lists_the_rows_a_refresh_skipped():
                 "job_id": "j-7",
                 "fragment_id": 3,
                 "row_offset": 9,
+                "row_address": 12884901897,
                 "column": "embedding",
                 "function": "embed",
                 "function_version": "2",
@@ -1668,7 +1917,13 @@ def test_remote_function_errors_lists_the_rows_a_refresh_skipped():
     assert errors.truncated is True
     assert [r.error_message for r in errors.records] == ["bad input 'x'"]
     assert errors.records[0].row_offset == 9
+    assert errors.records[0].row_address == 12884901897
     assert errors.records[0].function_version == "2"
+    assert repr(errors.records[0]) == (
+        'FunctionErrorRecord(job_id="j-7", fragment_id=3, row_offset=9, '
+        'row_address=12884901897, column="embedding", '
+        'error_type="ValueError", error_message="bad input \'x\'")'
+    )
     assert (errors.fragments[0].rows_skipped, errors.fragments[0].rows_recorded) == (
         500,
         100,
@@ -4635,6 +4890,9 @@ def test_remote_connection_jobs_surface():
         assert job.state == "failed"
         assert job.spec == {"column": "vec"}
         assert job.failure.message == "worker died"
+        assert repr(job.failure) == (
+            'JobFailureInfo(phase="execute", message="worker died", retryable=True)'
+        )
         assert job.status() == "failed"
         with pytest.raises(JobFailedError, match="worker died"):
             job.wait(timeout=timedelta(seconds=5))
@@ -4725,6 +4983,83 @@ def test_remote_job_handle_reports_its_own_detail():
             "limit": 500,
             "filter": "state = 'claim_complete'",
         }
+
+
+@pytest.mark.parametrize("is_async", [False, True])
+@pytest.mark.asyncio
+async def test_remote_list_gpu_classes(is_async):
+    requests = []
+
+    def handler(request):
+        requests.append((request.command, request.path))
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(
+            json.dumps(
+                {
+                    "gpu_classes": [
+                        {
+                            "name": "default",
+                            "resource_name": "nvidia.com/gpu",
+                            "gpu_model": "NVIDIA A10G",
+                            "gpu_memory_bytes": 25769803776,
+                            "max_gpu_count_per_worker": 1,
+                            "cpu_millis": 4000,
+                            "memory_bytes": 25769803776,
+                            "ephemeral_storage_bytes": 1073741824,
+                        },
+                        {
+                            "name": "h100",
+                            "resource_name": "nvidia.com/gpu",
+                            "gpu_model": "NVIDIA H100",
+                            "gpu_memory_bytes": 85899345920,
+                            "max_gpu_count_per_worker": 8,
+                            "cpu_millis": None,
+                            "memory_bytes": None,
+                            "ephemeral_storage_bytes": None,
+                        },
+                    ]
+                }
+            ).encode()
+        )
+
+    if is_async:
+        async with mock_lancedb_connection_async(handler) as db:
+            classes = await db.list_gpu_classes()
+    else:
+        with mock_lancedb_connection(handler) as db:
+            classes = db.list_gpu_classes()
+
+    assert requests == [("GET", "/v1/gpu/classes")]
+    assert len(classes) == 2
+    assert isinstance(classes[0], lancedb.GpuClass)
+    assert classes[0].name == "default"
+    assert classes[0].gpu_model == "NVIDIA A10G"
+    assert classes[0].gpu_memory_bytes == 25769803776
+    assert classes[1].max_gpu_count_per_worker == 8
+    assert classes[1].cpu_millis is None
+
+
+@pytest.mark.parametrize("is_async", [False, True])
+@pytest.mark.asyncio
+async def test_remote_list_gpu_classes_older_server(is_async):
+    requests = []
+
+    def handler(request):
+        requests.append(request.path)
+        request.send_response(404)
+        request.end_headers()
+
+    with pytest.raises(NotImplementedError, match="/v1/gpu/classes"):
+        if is_async:
+            async with mock_lancedb_connection_async(handler) as db:
+                await db.list_gpu_classes()
+        else:
+            with mock_lancedb_connection(handler) as db:
+                db.list_gpu_classes()
+
+    assert requests == ["/v1/gpu/classes"]
 
 
 def _property_graph_handler(calls, respond):

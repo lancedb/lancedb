@@ -14,7 +14,7 @@ use crate::{
     connection::Connection,
     error::PythonErrorExt,
     expr::PyExpr,
-    index::{IndexConfig, extract_index_params},
+    index::{CodeAnalyzerOptions, IndexConfig, extract_index_params},
     query::{Query, TakeQuery},
     table::scannable::PyScannable,
 };
@@ -42,12 +42,30 @@ use pyo3::{
 
 mod scannable;
 
-fn refresh_column_options(batch_size: Option<i64>) -> PyResult<RefreshColumnOptions> {
+fn refresh_column_options(
+    batch_size: Option<i64>,
+    gpu_class: Option<String>,
+    gpu_count: Option<i64>,
+) -> PyResult<RefreshColumnOptions> {
     let mut options = RefreshColumnOptions::default();
     options.batch_size = batch_size
         .map(usize::try_from)
         .transpose()
         .map_err(|_| PyValueError::new_err("batch_size must be greater than zero"))?;
+    options.gpu_class = gpu_class;
+    options.gpu_count = gpu_count
+        .map(|count| {
+            u32::try_from(count)
+                .ok()
+                .filter(|count| *count > 0)
+                .ok_or_else(|| {
+                    PyValueError::new_err(
+                        "gpu_count must be a positive integer no greater than u32::MAX",
+                    )
+                })
+        })
+        .transpose()?;
+    options.validate().infer_error()?;
     Ok(options)
 }
 
@@ -596,6 +614,7 @@ pub struct FunctionErrorRecord {
     pub job_id: String,
     pub fragment_id: u64,
     pub row_offset: Option<u32>,
+    pub row_address: Option<u64>,
     pub column: String,
     pub function: String,
     pub function_version: String,
@@ -608,12 +627,19 @@ pub struct FunctionErrorRecord {
 #[pymethods]
 impl FunctionErrorRecord {
     pub fn __repr__(&self) -> String {
+        let row_offset = self
+            .row_offset
+            .map_or_else(|| "None".to_string(), |value| value.to_string());
+        let row_address = self
+            .row_address
+            .map_or_else(|| "None".to_string(), |value| value.to_string());
         format!(
-            "FunctionErrorRecord(job_id={:?}, fragment_id={}, row_offset={:?}, column={:?}, \
-             error_type={:?}, error_message={:?})",
+            "FunctionErrorRecord(job_id={:?}, fragment_id={}, row_offset={}, row_address={}, \
+             column={:?}, error_type={:?}, error_message={:?})",
             self.job_id,
             self.fragment_id,
-            self.row_offset,
+            row_offset,
+            row_address,
             self.column,
             self.error_type,
             self.error_message
@@ -627,6 +653,7 @@ impl From<lancedb::function::FunctionErrorRecord> for FunctionErrorRecord {
             job_id: record.job_id,
             fragment_id: record.fragment_id,
             row_offset: record.row_offset,
+            row_address: record.row_address,
             column: record.column,
             function: record.function,
             function_version: record.function_version,
@@ -1003,7 +1030,12 @@ impl From<LanceDbFtsToken> for FtsToken {
     ascii_folding = true,
     ngram_min_length = 3,
     ngram_max_length = 3,
-    prefix_only = false
+    prefix_only = false,
+    analyzer = None,
+    split_identifiers = None,
+    split_on_numerics = None,
+    preserve_original = None,
+    index_operators = None
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn tokenize(
@@ -1019,7 +1051,20 @@ pub fn tokenize(
     ngram_min_length: u32,
     ngram_max_length: u32,
     prefix_only: bool,
+    analyzer: Option<String>,
+    split_identifiers: Option<bool>,
+    split_on_numerics: Option<bool>,
+    preserve_original: Option<bool>,
+    index_operators: Option<bool>,
 ) -> PyResult<Vec<FtsToken>> {
+    let code_options = CodeAnalyzerOptions {
+        analyzer,
+        split_identifiers,
+        split_on_numerics,
+        preserve_original,
+        index_operators,
+    };
+    let base_tokenizer = code_options.resolve_base_tokenizer(base_tokenizer)?;
     let mut params = FtsIndexBuilder::default()
         .base_tokenizer(base_tokenizer)
         .language(&language)
@@ -1042,6 +1087,7 @@ pub fn tokenize(
     if let Some(remove_stop_words) = remove_stop_words {
         params = params.remove_stop_words(remove_stop_words);
     }
+    let params = code_options.apply(params);
     let tokens = lancedb_tokenize(&query, &params).infer_error()?;
     Ok(tokens.into_iter().map(FtsToken::from).collect())
 }
@@ -2071,13 +2117,15 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, *, batch_size=None))]
+    #[pyo3(signature = (column, *, batch_size=None, gpu_class=None, gpu_count=None))]
     pub fn refresh_column(
         self_: PyRef<'_, Self>,
         column: String,
         batch_size: Option<i64>,
+        gpu_class: Option<String>,
+        gpu_count: Option<i64>,
     ) -> PyResult<Bound<'_, PyAny>> {
-        let options = refresh_column_options(batch_size)?;
+        let options = refresh_column_options(batch_size, gpu_class, gpu_count)?;
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let result = inner
@@ -2088,13 +2136,15 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, *, batch_size=None))]
+    #[pyo3(signature = (column, *, batch_size=None, gpu_class=None, gpu_count=None))]
     pub fn refresh_column_async(
         self_: PyRef<'_, Self>,
         column: String,
         batch_size: Option<i64>,
+        gpu_class: Option<String>,
+        gpu_count: Option<i64>,
     ) -> PyResult<Bound<'_, PyAny>> {
-        let options = refresh_column_options(batch_size)?;
+        let options = refresh_column_options(batch_size, gpu_class, gpu_count)?;
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let job = inner

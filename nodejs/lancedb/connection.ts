@@ -558,9 +558,10 @@ export abstract class Connection {
   /**
    * Rename a table.
    *
-   * Currently only supported in LanceDB Distributed. LanceDB Embedded connections and
-   * namespace-backed connections (via {@link connectNamespace}) reject with
-   * a "not supported" error.
+   * Supported in LanceDB Distributed and by namespace backends that implement
+   * renaming. Directory namespaces support renaming tables resolved through their
+   * manifest, including tables within or across child namespaces. LanceDB Embedded
+   * connections and directory-listing root tables reject with a "not supported" error.
    *
    * @param {string} currentName - The current name of the table.
    * @param {string} newName - The new name for the table.

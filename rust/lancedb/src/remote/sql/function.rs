@@ -108,7 +108,7 @@ impl SqlClient {
         let mut items: Vec<FunctionVersion> = self
             .object_job(
                 ExecuteQueryRequest {
-                    query: format!("SHOW FUNCTIONS WITH ({})", sql_options.join(", ")),
+                    query: format!("SHOW FUNCTIONS HISTORY WITH ({})", sql_options.join(", ")),
                     default_namespace_path: namespace.to_vec(),
                     parameters: None,
                 },
@@ -126,10 +126,6 @@ impl SqlClient {
             .await?
             .wait()
             .await?;
-        items.sort_by(|a, b| (a.name(), a.version()).cmp(&(b.name(), b.version())));
-        if let Some((name, version)) = after {
-            items.retain(|item| (item.name(), item.version()) > (name.as_str(), version.as_str()));
-        }
         let page_token = if items.len() > limit as usize {
             items.truncate(limit as usize);
             let last = items.last().unwrap();

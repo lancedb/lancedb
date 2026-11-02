@@ -26,12 +26,13 @@ Scalar indexes accelerate filters on values such as numbers, categories and
 strings. Use them for selective table queries or metadata filters combined
 with vector and full-text search.
 
-LanceDB supports four types of scalar indexes:
+LanceDB supports five types of scalar indexes:
 
 - `BTREE`: Stores column data in sorted order for binary search. Best for columns with many unique values.
 - `BITMAP`: Uses bitmaps to track value presence. Ideal for columns with few unique values (e.g., categories, tags).
 - `LABEL_LIST`: Special index for `List<T>` and `LargeList<T>` columns of primitive values supporting `array_has_all` and `array_has_any` queries.
 - `FM`: FM-Index over string or binary columns that accelerates substring search via `contains(col, 'needle')`.
+- `NGRAM`: Trigram index over UTF-8 string columns that accelerates substring search via `contains(col, 'needle')`, along with some `LIKE` and regular-expression filters.
 
 <Tip title="Working with scalar indices">
 Use scalar indexes with:
@@ -50,6 +51,7 @@ Use scalar indexes with:
 | Boolean, numbers or strings with fewer than 1,000 unique values | `<`, `=`, `>`, `in`, `between`, `is null` | `BITMAP`     |
 | List of low cardinality of numbers or strings                   | `array_has_any`, `array_has_all`          | `LABEL_LIST` |
 | String or binary (`Utf8`, `LargeUtf8`, `Binary`, `LargeBinary`) | `contains(col, 'needle')`                 | `FM`         |
+| String (`Utf8`, `LargeUtf8`)                                    | `contains(col, 'needle')`, `LIKE`, regex  | `NGRAM`      |
 
 ## Scalar Index Operations
 
@@ -166,6 +168,45 @@ table.search().where("contains(text, 'needle')").limit(10).to_pandas()
 ```
 
 `list_indices()` reports the index type as `"Fm"`.
+
+## NGram index for substring search
+
+The `NGram` index is a scalar index over UTF-8 string columns. It tokenizes
+values into overlapping character n-grams (using Lance's default trigram
+parameters) and uses them to accelerate `contains(col, 'needle')`, along with
+some `LIKE` and regular-expression filters. Unlike the `FM` index, which matches
+arbitrary substrings of the raw bytes, the `NGram` index is trigram based, so a
+query shorter than the n-gram length cannot be served by it.
+
+### Create an NGram index
+
+Build an NGram index with the async `create_index` API by passing the `NGram`
+config in Python. In Rust, use `Index::NGram(NGramIndexBuilder::default())`.
+
+<CodeGroup>
+```python Python icon="python"
+from lancedb.index import NGram
+
+await tbl.create_index("text", config=NGram())
+```
+
+```rust Rust icon="rust"
+use lancedb::index::Index;
+use lancedb::index::scalar::NGramIndexBuilder;
+
+tbl.create_index(&["text"], Index::NGram(NGramIndexBuilder::default()))
+    .execute()
+    .await?;
+```
+</CodeGroup>
+
+After the index is built, substring filters use it automatically:
+
+```python
+table.search().where("contains(text, 'needle')").limit(10).to_pandas()
+```
+
+`list_indices()` reports the index type as `"NGram"`.
 
 ## Index UUID Columns
 

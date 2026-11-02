@@ -826,9 +826,10 @@ abstract renameTable(
 
 Rename a table.
 
-Currently only supported in LanceDB Distributed. LanceDB Embedded connections and
-namespace-backed connections (via [connectNamespace](../functions/connectNamespace.md)) reject with
-a "not supported" error.
+Supported in LanceDB Distributed and by namespace backends that implement
+renaming. Directory namespaces support renaming tables resolved through their
+manifest, including tables within or across child namespaces. LanceDB Embedded
+connections and directory-listing root tables reject with a "not supported" error.
 
 #### Parameters
 
