@@ -1,0 +1,74 @@
+---
+title: "Real Time reads"
+sidebarTitle: "Real Time Read"
+description: "Query a table with the real time engine enabled and get writes back within milliseconds of being written, merged transparently with the base table."
+icon: "magnifying-glass"
+keywords: ["rte", "real time engine", "real time search", "real time query", "fresh reads", "memwal", "upsert"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+A table with the [real time engine](/tables/realtime-engine) enabled queries
+the same way as any other table — nothing about `search`, filtering, or SQL
+changes. This page covers what you get back and how it performs; for enabling
+RTE and writing to a table, see [Real Time writes](/ingestion/realtime-write).
+
+## Query a real time table {#query}
+
+Every query runs against the base table and the fresh tier (unflushed
+memtables and SSTables) in parallel, and the two are merged into one result.
+Fresh rows supersede base rows with the same primary key, so a row written a
+moment ago is already reflected:
+
+<CodeGroup>
+```python Python icon="python"
+# continuing the `frames` table connected and written to in Real Time writes
+import numpy as np
+
+query_vector = np.random.rand(frames.schema.field("embedding").type.list_size).astype("float32")
+
+frames.search(query_vector, vector_column_name="embedding").limit(10).to_list()
+frames.search("gripper closing on a cup", fts_columns="caption").limit(10).to_list()
+```
+</CodeGroup>
+
+Vector, full-text, BTree, bitmap, and most other scalar indexes are maintained
+on the memtable, so new rows are searchable through the index as soon as
+they're written — not just after the next compaction.
+
+## Read performance {#read-performance}
+
+Reads on an RTE table stay close to those on a fully compacted table, even
+with the fresh tier at its fullest before compaction.
+
+The table below compares a 5M-row table with a 128-dimension IVF-PQ index plus
+BTree and FTS indexes, with and without RTE. The RTE table holds one
+unflushed memtable and three SSTables, each from a 100k-row write wave, half of
+which are updates to existing rows. Latencies are p50 in milliseconds.
+
+| Query | Without RTE | With RTE |
+| --- | --: | --: |
+| Primary-key lookup | 62 | 63 |
+| Vector search | 68 | 71 |
+| Vector search with prefilter | 90 | 91 |
+| Full-text term | 63 | 64 |
+| Full-text phrase | 68 | 82 |
+| Hybrid search (RRF) | 68 | 83 |
+| SQL point lookup | 189 | 187 |
+
+Most queries are within a few milliseconds of the base table. Hybrid and phrase
+queries add roughly 15 ms to merge the two tiers.
+
+<Note>
+Support for all table operations on RTE tables is coming soon. Time travel,
+branching, `count_rows`, row IDs (`with_row_id`), and `TABLESAMPLE` are not yet
+available.
+</Note>
+
+## Next steps {#next-steps}
+
+- [Real Time writes](/ingestion/realtime-write) — enable RTE and write to a table
+- [How the real time engine works](/tables/realtime-engine#how-it-works)
+- [Hybrid search](/search/hybrid-search)
+- [Vector search](/search/vector-search)

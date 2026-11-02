@@ -18,33 +18,32 @@ Supported models are:
 - embed-multilingual-v3.0
 - embed-english-light-v3.0
 - embed-multilingual-light-v3.0
-- embed-english-v2.0
-- embed-english-light-v2.0
-- embed-multilingual-v2.0
+
+The v2.0 models (`embed-english-v2.0`, `embed-english-light-v2.0` and `embed-multilingual-v2.0`) were retired by Cohere on April 4, 2026.
+
+The previous default, `embed-multilingual-v2.0`, produced 768-dimensional vectors.
+The new default, `embed-multilingual-v3.0`, produces 1024-dimensional vectors.
+Existing tables containing vectors from a v2.0 model must be re-embedded with an
+active model into a table whose vector column has the matching dimension.
 
 
 Supported parameters (to be passed in `create` method) are:
 
 | Parameter | Type | Default Value | Description |
 |---|---|--------|---------|
-| `name` | `str` | `"embed-english-v2.0"` | The model ID of the cohere model to use. Supported base models for Text Embeddings: embed-english-v3.0, embed-multilingual-v3.0, embed-english-light-v3.0, embed-multilingual-light-v3.0, embed-english-v2.0, embed-english-light-v2.0, embed-multilingual-v2.0 |
+| `name` | `str` | `"embed-multilingual-v3.0"` | The model ID of the cohere model to use. Supported base models for Text Embeddings: embed-english-v3.0, embed-multilingual-v3.0, embed-english-light-v3.0, embed-multilingual-light-v3.0 |
 | `source_input_type` | `str` | `"search_document"` | The type of input data to be used for the source column. |
 | `query_input_type` | `str` | `"search_query"` | The type of input data to be used for the query. |
 
 Cohere supports following input types:
 
-| Input Type               | Description                          |
-|-------------------------|---------------------------------------|
-| "`search_document`"     | Used for embeddings stored in a vector|
-|                         | database for search use-cases.        |
-| "`search_query`"        | Used for embeddings of search queries |
-|                         | run against a vector DB               |
-| "`semantic_similarity`" | Specifies the given text will be used |
-|                         | for Semantic Textual Similarity (STS) |
-| "`classification`"      | Used for embeddings passed through a  |
-|                         | text classifier.                      |
-| "`clustering`"          | Used for the embeddings run through a |
-|                         | clustering algorithm                  |
+| Input type | Description |
+| --- | --- |
+| `search_document` | Used for embeddings stored in a vector database for search use cases. |
+| `search_query` | Used for embeddings of search queries run against a vector database. |
+| `semantic_similarity` | Specifies that the text will be used for semantic textual similarity (STS). |
+| `classification` | Used for embeddings passed through a text classifier. |
+| `clustering` | Used for embeddings run through a clustering algorithm. |
 
 Usage Example:
 

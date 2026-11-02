@@ -1,0 +1,82 @@
+---
+title: "REFRESH COLUMN"
+sidebarTitle: "REFRESH COLUMN"
+description: "Filling a computed column: idempotent, scoped, and resumable."
+icon: arrows-rotate
+keywords: ["refresh column", "backfill", "computed column"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+A LanceDB extension with no DataFusion equivalent. It is what makes
+[feature engineering](/feature-engineering) reachable from SQL: a column
+declared by [DDL](/sql/ddl/table#computed-column) starts empty, and a refresh fills it.
+
+```sql
+REFRESH COLUMN <column> ON [TABLE] <table>
+  [WHERE <predicate>]
+  [WITH (<option> = <value> [, ...])]
+```
+
+```sql
+REFRESH COLUMN doubled ON my_table
+REFRESH COLUMN embedding ON documents WHERE created_at > '2026-01-01'
+```
+
+A refresh gives values to rows that lack them, recomputes rows whose inputs
+changed, and **leaves other filled rows alone**. That makes it idempotent, cheap
+to repeat as data arrives, and safe to re-run after a failure, though a re-run
+can recompute values the failed run had already written.
+
+`WHERE` scopes the refresh, which is how you fill a slice and check it before
+committing to the whole table.
+
+## Options {#options}
+
+| Option | Meaning |
+| --- | --- |
+| `num_workers` | how many workers to use |
+| `cpu_millis` | CPU budget per worker |
+| `memory_bytes` | memory budget per worker |
+| `gpu_count` | GPUs per worker |
+| `batch_size` | rows a worker takes at a time |
+| `error_policy` | `'skip'` continues past failing rows instead of failing the job |
+
+```sql
+REFRESH COLUMN embedding ON documents
+  WITH (cpu_millis = 8000, memory_bytes = 17179869184, gpu_count = 2)
+```
+
+`num_workers` sets a count; the budget options size each worker. They are
+alternatives rather than a pair.
+
+{/*
+Draft for the Functions release.
+
+<Note>
+`error_policy` and `num_workers` are refused for a column filled by a registered
+[function](/management/function) with its own resource budget -- use the CPU,
+memory and GPU options there.
+</Note>
+*/}
+
+## Watching a refresh {#watching}
+
+A refresh submits work that outlives the call. Track it with
+[`SHOW JOBS`](/sql/ddl/job#show), and diagnose failures with
+[`SHOW ERRORS`](/sql/ddl/job#errors).
+
+## See also {#see-also}
+
+<CardGroup cols={2}>
+  <Card title="Refresh a computed column" icon="arrows-rotate" href="/feature-engineering/refresh-column">
+    The same operation from the SDKs, and what a refresh guarantees.
+  </Card>
+  <Card title="Table" icon="table" href="/sql/ddl/table#alter">
+    Declaring the columns this fills.
+  </Card>
+  <Card title="REFRESH MATERIALIZED VIEW" icon="arrows-rotate" href="/sql/dml/refresh-materialized-view">
+    Bringing a view's stored result up to date, instead of a column.
+  </Card>
+</CardGroup>

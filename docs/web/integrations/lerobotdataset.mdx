@@ -138,6 +138,25 @@ class EmbedFromBlob:                    # SigLIP2 loads once per worker
         ...
 ```
 
+**Deduplication** removes near-static runs before they skew curation or
+training. A stopped gripper holding one pose for a few seconds produces many
+frames whose `emb_siglip2` vectors are nearly identical; LanceDB Enterprise's
+native [`dedupe`](/sql/dql/dedupe) collapses them into one
+representative per cluster, directly over the index, without a pairwise scan:
+
+```python
+db.execute_query("""
+    CREATE MATERIALIZED VIEW frames_deduped AS
+    SELECT * FROM dedupe('frames', 'emb_siglip2', distance_threshold => 0.01)
+""")
+```
+
+Every column survives the dedup unchanged -- `jerk_score`, the episode and
+camera metadata, the video blob reference -- since `dedupe` returns full
+rows, not just which ones matched. Wrap it in a materialized view, as above,
+to keep the deduplicated set current as new episodes land; see
+[Materialized views](/feature-engineering/materialized-views).
+
 **Search** is an index on those columns: a vector index over the embeddings built in 29.7 s across 27.6M rows, a full-text index over the instructions in 7.0 s, queries in 10 to 54 ms.
 
 **Curation** is one query across all of it. Semantic search with a predicate on the derived score, no join, no second system:

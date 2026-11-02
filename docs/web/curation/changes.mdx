@@ -1,0 +1,93 @@
+---
+title: "Scope curation to what changed"
+sidebarTitle: "Changes"
+description: "Process only the rows added since your last curation run, instead of rescanning the whole table."
+icon: clock-rotate-left
+keywords: ["changes", "incremental", "cdc", "version", "append-only"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+A curation task you run repeatedly -- chunking, deduplication, profiling --
+does not need to rescan rows it already processed. `CHANGES` reads only the
+rows appended to a table since an earlier
+[version](/management/table#versioning), so a recurring job can scope itself
+to what is new.
+
+## Example data {#example-data}
+
+`curation_batches` gets a batch of new documents appended periodically, with
+no updates or deletes between appends:
+
+```sql
+CREATE TABLE curation_batches (doc_id BIGINT, source VARCHAR, text VARCHAR);
+INSERT INTO curation_batches VALUES
+    (1, 'web', 'A cat on a chair'),
+    (2, 'web', 'A dog in a field');
+-- note the version after this insert, for example 5
+INSERT INTO curation_batches VALUES
+    (3, 'books', 'A bird in a tree'),
+    (4, 'books', 'A cat by a window');
+-- the table is now at a later version, for example 7
+```
+
+## Read only what is new {#read-new}
+
+`CHANGES (INFORMATION => APPEND_ONLY) AT (VERSION => 5)` reads the rows
+appended after version 5 -- documents 3 and 4 -- without rescanning 1 and 2:
+
+```sql
+SELECT * FROM curation_batches CHANGES (INFORMATION => APPEND_ONLY) AT (VERSION => 5)
+```
+
+Record the table's version after each curation run, then start the next
+run's `CHANGES` from it. See [Versioning](/management/table#versioning) for
+the APIs that read a table's current version.
+
+## Chain it into a curation task {#chain}
+
+`CHANGES` is a relation, like any other table reference, so it composes with
+the rest of this page: chunk, dedupe, or join only the new rows, instead of
+the whole table. Materializing the result keeps a running, append-only table
+of work already done:
+
+```sql
+INSERT INTO curated_batches
+SELECT doc_id, source, text
+FROM curation_batches CHANGES (INFORMATION => APPEND_ONLY) AT (VERSION => 5)
+WHERE source = 'books'
+```
+
+A [chunker Function](/curation/chunking) or a [`dedupe`](/sql/dql/dedupe)
+call works the same way: put the `CHANGES` relation where the source table
+would otherwise go, and only the new rows flow through it.
+
+## Strictly append-only {#strict}
+
+The clause is named for what it requires, not just what it does. If anything
+other than a pure append happened to the table between the starting version
+and the current one -- an update, a delete, a merge -- the query is refused
+rather than silently returning an incomplete or wrong result:
+
+```sql
+-- refused if any row in curation_batches was updated or deleted after version 5
+SELECT * FROM curation_batches CHANGES (INFORMATION => APPEND_ONLY) AT (VERSION => 5)
+```
+
+When that happens, either re-run from a later starting version that is
+itself after the non-append write, or read the table in full instead of
+incrementally for that run. See
+[Changes since a version](/sql/dql/changes#strict) for the complete set of
+refused forms.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="CHANGES" icon="clock-rotate-left" href="/sql/dql/changes">
+    The full SQL syntax, placement rules, and unsupported forms.
+  </Card>
+  <Card title="Table" icon="table" href="/management/table#versioning">
+    How table versions work, and how to find one to start from.
+  </Card>
+</CardGroup>

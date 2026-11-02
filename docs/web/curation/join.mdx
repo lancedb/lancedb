@@ -5,10 +5,8 @@ description: "Combine records with labels or metadata, and check for missing or 
 icon: link
 keywords: ["join", "labels", "metadata", "enrichment", "namespace"]
 availability:
-  oss: unavailable
+  embedded: unavailable
   enterprise: available
-  summary: >-
-    Enterprise supports SQL joins.
 ---
 
 A SQL join combines records from two tables using a shared key. Use joins to
@@ -126,6 +124,38 @@ when source records include large media or embedding columns.
 Use [Explain a query plan](/search/explain) to see how the query reads and
 combines data. Check the plan to see whether the query uses indexes and how it performs the
 join. An index on a key does not guarantee that the join will use it.
+
+### Defer wide columns until after the join {#late-materialization}
+
+When one side of a join carries a BlobV2 column, an embedding, or both, join
+on a narrow key first -- `row_id`, `_rowid`, or another selective column --
+and project the wide columns only in the final select list, rather than
+selecting them alongside the join condition. The planner can then defer
+reading those columns until after the join has already narrowed down which
+rows survive, instead of reading them for every candidate row.
+
+`frames` is wide: a BlobV2 `image` and a vector `embedding` alongside its
+key. `selected` is narrow: the frame IDs an earlier curation step already
+kept, such as a sample or a dedupe result. Join on the key, project the wide
+columns last:
+
+```sql
+SELECT s.frame_id, f.image, f.embedding
+FROM selected AS s
+JOIN frames AS f ON f.frame_id = s.frame_id
+```
+
+`selected` narrows the row set before `image` or `embedding` is ever touched
+on the `frames` side, rather than reading every row's blob and vector just
+to discard most of them after the join.
+
+This is query planning the optimizer may or may not apply to a given query,
+not a guarantee from writing the join this way. Confirm it per query with
+[`EXPLAIN`](/search/explain): a plan containing `RemoteTake` deferred the
+wide read; a plan without it read the wide columns eagerly, even for a query
+shaped exactly like the one above. See
+[Late materialization for wide columns](/sql/dql/join#late-materialization)
+in the SQL reference for the underlying mechanism.
 
 ## Save the result or continue curating {#reference}
 

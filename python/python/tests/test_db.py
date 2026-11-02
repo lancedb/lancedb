@@ -1149,6 +1149,24 @@ def test_local_namespace_operations(tmp_path):
     assert db.list_namespaces().namespaces == []
 
 
+@pytest.mark.asyncio
+async def test_local_async_namespace_exists(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    await db.create_namespace(["existing"])
+    await db.create_namespace(["existing", "nested"])
+
+    assert await db.namespace_exists([]) is True
+    assert await db.namespace_exists(["existing"]) is True
+    assert await db.namespace_exists(["existing", "nested"]) is True
+    assert await db.namespace_exists(["missing"]) is False
+    assert await db.namespace_exists(["existing", "missing"]) is False
+    assert await db.namespace_exists(["missing", "nested"]) is False
+
+    await db.drop_namespace(["existing", "nested"])
+    assert await db.namespace_exists(["existing", "nested"]) is False
+    assert await db.namespace_exists(["existing"]) is True
+
+
 def test_local_sync_namespace_uses_rust_without_python_client(tmp_path, monkeypatch):
     """Sync local namespace operations should avoid the Python namespace client."""
     db = lancedb.connect(tmp_path)

@@ -4,9 +4,10 @@ sidebarTitle: "Data Types"
 description: "How Lance columns appear to SQL, including the types SQL has no name for."
 icon: shapes
 keywords: ["sql types", "arrow", "cast", "pseudo-columns", "vector", "json"]
+availability:
+  embedded: unavailable
+  enterprise: available
 ---
-
-<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 There is no SQL type layer over Lance storage. The table provider hands
 DataFusion the dataset's Arrow schema directly, so a column is the same object

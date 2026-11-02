@@ -124,7 +124,7 @@ class RetryConfig:
         `LANCE_CLIENT_RETRY_BACKOFF_JITTER`.
     statuses: Optional[List[int]
         The HTTP status codes for which to retry the request. Default is
-        [429, 500, 502, 503].
+        [409, 429, 500, 502, 503, 504].
 
         You can also set this via the environment variable
         `LANCE_CLIENT_RETRY_STATUSES`. Use a comma-separated list of integers.
@@ -163,7 +163,7 @@ class TlsConfig:
 
 @dataclass
 class ClientConfig:
-    """Configuration for the LanceDB Cloud HTTP client.
+    """Configuration for the HTTP client used to connect to LanceDB Enterprise.
 
     Attributes
     ----------
@@ -190,7 +190,7 @@ class ClientConfig:
         Provider for dynamic headers to be added to each request.
     user_id: Optional[str]
         User identifier for tracking purposes. This is sent as the
-        `x-lancedb-user-id` header in requests to LanceDB Cloud/Enterprise.
+        `x-lancedb-user-id` header in requests to LanceDB Enterprise.
 
         This can also be set via the `LANCEDB_USER_ID` environment variable.
         Alternatively, set `LANCEDB_USER_ID_ENV_KEY` to specify another

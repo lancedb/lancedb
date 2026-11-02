@@ -26,6 +26,28 @@ __all__ = [
 ]
 
 
+def _timeout_message(
+    job_id: Optional[str], timeout: timedelta, job_type: Optional[str]
+) -> str:
+    seconds = f"{timeout.total_seconds():g}"
+    unit = "second" if seconds == "1" else "seconds"
+    if job_id is None:
+        return (
+            f"operation still running after {seconds} {unit}; "
+            "it continues on the server"
+        )
+    if job_type == "query":
+        return (
+            f"query {job_id!r} still running after {seconds} {unit}; "
+            "it continues on the server; keep this handle to continue waiting"
+        )
+    return (
+        f"job {job_id!r} still running after {seconds} {unit}; "
+        "it continues on the server; "
+        f"reattach with db.open_job({job_id!r}).wait()"
+    )
+
+
 class AsyncJob(Generic[T]):
     """A handle to an operation that may still be running.
 
@@ -73,13 +95,24 @@ class AsyncJob(Generic[T]):
 
         Raises `JobFailedError` if the operation failed, `JobCancelledError`
         if it was cancelled, and `TimeoutError` if `timeout` elapses first.
+        The timeout error identifies the job and explains that it continues on
+        the server. Registry jobs include the ``db.open_job(id).wait()``
+        reattach call; SQL query handles must be kept because their IDs cannot
+        be reopened through the registry jobs API.
         """
         if self._inner is None:
             return cast(T, None)
         if timeout is None:
             result = await self._inner.wait()
         else:
-            result = await asyncio.wait_for(self._inner.wait(), timeout.total_seconds())
+            try:
+                result = await asyncio.wait_for(
+                    self._inner.wait(), timeout.total_seconds()
+                )
+            except asyncio.TimeoutError as error:
+                raise TimeoutError(
+                    _timeout_message(self.id, timeout, self.job_type)
+                ) from error
         if self._result_decoder is not None:
             return self._result_decoder(result)
         return cast(T, result)
@@ -270,6 +303,10 @@ class Job(Generic[T]):
 
         Raises `JobFailedError` if the operation failed, `JobCancelledError`
         if it was cancelled, and `TimeoutError` if `timeout` elapses first.
+        The timeout error identifies the job and explains that it continues on
+        the server. Registry jobs include the ``db.open_job(id).wait()``
+        reattach call; SQL query handles must be kept because their IDs cannot
+        be reopened through the registry jobs API.
         """
         if self._inner is None:
             return cast(T, None)

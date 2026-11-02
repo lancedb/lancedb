@@ -1453,6 +1453,132 @@ mod lsm_tests {
         );
     }
 
+    /// Another process re-initializing the MemWAL retires this process's
+    /// cached writer: its rows are not read, and the next write opens a
+    /// writer for the new MemWAL.
+    ///
+    /// `disable_rte` refuses while the writer holds rows, so the MemWAL index
+    /// is dropped through Lance directly, standing in for a write that lands
+    /// after that check. The writer's rows are lost to the base table either
+    /// way; what this pins is that they are not served from a directory the
+    /// index no longer names.
+    #[tokio::test]
+    async fn lsm_writer_of_a_retired_mem_wal_is_replaced() {
+        use lance::index::DatasetIndexExt;
+
+        let dir = tempdir().unwrap();
+        let uri = dir.path().to_str().unwrap();
+        let conn = connect(uri)
+            .read_consistency_interval(std::time::Duration::ZERO)
+            .execute()
+            .await
+            .unwrap();
+        let table = conn
+            .create_table("t", id_value_reader(vec![1, 2, 3]))
+            .execute()
+            .await
+            .unwrap();
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
+        lsm_upsert(&table, vec![4, 5]).await;
+        let retired_dir_id = mem_wal_dir_id(&table).await;
+
+        let mut dataset = lance::Dataset::open(&table.uri().await.unwrap())
+            .await
+            .unwrap();
+        dataset
+            .drop_index(lance_index::mem_wal::MEM_WAL_INDEX_NAME)
+            .await
+            .unwrap();
+        let other = connect(uri)
+            .execute()
+            .await
+            .unwrap()
+            .open_table("t")
+            .execute()
+            .await
+            .unwrap();
+        other.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
+        let dir_id = mem_wal_dir_id(&table).await;
+        assert_ne!(dir_id, retired_dir_id);
+
+        let ids = || async {
+            let rows = collect_id_value(table.query().execute().await.unwrap()).await;
+            rows.into_iter().map(|(id, _)| id).collect::<Vec<_>>()
+        };
+        assert_eq!(ids().await, vec![1, 2, 3]);
+
+        lsm_upsert(&table, vec![6]).await;
+        assert_eq!(ids().await, vec![1, 2, 3, 6]);
+        let native = table.as_native().unwrap();
+        assert!(
+            native
+                .dataset
+                .shard_writer()
+                .read_snapshot(&dir_id)
+                .await
+                .unwrap()
+                .is_some(),
+            "the write opened a writer for the new MemWAL"
+        );
+    }
+
+    /// `disable_rte` refuses while the MemWAL holds rows the base table does
+    /// not, since a MemWAL installed later would not read them.
+    #[tokio::test]
+    async fn lsm_disable_is_refused_while_rows_are_unmerged() {
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await;
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
+        lsm_upsert(&table, vec![4, 5]).await;
+
+        let err = table.disable_rte().await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("not been merged into the base table"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(
+            table.get_rte_spec().await.unwrap(),
+            Some(RTEWriteSpec::unsharded())
+        );
+        let rows = collect_id_value(table.query().execute().await.unwrap()).await;
+        assert_eq!(
+            rows.into_iter().map(|(id, _)| id).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 5]
+        );
+    }
+
+    /// Rows another process's writer has acknowledged but not flushed are in
+    /// its WAL only, and still refuse `disable_rte`.
+    #[tokio::test]
+    async fn lsm_disable_is_refused_while_another_writer_holds_rows() {
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await;
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
+        lsm_upsert(&table, vec![4, 5]).await;
+
+        let other = connect(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap()
+            .open_table("t")
+            .execute()
+            .await
+            .unwrap();
+        let err = other.disable_rte().await.unwrap_err();
+        assert!(
+            err.to_string().contains("0 SSTable(s) not merged")
+                && !err.to_string().contains(" 0 WAL entry(ies) not flushed"),
+            "unexpected error: {err}"
+        );
+        let rows = collect_id_value(table.query().execute().await.unwrap()).await;
+        assert_eq!(
+            rows.into_iter().map(|(id, _)| id).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 5]
+        );
+    }
+
     #[tokio::test]
     async fn base_table_adapter_use_rte_false_scans_the_base_only() {
         use crate::table::datafusion::BaseTableAdapter;
@@ -1728,9 +1854,10 @@ mod lsm_tests {
 
     /// A spec is replaced by unsetting it and setting the new one.
     ///
-    /// `disable_rte` drains the open writer, so the rows it held
-    /// survive the replacement, and the writer the next write opens builds its
-    /// MemTables from the new set.
+    /// The writer the next write opens builds its MemTables from the new set.
+    /// Unsetting is refused while the MemWAL holds unmerged rows (see
+    /// `lsm_disable_is_refused_while_rows_are_unmerged`), so nothing is
+    /// written before the replacement.
     #[tokio::test]
     async fn lsm_spec_is_replaced_by_unsetting_it_first() {
         use crate::index::Index;
@@ -1745,13 +1872,11 @@ mod lsm_tests {
             .unwrap();
         let fts_index = table.list_indices().await.unwrap()[0].name.clone();
 
-        // Installed maintaining nothing, then written to: the writer opens with
-        // no FTS index.
+        // Installed maintaining nothing.
         table
             .enable_rte(RTEWriteSpec::unsharded().with_maintained_indexes(Vec::new()))
             .await
             .unwrap();
-        upsert_text(&table, vec![(99, "zebra")]).await;
 
         // Setting over an installed spec is refused; unset, then set.
         let err = table
@@ -2269,7 +2394,7 @@ mod lsm_tests {
             .unwrap()
             .dataset
             .shard_writer()
-            .read_snapshot()
+            .read_snapshot(&mem_wal_dir_id(&table).await)
             .await
             .unwrap()
             .expect("the merge opened a writer");
@@ -2288,6 +2413,20 @@ mod lsm_tests {
         assert_sstables_answer_through_region_bitmap(&table, vec![10, 11]).await;
     }
 
+    /// The `dir_id` of the table's current MemWAL, read from storage.
+    async fn mem_wal_dir_id(table: &Table) -> String {
+        use lance::dataset::mem_wal::DatasetMemWalExt;
+
+        lance::Dataset::open(&table.uri().await.unwrap())
+            .await
+            .unwrap()
+            .mem_wal_index_details()
+            .await
+            .unwrap()
+            .expect("the table has a MemWAL")
+            .dir_id
+    }
+
     /// The SSTables each shard's manifest publishes.
     async fn published_sstables(table: &Table) -> Vec<lance::Dataset> {
         use lance::dataset::mem_wal::ShardManifestStore;
@@ -2296,13 +2435,15 @@ mod lsm_tests {
         let (store, base) = lance_io::object_store::ObjectStore::from_uri(&uri)
             .await
             .unwrap();
-        let mem_wal = std::path::Path::new(&uri).join("_mem_wal");
+        let dir_id = mem_wal_dir_id(table).await;
+        let mem_wal = std::path::Path::new(&uri)
+            .join(lance::dataset::mem_wal::util::mem_wal_dir_name(&dir_id));
         let mut sstables = Vec::new();
         for shard in std::fs::read_dir(&mem_wal).unwrap() {
             let Ok(shard_id) = shard.unwrap().file_name().to_string_lossy().parse() else {
                 continue;
             };
-            let manifest = ShardManifestStore::new(store.clone(), &base, shard_id, 2)
+            let manifest = ShardManifestStore::new(store.clone(), &base, &dir_id, shard_id, 2)
                 .latest()
                 .await
                 .unwrap()
@@ -2417,7 +2558,7 @@ mod lsm_tests {
             .unwrap()
             .dataset
             .shard_writer()
-            .read_snapshot()
+            .read_snapshot(&mem_wal_dir_id(&table).await)
             .await
             .unwrap()
             .expect("the merge opened a writer");

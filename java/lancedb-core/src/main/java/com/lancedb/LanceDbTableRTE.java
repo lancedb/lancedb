@@ -22,7 +22,7 @@ import java.util.Optional;
 import java.util.OptionalLong;
 
 /**
- * The RTE write path for one LanceDB Cloud or Enterprise table.
+ * The RTE write path for one LanceDB Enterprise table.
  *
  * <p>Installing an {@link RTEWriteSpec} routes {@code mergeInsert} upserts through Lance's RTE — an
  * LSM-style append — instead of the standard merge path. Rows land in an in-memory memtable, freeze

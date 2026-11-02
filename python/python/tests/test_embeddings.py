@@ -602,6 +602,51 @@ def test_openai_propagates_api_key(monkeypatch):
     assert len(actual.text) > 0
 
 
+@pytest.mark.parametrize("base_url", [None, "http://localhost:11434/v1"])
+def test_openai_compatible_model_uses_dim_for_ndims(base_url):
+    # Unlisted model names use the explicit dimension independently of base_url.
+    openai = get_registry().get("openai")
+    func = openai.create(
+        name="nomic-embed-text",
+        base_url=base_url,
+        dim=768,
+    )
+    assert func.ndims() == 768
+
+    class Schema(LanceModel):
+        text: str = func.SourceField()
+        vector: Vector(func.ndims()) = func.VectorField()
+
+    schema = Schema.to_arrow_schema()
+    assert schema.field("vector").type == pa.list_(pa.float32(), 768)
+
+
+def test_openai_unknown_model_without_dim_raises_clear_error():
+    openai = get_registry().get("openai")
+    func = openai.create(
+        name="nomic-embed-text",
+        base_url="http://localhost:11434/v1",
+    )
+    with pytest.raises(ValueError, match="dim"):
+        func.ndims()
+
+
+@pytest.mark.parametrize(
+    ("name", "dim", "expected_dim"),
+    [
+        ("text-embedding-ada-002", None, 1536),
+        ("text-embedding-ada-002", 512, 1536),
+        ("text-embedding-3-large", None, 3072),
+        ("text-embedding-3-large", 1024, 1024),
+        ("text-embedding-3-small", None, 1536),
+        ("text-embedding-3-small", 512, 512),
+    ],
+)
+def test_openai_known_model_ndims(name, dim, expected_dim):
+    func = get_registry().get("openai").create(name=name, dim=dim)
+    assert func.ndims() == expected_dim
+
+
 @patch("time.sleep")
 def test_openai_no_retry_on_401(mock_sleep):
     """
@@ -1115,3 +1160,13 @@ def test_jina_embeddings_use_their_own_api_key(monkeypatch):
         func_b.compute_source_embeddings(["hello"])
 
     assert sent == ["Bearer key-a", "Bearer key-b"]
+
+
+def test_cohere_default_model_is_not_a_retired_v2_model():
+    # Cohere retired embed-english-v2.0, embed-english-light-v2.0 and
+    # embed-multilingual-v2.0 on April 4, 2026.
+    cohere = get_registry().get("cohere").create()
+
+    assert cohere.name == "embed-multilingual-v3.0"
+    assert "v2.0" not in cohere.name
+    assert cohere.ndims() == 1024

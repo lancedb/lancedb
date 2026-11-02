@@ -104,9 +104,15 @@ pub fn canonicalize_sql_predicate(predicate: &str) -> crate::Result<String> {
         .collect())
 }
 
-/// Prefix for placeholder strings inserted in place of binary literals.  Chosen
-/// to be extremely unlikely to occur in user data.
+/// Prefixes for placeholder strings inserted in place of literals. Chosen to
+/// be extremely unlikely to occur in user data.
 const BINARY_PLACEHOLDER_PREFIX: &str = "__lancedb_binary_placeholder_";
+const STRING_PLACEHOLDER_PREFIX: &str = "__lancedb_string_placeholder_";
+
+enum LiteralBinding {
+    String(String),
+    Binary(Vec<u8>),
+}
 
 fn bytes_to_hex_sql(bytes: &[u8]) -> String {
     let hex: String = bytes.iter().map(|b| format!("{b:02X}")).collect();
@@ -137,19 +143,28 @@ fn typed_string_literal(value: String, data_type: DataType) -> Expr {
     )
 }
 
-fn next_binary_placeholder(user_strings: &HashSet<String>, next_id: &mut usize) -> String {
+fn next_placeholder(
+    prefix: &str,
+    user_strings: &HashSet<String>,
+    bindings: &HashMap<String, LiteralBinding>,
+    next_id: &mut usize,
+) -> String {
     loop {
-        let placeholder = format!("{BINARY_PLACEHOLDER_PREFIX}{}__", *next_id);
+        let placeholder = format!("{prefix}{}__", *next_id);
         *next_id += 1;
-        if !user_strings.contains(&placeholder) {
+        if !user_strings.contains(&placeholder) && !bindings.contains_key(&placeholder) {
             return placeholder;
         }
     }
 }
 
-fn bind_binary_literals(
+fn escape_string_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn bind_literals(
     sql: &str,
-    mut bindings: HashMap<String, Vec<u8>>,
+    mut bindings: HashMap<String, LiteralBinding>,
 ) -> crate::Result<String> {
     let bytes = sql.as_bytes();
     let mut output = Vec::with_capacity(bytes.len());
@@ -179,7 +194,7 @@ fn bind_binary_literals(
 
             let Some(identifier_end) = identifier_end else {
                 return Err(crate::Error::InvalidInput {
-                    message: "unterminated identifier while binding binary literal".to_string(),
+                    message: "unterminated identifier while binding literals".to_string(),
                 });
             };
             output.extend_from_slice(&bytes[identifier_start..identifier_end]);
@@ -214,13 +229,17 @@ fn bind_binary_literals(
 
         let Some(content_end) = content_end else {
             return Err(crate::Error::InvalidInput {
-                message: "unterminated string while binding binary literal".to_string(),
+                message: "unterminated string while binding literals".to_string(),
             });
         };
 
         let placeholder = &sql[content_start..content_end];
         if !escaped && let Some(value) = bindings.remove(placeholder) {
-            output.extend_from_slice(bytes_to_hex_sql(&value).as_bytes());
+            let rendered = match value {
+                LiteralBinding::String(value) => escape_string_literal(&value),
+                LiteralBinding::Binary(value) => bytes_to_hex_sql(&value),
+            };
+            output.extend_from_slice(rendered.as_bytes());
         } else {
             output.extend_from_slice(&bytes[literal_start..index]);
         }
@@ -228,12 +247,12 @@ fn bind_binary_literals(
 
     if !bindings.is_empty() {
         return Err(crate::Error::InvalidInput {
-            message: "failed to bind binary literal while serializing expression".to_string(),
+            message: "failed to bind literals while serializing expression".to_string(),
         });
     }
 
     String::from_utf8(output).map_err(|e| crate::Error::InvalidInput {
-        message: format!("failed to bind binary literal: {e}"),
+        message: format!("failed to bind literals: {e}"),
     })
 }
 
@@ -253,7 +272,7 @@ pub fn expr_to_sql_string(expr: &Expr) -> crate::Result<String> {
     // * decimal literals need an explicit cast to preserve precision and scale;
     // * casts need exact Arrow type names rather than SQL type aliases;
     // * an empty IN list is valid in DataFusion but invalid SQL;
-    // * binary literals are unsupported by the unparser and need placeholders.
+    // * literals are replaced with placeholders and restored after unparsing.
     // Eliminate empty membership expressions before visiting their children.
     // Otherwise a discarded binary child could leave behind a stale binding.
     let rewritten = expr
@@ -270,14 +289,19 @@ pub fn expr_to_sql_string(expr: &Expr) -> crate::Result<String> {
         .data;
 
     let user_strings = string_literals(&rewritten);
-    let mut next_placeholder_id = 0;
-    let mut binary_bindings = HashMap::new();
+    let mut next_binary_placeholder_id = 0;
+    let mut bindings = HashMap::new();
     let rewritten = rewritten
         .transform(|e: Expr| match e {
             Expr::Literal(ScalarValue::Binary(Some(bytes)), m)
             | Expr::Literal(ScalarValue::LargeBinary(Some(bytes)), m) => {
-                let placeholder = next_binary_placeholder(&user_strings, &mut next_placeholder_id);
-                binary_bindings.insert(placeholder.clone(), bytes);
+                let placeholder = next_placeholder(
+                    BINARY_PLACEHOLDER_PREFIX,
+                    &user_strings,
+                    &bindings,
+                    &mut next_binary_placeholder_id,
+                );
+                bindings.insert(placeholder.clone(), LiteralBinding::Binary(bytes));
                 Ok(Transformed::yes(Expr::Literal(
                     ScalarValue::Utf8(Some(placeholder)),
                     m,
@@ -345,11 +369,44 @@ pub fn expr_to_sql_string(expr: &Expr) -> crate::Result<String> {
         })?
         .data;
 
+    // DataFusion's SQLParser serializer treats a quote after a backslash as
+    // already escaped, but Lance's dialect does not support backslash escapes.
+    // Replace every string with an inert placeholder so the serializer cannot
+    // misinterpret its contents, then restore each value with standard SQL
+    // single-quote doubling below.
+    let mut next_string_placeholder_id = 0;
+    let rewritten = rewritten
+        .transform(|e: Expr| match e {
+            Expr::Literal(
+                ScalarValue::Utf8(Some(value))
+                | ScalarValue::LargeUtf8(Some(value))
+                | ScalarValue::Utf8View(Some(value)),
+                m,
+            ) if !bindings.contains_key(&value) => {
+                let placeholder = next_placeholder(
+                    STRING_PLACEHOLDER_PREFIX,
+                    &user_strings,
+                    &bindings,
+                    &mut next_string_placeholder_id,
+                );
+                bindings.insert(placeholder.clone(), LiteralBinding::String(value));
+                Ok(Transformed::yes(Expr::Literal(
+                    ScalarValue::Utf8(Some(placeholder)),
+                    m,
+                )))
+            }
+            other => Ok(Transformed::no(other)),
+        })
+        .map_err(|e| crate::Error::InvalidInput {
+            message: format!("failed to rewrite string literals: {}", e),
+        })?
+        .data;
+
     let sql = run_unparser(&rewritten)?;
-    if binary_bindings.is_empty() {
+    if bindings.is_empty() {
         Ok(sql)
     } else {
-        bind_binary_literals(&sql, binary_bindings)
+        bind_literals(&sql, bindings)
     }
 }
 

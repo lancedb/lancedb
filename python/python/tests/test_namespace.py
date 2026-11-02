@@ -9,15 +9,22 @@ import importlib
 import warnings
 import http.server
 import json
-import threading
 from urllib.parse import parse_qs, unquote, urlparse
 import pytest
+import builtins
+import copy
 import pyarrow as pa
 import lancedb
+from lance.namespace import DirectoryNamespace, LanceNamespace
 from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
+from utils import start_server_thread
 from lancedb.listing import AsyncListing, Listing
 from lancedb.materialized_view import DEFINITION_FORMAT, DEFINITION_META_KEY
-from lancedb.namespace import _MAX_QUERY_K, _query_to_namespace_request
+from lancedb.namespace import (
+    _MAX_QUERY_K,
+    LanceNamespaceDBConnection,
+    _query_to_namespace_request,
+)
 from lancedb.query import Query
 from lancedb.table import AsyncTable, LanceTable
 
@@ -267,8 +274,7 @@ def paginated_rest_namespace():
             pass
 
     with http.server.HTTPServer(("127.0.0.1", 0), Handler) as server:
-        thread = threading.Thread(target=server.serve_forever)
-        thread.start()
+        thread = start_server_thread(server)
         try:
             yield {"uri": f"http://127.0.0.1:{server.server_port}"}, requests
         finally:
@@ -576,37 +582,43 @@ class TestNamespaceConnection:
         assert table_schema.field("id").type == pa.int64()
         assert table_schema.field("text").type == pa.string()
 
-    def test_rename_table(self):
-        """Test that rename_table renames a table in the namespace.
-
-        The `dir` namespace implementation in lance-namespace-impls does not
-        implement `rename_table` yet (only the `rest` backend does), so it
-        currently falls back to the default trait method which raises
-        NotSupported. This is expected to start passing once the `dir`
-        backend gains rename_table support upstream.
-        """
+    @pytest.mark.parametrize("destination_namespace", ["test_ns", "destination_ns"])
+    def test_rename_table(self, destination_namespace):
+        """Test that renaming a table preserves its data and namespace registration."""
         db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
-
-        # Create a child namespace first
         db.create_namespace(["test_ns"])
+        if destination_namespace != "test_ns":
+            db.create_namespace([destination_namespace])
 
-        # Create a table in child namespace
         schema = pa.schema(
             [
                 pa.field("id", pa.int64()),
                 pa.field("vector", pa.list_(pa.float32(), 2)),
             ]
         )
-        db.create_table("old_name", schema=schema, namespace_path=["test_ns"])
+        data = pa.Table.from_pylist(
+            [{"id": 1, "vector": [1.0, 2.0]}, {"id": 2, "vector": [3.0, 4.0]}],
+            schema=schema,
+        )
+        db.create_table("old_name", data=data, namespace_path=["test_ns"])
 
-        # Rename the table within the same namespace
-        with pytest.raises(NotImplementedError, match="rename_table not implemented"):
-            db.rename_table(
-                "old_name",
-                "new_name",
-                cur_namespace_path=["test_ns"],
-                new_namespace_path=["test_ns"],
-            )
+        db.rename_table(
+            "old_name",
+            "new_name",
+            cur_namespace_path=["test_ns"],
+            new_namespace_path=[destination_namespace],
+        )
+
+        reopened = lancedb.connect_namespace("dir", {"root": self.temp_dir})
+        assert "old_name" not in reopened.table_names(namespace_path=["test_ns"])
+        assert "new_name" in reopened.table_names(
+            namespace_path=[destination_namespace]
+        )
+        with pytest.raises(TableNotFoundError):
+            reopened.open_table("old_name", namespace_path=["test_ns"])
+        table = reopened.open_table("new_name", namespace_path=[destination_namespace])
+        assert table.namespace == [destination_namespace]
+        assert table.to_arrow().equals(data)
 
     def test_drop_all_tables(self):
         """Test dropping all tables through namespace."""
@@ -1205,7 +1217,7 @@ class TestPushdownOperations:
         Rust so reads carry the x-lancedb-min-timestamp read-freshness header."""
         db = lancedb.connect_namespace(
             "rest",
-            {"uri": "http://localhost:12345"},
+            {"uri": "http://127.0.0.1:12345"},
             namespace_client_pushdown_operations=["QueryTable"],
         )
         assert db._route_pushdown_to_rust is True
@@ -1222,7 +1234,7 @@ class TestPushdownOperations:
         for the async path omitting the freshness header)."""
         db = lancedb.connect_namespace_async(
             "rest",
-            {"uri": "http://localhost:12345"},
+            {"uri": "http://127.0.0.1:12345"},
             namespace_client_pushdown_operations=["QueryTable"],
         )
         assert db._route_pushdown_to_rust is True
@@ -1361,3 +1373,56 @@ def test_namespace_request_rejects_search_effort(effort):
         _query_to_namespace_request(
             ["test"], Query(vector=[1.0, 0.0], search_effort=effort)
         )
+
+
+class AttributeAccessNamespace(LanceNamespace):
+    """A Python namespace that reads request fields as attributes.
+
+    Python implementations such as ``lance_namespace_impls.glue.GlueNamespace``
+    read requests like pydantic models (``request.id``), and expect omitted
+    optional fields to be ``None``. This fake records what it read and then
+    delegates to ``DirectoryNamespace`` so the test runs locally.
+    """
+
+    def __init__(self, root: str):
+        self._inner = DirectoryNamespace(root=root)
+        self.seen = {}
+
+    def namespace_id(self) -> str:
+        return f"AttributeAccessNamespace[{self._inner.namespace_id()}]"
+
+    def list_tables(self, request):
+        self.seen["list_tables"] = request
+        _ = request.id
+        _ = request.page_token
+        return self._inner.list_tables(request)
+
+    def describe_table(self, request):
+        self.seen["describe_table"] = request
+        _ = request.id
+        # Optional field omitted by the Rust side; must read as None.
+        assert request.load_detailed_metadata is None
+        return self._inner.describe_table(request)
+
+
+def test_python_namespace_attribute_access(tmp_path):
+    root = str(tmp_path)
+    data = pa.table({"id": [1, 2, 3], "text": ["alpha", "beta", "gamma"]})
+    lancedb.connect_namespace("dir", {"root": root}).create_table("t", data)
+
+    ns = AttributeAccessNamespace(root)
+    db = LanceNamespaceDBConnection(ns)
+
+    assert list(db.list_tables()) == ["t"]
+    assert db.open_table("t").to_arrow().to_pylist() == data.to_pylist()
+
+    # Mapping access and model_dump() keep working.
+    request = ns.seen["describe_table"]
+    assert isinstance(request, builtins._DictWithModelDump)
+    assert request["id"] == request.id == ["t"]
+    assert request.model_dump() == dict(request)
+    assert "load_detailed_metadata" not in request
+
+    # Missing dunder lookups still raise, so copy/hasattr probes work.
+    assert not hasattr(request, "__missing_dunder__")
+    assert copy.deepcopy(request) == request

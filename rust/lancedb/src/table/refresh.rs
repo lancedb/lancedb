@@ -51,8 +51,68 @@ use serde::{Deserialize, Serialize};
 use super::computed_columns::{BoundExpression, ComputedColumnKind, computed_column_from_field};
 use super::freshness::{self, SignatureMap, StalenessPlan};
 use super::{BaseTable, NativeTable};
+use crate::function::validate_gpu_class_name;
 use crate::job::Job;
 use crate::{Error, Result};
+
+/// Options for refreshing a computed column.
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub struct RefreshColumnOptions {
+    /// Maximum rows per Function call in LanceDB Distributed.
+    ///
+    /// Must be greater than zero. `None` uses the server default. This has no
+    /// effect on expression-backed columns in LanceDB Embedded.
+    pub batch_size: Option<usize>,
+    /// GPU class for Function workers in LanceDB Distributed.
+    ///
+    /// `None` keeps the Function's registered class, or the deployment default
+    /// when the Function does not declare one.
+    pub gpu_class: Option<String>,
+    /// Positive aggregate GPU budget for Function workers in LanceDB
+    /// Distributed.
+    ///
+    /// `None` leaves the server's configured budget unchanged.
+    pub gpu_count: Option<u32>,
+}
+
+impl RefreshColumnOptions {
+    /// Limit each Function call to at most `batch_size` rows.
+    pub fn batch_size(mut self, batch_size: usize) -> Self {
+        self.batch_size = Some(batch_size);
+        self
+    }
+
+    /// Request Function workers from `gpu_class`.
+    pub fn gpu_class(mut self, gpu_class: impl Into<String>) -> Self {
+        self.gpu_class = Some(gpu_class.into());
+        self
+    }
+
+    /// Request an aggregate GPU budget of `gpu_count`.
+    pub fn gpu_count(mut self, gpu_count: u32) -> Self {
+        self.gpu_count = Some(gpu_count);
+        self
+    }
+
+    /// Validate client-side constraints before any request is sent.
+    pub fn validate(&self) -> Result<()> {
+        if self.batch_size == Some(0) {
+            return Err(Error::InvalidInput {
+                message: "batch_size must be greater than zero".into(),
+            });
+        }
+        if let Some(gpu_class) = &self.gpu_class {
+            validate_gpu_class_name(gpu_class)?;
+        }
+        if self.gpu_count == Some(0) {
+            return Err(Error::InvalidInput {
+                message: "gpu_count must be greater than zero".into(),
+            });
+        }
+        Ok(())
+    }
+}
 
 /// The result of refreshing a computed column.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -368,7 +428,8 @@ fn declared_expression(dataset: &Dataset, column: &str) -> Result<String> {
     match declaration.kind {
         ComputedColumnKind::Sql { expression } => Ok(expression),
         ComputedColumnKind::Function { .. } => Err(Error::NotSupported {
-            message: "registered Function columns are refreshed only by a remote server Job".into(),
+            message: "registered Function columns are refreshed only by a LanceDB Distributed job"
+                .into(),
         }),
         ComputedColumnKind::Unrecognized { kind } => Err(Error::NotSupported {
             message: format!(
@@ -1804,8 +1865,8 @@ mod tests {
         assert!(matches!(err, Error::NotSupported { .. }));
     }
 
-    /// After catch-up activation and unset, no spec remains but the catch-up
-    /// flag still marks retained SSTable rows; refresh refuses on the flag.
+    /// Rows written through the RTE keep the spec installed, since
+    /// `disable_rte` refuses while they are unmerged, so refresh refuses.
     #[tokio::test]
     #[cfg_attr(
         not(feature = "experimental-functions"),
@@ -1848,7 +1909,8 @@ mod tests {
             )))
             .await
             .unwrap();
-        table.disable_rte().await.unwrap();
+        // The RTE holds the written rows, so unsetting it is refused.
+        table.disable_rte().await.unwrap_err();
         super::super::computed_columns::add_foreign_kind(&table, "doubled", "sql").await;
 
         let err = table.refresh_column("doubled").await.unwrap_err();

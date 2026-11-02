@@ -4,11 +4,6 @@ sidebarTitle: "SQL"
 description: "Query LanceDB Enterprise with SQL from Python or an Arrow Flight SQL client."
 icon: table-list
 keywords: ["sql", "flight sql", "datafusion", "reference", "dialect"]
-availability:
-  oss: unavailable
-  enterprise: available
-  summary: >-
-    Enterprise supports SQL through Arrow Flight SQL. Use the SDK table APIs for embedded OSS tables. See [Connection settings](#sql-is-remote) to connect.
 ---
 
 Use SQL in LanceDB Enterprise to filter records, join tables, calculate
@@ -16,25 +11,44 @@ aggregates, and prepare datasets. SQL queries work with the same Lance tables
 you create and update through the SDKs, without exporting the data to another
 system.
 
-You can run SQL through the Python SDK or an Arrow Flight SQL client. This
-guide covers connection settings, a first query, and how SQL fits alongside
-the SDK table APIs.
+This guide covers the two ways to run SQL, connection settings, a first query,
+parameterized queries, and how to read and manage the results.
 
-## Connect a SQL client {#flight-sql}
+## Access LanceDB with SQL {#access}
 
-Enterprise exposes an
-[Arrow Flight SQL](https://arrow.apache.org/docs/format/FlightSql.html)
-endpoint. A compatible client sends SQL statements to this endpoint and
-receives results as Arrow record batches.
+There are two ways to run SQL against LanceDB Enterprise, both against the
+same [Arrow Flight SQL](https://arrow.apache.org/docs/format/FlightSql.html)
+endpoint, returning results as Arrow record batches:
 
-- **Python:** use `execute_query()` on an Enterprise connection, as shown below.
-- **TypeScript:** use a separate Flight SQL client. The LanceDB TypeScript SDK
-  does not expose a SQL execution method.
-- **Other languages and tools:** use a Flight SQL client or a tool with Flight
-  SQL integration. A LanceDB-specific SDK is not required to submit SQL.
+1. **`db.execute_query()`** on the Python SDK's Enterprise connection, shown
+   below. This is LanceDB's native SQL execution method, and we recommend it
+   for the best performance -- see [Adaptive query execution](#adaptive).
+2. **An Arrow Flight SQL client.** Use this from TypeScript and other
+   languages, whose LanceDB SDKs do not expose a SQL execution method, or from
+   any tool with its own Flight SQL integration. A LanceDB-specific SDK is not
+   required to submit SQL.
+
+From the command line, use `lancedb` to open the [SQL shell](/tools/cli)
+or execute a statement or file.
 
 The [SQL reference](/sql#connecting) shows a query from Python. See
 [SDKs](/basics/sdk) for the LanceDB language clients.
+
+### Adaptive query execution {#adaptive}
+
+A standard Flight SQL client calls `GetFlightInfo` to plan a query and then
+`DoGet` to fetch rows -- two round trips every time, even when the server
+could stream results back immediately.
+
+`execute_query()` skips that extra round trip when it can. It calls `DoGet`
+directly for a query with no parameters, or `DoExchange` when
+[binding parameters](#parameters), and sends a
+`lancedb-sql-protocol: adaptive-v1` header. The server decides per query
+whether to stream results on that same call or defer execution and return a
+poll ticket; when it defers, `execute_query()` follows up with
+`PollFlightInfo` automatically, with no extra code on your side. A generic
+Flight SQL client does not send that header, so it always takes the slower
+`GetFlightInfo` path.
 
 ### Connection settings {#sql-is-remote}
 
@@ -49,20 +63,21 @@ The Flight SQL endpoint must be enabled and reachable from your client. Pass
 it explicitly as `sql_host_override` in Python, as in the example below. The
 API and SQL endpoints may use different hosts or ports.
 
-See [Connect to Enterprise](/basics/connect#enterprise) for other connection options.
+See [Connect to Enterprise](/basics/catalog#enterprise) for other connection options.
 
 SQL runs in Enterprise. Connections to a local directory or an object-storage
-bucket use the embedded OSS library and cannot execute SQL statements. Use
+bucket use LanceDB Embedded and cannot execute SQL statements. Use
 SDK table operations to query those tables.
 
 ## Run a query in Python {#sql-from-python}
 
 Install the SDK with `pip install lancedb`. Replace the connection placeholders
 with your Enterprise settings, including the region and both endpoint URLs.
-This example reads an existing table named `my_docs` with `id` and `text`
-columns. Change the query to match your table.
+This example reads an existing `frames` table, with a `video_id` and a
+`caption` column describing each frame. Change the query to match your table.
 
-```python
+<CodeGroup>
+```python Python icon="python"
 import lancedb
 
 db = lancedb.connect(
@@ -73,32 +88,96 @@ db = lancedb.connect(
     sql_host_override="https://your-sql-endpoint:443",
 )
 
-reader = db.execute_query("SELECT id, text FROM my_docs LIMIT 10")
+reader = db.execute_query("SELECT frame_id, video_id, caption FROM frames LIMIT 10")
 table = reader.read_all()
 print(table.to_pylist())
 ```
+</CodeGroup>
 
 In application code, load credentials from environment variables or a secrets
-manager. The [connection guide](/basics/connect#enterprise) shows that setup.
+manager. The [connection guide](/basics/catalog#enterprise) shows that setup.
 
-`execute_query()` returns a blocking Arrow reader when results start arriving.
-The server can stream rows on the first call or return result tickets that the
-SDK follows automatically, with the same behavior for parameterized queries.
-The example uses `read_all()` to collect the small result in memory. For larger
-results, consume the reader in batches. To submit a query and check its status
-separately, use `execute_query_async()`. See [Queries](/basics/query) for query
-handles, streaming, and cancellation.
+`execute_query()` returns a blocking Arrow reader; see
+[Adaptive query execution](#adaptive) for how it starts streaming. The example
+above uses `read_all()` to collect the small result in memory. For larger
+results, or to track and cancel a running query, see
+[Read and manage results](#results). To submit a query and check its status
+separately, use `execute_query_async()`.
+
+## Parameters in SQL queries {#parameters}
+
+Pass a `parameters` argument to bind values into a query, instead of
+formatting them into the SQL string:
+
+```python
+import numpy as np
+
+reader = db.execute_query(
+    "SELECT id FROM docs ORDER BY distance(vector, $1) LIMIT $2",
+    parameters=[np.array([0.1, 0.2, 0.3], dtype=np.float32), 10],
+)
+```
+
+Values travel as Arrow, not interpolated SQL text, so a vector binds as a
+fixed-size list with no manual formatting and no injection risk. Reference a
+parameter with `$1`, `$2`, ... for positional binding, or `$name` for named
+binding:
+
+- A list or tuple binds positionally, in order, to `$1`, `$2`, ...
+- A dict binds by key to `$name`.
+- A one-row `pyarrow.RecordBatch` or `Table` binds its columns, by name and by
+  position.
+- A 1-D NumPy or Arrow array becomes a single fixed-size-list value -- use
+  this form for a vector argument, as shown above.
+
+<Note>
+`parameters` is a LanceDB-specific mechanism, separate from the Flight SQL
+protocol's `PREPARE`/bind step, which
+[a deployment does not implement](/sql/prepared-statements#parameters). Bind
+values with `parameters` from the Python SDK; a generic Flight SQL client has
+no equivalent.
+</Note>
+
+## Read and manage results {#results}
+
+- **Collect the results** when you want a list, Arrow table or DataFrame that
+  fits in memory. Use a result limit and select only the columns you need.
+- **Read batches** when you want to process a large result incrementally.
+  Reading batches avoids loading the entire result into application memory.
+  It does not guarantee that the query can return its first batch immediately.
+
+### Asynchronous clients {#async-client}
+
+An async client lets your application do other work while a request is
+waiting. That is separate from whether you collect results or read them in
+batches. Python offers synchronous and asynchronous clients; TypeScript uses
+async APIs. Check the SDK reference for the methods available in your client.
+
+### Query handles and background jobs {#jobs}
+
+An Enterprise SQL query handle lets you inspect query execution and request
+cancellation. Background operations such as index builds return a
+[job](/basics/jobs) handle instead. Use the API for the returned handle to
+check status and retrieve results.
 
 ## Choose SQL or SDK table operations {#choosing}
 
 Use **SQL** for joins, aggregations, window functions, and analytical queries
 written in SQL. Use **SDK table operations** to build applications around table
 management, ingestion, filtering, and search, including applications that run
-with the embedded OSS library.
+with LanceDB Embedded.
 
 You can combine them. For example, create and populate a table with an SDK,
 then query it with SQL to prepare a training dataset. In Python, both workflows
 can use the same Enterprise connection.
+
+Both interfaces work with the same Lance tables, through the same Arrow
+schema. Applications in different languages can work with the same tables:
+connect to the same database and namespace, use the appropriate credentials,
+and account for [read consistency](/tables/consistency) when another process
+writes data. A fixed-size vector column stores vectors of a consistent
+dimension; see the [data types reference](/sql/data-types) for the supported
+element types and other column types.
 
 ### Common SQL operations {#sdk-parity}
 
@@ -130,7 +209,7 @@ server version supports this form, then use
 [`EXPLAIN`](/sql/dql/explain) to inspect the query plan.
 
 The [SDK vector search API](/search/vector-search) is also available in
-Enterprise and OSS. Use it when you prefer the SDK query builder or need to
+LanceDB Enterprise and LanceDB Embedded. Use it when you prefer the SDK query builder or need to
 search embedded tables.
 
 For full-text search in SQL, use the [`fts()`](/sql/functions#fts) table
@@ -152,8 +231,14 @@ and data types. For SDK methods and their arguments, use the
 ## Next steps {#next}
 
 <CardGroup cols={2}>
-  <Card title="Queries" icon="magnifying-glass" href="/basics/query">
-    Read results, track long-running queries, and cancel work.
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Run a complete create, insert and search example.
+  </Card>
+  <Card title="Search" icon="magnifying-glass" href="/search">
+    Choose vector, full-text or hybrid retrieval.
+  </Card>
+  <Card title="Filtering" icon="filter" href="/search/filtering">
+    Narrow results with predicates.
   </Card>
   <Card title="SDKs" icon="code-compare" href="/basics/sdk">
     Compare language clients and find their API references.

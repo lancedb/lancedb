@@ -543,29 +543,34 @@ where(predicate): this
 
 A filter statement to be applied to this query.
 
-The filter should be supplied as an SQL query string.  For example:
+The filter may be an SQL query string or an expression built with `col`,
+which preserves case-sensitive column names. For example:
 
 #### Parameters
 
-* **predicate**: `string`
+* **predicate**: `string` \| [`Expr`](Expr.md)
 
 #### Returns
 
 `this`
 
-#### Example
+#### Examples
 
 ```ts
 x > 10
 y > 0 AND y < 100
 x > 5 OR y = 'test'
+```
+
+```ts
+table.query().where(col("firstName").eq("Alice"));
+```
 
 Filtering performance can often be improved by creating a scalar index
 on the filter column(s).
 
 Calling this multiple times combines the filters with a logical AND rather
 than replacing the previous filter.
-```
 
 #### Inherited from
 

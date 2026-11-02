@@ -28,6 +28,42 @@
   "favicon": "/static/favicon.ico",
   "redirects": [
     {
+      "source": "/architecture",
+      "destination": "/#architecture"
+    },
+    {
+      "source": "/enterprise/architecture",
+      "destination": "/#architecture"
+    },
+    {
+      "source": "/enterprise/deployment/azure",
+      "destination": "/enterprise/deployment/kubernetes"
+    },
+    {
+      "source": "/basics/query",
+      "destination": "/basics/sql#results"
+    },
+    {
+      "source": "/basics/offerings",
+      "destination": "/#embedded-and-enterprise"
+    },
+    {
+      "source": "/enterprise/deployment",
+      "destination": "/enterprise#deployment"
+    },
+    {
+      "source": "/feature-engineering/data-evolution",
+      "destination": "/feature-engineering/add-computed-column"
+    },
+    {
+      "source": "/training/torch",
+      "destination": "/training/data-loading"
+    },
+    {
+      "source": "/basics/lakehouse",
+      "destination": "/"
+    },
+    {
       "source": "/tables/update",
       "destination": "/ingestion/update"
     },
@@ -209,7 +245,7 @@
     },
     {
       "source": "/sql/refresh",
-      "destination": "/sql/dml/refresh"
+      "destination": "/sql/dml/refresh-column"
     },
     {
       "source": "/sql/show",
@@ -245,13 +281,17 @@
             "group": "Getting Started",
             "pages": [
               "index",
-              "basics/offerings",
-              "basics/connect",
               "quickstart",
-              "architecture",
               "basics/sdk",
               "basics/sql",
-              "basics/agentic-skills"
+              "basics/agentic-skills",
+              "deployment/support"
+            ]
+          },
+          {
+            "group": "Tools",
+            "pages": [
+              "tools/cli"
             ]
           },
           {
@@ -259,9 +299,8 @@
             "pages": [
               "basics/lance",
               "basics/catalog",
-              "basics/lakehouse",
-              "basics/query",
               "basics/jobs",
+              "tables/realtime-engine",
               "tables/consistency",
               "basics/guarantees",
               "basics/limits",
@@ -276,7 +315,8 @@
               "ingestion/insert",
               "ingestion/merge-insert",
               "ingestion/update",
-              "ingestion/delete"
+              "ingestion/delete",
+              "ingestion/realtime-write"
             ]
           },
           {
@@ -288,35 +328,42 @@
               "search/hybrid-search",
               "search/filtering",
               "reranking/index",
-              "search/explain"
+              "search/explain",
+              "search/realtime-read",
+              "enterprise/distributed-search"
             ]
           },
           {
             "group": "Data Curation",
             "pages": [
               "curation/index",
+              "curation/create-function",
+              "curation/chunking",
+              "curation/changes",
               "curation/aggregate",
               "curation/sampling",
               "curation/join",
-              "curation/windowing"
+              "curation/windowing",
+              "curation/dedupe"
             ]
           },
           {
             "group": "Feature Engineering",
             "pages": [
               "feature-engineering/index",
-              "feature-engineering/data-evolution",
               "feature-engineering/add-computed-column",
               "feature-engineering/refresh-column",
-              "feature-engineering/materialized-views"
+              "feature-engineering/view",
+              "feature-engineering/materialized-views",
+              "feature-engineering/refresh-materialized-view"
             ]
           },
           {
             "group": "Training",
             "pages": [
-              "training/why-lancedb",
+              "training/permutation",
               "training/data-loading",
-              "training/torch"
+              "training/distributed-training"
             ]
           },
           {
@@ -327,19 +374,24 @@
               "management/namespace",
               "management/table",
               "tables/branching",
-              "tables/realtime-engine",
-              "management/materialized-view",
-              "management/view"
+              "management/view",
+              "management/materialized-view"
             ]
           },
           {
             "group": "Maintenance",
             "pages": [
-              "indexing/index",
-              "indexing/vector-index",
-              "indexing/fts-index",
-              "indexing/scalar-index",
-              "indexing/reindexing",
+              {
+                "group": "Indexing",
+                "icon": "layer-group",
+                "pages": [
+                  "indexing/index",
+                  "indexing/vector-index",
+                  "indexing/fts-index",
+                  "indexing/scalar-index",
+                  "indexing/reindexing"
+                ]
+              },
               "maintenance/compaction",
               "maintenance/cleanup",
               "maintenance/background-jobs"
@@ -349,14 +401,10 @@
             "group": "Deployment",
             "pages": [
               "enterprise/index",
-              "enterprise/architecture",
-              "enterprise/distributed-search",
-              "enterprise/deployment/index",
               "deployment/storage",
               "deployment/monitoring",
-              "enterprise/deployment/azure",
-              "enterprise/benchmarks",
-              "deployment/support"
+              "enterprise/deployment/kubernetes",
+              "enterprise/benchmarks"
             ]
           },
           {
@@ -375,6 +423,7 @@
               {
                 "group": "DDL",
                 "pages": [
+                  "sql/ddl/database",
                   "sql/ddl/namespace",
                   "sql/ddl/table",
                   "sql/ddl/view",
@@ -391,7 +440,8 @@
                   "sql/dml/update",
                   "sql/dml/delete",
                   "sql/dml/copy",
-                  "sql/dml/refresh"
+                  "sql/dml/refresh-column",
+                  "sql/dml/refresh-materialized-view"
                 ],
                 "icon": "database"
               },
@@ -404,7 +454,10 @@
                   "sql/dql/aggregation",
                   "sql/dql/window",
                   "sql/dql/sampling",
+                  "sql/dql/changes",
                   "sql/dql/fts",
+                  "sql/dql/dedupe",
+                  "sql/dql/duplicate-pairs",
                   "sql/dql/explain"
                 ],
                 "icon": "filter"
@@ -446,6 +499,7 @@
               "integrations/embedding/imagebind",
               "integrations/embedding/instructor",
               "integrations/embedding/jina",
+              "integrations/embedding/nvidia",
               "integrations/embedding/ollama",
               "integrations/embedding/openai",
               "integrations/embedding/openclip",
@@ -490,7 +544,8 @@
               "integrations/ai/genkit",
               "integrations/ai/kiln",
               "integrations/ai/prompttools",
-              "integrations/ai/synthetic-data-kit"
+              "integrations/ai/synthetic-data-kit",
+              "integrations/ai/vscode"
             ]
           }
         ]
