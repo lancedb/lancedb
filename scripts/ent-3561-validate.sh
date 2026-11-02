@@ -23,7 +23,4 @@ rm -rf "$root/docs/site"
 (cd "$root/docs" && PYTHONPATH="$docs_packages:$root/python/python" "$python" -m mkdocs build --clean)
 
 page="$root/docs/site/python/python/index.html"
-grep -Fq 'normalize(" Hello ")' "$page"
-grep -Fq 'read_range(6, 4)' "$page"
-grep -Fq 'FunctionApplication' "$page"
-echo "docs_render=checked"
+"$python" "$root/scripts/ent-3561-check-docs.py" "$page"
