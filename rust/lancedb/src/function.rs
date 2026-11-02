@@ -663,7 +663,7 @@ pub struct FunctionArtifactRequest {
     pub adapter: PythonAdapterSpec,
 }
 
-fn deserialize_batch_size<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
+fn deserialize_batch_size<'de, D>(deserializer: D) -> std::result::Result<Option<u32>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -673,7 +673,7 @@ where
     Ok(value)
 }
 
-fn deserialize_row_timeout<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
+fn deserialize_row_timeout<'de, D>(deserializer: D) -> std::result::Result<Option<f64>, D::Error>
 where
     D: Deserializer<'de>,
 {
