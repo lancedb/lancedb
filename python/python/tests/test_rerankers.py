@@ -1168,15 +1168,15 @@ def test_linear_combination_empty_side_scores_are_null(empty_side):
         }
     )
     if empty_side == "vector":
+        expected_present = fts_results["_score"].to_pylist()
         vector_results = vector_results.slice(0, 0)
         missing = "_distance"
         present = "_score"
-        expected_present = pa.array([5.0, 4.0], pa.float32())
     else:
+        expected_present = vector_results["_distance"].to_pylist()
         fts_results = fts_results.slice(0, 0)
         missing = "_score"
         present = "_distance"
-        expected_present = pa.array([0.1, 0.2], pa.float32())
 
     result = LanceHybridQueryBuilder._combine_hybrid_results(
         fts_results=fts_results,
@@ -1190,7 +1190,7 @@ def test_linear_combination_empty_side_scores_are_null(empty_side):
 
     assert result[missing].type == pa.float32()
     assert result[missing].null_count == len(result) == 2
-    assert result[present].equals(expected_present)
+    assert result[present].to_pylist() == expected_present
     assert result["_relevance_score"].to_pylist() == sorted(
         result["_relevance_score"].to_pylist(), reverse=True
     )
