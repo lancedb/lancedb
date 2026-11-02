@@ -1150,6 +1150,52 @@ def test_linear_combination_missing_fts_is_penalised():
     )
 
 
+@pytest.mark.parametrize("empty_side", ["vector", "fts"])
+def test_linear_combination_empty_side_scores_are_null(empty_side):
+    """With return_score="all", the missing side's score column is null, not NaN."""
+    from lancedb.query import LanceHybridQueryBuilder
+
+    vector_results = pa.table(
+        {
+            "_rowid": pa.array([1, 2], pa.uint64()),
+            "_distance": pa.array([0.1, 0.2], pa.float32()),
+        }
+    )
+    fts_results = pa.table(
+        {
+            "_rowid": pa.array([1, 2], pa.uint64()),
+            "_score": pa.array([5.0, 4.0], pa.float32()),
+        }
+    )
+    if empty_side == "vector":
+        expected_present = fts_results["_score"].to_pylist()
+        vector_results = vector_results.slice(0, 0)
+        missing = "_distance"
+        present = "_score"
+    else:
+        expected_present = vector_results["_distance"].to_pylist()
+        fts_results = fts_results.slice(0, 0)
+        missing = "_score"
+        present = "_distance"
+
+    result = LanceHybridQueryBuilder._combine_hybrid_results(
+        fts_results=fts_results,
+        vector_results=vector_results,
+        norm="score",
+        fts_query="query",
+        reranker=LinearCombinationReranker(return_score="all"),
+        limit=10,
+        with_row_ids=True,
+    )
+
+    assert result[missing].type == pa.float32()
+    assert result[missing].null_count == len(result) == 2
+    assert result[present].to_pylist() == expected_present
+    assert result["_relevance_score"].to_pylist() == sorted(
+        result["_relevance_score"].to_pylist(), reverse=True
+    )
+
+
 @pytest.mark.skipif(
     os.environ.get("WATSONX_API_KEY") is None
     or (
