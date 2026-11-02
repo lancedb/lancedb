@@ -1,0 +1,27 @@
+---
+title: "Distributed compaction"
+sidebarTitle: "Distributed compaction"
+description: "How LanceDB Enterprise distributes compaction across a fleet of job workers."
+icon: "compress"
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+Distributed compaction splits a table's fragments into independent,
+fragment-disjoint tasks and fans them out across job workers in LanceDB
+Enterprise. Unlike an index build, a compaction plan needs no bin-packing:
+Lance's own planner already produces disjoint tasks, so workers claim and
+commit them directly through the job registry. See [Architecture](/index#architecture).
+
+## Embedded compaction {#embedded-compaction}
+
+LanceDB Embedded compacts a table inside your application process, using
+that process's CPU and memory, on whatever schedule your code chooses. There
+is no fleet of workers to claim tasks from it.
+
+## Compaction interfaces {#compaction-interfaces}
+
+- [Compaction](/maintenance/compaction) for triggering and configuring a compaction.
+- [Cleanup](/maintenance/cleanup) for removing files compaction and other operations leave behind.
+- [Background jobs](/maintenance/background-jobs) for the job types a deployment runs on its own schedule.

@@ -372,6 +372,7 @@
               "feature-engineering/index",
               "feature-engineering/add-computed-column",
               "feature-engineering/refresh-column",
+              "enterprise/distributed-column-refresh",
               "feature-engineering/view",
               "feature-engineering/materialized-views",
               "feature-engineering/refresh-materialized-view"
@@ -411,10 +412,12 @@
                   "indexing/vector-index",
                   "indexing/fts-index",
                   "indexing/scalar-index",
-                  "indexing/reindexing"
+                  "indexing/reindexing",
+                  "enterprise/distributed-indexing"
                 ]
               },
               "maintenance/compaction",
+              "enterprise/distributed-compaction",
               "maintenance/cleanup",
               "maintenance/background-jobs"
             ]
@@ -441,6 +444,7 @@
             "group": "SQL Reference",
             "pages": [
               "sql/index",
+              "enterprise/distributed-sql",
               "sql/data-types",
               {
                 "group": "DDL",

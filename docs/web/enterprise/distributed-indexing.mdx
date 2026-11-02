@@ -1,0 +1,32 @@
+---
+title: "Distributed indexing"
+sidebarTitle: "Distributed indexing"
+description: "How LanceDB Enterprise distributes an index build across a fleet of job workers."
+icon: "layer-group"
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+Distributed indexing bin-packs a vector, full-text, or scalar index build into
+a plan of claimable tasks, then fans the plan out across job workers in
+LanceDB Enterprise. Workers claim tasks independently through the job
+registry and commit the finished index together. A vector index build first
+trains a shared IVF/PQ model from sampled data, then workers build storage
+from that model in parallel. See [Architecture](/index#architecture).
+
+## Embedded indexing {#embedded-indexing}
+
+LanceDB Embedded builds an index inside your application process, using that
+process's CPU and memory. There is no plan to bin-pack across machines and no
+fleet of workers to claim tasks from it.
+
+## Indexing interfaces {#indexing-interfaces}
+
+The shared indexing guides describe how to build and maintain each index
+type:
+
+- [Vector indexes](/indexing/vector-index) and [vector search](/search/vector-search).
+- [Full-text indexes](/indexing/fts-index) and [full-text search](/search/full-text-search).
+- [Scalar indexes](/indexing/scalar-index) and [filtering](/search/filtering).
+- [Build and repair indexes](/indexing/reindexing) for triggering and tracking a build.
