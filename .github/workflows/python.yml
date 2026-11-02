@@ -171,7 +171,7 @@ jobs:
       matrix:
         features: ["default", "experimental-functions"]
     timeout-minutes: 30
-    runs-on: macos-14
+    runs-on: macos-15
     defaults:
       run:
         shell: bash

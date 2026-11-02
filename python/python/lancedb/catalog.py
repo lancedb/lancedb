@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-"""Remote catalogs manage databases through a server's root namespace."""
+"""Remote catalogs manage databases."""
 
 from functools import cached_property
 from datetime import timedelta

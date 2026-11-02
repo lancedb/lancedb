@@ -725,7 +725,7 @@ def test_embedded_create_refuses_automatic_refresh_before_creating_view(
     tmp_path, options
 ):
     db = make_db(tmp_path)
-    with pytest.raises(NotImplementedError, match="requires LanceDB Distributed"):
+    with pytest.raises(NotImplementedError, match="requires LanceDB Enterprise"):
         db.create_materialized_view("adults", "people", **options)
     assert "adults" not in db.table_names()
 
@@ -742,7 +742,7 @@ def test_remote_create_rejects_invalid_interval_without_request(seconds):
 @pytest.mark.experimental_functions
 def test_namespace_forwards_automatic_refresh_request(tmp_path):
     db = lancedb.connect_namespace("dir", {"root": str(tmp_path)})
-    with pytest.raises(NotImplementedError, match="requires LanceDB Distributed"):
+    with pytest.raises(NotImplementedError, match="requires LanceDB Enterprise"):
         db.create_materialized_view("mv", "source", auto_refresh_enabled=True)
 
 
@@ -750,7 +750,7 @@ def test_namespace_forwards_automatic_refresh_request(tmp_path):
 @pytest.mark.asyncio
 async def test_async_namespace_forwards_automatic_refresh_request(tmp_path):
     db = lancedb.connect_namespace_async("dir", {"root": str(tmp_path)})
-    with pytest.raises(NotImplementedError, match="requires LanceDB Distributed"):
+    with pytest.raises(NotImplementedError, match="requires LanceDB Enterprise"):
         await db.create_materialized_view("mv", "source", auto_refresh_enabled=True)
 
 

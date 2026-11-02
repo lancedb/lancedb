@@ -16,7 +16,7 @@ import builtins
 import base64
 import functools
 import hashlib
-import importlib
+import importlib.util
 import inspect
 import symtable
 import json
@@ -61,6 +61,11 @@ from .secrets import EnvVarSecret
 _Int32 = conint(strict=True, ge=-(2**31), le=2**31 - 1)
 _UInt32 = conint(strict=True, ge=0, le=2**32 - 1)
 _UInt64 = conint(strict=True, ge=0, le=2**64 - 1)
+_GPU_CLASS_NAME = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+_GPU_CLASS_ERROR = (
+    "gpu_class must be a lowercase name of at most 63 letters, digits, or "
+    "hyphens, and cannot start or end with a hyphen"
+)
 
 
 def _validate_gpu_wire_marker(value: Any) -> bool:
@@ -73,6 +78,12 @@ def _normalize_gpu_marker(value: bool) -> Optional[bool]:
     if not isinstance(value, bool):
         raise ValueError("gpu must be a boolean")
     return True if value else None
+
+
+def _validate_gpu_class_name(value: Any) -> str:
+    if not isinstance(value, str) or not _GPU_CLASS_NAME.fullmatch(value):
+        raise ValueError(_GPU_CLASS_ERROR)
+    return value
 
 
 class _FrozenDict(dict):
@@ -291,6 +302,8 @@ class PythonRuntimeSpec(_RemoteValue):
 
     V1 supports ``kind="python"``. Newer runtime kinds remain readable, while
     their unknown payload fields are intentionally not retained by the client.
+    ``kind="python_v2"`` requires ``gpu=True`` and may name an operator-defined
+    ``gpu_class``.
     """
 
     kind: str
@@ -298,6 +311,7 @@ class PythonRuntimeSpec(_RemoteValue):
     environment: Optional[PythonEnvironmentSpec] = None
     env: Optional[Mapping[str, str]] = None
     gpu: Optional[bool] = None
+    gpu_class: Optional[str] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -315,6 +329,13 @@ class PythonRuntimeSpec(_RemoteValue):
             return None
         return _validate_gpu_wire_marker(value)
 
+    @field_validator("gpu_class", mode="before")
+    @classmethod
+    def _validate_gpu_class(cls, value):
+        if value is None:
+            return None
+        return _validate_gpu_class_name(value)
+
     @model_validator(mode="after")
     def _validate_runtime_kind(self):
         if self.kind == "python":
@@ -324,6 +345,10 @@ class PythonRuntimeSpec(_RemoteValue):
                 raise ValueError("python runtime requires environment")
             if self.gpu is not None:
                 raise ValueError("python runtime with gpu requires kind='python_v2'")
+            if self.gpu_class is not None:
+                raise ValueError(
+                    "python runtime with gpu_class requires kind='python_v2'"
+                )
         elif self.kind == "python_v2":
             if self.python_version is None:
                 raise ValueError("python_v2 runtime requires python_version")
@@ -336,6 +361,7 @@ class PythonRuntimeSpec(_RemoteValue):
             object.__setattr__(self, "environment", None)
             object.__setattr__(self, "env", None)
             object.__setattr__(self, "gpu", None)
+            object.__setattr__(self, "gpu_class", None)
         return self
 
 
@@ -373,6 +399,9 @@ class FunctionVersion(_RemoteValue):
     ``udf_def.registration_request.artifact.digest`` to check whether a local
     [UdfDefinition][lancedb.functions.UdfDefinition] has the same source.
     It is ``None`` when the server does not provide a source digest.
+
+    ``gpu_class`` is the operator-defined GPU pool fixed into this Function
+    version, or ``None`` when registration used the deployment default.
     """
 
     name: str
@@ -387,6 +416,7 @@ class FunctionVersion(_RemoteValue):
     created_at_millis: int
     metadata: Mapping[str, str]
     disabled: bool
+    gpu_class: Optional[str] = None
 
     def __call__(self, **arguments: Any) -> FunctionApplication:
         """Bind this exact version to named table columns.
@@ -661,7 +691,7 @@ class FunctionBinding(_RemoteValue):
 class RefreshColumnResult(_RemoteValue):
     """Terminal result of an expression-backed or Function-backed refresh Job.
 
-    LanceDB Embedded jobs produce this value in process. LanceDB Distributed
+    LanceDB Embedded jobs produce this value in process. LanceDB Enterprise
     decodes the same value from the durable server-job terminal payload.
     """
 
@@ -683,6 +713,8 @@ class RefreshColumnResult(_RemoteValue):
 
 
 _FUNCTION_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# Digest-pinned only; the server checks the host and repository grammar.
+_IMAGE_REFERENCE = re.compile(r"^[^/@\s]+/[^@\s]+@sha256:[0-9a-f]{64}$")
 
 _FUNCTION_BLOB_V2_TYPE = "blob_v2"
 _ARROW_EXTENSION_NAME_KEY = "ARROW:extension:name"
@@ -1462,6 +1494,28 @@ def _module_locations(module: types.ModuleType) -> tuple[str, ...]:
     return tuple(os.path.realpath(path) for path in getattr(module, "__path__", ()))
 
 
+def _module_locations_for_name(module_name: str) -> tuple[str, ...]:
+    """Where a top-level module would be imported from, without importing it
+    when it is not already loaded."""
+    import os
+
+    top = module_name.partition(".")[0]
+    module = sys.modules.get(top)
+    if module is not None:
+        return _module_locations(module)
+    try:
+        spec = importlib.util.find_spec(top)
+    except (AttributeError, ImportError, ValueError):
+        return ()
+    if spec is None:
+        return ()
+    if spec.submodule_search_locations:
+        return tuple(os.path.realpath(path) for path in spec.submodule_search_locations)
+    if spec.origin and spec.origin not in {"built-in", "frozen"}:
+        return (os.path.realpath(spec.origin),)
+    return ()
+
+
 class _SourcePackager:
     """Builds the entry module of a Function artifact.
 
@@ -1478,6 +1532,7 @@ class _SourcePackager:
         self._definitions: list[str] = []
         self._packaged: set[int] = set()
         self._names: dict[str, Any] = {}
+        self._warned_imports: set[str] = set()
 
     def package(self, target: Any, signature: FunctionSignature) -> str:
         entry = self._definition(target, entry=True, signature=signature)
@@ -1510,6 +1565,7 @@ class _SourcePackager:
             raise ValueError(
                 f"@udf cannot package dynamic namespace access: {dynamic!r}"
             )
+        self._warn_unshipped_direct_imports(definition)
         self._packaged.add(id(target))
         self._claim(target.__name__, ("definition", id(target)))
         if reader_name is not None:
@@ -1650,13 +1706,14 @@ class _SourcePackager:
             or top in sys.stdlib_module_names
             or top in sys.builtin_module_names
             or _normalized_distribution(top) in self._requirements
+            or top in self._warned_imports
         ):
             return
-        module = sys.modules.get(top)
-        locations = () if module is None else _module_locations(module)
+        locations = _module_locations_for_name(top)
         roots = _installed_roots()
         if not locations or any(location.startswith(roots) for location in locations):
             return
+        self._warned_imports.add(top)
         warnings.warn(
             f"@udf source imports {module_name!r} from {locations[0]}, a local "
             "module the Function's environment may not be able to import; ship "
@@ -1664,6 +1721,22 @@ class _SourcePackager:
             "pip/conda",
             UserWarning,
         )
+
+    def _warn_unshipped_direct_imports(
+        self, definition: Union[ast.FunctionDef, ast.ClassDef]
+    ) -> None:
+        """Warn for body imports that resolve to local, undeclared source.
+
+        Imports from site-packages are deliberately not guessed about: the
+        declared distribution name need not match the imported module, and the
+        client cannot inspect the remote base image.
+        """
+        for node in ast.walk(definition):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    self._require_importable(alias.name)
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                self._require_importable(node.module)
 
 
 def _code_files(modules: Sequence[Any]) -> tuple[dict[str, str], frozenset[str]]:
@@ -1839,7 +1912,11 @@ class UdfDefinition:
     Instances are created with :func:`udf`. Calling an instance executes the
     original Python function, or constructs the original class, which keeps
     local unit testing ordinary. Remote execution adapts the callable to the
-    internal Arrow batch ABI described by the registration artifact.
+    internal Arrow batch ABI described by the registration artifact. By
+    default it invokes the callable once per row. A callable whose parameters
+    are all annotated as ``pyarrow.Array`` receives whole Arrow arrays and
+    returns a ``pyarrow.Array`` instead. This authoring choice is independent
+    of the internal artifact adapter in the registration request.
     """
 
     def __init__(
@@ -1853,9 +1930,11 @@ class UdfDefinition:
         env: Mapping[str, str],
         python_version: Optional[str],
         gpu: bool = False,
+        gpu_class: Optional[str] = None,
         conda: tuple[str, ...] = (),
         conda_channels: tuple[str, ...] = (),
         apt: tuple[str, ...] = (),
+        image: Optional[str] = None,
         code: tuple[types.ModuleType, ...] = (),
     ):
         is_class = inspect.isclass(function)
@@ -1870,6 +1949,11 @@ class UdfDefinition:
             raise ValueError("a Function environment is pip or conda, not both")
         if conda_channels and not conda:
             raise ValueError("conda_channels requires conda packages")
+        gpu_marker = _normalize_gpu_marker(gpu)
+        if gpu_class is not None:
+            _validate_gpu_class_name(gpu_class)
+            if gpu_marker is None:
+                raise ValueError("gpu_class requires gpu=True")
         packages = tuple(sorted(set(conda if conda else pip)))
         system_packages = tuple(sorted(set(apt)))
         if any(
@@ -1877,16 +1961,24 @@ class UdfDefinition:
             for package in packages + system_packages
         ):
             raise ValueError("package requirements must be non-empty and trimmed")
+        if image is not None and not _IMAGE_REFERENCE.fullmatch(image):
+            raise ValueError(
+                f"Function image {image!r} must be host/repository@sha256:<digest>"
+            )
         if conda:
             environment_spec = PythonEnvironmentSpec(
                 kind="conda",
                 packages=packages,
                 channels=tuple(conda_channels),
+                image=image,
                 system_packages=system_packages,
             )
         else:
             environment_spec = PythonEnvironmentSpec(
-                kind="pip", packages=packages, system_packages=system_packages
+                kind="pip",
+                packages=packages,
+                image=image,
+                system_packages=system_packages,
             )
         environment = dict(env)
         if any(
@@ -1932,7 +2024,6 @@ class UdfDefinition:
             kind = _PYTHON_CALLABLE_ARTIFACT
             source = entry_source.encode("utf-8")
         digest = f"sha256:{hashlib.sha256(source).hexdigest()}"
-        gpu_marker = _normalize_gpu_marker(gpu)
         runtime = PythonRuntimeSpec(
             kind="python_v2" if gpu_marker is not None else "python",
             python_version=python_version
@@ -1940,6 +2031,7 @@ class UdfDefinition:
             environment=environment_spec,
             env=environment,
             gpu=gpu_marker,
+            gpu_class=gpu_class,
         )
         self._function = function
         self._request = FunctionRegistrationRequest(
@@ -2054,9 +2146,11 @@ def udf(
     env: Optional[Mapping[str, str]] = None,
     python_version: Optional[str] = None,
     gpu: bool = False,
+    gpu_class: Optional[str] = None,
     conda: tuple[str, ...] | list[str] = (),
     conda_channels: tuple[str, ...] | list[str] = (),
     apt: tuple[str, ...] | list[str] = (),
+    image: Optional[str] = None,
     code: Sequence[types.ModuleType] = (),
 ) -> Callable[[Callable[..., Any]], UdfDefinition]: ...
 
@@ -2071,9 +2165,11 @@ def udf(
     env: Optional[Mapping[str, str]] = None,
     python_version: Optional[str] = None,
     gpu: bool = False,
+    gpu_class: Optional[str] = None,
     conda: tuple[str, ...] | list[str] = (),
     conda_channels: tuple[str, ...] | list[str] = (),
     apt: tuple[str, ...] | list[str] = (),
+    image: Optional[str] = None,
     code: Sequence[types.ModuleType] = (),
 ):
     """Prepare a Python function or class for remote Function registration.
@@ -2130,9 +2226,15 @@ def udf(
       imported normally, so helpers shared by several Functions live in one
       place.
 
-    A reference to a module in a local source tree that is neither shipped
-    with ``code`` nor named by a declared package draws a warning at
-    registration, because the worker will most likely fail to import it.
+    A module imported by the packaged source -- including a direct ``import``
+    inside a function or method body -- draws a warning at registration when
+    it resolves to local source outside ``code`` and no declared requirement
+    matches the imported module name. The client cannot reliably validate
+    imports provided only by the base image: ``pip``/``conda`` distribution
+    names need not match the modules they install, and the client does not
+    know the contents of a built or custom image. Declare every third-party
+    import in ``pip`` or ``conda`` even when it happens to be installed on the
+    registration host.
     Closures, lambdas, nested definitions, mutable module-level
     objects, code that reaches the module namespace another way
     (``globals()``/``eval``, ``sys.modules``, ``builtins``), and a
@@ -2144,7 +2246,10 @@ def udf(
     Parameters
     ----------
     function : function or class, optional
-        The synchronous callable, or the class whose instances are called.
+        The synchronous callable, or the class whose instances are called. For
+        a function, annotate every parameter as ``pyarrow.Array`` to opt into
+        vectorized execution; a matching return annotation documents that the
+        callable returns an Arrow array.
     name : str, optional
         The remote Function name. Defaults to the callable name.
         Must start with an ASCII letter or underscore and contain only ASCII
@@ -2169,6 +2274,10 @@ def udf(
         conda cannot provide, such as FFmpeg's for ``torchcodec``. Packages
         are unpacked without running their maintainer scripts. Works with
         ``pip`` or ``conda``; requires image execution.
+    image : str, optional
+        A digest-pinned registry image (``"host/repository@sha256:<digest>"``)
+        the remote environment is built on instead of the default base. Pip
+        requirements install only what the image lacks.
     env : mapping of str to str, optional
         Environment variables included in the Function definition. Not for
         credentials -- these are ordinary configuration, stored with the
@@ -2180,6 +2289,12 @@ def udf(
         Whether every remote execution requires a GPU. The execution platform
         selects one compatible GPU for each worker. The requirement is part of
         the immutable Function version.
+    gpu_class : str, optional
+        Operator-defined GPU class for every execution of this Function, such
+        as ``"a10g"`` or ``"h100"``. Requires ``gpu=True`` and follows the
+        lowercase 63-character DNS-label rule. The class is part of the
+        immutable Function version; per-refresh aggregate GPU budgets are
+        selected through ``refresh_column`` instead of registration.
     code : sequence of module, optional
         Top-level modules or packages whose importable ``.py`` files ship
         with the Function and are importable by their own names.
@@ -2209,11 +2324,13 @@ def udf(
     ...     return value
     >>> batch_identity(pa.array([1, 2, 3])).to_pylist()
     [1, 2, 3]
-    >>> @udf(pip=["cupy-cuda12x"], gpu=True)
+    >>> @udf(pip=["cupy-cuda12x"], gpu=True, gpu_class="a10g")
     ... def gpu_score(value: int) -> int:
     ...     return value * 2
     >>> gpu_score.registration_request.runtime.gpu
     True
+    >>> gpu_score.registration_request.runtime.gpu_class
+    'a10g'
     >>> @udf
     ... class scale:
     ...     def __init__(self, factor: float, offset: float = 0.0):
@@ -2224,6 +2341,18 @@ def udf(
     3.0
     >>> [field.name for field in scale.registration_request.signature.initialization]
     ['factor', 'offset']
+    >>> import lancedb
+    >>> @udf(
+    ...     input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
+    ...     output_schema=lancedb.blob("copy", nullable=False),
+    ... )
+    ... def copy_blobs(image: pa.Array) -> pa.Array:
+    ...     return image
+
+    Blob v2 input is exposed as ``pyarrow.LargeBinaryArray`` in vectorized
+    mode (and as ``bytes`` in row mode). Return a ``LargeBinaryArray`` with the
+    declared nullability. Use :func:`lancedb.blob` in the explicit schemas;
+    plain ``pyarrow.large_binary()`` does not carry Blob v2 semantics.
     """
 
     def decorate(target: Any) -> UdfDefinition:
@@ -2236,9 +2365,11 @@ def udf(
             env={} if env is None else env,
             python_version=python_version,
             gpu=gpu,
+            gpu_class=gpu_class,
             conda=tuple(conda),
             conda_channels=tuple(conda_channels),
             apt=tuple(apt),
+            image=image,
             code=tuple(code),
         )
 

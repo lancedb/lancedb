@@ -12,11 +12,62 @@ statement, or execute a SQL file. SQL requires a running deployment with an
 
 ## Install
 
-With Rust and Git installed, build the CLI from the LanceDB repository:
+Download a CLI archive and `SHA256SUMS` from the
+[LanceDB releases page](https://github.com/lancedb/lancedb/releases). The CLI
+shares the SDK release version, including beta versions.
+
+| Platform | Target | Requirements |
+| --- | --- | --- |
+| Linux x86_64 | `x86_64-unknown-linux-gnu` | glibc 2.28 or newer; Haswell-compatible CPU with AVX2, FMA, and F16C |
+| Linux ARM64 | `aarch64-unknown-linux-gnu` | glibc 2.28 or newer |
+| macOS Apple Silicon | `aarch64-apple-darwin` | macOS 14 or newer |
+
+Set the version and target to match your chosen release and platform:
+
+```sh
+CLI_VERSION=X.Y.Z # Replace with the release version, for example X.Y.Z-beta.N
+CLI_TARGET=aarch64-apple-darwin
+CLI_STEM="lancedb-v${CLI_VERSION}-${CLI_TARGET}"
+CLI_RELEASE_URL="https://github.com/lancedb/lancedb/releases/download/v${CLI_VERSION}"
+curl -fLO "${CLI_RELEASE_URL}/${CLI_STEM}.tar.gz"
+curl -fLO "${CLI_RELEASE_URL}/SHA256SUMS"
+awk -v archive="${CLI_STEM}.tar.gz" '$2 == archive' SHA256SUMS > "${CLI_STEM}.sha256"
+```
+
+Verify the downloaded archive before extracting it. On Linux:
+
+```sh
+sha256sum --check "${CLI_STEM}.sha256"
+```
+
+On macOS:
+
+```sh
+shasum -a 256 --check "${CLI_STEM}.sha256"
+```
+
+After the checksum passes, install the executable into a directory on your `PATH`:
+
+```sh
+tar -xzf "${CLI_STEM}.tar.gz"
+mkdir -p "$HOME/.local/bin"
+install -m 755 "${CLI_STEM}/lancedb" "$HOME/.local/bin/lancedb"
+export PATH="$HOME/.local/bin:$PATH"
+lancedb --version
+```
+
+Add `$HOME/.local/bin` to your shell's `PATH` configuration to use it in future
+sessions. Each archive also contains the license and Rust third-party notices.
+
+### Build from source
+
+With Rust and Git installed, build the CLI from the LanceDB repository. Check
+out a release tag to build that version:
 
 ```sh
 git clone https://github.com/lancedb/lancedb.git
 cd lancedb
+git checkout vX.Y.Z # Replace with the desired release tag
 cargo install --locked --path rust/lancedb/cli
 ```
 

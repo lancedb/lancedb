@@ -14,6 +14,7 @@ on:
       - docs/web-tests/blob-v2/rs/**
       - nodejs/Cargo.toml
       - python/Cargo.toml
+      - .github/actions/setup-protoc/**
       - .github/workflows/rust.yml
 
 permissions:
@@ -227,7 +228,11 @@ jobs:
         # Python and TypeScript blob docs tests install preview packages.
         # Those builds are not guaranteed to remain available for more than
         # 6 months, so they stay a manual run. This example uses the workspace crate.
-        run: cargo run --profile ci --all-features -p lancedb-blob-v2-docs --example multimodal --locked
+        run: |
+          # The completed all-features checks leave large lancedb artifacts in target.
+          # Reclaim that package before building the example with a different feature set.
+          cargo clean --profile ci -p lancedb
+          cargo run --profile ci --all-features -p lancedb-blob-v2-docs --example multimodal --locked
 
   remote:
     timeout-minutes: 30
@@ -270,7 +275,7 @@ jobs:
     timeout-minutes: 60
     strategy:
       matrix:
-        mac-runner: ["macos-14", "macos-15"]
+        mac-runner: ["macos-15", "macos-26"]
     runs-on: "${{ matrix.mac-runner }}"
     defaults:
       run:
@@ -324,8 +329,8 @@ jobs:
           # unreadable outside their own branch anyway, since GitHub scopes
           # caches to the creating ref.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Install Protoc v21.12
-        run: choco install --no-progress protoc
+      - name: Install protoc
+        uses: ./.github/actions/setup-protoc
       - name: Build
         run: |
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
@@ -361,8 +366,8 @@ jobs:
           # unreadable outside their own branch anyway, since GitHub scopes
           # caches to the creating ref.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Install Protoc v21.12
-        run: choco install --no-progress protoc
+      - name: Install protoc
+        uses: ./.github/actions/setup-protoc
       - name: Build
         run: |
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT

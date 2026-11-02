@@ -72,6 +72,7 @@ from .index import (
     IvfRq,
     LabelList,
     Fm,
+    NGram,
     HnswPq,
     HnswSq,
     HnswFlat,
@@ -285,6 +286,7 @@ IndexConfigType = Union[
     Bitmap,
     LabelList,
     Fm,
+    NGram,
     FTS,
 ]
 
@@ -1576,7 +1578,7 @@ class Table(ABC):
     def to_lance(self, **kwargs) -> lance.LanceDataset:
         """Return a LanceDB Embedded table as a lance.LanceDataset.
 
-        LanceDB Distributed tables cannot be opened as Lance datasets by the
+        LanceDB Enterprise tables cannot be opened as Lance datasets by the
         client. Use
         ``table.search().to_arrow()`` to read them through the server.
 
@@ -1589,7 +1591,7 @@ class Table(ABC):
     def to_polars(self, batch_size=None) -> "pl.LazyFrame":
         """Return the table as a Polars LazyFrame.
 
-        In LanceDB Distributed, use ``table.search().to_polars()`` to convert query
+        In LanceDB Enterprise, use ``table.search().to_polars()`` to convert query
         results to a Polars DataFrame.
 
         Parameters
@@ -1884,7 +1886,7 @@ class Table(ABC):
         config : IndexConfigType, optional
             The index configuration object. If provided, uses the new unified API.
             Can be one of: IvfFlat, IvfPq, IvfSq, IvfRq, HnswPq, HnswSq,
-            BTree, Bitmap, LabelList, Fm, FTS.
+            BTree, Bitmap, LabelList, Fm, NGram, FTS.
         replace : bool, default True
             Whether to replace an existing index on this column.
         wait_timeout : timedelta, optional
@@ -1931,6 +1933,27 @@ class Table(ABC):
         raise NotImplementedError(
             "create_index_async is not supported for this table type"
         )
+
+    def get_table_overrides(self) -> dict[str, Any]:
+        """Read Enterprise table overrides for this table.
+
+        Table overrides configure Enterprise-managed background behavior such as
+        automatic compaction, cleanup, and reindex execution. This method is
+        supported only on remote Enterprise tables.
+        """
+        raise NotImplementedError
+
+    def update_table_overrides(self, **overrides: Any) -> dict[str, Any]:
+        """Merge Enterprise table overrides into the current table overrides.
+
+        Only fields supplied in ``overrides`` are changed; unrelated existing
+        overrides are preserved by the remote service update flow.
+        """
+        raise NotImplementedError
+
+    def reset_table_overrides(self) -> dict[str, Any]:
+        """Clear Enterprise table overrides for this table."""
+        raise NotImplementedError
 
     def drop_index(self, name: str) -> None:
         """
@@ -2549,7 +2572,7 @@ class Table(ABC):
 
         Blobs inside lists cannot be fetched by row id yet.
 
-        LanceDB Distributed limits each request to 1024 row IDs and 64 MiB of blob
+        LanceDB Enterprise limits each request to 1024 row IDs and 64 MiB of blob
         bytes. The client splits requests automatically and reads an individual
         larger blob through the Range route. This method still materializes all
         bytes in memory; for large values use :meth:`fetch_blob_files`.
@@ -2576,7 +2599,7 @@ class Table(ABC):
         results are returned.
 
         Row IDs can be obtained from a query with ``with_row_id(True)``.
-        LanceDB Distributed reads the requested ranges through version-pinned blob
+        LanceDB Enterprise reads the requested ranges through version-pinned blob
         handles using HTTP byte-range requests.
         """
 
@@ -2593,7 +2616,7 @@ class Table(ABC):
         a ``list[int]``, an integer Arrow array or chunked array, or a query
         ``pyarrow.Table`` carrying row identity via ``_rowid`` or a
         ``_lance_row_id`` field on the blob descriptor. Null blob values return
-        ``None``. LanceDB Distributed requires server version 0.5.0 or newer.
+        ``None``. LanceDB Enterprise requires server version 0.5.0 or newer.
 
         ``_rowid`` values stay valid after compaction when the table has stable
         row ids.
@@ -2835,7 +2858,7 @@ class Table(ABC):
 
         Notes
         -----
-        This function is not available in LanceDB Distributed, which manages
+        This function is not available in LanceDB Enterprise, which manages
         cleanup for you automatically.
         """
 
@@ -2857,7 +2880,7 @@ class Table(ABC):
 
         Notes
         -----
-        This function is not available in LanceDB Distributed, which manages
+        This function is not available in LanceDB Enterprise, which manages
         compaction for you automatically.
         """
 
@@ -2944,7 +2967,7 @@ class Table(ABC):
         Specify exactly one of ``column`` or ``index_name``.
 
         Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
-        rebuilt in the client process from index metadata. In LanceDB Distributed,
+        rebuilt in the client process from index metadata. In LanceDB Enterprise,
         this means the same tokenizer model files must also exist locally
         (under ``LANCE_LANGUAGE_MODEL_HOME``) and must match the files the
         server uses. A mismatch cannot be detected: the returned tokens may
@@ -3001,11 +3024,11 @@ class Table(ABC):
             named-struct application expands its ordered result fields as one
             atomic binding; aliases come from ``rename(columns=...)``.
             Function columns are supported only in LanceDB
-            Distributed.
+            Enterprise.
         computed: Dict[str, str], optional
             LanceDB Embedded declaration and refresh require a source build with the
             ``experimental-functions`` Cargo feature, which published packages
-            do not enable. LanceDB Distributed operations remain available.
+            do not enable. LanceDB Enterprise operations remain available.
 
             A mapping from output column names to SQL expressions derives each
             output field from its expression. A direct projection of a Blob v2
@@ -3024,7 +3047,7 @@ class Table(ABC):
             While a declaration reads a column, that column cannot be renamed,
             retyped or dropped.
 
-            In LanceDB Distributed the expression is planned by the
+            In LanceDB Enterprise the expression is planned by the
             server, and the refresh runs as a server job -- see
             [`refresh_column_async`][lancedb.table.Table.refresh_column_async].
             Cannot be combined with ``transforms``.
@@ -3060,7 +3083,14 @@ class Table(ABC):
         """
 
     @abstractmethod
-    def refresh_column(self, column: str) -> "RefreshColumnResult":
+    def refresh_column(
+        self,
+        column: str,
+        *,
+        batch_size: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
+    ) -> "RefreshColumnResult":
         """
         Fill the rows of a computed column that hold no value yet.
 
@@ -3072,14 +3102,27 @@ class Table(ABC):
         by the next one, and rows whose inputs changed since they were computed
         are recomputed; everything else is left as it is.
 
-        LanceDB Embedded only. In LanceDB Distributed, a refresh runs as a
-        server job, through
+        Supported for local tables only. For remote tables, a refresh runs as
+        a server job, through
         [`refresh_column_async`][lancedb.table.Table.refresh_column_async].
 
         Parameters
         ----------
         column: str
             The name of the computed column to fill.
+        batch_size: int, optional
+            Maximum rows per Function call on the remote server. Must be
+            greater than zero. None uses the server default. Has no effect on
+            local expression-backed columns.
+        gpu_class: str, optional
+            GPU class for Function workers. Must be a lowercase name of 1-63
+            letters, digits, or hyphens, without a leading or trailing hyphen.
+            None keeps the Function's registered class or the deployment
+            default. LanceDB Enterprise only.
+        gpu_count: int, optional
+            Positive aggregate GPU budget for Function workers. None leaves
+            the server's configured budget unchanged. LanceDB Enterprise
+            only.
 
         Returns
         -------
@@ -3089,20 +3132,45 @@ class Table(ABC):
         """
 
     @abstractmethod
-    def refresh_column_async(self, column: str) -> Job[RefreshColumnJobResult]:
+    def refresh_column_async(
+        self,
+        column: str,
+        *,
+        batch_size: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
+    ) -> Job[RefreshColumnJobResult]:
         """
         Like :meth:`refresh_column`, but returns a handle to the refresh job
         instead of blocking until it completes.
 
-        LanceDB Embedded refresh requires a source build with
-        ``experimental-functions``.
-        LanceDB Distributed jobs do not require this feature.
+        Local refresh requires a source build with ``experimental-functions``.
+        Remote jobs do not require this feature.
 
         The job may already be complete when returned; callers must not assume
         the column is filled until :meth:`Job.wait` returns. Invalid input --
         an unknown column, or one that is not computed -- raises here rather
-        than failing the job. In LanceDB Embedded the job runs in-process; in
-        LanceDB Distributed it is the server's backfill job.
+        than failing the job. For local tables, the job runs in-process; for
+        remote tables, it is the server's backfill job.
+
+        Parameters
+        ----------
+        column: str
+            The name of the computed column to fill.
+        batch_size: int, optional
+            Maximum rows per Function call on the remote server. Must be
+            greater than zero. None uses the server default. Lower this for
+            slow Functions to stay within the executor's per-call deadline.
+            Has no effect on local expression-backed columns.
+        gpu_class: str, optional
+            GPU class for Function workers. Must be a lowercase name of 1-63
+            letters, digits, or hyphens, without a leading or trailing hyphen.
+            None keeps the Function's registered class or the deployment
+            default. LanceDB Enterprise only.
+        gpu_count: int, optional
+            Positive aggregate GPU budget for Function workers. None leaves
+            the server's configured budget unchanged. LanceDB Enterprise
+            only.
 
         Returns
         -------
@@ -3138,7 +3206,7 @@ class Table(ABC):
         A refresh running under a skip policy records each row it skipped
         with the input that failed and the error. This lists those records,
         newest job first, plus a summary for any fragment whose per-row
-        detail was capped. LanceDB Distributed only; reading errors
+        detail was capped. LanceDB Enterprise only; reading errors
         needs read access to the table, since a message carries the value
         that failed.
 
@@ -3156,6 +3224,30 @@ class Table(ABC):
         FunctionErrors
             ``records``, ``fragments`` and ``truncated``, the last saying
             whether the listing stopped at its limit.
+
+        Each record identifies its row with ``fragment_id``, ``row_offset``
+        and the physical ``row_address`` (``(fragment_id << 32) |
+        row_offset``). To retry the recorded rows, collect the non-null
+        addresses before the table is compacted or rewritten and run the
+        SQL refresh:
+
+        .. code-block:: python
+
+            errors = table.function_errors(column="embedding")
+            addresses = sorted(
+                record.row_address
+                for record in errors.records
+                if record.row_address is not None
+            )
+            if addresses:
+                address_list = ", ".join(str(address) for address in addresses)
+                database.execute_query(
+                    f"REFRESH COLUMN embedding ON {table.name()} "
+                    f"WHERE _rowaddr IN ({address_list})"
+                )
+
+        Records whose per-row detail was capped have no address and appear
+        only in ``fragments``; they cannot be selected individually here.
 
         Examples
         --------
@@ -3193,6 +3285,9 @@ class Table(ABC):
             Each alteration must specify at least one of "rename", "data_type",
             or "nullable". The legacy key "name" is also accepted for renaming.
             Unknown keys raise ValueError before any alterations are applied.
+
+            Local tables reject renaming source or vector columns used by an
+            embedding function with ValueError, preserving the embedding binding.
 
         Returns
         -------
@@ -3261,6 +3356,9 @@ class Table(ABC):
     def drop_columns(self, columns: Iterable[str]) -> DropColumnsResult:
         """
         Drop columns from the table.
+
+        Local tables reject dropping source or vector columns used by an
+        embedding function with ValueError, preserving the embedding binding.
 
         Parameters
         ----------
@@ -3990,7 +4088,7 @@ class LanceTable(Table):
         config : IndexConfigType, optional
             The index configuration object. If provided, uses the new unified API.
             Can be one of: IvfFlat, IvfPq, IvfSq, IvfRq, HnswPq, HnswSq,
-            BTree, Bitmap, LabelList, Fm, FTS.
+            BTree, Bitmap, LabelList, Fm, NGram, FTS.
         replace : bool, default True
             Whether to replace an existing index on this column.
         wait_timeout : timedelta, optional
@@ -4201,7 +4299,7 @@ class LanceTable(Table):
 
         This is a hint to the database that the given columns will be accessed
         in the future and the database should prefetch the data if possible.
-        Currently only supported in LanceDB Distributed.
+        Currently only supported in LanceDB Enterprise.
 
         This call initiates prewarming and returns once the request is accepted.
         It is idempotent and safe to call from multiple clients concurrently.
@@ -5097,7 +5195,7 @@ class LanceTable(Table):
         Specify exactly one of ``column`` or ``index_name``.
 
         Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
-        rebuilt in the client process from index metadata. In LanceDB Distributed,
+        rebuilt in the client process from index metadata. In LanceDB Enterprise,
         this means the same tokenizer model files must also exist locally
         (under ``LANCE_LANGUAGE_MODEL_HOME``) and must match the files the
         server uses. A mismatch cannot be detected: the returned tokens may
@@ -5146,18 +5244,48 @@ class LanceTable(Table):
             )
         )
 
-    def refresh_column(self, column: str) -> "RefreshColumnResult":
+    def refresh_column(
+        self,
+        column: str,
+        *,
+        batch_size: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
+    ) -> "RefreshColumnResult":
         """Fill a computed column's unfilled rows and recompute those whose
         inputs changed. See
         [`AsyncTable.refresh_column`][lancedb.AsyncTable.refresh_column]."""
-        return LOOP.run(self._table.refresh_column(column))
+        return LOOP.run(
+            self._table.refresh_column(
+                column,
+                batch_size=batch_size,
+                gpu_class=gpu_class,
+                gpu_count=gpu_count,
+            )
+        )
 
-    def refresh_column_async(self, column: str) -> Job[RefreshColumnJobResult]:
+    def refresh_column_async(
+        self,
+        column: str,
+        *,
+        batch_size: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
+    ) -> Job[RefreshColumnJobResult]:
         """Fill a computed column's unfilled rows and recompute those whose
         inputs changed, returning a handle to the refresh job. See
         [`Table.refresh_column_async`][lancedb.table.Table.refresh_column_async].
         """
-        return Job(LOOP.run(self._table.refresh_column_async(column)))
+        return Job(
+            LOOP.run(
+                self._table.refresh_column_async(
+                    column,
+                    batch_size=batch_size,
+                    gpu_class=gpu_class,
+                    gpu_count=gpu_count,
+                )
+            )
+        )
 
     def function_errors(
         self,
@@ -5203,6 +5331,36 @@ class LanceTable(Table):
         """Read the installed RTEWriteSpec, or ``None``. See
         [`AsyncTable.get_rte_spec`][lancedb.AsyncTable.get_rte_spec]."""
         return LOOP.run(self._table.get_rte_spec())
+
+    def get_table_overrides(self) -> dict[str, Any]:
+        """Read Enterprise table overrides for this table.
+
+        Table overrides configure Enterprise-managed background behavior such as
+        automatic compaction, cleanup, and reindex execution. This method is
+        supported only on remote Enterprise tables.
+        """
+        return LOOP.run(self._table.get_table_overrides())
+
+    def update_table_overrides(self, **overrides: Any) -> dict[str, Any]:
+        """Merge Enterprise table overrides into the current table overrides.
+
+        Only fields supplied in ``overrides`` are changed; unrelated overrides
+        from the current read snapshot are preserved.
+
+        Examples
+        --------
+        >>> table.update_table_overrides(  # doctest: +SKIP
+        ...     job_types={
+        ...         "compaction": {"enabled": True},
+        ...         "cleanup": {"enabled": False},
+        ...     }
+        ... )
+        """
+        return LOOP.run(self._table.update_table_overrides(**overrides))
+
+    def reset_table_overrides(self) -> dict[str, Any]:
+        """Clear Enterprise table overrides for this table."""
+        return LOOP.run(self._table.reset_table_overrides())
 
     def checkpoint_rte(self) -> None:
         """Synchronous version of
@@ -5953,6 +6111,37 @@ class AsyncTable:
         """
         return await self._inner.get_rte_spec()
 
+    async def get_table_overrides(self) -> dict[str, Any]:
+        """Read Enterprise table overrides for this table.
+
+        Table overrides configure Enterprise-managed background behavior such as
+        automatic compaction, cleanup, and reindex execution. This method is
+        supported only on remote Enterprise tables.
+        """
+        return json.loads(await self._inner.get_table_overrides())
+
+    async def update_table_overrides(self, **overrides: Any) -> dict[str, Any]:
+        """Merge Enterprise table overrides into the current table overrides.
+
+        Only fields supplied in ``overrides`` are changed; unrelated overrides
+        from the current read snapshot are preserved.
+
+        Examples
+        --------
+        >>> await table.update_table_overrides(  # doctest: +SKIP
+        ...     job_types={
+        ...         "compaction": {"enabled": True},
+        ...         "cleanup": {"enabled": False},
+        ...     }
+        ... )
+        """
+        encoded = json.dumps(overrides)
+        return json.loads(await self._inner.update_table_overrides(encoded))
+
+    async def reset_table_overrides(self) -> dict[str, Any]:
+        """Clear Enterprise table overrides for this table."""
+        return json.loads(await self._inner.reset_table_overrides())
+
     # WAL-PK-FUSION: delete both hooks.
     def _hybrid_pk_fusion_learned(self) -> bool:
         """See [`Table._hybrid_pk_fusion_learned`][lancedb.table.Table]."""
@@ -6094,7 +6283,7 @@ class AsyncTable:
     async def to_lance(self, **kwargs) -> lance.LanceDataset:
         """Return the Lance dataset backing a LanceDB Embedded table.
 
-        LanceDB Distributed tables cannot be opened as Lance datasets by the
+        LanceDB Enterprise tables cannot be opened as Lance datasets by the
         client. Use
         [to_arrow][lancedb.table.AsyncTable.to_arrow] or
         [query][lancedb.table.AsyncTable.query] to read them through the server.
@@ -6116,7 +6305,7 @@ class AsyncTable:
         """
         if not self._inner._is_native():
             raise NotImplementedError(
-                "to_lance() is not supported in LanceDB Distributed; "
+                "to_lance() is not supported in LanceDB Enterprise; "
                 "query the server instead"
             )
 
@@ -6149,7 +6338,7 @@ class AsyncTable:
         Parameters
         ----------
         blob_mode: str, default "lazy"
-            Controls how Lance blob columns are returned. LanceDB Distributed supports
+            Controls how Lance blob columns are returned. LanceDB Enterprise supports
             "descriptions"; "bytes" and "lazy" are not yet supported.
         **kwargs
             Forwarded to PyArrow / Lance pandas conversion.
@@ -6226,6 +6415,7 @@ class AsyncTable:
                 Bitmap,
                 LabelList,
                 Fm,
+                NGram,
                 FTS,
             ]
         ] = None,
@@ -6279,12 +6469,13 @@ class AsyncTable:
                     Bitmap,
                     LabelList,
                     Fm,
+                    NGram,
                     FTS,
                 ),
             ):
                 raise TypeError(
                     "config must be an instance of IvfSq, IvfPq, IvfRq, HnswPq, HnswSq,"
-                    " BTree, Bitmap, LabelList, Fm, or FTS, but got "
+                    " BTree, Bitmap, LabelList, Fm, NGram, or FTS, but got "
                     + str(type(config))
                 )
         try:
@@ -6322,6 +6513,7 @@ class AsyncTable:
                 Bitmap,
                 LabelList,
                 Fm,
+                NGram,
                 FTS,
             ]
         ] = None,
@@ -6393,7 +6585,7 @@ class AsyncTable:
 
         This is a hint to the database that the given columns will be accessed
         in the future and the database should prefetch the data if possible.
-        Currently only supported in LanceDB Distributed.
+        Currently only supported in LanceDB Enterprise.
 
         This call initiates prewarming and returns once the request is accepted.
         It is idempotent and safe to call from multiple clients concurrently.
@@ -6437,7 +6629,7 @@ class AsyncTable:
         """
         Get the table URI (storage location).
 
-        In LanceDB Distributed, this fetches the location from the server via describe.
+        In LanceDB Enterprise, this fetches the location from the server via describe.
         In LanceDB Embedded, this returns the dataset URI.
 
         Returns
@@ -7255,11 +7447,11 @@ class AsyncTable:
             named-struct application expands its ordered result fields as one
             atomic binding; aliases come from ``rename(columns=...)``.
             Function columns are supported only in LanceDB
-            Distributed.
+            Enterprise.
         computed: Dict[str, str], optional
             LanceDB Embedded declaration and refresh require a source build with the
             ``experimental-functions`` Cargo feature, which published packages
-            do not enable. LanceDB Distributed operations remain available.
+            do not enable. LanceDB Enterprise operations remain available.
 
             A mapping from output column names to SQL expressions derives each
             output field from its expression. A direct projection of a Blob v2
@@ -7277,13 +7469,13 @@ class AsyncTable:
             While a declaration reads a column, that column cannot be renamed,
             retyped or dropped.
 
-            In LanceDB Distributed the expression is planned by
+            In LanceDB Enterprise the expression is planned by
             the server. Cannot be combined with ``transforms``.
 
         auto_refresh_enabled: bool, optional
             Enable automatic refresh for each computed output declared by this
             call. Defaults to True. LanceDB Embedded stores the setting; automatic
-            scheduling requires LanceDB Distributed.
+            scheduling requires LanceDB Enterprise.
         auto_refresh_interval_seconds: int, optional
             Positive minimum seconds after a successful refresh before another
             automatic refresh is eligible. When omitted, the server determines when
@@ -7376,7 +7568,14 @@ class AsyncTable:
         else:
             return await self._inner.add_columns(list(transforms.items()))
 
-    async def refresh_column(self, column: str) -> RefreshColumnResult:
+    async def refresh_column(
+        self,
+        column: str,
+        *,
+        batch_size: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
+    ) -> RefreshColumnResult:
         """
         Fill the rows of a computed column that hold no value yet.
 
@@ -7388,21 +7587,39 @@ class AsyncTable:
         by the next one, and rows whose inputs changed since they were computed
         are recomputed; everything else is left as it is.
 
-        LanceDB Embedded only. In LanceDB Distributed, a refresh runs as a
-        server job, through
+        Supported for local tables only. For remote tables, a refresh runs as
+        a server job, through
         [`refresh_column_async`][lancedb.table.Table.refresh_column_async].
 
         Parameters
         ----------
         column: str
             The name of the computed column to fill.
+        batch_size: int, optional
+            Maximum rows per Function call on the remote server. Must be
+            greater than zero. None uses the server default. Has no effect on
+            local expression-backed columns.
+        gpu_class: str, optional
+            GPU class for Function workers. Must be a lowercase name of 1-63
+            letters, digits, or hyphens, without a leading or trailing hyphen.
+            None keeps the Function's registered class or the deployment
+            default. LanceDB Enterprise only.
+        gpu_count: int, optional
+            Positive aggregate GPU budget for Function workers. None leaves
+            the server's configured budget unchanged. LanceDB Enterprise
+            only.
 
         Returns
         -------
         RefreshColumnResult
             The number of rows filled and the new version of the table.
         """
-        return await self._inner.refresh_column(column)
+        return await self._inner.refresh_column(
+            column,
+            batch_size=batch_size,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
+        )
 
     async def function_errors(
         self,
@@ -7416,7 +7633,7 @@ class AsyncTable:
         A refresh running under a skip policy records each row it skipped
         with the input that failed and the error. This lists those records,
         newest job first, plus a summary for any fragment whose per-row
-        detail was capped. LanceDB Distributed only; reading errors
+        detail was capped. LanceDB Enterprise only; reading errors
         needs read access to the table, since a message carries the value
         that failed.
 
@@ -7435,6 +7652,30 @@ class AsyncTable:
             ``records``, ``fragments`` and ``truncated``, the last saying
             whether the listing stopped at its limit.
 
+        Each record identifies its row with ``fragment_id``, ``row_offset``
+        and the physical ``row_address`` (``(fragment_id << 32) |
+        row_offset``). To retry the recorded rows, collect the non-null
+        addresses before the table is compacted or rewritten and run the
+        SQL refresh:
+
+        .. code-block:: python
+
+            errors = await table.function_errors(column="embedding")
+            addresses = sorted(
+                record.row_address
+                for record in errors.records
+                if record.row_address is not None
+            )
+            if addresses:
+                address_list = ", ".join(str(address) for address in addresses)
+                await database.execute_query(
+                    f"REFRESH COLUMN embedding ON {table.name()} "
+                    f"WHERE _rowaddr IN ({address_list})"
+                )
+
+        Records whose per-row detail was capped have no address and appear
+        only in ``fragments``; they cannot be selected individually here.
+
         Examples
         --------
         >>> errors = await table.function_errors(column="embedding")  # doctest: +SKIP
@@ -7448,22 +7689,44 @@ class AsyncTable:
         )
 
     async def refresh_column_async(
-        self, column: str
+        self,
+        column: str,
+        *,
+        batch_size: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> AsyncJob[RefreshColumnJobResult]:
         """
         Like :meth:`refresh_column`, but returns a handle to the refresh job
         instead of blocking until it completes.
 
-        LanceDB Embedded refresh requires a source build with
-        ``experimental-functions``.
-        LanceDB Distributed jobs do not require this feature.
+        Local refresh requires a source build with ``experimental-functions``.
+        Remote jobs do not require this feature.
 
         The job may already be complete when returned; callers must not assume
         the column is filled until :meth:`AsyncJob.wait` resolves. Invalid
         input -- an unknown column, or one that is not computed -- raises here
-        rather than failing the job. In LanceDB Embedded the job runs
-        in-process; in LanceDB Distributed it is the server's
-        backfill job.
+        rather than failing the job. For local tables, the job runs in-process;
+        for remote tables, it is the server's backfill job.
+
+        Parameters
+        ----------
+        column: str
+            The name of the computed column to fill.
+        batch_size: int, optional
+            Maximum rows per Function call on the remote server. Must be
+            greater than zero. None uses the server default. Lower this for
+            slow Functions to stay within the executor's per-call deadline.
+            Has no effect on local expression-backed columns.
+        gpu_class: str, optional
+            GPU class for Function workers. Must be a lowercase name of 1-63
+            letters, digits, or hyphens, without a leading or trailing hyphen.
+            None keeps the Function's registered class or the deployment
+            default. LanceDB Enterprise only.
+        gpu_count: int, optional
+            Positive aggregate GPU budget for Function workers. None leaves
+            the server's configured budget unchanged. LanceDB Enterprise
+            only.
 
         Returns
         -------
@@ -7487,7 +7750,12 @@ class AsyncTable:
         'finished'
         """
         return _typed_job(
-            await self._inner.refresh_column_async(column),
+            await self._inner.refresh_column_async(
+                column,
+                batch_size=batch_size,
+                gpu_class=gpu_class,
+                gpu_count=gpu_count,
+            ),
             RefreshColumnJobResult.from_json,
         )
 
@@ -7518,6 +7786,9 @@ class AsyncTable:
             or "nullable". The legacy key "name" is also accepted for renaming.
             Unknown keys raise ValueError before any alterations are applied.
 
+            Local tables reject renaming source or vector columns used by an
+            embedding function with ValueError, preserving the embedding binding.
+
         Returns
         -------
         AlterColumnsResult
@@ -7535,6 +7806,9 @@ class AsyncTable:
     async def drop_columns(self, columns: Iterable[str]):
         """
         Drop columns from the table.
+
+        Local tables reject dropping source or vector columns used by an
+        embedding function with ValueError, preserving the embedding binding.
 
         Parameters
         ----------
@@ -7884,7 +8158,7 @@ class AsyncTable:
         Specify exactly one of ``column`` or ``index_name``.
 
         Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
-        rebuilt in the client process from index metadata. In LanceDB Distributed,
+        rebuilt in the client process from index metadata. In LanceDB Enterprise,
         this means the same tokenizer model files must also exist locally
         (under ``LANCE_LANGUAGE_MODEL_HOME``) and must match the files the
         server uses. A mismatch cannot be detected: the returned tokens may
@@ -8001,6 +8275,7 @@ class IndexStatistics:
         "BTREE",
         "BITMAP",
         "LABEL_LIST",
+        "NGRAM",
     ]
     distance_type: Optional[Literal["l2", "cosine", "dot"]] = None
     num_indices: Optional[int] = None

@@ -4,6 +4,21 @@
 use std::process::Command;
 
 #[test]
+fn version_matches_the_release() {
+    let output = Command::new(env!("CARGO_BIN_EXE_lancedb"))
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim(),
+        format!("lancedb {}", env!("CARGO_PKG_VERSION"))
+    );
+    assert_eq!(lancedb_cli::build_version(), env!("CARGO_PKG_VERSION"));
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
 fn an_unconfigured_default_sql_invocation_prints_usage() {
     use lancedb_cli::server_config::{Config, Profile};
 

@@ -39,7 +39,7 @@
 //! - `experimental-functions` - Opt in to local SQL computed-column declarations
 //!   and refresh, and local materialized-view creation and refresh. Disabled by
 //!   default, including in published Python and TypeScript packages. LanceDB
-//!   Distributed operations, reading existing data, metadata protections,
+//!   Enterprise operations, reading existing data, metadata protections,
 //!   and ordinary eager `add_columns` transforms do not require this feature.
 //! - `huggingface` - Enable HuggingFace Hub integration for loading datasets from the Hub.
 //! - `fp16kernels` - Enable FP16 kernels for faster vector search on CPU.
@@ -199,6 +199,7 @@ pub mod embeddings;
 pub mod error;
 pub mod expr;
 pub mod function;
+pub mod graph;
 pub mod index;
 pub mod io;
 pub mod ipc;
@@ -215,6 +216,7 @@ pub mod remote;
 pub mod rerankers;
 pub mod secrets;
 pub mod sql;
+pub mod storage_integration;
 pub mod table;
 #[cfg(test)]
 pub mod test_utils;
