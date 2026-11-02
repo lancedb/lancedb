@@ -40,6 +40,8 @@ export const PyScalarIndexWait = "index_name = \"label_idx\"\ntable.wait_for_ind
 
 export const PyVectorIndexAsyncConfig = "import lancedb\nimport numpy as np\nfrom lancedb.index import IvfPq\n\nasync def main():\n    data = [\n        {\"id\": i, \"vector\": np.random.random(8).astype(np.float32).tolist()}\n        for i in range(512)\n    ]\n\n    db = await lancedb.connect_async(\"ex_lancedb\")\n    table = await db.create_table(\n        \"vector_index_async\", data=data, mode=\"overwrite\"\n    )\n\n    await table.create_index(\n        \"vector\",\n        config=IvfPq(\n            distance_type=\"cosine\",\n            num_partitions=16,\n            num_sub_vectors=4,\n        ),\n    )\n    return await table.list_indices()\n";
 
+export const PyVectorIndexAuto = "# Use Auto with no fixed probe count or explicit bounds.\nauto = table.search(query_vector).limit(10).to_arrow()\n";
+
 export const PyVectorIndexBinaryAddData = "table.add(data)\n";
 
 export const PyVectorIndexBinaryBuildIndex = "table.create_index(\n    metric=\"hamming\",\n    vector_column_name=\"vector\",\n    index_type=\"IVF_FLAT\",\n)\n";
@@ -62,13 +64,17 @@ export const PyVectorIndexCustomName = "# Override the default `{column}_idx` co
 
 export const PyVectorIndexDistanceRange = "# Only return results whose distance falls within [0.0, 0.5).\n# Useful for near-duplicate detection or thresholded similarity search.\n(\n    table.search(np.random.random(128))\n    .distance_range(lower_bound=0.0, upper_bound=0.5)\n    .limit(10)\n    .to_pandas()\n)\n";
 
+export const PyVectorIndexFixedProbes = "# Search 20 partitions per segment, without result-count expansion.\nfixed = table.search(query_vector).nprobes(20).limit(10).to_arrow()\n";
+
 export const PyVectorIndexNestedField = "# The vector column `embedding` is nested inside the `image` struct.\n# Pass its full dotted path as `vector_column_name`; the same path is used\n# at query time and is what `list_indices()` reports under `columns`.\ntable.create_index(\n    vector_column_name=\"image.embedding\",\n    num_partitions=1,\n    num_sub_vectors=1,\n    name=\"image_embedding_idx\",\n)\n\nresults = (\n    table.search([0.0, 1.0], vector_column_name=\"image.embedding\")\n    .limit(1)\n    .to_list()\n)\n";
 
-export const PyVectorIndexNprobes = "# Always scan 10 partitions; scan up to 50 only if the initial pass\n# returns fewer than `limit` results (common with narrow filters).\n(\n    table.search(np.random.random(128))\n    .minimum_nprobes(10)\n    .maximum_nprobes(50)\n    .where(\"id > 100\")\n    .limit(5)\n    .to_pandas()\n)\n";
+export const PyVectorIndexNprobes = "# Bound Auto to 10-50 partitions per segment (if available).\n# The initial search can exceed 10; further search also respects 50.\nfiltered = (\n    table.search(query_vector)\n    .minimum_nprobes(10)\n    .maximum_nprobes(50)\n    .where(\"id > 100\")\n    .limit(5)\n    .to_arrow()\n)\n";
 
 export const PyVectorIndexQueryHnsw = "tbl = table\ntbl.search(np.random.random((16))).limit(2).to_pandas()\n";
 
 export const PyVectorIndexQueryIvf = "tbl = table\ntbl.search(np.random.random((1536))).limit(2).nprobes(20).refine_factor(\n    10\n).to_pandas()\n";
+
+export const PyVectorIndexSearchEffort = "# Increase initial search effort; 0.75 is not a recall target.\nhigher_effort = table.search(query_vector).search_effort(0.75).limit(10).to_arrow()\n";
 
 export const PyVectorIndexSetup = "table_name = \"vector-index-tbl\"\ntable = db.open_table(table_name)\n";
 

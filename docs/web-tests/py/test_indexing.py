@@ -177,29 +177,69 @@ def test_vector_index_query_ivf(tmp_db):
 
 
 def test_vector_index_nprobes(tmp_db):
-    dim = 128
+    from lancedb.index import IvfFlat
+
+    dim = 16
+    rng = np.random.default_rng(180)
     data = [
-        {"id": i, "keywords_embeddings": np.random.random(dim).tolist()}
+        {"id": i, "vector": rng.random(dim).astype(np.float32).tolist()}
         for i in range(512)
     ]
     table = tmp_db.create_table("vector_index_nprobes", data, mode="overwrite")
     table.create_index(
-        metric="cosine",
-        vector_column_name="keywords_embeddings",
+        "vector",
+        config=IvfFlat(distance_type="cosine", num_partitions=64, max_iterations=2),
     )
+    query_vector = data[123]["vector"]
+
+    # --8<-- [start:vector_index_auto]
+    # Use Auto with no fixed probe count or explicit bounds.
+    auto = table.search(query_vector).limit(10).to_arrow()
+    # --8<-- [end:vector_index_auto]
+
+    # --8<-- [start:vector_index_search_effort]
+    # Increase initial search effort; 0.75 is not a recall target.
+    higher_effort = table.search(query_vector).search_effort(0.75).limit(10).to_arrow()
+    # --8<-- [end:vector_index_search_effort]
+
+    # --8<-- [start:vector_index_fixed_probes]
+    # Search 20 partitions per segment, without result-count expansion.
+    fixed = table.search(query_vector).nprobes(20).limit(10).to_arrow()
+    # --8<-- [end:vector_index_fixed_probes]
 
     # --8<-- [start:vector_index_nprobes]
-    # Always scan 10 partitions; scan up to 50 only if the initial pass
-    # returns fewer than `limit` results (common with narrow filters).
-    (
-        table.search(np.random.random(128))
+    # Bound Auto to 10-50 partitions per segment (if available).
+    # The initial search can exceed 10; further search also respects 50.
+    filtered = (
+        table.search(query_vector)
         .minimum_nprobes(10)
         .maximum_nprobes(50)
         .where("id > 100")
         .limit(5)
-        .to_pandas()
+        .to_arrow()
     )
     # --8<-- [end:vector_index_nprobes]
+
+    for result, expected_count in [
+        (auto, 10),
+        (higher_effort, 10),
+        (fixed, 10),
+        (filtered, 5),
+    ]:
+        assert result.num_rows == expected_count
+        assert result["id"][0].as_py() == 123
+        assert np.isfinite(result["_distance"].to_numpy()).all()
+        exact_query = (
+            table.search(query_vector).distance_type("cosine").bypass_vector_index()
+        )
+        if result is filtered:
+            exact_query = exact_query.where("id > 100")
+        expected_ids = set(
+            exact_query.limit(expected_count).to_arrow()["id"].to_pylist()
+        )
+        recall = len(set(result["id"].to_pylist()) & expected_ids) / expected_count
+        assert recall >= 0.5
+    assert all(row_id > 100 for row_id in filtered["id"].to_pylist())
 
 
 def test_vector_index_distance_range(tmp_db):

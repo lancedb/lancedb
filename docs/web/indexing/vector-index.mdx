@@ -84,7 +84,8 @@ giving an approximate ANN result.
 
 However, observe that a queried vector may lie near the boundary of $2$ or more partitions; thus, the true nearest neighbors are scattered across several different partitions.
  To address this, LanceDB exposes the `nprobes` parameter, which specifies the number of partitions searched. 
-A high `nprobes` parameter will yield more accurate results at slightly higher runtime.
+A higher probe budget searches more partitions, which can improve recall at
+higher CPU and I/O cost.
 
 <Frame caption="Edge case for single-partition brute force.">
   <img src="/static/assets/images/indexing/ivfpq_query_vector.webp" alt="IVF vector-space partitioning" />
@@ -142,11 +143,12 @@ Learn how to configure, build, and search LanceDB vector indexes, including buil
 | Parameter | Description |
 | :--- | :--- |
 | `limit` | Number of results to return (the `k` in `k-ANN`). |
-| `nprobes` | Sets both `minimum_nprobes` and `maximum_nprobes` to the same value in Lance. Leave unset to use Lance's adaptive defaults. At very high scales you will likely need to experiment to find your preferred recall / latency balance. |
-| `minimum_nprobes` | Minimum number of partitions scanned. Leave unset to use Lance's default. |
-| `maximum_nprobes` | Maximum number of partitions scanned. Only scans more than `minimum_nprobes` if an initial pass does not return enough results, which is useful for narrow filters. Leave unset, or set to `0`, to remove the cap. |
+| `nprobes` | A positive fixed probe count per index segment when used alone. Explicit `search_effort` overrides it; explicit min/max bounds override the corresponding fixed bound. Leave probe settings unset to use Auto. |
+| `search_effort` | A finite value in `[0, 1]` controlling the initial probe budget. `0.5` selects Auto, `0` starts at the minimum and `1` starts at the maximum (all partitions if unbounded). This is not a recall percentage. |
+| `minimum_nprobes` | Positive lower bound for the initial search per segment, limited by available partitions. Auto can start above it, even without a filter. |
+| `maximum_nprobes` | Upper bound for both initial and further probing per segment, not for the whole query. Leave unset to allow all partitions as needed. To clear an explicit cap, use `0` in Python/TypeScript or `None` in Rust. |
 | `ef` | HNSW search-time exploration factor. Start around `1.5 * k` and increase up to `10 * k` for higher recall. |
-| `refine_factor` | Reads and reranks additional candidates in memory to recover recall lost to quantization. Start between `5` and `50` (a factor of `25` reads and reranks the top `25 * k` candidates) and measure the latency cost, typically a few milliseconds, against the recall gained. |
+| `refine_factor` | Reads full vectors and reranks selected candidates. A factor of `25` requests up to `25 * k` candidates before refinement. It can recover recall lost to quantized ranking, but not neighbors excluded from that candidate set. Measure the recall gain and I/O cost. |
 | `distance_range(lower_bound, upper_bound)` | Return only rows whose distance falls within `[lower_bound, upper_bound)`. Either bound is optional. Useful for near-duplicate detection or "close-enough" matching. |
 | `bypass_vector_index()` | Ignore the ANN index entirely and perform an exact (flat) scan. Can be used to measure ANN `recall@k`, or to query with a metric the index was not built for (e.g., a non-cosine query on a multivector column). |
 
@@ -173,11 +175,12 @@ older client.
 
 
 <Note>
-**Filtered queries and adaptive `nprobes`.** When a `where(...)` filter is active, LanceDB initially scans `minimum_nprobes` 
-partitions and uses a wider scan if too few rows are found. 
-Set `minimum_nprobes == maximum_nprobes` or call `nprobes(n)` to instead fix the partition count.
-Whether a deployment widens the scan this way depends on its version; one that does not scans exactly
-`minimum_nprobes` partitions.
+**Auto probing and filtered queries.** Auto first chooses an initial budget from
+the metric, `k` and query-to-centroid distances, within explicit bounds. It can
+search further if too few candidate rows are found, for example after filtering
+or deletions. Equal min/max bounds or `nprobes(n)` alone fix the count. Returning
+`k` rows is not a recall guarantee. See [Auto probing and search effort](/search/vector-search#tuning-nprobes)
+for precedence, calibration limits, per-segment work and client/server requirements.
 </Note>
 
 Here is an example of a vector search exercising several of the above parameters.
@@ -198,6 +201,8 @@ LanceDB also supports advanced search-time controls for thresholded retrieval, r
     {VectorIndexDistanceRange}
     </CodeBlock>
 </CodeGroup>
+
+<span id="measuring-vector-recall"></span>
 
 **Using `bypass_vector_index`:**
 

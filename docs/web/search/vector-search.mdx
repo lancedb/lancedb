@@ -48,6 +48,7 @@ import {
 
 import { PyVectorSearch, TsVectorSearchBody, TsVectorSearchTail } from '/snippets/search_examples.mdx';
 import { RsExampleBody as RsVectorSearchBody, RsExampleTail as RsVectorSearchTail } from '/snippets/search_vector_search.mdx';
+import { PyVectorIndexAuto, PyVectorIndexSearchEffort, PyVectorIndexFixedProbes } from '/snippets/indexing.mdx';
 
 Vector search finds similar items by comparing their embeddings: numerical
 representations of text, images, audio or other data. An embedding model maps
@@ -247,21 +248,156 @@ The supported values are:
 
 Only the Rust SDK sets `approx_mode`; the Python and TypeScript SDKs do not expose it. You can change `approx_mode` per query without rebuilding the index. For RQ indexes built with `num_bits=1`, `normal` uses the same one-bit scoring path as `fast`. If you also set `refine_factor`, LanceDB first uses `approx_mode` while finding candidates, then reranks the selected candidates on full vectors.
 
-### Tuning `nprobes`
+### Tuning `nprobes` {#tuning-nprobes}
 
-- `nprobes` controls how many partitions are searched at query time.
-- `nprobes` improves candidate recall, but does not by itself make `_distance` exact.
-- The default probe selection is a starting point. Measure recall and latency for your data before overriding it.
-- In most cases, leave `nprobes` unset and use the auto-tuned value.
-- Only tune `nprobes` manually when recall is below your target, or when you need even higher performance for your workload.
-- If recall is too low, increase `nprobes` gradually, but after a certain threshold, increasing `nprobes` yields only marginal accuracy gains.
-- If you need higher performance and have recall headroom, decrease `nprobes` gradually.
+An IVF probe searches one partition of a vector index segment. Leave the probe
+settings unset to start with **Auto**, then measure recall and latency on queries
+that represent your application. Auto chooses how many partitions to search;
+it does not measure recall while serving a query.
 
-For filtered ANN searches, you can also set `minimum_nprobes` and `maximum_nprobes`. LanceDB starts
-with the minimum and can scan more partitions up to the maximum if the filter leaves too few
-candidates. Calling `nprobes(n)` fixes both values to `n`, which disables that adaptive behavior.
-Whether a deployment honors this range depends on its version; one that does not searches exactly
-`minimum_nprobes` partitions.
+The examples below assume `table` has an IVF index and `query_vector` uses the
+same embedding model and dimension as its vectors.
+
+<CodeBlock filename="Python" language="python" icon="python">
+{PyVectorIndexAuto}
+</CodeBlock>
+
+#### How Auto chooses partitions {#auto-probe-selection}
+
+Auto has two separate steps:
+
+1. **Choose an initial budget.** The index metric and requested `k` select a
+   calibrated profile: a relative centroid-distance margin, an initial floor and
+   an initial cap. The query's distances to the centroids determine how many
+   nearby partitions fit that profile. Caller-supplied bounds also apply. Auto
+   can therefore start above `minimum_nprobes`, even without a filter.
+2. **Search further if too few results are found.** After the initial search,
+   Lance can search additional partitions when there are too few candidate rows,
+   for example after prefiltering or deletions. It stops when enough are found,
+   the caller's maximum is reached or the available partitions are exhausted.
+   This checks result count, not recall. Finding `k` rows does not establish that
+   they are the true nearest `k` rows.
+
+The default calibrated profiles cover `l2`, `cosine` and `dot` for `k <= 100000` across
+IVF index types, including `IVF_RQ`. They use buckets ending at 1, 10, 100, 200,
+500, 1000, 10000 and 100000; intermediate values share a profile. Hamming and
+larger `k` use the older heuristic, outside that calibration. The profile is not
+retrained for each user's data, quantizer, filter or partition layout. Here `k`
+is the size requested from ANN search; pagination can increase it beyond `limit`
+to include the offset.
+
+The calibration aimed for roughly **95% mean recall** on held-out benchmark
+queries, using frozen IVF_FLAT indices and exact centroid routing. For example,
+the [dot-product calibration](https://github.com/lance-format/lance/blob/fd110a36f991e5128979537f4a30a5bbfceff467/benchmarks/auto-ivf-dot/RESULTS.md)
+fit parameters to a 96% calibration target before evaluating the separate 95%
+held-out target. These are empirical targets, not a per-query guarantee or a
+promise for every dataset, metric, `k`, quantizer or centroid router.
+
+<Accordion title="Advanced: overriding the initial Auto profile">
+The process running Lance can override the profile with
+`LANCE_AUTO_PROBE_MARGIN` (a finite, nonnegative relative margin),
+`LANCE_AUTO_MIN_INITIAL_NPROBES` (a positive initial floor) and
+`LANCE_AUTO_MAX_INITIAL_NPROBES` (a positive initial cap). Overrides replace
+individual profile fields; the effective floor must not exceed the effective
+cap. Invalid values fail the query rather than being silently adjusted.
+
+These process-wide settings affect the calibrated metric/`k` range above.
+Fixed probing and the older heuristic ignore them. The caller minimum can
+exceed the profile's initial cap; the caller maximum and available partitions
+still limit the search. The initial cap does not cap later result-count
+expansion. Use query bounds to bound that work, and validate any custom profile
+on separate queries before using it. Do not change environment settings while
+queries are running.
+</Accordion>
+
+#### Choose effort or explicit bounds {#search-effort-and-probe-bounds}
+
+`search_effort` is a finite number in `[0, 1]` that adjusts the initial budget.
+It is available in Rust and Python as `search_effort`, and TypeScript as
+`searchEffort`. The LSM table engine does not currently accept explicit effort.
+**It is not a requested recall percentage**: `0.95` does not
+request or guarantee 95% recall.
+
+| Setting | Initial search | Further search if results are insufficient |
+| :--- | :--- | :--- |
+| Probe settings omitted | Auto budget | Allowed up to all available partitions |
+| `search_effort(0)` | Caller minimum, or one available partition | Still allowed up to the caller maximum |
+| `search_effort(0.5)` | Auto budget | Still allowed up to the caller maximum |
+| `search_effort(1)` | Caller maximum, or all available partitions | No remaining partitions within that bound |
+| `minimum_nprobes(m)`, `maximum_nprobes(n)` | Auto budget bounded by `m` and `n` | Allowed up to `n` per segment |
+| `nprobes(n)` alone, or equal explicit min/max | Fixed at `n`, limited by available partitions | Disabled |
+
+Values between 0 and 0.5 interpolate geometrically between the minimum and Auto;
+values between 0.5 and 1 interpolate between Auto and the maximum. A higher
+effort increases or preserves the initial budget for the same query and bounds, but does not
+promise a proportional change in latency or recall. Without a maximum,
+`search_effort(1)` searches every available partition.
+
+Any explicit effort, including `0.5`, overrides `nprobes` regardless of setter
+order. Explicit `minimum_nprobes` and `maximum_nprobes` take precedence over
+`nprobes` and remain effective with effort; equal bounds keep the search fixed.
+An omitted effort preserves an explicitly fixed `nprobes` value.
+
+<CodeGroup>
+<CodeBlock filename="Adjust effort" language="python" icon="python">
+{PyVectorIndexSearchEffort}
+</CodeBlock>
+<CodeBlock filename="Fix the probe count" language="python" icon="python">
+{PyVectorIndexFixedProbes}
+</CodeBlock>
+</CodeGroup>
+
+Use positive integers for fixed and minimum probe counts, and a maximum no
+smaller than the minimum. An unset maximum allows all partitions as needed;
+it does not require searching all of them. To clear an explicit maximum, use
+`maximum_nprobes(0)` in Python, `maximumNprobes(0)` in TypeScript or
+`maximum_nprobes(None)` in Rust. A separate `nprobes` value still supplies the
+minimum unless overridden by effort or an explicit minimum.
+
+<Note>
+The Python examples use APIs available in LanceDB 0.41.0. Remote queries also
+require a server version that forwards effort and probe bounds. An old SDK that
+sends fixed probes keeps requesting fixed probes after a server upgrade. Check
+both the client request and server support; omitting a method call in application
+code does not mean an old SDK omits the field from its request.
+</Note>
+
+#### Probe counts apply per segment {#probes-per-segment}
+
+An index can contain multiple segments. Each searched segment gets its own
+initial budget and maximum; `maximum_nprobes(50)` is not a 50-partition budget
+for the whole query. For example, ten searched segments with at least 20
+partitions each and fixed `nprobes(20)` can require 200 partition searches.
+Auto's initial counts can differ between segments, and further probing can add
+work. A probe limit also does not bound an unindexed scan or result refinement.
+
+Total work depends on the rows and bytes in those partitions, not just their
+count. With cold caches, visiting more partitions can cause more object-store
+reads and, where a disk cache is used, more cache-fill writes. Warm cache hits
+can avoid those transfers. Distributing the work across fewer executors can
+concentrate the CPU, memory and I/O load. Measure the complete query across
+segments; a per-segment setting is not a cluster-wide I/O or latency limit.
+
+#### Measure recall on your workload {#measure-auto-probe-recall}
+
+Compare ANN results with an exact search using the same metric, filter and
+table version. Use representative queries, tune on one set and validate on a
+separate set. Measure recall, result counts, latency and I/O separately. If your
+requirement is that 99% of queries meet a recall target, measure that distribution;
+mean recall alone cannot establish it. Recheck after changing the data, partition
+count, segment layout or index settings.
+
+A fixed probe count that meets a target on a sample does not make the same
+`maximum_nprobes` an equivalent Auto setting: Auto can stop below that maximum.
+Evaluate the exact settings you intend to deploy.
+
+Probing more partitions only widens candidate coverage. Quantization can still
+discard true neighbors or rank them incorrectly, even if every partition is
+searched. A one-bit RQ index is not guaranteed to reach 95% original-vector recall
+by increasing probes. `refine_factor` reranks selected candidates using full
+vectors, but cannot recover neighbors excluded before refinement. Tune index
+precision, refinement and, for HNSW sub-indices, `ef` alongside probing. See
+[measuring recall](/indexing/vector-index#measuring-vector-recall).
 
 ### Vector Search with Prefiltering
 
