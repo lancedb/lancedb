@@ -2461,6 +2461,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             version: u64,
             timestamp: Option<DateTime<Utc>>,
             timestamp_millis: Option<i64>,
+            manifest_size: Option<u64>,
             #[serde(default)]
             metadata: std::collections::BTreeMap<String, String>,
         }
@@ -2506,6 +2507,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                     version: entry.version,
                     timestamp,
                     metadata: entry.metadata,
+                    manifest_size: entry.manifest_size,
                 })
             })
             .collect()
@@ -9486,11 +9488,13 @@ mod tests {
                 version: 1,
                 timestamp: "2024-01-01T00:00:00Z".parse().unwrap(),
                 metadata: Default::default(),
+                manifest_size: Some(1024),
             };
             let version2 = lance::dataset::Version {
                 version: 2,
                 timestamp: "2024-02-01T00:00:00Z".parse().unwrap(),
                 metadata: Default::default(),
+                manifest_size: None,
             };
             let response_body = serde_json::json!({
                 "versions": [
@@ -9509,6 +9513,7 @@ mod tests {
         let versions = table.list_versions().await.unwrap();
         assert_eq!(versions.len(), 2);
         assert_eq!(versions[0].version, 1);
+        assert_eq!(versions[0].manifest_size, Some(1024));
         assert_eq!(
             versions[0].timestamp,
             "2024-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
@@ -9518,7 +9523,7 @@ mod tests {
             versions[1].timestamp,
             "2024-02-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
         );
-        // assert_eq!(versions, expected);
+        assert_eq!(versions[1].manifest_size, None);
     }
 
     /// Namespace-backed servers report `timestamp_millis` instead of
@@ -9560,6 +9565,7 @@ mod tests {
             "2024-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
         );
         assert!(versions[0].metadata.is_empty());
+        assert_eq!(versions[0].manifest_size, None);
         assert_eq!(versions[1].version, 2);
         assert_eq!(
             versions[1].timestamp,
