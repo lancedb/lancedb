@@ -42,6 +42,9 @@ jobs:
       with:
         fetch-depth: 0
         lfs: true
+    - uses: ./.github/actions/setup-private-lance
+      with:
+        token: ${{ secrets.ROBOT_TOKEN }}
     - uses: pnpm/action-setup@v6
       with:
         version: 11.1.1
@@ -98,6 +101,9 @@ jobs:
       with:
         fetch-depth: 0
         lfs: true
+    - uses: ./.github/actions/setup-private-lance
+      with:
+        token: ${{ secrets.ROBOT_TOKEN }}
     - uses: pnpm/action-setup@v6
       with:
         version: 11.1.1
@@ -188,6 +194,9 @@ jobs:
       with:
         fetch-depth: 0
         lfs: true
+    - uses: ./.github/actions/setup-private-lance
+      with:
+        token: ${{ secrets.ROBOT_TOKEN }}
     - uses: pnpm/action-setup@v6
       with:
         version: 11.1.1
@@ -248,6 +257,9 @@ jobs:
       with:
         fetch-depth: 0
         lfs: true
+    - uses: ./.github/actions/setup-private-lance
+      with:
+        token: ${{ secrets.ROBOT_TOKEN }}
     - uses: pnpm/action-setup@v6
       with:
         version: 11.1.1

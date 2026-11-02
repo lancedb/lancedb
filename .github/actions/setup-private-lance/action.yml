@@ -1,0 +1,25 @@
+name: Authenticate private Lance dependencies
+description: Configure Cargo Git fetches for the internal Lance fork
+inputs:
+  token:
+    description: Token with read access to lance-internal-fork
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        PRIVATE_LANCE_TOKEN: ${{ inputs.token }}
+      run: |
+        if [ -z "$PRIVATE_LANCE_TOKEN" ]; then
+          echo "::error::ROBOT_TOKEN must have read access to lance-internal-fork"
+          exit 1
+        fi
+        header=$(printf 'x-access-token:%s' "$PRIVATE_LANCE_TOKEN" | base64 | tr -d '\r\n')
+        echo "::add-mask::$header"
+        {
+          echo 'CARGO_NET_GIT_FETCH_WITH_CLI=true'
+          echo 'GIT_CONFIG_COUNT=1'
+          echo 'GIT_CONFIG_KEY_0=http.https://github.com/lancedb/lance-internal-fork.git.extraheader'
+          echo "GIT_CONFIG_VALUE_0=AUTHORIZATION: basic $header"
+        } >> "$GITHUB_ENV"

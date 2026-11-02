@@ -72,6 +72,9 @@ jobs:
         with:
           fetch-depth: 0
           lfs: true
+      - uses: ./.github/actions/setup-private-lance
+        with:
+          token: ${{ secrets.ROBOT_TOKEN }}
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -115,6 +118,9 @@ jobs:
         with:
           fetch-depth: 0
           lfs: true
+      - uses: ./.github/actions/setup-private-lance
+        with:
+          token: ${{ secrets.ROBOT_TOKEN }}
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -146,6 +152,9 @@ jobs:
         with:
           fetch-depth: 0
           lfs: true
+      - uses: ./.github/actions/setup-private-lance
+        with:
+          token: ${{ secrets.ROBOT_TOKEN }}
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -176,6 +185,9 @@ jobs:
         with:
           fetch-depth: 0
           lfs: true
+      - uses: ./.github/actions/setup-private-lance
+        with:
+          token: ${{ secrets.ROBOT_TOKEN }}
       - name: Set up Python
         uses: actions/setup-python@v6
         with:

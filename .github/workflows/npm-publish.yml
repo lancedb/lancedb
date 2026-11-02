@@ -161,6 +161,9 @@ jobs:
         working-directory: nodejs
     steps:
       - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-private-lance
+        with:
+          token: ${{ secrets.ROBOT_TOKEN }}
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
         with:
@@ -243,6 +246,7 @@ jobs:
           options: "--user 0:0 -v ${{ github.workspace }}/.cargo-cache/git/db:/usr/local/cargo/git/db \
                     -v ${{ github.workspace }}/.cargo-cache/registry/cache:/usr/local/cargo/registry/cache \
                     -v ${{ github.workspace }}/.cargo-cache/registry/index:/usr/local/cargo/registry/index \
+                    -e CARGO_NET_GIT_FETCH_WITH_CLI -e GIT_CONFIG_COUNT -e GIT_CONFIG_KEY_0 -e GIT_CONFIG_VALUE_0 \
                     -e CARGO_PROFILE_RELEASE_LTO \
                     -e CARGO_PROFILE_RELEASE_CODEGEN_UNITS \
                     -e CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER \
