@@ -742,7 +742,10 @@ async fn referenced_digests(dataset: &Dataset, into: &mut HashSet<String>) -> Re
 
 enum StoredFreshnessState {
     Absent,
-    Present(FreshnessState),
+    Present {
+        state: FreshnessState,
+        digest: Option<String>,
+    },
     Unreadable,
 }
 
@@ -751,17 +754,23 @@ async fn stored_freshness_state(dataset: &Dataset, column: &str) -> StoredFreshn
         return StoredFreshnessState::Absent;
     };
     // Inline JSON is the declaration's empty seed and the pre-sidecar form.
-    let read = match encoded.strip_prefix(SIDECAR_REF) {
-        Some(digest) => read_sidecar(dataset, digest).await,
-        None => serde_json::from_str::<SignatureMap>(&encoded)
-            .map(|signatures| FreshnessState {
-                signatures,
-                ..Default::default()
-            })
-            .map_err(|e| invalid(e.to_string())),
+    let (read, digest) = match encoded.strip_prefix(SIDECAR_REF) {
+        Some(digest) => (
+            read_sidecar(dataset, digest).await,
+            Some(digest.to_string()),
+        ),
+        None => (
+            serde_json::from_str::<SignatureMap>(&encoded)
+                .map(|signatures| FreshnessState {
+                    signatures,
+                    ..Default::default()
+                })
+                .map_err(|e| invalid(e.to_string())),
+            None,
+        ),
     };
     match read {
-        Ok(state) => StoredFreshnessState::Present(state),
+        Ok(state) => StoredFreshnessState::Present { state, digest },
         Err(error) => {
             log::warn!(
                 "computed column '{column}' freshness state is unreadable ({error}); every fragment will be recomputed"
@@ -776,7 +785,7 @@ async fn stored_freshness_state(dataset: &Dataset, column: &str) -> StoredFreshn
 pub async fn stored_signatures(dataset: &Dataset, column: &str) -> StoredSignatures {
     match stored_freshness_state(dataset, column).await {
         StoredFreshnessState::Absent => StoredSignatures::Absent,
-        StoredFreshnessState::Present(state) => StoredSignatures::Present(state.signatures),
+        StoredFreshnessState::Present { state, .. } => StoredSignatures::Present(state.signatures),
         StoredFreshnessState::Unreadable => StoredSignatures::Unreadable,
     }
 }
@@ -786,7 +795,7 @@ pub async fn stored_signatures(dataset: &Dataset, column: &str) -> StoredSignatu
 pub async fn stored_row_states(dataset: &Dataset, column: &str) -> StoredRowStates {
     match stored_freshness_state(dataset, column).await {
         StoredFreshnessState::Absent => StoredRowStates::Absent,
-        StoredFreshnessState::Present(state) => StoredRowStates::Present(state.row_state),
+        StoredFreshnessState::Present { state, .. } => StoredRowStates::Present(state.row_state),
         StoredFreshnessState::Unreadable => StoredRowStates::Unreadable,
     }
 }
@@ -1129,7 +1138,7 @@ pub async fn staleness_against(
                 ..Default::default()
             });
         }
-        StoredFreshnessState::Present(stored) => stored,
+        StoredFreshnessState::Present { state: stored, .. } => stored,
     };
     let stored_version = field_meta(dataset, column, DEFINITION_VERSION_META_KEY);
     if stored_version.is_some_and(|version| version != definition_version) {
@@ -1267,7 +1276,7 @@ pub async fn write_signatures(
     let stored = stored_freshness_state(dataset, column).await;
     let state_unreadable = matches!(&stored, StoredFreshnessState::Unreadable);
     let mut state = match stored {
-        StoredFreshnessState::Present(state) => state,
+        StoredFreshnessState::Present { state, .. } => state,
         StoredFreshnessState::Absent | StoredFreshnessState::Unreadable => {
             FreshnessState::default()
         }
@@ -1415,7 +1424,7 @@ pub async fn begin_row_repair(
     let was_absent = matches!(&stored, StoredFreshnessState::Absent);
     let state_unreadable = matches!(&stored, StoredFreshnessState::Unreadable);
     let mut freshness = match stored {
-        StoredFreshnessState::Present(state) => state,
+        StoredFreshnessState::Present { state, .. } => state,
         StoredFreshnessState::Absent | StoredFreshnessState::Unreadable => {
             FreshnessState::default()
         }
@@ -1568,8 +1577,16 @@ pub async fn finish_row_repair(
         ));
     }
     dataset.checkout_latest().await?;
-    let mut state = match stored_freshness_state(dataset, column).await {
-        StoredFreshnessState::Present(state) => state,
+    let (mut state, current_digest) = match stored_freshness_state(dataset, column).await {
+        StoredFreshnessState::Present {
+            state,
+            digest: Some(digest),
+        } => (state, digest),
+        StoredFreshnessState::Present { digest: None, .. } => {
+            return Err(invalid(
+                "row repair token cannot name an inline freshness state".to_string(),
+            ));
+        }
         StoredFreshnessState::Absent | StoredFreshnessState::Unreadable => {
             return Err(invalid(
                 "row repair freshness state disappeared before finalization".to_string(),
@@ -1607,6 +1624,11 @@ pub async fn finish_row_repair(
     )?;
     if state.row_state == before {
         return Ok(dataset.version().version);
+    }
+    if current_digest != token.intent_digest.as_str() {
+        return Err(invalid(
+            "row repair dirty intent changed before finalization".to_string(),
+        ));
     }
     state.basis = token.basis.clone();
     let write = write_freshness_state(dataset, column, definition_version, state, true).await?;
@@ -1756,13 +1778,14 @@ mod tests {
         stamp_all(&mut dataset).await;
         let definition = definition_version(EXPRESSION);
         let ids = inputs(&dataset);
+        let repairs = BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([1, 2])))]);
         let token = begin_row_repair(
             &mut dataset,
             COLUMN,
             &definition,
             &ids,
             "accepted-job-generation-a",
-            &BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([1, 2])))]),
+            &repairs,
         )
         .await
         .unwrap();
@@ -1821,13 +1844,14 @@ mod tests {
         stamp_all(&mut dataset).await;
         let ids = inputs(&dataset);
         let definition = "definition-generation-b";
+        let repairs = BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([0])))]);
         let token = begin_row_repair(
             &mut dataset,
             COLUMN,
             definition,
             &ids,
             "accepted-job-generation-b",
-            &BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([0])))]),
+            &repairs,
         )
         .await
         .unwrap();
@@ -1858,33 +1882,79 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn disjoint_repair_tokens_compose_without_clearing_other_rows() {
+    async fn one_token_finishes_disjoint_fragments_without_clearing_other_rows() {
         let dir = tempfile::tempdir().unwrap();
         let mut dataset = table(dir.path().to_str().unwrap()).await;
         stamp_all(&mut dataset).await;
         let definition = definition_version(EXPRESSION);
         let ids = inputs(&dataset);
+        let repairs = BTreeMap::from([
+            (0, repair(&dataset, 0, RoaringBitmap::from_iter([1]))),
+            (1, repair(&dataset, 1, RoaringBitmap::from_iter([2]))),
+        ]);
+        let token = begin_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            "accepted-input-basis",
+            &repairs,
+        )
+        .await
+        .unwrap();
+        finish_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            &token,
+            &BTreeMap::from([(0, RoaringBitmap::from_iter([1]))]),
+            &BTreeMap::from([(1, RoaringBitmap::from_iter([2]))]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            stored_row_states(&dataset, COLUMN).await,
+            StoredRowStates::Present(RowStateMap::from([(
+                1,
+                DirtyRows::Rows(RoaringBitmap::from_iter([2])),
+            )]))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_new_intent_blocks_a_stale_non_noop_finish() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dataset = table(dir.path().to_str().unwrap()).await;
+        stamp_all(&mut dataset).await;
+        let definition = definition_version(EXPRESSION);
+        let ids = inputs(&dataset);
+        let first_repair =
+            BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([1])))]);
         let first = begin_row_repair(
             &mut dataset,
             COLUMN,
             &definition,
             &ids,
             "accepted-input-basis",
-            &BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([1])))]),
+            &first_repair,
         )
         .await
         .unwrap();
-        let second = begin_row_repair(
+        let second_repair =
+            BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([3])))]);
+        begin_row_repair(
             &mut dataset,
             COLUMN,
             &definition,
             &ids,
             "accepted-input-basis",
-            &BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([3])))]),
+            &second_repair,
         )
         .await
         .unwrap();
-        finish_row_repair(
+        let before = stored_row_states(&dataset, COLUMN).await;
+        let error = finish_row_repair(
             &mut dataset,
             COLUMN,
             &definition,
@@ -1894,29 +1964,12 @@ mod tests {
             &BTreeMap::new(),
         )
         .await
-        .unwrap();
-        assert_eq!(
-            stored_row_states(&dataset, COLUMN).await,
-            StoredRowStates::Present(RowStateMap::from([(
-                0,
-                DirtyRows::Rows(RoaringBitmap::from_iter([3])),
-            )]))
+        .expect_err("a newer dirty intent must fence a non-noop finish");
+        assert!(
+            error.to_string().contains("dirty intent changed"),
+            "{error}"
         );
-        finish_row_repair(
-            &mut dataset,
-            COLUMN,
-            &definition,
-            &ids,
-            &second,
-            &BTreeMap::from([(0, RoaringBitmap::from_iter([3]))]),
-            &BTreeMap::new(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            stored_row_states(&dataset, COLUMN).await,
-            StoredRowStates::Present(RowStateMap::new())
-        );
+        assert_eq!(stored_row_states(&dataset, COLUMN).await, before);
     }
 
     #[tokio::test]
@@ -1926,13 +1979,14 @@ mod tests {
         stamp_all(&mut dataset).await;
         let definition = definition_version(EXPRESSION);
         let ids = inputs(&dataset);
+        let repairs = BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([1])))]);
         let token = begin_row_repair(
             &mut dataset,
             COLUMN,
             &definition,
             &ids,
             "accepted-input-basis",
-            &BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([1])))]),
+            &repairs,
         )
         .await
         .unwrap();
@@ -1980,7 +2034,12 @@ mod tests {
         )
         .await
         .expect_err("legacy absence cannot prove an accepted generation");
-        assert!(error.to_string().contains("does not match"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("disappeared before finalization"),
+            "{error}"
+        );
     }
 
     #[tokio::test]
@@ -1990,13 +2049,14 @@ mod tests {
         stamp_all(&mut dataset).await;
         let definition = definition_version(EXPRESSION);
         let ids = inputs(&dataset);
+        let repairs = BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([1])))]);
         let token = begin_row_repair(
             &mut dataset,
             COLUMN,
             &definition,
             &ids,
             "accepted-input-basis",
-            &BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([1])))]),
+            &repairs,
         )
         .await
         .unwrap();
@@ -2028,13 +2088,14 @@ mod tests {
         stamp_all(&mut dataset).await;
         let definition = definition_version(EXPRESSION);
         let ids = inputs(&dataset);
+        let repairs = BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([1])))]);
         let stale = begin_row_repair(
             &mut dataset,
             COLUMN,
             &definition,
             &ids,
             "accepted-input-basis",
-            &BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([1])))]),
+            &repairs,
         )
         .await
         .unwrap();
@@ -2051,13 +2112,14 @@ mod tests {
         .unwrap();
         corrupt_current_sidecar(&dataset).await;
 
+        let retry = BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([2])))]);
         begin_row_repair(
             &mut dataset,
             COLUMN,
             &definition,
             &ids,
             "retry-input-basis",
-            &BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([2])))]),
+            &retry,
         )
         .await
         .unwrap();
@@ -2080,13 +2142,14 @@ mod tests {
         stamp_all(&mut dataset).await;
         let definition = definition_version(EXPRESSION);
         let ids = inputs(&dataset);
+        let repairs = BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([1])))]);
         let stale = begin_row_repair(
             &mut dataset,
             COLUMN,
             &definition,
             &ids,
             "accepted-input-basis",
-            &BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([1])))]),
+            &repairs,
         )
         .await
         .unwrap();
@@ -2101,21 +2164,12 @@ mod tests {
         )
         .await
         .unwrap();
-        dataset
-            .update_field_metadata()
-            .update(COLUMN, [(SOURCE_SIGNATURE_META_KEY.to_string(), "{}")])
-            .unwrap()
-            .await
-            .unwrap();
+        corrupt_current_sidecar(&dataset).await;
 
-        let error = write_signatures(
-            &mut dataset,
-            COLUMN,
-            &definition,
-            SignatureMap::from([(0, fragment_signature(&dataset, 0))]),
-        )
-        .await
-        .expect_err("a partial stamp cannot replace unreadable state");
+        let partial = SignatureMap::from([(0, fragment_signature(&dataset, 0))]);
+        let error = write_signatures(&mut dataset, COLUMN, &definition, partial)
+            .await
+            .expect_err("a partial stamp cannot replace unreadable state");
         assert!(
             error.to_string().contains("partial signature stamp"),
             "{error}"
@@ -2155,13 +2209,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut dataset = table(dir.path().to_str().unwrap()).await;
         stamp_all(&mut dataset).await;
+        let definition = definition_version(EXPRESSION);
+        let ids = inputs(&dataset);
+        let repairs = BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([1])))]);
         begin_row_repair(
             &mut dataset,
             COLUMN,
-            &definition_version(EXPRESSION),
-            &inputs(&dataset),
+            &definition,
+            &ids,
             "accepted-input-basis",
-            &BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([1])))]),
+            &repairs,
         )
         .await
         .unwrap();
@@ -2187,13 +2244,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut dataset = table(dir.path().to_str().unwrap()).await;
         stamp_all(&mut dataset).await;
+        let definition = definition_version(EXPRESSION);
+        let ids = inputs(&dataset);
+        let repairs = BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([1])))]);
         begin_row_repair(
             &mut dataset,
             COLUMN,
-            &definition_version(EXPRESSION),
-            &inputs(&dataset),
+            &definition,
+            &ids,
             "accepted-job-generation-a",
-            &BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([1])))]),
+            &repairs,
         )
         .await
         .unwrap();
@@ -2208,13 +2268,14 @@ mod tests {
         stamp_all(&mut dataset).await;
         let definition = definition_version(EXPRESSION);
         let ids = inputs(&dataset);
+        let repairs = BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([1])))]);
         let token = begin_row_repair(
             &mut dataset,
             COLUMN,
             &definition,
             &ids,
             "accepted-job-generation-a",
-            &BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([1])))]),
+            &repairs,
         )
         .await
         .unwrap();
