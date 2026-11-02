@@ -1192,7 +1192,10 @@ impl Connection {
 
     /// Rename a table in the database.
     ///
-    /// This is only supported in LanceDB Distributed.
+    /// Supported in LanceDB Distributed and by namespace backends that implement
+    /// renaming. Directory namespaces support renaming tables resolved through
+    /// their manifest, including tables within or across child namespaces.
+    /// Directory-listing root tables cannot be renamed.
     pub async fn rename_table(
         &self,
         old_name: impl AsRef<str>,
