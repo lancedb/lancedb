@@ -4,6 +4,7 @@
 
 from collections import defaultdict
 from numpy import nan
+import numpy as np
 import pyarrow as pa
 
 from .base import Reranker
@@ -12,7 +13,15 @@ from .base import Reranker
 class LinearCombinationReranker(Reranker):
     """
     Reranks the results using a linear combination of the scores from the
-    vector and FTS search. For missing scores, fill with `fill` value.
+    vector and FTS search.
+
+    This reranker can be used for:
+    - Vector search reranking
+    - Full-text search reranking
+    - Hybrid search (vector + FTS) reranking
+
+    For hybrid search, missing scores are filled with the `fill` value.
+
     Parameters
     ----------
     weight : float, default 0.7
@@ -23,7 +32,7 @@ class LinearCombinationReranker(Reranker):
         TODO: We should just hardcode this--
         its pretty confusing as we invert scores to calculate final score
     return_score : str, default "relevance"
-        opntions are "relevance" or "all"
+        options are "relevance" or "all"
         The type of score to return. If "relevance", will return only the relevance
         score. If "all", will return all scores from the vector and FTS search along
         with the relevance score.
@@ -40,6 +49,93 @@ class LinearCombinationReranker(Reranker):
 
     def __str__(self):
         return f"LinearCombinationReranker(weight={self.weight}, fill={self.fill})"
+
+    def rerank_vector(self, query: str, vector_results: pa.Table) -> pa.Table:
+        """
+        Rerank vector results using linear combination.
+        Since there's no FTS score, use weight=1.0 for vector score.
+
+        Parameters
+        ----------
+        query : str
+            The query string (unused)
+        vector_results : pa.Table
+            Vector search results with _distance column
+
+        Returns
+        -------
+        pa.Table
+            Results with _relevance_score column, sorted descending
+        """
+        # Normalize distance to similarity score
+        distances = vector_results.column("_distance").to_numpy()
+        max_dist = distances.max() if len(distances) > 0 else 1.0
+        min_dist = distances.min() if len(distances) > 0 else 0.0
+        rng = max_dist - min_dist if max_dist - min_dist > 1e-5 else 1.0
+
+        # Normalize and invert (distance -> similarity)
+        if rng != 0.0:
+            normalized = (distances - min_dist) / rng
+            relevance_scores = 1.0 - normalized  # Invert
+        else:
+            relevance_scores = np.ones_like(distances)
+
+        # Add relevance score column
+        vector_results = vector_results.append_column(
+            "_relevance_score", pa.array(relevance_scores, type=pa.float32())
+        )
+
+        # Sort descending
+        vector_results = vector_results.sort_by([("_relevance_score", "descending")])
+
+        if self.score == "relevance":
+            vector_results = self._keep_relevance_score(vector_results)
+
+        return vector_results
+
+    def rerank_fts(self, query: str, fts_results: pa.Table) -> pa.Table:
+        """
+        Rerank FTS results using linear combination.
+        Since there's no vector score, directly use FTS scores.
+
+        Parameters
+        ----------
+        query : str
+            The query string (unused)
+        fts_results : pa.Table
+            FTS search results with _score column
+
+        Returns
+        -------
+        pa.Table
+            Results with _relevance_score column, sorted descending
+        """
+        # FTS scores are already normalized (BM25 scores)
+        # Just use them as relevance scores
+        scores = fts_results.column("_score").to_numpy()
+
+        # Normalize scores to [0, 1]
+        max_score = scores.max() if len(scores) > 0 else 1.0
+        min_score = scores.min() if len(scores) > 0 else 0.0
+        rng = max_score - min_score if max_score - min_score > 1e-5 else 1.0
+
+        if rng != 0.0:
+            relevance_scores = (scores - min_score) / rng
+        else:
+            relevance_scores = np.ones_like(scores)
+
+        # Add relevance score column
+        fts_results = fts_results.append_column(
+            "_relevance_score", pa.array(relevance_scores, type=pa.float32())
+        )
+
+        # Sort descending
+        fts_results = fts_results.sort_by([("_relevance_score", "descending")])
+
+        if self.score == "relevance":
+            fts_results = self._keep_relevance_score(fts_results)
+
+        return fts_results
 
     def rerank_hybrid(
         self,
