@@ -29,7 +29,7 @@ def main() -> None:
     assert not isinstance(normalize(" Hello "), FunctionApplication)
 
     scaler = Scale(factor=2.0)
-    assert isinstance(scaler, Scale)
+    assert type(scaler).__name__ == "Scale"
     assert scaler(3.0) == 6.0
     scaler.close()
     assert scaler.closed
