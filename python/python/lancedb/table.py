@@ -3280,6 +3280,9 @@ class Table(ABC):
             or "nullable". The legacy key "name" is also accepted for renaming.
             Unknown keys raise ValueError before any alterations are applied.
 
+            Local tables reject renaming source or vector columns used by an
+            embedding function with ValueError, preserving the embedding binding.
+
         Returns
         -------
         AlterColumnsResult
@@ -3347,6 +3350,9 @@ class Table(ABC):
     def drop_columns(self, columns: Iterable[str]) -> DropColumnsResult:
         """
         Drop columns from the table.
+
+        Local tables reject dropping source or vector columns used by an
+        embedding function with ValueError, preserving the embedding binding.
 
         Parameters
         ----------
@@ -7744,6 +7750,9 @@ class AsyncTable:
             or "nullable". The legacy key "name" is also accepted for renaming.
             Unknown keys raise ValueError before any alterations are applied.
 
+            Local tables reject renaming source or vector columns used by an
+            embedding function with ValueError, preserving the embedding binding.
+
         Returns
         -------
         AlterColumnsResult
@@ -7761,6 +7770,9 @@ class AsyncTable:
     async def drop_columns(self, columns: Iterable[str]):
         """
         Drop columns from the table.
+
+        Local tables reject dropping source or vector columns used by an
+        embedding function with ValueError, preserving the embedding binding.
 
         Parameters
         ----------
