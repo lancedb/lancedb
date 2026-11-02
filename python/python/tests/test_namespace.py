@@ -582,37 +582,43 @@ class TestNamespaceConnection:
         assert table_schema.field("id").type == pa.int64()
         assert table_schema.field("text").type == pa.string()
 
-    def test_rename_table(self):
-        """Test that rename_table renames a table in the namespace.
-
-        The `dir` namespace implementation in lance-namespace-impls does not
-        implement `rename_table` yet (only the `rest` backend does), so it
-        currently falls back to the default trait method which raises
-        NotSupported. This is expected to start passing once the `dir`
-        backend gains rename_table support upstream.
-        """
+    @pytest.mark.parametrize("destination_namespace", ["test_ns", "destination_ns"])
+    def test_rename_table(self, destination_namespace):
+        """Test that renaming a table preserves its data and namespace registration."""
         db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
-
-        # Create a child namespace first
         db.create_namespace(["test_ns"])
+        if destination_namespace != "test_ns":
+            db.create_namespace([destination_namespace])
 
-        # Create a table in child namespace
         schema = pa.schema(
             [
                 pa.field("id", pa.int64()),
                 pa.field("vector", pa.list_(pa.float32(), 2)),
             ]
         )
-        db.create_table("old_name", schema=schema, namespace_path=["test_ns"])
+        data = pa.Table.from_pylist(
+            [{"id": 1, "vector": [1.0, 2.0]}, {"id": 2, "vector": [3.0, 4.0]}],
+            schema=schema,
+        )
+        db.create_table("old_name", data=data, namespace_path=["test_ns"])
 
-        # Rename the table within the same namespace
-        with pytest.raises(NotImplementedError, match="rename_table not implemented"):
-            db.rename_table(
-                "old_name",
-                "new_name",
-                cur_namespace_path=["test_ns"],
-                new_namespace_path=["test_ns"],
-            )
+        db.rename_table(
+            "old_name",
+            "new_name",
+            cur_namespace_path=["test_ns"],
+            new_namespace_path=[destination_namespace],
+        )
+
+        reopened = lancedb.connect_namespace("dir", {"root": self.temp_dir})
+        assert "old_name" not in reopened.table_names(namespace_path=["test_ns"])
+        assert "new_name" in reopened.table_names(
+            namespace_path=[destination_namespace]
+        )
+        with pytest.raises(TableNotFoundError):
+            reopened.open_table("old_name", namespace_path=["test_ns"])
+        table = reopened.open_table("new_name", namespace_path=[destination_namespace])
+        assert table.namespace == [destination_namespace]
+        assert table.to_arrow().equals(data)
 
     def test_drop_all_tables(self):
         """Test dropping all tables through namespace."""

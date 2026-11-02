@@ -419,6 +419,8 @@ scoped to each invocation and support `read`, `readinto`, `seek`, `tell`,
 
 ::: lancedb.functions.PythonRuntimeSpec
 
+::: lancedb.GpuClass
+
 ::: lancedb.functions.FunctionVersionRef
 
 ::: lancedb.functions.ApplicationInput

@@ -28,6 +28,7 @@ from lancedb.rerankers import (
     WatsonxReranker,
 )
 from lancedb.table import LanceTable
+from lancedb.rerankers.base import Reranker
 
 
 def get_test_table(tmp_path):
@@ -356,6 +357,19 @@ def test_mrr_reranker(tmp_path):
     # Test with duplicate results
     result_deduped = reranker.rerank_multivector([rs1, rs2, rs1])
     assert len(result_deduped) == len(result)
+
+
+@pytest.mark.parametrize("deduplicate", [False, True])
+def test_base_reranker_multivector_empty_input(deduplicate):
+    class VectorReranker(Reranker):
+        def rerank_hybrid(self, query, vector_results, fts_results):
+            raise AssertionError("should not rerank")
+
+        def rerank_vector(self, query, vector_results):
+            raise AssertionError("should not rerank")
+
+    with pytest.raises(ValueError, match="vector_results must not be empty"):
+        VectorReranker().rerank_multivector([], None, deduplicate=deduplicate)
 
 
 def test_mrr_reranker_empty_input():
@@ -836,6 +850,56 @@ def test_empty_hybrid_result_reranker():
     assert "_rowid" in result.column_names
 
 
+@pytest.mark.parametrize("reranker_cls", [LinearCombinationReranker, RRFReranker])
+@pytest.mark.parametrize("return_score", ["relevance", "all"])
+def test_empty_hybrid_result_keeps_reranker_columns(
+    tmp_path, reranker_cls, return_score
+):
+    # A filter that matches nothing must not change which columns come back.
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "t",
+        pa.table(
+            {
+                "text": ["red fox", "blue fox"],
+                "vector": pa.array([[1.0, 2.0], [3.0, 4.0]], pa.list_(pa.float32(), 2)),
+            }
+        ),
+    )
+    table.create_fts_index("text")
+    reranker = reranker_cls(return_score=return_score)
+
+    def columns(where):
+        query = table.search(query_type="hybrid").vector([1.0, 2.0]).text("fox")
+        query = query.where(where, prefilter=True).rerank(reranker)
+        return query.to_arrow().column_names
+
+    assert columns("text = 'none'") == columns("text != 'none'")
+
+
+def test_empty_hybrid_result_skips_keep_relevance_score_override(tmp_path):
+    # An override written for non-empty results must not run on the empty path.
+    class FirstRowReranker(LinearCombinationReranker):
+        def _keep_relevance_score(self, combined_results):
+            combined_results["_relevance_score"][0]
+            return super()._keep_relevance_score(combined_results)
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "t",
+        pa.table(
+            {
+                "text": ["red fox", "blue fox"],
+                "vector": pa.array([[1.0, 2.0], [3.0, 4.0]], pa.list_(pa.float32(), 2)),
+            }
+        ),
+    )
+    table.create_fts_index("text")
+    query = table.search(query_type="hybrid").vector([1.0, 2.0]).text("fox")
+    query = query.where("text = 'none'", prefilter=True).rerank(FirstRowReranker())
+    assert query.to_arrow().num_rows == 0
+
+
 @pytest.mark.parametrize("norm", ["score", "rank"])
 def test_hybrid_return_all_restores_original_scores(norm):
     from lancedb.query import LanceHybridQueryBuilder
@@ -1097,6 +1161,52 @@ def test_linear_combination_missing_fts_is_penalised():
     assert scores[0] > scores[1], (
         f"Document with FTS score (rowid 0, {scores[0]:.4f}) should beat "
         f"document with no FTS match (rowid 1, {scores[1]:.4f})"
+    )
+
+
+@pytest.mark.parametrize("empty_side", ["vector", "fts"])
+def test_linear_combination_empty_side_scores_are_null(empty_side):
+    """With return_score="all", the missing side's score column is null, not NaN."""
+    from lancedb.query import LanceHybridQueryBuilder
+
+    vector_results = pa.table(
+        {
+            "_rowid": pa.array([1, 2], pa.uint64()),
+            "_distance": pa.array([0.1, 0.2], pa.float32()),
+        }
+    )
+    fts_results = pa.table(
+        {
+            "_rowid": pa.array([1, 2], pa.uint64()),
+            "_score": pa.array([5.0, 4.0], pa.float32()),
+        }
+    )
+    if empty_side == "vector":
+        expected_present = fts_results["_score"].to_pylist()
+        vector_results = vector_results.slice(0, 0)
+        missing = "_distance"
+        present = "_score"
+    else:
+        expected_present = vector_results["_distance"].to_pylist()
+        fts_results = fts_results.slice(0, 0)
+        missing = "_score"
+        present = "_distance"
+
+    result = LanceHybridQueryBuilder._combine_hybrid_results(
+        fts_results=fts_results,
+        vector_results=vector_results,
+        norm="score",
+        fts_query="query",
+        reranker=LinearCombinationReranker(return_score="all"),
+        limit=10,
+        with_row_ids=True,
+    )
+
+    assert result[missing].type == pa.float32()
+    assert result[missing].null_count == len(result) == 2
+    assert result[present].to_pylist() == expected_present
+    assert result["_relevance_score"].to_pylist() == sorted(
+        result["_relevance_score"].to_pylist(), reverse=True
     )
 
 

@@ -24,6 +24,7 @@ use lancedb::{
     connection::NamespaceClientPushdownOperation,
     database::namespace::LanceNamespaceDatabase,
     database::{CreateTableMode, Database, ReadConsistency},
+    function::GpuClass as LanceGpuClass,
     graph::PropertyGraphDefinition,
 };
 use pyo3::{
@@ -36,6 +37,62 @@ use pyo3::{
 #[pyclass]
 pub struct Connection {
     inner: Option<LanceConnection>,
+}
+
+/// Configured hardware and worker limits of a Function GPU class.
+#[pyclass(module = "lancedb._lancedb", get_all, from_py_object)]
+#[derive(Clone, Debug)]
+pub struct GpuClass {
+    pub name: String,
+    pub resource_name: String,
+    pub gpu_model: Option<String>,
+    pub gpu_memory_bytes: Option<u64>,
+    pub max_gpu_count_per_worker: Option<u32>,
+    pub cpu_millis: Option<u64>,
+    pub memory_bytes: Option<u64>,
+    pub ephemeral_storage_bytes: Option<u64>,
+}
+
+impl From<LanceGpuClass> for GpuClass {
+    fn from(class: LanceGpuClass) -> Self {
+        Self {
+            name: class.name,
+            resource_name: class.resource_name,
+            gpu_model: class.gpu_model,
+            gpu_memory_bytes: class.gpu_memory_bytes,
+            max_gpu_count_per_worker: class.max_gpu_count_per_worker,
+            cpu_millis: class.cpu_millis,
+            memory_bytes: class.memory_bytes,
+            ephemeral_storage_bytes: class.ephemeral_storage_bytes,
+        }
+    }
+}
+
+#[pymethods]
+impl GpuClass {
+    fn __repr__(&self) -> String {
+        let gpu_model = self
+            .gpu_model
+            .as_ref()
+            .map_or_else(|| "None".to_string(), |value| format!("{value:?}"));
+        let optional = |value: Option<u64>| {
+            value.map_or_else(|| "None".to_string(), |value| value.to_string())
+        };
+        let max_gpu_count = self
+            .max_gpu_count_per_worker
+            .map_or_else(|| "None".to_string(), |value| value.to_string());
+        format!(
+            "GpuClass(name={:?}, resource_name={:?}, gpu_model={gpu_model}, \
+             gpu_memory_bytes={}, max_gpu_count_per_worker={max_gpu_count}, \
+             cpu_millis={}, memory_bytes={}, ephemeral_storage_bytes={})",
+            self.name,
+            self.resource_name,
+            optional(self.gpu_memory_bytes),
+            optional(self.cpu_millis),
+            optional(self.memory_bytes),
+            optional(self.ephemeral_storage_bytes),
+        )
+    }
 }
 
 impl Connection {
@@ -1200,6 +1257,14 @@ impl Connection {
             self.get_inner()?
                 .list_jobs(crate::listing::options(page_token, page_limit)),
         ))
+    }
+
+    pub fn list_gpu_classes(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let classes = inner.list_gpu_classes().await.infer_error()?;
+            Ok(classes.into_iter().map(GpuClass::from).collect::<Vec<_>>())
+        })
     }
 
     pub fn cancel_job(self_: PyRef<'_, Self>, job_id: String) -> PyResult<Bound<'_, PyAny>> {
