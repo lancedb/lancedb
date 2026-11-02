@@ -2537,16 +2537,14 @@ class Table(ABC):
         omitted. The example assumes each returned ``_rowid`` appears at most
         once, which is the current take behavior:
 
-        .. code-block:: python
-
-            # Row IDs obtained from an earlier scan; these are not offsets.
-            scanned_row_ids = [7, 2, 7, 9]
-            unique = list(dict.fromkeys(scanned_row_ids))
-            rows = table.take_row_ids(unique, with_row_id=True).to_arrow()
-            by_id = {
-                row_id: i for i, row_id in enumerate(rows["_rowid"].to_pylist())
-            }
-            rows = rows.take([by_id[row_id] for row_id in unique if row_id in by_id])
+        ```python
+        # Row IDs obtained from an earlier scan; these are not offsets.
+        scanned_row_ids = [7, 2, 7, 9]
+        unique = list(dict.fromkeys(scanned_row_ids))
+        rows = table.take_row_ids(unique, with_row_id=True).to_arrow()
+        by_id = {row_id: i for i, row_id in enumerate(rows["_rowid"].to_pylist())}
+        rows = rows.take([by_id[row_id] for row_id in unique if row_id in by_id])
+        ```
 
         Parameters
         ----------
