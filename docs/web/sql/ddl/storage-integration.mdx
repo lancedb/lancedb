@@ -5,7 +5,7 @@ description: "CREATE, DESCRIBE, SHOW and DROP STORAGE INTEGRATION: a namespace-s
 icon: cloud
 keywords: ["storage integration", "create storage integration", "show storage integrations", "drop storage integration", "s3", "gcs", "azure", "huggingface", "sql"]
 availability:
-  embedded: unavailable
+  embedded: wip
   enterprise: available
 ---
 
@@ -132,6 +132,34 @@ same row, and attach `permissions_policy` to grant that role read access
 to the bucket. `access_verified` reports whether the deployment already
 confirmed it can assume the role and read the prefix; `false` typically
 means the trust policy has not been attached yet.
+
+## Reading and importing through the integration {#read-import}
+
+A query or `CREATE TABLE ... AS SELECT` can reference a matching URI
+directly, once an integration covers it -- the integration is never named
+in the statement. What the URI reads depends on the provider:
+
+- **Hugging Face** (`hf://datasets/...`) reads Parquet files from a dataset
+  repository. See [Read Hugging Face datasets with SQL](/curation/huggingface)
+  for the full workflow, including how a CTAS import distributes across
+  plan executors.
+- **S3, GCS and Azure** (`s3://`, `gs://`, `az://`) read an existing Lance
+  dataset at that prefix, the same way as a managed table:
+
+<CodeGroup>
+```sql SQL icon="database"
+SELECT * FROM 's3://customer-data/raw/events.lance' LIMIT 10
+
+CREATE TABLE events_copy AS
+SELECT * FROM 's3://customer-data/raw/events.lance'
+```
+</CodeGroup>
+
+A CTAS import distributes the same way regardless of provider: disjoint
+file and row-group ranges go to plan-executor workers, each writes
+uncommitted Lance files, and a coordinator commits the table once every
+worker finishes. See [`CREATE TABLE`](/sql/ddl/table#create) for
+`CREATE TABLE AS SELECT` syntax in general.
 
 ## DESCRIBE STORAGE INTEGRATION {#describe}
 
