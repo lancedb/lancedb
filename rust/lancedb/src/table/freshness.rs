@@ -1566,6 +1566,7 @@ fn apply_row_repair(
 /// commit fails instead of being rebased underneath the verified publication;
 /// with `None`, it uses ordinary metadata-commit semantics and provides no
 /// version fence.
+#[allow(clippy::too_many_arguments)]
 pub async fn finish_row_repair(
     dataset: &mut Dataset,
     column: &str,
