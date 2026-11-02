@@ -270,9 +270,9 @@ export abstract class Connection {
   /**
    * Define a materialized view named `name` over the table `source`.
    *
-   * Local creation and refresh require a source build with the
+   * LanceDB Embedded creation and refresh require a source build with the
    * `experimental-functions` Cargo feature, disabled in published packages.
-   * Remote Cloud/Enterprise operations do not require this feature.
+   * LanceDB Distributed operations do not require this feature.
    *
    * The view is populated before creation returns. Set `withNoData` to create
    * only its definition and empty backing table. The view is a normal table:
@@ -356,19 +356,18 @@ export abstract class Connection {
   ): Promise<ViewDescription>;
 
   /**
-   * Drop the view named `name` and wait for its definition to be deleted.
+   * Drop the view named `name` and wait for catalog removal.
    *
    * The tables it reads are untouched: a view holds no rows of its own. Use
-   * {@link dropViewAsync} to retain the cleanup job instead of waiting on it.
+   * {@link dropViewAsync} to retain its SQL query job. Completion confirms
+   * catalog removal; physical cleanup continues in the background.
    */
   abstract dropView(name: string, namespacePath?: string[]): Promise<void>;
 
   /**
-   * Start dropping the view named `name` and return the job deleting its
-   * definition, without waiting for completion.
-   *
-   * The name is free before this resolves. When nothing was bound to it, the
-   * returned job is already finished and has no id.
+   * Drop a view and return its SQL query job.
+   * The job has type `query` and its ID is the SQL query UUID. Waiting confirms
+   * catalog removal; physical cleanup continues in the background.
    */
   abstract dropViewAsync(name: string, namespacePath?: string[]): Promise<Job>;
 
@@ -559,9 +558,10 @@ export abstract class Connection {
   /**
    * Rename a table.
    *
-   * Currently only supported by LanceDB Cloud. Local OSS connections and
-   * namespace-backed connections (via {@link connectNamespace}) reject with
-   * a "not supported" error.
+   * Supported in LanceDB Distributed and by namespace backends that implement
+   * renaming. Directory namespaces support renaming tables resolved through their
+   * manifest, including tables within or across child namespaces. LanceDB Embedded
+   * connections and directory-listing root tables reject with a "not supported" error.
    *
    * @param {string} currentName - The current name of the table.
    * @param {string} newName - The new name for the table.

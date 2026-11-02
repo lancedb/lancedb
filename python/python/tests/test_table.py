@@ -1417,6 +1417,7 @@ def test_branches_preserve_namespace(tmp_path):
         "lance"
     )  # namespace_path routes through lance's DirectoryNamespace
     db = lancedb.connect(tmp_path)
+    db.create_namespace(["ns1"])
     table = db.create_table("t", [{"id": 1}], namespace_path=["ns1"])
     assert table.namespace == ["ns1"]
 
@@ -1930,6 +1931,66 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         name=None,
         train=True,
     )
+
+
+@patch("lancedb.table.AsyncTable.get_table_overrides")
+def test_get_table_overrides_method(mock_get_table_overrides, mem_db: DBConnection):
+    expected = {"job_types": {"cleanup": {"enabled": False}}}
+    mock_get_table_overrides.return_value = expected
+    table = mem_db.create_table("test", data=[{"id": 1}])
+
+    assert table.get_table_overrides() == expected
+    mock_get_table_overrides.assert_called_once_with()
+
+
+@patch("lancedb.table.AsyncTable.update_table_overrides")
+def test_update_table_overrides_method(
+    mock_update_table_overrides, mem_db: DBConnection
+):
+    overrides = {
+        "job_types": {
+            "cleanup": {"enabled": False},
+            "index": {
+                "scalar": {
+                    "reindex": {
+                        "row_threshold": 1000,
+                        "ttl_millis": 300000,
+                    }
+                }
+            },
+        }
+    }
+    mock_update_table_overrides.return_value = overrides
+    table = mem_db.create_table("test", data=[{"id": 1}])
+
+    assert table.update_table_overrides(**overrides) == overrides
+    mock_update_table_overrides.assert_called_once_with(**overrides)
+
+
+@patch("lancedb.table.AsyncTable.reset_table_overrides")
+def test_reset_table_overrides_method(mock_reset_table_overrides, mem_db: DBConnection):
+    expected = {}
+    mock_reset_table_overrides.return_value = expected
+    table = mem_db.create_table("test", data=[{"id": 1}])
+
+    assert table.reset_table_overrides() == expected
+    mock_reset_table_overrides.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_async_update_table_overrides_encodes_json():
+    class MockInner:
+        async def update_table_overrides(self, encoded_overrides):
+            assert json.loads(encoded_overrides) == {
+                "job_types": {"cleanup": {"enabled": False}}
+            }
+            return json.dumps({"job_types": {"cleanup": {"enabled": False}}})
+
+    table = lancedb.table.AsyncTable(MockInner())
+
+    assert await table.update_table_overrides(
+        job_types={"cleanup": {"enabled": False}}
+    ) == {"job_types": {"cleanup": {"enabled": False}}}
 
 
 @pytest.mark.parametrize("api", ["legacy", "unified"])
@@ -5490,14 +5551,15 @@ async def test_async_search_runs_embedding_on_dedicated_executor(
 
 
 @pytest.mark.experimental_functions
-def test_computed_column_declare_and_refresh(tmp_path):
+@pytest.mark.parametrize("batch_size", [None, 8])
+def test_computed_column_declare_and_refresh(tmp_path, batch_size):
     db = lancedb.connect(tmp_path)
     table = db.create_table("computed", [{"x": 1}, {"x": 2}])
 
     table.add_columns(computed={"doubled": "x * 2"})
     assert table.to_arrow()["doubled"].to_pylist() == [None, None]
 
-    result = table.refresh_column("doubled")
+    result = table.refresh_column("doubled", batch_size=batch_size)
     assert result.rows_filled == 2
     assert sorted(table.to_arrow()["doubled"].to_pylist()) == [2, 4]
 
@@ -5539,30 +5601,55 @@ def test_computed_column_blob_projection_inherits_semantics(tmp_path):
 
 @pytest.mark.experimental_functions
 @pytest.mark.asyncio
-async def test_computed_column_async(tmp_path):
+@pytest.mark.parametrize("batch_size", [None, 8])
+async def test_computed_column_async(tmp_path, batch_size):
     db = await lancedb.connect_async(tmp_path)
     table = await db.create_table("computed_async", [{"x": 3}])
 
     await table.add_columns(computed={"tripled": "x * 3"})
-    await table.refresh_column("tripled")
+    await table.refresh_column("tripled", batch_size=batch_size)
 
     assert (await table.to_arrow())["tripled"].to_pylist() == [9]
+
+
+@pytest.mark.parametrize("method", ["refresh_column", "refresh_column_async"])
+@pytest.mark.parametrize("batch_size", [0, -1])
+def test_refresh_column_rejects_invalid_batch_size(tmp_path, method, batch_size):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("invalid_refresh_batch", [{"x": 1}])
+    with pytest.raises(ValueError, match="batch_size must be greater than zero"):
+        getattr(table, method)("x", batch_size=batch_size)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["refresh_column", "refresh_column_async"])
+@pytest.mark.parametrize("batch_size", [0, -1])
+async def test_async_refresh_column_rejects_invalid_batch_size(
+    tmp_path, method, batch_size
+):
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("invalid_refresh_batch", [{"x": 1}])
+    with pytest.raises(ValueError, match="batch_size must be greater than zero"):
+        await getattr(table, method)("x", batch_size=batch_size)
 
 
 def test_function_errors_are_remote_only(tmp_path):
     db = lancedb.connect(tmp_path)
     table = db.create_table("t", [{"x": 1}])
-    with pytest.raises(NotImplementedError, match="LanceDB Cloud and Enterprise"):
+    with pytest.raises(
+        NotImplementedError, match="recorded only in LanceDB Distributed"
+    ):
         table.function_errors()
 
 
 @pytest.mark.experimental_functions
-def test_refresh_column_async_returns_job(tmp_path):
+@pytest.mark.parametrize("batch_size", [None, 8])
+def test_refresh_column_async_returns_job(tmp_path, batch_size):
     db = lancedb.connect(tmp_path)
     table = db.create_table("computed_job", [{"x": 1}, {"x": 2}])
     table.add_columns(computed={"doubled": "x * 2"})
 
-    job = table.refresh_column_async("doubled")
+    job = table.refresh_column_async("doubled", batch_size=batch_size)
     assert job.id is None  # in-process jobs have no server id
     result = job.wait()
     assert isinstance(result, lancedb.RefreshColumnResult)
@@ -5587,12 +5674,13 @@ def test_refresh_column_async_returns_job(tmp_path):
 
 @pytest.mark.experimental_functions
 @pytest.mark.asyncio
-async def test_refresh_column_async_job_async_table(tmp_path):
+@pytest.mark.parametrize("batch_size", [None, 8])
+async def test_refresh_column_async_job_async_table(tmp_path, batch_size):
     db = await lancedb.connect_async(tmp_path)
     table = await db.create_table("computed_job_async", [{"x": 3}])
     await table.add_columns(computed={"tripled": "x * 3"})
 
-    job = await table.refresh_column_async("tripled")
+    job = await table.refresh_column_async("tripled", batch_size=batch_size)
     result = await job.wait()
     assert isinstance(result, lancedb.RefreshColumnResult)
     assert result.rows_assigned == 1

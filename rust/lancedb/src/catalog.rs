@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Catalogs manage databases. A remote catalog is the root namespace of a server.
+//! Catalogs manage databases at the server root. Storage integrations belong to databases.
 //!
 //! ```
 //! # #[cfg(feature = "remote")]
@@ -200,7 +200,7 @@ impl Stream for DatabaseNames {
     }
 }
 
-/// A backend that manages databases. Implementations own database lifecycle semantics.
+/// A backend that manages databases.
 #[async_trait::async_trait]
 pub trait Catalog: Send + Sync + std::fmt::Debug + 'static {
     /// Obtain deployment-wide authorization, if supported by this backend.
@@ -265,7 +265,6 @@ impl CatalogConnection {
     pub fn catalog(&self) -> &Arc<dyn Catalog> {
         &self.catalog
     }
-
     /// Create a database; pass a name or [`CreateDatabaseRequest`] for additional options.
     pub async fn create_database(
         &self,

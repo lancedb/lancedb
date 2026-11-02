@@ -231,6 +231,78 @@ def test_blob_type_works_without_pylance():
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.parametrize("use_async", [False, True])
+@pytest.mark.parametrize("with_pylance", [False, True])
+def test_local_schema_restores_blob_extensions(tmp_path, use_async, with_pylance):
+    db = lancedb.connect(tmp_path)
+    db.create_table(
+        "images",
+        schema=pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                lancedb.blob("image", nullable=False, inline_size_threshold=8192),
+            ],
+            metadata={"schema-key": "schema-value"},
+        ),
+    )
+
+    # Reopening must restore the type before blob() or pylance registers it in
+    # the reader process, including when pylance is not installed.
+    script = textwrap.dedent(
+        """\
+        import asyncio
+        import importlib.abc
+        import sys
+        import pyarrow as pa
+
+        if sys.argv[3] == "False":
+            class NoLance(importlib.abc.MetaPathFinder):
+                def find_spec(self, fullname, path, target=None):
+                    if fullname == "lance" or fullname.startswith("lance."):
+                        raise ModuleNotFoundError(fullname, name="lance")
+            sys.meta_path.insert(0, NoLance())
+        import lancedb
+
+        assert "lance.blob" not in sys.modules
+
+        async def read_schema():
+            db = await lancedb.connect_async(sys.argv[1])
+            table = await db.open_table("images")
+            return await table.schema()
+
+        if sys.argv[2] == "True":
+            schema = asyncio.run(read_schema())
+        else:
+            schema = lancedb.connect(sys.argv[1]).open_table("images").schema
+
+        image = schema.field("image")
+        assert isinstance(image.type, pa.ExtensionType), image
+        assert image.type == lancedb.blob("x").type
+        assert type(image.type) is lancedb.BlobType
+        assert not image.nullable
+        assert image.metadata == {
+            b"lance-encoding:blob-inline-size-threshold": b"8192"
+        }
+        assert schema.field("id") == pa.field("id", pa.int64())
+        assert schema.metadata == {b"schema-key": b"schema-value"}
+        """
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(tmp_path),
+            str(use_async),
+            str(with_pylance),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_blob_resolves_pylance_type_without_eager_import():
     script = textwrap.dedent(
         """\
@@ -1295,12 +1367,13 @@ def test_merge_insert_bytes_after_reopen_without_touching_blob_type(tmp_path):
     script = textwrap.dedent(
         f"""\
         import lancedb
+        import pyarrow as pa
 
         db = lancedb.connect({str(tmp_path)!r})
         table = db.open_table("images")
         image_type = table.schema.field("image").type
-        if type(image_type).__name__ != "StructType":
-            raise SystemExit(f"expected StructType, got {{type(image_type)}}")
+        if not isinstance(image_type, pa.ExtensionType):
+            raise SystemExit(f"expected ExtensionType, got {{type(image_type)}}")
         result = (
             table.merge_insert("id")
             .when_matched_update_all()
@@ -1339,12 +1412,13 @@ def test_merge_insert_bytes_after_reopen_without_pylance(tmp_path):
     script = _HIDE_LANCE_BLOB + textwrap.dedent(
         f"""\
         import lancedb
+        import pyarrow as pa
 
         db = lancedb.connect({str(tmp_path)!r})
         table = db.open_table("images")
         image_type = table.schema.field("image").type
-        if type(image_type).__name__ != "StructType":
-            raise SystemExit(f"expected StructType, got {{type(image_type)}}")
+        if not isinstance(image_type, pa.ExtensionType):
+            raise SystemExit(f"expected ExtensionType, got {{type(image_type)}}")
         result = (
             table.merge_insert("id")
             .when_matched_update_all()
@@ -1374,7 +1448,7 @@ def test_merge_insert_bytes_after_reopen_without_pylance(tmp_path):
     assert result.returncode == 0, result.stderr
 
 
-def test_merge_insert_blob_array_into_reopened_unregistered_table(tmp_path):
+def test_merge_insert_blob_array_into_reopened_table(tmp_path):
     db = lancedb.connect(tmp_path)
     schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
     table = db.create_table("images", schema=schema)
@@ -1388,10 +1462,8 @@ def test_merge_insert_blob_array_into_reopened_unregistered_table(tmp_path):
         db = lancedb.connect({str(tmp_path)!r})
         table = db.open_table("images")
         image_type = table.schema.field("image").type
-        if type(image_type).__name__ != "StructType":
-            raise SystemExit(
-                f"expected StructType before lance import, got {{type(image_type)}}"
-            )
+        if not isinstance(image_type, pa.ExtensionType):
+            raise SystemExit(f"expected ExtensionType, got {{type(image_type)}}")
 
         import lance
 

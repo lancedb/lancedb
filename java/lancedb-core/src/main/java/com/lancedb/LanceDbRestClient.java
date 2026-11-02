@@ -27,7 +27,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 
 /**
- * Minimal HTTP client for LanceDB Cloud and Enterprise routes that the Lance Namespace
+ * Minimal HTTP client for LanceDB Enterprise routes that the Lance Namespace
  * specification does not cover.
  *
  * <p>Most table operations reach LanceDB through {@link org.lance.namespace.LanceNamespace}, which

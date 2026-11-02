@@ -81,6 +81,85 @@ if TYPE_CHECKING:
         from typing_extensions import Self
 
 T = TypeVar("T", bound="LanceModel")
+
+
+def _top_level_alias_key(alias: Any) -> str | None:
+    if isinstance(alias, str):
+        return alias
+    if isinstance(alias, pydantic.AliasPath) and alias.path:
+        key = alias.path[0]
+        return key if isinstance(key, str) else None
+    return None
+
+
+def _top_level_alias_keys(alias: Any) -> set[str]:
+    options = alias.choices if isinstance(alias, pydantic.AliasChoices) else (alias,)
+    return {
+        key for option in options if (key := _top_level_alias_key(option)) is not None
+    }
+
+
+def _single_component_alias(alias: Any) -> str | None:
+    # AliasChoices validates against the first matching source, so only use
+    # its first option as a field-name fallback.
+    option = alias.choices[0] if isinstance(alias, pydantic.AliasChoices) else alias
+    if isinstance(option, pydantic.AliasPath) and len(option.path) != 1:
+        # A nested path needs a structured payload; do not infer one here.
+        return None
+    return _top_level_alias_key(option)
+
+
+def _rows_to_models(model: type[T], rows: List[dict]) -> List[T]:
+    """Build ``model`` instances from result rows.
+
+    A table created from a LanceModel stores each field under its name, while
+    pydantic validates an aliased field by its alias. Pass a row's value under
+    the alias when the row has the field name but none of the aliases, so a
+    model with aliases can read the tables it wrote; rows keyed by any alias
+    still work.
+    """
+    if model.model_config.get("validate_by_alias", True) is False:
+        # Name-only validation: pydantic reads field names and ignores aliases.
+        return [model(**row) for row in rows]
+    aliases = {
+        name: field.validation_alias or field.alias
+        for name, field in model.model_fields.items()
+    }
+    # populate_by_name is the pre-2.11 spelling; an explicit new flag wins.
+    accepts_by_name = model.model_config.get(
+        "validate_by_name",
+        model.model_config.get("populate_by_name", False),
+    )
+    # Every top-level key some field reads, including the first step of an
+    # AliasPath and each choice of an AliasChoices.
+    alias_keys = {}
+    for name, alias in aliases.items():
+        keys = _top_level_alias_keys(alias)
+        if not keys or accepts_by_name:
+            keys.add(name)
+        alias_keys[name] = keys
+    readers = {}
+    for name, keys in alias_keys.items():
+        for key in keys:
+            readers.setdefault(key, set()).add(name)
+    renames = {
+        name: target
+        for name, alias in aliases.items()
+        if (target := _single_component_alias(alias)) is not None
+        # Do not move a source that another field reads.
+        and target != name
+        and not (readers.get(name, set()) - {name})
+        # Do not add a source that another field accepts. Introducing a shared
+        # alias key could change that field's Pydantic selection.
+        and not (readers.get(target, set()) - {name})
+    }
+    for row in rows:
+        for name, target in renames.items():
+            if name in row and not any(key in row for key in alias_keys[name]):
+                row[target] = row.pop(name)
+    return [model(**row) for row in rows]
+
+
 AnalyzePlanDistributedMetrics = Literal["aggregate", "per_worker", "full"]
 _SYNC_VECTOR_QUERY_TYPES = (list, tuple, np.ndarray, pa.Array, pa.ChunkedArray)
 
@@ -125,7 +204,7 @@ def _supports_local_blob_fetch(
 def _blob_bytes_without_snapshot_error() -> NotImplementedError:
     return NotImplementedError(
         "blob_mode='bytes' cannot safely materialize blob columns without a "
-        "stable table snapshot. Remote tables and namespace QueryTable pushdown "
+        "stable table snapshot. LanceDB Distributed and namespace QueryTable pushdown "
         "run the query on a server, so the blob fetch could read another table "
         "version. Use blob_mode='descriptions'."
     )
@@ -445,6 +524,7 @@ class FullTextQueryType(str, Enum):
     MATCH_PHRASE = "match_phrase"
     BOOST = "boost"
     MULTI_MATCH = "multi_match"
+    COMBINED_FIELDS = "combined_fields"
     BOOLEAN = "boolean"
 
 
@@ -667,6 +747,42 @@ class MultiMatchQuery(FullTextQuery):
 
     def query_type(self) -> FullTextQueryType:
         return FullTextQueryType.MULTI_MATCH
+
+
+@pydantic.dataclasses.dataclass
+class CombinedFieldsQuery(FullTextQuery):
+    """
+    Combined-fields (BM25F) query for full-text search.
+
+    Unlike `MultiMatchQuery`, which scores each column on its own and keeps
+    the best one, this query treats the columns as a single virtual field, so
+    term statistics are blended across them. A query term can then match in
+    any of the columns, e.g. a first name in one column and a last name in
+    another.
+
+    Parameters
+    ----------
+    query : str
+        The query string to match against.
+    columns : list[str]
+        The columns combined into the virtual field. Every column must have the
+        same tokenizer configuration, and at least one must have an FTS index.
+    boosts : list[float], optional
+        The weight of each column, aligned with `columns`. Each weight must be
+        at least 1. If not provided, every column has a weight of 1.
+    operator : FullTextOperator, default OR
+        The operator to use for combining the query terms.
+        If `AND`, every term must appear in at least one of the columns.
+        If `OR`, at least one term must match.
+    """
+
+    query: str
+    columns: list[str]
+    boosts: Optional[list[float]] = pydantic.Field(None, kw_only=True)
+    operator: FullTextOperator = pydantic.Field(FullTextOperator.OR, kw_only=True)
+
+    def query_type(self) -> FullTextQueryType:
+        return FullTextQueryType.COMBINED_FIELDS
 
 
 @pydantic.dataclasses.dataclass
@@ -1147,7 +1263,8 @@ class LanceQueryBuilder(ABC):
             mode and for legacy blob columns. Other local blob v2
             queries return descriptors in ``"lazy"`` and ``"descriptions"``
             modes, or payloads in ``"bytes"`` mode, through :meth:`to_arrow`.
-            Remote blob queries support only ``"descriptions"`` until a stable
+            LanceDB Distributed blob queries support only ``"descriptions"`` until a
+            stable
             table snapshot can bind the query and blob fetches.
         **kwargs
             Forwarded to pyarrow.Table.to_pandas after query execution and
@@ -1302,7 +1419,7 @@ class LanceQueryBuilder(ABC):
         -------
         List[LanceModel]
         """
-        return [model(**row) for row in self.to_arrow(timeout=timeout).to_pylist()]
+        return _rows_to_models(model, self.to_arrow(timeout=timeout).to_pylist())
 
     def to_polars(self, *, timeout: Optional[timedelta] = None) -> "pl.DataFrame":
         """
@@ -2671,7 +2788,10 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             )
             if not with_row_ids and "_rowid" in empty.column_names:
                 empty = empty.drop(["_rowid"])
-            return empty
+            # Match the columns a non-empty result has for this reranker. Call the
+            # base method so an override that assumes rows never sees the empty
+            # table (#3030).
+            return Reranker._keep_relevance_score(reranker, empty)
 
         original_distances = None
         original_scores = None
@@ -3483,7 +3603,7 @@ class AsyncQueryBase(object):
             ``fetch_blobs`` reads. ``"descriptions"`` returns them without it.
             ``"bytes"`` returns payload bytes and raises for legacy blob columns
             and blobs inside lists.
-            Remote tables and namespace query pushdown refuse ``"bytes"``.
+            LanceDB Distributed and namespace query pushdown refuse ``"bytes"``.
         """
         blob_sources = await self._validated_blob_sources(blob_mode)
         batch_iter = await self.to_batches(timeout=timeout)
@@ -3562,7 +3682,8 @@ class AsyncQueryBase(object):
             mode and for legacy blob columns. Other local blob v2
             queries return descriptors in ``"lazy"`` and ``"descriptions"``
             modes, or payloads in ``"bytes"`` mode, through :meth:`to_arrow`.
-            Remote blob queries support only ``"descriptions"`` until a stable
+            LanceDB Distributed blob queries support only ``"descriptions"`` until a
+            stable
             table snapshot can bind the query and blob fetches.
         **kwargs
             Forwarded to pyarrow.Table.to_pandas after query execution and
@@ -3731,9 +3852,9 @@ class AsyncQueryBase(object):
         -------
         list[LanceModel]
         """
-        return [
-            model(**row) for row in (await self.to_arrow(timeout=timeout)).to_pylist()
-        ]
+        return _rows_to_models(
+            model, (await self.to_arrow(timeout=timeout)).to_pylist()
+        )
 
     async def explain_plan(self, verbose: Optional[bool] = False):
         """Return the execution plan for this query.
@@ -4209,9 +4330,10 @@ class AsyncVectorQueryBase:
         your actual data to find the smallest possible value that will still give
         you the desired recall.
 
-        LanceDB retains this as `nprobes` through local and remote request
-        construction. Lance sets both probe bounds to this value. Explicit minimum
-        or maximum settings can override their respective bounds.
+        LanceDB retains this as `nprobes` through LanceDB Embedded and LanceDB
+        Distributed request construction. Lance sets both probe bounds to this
+        value. Explicit minimum or maximum settings can override their respective
+        bounds.
         """
         self._inner.nprobes(nprobes)
         return self

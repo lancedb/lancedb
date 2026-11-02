@@ -21,4 +21,4 @@ optional signal: AbortSignal;
 ```
 
 Cancels the read. The call rejects with `signal.reason`, and the native
-read stops, including in-flight requests to a remote table.
+read stops, including in-flight requests to a LanceDB Distributed table.

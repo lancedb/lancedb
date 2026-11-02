@@ -6,8 +6,9 @@
 Registering a Function and filling its column need a LanceDB Enterprise
 deployment, so `test_function_enterprise` runs only when
 LANCEDB_DOCS_TEST_DEPLOYMENT=1 asks for one, with the connection variables the
-Enterprise examples already use: LANCEDB_URI, LANCEDB_API_KEY and
-LANCEDB_HOST_OVERRIDE, plus LANCEDB_REGION if the deployment needs one. The
+Enterprise examples already use: LANCEDB_URI, LANCEDB_API_KEY,
+LANCEDB_HOST_OVERRIDE and LANCEDB_SQL_HOST_OVERRIDE, plus LANCEDB_REGION if the
+deployment needs one. The
 walkthrough calls its table `function_demo` and its Function `double`; the test
 creates both under names unique to its run, never replaces an existing object,
 and drops only what it created.
@@ -50,6 +51,25 @@ def describe(value: float):
     return {"half": value / 2, "note": None}
 
 
+# --8<-- [start:function_class_define]
+@udf(pip=["sentence-transformers"])
+class embed:
+    def __init__(self, model: str = "all-MiniLM-L6-v2"):
+        # Runs on the worker, once per instance: only the worker needs the package.
+        from sentence_transformers import SentenceTransformer
+
+        self.model = SentenceTransformer(model)
+
+    def __call__(self, text: str) -> list[float]:
+        return self.model.encode(text).tolist()
+
+    def close(self):
+        del self.model
+
+
+# --8<-- [end:function_class_define]
+
+
 # A Function version as the service returns it after registration: the SDK's
 # shared golden reply, with the name and signature of the definition above.
 SERVICE_REPLY = (
@@ -72,7 +92,12 @@ def registered_version(definition) -> FunctionVersion:
     return FunctionVersion.from_json(json.dumps(reply))
 
 
-DEPLOYMENT = ("LANCEDB_URI", "LANCEDB_HOST_OVERRIDE", "LANCEDB_API_KEY")
+DEPLOYMENT = (
+    "LANCEDB_URI",
+    "LANCEDB_HOST_OVERRIDE",
+    "LANCEDB_SQL_HOST_OVERRIDE",
+    "LANCEDB_API_KEY",
+)
 # The connection settings alone never send this test to a deployment.
 OPT_IN = "LANCEDB_DOCS_TEST_DEPLOYMENT"
 
@@ -162,8 +187,36 @@ def test_function_version_binds_a_column(tmp_path):
     # The binding is accepted by add_columns, which a local table refuses:
     # a Function column needs LanceDB Cloud or Enterprise.
     table = lancedb.connect(tmp_path).create_table("t", [{"value": 1.0}])
-    with pytest.raises(NotImplementedError, match="Cloud and Enterprise"):
+    with pytest.raises(
+        NotImplementedError,
+        match="Function columns are supported only in LanceDB Distributed",
+    ):
         table.add_columns({"doubled": application})
+
+
+def test_class_function_is_constructed_only_where_it_runs():
+    # Registration reads __init__'s signature; it never constructs the class,
+    # so the model's package need not be installed here.
+    assert "sentence_transformers" not in sys.modules
+    signature = embed.registration_request.signature
+    assert [
+        (field.name, field.arrow_type, field.nullable)
+        for field in signature.initialization
+    ] == [("model", "utf8", True)]
+    assert [(p.name, p.arrow_type) for p in signature.inputs] == [("text", "utf8")]
+    assert "sentence_transformers" not in sys.modules
+
+    embedder = registered_version(embed)
+    # --8<-- [start:function_class_apply]
+    from lancedb import col
+
+    application = embedder(text=col("text"), model="all-mpnet-base-v2")
+    # --8<-- [end:function_class_apply]
+    assert application.initialization == {"model": "all-mpnet-base-v2"}
+    # The default applies to an omitted field.
+    assert embedder(text=col("text")).initialization == {}
+    with pytest.raises(TypeError, match="unknown arguments"):
+        embedder(text=col("text"), device="cuda")
 
 
 def test_function_enterprise(monkeypatch):
@@ -179,6 +232,7 @@ def test_function_enterprise(monkeypatch):
         api_key=os.environ["LANCEDB_API_KEY"],
         region=os.environ.get("LANCEDB_REGION", "us-east-1"),
         host_override=os.environ["LANCEDB_HOST_OVERRIDE"],
+        sql_host_override=os.environ["LANCEDB_SQL_HOST_OVERRIDE"],
     )
     # --8<-- [end:function_connect]
 
@@ -254,6 +308,7 @@ class ReachedConnection(Exception):
 SETTINGS = {
     "LANCEDB_URI": "db://docs-test",
     "LANCEDB_HOST_OVERRIDE": "https://deployment.invalid",
+    "LANCEDB_SQL_HOST_OVERRIDE": "grpc+tls://sql.deployment.invalid:10026",
     "LANCEDB_API_KEY": "docs-test-key",
 }
 
@@ -331,5 +386,6 @@ def test_function_enterprise_connects_when_asked(monkeypatch, connect_attempts, 
             "api_key": "docs-test-key",
             "region": region or "us-east-1",
             "host_override": "https://deployment.invalid",
+            "sql_host_override": "grpc+tls://sql.deployment.invalid:10026",
         }
     ]

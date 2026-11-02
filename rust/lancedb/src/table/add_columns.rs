@@ -69,10 +69,10 @@ impl AddColumnsBuilder {
     /// renamed, retyped or dropped while a declaration reads it, since the
     /// expression names it.
     ///
-    /// Local declaration and refresh require the `experimental-functions`
-    /// Cargo feature. Remote operations do not require this feature.
+    /// LanceDB Embedded declaration and refresh require the `experimental-functions`
+    /// Cargo feature. LanceDB Distributed operations do not require this feature.
     ///
-    /// On LanceDB Cloud and Enterprise the expression is planned by the
+    /// In LanceDB Distributed the expression is planned by the
     /// server, and the refresh runs as a server job -- see
     /// [`Table::refresh_column_async`](super::Table::refresh_column_async).
     ///
@@ -147,7 +147,7 @@ impl AddColumnsBuilder {
 
     /// Configure automatic refresh for every output declared in this call.
     /// Settings are stored with the declaration. They require computed or
-    /// Function columns; local tables persist them without starting a scheduler.
+    /// Function columns; LanceDB Embedded persists them without starting a scheduler.
     ///
     /// ```
     /// # use lancedb::{Table, table::computed_columns::ComputedColumnOptions};

@@ -1,0 +1,33 @@
+extends: existence
+message: "Avoid '%s'. Write 'LanceDB Distributed' for the execution model or 'LanceDB Enterprise' for the product."
+link: https://github.com/lancedb/docs/blob/main/STYLE.md#names
+level: warning
+ignorecase: false
+# Remote storage, remote URLs and a git remote are other things and stay. Class
+# names such as `RemoteTable` are code, and code is never prose.
+tokens:
+  - '[Rr]emote\s+(?:mode|tables?|connections?|databases?)'
+tests:
+  - name: flags remote as the execution model
+    input: In remote mode, a remote table is opened through a remote connection.
+    want: |
+      1:4:LanceDB.RemoteExecution:Avoid 'remote mode'. Write 'LanceDB Distributed' for the execution model or 'LanceDB Enterprise' for the product.
+      1:19:LanceDB.RemoteExecution:Avoid 'remote table'. Write 'LanceDB Distributed' for the execution model or 'LanceDB Enterprise' for the product.
+      1:52:LanceDB.RemoteExecution:Avoid 'remote connection'. Write 'LanceDB Distributed' for the execution model or 'LanceDB Enterprise' for the product.
+  - name: flags plurals and a heading
+    input: |
+      ## Remote tables
+
+      Remote databases hold remote tables.
+    want: |
+      1:4:LanceDB.RemoteExecution:Avoid 'Remote tables'. Write 'LanceDB Distributed' for the execution model or 'LanceDB Enterprise' for the product.
+      3:1:LanceDB.RemoteExecution:Avoid 'Remote databases'. Write 'LanceDB Distributed' for the execution model or 'LanceDB Enterprise' for the product.
+      3:23:LanceDB.RemoteExecution:Avoid 'remote tables'. Write 'LanceDB Distributed' for the execution model or 'LanceDB Enterprise' for the product.
+  - name: leaves other remotes and code alone
+    input: |
+      Push to the git remote, read remote storage and fetch a remote URL. `open_table` returns a `RemoteTable`; see `remote table` in the API.
+
+      ```python
+      remote_table = db.open_table("remote table")
+      ```
+    want: ''

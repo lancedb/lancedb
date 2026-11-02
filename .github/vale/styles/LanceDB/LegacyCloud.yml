@@ -1,0 +1,21 @@
+extends: existence
+message: "'%s' is the legacy hosted service. Unless the text is specific to it, write 'LanceDB Enterprise' or 'LanceDB Distributed'."
+link: https://github.com/lancedb/docs/blob/main/STYLE.md#names
+level: suggestion
+ignorecase: false
+# A suggestion, because `db://` URIs, `api_key` and `region` for the hosted
+# service are still documented as LanceDB Cloud.
+tokens:
+  - 'LanceDB\s+Cloud'
+  - 'Cloud\s*/\s*Enterprise'
+  - 'Enterprise\s*/\s*Cloud'
+tests:
+  - name: suggests checking each LanceDB Cloud mention
+    input: Connect to LanceDB Cloud with an API key. Cloud/Enterprise users get the cache.
+    want: |
+      1:12:LanceDB.LegacyCloud:'LanceDB Cloud' is the legacy hosted service. Unless the text is specific to it, write 'LanceDB Enterprise' or 'LanceDB Distributed'.
+      1:43:LanceDB.LegacyCloud:'Cloud/Enterprise' is the legacy hosted service. Unless the text is specific to it, write 'LanceDB Enterprise' or 'LanceDB Distributed'.
+  - name: leaves other clouds and code alone
+    input: |
+      Deploy into your own cloud account on Google Cloud. Pass `LanceDB Cloud` as a literal.
+    want: ''

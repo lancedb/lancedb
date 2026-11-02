@@ -45,7 +45,7 @@ pub struct BitmapIndexBuilder {}
 /// Builder for LabelList index.
 ///
 /// [LabeListIndexBuilder] is a scalar index that can be used on `List<T>` columns to
-/// support queries with `array_contains_all` and `array_contains_any`
+/// support queries with `array_has_all` and `array_has_any`
 /// using an underlying bitmap index.
 ///
 #[derive(Debug, Clone, Default, serde::Serialize)]

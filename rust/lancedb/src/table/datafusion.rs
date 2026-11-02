@@ -104,6 +104,16 @@ impl DisplayAs for MetadataEraserExec {
 }
 
 impl ExecutionPlan for MetadataEraserExec {
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(
+            &Arc<dyn datafusion_physical_expr::PhysicalExpr>,
+        ) -> datafusion_common::Result<
+            datafusion_common::tree_node::TreeNodeRecursion,
+        >,
+    ) -> datafusion_common::Result<datafusion_common::tree_node::TreeNodeRecursion> {
+        Ok(datafusion_common::tree_node::TreeNodeRecursion::Continue)
+    }
     fn name(&self) -> &str {
         "MetadataEraserExec"
     }
@@ -157,8 +167,21 @@ impl ExecutionPlan for MetadataEraserExec {
         )
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> DataFusionResult<Arc<Statistics>> {
-        self.input.partition_statistics(partition)
+    fn child_stats_requests(
+        &self,
+        partition: Option<usize>,
+    ) -> Vec<datafusion_physical_plan::statistics::ChildStats> {
+        vec![datafusion_physical_plan::statistics::ChildStats::At(
+            partition,
+        )]
+    }
+
+    fn statistics_from_inputs(
+        &self,
+        input_stats: &[Arc<Statistics>],
+        _args: &datafusion_physical_plan::statistics::StatisticsArgs,
+    ) -> DataFusionResult<Arc<Statistics>> {
+        Ok(input_stats[0].clone())
     }
 
     fn supports_limit_pushdown(&self) -> bool {
@@ -1398,7 +1421,9 @@ pub mod tests {
 
         assert_eq!(physical_plan.name(), "MetadataEraserExec");
 
-        let partition_stats = physical_plan.partition_statistics(None).unwrap();
+        let partition_stats = datafusion_physical_plan::statistics::StatisticsContext::new()
+            .compute(physical_plan.as_ref(), &Default::default())
+            .unwrap();
 
         assert!(matches!(partition_stats.num_rows, Precision::Exact(10)));
     }
@@ -1492,7 +1517,9 @@ pub mod tests {
             .await
             .unwrap();
 
-        let rewired = foo.with_new_children(vec![tbl2.clone()]).unwrap();
+        let rewired =
+            datafusion_physical_plan::replace_children_if_necessary(foo, vec![tbl2.clone()])
+                .unwrap();
         assert_eq!(rewired.schema(), tbl2.schema());
     }
 }
