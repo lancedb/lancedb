@@ -263,7 +263,7 @@ jobs:
     env:
       CC: clang-18
       CXX: clang++-18
-      GH_TOKEN: ${{ github.token }}
+      GH_TOKEN: ${{ secrets.ROBOT_TOKEN }}
       SOPHON_READ_TOKEN: ${{ secrets.SOPHON_READ_TOKEN }}
     steps:
       - uses: actions/checkout@v6
