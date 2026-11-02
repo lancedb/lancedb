@@ -2333,7 +2333,6 @@ def remote_unsupported_operations():
     return [
         ("uses_v2_manifest_paths", (), {}, "uses_v2_manifest_paths"),
         ("migrate_v2_manifest_paths", (), {}, "migrate_manifest_paths_v2"),
-        ("optimize", (), {}, "optimize"),
         ("create_index", ("vector",), {"config": HnswPq()}, "IVF_HNSW_PQ"),
     ]
 
@@ -2383,6 +2382,38 @@ def test_remote_unsupported_legacy_hnsw_pq():
                 table.create_index(
                     vector_column_name="vector", index_type="IVF_HNSW_PQ"
                 )
+
+
+def test_remote_optimize_compacts_then_rejects_prune():
+    """`table.optimize()` always runs Compact, then Prune, then Index. Compact
+    now has a remote endpoint and succeeds -- a real compaction job is
+    submitted -- but the composite call still raises because Prune has no
+    remote endpoint yet, same as before this endpoint existed."""
+    optimize_calls = []
+
+    def handler(request):
+        if request.path == "/v1/table/test/create/?mode=create":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b"{}")
+        elif request.path == "/v1/table/test/optimize/":
+            optimize_calls.append(1)
+            request.send_response(202)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b'{"job_id": "optimize-1"}')
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.create_table("test", [{"id": 1}])
+        with pytest.raises(NotImplementedError, match="not supported"):
+            table.optimize()
+        assert optimize_calls == [1], (
+            "compaction must be submitted before the unsupported Prune step fails"
+        )
 
 
 def test_remote_python_only_messages():

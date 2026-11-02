@@ -1074,7 +1074,10 @@ class RemoteTable(Table):
         retrain: bool = False,
         compaction_options: Optional[CompactionOptions] = None,
     ):
-        """optimize() is not supported in LanceDB Enterprise."""
+        """Compact the table's data files via a durable, asynchronous
+        Enterprise job. Pruning old versions and index optimization are not
+        yet supported remotely and will raise ``NotImplementedError``.
+        """
         return LOOP.run(
             self._table.optimize(
                 cleanup_older_than=cleanup_older_than,

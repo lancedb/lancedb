@@ -3564,11 +3564,13 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     /// `POST /v1/table/{id}/optimize`, the same atomic, single-worker,
     /// index-safe path the server uses for its own automatic compaction.
     /// The job runs asynchronously, so this returns as soon as it is
-    /// accepted rather than once it completes, and `OptimizeStats` carries
-    /// no detail -- the server does not report per-job compaction metrics
-    /// over this endpoint. `OptimizeAction::All`, `::Prune`, and `::Index`
-    /// remain unsupported remotely: there is no server endpoint yet for
-    /// version pruning or index optimization.
+    /// accepted rather than once it completes. `OptimizeStats::compaction`
+    /// is `Some(CompactionMetrics::default())`, a placeholder rather than
+    /// `None` -- callers (including the Python/Node bindings) unwrap it
+    /// unconditionally on success -- because the server does not report
+    /// per-job compaction metrics over this endpoint. `OptimizeAction::All`,
+    /// `::Prune`, and `::Index` remain unsupported remotely: there is no
+    /// server endpoint yet for version pruning or index optimization.
     async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats> {
         self.check_mutable().await?;
         let OptimizeAction::Compact { remap_options, .. } = &action else {
@@ -3598,7 +3600,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let (request_id, response) = self.send(request, true).await?;
         self.check_table_response(&request_id, response).await?;
 
-        Ok(OptimizeStats::default())
+        Ok(OptimizeStats {
+            compaction: Some(lance::dataset::optimize::CompactionMetrics::default()),
+            prune: None,
+        })
     }
     async fn add_columns(
         &self,
@@ -8696,8 +8701,13 @@ mod tests {
             .unwrap();
 
         // The server does not report per-job compaction metrics over this
-        // endpoint, so a successful remote compaction carries no detail.
-        assert!(stats.compaction.is_none());
+        // endpoint, so `compaction` is a zeroed placeholder, not real
+        // numbers -- but it must be `Some`: callers (including the
+        // Python/Node bindings) unwrap it unconditionally on success.
+        assert_eq!(
+            stats.compaction,
+            Some(lance::dataset::optimize::CompactionMetrics::default())
+        );
         assert!(stats.prune.is_none());
     }
 
