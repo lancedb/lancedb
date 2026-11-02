@@ -115,14 +115,14 @@ describe("remote connection", () => {
             ...options,
             mode: "overwrite",
           }),
-        ).rejects.toThrow(/write_options.*LanceDB Distributed/);
+        ).rejects.toThrow(/write_options.*LanceDB Enterprise/);
         await expect(
           db.createEmptyTable(
             "test",
             new Schema([new Field("value", new Int64(), true)]),
             options,
           ),
-        ).rejects.toThrow(/write_options.*LanceDB Distributed/);
+        ).rejects.toThrow(/write_options.*LanceDB Enterprise/);
       },
     );
     expect(requests).toEqual([]);
@@ -141,7 +141,7 @@ describe("remote connection", () => {
           await expect(
             db.openTable("test", undefined, options),
           ).rejects.toThrow(
-            /not supported for table access in LanceDB Distributed/,
+            /not supported for table access in LanceDB Enterprise/,
           );
         },
       );
@@ -318,7 +318,7 @@ describe("remote connection", () => {
           ],
         ];
         for (const [run, operation] of cases) {
-          let message = `LanceDBError: not supported: ${operation} is not supported in LanceDB Distributed.`;
+          let message = `LanceDBError: not supported: ${operation} is not supported in LanceDB Enterprise.`;
           if (operation === "IVF_HNSW_PQ") {
             message += " Please use IVF_HNSW_SQ instead.";
           }

@@ -2016,7 +2016,7 @@ impl Table {
             inner
                 .as_native()
                 .ok_or_else(|| lancedb::Error::NotSupported {
-                    message: "uses_v2_manifest_paths is not supported in LanceDB Distributed."
+                    message: "uses_v2_manifest_paths is not supported in LanceDB Enterprise."
                         .into(),
                 })
                 .infer_error()?
@@ -2032,7 +2032,7 @@ impl Table {
             inner
                 .as_native()
                 .ok_or_else(|| lancedb::Error::NotSupported {
-                    message: "migrate_manifest_paths_v2 is not supported in LanceDB Distributed."
+                    message: "migrate_manifest_paths_v2 is not supported in LanceDB Enterprise."
                         .into(),
                 })
                 .infer_error()?

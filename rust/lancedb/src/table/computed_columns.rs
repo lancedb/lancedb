@@ -61,7 +61,7 @@ pub const AUTO_REFRESH_ENABLED_META_KEY: &str = "computed_column.auto_refresh_en
 pub const AUTO_REFRESH_INTERVAL_META_KEY: &str = "computed_column.auto_refresh_interval_seconds";
 
 /// Scheduling settings persisted on each computed output. LanceDB Embedded
-/// stores these settings; automatic scheduling requires LanceDB Distributed.
+/// stores these settings; automatic scheduling requires LanceDB Enterprise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ComputedColumnOptions {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Handles to SQL queries running on a LanceDB Distributed database.
+//! Handles to SQL queries running on a LanceDB Enterprise database.
 
 use std::{fmt, sync::Arc};
 

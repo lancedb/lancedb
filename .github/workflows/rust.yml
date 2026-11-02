@@ -228,7 +228,11 @@ jobs:
         # Python and TypeScript blob docs tests install preview packages.
         # Those builds are not guaranteed to remain available for more than
         # 6 months, so they stay a manual run. This example uses the workspace crate.
-        run: cargo run --profile ci --all-features -p lancedb-blob-v2-docs --example multimodal --locked
+        run: |
+          # The completed all-features checks leave large lancedb artifacts in target.
+          # Reclaim that package before building the example with a different feature set.
+          cargo clean --profile ci -p lancedb
+          cargo run --profile ci --all-features -p lancedb-blob-v2-docs --example multimodal --locked
 
   remote:
     timeout-minutes: 30
