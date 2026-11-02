@@ -38,7 +38,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - name: Read the pinned Lance tag
+      - name: Read the pinned Lance revision
         id: lance
         run: |
           python3 - <<'PYTHON'
@@ -47,14 +47,15 @@ jobs:
           from pathlib import Path
 
           manifest = tomllib.loads(Path("Cargo.toml").read_text())
-          tag = manifest["workspace"]["dependencies"]["lance"]["tag"]
+          lance = manifest["workspace"]["dependencies"]["lance"]
+          revision = lance.get("rev") or lance["tag"]
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-              output.write(f"tag={tag}\n")
+              output.write(f"revision={revision}\n")
           PYTHON
       - uses: actions/checkout@v6
         with:
           repository: lance-format/lance
-          ref: ${{ steps.lance.outputs.tag }}
+          ref: ${{ steps.lance.outputs.revision }}
           path: local-lance
       - name: Resolve a downstream workspace with a local Lance override
         run: |
@@ -135,7 +136,7 @@ jobs:
           command: check advisories bans licenses sources
 
   build-no-lock:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-2404-8x-x64
     timeout-minutes: 30
     env:
       # Need up-to-date compilers for kernels
