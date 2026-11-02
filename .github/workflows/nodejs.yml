@@ -6,6 +6,7 @@ on:
       - main
   pull_request:
     paths:
+      - .github/actions/setup-private-lance/**
       - Cargo.toml
       - Cargo.lock
       - rust-toolchain.toml

@@ -5,6 +5,7 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
+      - .github/actions/setup-private-lance/**
       - 'rust/lancedb/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -36,6 +37,9 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
+      - uses: ./.github/actions/setup-private-lance
+        with:
+          token: ${{ secrets.ROBOT_TOKEN }}
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
@@ -71,6 +75,9 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
+      - uses: ./.github/actions/setup-private-lance
+        with:
+          token: ${{ secrets.ROBOT_TOKEN }}
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
@@ -107,6 +114,7 @@ jobs:
             --volume "$PWD:/workspace" --workdir /workspace \
             --volume "$HOME/.cargo:/cargo" --env CARGO_HOME=/cargo \
             --volume "$HOME/.rustup:/rustup" --env RUSTUP_HOME=/rustup \
+            --env CARGO_NET_GIT_FETCH_WITH_CLI --env GIT_CONFIG_COUNT --env GIT_CONFIG_KEY_0 --env GIT_CONFIG_VALUE_0 \
             --env CLI_TARGET --env PROTOC_PLATFORM --env PROTOC_VERSION --env PROTOC_SHA256 \
             "$MANYLINUX_IMAGE" bash ci/build_cli_linux.sh
       - name: Build macOS CLI

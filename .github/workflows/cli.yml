@@ -4,6 +4,7 @@ on:
     branches: [main]
   pull_request:
     paths:
+      - .github/actions/setup-private-lance/**
       - 'rust/lancedb/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
