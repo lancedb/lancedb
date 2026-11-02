@@ -2530,20 +2530,23 @@ class Table(ABC):
         There is an ongoing effort to make row ids stable which is tracked at
         https://github.com/lancedb/lancedb/issues/1120
 
-        The example below restores the first occurrence of each requested row ID.
-        It omits IDs that no longer exist and assumes each returned ``_rowid``
-        appears at most once, which is the current take behavior:
+        The example below restores the first occurrence of each requested row ID
+        and keeps the returned ``_rowid`` column. Use the returned row ID to join
+        labels or weights; do not zip them from the original request when
+        duplicates or missing row IDs are present. IDs that no longer exist are
+        omitted. The example assumes each returned ``_rowid`` appears at most
+        once, which is the current take behavior:
 
         .. code-block:: python
 
-            requested = [7, 2, 7, 9]
-            unique = list(dict.fromkeys(requested))
+            # Row IDs obtained from an earlier scan; these are not offsets.
+            scanned_row_ids = [7, 2, 7, 9]
+            unique = list(dict.fromkeys(scanned_row_ids))
             rows = table.take_row_ids(unique, with_row_id=True).to_arrow()
             by_id = {
                 row_id: i for i, row_id in enumerate(rows["_rowid"].to_pylist())
             }
             rows = rows.take([by_id[row_id] for row_id in unique if row_id in by_id])
-            rows = rows.drop_columns(["_rowid"])
 
         Parameters
         ----------
