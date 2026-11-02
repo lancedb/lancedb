@@ -2227,7 +2227,10 @@ mod tests {
 
         dataset
             .update_field_metadata()
-            .update(COLUMN, [(SOURCE_SIGNATURE_META_KEY.to_string(), "{}")])
+            .update(
+                COLUMN,
+                [(SOURCE_SIGNATURE_META_KEY.to_string(), "{}".to_string())],
+            )
             .unwrap()
             .await
             .unwrap();
