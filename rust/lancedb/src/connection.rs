@@ -28,6 +28,7 @@ use crate::database::{
 };
 use crate::embeddings::{EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
+use crate::function::GpuClass;
 use crate::graph::{PropertyGraphDefinition, PropertyGraphDescription};
 use crate::listing::{Listing, ListingOptions, ListingPage};
 #[cfg(feature = "remote")]
@@ -1242,6 +1243,16 @@ impl Connection {
     /// ```
     pub async fn open_job(&self, job_id: impl AsRef<str>) -> Result<crate::job::Job> {
         self.internal.open_job(job_id.as_ref()).await
+    }
+
+    /// List the operator-configured GPU classes available to Function workers.
+    ///
+    /// The result describes configured hardware, not current free capacity.
+    /// The principal needs System Usage permission. LanceDB Embedded and
+    /// older Distributed servers without `GET /v1/gpu/classes` return
+    /// [`Error::NotSupported`].
+    pub async fn list_gpu_classes(&self) -> Result<Vec<GpuClass>> {
+        self.database().list_gpu_classes().await
     }
 
     /// List server-side jobs across the database's tables.

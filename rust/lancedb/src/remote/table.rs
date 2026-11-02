@@ -3794,6 +3794,12 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         if let Some(batch_size) = options.batch_size {
             body["batch_size"] = serde_json::json!(batch_size);
         }
+        if let Some(gpu_class) = options.gpu_class {
+            body["gpu_class"] = serde_json::json!(gpu_class);
+        }
+        if let Some(gpu_count) = options.gpu_count {
+            body["gpu_count"] = serde_json::json!(gpu_count);
+        }
         self.apply_branch_body(&mut body);
         let request = self
             .client
@@ -10558,12 +10564,74 @@ mod tests {
             .create_branch("exp", Ref::Version(None, None))
             .await
             .unwrap();
-        let options = RefreshColumnOptions { batch_size };
+        let options = RefreshColumnOptions {
+            batch_size,
+            ..Default::default()
+        };
         let job = branch
             .refresh_column_async_with_options("quality", options)
             .await
             .unwrap();
         assert_eq!(job.id(), Some("j-42"));
+    }
+
+    #[tokio::test]
+    async fn test_refresh_column_async_gpu_placement_options() {
+        use crate::table::RefreshColumnOptions;
+
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/backfill_column");
+            assert_eq!(
+                request_body_json(&request),
+                serde_json::json!({
+                    "column": "quality",
+                    "gpu_class": "a10g",
+                    "gpu_count": 2,
+                })
+            );
+            http::Response::builder()
+                .status(202)
+                .body(r#"{"job_id": "j-gpu"}"#)
+                .unwrap()
+        });
+        let options = RefreshColumnOptions::default()
+            .gpu_class("a10g")
+            .gpu_count(2);
+        let job = table
+            .refresh_column_async_with_options("quality", options)
+            .await
+            .unwrap();
+        assert_eq!(job.id(), Some("j-gpu"));
+    }
+
+    #[tokio::test]
+    async fn test_refresh_column_rejects_invalid_gpu_options_before_request() {
+        use crate::table::RefreshColumnOptions;
+
+        let table = Table::new_with_handler("my_table", |_| -> http::Response<String> {
+            panic!("invalid GPU options must not send a request")
+        });
+        for (options, expected) in [
+            (
+                RefreshColumnOptions::default().gpu_class("A10G"),
+                "gpu_class",
+            ),
+            (
+                RefreshColumnOptions::default().gpu_class("-a10g"),
+                "gpu_class",
+            ),
+            (RefreshColumnOptions::default().gpu_count(0), "gpu_count"),
+        ] {
+            let error = table
+                .refresh_column_async_with_options("quality", options)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(&error, Error::InvalidInput { message } if message.contains(expected)),
+                "{error:?}"
+            );
+        }
     }
 
     #[tokio::test]

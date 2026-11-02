@@ -25,7 +25,7 @@ use crate::database::{
     ExecuteQueryRequest, JobInfo, OpenTableRequest, ReadConsistency, TableNamesRequest,
 };
 use crate::error::Result;
-use crate::function::{FunctionRegistrationRequest, FunctionVersion};
+use crate::function::{FunctionRegistrationRequest, FunctionVersion, GpuClass};
 use crate::graph::{PropertyGraphDefinition, PropertyGraphDescription};
 use crate::job::Job;
 use crate::listing::{ListingOptions, ListingPage};
@@ -1162,6 +1162,32 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             }),
             Err(err) => Err(err),
         }
+    }
+
+    async fn list_gpu_classes(&self) -> Result<Vec<GpuClass>> {
+        #[derive(serde::Deserialize)]
+        struct Response {
+            gpu_classes: Vec<GpuClass>,
+        }
+
+        let req = self.client.get("/v1/gpu/classes");
+        let (request_id, response) = self.client.send(req).await?;
+        let response = match self.client.check_response(&request_id, response).await {
+            Ok(response) => response,
+            Err(Error::Http {
+                status_code: Some(StatusCode::NOT_FOUND),
+                ..
+            }) => {
+                return Err(Error::NotSupported {
+                    message: "GPU class discovery requires a newer LanceDB server; \
+                              GET /v1/gpu/classes returned 404 Not Found"
+                        .to_string(),
+                });
+            }
+            Err(error) => return Err(error),
+        };
+        let response: Response = response.json().await.err_to_http(request_id)?;
+        Ok(response.gpu_classes)
     }
 
     async fn list_jobs(&self, options: ListingOptions) -> Result<ListingPage<JobInfo>> {
@@ -3843,6 +3869,66 @@ mod tests {
                 _ => check(conn.list_jobs(options), count).await,
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_list_gpu_classes_reports_configured_hardware() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::GET);
+            assert_eq!(request.url().path(), "/v1/gpu/classes");
+            http::Response::builder()
+                .status(200)
+                .body(
+                    serde_json::json!({
+                        "gpu_classes": [
+                            {
+                                "name": "default",
+                                "resource_name": "nvidia.com/gpu",
+                                "gpu_model": "NVIDIA A10G",
+                                "gpu_memory_bytes": 25_769_803_776_u64,
+                                "max_gpu_count_per_worker": 1,
+                                "cpu_millis": 4000,
+                                "memory_bytes": 25_769_803_776_u64,
+                                "ephemeral_storage_bytes": 1_073_741_824_u64,
+                            },
+                            {
+                                "name": "h100",
+                                "resource_name": "nvidia.com/gpu",
+                                "gpu_model": "NVIDIA H100",
+                                "gpu_memory_bytes": 85_899_345_920_u64,
+                                "max_gpu_count_per_worker": 8,
+                            }
+                        ]
+                    })
+                    .to_string(),
+                )
+                .unwrap()
+        });
+
+        let classes = conn.list_gpu_classes().await.unwrap();
+        assert_eq!(classes.len(), 2);
+        assert_eq!(classes[0].name, "default");
+        assert_eq!(classes[0].gpu_model.as_deref(), Some("NVIDIA A10G"));
+        assert_eq!(classes[0].gpu_memory_bytes, Some(25_769_803_776));
+        assert_eq!(classes[1].max_gpu_count_per_worker, Some(8));
+        assert_eq!(classes[1].cpu_millis, None);
+    }
+
+    #[tokio::test]
+    async fn test_list_gpu_classes_explains_older_server_404() {
+        let conn = Connection::new_with_handler(|_| {
+            http::Response::builder()
+                .status(404)
+                .body("not found")
+                .unwrap()
+        });
+        let error = conn.list_gpu_classes().await.unwrap_err();
+        assert!(matches!(
+            error,
+            Error::NotSupported { message }
+                if message.contains("newer LanceDB server")
+                    && message.contains("/v1/gpu/classes")
+        ));
     }
 
     #[tokio::test]

@@ -31,6 +31,15 @@ def test_job_metadata_types_have_resolvable_modules(name):
     assert getattr(defining_module, public_type.__name__, None) is public_type
 
 
+def test_gpu_class_reexport_has_resolvable_module():
+    import lancedb
+
+    public_type = lancedb.GpuClass
+    defining_module = importlib.import_module(public_type.__module__)
+
+    assert getattr(defining_module, public_type.__name__, None) is public_type
+
+
 def test_pyo3_abi_matches_minimum_supported_python():
     project_dir = Path(__file__).parents[2]
     pyproject = (project_dir / "pyproject.toml").read_text()

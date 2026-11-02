@@ -1700,7 +1700,14 @@ def test_remote_create_index_async_returns_job():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("async_table", [False, True])
 @pytest.mark.parametrize(
-    "refresh_kwargs", [{}, {"batch_size": None}, {"batch_size": 1}, {"batch_size": 8}]
+    "refresh_kwargs",
+    [
+        {},
+        {"batch_size": None},
+        {"batch_size": 1},
+        {"batch_size": 8},
+        {"gpu_class": "a10g", "gpu_count": 2},
+    ],
 )
 async def test_remote_refresh_async_returns_typed_terminal_result(
     async_table, refresh_kwargs
@@ -1720,6 +1727,10 @@ async def test_remote_refresh_async_returns_typed_terminal_result(
             expected = {"column": "derived"}
             if refresh_kwargs.get("batch_size") is not None:
                 expected["batch_size"] = refresh_kwargs["batch_size"]
+            if refresh_kwargs.get("gpu_class") is not None:
+                expected["gpu_class"] = refresh_kwargs["gpu_class"]
+            if refresh_kwargs.get("gpu_count") is not None:
+                expected["gpu_count"] = refresh_kwargs["gpu_count"]
             assert json.loads(body) == expected
             request.send_response(202)
             request.send_header("Content-Type", "application/json")
@@ -1786,6 +1797,66 @@ async def test_remote_refresh_async_returns_typed_terminal_result(
     assert result.model_dump() == terminal_result
     assert result.rows_filled == 12
     assert result.version == 8
+
+
+@pytest.mark.parametrize(
+    "refresh_kwargs,message",
+    [
+        ({"gpu_class": "H100"}, "gpu_class"),
+        ({"gpu_class": "-a10g"}, "gpu_class"),
+        ({"gpu_class": "a_b"}, "gpu_class"),
+        ({"gpu_count": 0}, "gpu_count"),
+        ({"gpu_count": -1}, "gpu_count"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_remote_refresh_rejects_invalid_gpu_options_before_request(
+    refresh_kwargs, message
+):
+    backfill_requests = []
+
+    def handler(request):
+        if request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "schema": {
+                            "fields": [
+                                {
+                                    "name": "id",
+                                    "type": {"type": "int64"},
+                                    "nullable": False,
+                                }
+                            ]
+                        },
+                    }
+                ).encode()
+            )
+        elif request.path == "/v1/table/test/backfill_column":
+            backfill_requests.append(request.path)
+            request.send_response(202)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b'{"job_id": "unexpected"}')
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.open_table("test")
+        with pytest.raises(ValueError, match=message):
+            table.refresh_column_async("derived", **refresh_kwargs)
+
+    async with mock_lancedb_connection_async(handler) as db:
+        table = await db.open_table("test")
+        with pytest.raises(ValueError, match=message):
+            await table.refresh_column_async("derived", **refresh_kwargs)
+
+    assert backfill_requests == []
 
 
 def test_remote_function_errors_lists_the_rows_a_refresh_skipped():
@@ -4912,6 +4983,83 @@ def test_remote_job_handle_reports_its_own_detail():
             "limit": 500,
             "filter": "state = 'claim_complete'",
         }
+
+
+@pytest.mark.parametrize("is_async", [False, True])
+@pytest.mark.asyncio
+async def test_remote_list_gpu_classes(is_async):
+    requests = []
+
+    def handler(request):
+        requests.append((request.command, request.path))
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(
+            json.dumps(
+                {
+                    "gpu_classes": [
+                        {
+                            "name": "default",
+                            "resource_name": "nvidia.com/gpu",
+                            "gpu_model": "NVIDIA A10G",
+                            "gpu_memory_bytes": 25769803776,
+                            "max_gpu_count_per_worker": 1,
+                            "cpu_millis": 4000,
+                            "memory_bytes": 25769803776,
+                            "ephemeral_storage_bytes": 1073741824,
+                        },
+                        {
+                            "name": "h100",
+                            "resource_name": "nvidia.com/gpu",
+                            "gpu_model": "NVIDIA H100",
+                            "gpu_memory_bytes": 85899345920,
+                            "max_gpu_count_per_worker": 8,
+                            "cpu_millis": None,
+                            "memory_bytes": None,
+                            "ephemeral_storage_bytes": None,
+                        },
+                    ]
+                }
+            ).encode()
+        )
+
+    if is_async:
+        async with mock_lancedb_connection_async(handler) as db:
+            classes = await db.list_gpu_classes()
+    else:
+        with mock_lancedb_connection(handler) as db:
+            classes = db.list_gpu_classes()
+
+    assert requests == [("GET", "/v1/gpu/classes")]
+    assert len(classes) == 2
+    assert isinstance(classes[0], lancedb.GpuClass)
+    assert classes[0].name == "default"
+    assert classes[0].gpu_model == "NVIDIA A10G"
+    assert classes[0].gpu_memory_bytes == 25769803776
+    assert classes[1].max_gpu_count_per_worker == 8
+    assert classes[1].cpu_millis is None
+
+
+@pytest.mark.parametrize("is_async", [False, True])
+@pytest.mark.asyncio
+async def test_remote_list_gpu_classes_older_server(is_async):
+    requests = []
+
+    def handler(request):
+        requests.append(request.path)
+        request.send_response(404)
+        request.end_headers()
+
+    with pytest.raises(NotImplementedError, match="/v1/gpu/classes"):
+        if is_async:
+            async with mock_lancedb_connection_async(handler) as db:
+                await db.list_gpu_classes()
+        else:
+            with mock_lancedb_connection(handler) as db:
+                db.list_gpu_classes()
+
+    assert requests == ["/v1/gpu/classes"]
 
 
 def _property_graph_handler(calls, respond):
