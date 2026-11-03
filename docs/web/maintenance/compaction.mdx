@@ -50,7 +50,7 @@ Three operations, in one call:
 | | |
 | --- | --- |
 | **Compaction** | merges small files into larger ones |
-| **Prune** | removes versions older than the retention window (see [Cleanup](/maintenance/cleanup)) |
+| **Prune** | removes versions older than the retention window (see [Garbage Collection](/maintenance/cleanup)) |
 | **Index** | folds newly added rows into existing indexes (see [Incremental Indexing](/indexing/incremental-indexing)) |
 
 Compaction itself is only the first of the three: merging small fragments back
@@ -104,7 +104,7 @@ Compaction rewrites files, which conflicts with a concurrent
 version it replaces. Sequence them rather than running both at once.
 </Note>
 
-See [Cleanup](/maintenance/cleanup) for pruning old versions, and
+See [Garbage Collection](/maintenance/cleanup) for pruning old versions, and
 [Incremental Indexing](/indexing/incremental-indexing) for the index-folding half of
 `optimize()`.
 

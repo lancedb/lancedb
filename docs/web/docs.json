@@ -49,11 +49,19 @@
     },
     {
       "source": "/enterprise/intelligent-scheduling",
-      "destination": "/enterprise/intelligent-planning"
+      "destination": "/enterprise/intelligent-auto-maintenance"
     },
     {
       "source": "/enterprise/intelligent-maintenance",
-      "destination": "/enterprise/intelligent-planning"
+      "destination": "/enterprise/intelligent-auto-maintenance"
+    },
+    {
+      "source": "/enterprise/intelligent-planning",
+      "destination": "/enterprise/intelligent-auto-maintenance"
+    },
+    {
+      "source": "/enterprise/automated-cleanup",
+      "destination": "/enterprise/intelligent-auto-maintenance#cleanup"
     },
     {
       "source": "/indexing/reindexing",
@@ -122,6 +130,10 @@
     {
       "source": "/curation/slurm-integration",
       "destination": "/curation/slurm-scheduling"
+    },
+    {
+      "source": "/curation/sampling",
+      "destination": "/curation/statistical-sampling"
     },
     {
       "source": "/search/optimize-queries",
@@ -491,7 +503,7 @@
             "group": "Maintenance",
             "pages": [
               "indexing/index",
-              "enterprise/intelligent-planning",
+              "enterprise/intelligent-auto-maintenance",
               "indexing/vector-index",
               "indexing/fts-index",
               "indexing/scalar-index",
@@ -499,11 +511,10 @@
               "enterprise/distributed-indexing",
               "indexing/gpu-indexing",
               "maintenance/compaction",
+              "enterprise/realtime-engine-compaction",
               "enterprise/distributed-compaction",
               "enterprise/advanced-conflict-resolution",
-              "maintenance/cleanup",
-              "enterprise/automated-cleanup",
-              "enterprise/realtime-engine-compaction"
+              "maintenance/cleanup"
             ]
           },
           {

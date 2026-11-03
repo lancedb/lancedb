@@ -346,7 +346,7 @@ Use the `drop_table()` method on the database to remove a table.
 
 Dropping a table removes the table object. Deleting rows keeps the table and
 changes its contents; retained versions and cleanup are described in
-[Cleanup](/maintenance/cleanup).
+[Garbage Collection](/maintenance/cleanup).
 On a local database, dropping a table that does not exist raises an error; in
 Python, pass `ignore_missing=True` to suppress it. A deployment may report
 success instead, depending on how it stores its catalog, so do not rely on the

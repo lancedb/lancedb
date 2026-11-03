@@ -1,9 +1,9 @@
 ---
-title: "Intelligent Planning"
-sidebarTitle: "Intelligent Planning"
-description: "How Enterprise continuously tracks table activity and decides what maintenance a table needs next."
+title: "Intelligent Auto-Maintenance"
+sidebarTitle: "Intelligent Auto-Maintenance"
+description: "How Enterprise continuously tracks table activity in the background and decides what maintenance -- compaction, cleanup, indexing, remap catch-up -- a table needs next."
 icon: "brain"
-keywords: ["agent", "planning", "scheduling", "maintenance", "planner", "table events", "coverage"]
+keywords: ["agent", "planning", "scheduling", "maintenance", "planner", "table events", "coverage", "cleanup", "automated", "retention", "gc", "version_interval", "min_age_seconds"]
 availability:
   embedded: unavailable
   enterprise: available
@@ -13,8 +13,9 @@ Keeping a table in good condition takes several different kinds of work --
 compacting files, catching indexes up, cleaning old versions, folding a
 real-time write tier into the base table -- each with its own trigger. In
 LanceDB Enterprise, a fleet of agent processes decides when each of these
-needs to run, continuously, per table, so nothing has to be scheduled by
-hand.
+needs to run, continuously, per table, in the background across your
+cluster -- nothing to schedule, trigger, or monitor by hand unless you want
+to.
 
 ```mermaid
 flowchart LR
@@ -40,10 +41,12 @@ events does not get to monopolize evaluation: notifications and the
 periodic sweep share a bounded per-tick budget, and reads for a given table
 run at most once at a time.
 
-Each evaluation reopens the table, reads its current manifest, indexes and
-in-flight jobs, and only then decides what, if anything, to launch -- so a
-decision is always made against that table's actual current state, not a
-cached guess.
+Each evaluation reopens the table and reads its manifest, indexes and
+in-flight jobs fresh, rather than deciding from a cached guess. Those are
+separate reads rather than one atomic snapshot, so a concurrent write
+between them is possible; the next evaluation -- triggered by that same
+write's own event notification -- is what catches anything the current
+one missed.
 
 ## Deciding what to run {#deciding}
 
@@ -54,7 +57,7 @@ whichever ones are due:
 1. **WAL index catch-up.** Checked first and gated by nothing else, because
    it is correctness-driven rather than discretionary: while an index lags
    behind the compacted generation, the real-time write tier cannot trim its
-   log. See [Real Time Engine compaction](/enterprise/realtime-engine-compaction).
+   log. See [RTE Compaction](/enterprise/realtime-engine-compaction).
 2. **Index operations.** Reindexing a column, unless a compaction that
    cannot defer its remap is about to run this same tick -- deferred-remap
    compaction lets index work proceed alongside it instead of waiting. See
@@ -63,7 +66,7 @@ whichever ones are due:
    accumulated to merge. See [Compaction](/maintenance/compaction) and
    [Distributed compaction](/enterprise/distributed-compaction).
 4. **Cleanup.** Independent of the other four -- it can always run in
-   parallel with them. See [Automated Cleanup](/enterprise/automated-cleanup).
+   parallel with them. [See below](#cleanup) for exactly when it's due.
 5. **Deferred-remap catch-up.** The batched, amortized follow-up for index
    entries a deferred compaction didn't remap synchronously. See
    [Advanced Conflict Resolution](/enterprise/advanced-conflict-resolution).
@@ -72,6 +75,33 @@ More than one of these can fire for the same table in the same evaluation --
 a compaction and a cleanup are unrelated and can both launch together -- but
 some gate each other where running them at the same time would be unsafe,
 like index operations waiting on a compaction that can't defer its remap.
+
+### When cleanup is due {#cleanup}
+
+[Cleanup](/maintenance/cleanup) prunes old table versions and the files only
+they referenced. In LanceDB Embedded, that always happens because you asked
+for it -- a call to `optimize()`. LanceDB Enterprise does not support a
+manual `optimize()` call at all; cleanup there is entirely this planner's own
+decision, off by default unless the deployment sets a minimum version age --
+with no minimum age configured, nothing is ever old enough to clean up
+automatically, and old versions simply accumulate until an operator enables
+it. A table can also disable it individually even when the deployment allows
+it, overriding the deployment-wide setting for just that table.
+
+Once enabled, a table becomes due for cleanup when any one of these is true:
+
+| Trigger | Condition |
+| --- | --- |
+| Enough new versions | The current version has advanced far enough past the version the last successful cleanup started from |
+| Enough time has passed | The last successful cleanup finished long enough ago -- the default is 24 hours -- so an idle table whose versions simply age past the retention window still gets revisited |
+| Version went backward | The current version is lower than the version the last successful cleanup recorded, which re-triggers a run immediately |
+
+A table that has never had a successful cleanup run is held to its own
+initial version threshold first, so a brand-new table is not claimed for
+cleanup before it has accumulated enough versions to be worth the pass. A
+failed attempt is retried, but not immediately -- a minimum delay (60
+seconds by default) must pass after the failure before the table becomes
+eligible again, even if one of the triggers above would otherwise fire.
 
 ## Confirming it's actually running {#observability}
 
@@ -94,16 +124,19 @@ counted as covered.
 ## What to read next {#next}
 
 <CardGroup cols={2}>
+  <Card title="Cleanup" icon="broom" href="/maintenance/cleanup">
+    What a cleanup pass actually removes, and the retention window it respects.
+  </Card>
   <Card title="Advanced Conflict Resolution" icon="shuffle" href="/enterprise/advanced-conflict-resolution">
     Why compaction and index maintenance need the deferred-remap decision at all.
   </Card>
-  <Card title="Automated Cleanup" icon="clock" href="/enterprise/automated-cleanup">
-    The cleanup decision's own triggers, in depth.
-  </Card>
-  <Card title="Real Time Engine compaction" icon="compress" href="/enterprise/realtime-engine-compaction">
+  <Card title="RTE Compaction" icon="compress" href="/enterprise/realtime-engine-compaction">
     The WAL-tier compaction this page's Decision 1 depends on.
   </Card>
   <Card title="Incremental Indexing" icon="refresh" href="/indexing/incremental-indexing">
     What an index operation actually does once scheduled.
+  </Card>
+  <Card title="OpenTelemetry" icon="chart-line" href="/deployment/opentelemetry">
+    Viewing the `lance_agent_*` coverage metrics above.
   </Card>
 </CardGroup>

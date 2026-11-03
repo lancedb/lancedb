@@ -145,8 +145,8 @@ around from SQL.
 `SHOW JOBS FOR <table>` (without the `TABLE` keyword), `SHOW JOB SUMMARY`,
 and `SHOW JOB SPLITS` retain their existing behavior as compatibility forms.
 Prefer `SHOW JOBS FOR TABLE`/`FOR JOB` and `DESCRIBE JOB` going forward. See
-[`SHOW JOB SPLITS`](/sql/dml/refresh#watching) for the per-split diagnostics
-form.
+[`SHOW JOBS FOR JOB`](#show) for the per-split diagnostics
+form -- each split is a child job, listed with its own phase and progress.
 
 ## What to read next {#next}
 
@@ -154,7 +154,7 @@ form.
   <Card title="Query and job" icon="hourglass-half" href="/basics/jobs">
     The handle these statements are the SQL view of.
   </Card>
-  <Card title="Automated Cleanup" icon="clock" href="/enterprise/automated-cleanup">
+  <Card title="Intelligent Auto-Maintenance" icon="brain" href="/enterprise/intelligent-auto-maintenance#cleanup">
     A job type the deployment schedules on its own, without a call.
   </Card>
 </CardGroup>

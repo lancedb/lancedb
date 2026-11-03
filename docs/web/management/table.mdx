@@ -697,7 +697,7 @@ LanceDB Embedded tables can also derive blob columns with
 [SQL computed columns](/feature-engineering/add-computed-column).
 
 Deleting a row or replacing its blob does not immediately remove the old
-payload: retained table versions may still reference it. [Cleanup](/maintenance/cleanup#managed-blobs)
+payload: retained table versions may still reference it. [Garbage Collection](/maintenance/cleanup#managed-blobs)
 reclaims objects after those references expire. A packed object remains while
 any of its contained blobs is still referenced.
 

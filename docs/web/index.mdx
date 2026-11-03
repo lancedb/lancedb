@@ -101,12 +101,18 @@ Teams choose Enterprise to:
 
 - **Get new capabilities first** -- SQL, Functions, materialized views, and most other features documented
   throughout these docs land in Enterprise first, often well before they reach Embedded, if they ever do.
-- **Serve growing workloads** -- add query-serving capacity and let Enterprise cache frequently read table data near
-  compute as traffic grows.
-- **Reduce operational work** -- let the service handle background [compaction](/maintenance/compaction) and
-  [cleanup](/maintenance/cleanup) instead of scheduling them in application code.
-- **Fit deployment requirements** -- run a managed deployment or bring LanceDB into your own cloud account, with
-  OpenTelemetry metrics and traces.
+- **Performance** -- cache frequently read table data near compute with the [Data Page Cache](/enterprise/data-page-cache),
+  and let [adaptive execution](/enterprise/adaptive-execution) size refresh and curation workers to the job instead
+  of guessing once.
+- **Scale** -- add query-serving capacity by spreading a table across more [replica groups](/enterprise/horizontal-scaling)
+  as traffic grows, instead of upgrading one machine.
+- **Fault tolerance** -- [replication](/enterprise/horizontal-scaling) keeps a table serving when a node fails, so
+  you lose latency to a warm-up, not an outage.
+- **Multicloud deployment** -- bring LanceDB into your own cloud account, in the region your
+  [GPU capacity](/curation/gpu-function-execution) already lives, instead of moving data to it.
+- **Simplify operations** -- [Intelligent Auto-Maintenance](/enterprise/intelligent-auto-maintenance) runs
+  compaction, cleanup, and indexing in the background, with [OpenTelemetry](/deployment/opentelemetry) metrics and
+  traces instead of guesswork.
 
 [Reach out to us](https://www.lancedb.com/contact) to set up LanceDB Enterprise in your organization. Sharing a
 format does not mean an Enterprise deployment automatically opens an existing Embedded database -- plan how to
@@ -170,19 +176,18 @@ move or connect your data.
 |  | [Secret](/management/secret) | ❌ | ✅ |
 |  | [Function](/management/function) | 🚧 | ✅ |
 |  | [Storage integration](/management/storage-integration) | ❌ | ✅ |
-| **Maintenance** | [Intelligent Planning](/enterprise/intelligent-planning) | ❌ | ✅ |
+| **Maintenance** | [Intelligent Auto-Maintenance](/enterprise/intelligent-auto-maintenance) | ❌ | ✅ |
 |  | [Vector Indexing](/indexing/vector-index) | ✅ | ✅ |
 |  | [FTS Indexing](/indexing/fts-index) | ✅ | ✅ |
 |  | [Scalar Indexing](/indexing/scalar-index) | ✅ | ✅ |
 |  | [Incremental Indexing](/indexing/incremental-indexing) | ✅ | ✅ |
 |  | [Distributed Indexing](/enterprise/distributed-indexing) | ❌ | ✅ |
 |  | [GPU Indexing](/indexing/gpu-indexing) | ✅ | ✅ |
-|  | [Compaction and cleanup](/maintenance/compaction) | ✅ | ✅ |
-|  | [Cleanup](/maintenance/cleanup) | ✅ | ✅ |
-|  | [Automated Cleanup](/enterprise/automated-cleanup) | ❌ | ✅ |
+|  | [Compaction](/maintenance/compaction) | ✅ | ✅ |
+|  | [RTE Compaction](/enterprise/realtime-engine-compaction) | 🚧 | ✅ |
+|  | [Garbage Collection](/maintenance/cleanup) | ✅ | ✅ |
 |  | [Distributed compaction](/enterprise/distributed-compaction) | ❌ | ✅ |
 |  | [Advanced Conflict Resolution](/enterprise/advanced-conflict-resolution) | ❌ | ✅ |
-|  | [Real Time Engine Compaction](/enterprise/realtime-engine-compaction) | ❌ | ✅ |
 | **Security** | [Authentication](/enterprise/authentication) | ❌ | ✅ |
 |  | [Authorization](/governance/authorization) | ❌ | ✅ |
 |  | [Audit Log](/governance/audit-log) | ❌ | ✅ |

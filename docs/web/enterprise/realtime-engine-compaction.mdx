@@ -4,7 +4,7 @@ sidebarTitle: "RTE Compaction"
 description: "How Enterprise automatically folds a Real Time Engine shard's SSTables into the base table and catches its indexes up."
 icon: "compress"
 availability:
-  embedded: unavailable
+  embedded: wip
   enterprise: available
 ---
 
@@ -39,7 +39,9 @@ so a hot shard that already qualifies compacts sooner than
 operator can still force a pass with `POST /v1/compact`, and
 `Table::checkpoint_rte` drives the same flush-then-compact cycle from the
 client when you need a table to converge on demand rather than wait for
-the trigger.
+the trigger. `checkpoint_rte` has no liveness bound of its own -- it is
+idempotent and abandonable at any point, but the caller owns the deadline
+for how long to wait on it.
 
 This trigger decision is internal to the WAL pod -- it is not the general
 job scheduler deciding to run `memwal_compaction`, the pod decides to
@@ -109,10 +111,15 @@ stops being listed, and it only commits after `merge_insert` has already
 written that row into the base table.
 
 A table queried *without* the real time engine's live path only sees data
-once it has been folded into the base table, so its staleness bound is the
-compaction cadence itself: `WAL_COMPACTION_INTERVAL_SECS` plus the job's
-own runtime, which is wider than the real time engine's own
-millisecond-scale freshness. See [Real Time reads](/search/realtime-read)
+once it has been folded into the base table, so its staleness bound tracks
+the compaction cadence: `WAL_COMPACTION_INTERVAL_SECS` at most before a
+shard's trigger is even checked, plus the compaction job's own runtime --
+wider either way than the real time engine's own millisecond-scale
+freshness. That bound assumes the per-pod compactor pool has a free slot
+when the shard becomes eligible; under `WAL_COMPACT_CONCURRENCY` jobs
+already running for other tables the same pod owns, an eligible shard
+waits in queue, so the actual delay can run longer than the interval and
+one job's runtime alone suggest. See [Real Time reads](/search/realtime-read)
 for what a live RTE read sees instead.
 
 ## What to read next {#next}

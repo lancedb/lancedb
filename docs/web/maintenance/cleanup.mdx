@@ -1,9 +1,9 @@
 ---
-title: "Cleanup"
-sidebarTitle: "Cleanup"
+title: "Garbage Collection"
+sidebarTitle: "Garbage Collection"
 description: "Pruning old versions and the files only they referenced."
 icon: broom
-keywords: ["cleanup", "retention", "prune", "delete_unverified", "vacuum"]
+keywords: ["cleanup", "garbage collection", "retention", "prune", "delete_unverified", "vacuum"]
 availability:
   embedded: available
   enterprise: available
@@ -92,7 +92,7 @@ them, and reopen handles created before that upgrade.
 For LanceDB Embedded tables, `optimize()` performs compaction and cleanup.
 Enterprise runs these as background jobs; Python tables connected to Enterprise
 do not support `optimize()`.
-See [Automated Cleanup](/enterprise/automated-cleanup) for the Enterprise path.
+See [Intelligent Auto-Maintenance](/enterprise/intelligent-auto-maintenance#cleanup) for the Enterprise path.
 
 ## Disk usage does not drop immediately {#disk}
 
@@ -137,7 +137,7 @@ the table.
   <Card title="Compaction" icon="broom" href="/maintenance/compaction">
     Merging small files, the other half of `optimize()`.
   </Card>
-  <Card title="Automated Cleanup" icon="clock" href="/enterprise/automated-cleanup">
+  <Card title="Intelligent Auto-Maintenance" icon="brain" href="/enterprise/intelligent-auto-maintenance#cleanup">
     How Enterprise decides to run cleanup without a call from you.
   </Card>
 </CardGroup>

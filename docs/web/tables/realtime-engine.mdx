@@ -41,7 +41,7 @@ A write commits in two stages, both before it is acknowledged: the WAL buffer
 append makes it durable, then it lands in the shard's memtable. When a
 memtable crosses a size or row-count threshold, it freezes and flushes as an
 immutable **SSTable** -- an ordinary Lance data file -- and a fresh memtable
-takes over. [Real Time Engine compaction](/enterprise/realtime-engine-compaction)
+takes over. [RTE Compaction](/enterprise/realtime-engine-compaction)
 later folds SSTables into the base table, catching its indexes up as it goes.
 
 ## WAL nodes serve MemWAL shards {#wal-nodes}
@@ -90,4 +90,4 @@ results.
 - [Real Time reads](/search/realtime-read) — query an RTE table
 - [Distributed Real Time Write](/enterprise/distributed-real-time-write) — how Enterprise shards and scales writes
 - [Distributed Real Time Read](/enterprise/distributed-real-time-read) — how Enterprise combines reads across machines
-- [Real Time Engine compaction](/enterprise/realtime-engine-compaction) — how Enterprise folds shards into the base table
+- [RTE Compaction](/enterprise/realtime-engine-compaction) — how Enterprise folds shards into the base table

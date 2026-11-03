@@ -8,14 +8,24 @@ availability:
   enterprise: available
 ---
 
+[Slurm](https://slurm.schedmd.com/) is the workload manager most GPU
+clusters run to schedule and account for jobs -- queueing work across
+shared nodes, enforcing fair-share and priority policies between teams,
+and tracking GPU-hour usage per job. That makes it the de facto standard
+in AI training infrastructure, where expensive GPU nodes are shared
+across many training and data jobs instead of dedicated to one team.
+CoreWeave, a major GPU cloud provider, runs Slurm this way through SUNK
+(Slurm on Kubernetes) -- Slurm's scheduling and accounting layered onto
+an otherwise ordinary Kubernetes cluster.
+
 LanceDB Enterprise's job workers -- indexing, compaction, cache prewarm,
 and GPU Function execution alike -- all launch as ordinary Kubernetes
 pods through one shared scheduling configuration. Today, that
-configuration supports CoreWeave's SUNK (Slurm on Kubernetes); the rest
-of this page describes SUNK specifically. On a Neocloud running SUNK,
-pointing that configuration at SUNK's pod scheduler puts every worker pod
-LanceDB launches under Slurm's scheduling and accounting, instead of
-plain Kubernetes bin-packing. See [Architecture](/index#architecture).
+configuration integrates with CoreWeave's SUNK specifically; the rest of
+this page describes its effect. On a Neocloud running SUNK, pointing
+that configuration at SUNK's pod scheduler puts every worker pod LanceDB
+launches under Slurm's scheduling and accounting, instead of plain
+Kubernetes bin-packing. See [Architecture](/index#architecture).
 
 ## What SUNK changes {#what-changes}
 
