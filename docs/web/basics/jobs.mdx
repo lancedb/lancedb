@@ -196,6 +196,10 @@ counter; it does not mean zero, complete, or failed. Embedded handles and
 SQL-backed query handles do not have registry progress records. Use their
 `status()` and `wait()` APIs, and use registry progress only on handles backed
 by the jobs API.
+
+`estimated_remaining_time_millis` is a best-effort client-side estimate. It is
+omitted while a job is initializing, queued, or paused, and when there is no
+positive progress rate from two compatible samples.
 */}
 
 ## Embedded and Enterprise execution {#in-process}
