@@ -10660,7 +10660,7 @@ mod tests {
         }));
 
         assert_eq!(job.id(), Some("job-1"));
-        let result = job.wait().await.unwrap();
+        let result: RefreshMaterializedViewResult = job.wait().await.unwrap();
         assert_eq!(result.version, 42);
         assert_eq!(result.mode, None);
         assert_eq!(result.rows_written, None);
