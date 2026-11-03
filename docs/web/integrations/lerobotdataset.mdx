@@ -126,14 +126,14 @@ tbl.add_columns({"jerk_score": jerk_score})   # nothing computed yet
 tbl.backfill("jerk_score", concurrency=8)     # 610,403 rows in 16.7 s
 ```
 
-Embeddings work the same way, reading frames straight from the video blobs in the same table:
+Embeddings work the same way, reading frames straight from the video blobs in the `videos` table:
 
 ```python
 @udf(data_type=pa.list_(pa.float32(), 768), num_gpus=1,
      input_columns=["episode_index", "frame_index"])
 class EmbedFromBlob:                    # SigLIP2 loads once per worker
     def __call__(self, episode_index, frame_index):
-        blob = self.videos.take_blobs("video_bytes", indices=[vrow])[0]
+        blob = self.videos.fetch_blob_files("video_bytes", [video_row_id])[0]
         frame = VideoDecoder(blob).get_frames_at([pos]).data[0]
         ...
 ```

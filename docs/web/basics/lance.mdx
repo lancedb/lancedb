@@ -34,12 +34,42 @@ those fields together.
 - **Independent column updates.** Add embeddings or other derived features
   without rewriting the existing image, video or text columns.
 
+## Opening Lance datasets in Python {#python-packages}
+
+Any `.lance` dataset directory is a LanceDB table. Pass the parent directory to
+`lancedb.connect()` and open the table by its directory stem:
+
+```python
+import lancedb
+
+db = lancedb.connect("/data")  # pass storage_options=... for S3, GCS or Azure
+tbl = db.open_table("frames")  # opens /data/frames.lance; version=N pins a version
+```
+
+Use `lancedb` for search, retrieval, data curation, multimodal blob access and
+application code. Install `pylance` (`import lance`) only when building query
+engines or connectors, or when calling format-level fragment APIs directly.
+
+| `pylance` (`import lance`) | `lancedb` (`import lancedb`) |
+| --- | --- |
+| `lance.dataset("/data/frames.lance")` | `lancedb.connect("/data").open_table("frames")` |
+| `lance.write_dataset(data, "/data/frames.lance")` | `lancedb.connect("/data").create_table("frames", data)` |
+| `lance.vector.vec_to_table(mat)` | `db.create_table(name, pa.table({"vector": list(mat)}))` |
+| `lance.blob_field("video")` | `lancedb.blob("video")` |
+| `ds.take_blobs("video", ids=row_ids)` | `tbl.fetch_blob_files("video", row_ids)` (seekable handles) or `tbl.fetch_blobs("video", row_ids)` (`pa.LargeBinaryArray`) |
+| `ds.to_table(columns=cols, filter=expr, limit=n)` | `tbl.search().where(expr).select(cols).limit(n).to_arrow()` |
+| `ds.to_batches(batch_size=k)` | `tbl.search().to_batches(k)` |
+| `ds.take(offsets)` | `tbl.take_offsets(offsets).to_arrow()` |
+| `ds.versions()`, `ds.checkout_version(v)`, `ds.restore()` | `tbl.list_versions()`, `tbl.checkout(v)`, `tbl.restore()` |
+| `ds.optimize.compact_files(...)`, `ds.cleanup_old_versions(...)` | `tbl.optimize(compaction_options=..., cleanup_older_than=...)` |
+
 ## Learn more {#next}
 
 <span id="versioning" />
 <span id="evolution" />
 
 - [Lance format specification](https://lance.org/format): how the format works.
+- [Multimodal data and blobs](/management/table#multimodal): declare `lancedb.blob()` columns and read blobs on demand.
 - [Table versioning](/management/table#versioning): read and manage table versions.
 - [Computed columns](/feature-engineering/add-computed-column): add derived features to your data.
 - [Architecture](/index#architecture): how LanceDB Embedded and Enterprise build on Lance.

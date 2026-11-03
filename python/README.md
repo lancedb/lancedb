@@ -20,7 +20,7 @@ For those hosts, install the `lancedb-compat` package instead:
 pip install lancedb-compat
 ```
 
-Same Python API (`import lancedb` works as usual). The compat wheel is compiled at the `x86-64-v2` baseline (Nehalem-class) and uses runtime SIMD dispatch in the embedded lance crate to pick the right kernel tier (scalar / AVX / AVX+FMA / AVX2+FMA / AVX-512) at load time, so it still goes fast on modern hardware while running cleanly on the pre-Haswell silicon. Use `lance.simd_info()` from Python to verify which tier was selected.
+Same Python API (`import lancedb` works as usual). The compat wheel is compiled at the `x86-64-v2` baseline (Nehalem-class) and uses runtime SIMD dispatch in the embedded lance crate to pick the right kernel tier (scalar / AVX / AVX+FMA / AVX2+FMA / AVX-512) at load time, so it still goes fast on modern hardware while running cleanly on the pre-Haswell silicon (if `pylance` is installed, `lance.simd_info()` reports which tier was selected).
 
 `lancedb` and `lancedb-compat` install to the same `lancedb/` namespace and conflict at install time. Pick one. To switch, `pip uninstall lancedb` first, then `pip install lancedb-compat` (or vice-versa).
 
@@ -40,8 +40,9 @@ Stable releases are created about every 2 weeks. For the latest features and bug
 pip install --pre --extra-index-url https://pypi.fury.io/lancedb/ lancedb
 ```
 
-If you also need the optional `lance` Python API, install the `pylance` extra
-and include the Lance preview index:
+Most applications only need `lancedb`. Install the optional `pylance` extra and
+include the Lance preview index only when building query engines or connectors,
+or when calling format-level `lance` APIs directly:
 
 ```bash
 pip install --pre \
