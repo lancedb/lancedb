@@ -32,8 +32,16 @@
       "destination": "/search/vector-search#expected-performance"
     },
     {
+      "source": "/enterprise/distributed-sql",
+      "destination": "/enterprise/distributed-search"
+    },
+    {
       "source": "/enterprise/intelligent-scheduling",
-      "destination": "/enterprise/intelligent-maintenance"
+      "destination": "/enterprise/intelligent-planning"
+    },
+    {
+      "source": "/enterprise/intelligent-maintenance",
+      "destination": "/enterprise/intelligent-planning"
     },
     {
       "source": "/indexing/reindexing",
@@ -97,7 +105,11 @@
     },
     {
       "source": "/curation/sunk-integration",
-      "destination": "/curation/slurm-integration"
+      "destination": "/curation/slurm-scheduling"
+    },
+    {
+      "source": "/curation/slurm-integration",
+      "destination": "/curation/slurm-scheduling"
     },
     {
       "source": "/search/optimize-queries",
@@ -405,9 +417,9 @@
               "curation/create-function",
               "curation/chunking",
               "curation/changes",
-              "curation/aggregate",
               "curation/statistical-sampling",
               "curation/selective-sampling",
+              "curation/aggregate",
               "curation/join",
               "curation/blob-late-materialization",
               "curation/distributed-shuffle",
@@ -417,7 +429,7 @@
               "feature-engineering/view",
               "curation/vend-secret",
               "curation/gpu-function-execution",
-              "curation/slurm-integration"
+              "curation/slurm-scheduling"
             ]
           },
           {
@@ -464,8 +476,8 @@
           {
             "group": "Maintenance",
             "pages": [
-              "enterprise/intelligent-maintenance",
               "indexing/index",
+              "enterprise/intelligent-planning",
               "indexing/vector-index",
               "indexing/fts-index",
               "indexing/scalar-index",
@@ -502,7 +514,6 @@
             "group": "SQL Reference",
             "pages": [
               "sql/index",
-              "enterprise/distributed-sql",
               "sql/data-types",
               {
                 "group": "DDL",
