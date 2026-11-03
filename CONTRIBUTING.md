@@ -150,18 +150,17 @@ example.
 ### Say where a feature works
 
 Use `availability` in a page's frontmatter to describe the support covered by
-that page. Each product (`oss` for LanceDB Embedded, `enterprise` for LanceDB
-Enterprise) is either `available` or `unavailable`; use the summary
-and body for setup requirements, SDK differences and unsupported operations.
-For example, a page about signing in to Enterprise could declare:
+that page. Each product (`embedded` for LanceDB Embedded, `enterprise` for
+LanceDB Enterprise) is `available`, `unavailable`, or `wip` for an offering
+the feature is actively being built for -- distinct from `unavailable`, which
+makes no such promise. Use the body for setup requirements, SDK differences
+and unsupported operations. For example, a page about signing in to
+Enterprise could declare:
 
 ```yaml
 availability:
-  oss: unavailable
+  embedded: unavailable
   enterprise: available
-  summary: >-
-    These sign-in instructions apply to LanceDB Enterprise. LanceDB
-    Embedded has no server to sign in to.
 ```
 
 Check these claims with the feature owner. Don't use `varies`, treat an API

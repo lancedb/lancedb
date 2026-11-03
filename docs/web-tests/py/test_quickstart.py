@@ -232,6 +232,13 @@ async def test_quickstart_async_api(async_db):
 
 def test_quickstart_curate_with_sql(deployment):
     db = deployment.db
+    # create_frames and the dedupe statement below name tables directly, to
+    # keep the extracted snippets reading like the quickstart. Claim each
+    # name explicitly first, so this only ever overwrites or drops a table
+    # this run created.
+    existing = deployment.table_names()
+    if "frames" in existing:
+        raise RuntimeError("'frames' already exists and is not this test's")
     table = create_frames(db)
     deployment.claimed.append("frames")
 
@@ -264,6 +271,9 @@ def test_quickstart_curate_with_sql(deployment):
     )
     table.wait_for_index(["embedding_idx"])
     # --8<-- [end:quickstart_curate_dedupe_setup]
+
+    if "frames_deduped" in deployment.table_names():
+        raise RuntimeError("'frames_deduped' already exists and is not this test's")
 
     # --8<-- [start:quickstart_curate_dedupe]
     db.execute_query("""
