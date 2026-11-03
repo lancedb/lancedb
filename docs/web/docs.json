@@ -28,6 +28,14 @@
   "favicon": "/static/favicon.ico",
   "redirects": [
     {
+      "source": "/indexing/reindexing",
+      "destination": "/indexing/incremental-indexing"
+    },
+    {
+      "source": "/maintenance/background-jobs",
+      "destination": "/basics/jobs"
+    },
+    {
       "source": "/architecture",
       "destination": "/#architecture"
     },
@@ -378,6 +386,7 @@
               "enterprise/distributed-search",
               "enterprise/data-page-cache",
               "enterprise/tiered-index-cache",
+              "enterprise/cache-prewarm",
               "enterprise/expected-performance"
             ]
           },
@@ -409,11 +418,11 @@
               "feature-engineering/index",
               "feature-engineering/add-computed-column",
               "feature-engineering/refresh-column",
+              "feature-engineering/materialized-views",
+              "feature-engineering/refresh-materialized-view",
               "enterprise/incremental-refresh",
               "enterprise/auto-refresh",
-              "enterprise/adaptive-execution",
-              "feature-engineering/materialized-views",
-              "feature-engineering/refresh-materialized-view"
+              "enterprise/adaptive-execution"
             ]
           },
           {
@@ -446,25 +455,19 @@
           {
             "group": "Maintenance",
             "pages": [
-              {
-                "group": "Indexing",
-                "icon": "layer-group",
-                "pages": [
-                  "indexing/index",
-                  "indexing/vector-index",
-                  "indexing/fts-index",
-                  "indexing/scalar-index",
-                  "indexing/reindexing",
-                  "enterprise/distributed-indexing"
-                ]
-              },
+              "indexing/index",
+              "indexing/vector-index",
+              "indexing/fts-index",
+              "indexing/scalar-index",
+              "indexing/incremental-indexing",
+              "enterprise/distributed-indexing",
+              "indexing/gpu-indexing",
               "maintenance/compaction",
               "enterprise/distributed-compaction",
               "enterprise/advanced-conflict-resolution",
               "maintenance/cleanup",
               "enterprise/automated-cleanup",
-              "enterprise/realtime-engine-compaction",
-              "maintenance/background-jobs"
+              "enterprise/realtime-engine-compaction"
             ]
           },
           {
