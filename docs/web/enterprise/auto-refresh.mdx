@@ -22,16 +22,32 @@ jobs fleet.
 
 A computed column's auto-refresh setting is per output: each column
 declared in the same `add_columns` call gets its own independent
-interval, set when you declare it or changed later with `ALTER TABLE ...
-ALTER COLUMN ... SET auto_refresh_enabled`. Automatic execution additionally
-needs the deployment's `column_refresh.enabled` switch, which is off in the
-base configuration.
+interval, set when you declare it or changed later. Automatic execution
+additionally needs the deployment's `column_refresh.enabled` switch,
+which is off in the base configuration.
+
+```sql
+ALTER TABLE frames ALTER COLUMN caption SET auto_refresh_enabled = false;
+ALTER TABLE frames ALTER COLUMN caption SET auto_refresh_enabled = true;
+ALTER TABLE frames ALTER COLUMN caption SET auto_refresh_interval_seconds = 300;
+```
 
 A materialized view's setting is whole-view -- there is no per-column
 granularity the way a computed column has one setting per output. The
 view's *initial* population always happens regardless of this setting;
-only the refreshes after that are gated. A view's setting is fixed when creating it, not
-altered afterward through SQL the way a column's setting can be.
+only the refreshes after that are gated. Unlike a computed column, a view's
+setting is declared at `CREATE` time, but it can still be changed
+afterward with `ALTER`:
+
+```sql
+CREATE MATERIALIZED VIEW my_view AS
+SELECT * FROM source_table
+WITH (auto_refresh_enabled = true, auto_refresh_interval_seconds = 300);
+
+ALTER MATERIALIZED VIEW my_view SET auto_refresh_enabled = false;
+ALTER MATERIALIZED VIEW my_view SET auto_refresh_enabled = true;
+ALTER MATERIALIZED VIEW my_view SET auto_refresh_interval_seconds = 300;
+```
 
 ## Catching up {#catch-up}
 
