@@ -91,6 +91,10 @@ Frequent small appends are what make it necessary, because each one commits
 files. A table written in a few large batches needs it rarely; one taking
 continuous small writes needs it on a schedule.
 
+Opening a table in LanceDB Embedded logs a warning at most once per table per
+process when at least 100 fragments have fewer than 100,000 rows each. Set
+`LANCEDB_LOG=warn` to surface this log if your logger hides warnings by default.
+
 <Note>
 Compaction rewrites files, which conflicts with a concurrent
 [computed-column refresh](/feature-engineering/add-computed-column) or

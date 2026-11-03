@@ -13,7 +13,7 @@ import pyarrow as pa
 from lancedb.background_loop import LOOP
 
 from . import _lancedb
-from ._lancedb import JobDescription, JobFailureInfo, JobInfo
+from ._lancedb import JobDescription, JobFailureInfo, JobInfo, _append_doc_url
 from .remote.errors import HttpError, RetryError
 
 T = TypeVar("T")
@@ -266,7 +266,10 @@ class AsyncJob(Generic[T]):
         """
         if self._inner is None:
             raise NotImplementedError(
-                "job event history is only available for server-side jobs"
+                _append_doc_url(
+                    "job event history is only available for server-side jobs",
+                    "jobs",
+                )
             )
         return await self._inner.events(limit=limit, filter=filter)
 
@@ -431,7 +434,10 @@ class Job(Generic[T]):
         """
         if self._inner is None:
             raise NotImplementedError(
-                "job event history is only available for server-side jobs"
+                _append_doc_url(
+                    "job event history is only available for server-side jobs",
+                    "jobs",
+                )
             )
         return LOOP.run(self._inner.events(limit=limit, filter=filter))
 
