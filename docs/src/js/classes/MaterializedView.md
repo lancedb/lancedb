@@ -64,15 +64,13 @@ refresh(options?): Promise<RefreshMaterializedViewResult>
 ```
 
 Recompute the view from its source.
+Local refresh requires a source build with `experimental-functions`.
 
-The refresh is incremental when the source's changes can be reconciled
-into the view -- rows added, changed or removed since the last one --
-and otherwise rebuilds. `full` forces a rebuild; `sourceVersion`
-refreshes to that source version instead of the latest.
-
-Concurrent refreshes of one view do not duplicate its rows. Two that
-plan the same source rows conflict on commit, and the loser throws
-rather than writing them a second time.
+`full: true` forces a remote rebuild; otherwise the server chooses the
+refresh mode. Local views always rebuild, and `sourceVersion` selects a
+source version instead of the latest. Remote SQL refreshes do not support
+source-version pinning. Their results leave `mode`, `rowsWritten`, and
+`sourceVersion` absent because the SQL job adapter does not expose these metrics.
 
 #### Parameters
 

@@ -24,7 +24,8 @@ export interface JobEventsOptions {
  * - {@link Job.refresh} and {@link Job.status} fetch the whole record.
  * - {@link Job.wait} records the terminal state it establishes, but not the
  *   rest of the record.
- * - Everything is null until one of those runs.
+ * - Registry details are null until one of those runs. Query handles report
+ *   jobType "query" immediately.
  *
  * @hideconstructor
  */
@@ -38,8 +39,10 @@ export class Job {
   /**
    * Identifies the operation on the server that is running it.
    *
-   * Operations that run in this process have no server id. The value is
-   * opaque: parsing it or storing it to resume the job later is not supported.
+   * Registry handles expose a registry job ID; query handles expose a
+   * connection-scoped SQL query UUID string. Local handles have no ID.
+   * Query handles report jobType "query". Their IDs are not registry IDs or
+   * durable resume tokens.
    */
   get id(): string | null {
     return this.inner.id ?? null;
@@ -51,8 +54,8 @@ export class Job {
   }
 
   /**
-   * The job's type, as the server names it. Null for an in-process job, which
-   * has no server-side record.
+   * "query" immediately for SQL-backed handles; otherwise the cached
+   * server-reported job type. Null for in-process handles.
    */
   get jobType(): string | null {
     return this.inner.jobType ?? null;

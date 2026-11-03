@@ -1,0 +1,196 @@
+---
+title: "Real Time writes"
+sidebarTitle: "Real Time Write"
+description: "Enable the real time engine on a table and absorb small, frequent writes cheaply, each one committed in milliseconds."
+icon: "bolt"
+keywords: ["rte", "real time engine", "wal", "memwal", "lsm", "write-ahead log", "streaming writes", "upsert"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+The [real time engine](/tables/realtime-engine) puts an LSM-style write tier in
+front of a table, turning many small writes into a few large commits. This
+page covers enabling it and writing to a table; for querying an RTE table, see
+[Real Time reads](/search/realtime-read).
+
+## Getting started {#getting-started}
+
+### 1. Create a table with a primary key {#primary-key}
+
+RTE deduplicates writes by primary key. Create the table with a non-nullable
+key column, then declare it with `set_unenforced_primary_key`. The key is a
+single `int32`, `int64`, string, or binary column, and cannot be changed once
+set.
+
+The table below holds frames captioned and embedded as they stream in from a
+live camera feed, such as a robot recording episodes into a dataset shaped
+like [LeRobotDataset](/integrations/lerobotdataset)'s `frames` table —
+`frame_id` is the primary key so a re-captioned frame upserts in place:
+
+<CodeGroup>
+```python Python icon="python"
+from datetime import timedelta
+
+import lancedb
+import numpy as np
+import pyarrow as pa
+from lancedb import RTEWriteSpec
+from lancedb.index import FTS, BTree, IvfPq
+
+db = lancedb.connect("db://my_db", api_key="...", host_override="https://...")
+
+dim = 768
+schema = pa.schema([
+    pa.field("frame_id", pa.int64(), nullable=False),
+    pa.field("video_id", pa.utf8(), nullable=False),
+    pa.field("embedding", pa.list_(pa.float32(), dim)),
+    pa.field("caption", pa.utf8()),
+])
+frames = db.create_table("frames", schema=schema)
+frames.set_unenforced_primary_key("frame_id")
+```
+</CodeGroup>
+
+Or in SQL:
+
+<CodeGroup>
+```sql SQL
+ALTER TABLE frames SET UNENFORCED PRIMARY KEY (frame_id)
+```
+</CodeGroup>
+
+### 2. Create indexes {#indexes}
+
+By default, RTE maintains every supported index on the table, including
+indexes created after it is enabled. A scalar index on the primary key is
+required for partial updates and deletes.
+
+<CodeGroup>
+```python Python icon="python"
+frames.create_index("embedding", config=IvfPq())
+frames.create_index("caption", config=FTS())
+frames.create_index("frame_id", config=BTree())
+frames.wait_for_index(["embedding_idx", "caption_idx", "frame_id_idx"], timeout=timedelta(minutes=5))
+```
+</CodeGroup>
+
+### 3. Enable RTE {#enable}
+
+<CodeGroup>
+```python Python icon="python"
+frames.enable_rte(RTEWriteSpec.unsharded())
+```
+</CodeGroup>
+
+Or in SQL:
+
+<CodeGroup>
+```sql SQL
+ALTER TABLE frames SET RTE
+```
+</CodeGroup>
+
+### 4. Write {#write}
+
+<Warning>
+On an RTE table, an upsert through `merge_insert` is the only way to write
+rows. Use the form below exactly: `when_matched_update_all()` with no filter,
+plus `when_not_matched_insert_all()`. Other `merge_insert` forms, such as
+conditional updates or deleting rows missing from the source, are rejected.
+</Warning>
+
+Writes go through `merge_insert` on the primary key, and are visible to queries
+immediately — see [Real Time reads](/search/realtime-read) for querying them
+back:
+
+<CodeGroup>
+```python Python icon="python"
+new_frames = pa.table({
+    "frame_id": pa.array([2000, 2001], pa.int64()),
+    "video_id": pa.array(["clip-9", "clip-9"]),
+    "embedding": pa.FixedSizeListArray.from_arrays(
+        pa.array(np.random.rand(2 * dim).astype("float32")), dim),
+    "caption": pa.array(["a gripper closing on a cup", "a cup set down on the table"]),
+}, schema=schema)
+
+frames.merge_insert("frame_id") \
+    .when_matched_update_all() \
+    .when_not_matched_insert_all() \
+    .execute(new_frames)
+```
+</CodeGroup>
+
+**Partial updates.** Send the primary key plus only the columns you want to
+change; omitted columns keep their current values. This requires a scalar
+index on the primary key. A re-captioning job, for example, only touches
+`caption`:
+
+<CodeGroup>
+```python Python icon="python"
+patch = pa.table(
+    {"frame_id": [2000, 2001], "caption": ["a two-finger gripper closing on a cup", "the cup resting upright"]},
+    schema=pa.schema([schema.field("frame_id"), schema.field("caption")]),
+)
+frames.merge_insert("frame_id").when_matched_update_all().when_not_matched_insert_all().execute(patch)
+```
+</CodeGroup>
+
+**Deletes.** The predicate must bind the primary key to literal values. Ranges,
+`OR`, and filters on other columns are rejected. Deletes require a scalar index
+on the primary key.
+
+<CodeGroup>
+```python Python icon="python"
+frames.delete("frame_id IN (2000, 2001)")
+```
+</CodeGroup>
+
+### Disabling RTE {#disable}
+
+Stop writes and wait for in-flight writes to finish, then flush pending writes
+into the base table and disable. `checkpoint_rte()` only drains writes that
+existed when it started, so anything written during the checkpoint can be left
+behind. `disable_rte()` is rejected while the write-ahead log still holds rows,
+so run `checkpoint_rte()` first.
+
+<CodeGroup>
+```python Python icon="python"
+frames.checkpoint_rte()
+frames.disable_rte()
+```
+</CodeGroup>
+
+## Write performance {#write-performance}
+
+RTE acknowledges a write as soon as it is durable in the write-ahead log, so
+ingest is no longer limited by how fast the table can commit.
+
+**Compared with writing directly to the table.** On tables ranging from
+hundreds of thousands to tens of millions of rows, RTE delivered 4–12× the
+write throughput and 24–52× lower p99 write latency, depending on the mix of
+inserts, updates, and deletes.
+
+**Scaling with shards.** An RTE table can be split into
+[shards](/sql/ddl/table#properties) that write independently, and a single
+table's ingest grows with its shard count. In our testing on AWS, with every
+index on the table (vector, full-text, and BTree) kept current, a single table
+reached these peak rates:
+
+| Shards | Peak ingest |
+| --: | --: |
+| 1 | 90 MB/s |
+| 2 | 170 MB/s |
+| 4 | 340 MB/s |
+| 8 | 625 MB/s |
+| 16 | 690 MB/s |
+| 32 | 885 MB/s |
+
+Adding shards scales a table's ingest nearly linearly.
+
+## Next steps {#next-steps}
+
+- [Real Time reads](/search/realtime-read) — query an RTE table
+- [How the real time engine works](/tables/realtime-engine#how-it-works)
+- [Merge insert](/ingestion/merge-insert)
+- [`ALTER TABLE ... SET RTE`](/sql/ddl/table#properties)

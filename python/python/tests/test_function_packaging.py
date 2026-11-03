@@ -11,9 +11,10 @@ import json
 import subprocess
 import sys
 import textwrap
+import types
 import warnings
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated, Optional, get_type_hints
 
 import pyarrow as pa
 import pytest
@@ -124,6 +125,136 @@ def test_function_without_initialization_keeps_its_wire_form():
     request = json.loads(double.registration_request.to_canonical_json())
     assert "initialization" not in request["signature"]
     assert request["artifact"]["kind"] == "python_callable"
+
+
+@pytest.mark.parametrize("annotation", ["Array", "RecordBatch"])
+@pytest.mark.parametrize("kind", ["function", "class"])
+def test_batch_annotations_require_explicit_schemas(annotation, kind, helper_package):
+    if kind == "class":
+        source = f"""
+            import pyarrow as pa
+
+            class identity:
+                def __call__(self, value: pa.{annotation}) -> pa.{annotation}:
+                    return value
+        """
+    else:
+        source = f"""
+            import pyarrow as pa
+
+            def identity(value: pa.{annotation}) -> pa.{annotation}:
+                return value
+        """
+    module = helper_package("fx_batch_annotations", {"__init__.py": source})
+    with pytest.raises(TypeError, match="input_schema and output_schema"):
+        udf(module.identity)
+
+
+def test_array_batch_annotations_accept_explicit_schemas():
+    @udf(
+        input_schema=pa.schema([pa.field("value", pa.int64(), nullable=False)]),
+        output_schema=pa.int64(),
+    )
+    def identity(value: pa.Array) -> pa.Array:
+        return value
+
+    signature = identity.registration_request.signature
+    assert [(p.name, p.arrow_type, p.nullable) for p in signature.inputs] == [
+        ("value", "int64", False)
+    ]
+    assert signature.output.arrow_type == "int64"
+    assert signature.output.nullable is False
+    values = pa.array([1, 2, 3])
+    assert identity(values).equals(values)
+
+
+@pytest.mark.parametrize("class_udf", [False, True])
+@pytest.mark.parametrize("postponed", [False, True])
+@pytest.mark.parametrize(
+    ("annotation", "nullable"),
+    [
+        ("BlobReader", False),
+        ("Reader", False),
+        ('"Reader"', False),
+        ("Reader | None", True),
+        ("Optional[Reader]", True),
+        ('Optional["Reader"]', True),
+        ("MaybeReader", True),
+        ("lancedb.BlobReader", False),
+        ("lancedb.BlobReader | None", True),
+    ],
+)
+def test_blob_reader_annotations_resolve_in_the_artifact(
+    helper_package, monkeypatch, class_udf, postponed, annotation, nullable
+):
+    definition = (
+        f"class read_blob:\n"
+        f"    def __call__(self, video: {annotation}) -> int:\n"
+        f"        return 0\n"
+        if class_udf
+        else f"def read_blob(video: {annotation}) -> int:\n    return 0\n"
+    )
+    module = helper_package(
+        "fx_blob_annotations",
+        {
+            "__init__.py": (
+                ("from __future__ import annotations\n" if postponed else "")
+                + "import lancedb\n"
+                "from typing import Optional\n"
+                "from lancedb import BlobReader, BlobReader as Reader\n"
+                "from lancedb.functions import udf\n"
+                "MaybeReader = Optional[Reader]\n\n"
+                f"@udf\n{definition}"
+            )
+        },
+    )
+    request = module.read_blob.registration_request
+    parameter = request.signature.inputs[0]
+    assert parameter.arrow_type == "blob_v2"
+    assert parameter.blob_access == "reader"
+    assert parameter.nullable is nullable
+
+    # Workers provide lance_blob rather than importing the client SDK's reader.
+    worker = types.ModuleType("lance_blob")
+    worker.BlobReader = type("BlobReader", (), {})
+    monkeypatch.setitem(sys.modules, "lance_blob", worker)
+    namespace = {}
+    exec(compile(artifact(module.read_blob), "user_function.py", "exec"), namespace)
+    packaged = namespace["read_blob"]
+    if class_udf:
+        packaged = packaged.__call__
+    assert get_type_hints(packaged) == {
+        "video": Optional[worker.BlobReader] if nullable else worker.BlobReader,
+        "return": int,
+    }
+
+
+def test_blob_reader_annotation_does_not_shadow_body_globals(
+    helper_package, monkeypatch
+):
+    module = helper_package(
+        "fx_blob_annotation_globals",
+        {
+            "__init__.py": """
+                from lancedb import BlobReader
+                from lancedb.functions import udf
+
+                _lance_blob_reader = 7
+
+                @udf
+                def read_blob(video: BlobReader) -> int:
+                    return _lance_blob_reader
+            """
+        },
+    )
+    worker = types.ModuleType("lance_blob")
+    worker.BlobReader = type("BlobReader", (), {})
+    monkeypatch.setitem(sys.modules, "lance_blob", worker)
+    namespace = {}
+    exec(compile(artifact(module.read_blob), "user_function.py", "exec"), namespace)
+    packaged = namespace["read_blob"]
+    assert get_type_hints(packaged)["video"] is worker.BlobReader
+    assert packaged(worker.BlobReader()) == 7
 
 
 @pytest.mark.parametrize(
@@ -257,9 +388,24 @@ def test_code_packages_ship_as_a_bundle_and_version_with_their_source(
 
     def define():
         sys.modules.pop("fx_helpers_functions", None)
+        importlib.invalidate_caches()
         return importlib.import_module("fx_helpers_functions").limited
 
-    first = define()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        first = define()
+    assert len(caught) == 1
+    warning = str(caught[0].message)
+    assert "fx_helpers/fixtures/data.json" in warning
+    assert "fx_helpers/not-a-module.py" in warning
+    assert warning.index("fx_helpers/fixtures/data.json") < warning.index(
+        "fx_helpers/not-a-module.py"
+    )
+    assert "remove 'fx_helpers' from code=" in warning
+    assert "pip=" in warning
+    assert "conda=" in warning
+    assert "__pycache__" not in warning
+    assert ".pyc" not in warning
     shipped = bundle_files(first)
     assert sorted(shipped) == [
         "fx_helpers/__init__.py",
@@ -275,12 +421,66 @@ def test_code_packages_ship_as_a_bundle_and_version_with_their_source(
     helper_package(
         "fx_helpers", {**files, "rate.py": textwrap.dedent(files["rate.py"]) + "# v2\n"}
     )
-    second = define()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        second = define()
+    assert len(caught) == 1
     assert (
         first.registration_request.artifact.digest
         != second.registration_request.artifact.digest
     )
     assert first.registration_request.runtime == second.registration_request.runtime
+
+
+def test_code_package_cache_artifacts_do_not_warn(helper_package):
+    cache = helper_package(
+        "fx_cache",
+        {
+            "__init__.py": "",
+            "__pycache__/ignored.cpython-312.pyc": "",
+            "stale.pyo": "",
+        },
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+
+        @udf(code=[cache])
+        def cache_only(value: int) -> int:
+            return value
+
+    assert not caught
+    assert sorted(bundle_files(cache_only)) == [
+        "fx_cache/__init__.py",
+        "user_function.py",
+    ]
+
+
+def test_code_package_nonidentifier_resource_dir_warns_at_boundary(helper_package):
+    resources = helper_package(
+        "fx_resources",
+        {
+            "__init__.py": "",
+            "label-maps/labels.json": "{}",
+        },
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+
+        @udf(code=[resources])
+        def resource_boundary(value: int) -> int:
+            return value
+
+    assert len(caught) == 1
+    warning = str(caught[0].message)
+    assert "fx_resources/label-maps/" in warning
+    assert "remove 'fx_resources' from code=" in warning
+    assert "labels.json" not in warning
+    assert sorted(bundle_files(resource_boundary)) == [
+        "fx_resources/__init__.py",
+        "user_function.py",
+    ]
 
 
 def test_code_rejects_submodules_duplicates_and_non_modules(helper_package):
@@ -323,6 +523,7 @@ def test_local_module_outside_code_warns_at_registration(tmp_path, helper_packag
                 """
             )
         )
+        importlib.invalidate_caches()
         return getattr(importlib.import_module(name), name)
 
     with pytest.warns(UserWarning, match=r"local module.*code=\[fx_local\]"):
@@ -334,6 +535,44 @@ def test_local_module_outside_code_warns_at_registration(tmp_path, helper_packag
         warnings.simplefilter("error")
         installed = define("fx_uses_installed", "pip=['fx-local==1.0']")
     assert "from fx_local import normalize" in artifact(installed).decode()
+
+
+def test_local_module_imported_in_function_body_warns_at_registration(
+    tmp_path, helper_package
+):
+    """A direct import inside the packaged definition is checked too."""
+    helper_package(
+        "fx_body_local",
+        {"__init__.py": "def normalize(value):\n    return value\n"},
+    )
+    sys.modules.pop("fx_body_local", None)
+
+    def define(name, options):
+        (tmp_path / f"{name}.py").write_text(
+            textwrap.dedent(
+                f"""
+                from lancedb import udf
+
+
+                @udf({options})
+                def {name}(value: int) -> int:
+                    import fx_body_local
+
+                    return fx_body_local.normalize(value)
+                """
+            )
+        )
+        importlib.invalidate_caches()
+        return getattr(importlib.import_module(name), name)
+
+    with pytest.warns(UserWarning, match=r"local module.*code=\[fx_body_local\]"):
+        local = define("fx_body_uses_local", "")
+    assert "import fx_body_local" in artifact(local).decode()
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        installed = define("fx_body_uses_installed", "pip=['fx-body-local==1.0']")
+    assert "import fx_body_local" in artifact(installed).decode()
 
 
 MMLB_HELPERS = {
@@ -396,6 +635,7 @@ def test_shared_helpers_construct_state_on_every_path(tmp_path, helper_package):
     initialized through the same helper, so neither path can skip it."""
     helper_package("fx_mmlb", MMLB_HELPERS)
     (tmp_path / "fx_mmlb_functions.py").write_text(MMLB_FUNCTIONS)
+    importlib.invalidate_caches()
     functions = importlib.import_module("fx_mmlb_functions")
 
     signatures = [

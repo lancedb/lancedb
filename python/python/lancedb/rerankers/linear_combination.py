@@ -3,7 +3,6 @@
 
 
 from collections import defaultdict
-from numpy import nan
 import pyarrow as pa
 
 from .base import Reranker
@@ -66,7 +65,7 @@ class LinearCombinationReranker(Reranker):
             elif self.score == "all":
                 results = results.append_column(
                     "_distance",
-                    pa.array([nan] * len(fts_results), type=pa.float32()),
+                    pa.nulls(len(fts_results), type=pa.float32()),
                 )
             return results
 
@@ -87,7 +86,7 @@ class LinearCombinationReranker(Reranker):
             elif self.score == "all":
                 results = results.append_column(
                     "_score",
-                    pa.array([nan] * len(vector_results), type=pa.float32()),
+                    pa.nulls(len(vector_results), type=pa.float32()),
                 )
             return results
         results = defaultdict()

@@ -43,7 +43,7 @@
 //!     client_id: "my-app".to_string(),
 //!     client_secret: None,
 //!     scopes: vec!["openid".to_string()],
-//!     flow: OAuthFlow::DeviceCode,
+//!     flow: OAuthFlow::DeviceCode(Default::default()),
 //!     client_auth_method: None,
 //!     refresh_buffer_secs: None,
 //!     resource: Some("https://api.example.com".to_string()),
@@ -237,7 +237,7 @@ fn canonicalize_scopes(scopes: &[String]) -> Vec<String> {
 fn flow_key(flow: &OAuthFlow) -> Option<&'static str> {
     match flow {
         OAuthFlow::AuthorizationCode(_) => Some("authorization_code"),
-        OAuthFlow::DeviceCode => Some("device_code"),
+        OAuthFlow::DeviceCode(_) => Some("device_code"),
         OAuthFlow::ClientCredentials | OAuthFlow::AzureManagedIdentity { .. } => None,
     }
 }
@@ -845,7 +845,7 @@ pub struct SessionLogout {
 ///     client_id: "my-app".to_string(),
 ///     client_secret: None,
 ///     scopes: vec!["openid".to_string()],
-///     flow: OAuthFlow::DeviceCode,
+///     flow: OAuthFlow::DeviceCode(Default::default()),
 ///     client_auth_method: None,
 ///     refresh_buffer_secs: None,
 ///     resource: None,
@@ -1012,7 +1012,7 @@ mod tests {
             client_secret: None,
             client_auth_method: None,
             scopes: vec!["openid".to_string()],
-            flow: OAuthFlow::DeviceCode,
+            flow: OAuthFlow::DeviceCode(Default::default()),
             refresh_buffer_secs: None,
             resource: None,
             audience: None,
@@ -1544,6 +1544,18 @@ mod tests {
         config.issuer_url = "https://issuer.example.com".to_string();
         let canonical = CacheKey::new(&config).unwrap();
         assert_eq!(canonical.file_stem, key.file_stem);
+    }
+
+    #[test]
+    fn test_device_pkce_preserves_cache_identity() {
+        let dir = cache_tempdir();
+        let mut config = device_config(dir.path());
+        let standard = CacheKey::new(&config).unwrap();
+        config.flow = OAuthFlow::DeviceCode(crate::remote::DeviceCodeOptions::new().use_pkce(true));
+        assert_eq!(
+            CacheKey::new(&config).unwrap().file_stem,
+            standard.file_stem
+        );
     }
 
     #[test]

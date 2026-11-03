@@ -1,8 +1,6 @@
-<a href="https://cloud.lancedb.com" target="_blank">
-  <img src="https://github.com/user-attachments/assets/92dad0a2-2a37-4ce1-b783-0d1b4f30a00c" alt="LanceDB Cloud Public Beta" width="100%" style="max-width: 100%;">
-</a>
 <div align="center">
 
+[![Reverie](docs/src/assets/reverie-banner.png)](https://www.reveriesummit.com/?utm_medium=social&utm_source=github&utm_campaign=reverie-2026)
 [![LanceDB](docs/src/assets/hero-header.png)](https://lancedb.com)
 [![Website](https://img.shields.io/badge/-Website-100000?style=for-the-badge&labelColor=645cfb&color=645cfb)](https://lancedb.com/)
 [![Blog](https://img.shields.io/badge/Blog-100000?style=for-the-badge&labelColor=645cfb&color=645cfb)](https://blog.lancedb.com/)
@@ -13,7 +11,7 @@
 
 <img src="docs/src/assets/lancedb.png" alt="LanceDB" width="50%">
 
-# **The Multimodal AI Lakehouse**
+# **The Multimodal Lakehouse for AI**
 
 [**How to Install** ](#how-to-install) ✦ [**Detailed Documentation**](https://docs.lancedb.com) ✦ [**Tutorials and Recipes**](https://github.com/lancedb/vectordb-recipes/tree/main) ✦  [**Contributors**](#contributors) 
 
@@ -47,13 +45,13 @@ LanceDB is a central location where developers can build, train and analyze thei
 - **Advanced Features**: Zero-copy, automatic versioning, manage versions of your data without needing extra infrastructure. GPU support in building vector index.
 
 ### **Products**:
-- **Open Source & Local**: 100% open source, runs locally or in your cloud. No vendor lock-in.
-- **Cloud and Enterprise**: Production-scale vector search with no servers to manage. Complete data sovereignty and security.
+- **LanceDB Embedded (open source)**: 100% open source, runs in your application's process; your data can live on local disk or in object storage. No vendor lock-in.
+- **LanceDB Enterprise**: Production-scale distributed search, indexing, and maintenance. Plus, complete data sovereignty and security.
 
 ### **Ecosystem**:
 - **Columnar Storage**: Built on the Lance columnar format for efficient storage and analytics.
 - **Seamless Integration**: Python, Node.js, Rust, and REST APIs for easy integration. Native Python and Javascript/Typescript support.
-- **Rich Ecosystem**: Integrations with [**LangChain** 🦜️🔗](https://python.langchain.com/docs/integrations/vectorstores/lancedb/), [**LlamaIndex** 🦙](https://gpt-index.readthedocs.io/en/latest/examples/vector_stores/LanceDBIndexDemo.html), Apache-Arrow, Pandas, Polars, DuckDB and more on the way.
+- **Rich Ecosystem**: Integrations with [**LangChain** 🦜️🔗](https://docs.lancedb.com/integrations/ai/langchain), [**LlamaIndex** 🦙](https://docs.lancedb.com/integrations/ai/llamaIndex), Apache-Arrow, Pandas, Polars, DuckDB and more on the way.
 
 ## **How to Install**:
 
