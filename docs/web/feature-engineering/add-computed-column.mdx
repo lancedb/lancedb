@@ -30,9 +30,44 @@ cheap on any table size, because nothing is evaluated until
 transforms, without `computed`, remain available in LanceDB Embedded.
 </Note>
 
-## Add a computed column {#declare}
+## Fill a column with a Function {#functions}
 
-Connect with an [Enterprise connection](/basics/catalog#enterprise):
+<Badge color="red">Enterprise</Badge>
+
+When the value cannot be expressed in SQL -- an embedding, a model call, an
+image decode -- the column is filled by a registered
+[function](/management/function) instead of a SQL expression. It needs a
+deployment with Functions enabled.
+
+Connect with an [Enterprise connection](/basics/catalog#enterprise).
+Continuing the [`caption` Function](/curation/create-function#chain)
+registered in Create a Function, against a `frames` table that already has
+a `jpeg` column:
+
+<CodeGroup>
+```python Python icon="python"
+version = db.create_function_async(caption).wait()
+table.add_columns({"caption": version(jpeg=col("jpeg"))})
+```
+
+```sql SQL icon="database"
+ALTER TABLE frames ADD COLUMN caption AS caption(jpeg) WITH (version = 'fv_1')
+```
+</CodeGroup>
+
+A Function application is called with its parameters bound to source
+columns through `col(...)`, keyed by the output column name. It commits a
+new, empty table version the same way a SQL expression does, so the usual
+[versioning](/management/table#versioning) applies.
+
+Both a Function application and a SQL expression accept the same
+`auto_refresh_enabled` and `auto_refresh_interval_seconds` options, and both
+refresh and toggle the same way; see [Auto Refresh](/enterprise/auto-refresh).
+
+## Fill a column with a SQL expression {#expressions}
+
+A value that SQL can compute doesn't need a Function. Declare it with
+`computed` instead, as an expression evaluated over the row:
 
 <CodeGroup>
 ```python Python icon="python"
@@ -50,6 +85,37 @@ ALTER TABLE computed_demo ADD COLUMN doubled AS x * 2
 That commits a new table version with the column present and empty. It is an
 ordinary table version, so the usual [versioning](/management/table#versioning) applies,
 including that you can travel back to before the column existed.
+
+The expression can reference any column in the table, including another
+computed column -- declaration order is dependency order, so it may
+reference one declared earlier in the same mapping, but not one declared
+after it:
+
+<CodeGroup>
+```python Python icon="python"
+table.add_columns(computed={
+    "power_score": "cast(x as double) / 2.0",
+    "is_strong":   "power_score > 0.5",
+})
+```
+
+```sql SQL icon="database"
+ALTER TABLE computed_demo ADD COLUMN power_score AS cast(x as double) / 2.0
+ALTER TABLE computed_demo ADD COLUMN is_strong AS power_score > 0.5
+```
+</CodeGroup>
+
+The functions available are the ones the
+[SQL dialect](/sql/dql/functions) documents.
+
+A literal in the expression has to fit the column it meets: `x / 2.0` is
+refused when `x` is an integer column, so write `cast(x as double) / 2.0`.
+
+<Warning>
+Keep the expression to top-level columns. A column refresh can fail on an
+expression that reads a field inside a struct, such as
+`stats.magic + stats.strength`. Try a new expression on a small table first.
+</Warning>
 
 ## Compute now or on refresh {#computed-vs-transforms}
 
@@ -130,41 +196,7 @@ on remote tables. Python callables and batch UDFs are not accepted; compute
 those values first, then pass the result as a DataFrame or reader.
 </Info>
 
-## The expression {#expressions}
-
-The expression is SQL, evaluated over the row. It can reference any column in
-the table, including another computed column:
-
-<CodeGroup>
-```python Python icon="python"
-table.add_columns(computed={
-    "power_score": "cast(x as double) / 2.0",
-    "is_strong":   "power_score > 0.5",
-})
-```
-
-```sql SQL icon="database"
-ALTER TABLE computed_demo ADD COLUMN power_score AS cast(x as double) / 2.0
-ALTER TABLE computed_demo ADD COLUMN is_strong AS power_score > 0.5
-```
-</CodeGroup>
-
-Declaration order is dependency order: a computed column may reference one
-declared earlier in the same mapping, but not one declared after it.
-
-The functions available are the ones the
-[SQL dialect](/sql/dql/functions) documents.
-
-A literal in the expression has to fit the column it meets: `x / 2.0` is
-refused when `x` is an integer column, so write `cast(x as double) / 2.0`.
-
-<Warning>
-Keep the expression to top-level columns. A column refresh can fail on an
-expression that reads a field inside a struct, such as
-`stats.magic + stats.strength`. Try a new expression on a small table first.
-</Warning>
-
-## Change columns used by an expression {#input-constraints}
+## Change columns used by a computed column {#input-constraints}
 
 <Warning>
 While a computed column's declaration references another column, that column
@@ -174,50 +206,6 @@ if you need to change one of its inputs.
 
 This is worth knowing before deriving a column from something you expect to
 reshape later. Dropping the computed column releases the constraint.
-
-## Filling with Python instead of SQL {#functions}
-
-<Badge color="red">Enterprise</Badge>
-
-When the value cannot be expressed in SQL -- an embedding, a model call, an
-image decode -- the column is filled by a registered
-[function](/management/function) instead of an expression. Declaring it looks
-the same; what differs is what fills it. It needs a deployment with Functions
-enabled.
-
-The call passed to `add_columns` is the tell: a SQL expression in `computed`
-is a string, keyed by the column name --
-
-<CodeGroup>
-```python Python icon="python"
-table.add_columns(computed={"caption_length": "length(caption)"})
-```
-
-```sql SQL icon="database"
-ALTER TABLE frames ADD COLUMN caption_length AS length(caption)
-```
-</CodeGroup>
-
--- while a Function application is the registered version itself, called with
-its parameters bound to source columns through `col(...)`, keyed the same way
-but passed positionally rather than through `computed`. Continuing the
-[`caption` Function](/curation/create-function#chain) registered in Create a
-Function:
-
-<CodeGroup>
-```python Python icon="python"
-version = db.create_function_async(caption).wait()
-table.add_columns({"caption": version(jpeg=col("jpeg"))})
-```
-
-```sql SQL icon="database"
-ALTER TABLE frames ADD COLUMN caption AS caption(jpeg) WITH (version = 'fv_1')
-```
-</CodeGroup>
-
-Both accept the same `auto_refresh_enabled` and `auto_refresh_interval_seconds`
-options, and both refresh and toggle the same way; see
-[Auto Refresh](/enterprise/auto-refresh).
 
 ## Related guides {#next}
 
