@@ -14,9 +14,9 @@ export const PyBruteForceSearch = "tbl.search(np.random.random((1536))).limit(3)
 
 export const PyBypassVectorIndex = "table.search(embedding).bypass_vector_index().limit(5).to_pandas()\n";
 
-export const PyClassDefinition = "class Metadata(BaseModel):\n    source: str\n    timestamp: datetime\n\n\nclass Document(BaseModel):\n    content: str\n    meta: Metadata\n\n\nclass LanceSchema(LanceModel):\n    id: str\n    vector: Vector(1536)\n    payload: Document\n";
-
 export const PyClassDocuments = "class Documents(LanceModel):\n    vector: Vector(embeddings.ndims()) = embeddings.VectorField()\n    text: str = embeddings.SourceField()\n";
+
+export const PyClassDefinition = "class Metadata(BaseModel):\n    source: str\n    timestamp: datetime\n\n\nclass Document(BaseModel):\n    content: str\n    meta: Metadata\n\n\nclass LanceSchema(LanceModel):\n    id: str\n    vector: Vector(1536)\n    payload: Document\n";
 
 export const PyConfigureDistanceMetric = "tbl.search(np.random.random((1536))).distance_type(\"cosine\").limit(10).to_list()\n";
 

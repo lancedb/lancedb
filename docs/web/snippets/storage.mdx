@@ -28,10 +28,6 @@ export const PyStorageTableTimeout = "table = db.create_table(\n    \"table\",\n
 
 export const PyStorageTigrisConnect = "db = lancedb.connect(\n    \"s3://your-bucket/path\",\n    storage_options={\n        \"endpoint\": \"https://t3.storage.dev\",\n        \"region\": \"auto\",\n    },\n)\n";
 
-export const PyStorageCosConnect = "db = lancedb.connect(\n    \"cos://my-bucket/my-database\",\n    storage_options={\n        \"secret_id\": \"<tencent-cloud-secret-id>\",\n        \"secret_key\": \"<tencent-cloud-secret-key>\",\n        \"region\": \"ap-guangzhou\",\n    },\n)\n";
-
-export const PyStorageGoosefsConnect = "db = lancedb.connect(\"goosefs://my-namespace/my-database\")\n";
-
 export const TsStorageAzureAccount = "async function storageAzureAccount() {\n  const db = await lancedb.connect(\n    \"az://my-container/my-database\",\n    {\n      storageOptions: {\n        accountName: \"some-account\",\n        accountKey: \"some-key\",\n      },\n    },\n  );\n  return db;\n}\n";
 
 export const TsStorageAzureSas = "async function storageAzureSas() {\n  const db = await lancedb.connect(\n    \"az://my-container/my-database\",\n    {\n      storageOptions: {\n        azureStorageAccountName: \"some-account\",\n        azureStorageSasToken: \"<sas-token>\",\n      },\n    },\n  );\n  return db;\n}\n";
@@ -59,6 +55,4 @@ export const TsStorageS3SseKms = "async function storageS3SseKms() {\n  const db
 export const TsStorageTableTimeout = "async function storageTableTimeout() {\n  const db = await lancedb.connect(\"s3://bucket/path\");\n  const table = await db.createTable(\n    \"table\",\n    [{ a: 1, b: 2 }],\n    { storageOptions: { timeout: \"60s\" } },\n  );\n  return table;\n}\n";
 
 export const TsStorageTigrisConnect = "async function storageTigrisConnect() {\n  const db = await lancedb.connect(\n    \"s3://your-bucket/path\",\n    {\n      storageOptions: {\n        endpoint: \"https://t3.storage.dev\",\n        region: \"auto\",\n      },\n    },\n  );\n  return db;\n}\n";
-
-export const TsStorageGoosefsConnect = "async function storageGoosefsConnect() {\n  const db = await lancedb.connect(\"goosefs://my-namespace/my-database\");\n  return db;\n}\n";
 

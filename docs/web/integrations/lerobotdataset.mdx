@@ -7,12 +7,12 @@ keywords: ["lerobot", "robotics", "droid", "training", "dataloader"]
 
 import {
   PyFrameworksLerobotFilterFrames,
-  PyFrameworksLerobotLoad,
+  PyFrameworksLerobotLancedbImageDataset,
+  PyFrameworksLerobotLancedbVideoDataset,
   PyFrameworksLerobotOpenLanceTables,
-  PyFrameworksLerobotTrainReady,
 } from '/snippets/integrations.mdx';
 
-[LeRobot](https://huggingface.co/docs/lerobot/index) is Hugging Face's open-source robotics stack. Since [lerobot#4363](https://github.com/huggingface/lerobot/pull/4363) it reads Lance datasets natively: same `LeRobotDataset` class, same items, same training pipeline. The dataset's `"storage_format": "lance"` picks the reader. No subclasses, no wrapper library.
+[LeRobot](https://huggingface.co/docs/lerobot/index) is HuggingFace's open-source robotics stack. Since [lerobot#4363](https://github.com/huggingface/lerobot/pull/4363) it reads Lance datasets natively, and `lerobot-lancedb` wraps that into ready-made dataset classes for image and video features: same items, same training pipeline.
 
 What you get:
 
@@ -69,15 +69,20 @@ Host the result anywhere: an HF dataset repo (`hf upload`, tag it `v3.0`), an HF
 
 ## Load and train
 
-<CodeBlock filename="Python" language="Python" icon="python">
-  {PyFrameworksLerobotLoad}
-</CodeBlock>
-
-An explicit `root` works for any object store: `LeRobotDataset("lerobot/pusht", root="s3://my-bucket/pusht-lance")`. Remote roots download only `meta/`. Data is fetched per batch. Temporal windows, `DataLoader` and the rest of the training stack work unchanged:
+`lerobot-lancedb` provides a dataset class for image features and one for
+video features, both reading from the Hub or any object store with
+nothing downloaded up front:
 
 <CodeBlock filename="Python" language="Python" icon="python">
-  {PyFrameworksLerobotTrainReady}
+  {PyFrameworksLerobotLancedbImageDataset}
 </CodeBlock>
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFrameworksLerobotLancedbVideoDataset}
+</CodeBlock>
+
+`delta_timestamps` configures temporal windows the same way on both
+classes; `DataLoader` and the rest of the training stack work unchanged.
 
 Or from the CLI. Held-out evaluation on a remote dataset needs random access, so it only works on the Lance path:
 

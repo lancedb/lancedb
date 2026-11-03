@@ -99,12 +99,12 @@ def test_update_connect_local_snippet(monkeypatch):
 
 
 def test_table_creation_from_dicts(tmp_db):
-    # --8<-- [start:create_table_from_dicts]
     data = [
         {"vector": [1.1, 1.2], "lat": 45.5, "long": -122.7},
         {"vector": [0.2, 1.8], "lat": 40.1, "long": -74.1},
     ]
     db = tmp_db
+    # --8<-- [start:create_table_from_dicts]
     db.create_table("test_table", data, mode="overwrite")
     tbl = db["test_table"]
     tbl.head()
@@ -133,7 +133,6 @@ def test_create_table_conflict_handling(tmp_db):
 
 
 def test_table_creation_from_pandas(tmp_db):
-    # --8<-- [start:create_table_from_pandas]
     import pandas as pd
 
     data = pd.DataFrame(
@@ -144,13 +143,13 @@ def test_table_creation_from_pandas(tmp_db):
         }
     )
     db = tmp_db
+    # --8<-- [start:create_table_from_pandas]
     db.create_table("my_table_pandas", data, mode="overwrite")
     db["my_table_pandas"].head()
     # --8<-- [end:create_table_from_pandas]
 
 
 def test_table_creation_with_custom_schema(tmp_db):
-    # --8<-- [start:create_table_custom_schema]
     import pyarrow as pa
 
     custom_schema = pa.schema(
@@ -166,6 +165,7 @@ def test_table_creation_with_custom_schema(tmp_db):
         {"vector": [0.2, 1.8, 0.4, 3.6], "lat": 40.1, "long": -74.1},
     ]
     db = tmp_db
+    # --8<-- [start:create_table_custom_schema]
     tbl = db.create_table(
         "my_table_custom_schema", data, schema=custom_schema, mode="overwrite"
     )
@@ -173,7 +173,6 @@ def test_table_creation_with_custom_schema(tmp_db):
 
 
 def test_table_creation_from_polars(tmp_db):
-    # --8<-- [start:create_table_from_polars]
     import polars as pl
 
     data = pl.DataFrame(
@@ -184,12 +183,12 @@ def test_table_creation_from_polars(tmp_db):
         }
     )
     db = tmp_db
+    # --8<-- [start:create_table_from_polars]
     tbl = db.create_table("my_table_pl", data, mode="overwrite")
     # --8<-- [end:create_table_from_polars]
 
 
 def test_table_creation_from_arrow(tmp_db):
-    # --8<-- [start:create_table_from_arrow]
     import numpy as np
     import pyarrow as pa
 
@@ -209,12 +208,12 @@ def test_table_creation_from_arrow(tmp_db):
         ["vector", "text"],
     )
     db = tmp_db
+    # --8<-- [start:create_table_from_arrow]
     tbl = db.create_table("f16_tbl", data, schema=schema, mode="overwrite")
     # --8<-- [end:create_table_from_arrow]
 
 
 def test_table_creation_from_pydantic(tmp_db):
-    # --8<-- [start:create_table_from_pydantic]
     from lancedb.pydantic import LanceModel, Vector
 
     class Content(LanceModel):
@@ -229,12 +228,12 @@ def test_table_creation_from_pydantic(tmp_db):
             return f"https://www.imdb.com/title/tt{self.imdb_id}"
 
     db = tmp_db
+    # --8<-- [start:create_table_from_pydantic]
     tbl = db.create_table("movielens_small", schema=Content, mode="overwrite")
     # --8<-- [end:create_table_from_pydantic]
 
 
 def test_table_creation_nested_schema(tmp_db):
-    # --8<-- [start:create_table_nested_schema]
     from lancedb.pydantic import LanceModel, Vector
 
     # --8<-- [start:tables_document_model]
@@ -252,6 +251,7 @@ def test_table_creation_nested_schema(tmp_db):
         document: Document
 
     db = tmp_db
+    # --8<-- [start:create_table_nested_schema]
     tbl = db.create_table("nested_table", schema=NestedSchema, mode="overwrite")
     # --8<-- [end:create_table_nested_schema]
 
@@ -314,11 +314,11 @@ def test_add_from_dataset(tmp_db, tmp_path):
 
     data_path = str(tmp_path)
 
-    # --8<-- [start:add_from_dataset]
     import pyarrow.dataset as ds
 
     dataset = ds.dataset(data_path, format="parquet")
     db = tmp_db
+    # --8<-- [start:add_from_dataset]
     table = db.create_table("my_table", schema=dataset.schema, mode="overwrite")
     table.add(dataset)
     # --8<-- [end:add_from_dataset]
@@ -326,7 +326,6 @@ def test_add_from_dataset(tmp_db, tmp_path):
 
 
 def test_table_creation_from_iterator(tmp_db):
-    # --8<-- [start:create_table_from_iterator]
     import pyarrow as pa
 
     schema = pa.schema(
@@ -352,12 +351,13 @@ def test_table_creation_from_iterator(tmp_db):
             )
 
     db = tmp_db
+    # --8<-- [start:create_table_from_iterator]
     db.create_table("batched_table", make_batches(), schema=schema, mode="overwrite")
     # --8<-- [end:create_table_from_iterator]
 
 def test_open_existing_table(tmp_db):
-    # --8<-- [start:open_existing_table]
     db = tmp_db
+    # --8<-- [start:open_existing_table]
     # Create a table first
     data = [{"vector": [1.1, 1.2], "lat": 45.5, "long": -122.7}]
     db.create_table("test_table", data, mode="overwrite")
@@ -371,7 +371,6 @@ def test_open_existing_table(tmp_db):
 
 
 def test_create_empty_table(tmp_db):
-    # --8<-- [start:create_empty_table]
     import pyarrow as pa
 
     schema = pa.schema(
@@ -382,12 +381,12 @@ def test_create_empty_table(tmp_db):
         ]
     )
     db = tmp_db
+    # --8<-- [start:create_empty_table]
     tbl = db.create_table("test_empty_table", schema=schema, mode="overwrite")
     # --8<-- [end:create_empty_table]
 
 
 def test_create_empty_table_pydantic(tmp_db):
-    # --8<-- [start:create_empty_table_pydantic]
     from lancedb.pydantic import LanceModel, Vector
 
     class Item(LanceModel):
@@ -396,6 +395,7 @@ def test_create_empty_table_pydantic(tmp_db):
         price: float
 
     db = tmp_db
+    # --8<-- [start:create_empty_table_pydantic]
     tbl = db.create_table(
         "test_empty_table_new", schema=Item.to_arrow_schema(), mode="overwrite"
     )
@@ -403,8 +403,8 @@ def test_create_empty_table_pydantic(tmp_db):
 
 
 def test_drop_table(tmp_db):
-    # --8<-- [start:drop_table]
     db = tmp_db
+    # --8<-- [start:drop_table]
     # Create a table first
     data = [{"vector": [1.1, 1.2], "lat": 45.5}]
     db.create_table("my_table", data, mode="overwrite")
@@ -865,6 +865,7 @@ def _setup_schema_add_table(db):
 
 
 def _setup_schema_alter_table(tmp_db, data=None):
+    db = tmp_db
     # --8<-- [start:schema_alter_setup]
     table_name = "schema_evolution_alter_example"
     if data is None:
@@ -893,12 +894,13 @@ def _setup_schema_alter_table(tmp_db, data=None):
             "vector": pa.list_(pa.float32(), 128),
         }
     )
-    table = tmp_db.create_table(table_name, data, schema=schema, mode="overwrite")
+    table = db.create_table(table_name, data, schema=schema, mode="overwrite")
     # --8<-- [end:schema_alter_setup]
     return table
 
 
 def _setup_schema_drop_table(tmp_db, data=None):
+    db = tmp_db
     # --8<-- [start:schema_drop_setup]
     if data is None:
         data = [
@@ -927,7 +929,7 @@ def _setup_schema_drop_table(tmp_db, data=None):
                 "vector": np.random.random(128).tolist(),
             },
         ]
-    table = tmp_db.create_table("schema_evolution_drop_example", data, mode="overwrite")
+    table = db.create_table("schema_evolution_drop_example", data, mode="overwrite")
     # --8<-- [end:schema_drop_setup]
     return table
 
@@ -1061,9 +1063,10 @@ def test_alter_columns_multiple(tmp_db):
 
 
 def test_alter_columns_with_expression(tmp_db):
+    db = tmp_db
     # --8<-- [start:alter_columns_with_expression]
     # For custom transforms, create a new column from a SQL expression.
-    expression_table = tmp_db.create_table(
+    expression_table = db.create_table(
         "schema_evolution_expression_example",
         [{"id": 1, "price_text": "$100"}],
         mode="overwrite",
@@ -1111,10 +1114,10 @@ def test_drop_columns_multiple(tmp_db):
 
 
 def test_alter_vector_column(tmp_db):
-    # --8<-- [start:alter_vector_column]
     vector_dim = 768  # Your embedding dimension
     table_name = "vector_alter_example"
     db = tmp_db
+    # --8<-- [start:alter_vector_column]
     data = [
         {
             "id": 1,
@@ -1197,10 +1200,10 @@ def _setup_versioning_table(tmp_db, data=None, table_name="quotes_versioning_exa
 
 
 def test_versioning_basic_setup(tmp_db):
-    # --8<-- [start:versioning_basic_setup]
     import pyarrow as pa
 
     db = tmp_db
+    # --8<-- [start:versioning_basic_setup]
 
     table_name = "quotes_versioning_example"
     data = [
@@ -1478,11 +1481,11 @@ def test_branches(tmp_db):
 # ============================================================================
 
 
-def test_consistency_strong(tmp_db):
+def test_consistency_strong(tmp_path):
+    uri = str(tmp_path)
     # --8<-- [start:consistency_strong]
     from datetime import timedelta
 
-    uri = str(tmp_db.uri)
     writer_db = lancedb.connect(uri)
     reader_db = lancedb.connect(uri, read_consistency_interval=timedelta(0))
     writer_table = writer_db.create_table(
@@ -1496,11 +1499,11 @@ def test_consistency_strong(tmp_db):
     assert rows_after_write == 2
 
 
-def test_consistency_eventual(tmp_db):
+def test_consistency_eventual(tmp_path):
+    uri = str(tmp_path)
     # --8<-- [start:consistency_eventual]
     from datetime import timedelta
 
-    uri = str(tmp_db.uri)
     writer_db = lancedb.connect(uri)
     reader_db = lancedb.connect(uri, read_consistency_interval=timedelta(seconds=3600))
     writer_table = writer_db.create_table(
@@ -1514,9 +1517,9 @@ def test_consistency_eventual(tmp_db):
     assert rows_after_write == 1
 
 
-def test_consistency_checkout_latest(tmp_db):
+def test_consistency_checkout_latest(tmp_path):
+    uri = str(tmp_path)
     # --8<-- [start:consistency_checkout_latest]
-    uri = str(tmp_db.uri)
     writer_db = lancedb.connect(uri)
     reader_db = lancedb.connect(uri)
     writer_table = writer_db.create_table(

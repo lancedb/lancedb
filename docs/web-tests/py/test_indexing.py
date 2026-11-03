@@ -334,6 +334,7 @@ def test_vector_index_hnsw(tmp_db):
 
 
 def test_vector_index_binary(tmp_db):
+    db = tmp_db
     table_name = "hamming-index-tbl"
     ndim = 256
     schema = pa.schema(
@@ -344,7 +345,7 @@ def test_vector_index_binary(tmp_db):
     )
 
     # --8<-- [start:vector_index_binary_schema]
-    table = tmp_db.create_table(table_name, schema=schema, mode="overwrite")
+    table = db.create_table(table_name, schema=schema, mode="overwrite")
     # --8<-- [end:vector_index_binary_schema]
 
     data = []
