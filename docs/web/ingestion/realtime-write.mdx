@@ -5,7 +5,7 @@ description: "Enable the real time engine on a table and absorb small, frequent 
 icon: "bolt"
 keywords: ["rte", "real time engine", "wal", "memwal", "lsm", "write-ahead log", "streaming writes", "upsert"]
 availability:
-  embedded: unavailable
+  embedded: available
   enterprise: available
 ---
 
@@ -13,6 +13,17 @@ The [real time engine](/tables/realtime-engine) puts an LSM-style write tier in
 front of a table, turning many small writes into a few large commits. This
 page covers enabling it and writing to a table; for querying an RTE table, see
 [Real Time reads](/search/realtime-read).
+
+`table.enable_rte(spec)` is the same call on both connections, but what it
+does underneath differs:
+
+- **Embedded** runs Lance's MemWAL `ShardWriter` directly in your process --
+  the WAL buffer, memtables and SSTables all live wherever your table does, and
+  there is no separate serving layer to scale or configure.
+- **Enterprise** forwards the call to the server, which runs it on a
+  dedicated, horizontally scalable WAL-node tier instead of your table's
+  query-serving fleet. See [Distributed Real Time Write](/enterprise/distributed-real-time-write)
+  for how that tier shards a table's writes and the throughput limits that come with it.
 
 ## Getting started {#getting-started}
 
@@ -37,6 +48,7 @@ import pyarrow as pa
 from lancedb import RTEWriteSpec
 from lancedb.index import FTS, BTree, IvfPq
 
+# Embedded: db = lancedb.connect("./my_db")
 db = lancedb.connect("db://my_db", api_key="...", host_override="https://...")
 
 dim = 768
@@ -160,19 +172,22 @@ frames.disable_rte()
 ```
 </CodeGroup>
 
-## Write quota {#write-quota}
+## Write throughput {#write-quota}
 
 RTE acknowledges a write as soon as it is durable in the write-ahead log, so
-ingest is no longer limited by how fast the table can commit.
+ingest is no longer limited by how fast the table can commit. On Embedded,
+durability means your local disk or object store, so throughput is bounded by
+your own machine's resources, not a quota.
 
-An RTE table can be split into [shards](/sql/ddl/table#properties) that write
-independently. Each shard is allowed up to **90 MB/s**, and a single table's
-ingest is capped at **900 MB/s** across all of its shards. [Contact
-support](https://www.lancedb.com/contact) to request a higher quota.
+An Enterprise table can be split into shards that write independently, and
+the deployment's WAL-node tier enforces a per-shard and per-table throughput
+cap. See [Distributed Real Time Write](/enterprise/distributed-real-time-write#throughput)
+for the numbers and how to raise them.
 
 ## Next steps {#next-steps}
 
 - [Real Time reads](/search/realtime-read) — query an RTE table
+- [Distributed Real Time Write](/enterprise/distributed-real-time-write) — how Enterprise shards and scales this
 - [How the real time engine works](/tables/realtime-engine#memwal-format)
 - [Merge insert](/ingestion/merge-insert)
 - [`ALTER TABLE ... SET RTE`](/sql/ddl/table#properties)

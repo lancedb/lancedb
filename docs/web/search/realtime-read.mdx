@@ -5,14 +5,16 @@ description: "Query a table with the real time engine enabled and get writes bac
 icon: "magnifying-glass"
 keywords: ["rte", "real time engine", "real time search", "real time query", "fresh reads", "memwal", "upsert"]
 availability:
-  embedded: unavailable
+  embedded: available
   enterprise: available
 ---
 
 A table with the [real time engine](/tables/realtime-engine) enabled queries
 the same way as any other table — nothing about `search`, filtering, or SQL
 changes. This page covers what you get back; for enabling RTE and writing to
-a table, see [Real Time writes](/ingestion/realtime-write).
+a table, see [Real Time writes](/ingestion/realtime-write). For how Enterprise
+combines these results across machines, see
+[Distributed Real Time Read](/enterprise/distributed-real-time-read).
 
 ## Query a real time table {#query}
 
@@ -33,9 +35,36 @@ frames.search("gripper closing on a cup", fts_columns="caption").limit(10).to_li
 ```
 </CodeGroup>
 
-Vector, full-text, BTree, bitmap, and most other scalar indexes are maintained
-on the memtable, so new rows are searchable through the index as soon as
-they're written — not just after the next compaction.
+By default every index on the table is RTE-maintained, re-read as the table
+changes, so a new index is picked up automatically; pin a smaller set with
+`RTEWriteSpec.with_maintained_indexes`. For full-text and scalar (BTree,
+bitmap) indexes, a maintained index covers every tier -- base table,
+SSTables, and the active memtable -- so a query rejects outright rather than
+silently skipping un-compacted rows if a resident memtable predates the
+index. Vector (ANN) search is maintained on the base table and SSTables the
+same way, but the active memtable itself needs no index: it is small by
+construction (it freezes into an SSTable once it crosses a size threshold),
+so the LSM scanner simply compares every row in it, which is already fast
+enough to make writes searchable within milliseconds without waiting on an
+index build.
+
+## Embedded: one process, one dataset {#embedded}
+
+LanceDB Embedded runs this same LSM scanner directly against the local Lance
+dataset, in-process -- the identical merge-by-primary-key logic, the same
+maintained-index rules for vector, full-text, and scalar search, just with no
+network hop to a separate serving tier. There is no WAL node to route to and
+nothing to combine across machines: a query against an RTE-enabled Embedded
+table already reads the fresh tier together with the base table in one call.
+See [Distributed Real Time Read](/enterprise/distributed-real-time-read) for
+what Enterprise adds on top when that fresh tier is served by a separate
+machine from the one answering the rest of the query.
+
+Not every query shape runs through the LSM scanner -- a query that asks for
+`with_row_id`, time travel, multiple query vectors, hybrid search, or a
+handful of other combinations is rejected with a clear error asking you to
+set `use_rte(False)` and read the base table only, rather than silently
+returning a result that omits un-compacted rows.
 
 ## Limitations {#limitations}
 
@@ -48,6 +77,7 @@ available.
 ## Next steps {#next-steps}
 
 - [Real Time writes](/ingestion/realtime-write) — enable RTE and write to a table
+- [Distributed Real Time Read](/enterprise/distributed-real-time-read) — combining results across machines in Enterprise
 - [How the real time engine works](/tables/realtime-engine#memwal-format)
 - [Hybrid search](/search/hybrid-search)
 - [Vector search](/search/vector-search)

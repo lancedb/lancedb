@@ -5,7 +5,7 @@ description: "Absorb small, frequent writes cheaply and make them queryable with
 icon: "bolt"
 keywords: ["rte", "real time engine", "wal", "memwal", "wal node", "lsm", "write-ahead log", "streaming writes", "upsert", "sharding"]
 availability:
-  embedded: unavailable
+  embedded: available
   enterprise: available
 ---
 
@@ -46,7 +46,13 @@ SSTables into the base table, catching its indexes up as it goes.
 
 ## WAL nodes serve MemWAL shards {#wal-nodes}
 
-RTE's serving layer is a dedicated component, separate from the
+This section describes LanceDB Enterprise's serving layer. LanceDB Embedded
+runs the same MemWAL mechanics directly against the local dataset, in one
+process -- there is no separate node to route to or scale; see
+[Real Time writes](/ingestion/realtime-write#getting-started) and
+[Real Time reads](/search/realtime-read#embedded) for what that looks like.
+
+RTE's Enterprise serving layer is a dedicated component, separate from the
 [query nodes and plan executors](/enterprise/distributed-search)
 that serve ordinary queries:
 
@@ -82,4 +88,7 @@ results.
 
 - [Real Time writes](/ingestion/realtime-write) — enable RTE and write to a table
 - [Real Time reads](/search/realtime-read) — query an RTE table
+- [Distributed Real Time Write](/enterprise/distributed-real-time-write) — how Enterprise shards and scales writes
+- [Distributed Real Time Read](/enterprise/distributed-real-time-read) — how Enterprise combines reads across machines
+- [Real Time Engine compaction](/enterprise/realtime-engine-compaction) — how Enterprise folds shards into the base table
 - [Background jobs](/maintenance/background-jobs#wal)
