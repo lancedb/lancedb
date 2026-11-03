@@ -28,6 +28,10 @@
   "favicon": "/static/favicon.ico",
   "redirects": [
     {
+      "source": "/enterprise/intelligent-scheduling",
+      "destination": "/enterprise/intelligent-maintenance"
+    },
+    {
       "source": "/indexing/reindexing",
       "destination": "/indexing/incremental-indexing"
     },
@@ -455,7 +459,7 @@
           {
             "group": "Maintenance",
             "pages": [
-              "enterprise/intelligent-scheduling",
+              "enterprise/intelligent-maintenance",
               "indexing/index",
               "indexing/vector-index",
               "indexing/fts-index",
