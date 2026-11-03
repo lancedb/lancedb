@@ -10985,12 +10985,14 @@ mod tests {
             .unwrap();
         assert_eq!(result.rows_assigned, 12);
 
-        let observed = observed.lock().unwrap();
-        assert_eq!(observed.len(), 2);
-        assert_eq!(observed[0]["state"], "running");
-        assert_eq!(observed[0]["rows_planned"], 12);
-        assert_eq!(observed[0]["rows_computed"], 4);
-        assert_eq!(observed[1]["state"], "finished");
+        {
+            let observed = observed.lock().unwrap();
+            assert_eq!(observed.len(), 2);
+            assert_eq!(observed[0]["state"], "running");
+            assert_eq!(observed[0]["rows_planned"], 12);
+            assert_eq!(observed[0]["rows_computed"], 4);
+            assert_eq!(observed[1]["state"], "finished");
+        }
 
         table.count_rows(None).await.unwrap();
         assert!(
@@ -11070,12 +11072,14 @@ mod tests {
         .await
         .unwrap();
 
-        let observed = observed.lock().unwrap();
-        assert_eq!(observed.len(), 2);
-        assert_eq!(observed[0]["state"], "running");
-        assert_eq!(observed[0]["rows_planned"], 10);
-        assert_eq!(observed[0]["rows_computed"], 3);
-        assert_eq!(observed[1]["state"], "finished");
+        {
+            let observed = observed.lock().unwrap();
+            assert_eq!(observed.len(), 2);
+            assert_eq!(observed[0]["state"], "running");
+            assert_eq!(observed[0]["rows_planned"], 10);
+            assert_eq!(observed[0]["rows_computed"], 3);
+            assert_eq!(observed[1]["state"], "finished");
+        }
 
         table.count_rows(None).await.unwrap();
         assert!(
