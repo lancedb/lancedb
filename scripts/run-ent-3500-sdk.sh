@@ -8,7 +8,7 @@ fi
 
 suite=$1
 out=$2
-expected_sha=${EXPECTED_SHA:-5bfcbe77bf9595b05ed1a5f06a803bdce8fe79a8}
+expected_sha=${EXPECTED_SHA:-6a4f1fedb828694c40c18b78d99459f7b24f04c6}
 if [[ -n ${SOURCE_DIR:-} ]]; then
   repo=$(cd "$SOURCE_DIR" && pwd)
 else
