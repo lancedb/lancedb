@@ -402,6 +402,58 @@ async def test_wait_progress_true_updates_and_closes_only_the_owned_bar(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_wait_progress_bar_uses_remaining_rows_when_computation_is_repeated(
+    monkeypatch,
+):
+    tqdm_module = pytest.importorskip("tqdm.auto")
+
+    class Bar:
+        def __init__(self):
+            self.total = None
+            self.updates = []
+            self.closed = False
+
+        def update(self, delta):
+            self.updates.append(delta)
+
+        def set_postfix_str(self, _phase):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    class RepeatedComputationJob:
+        id = "job-recomputed"
+        job_type = "refresh_column"
+
+        async def wait(self, progress):
+            progress(
+                {
+                    "state": "running",
+                    "rows_planned": 4,
+                    "rows_computed": 6,
+                    "rows_remaining": 2,
+                }
+            )
+            progress(
+                {
+                    "state": "finished",
+                    "rows_planned": 4,
+                    "rows_computed": 8,
+                    "rows_remaining": 0,
+                }
+            )
+
+    bar = Bar()
+    monkeypatch.setattr(tqdm_module, "tqdm", lambda **kwargs: bar)
+
+    assert await AsyncJob(RepeatedComputationJob()).wait(progress=True) is None
+    assert bar.total == 4
+    assert bar.updates == [2, 2]
+    assert bar.closed
+
+
+@pytest.mark.asyncio
 async def test_wait_progress_false_keeps_legacy_inner_wait_call():
     class NoProgressArgument:
         id = "job-legacy"

@@ -135,13 +135,21 @@ def _job_progress_callback(progress):
         snapshot = _with_progress_eta(previous_snapshot, snapshot)
         previous_snapshot = snapshot
         planned = snapshot.get("rows_planned")
+        remaining = snapshot.get("rows_remaining")
         computed = snapshot.get("rows_computed")
         if planned is not None and not total_set:
             progress.total = planned
             total_set = True
-        if computed is not None:
-            delta = max(computed - last_rows, 0)
-            last_rows = computed
+        completed = None
+        if isinstance(planned, int) and isinstance(remaining, int):
+            completed = max(planned - remaining, 0)
+        elif computed is not None:
+            completed = computed
+        if completed is not None:
+            if isinstance(planned, int):
+                completed = min(completed, planned)
+            delta = max(completed - last_rows, 0)
+            last_rows = completed
             if delta:
                 progress.update(delta)
         phase = snapshot.get("phase")
