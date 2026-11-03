@@ -371,7 +371,6 @@
               "curation/aggregate",
               "curation/statistical-sampling",
               "curation/selective-sampling",
-              "training/permutation",
               "curation/join",
               "curation/windowing",
               "curation/clustering",
@@ -393,6 +392,7 @@
           {
             "group": "Training",
             "pages": [
+              "training/permutation",
               "training/data-loading",
               "training/observability",
               "training/distributed-training",
