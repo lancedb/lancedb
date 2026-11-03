@@ -314,9 +314,9 @@ pub struct JobDescription {
 impl JobDescription {
     /// A flat, job-type-neutral progress snapshot for SDK callers.
     ///
-    /// The lifecycle and queue fields are always present. A job type that
-    /// reports structured progress contributes its fields without changing
-    /// their meaning; older servers simply omit those fields.
+    /// Lifecycle metadata is always available. Queue metadata and structured
+    /// progress fields are included when supplied by the server; older servers
+    /// simply omit those fields.
     pub fn progress_snapshot(&self) -> serde_json::Value {
         let mut snapshot = serde_json::Map::new();
         snapshot.insert("job_type".to_string(), self.job_type.clone().into());
