@@ -233,6 +233,7 @@ pub struct JobFailureInfo {
     phase: Option<String>,
     message: Option<String>,
     retryable: Option<bool>,
+    sql_job_id: Option<String>,
 }
 
 #[pymethods]
@@ -251,7 +252,14 @@ impl JobFailureInfo {
             Some(false) => "False",
             None => "None",
         };
-        format!("JobFailureInfo(phase={phase}, message={message}, retryable={retryable})")
+        let sql_job_id = self
+            .sql_job_id
+            .as_ref()
+            .map_or_else(|| "None".to_string(), |value| format!("{value:?}"));
+        format!(
+            "JobFailureInfo(phase={phase}, message={message}, retryable={retryable}, \
+             sql_job_id={sql_job_id})"
+        )
     }
 }
 
@@ -335,6 +343,7 @@ impl From<lancedb::database::JobDescription> for JobDescription {
                 phase: failure.phase,
                 message: failure.message,
                 retryable: failure.retryable,
+                sql_job_id: failure.sql_job_id,
             }),
         }
     }

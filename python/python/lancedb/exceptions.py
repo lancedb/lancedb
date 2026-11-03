@@ -3,6 +3,8 @@
 
 """Custom exception handling"""
 
+from typing import Optional
+
 
 class MissingValueError(ValueError):
     """Exception raised when a required value is missing."""
@@ -28,7 +30,15 @@ class MissingColumnError(KeyError):
 class JobFailedError(RuntimeError):
     """Exception raised when an asynchronous job reaches the failed state."""
 
-    pass
+    def __init__(
+        self,
+        message: str,
+        job_id: Optional[str] = None,
+        sql_job_id: Optional[str] = None,
+    ):
+        super().__init__(message)
+        self.job_id = job_id
+        self.sql_job_id = sql_job_id
 
 
 class JobCancelledError(RuntimeError):

@@ -118,6 +118,11 @@ impl TerminalResult {
         self.value.as_ref()
     }
 
+    pub(crate) fn with_value(mut self, value: Value) -> Self {
+        self.value = Some(value);
+        self
+    }
+
     fn decode<T: DeserializeOwned>(self) -> Result<T> {
         let value = self.value.ok_or_else(|| match &self.request_id {
             Some(request_id) => remote_job_error(
