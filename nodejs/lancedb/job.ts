@@ -164,7 +164,11 @@ export class Job {
       return this.inner.wait();
     }
     return this.inner.wait((progress) => {
-      progressCallback(this.enrichProgress(progress));
+      try {
+        progressCallback(this.enrichProgress(progress));
+      } catch (error) {
+        console.warn("Job progress callback threw:", error);
+      }
     });
   }
 
@@ -350,7 +354,12 @@ function integerValue(value: unknown): number | null {
 }
 
 function isTransitionalPhase(phase: unknown): boolean {
-  return phase === "queued" || phase === "starting" || phase === "paused";
+  return (
+    phase === "queued" ||
+    phase === "starting" ||
+    phase === "initializing" ||
+    phase === "paused"
+  );
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: shape varies by job type

@@ -1689,8 +1689,9 @@ describe("remote connection jobs surface", () => {
       `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":100,"rows_computed":20,"rows_skipped":0,"rows_remaining":80,"fragments_planned":4,"execution_epoch":1,"sample_at_millis":${now - 5000}}}`,
       `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":100,"rows_computed":20,"rows_skipped":0,"rows_remaining":80,"fragments_planned":4,"execution_epoch":1,"sample_at_millis":${now - 4000}}}`,
       `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":100,"rows_computed":40,"rows_skipped":0,"rows_remaining":60,"fragments_planned":4,"execution_epoch":2,"sample_at_millis":${now - 3000}}}`,
-      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"paused_at_millis":5000,"progress":{"rows_planned":100,"rows_computed":40,"rows_skipped":0,"rows_remaining":60,"fragments_planned":4,"execution_epoch":2,"sample_at_millis":${now - 2000}}}`,
-      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":100,"rows_computed":60,"rows_skipped":0,"rows_remaining":40,"fragments_planned":4,"execution_epoch":2,"sample_at_millis":${now - 1000}}}`,
+      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"phase":"initializing","progress":{"rows_planned":100,"rows_computed":60,"rows_skipped":0,"rows_remaining":40,"fragments_planned":4,"execution_epoch":2,"sample_at_millis":${now - 2000}}}`,
+      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"paused_at_millis":5000,"progress":{"rows_planned":100,"rows_computed":60,"rows_skipped":0,"rows_remaining":40,"fragments_planned":4,"execution_epoch":2,"sample_at_millis":${now - 1500}}}`,
+      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":100,"rows_computed":80,"rows_skipped":0,"rows_remaining":20,"fragments_planned":4,"execution_epoch":2,"sample_at_millis":${now - 1000}}}`,
     ];
 
     await withMockDatabase(
@@ -1710,7 +1711,7 @@ describe("remote connection jobs surface", () => {
       },
       async (db) => {
         const job = await db.openJob("job-eta");
-        for (let i = 0; i < 4; i++) {
+        for (let i = 0; i < 5; i++) {
           const progress = await job.progress();
           expect(progress).not.toHaveProperty(
             "estimated_remaining_time_millis",
@@ -1750,6 +1751,7 @@ describe("remote connection jobs surface", () => {
               throw new Error("observer failed");
             }),
           ).resolves.toBeUndefined();
+          expect(warn).toHaveBeenCalled();
         } finally {
           warn.mockRestore();
         }
