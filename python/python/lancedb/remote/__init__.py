@@ -9,7 +9,13 @@ from typing import List, Optional
 from lancedb import __version__
 
 from .header import HeaderProvider
-from .oauth import OAuthConfig, OAuthFlowType
+from .oauth import (
+    ClientAuthMethod,
+    OAuthConfig,
+    OAuthFlowType,
+    OAuthSession,
+    TokenCacheOptions,
+)
 
 # The API reference renders this module with a single mkdocstrings directive,
 # which only picks up names listed here. New public names must be added to this
@@ -22,6 +28,9 @@ __all__ = [
     "HeaderProvider",
     "OAuthConfig",
     "OAuthFlowType",
+    "ClientAuthMethod",
+    "OAuthSession",
+    "TokenCacheOptions",
 ]
 
 
@@ -43,7 +52,10 @@ class TimeoutConfig:
         `LANCE_CLIENT_CONNECT_TIMEOUT`, as an integer number of seconds.
     read_timeout: Optional[timedelta]
         The timeout for reading data from the server. Default is 300 seconds
-        (5 minutes). This can also be set via the environment variable
+        (5 minutes). This also applies while waiting for response headers during
+        an upload. Increase it for large or slowly produced inputs to
+        `create_table`, even if data is still being uploaded. This can also be
+        set via the environment variable
         `LANCE_CLIENT_READ_TIMEOUT`, as an integer number of seconds.
     pool_idle_timeout: Optional[timedelta]
         The timeout for keeping idle connections in the connection pool. Default
@@ -112,7 +124,7 @@ class RetryConfig:
         `LANCE_CLIENT_RETRY_BACKOFF_JITTER`.
     statuses: Optional[List[int]
         The HTTP status codes for which to retry the request. Default is
-        [429, 500, 502, 503].
+        [409, 429, 500, 502, 503, 504].
 
         You can also set this via the environment variable
         `LANCE_CLIENT_RETRY_STATUSES`. Use a comma-separated list of integers.
@@ -151,7 +163,7 @@ class TlsConfig:
 
 @dataclass
 class ClientConfig:
-    """Configuration for the LanceDB Cloud HTTP client.
+    """Configuration for the HTTP client used to connect to LanceDB Enterprise.
 
     Attributes
     ----------
@@ -161,17 +173,24 @@ class ClientConfig:
         Configuration for retrying failed requests.
     timeout_config: Optional[TimeoutConfig]
         Configuration for request timeouts.
+    blob_request_concurrency: Optional[int]
+        Maximum concurrent blob HTTP requests across all handles on this
+        connection. Defaults to 8. Set a positive integer here or via
+        `LANCE_CLIENT_BLOB_REQUEST_CONCURRENCY`.
     extra_headers: Optional[dict]
         Additional headers to include in requests.
     id_delimiter: Optional[str]
-        The delimiter to use when constructing object identifiers.
+        The delimiter joining a namespace path and a name into one object
+        identifier. ``"$"`` is the only supported value, and leaving this
+        unset is how to get it; anything else is rejected when the connection
+        is created.
     tls_config: Optional[TlsConfig]
         TLS/mTLS configuration for secure connections.
     header_provider: Optional[HeaderProvider]
         Provider for dynamic headers to be added to each request.
     user_id: Optional[str]
         User identifier for tracking purposes. This is sent as the
-        `x-lancedb-user-id` header in requests to LanceDB Cloud/Enterprise.
+        `x-lancedb-user-id` header in requests to LanceDB Enterprise.
 
         This can also be set via the `LANCEDB_USER_ID` environment variable.
         Alternatively, set `LANCEDB_USER_ID_ENV_KEY` to specify another
@@ -181,6 +200,7 @@ class ClientConfig:
     user_agent: str = f"LanceDB-Python-Client/{__version__}"
     retry_config: RetryConfig = field(default_factory=RetryConfig)
     timeout_config: Optional[TimeoutConfig] = field(default_factory=TimeoutConfig)
+    blob_request_concurrency: Optional[int] = None
     extra_headers: Optional[dict] = None
     id_delimiter: Optional[str] = None
     tls_config: Optional[TlsConfig] = None

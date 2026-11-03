@@ -22,7 +22,7 @@ import java.util.Optional;
 /**
  * Util class to help construct a {@link LanceNamespace} for LanceDB.
  *
- * <p>For LanceDB Cloud, use the simplified builder API:
+ * <p>For LanceDB Cloud (legacy hosted service), use the simplified builder API:
  *
  * <pre>{@code
  * import org.lance.namespace.LanceNamespace;
@@ -151,8 +151,8 @@ public class LanceDbNamespaceClientBuilder {
    * Build a {@link LanceDbRestClient} for the same endpoint.
    *
    * <p>Needed only for LanceDB routes that the Lance Namespace specification does not cover — the
-   * MemWAL LSM write path, reached through {@link LanceDbTableLsm}. Every other table operation
-   * belongs on the {@link LanceNamespace} from {@link #build()}.
+   * RTE write path, reached through {@link LanceDbTableRTE}. Every other table operation belongs on
+   * the {@link LanceNamespace} from {@link #build()}.
    *
    * <p>The returned client owns an HTTP connection pool; close it when you are done with it.
    *

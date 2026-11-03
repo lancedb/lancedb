@@ -48,6 +48,23 @@ Inputs can be a version (`7.2.0-beta.1`), a tag (`v7.2.0-beta.1`), a tag ref (`r
 
    This updates the Rust workspace Lance dependencies through `ci/set_lance_version.py`, updates `java/pom.xml`, refreshes Cargo metadata, and prints JSON metadata containing `branch_name`, `commit_message`, and `pr_title`.
 
+   Also synchronize the Python requirements in `python/pyproject.toml`: set the
+   `tests` extra's exact `pylance` pin to the matching published Python release,
+   and update the `pylance` extra's minimum when needed to exclude older bundled
+   Lance majors. The minimum must still accept the test pin. Python prerelease
+   spelling differs from Rust (for example, `15.0.0-beta.1` becomes `15.0.0b1`).
+   Confirm the matching Python release is published before changing the pin.
+
+   Refresh and check `python/uv.lock` from the repository root:
+
+   ```bash
+   uv lock --project python --index https://pypi.fury.io/lancedb/ --index https://pypi.fury.io/lance-format/ --index-strategy unsafe-best-match
+   uv lock --project python --check --index https://pypi.fury.io/lancedb/ --index https://pypi.fury.io/lance-format/ --index-strategy unsafe-best-match
+   ```
+
+   This strategy considers versions across indexes; use it only with trusted
+   indexes. Commit the Python requirements and lockfile together with the bump.
+
 5. Run validation:
 
    ```bash
@@ -56,6 +73,16 @@ Inputs can be a version (`7.2.0-beta.1`), a tag (`v7.2.0-beta.1`), a tag ref (`r
    ```
 
    Fix real diagnostics and rerun clippy until it succeeds. Do not skip warnings.
+
+   Run the Python dependency guards with Python 3.11+ and `packaging` installed:
+
+   ```bash
+   python3 -m unittest discover -s ci/tests -p test_python_dependencies.py -v
+   ```
+
+   These checks reject older Lance majors and ensure the `pylance` and `tests`
+   extras remain compatible. The full CI-script suite uses
+   `python3 -m unittest discover -s ci/tests -v`.
 
 6. Inspect `git status --short` and `git diff` to ensure only the Lance dependency update and required compatibility fixes are present.
 

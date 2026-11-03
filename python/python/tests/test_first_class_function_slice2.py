@@ -7,14 +7,16 @@ import base64
 import contextlib
 import functools
 import importlib.util
+import inspect
 import types
 from datetime import date
 import http.server
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
-import threading
+import typing
 import urllib.parse
 from typing import Optional
 
@@ -22,13 +24,19 @@ import pyarrow as pa
 import pytest
 
 import lancedb
+from lancedb import BlobReader
 from lancedb.functions import (
     PythonRuntimeSpec,
+    SecretBinding,
+    SecretReference,
     UdfDefinition,
     _canonical_arrow_type,
+    _exact_arrow_type,
     _GRAMMAR_PRIMITIVES,
     udf,
 )
+from lancedb.secrets import EnvVarSecret
+from utils import start_server_thread
 
 THRESHOLD = 20
 _CACHE = None
@@ -45,6 +53,11 @@ FIXTURES = (
 )
 
 
+FUNCTION_VERSION = json.loads(
+    (FIXTURES / "remote_function_version.canonical.json").read_text()
+)["version"]
+
+
 @udf(
     pip=["numpy>=2"],
     env={"MODE": "test"},
@@ -52,6 +65,15 @@ FIXTURES = (
 )
 def normalize_score(value: float) -> float:
     return value / 100.0
+
+
+@udf(
+    pip=["openai==3.7.0"],
+    env={"MODE": "test"},
+    python_version="3.12",
+)
+def analyze_caption(caption: str) -> str:
+    return caption.strip()
 
 
 def test_scalar_udf_matches_shared_registration_golden_and_remains_callable():
@@ -68,6 +90,273 @@ def test_scalar_udf_matches_shared_registration_golden_and_remains_callable():
         "kind": "scalar_to_arrow_batch",
         "version": 1,
     }
+
+
+@pytest.mark.parametrize(
+    "name", ["examples.image_info", "image-info", "image_info.", "image_info-"]
+)
+def test_udf_rejects_function_names_with_periods_or_hyphens(name):
+    with pytest.raises(ValueError, match="invalid Function name"):
+
+        @udf(name=name)
+        def image_info(value: int) -> int:
+            return value
+
+
+@pytest.mark.parametrize("name", ["image_info", "ImageInfo123", "_image_info", "f"])
+def test_udf_accepts_function_names_with_letters_digits_and_underscores(name):
+    @udf(name=name)
+    def image_info(value: int) -> int:
+        return value
+
+    assert image_info.registration_request.name == name
+    assert image_info(1) == 1
+
+
+def test_secret_bound_udf_matches_its_shared_registration_golden():
+    assert analyze_caption("  hello  ") == "hello"
+    bound = analyze_caption.bind_secrets(
+        [EnvVarSecret(secret_name="openai-prod", env_variable="OPENAI_API_KEY")]
+    )
+    assert (
+        bound.to_canonical_json()
+        == (FIXTURES / "remote_function_secret_registration_request.canonical.json")
+        .read_text()
+        .strip()
+    )
+
+
+def test_a_namespaced_binding_records_the_path_and_the_name():
+    """A binding names the parts, so nothing has to be parsed back out.
+
+    A root binding carries no path at all: the field is absent rather than an
+    empty list, so a binding states a namespace only when it has one.
+    """
+    root = EnvVarSecret(secret_name="openai-prod", env_variable="OPENAI_API_KEY")
+    assert root.secret_namespace_path == []
+
+    nested = EnvVarSecret(
+        secret_name="openai-prod",
+        env_variable="OPENAI_API_KEY",
+        secret_namespace_path=["prod", "vision"],
+    )
+    assert nested.secret_namespace_path == ["prod", "vision"]
+    assert nested != root
+
+    bound = analyze_caption.bind_secrets([nested])
+    assert list(bound.secret_bindings) == [
+        SecretBinding(
+            kind="env",
+            variable="OPENAI_API_KEY",
+            secret_ref=SecretReference(
+                name="openai-prod", namespace_path=("prod", "vision")
+            ),
+        )
+    ]
+
+    at_root = analyze_caption.bind_secrets([root])
+    assert list(at_root.secret_bindings) == [
+        SecretBinding(
+            kind="env",
+            variable="OPENAI_API_KEY",
+            secret_ref=SecretReference(name="openai-prod"),
+        )
+    ]
+    # A root binding carries no path at all on the wire.
+    canonical = json.loads(at_root.to_canonical_json())
+    assert canonical["secret_bindings"] == [
+        {
+            "kind": "env",
+            "variable": "OPENAI_API_KEY",
+            "secret_ref": {"name": "openai-prod"},
+        }
+    ]
+
+
+def test_a_namespace_path_is_validated_locally():
+    # The charset is the service's, not a delimiter's: a reference is never
+    # joined, so a segment cannot make anything parse two ways.
+    with pytest.raises(ValueError):
+        EnvVarSecret(
+            secret_name="openai-prod",
+            env_variable="K",
+            secret_namespace_path=["with$delim"],
+        )
+    with pytest.raises(ValueError):
+        EnvVarSecret(
+            secret_name="openai-prod", env_variable="K", secret_namespace_path=["a/b"]
+        )
+    # A bare string is a plausible mistake with the wrong meaning.
+    with pytest.raises(TypeError):
+        EnvVarSecret(
+            secret_name="openai-prod", env_variable="K", secret_namespace_path="prod"
+        )
+
+
+def test_an_unbound_request_carries_no_binding_at_all():
+    """Binding is a registration-time decision, so the definition holds none.
+
+    The decorator declares nothing about secrets, which is what makes the PRD's
+    claim true: a Function's source and its registration request are identical
+    whether or not a credential is later bound to it.
+    """
+    unbound = json.loads(analyze_caption.registration_request.to_canonical_json())
+    assert "secret_bindings" not in unbound
+    assert "OPENAI_API_KEY" not in json.dumps(unbound)
+
+
+def test_binding_a_secret_leaves_the_packaged_artifact_untouched():
+    """The artifact is source bytes and nothing else, with or without secrets."""
+    bound = analyze_caption.bind_secrets(
+        [EnvVarSecret(secret_name="openai-prod", env_variable="OPENAI_API_KEY")]
+    )
+    assert bound.artifact == analyze_caption.registration_request.artifact
+    assert bound.artifact.digest == analyze_caption.registration_request.artifact.digest
+
+
+def test_a_function_declaring_no_secret_is_registered_exactly_as_before():
+    """The compatibility claim: nothing about the no-secret path moves."""
+    assert (
+        normalize_score.bind_secrets(None).to_canonical_json()
+        == normalize_score.registration_request.to_canonical_json()
+    )
+    assert (
+        "secret_bindings"
+        not in normalize_score.registration_request.to_canonical_json()
+    )
+
+
+def test_a_function_binds_each_variable_once():
+    with pytest.raises(ValueError, match="binds each environment variable once"):
+        analyze_caption.bind_secrets(
+            [
+                EnvVarSecret(secret_name="openai-prod", env_variable="OPENAI_API_KEY"),
+                EnvVarSecret(
+                    secret_name="openai-staging", env_variable="OPENAI_API_KEY"
+                ),
+            ]
+        )
+
+
+def test_bindings_may_not_collide_with_plain_configuration():
+    """`env` is stored with the Function; a Secret is not. Refuse, do not pick."""
+    with pytest.raises(ValueError, match="must be disjoint"):
+        analyze_caption.bind_secrets(
+            [EnvVarSecret(secret_name="mode-prod", env_variable="MODE")]
+        )
+
+
+_SECRET_DEBUG_LOG_SOURCE = """
+import pyarrow as pa
+import pyarrow.flight as flight
+
+import lancedb
+
+
+class SecretServer(flight.FlightServerBase):
+    def __init__(self):
+        super().__init__("grpc://127.0.0.1:0")
+
+    def do_exchange(self, context, descriptor, reader, writer):
+        assert b"SECRET_VALUE_SENTINEL" not in descriptor.command
+        parameters = reader.read_all()
+        assert parameters.column(0).to_pylist() == ["SECRET_VALUE_SENTINEL"]
+        result = pa.table({"status": ["created"]})
+        writer.begin(result.schema)
+        writer.write_table(result)
+        writer.close()
+
+
+with SecretServer() as server:
+    db = lancedb.connect(
+        "db://dev",
+        api_key="API_KEY_SENTINEL",
+        host_override="http://localhost:10024",
+        sql_host_override=f"grpc://127.0.0.1:{server.port}",
+    )
+    db.create_secret("openai-prod", "SECRET_VALUE_SENTINEL")
+"""
+
+
+def test_a_credential_never_reaches_a_debug_log(tmp_path):
+    """Credential parameters and authentication stay out of Flight debug logs.
+
+    Runs in a subprocess because the Rust logger reads ``LANCEDB_LOG`` once, at
+    import.
+    """
+    pytest.importorskip("pyarrow.flight")
+    script = tmp_path / "write_secret.py"
+    script.write_text(_SECRET_DEBUG_LOG_SOURCE)
+
+    result = subprocess.run(
+        [sys.executable, str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "LANCEDB_LOG": "debug"},
+    )
+    output = result.stdout + result.stderr
+
+    # Without this the test passes when debug logging is simply off.
+    assert "Created client for host:" in output, output
+    assert "SECRET_VALUE_SENTINEL" not in output
+    assert "API_KEY_SENTINEL" not in output
+
+
+def test_a_credential_value_is_rejected_in_the_binding_position():
+    """The one mistake the typed binding exists to stop."""
+    with pytest.raises(TypeError, match="EnvVarSecret"):
+        analyze_caption.bind_secrets(["sk-live-0001"])
+
+
+@pytest.mark.parametrize(
+    ("secret", "variable", "message"),
+    [
+        ("openai-prod", "not-a-var", "invalid environment variable name"),
+        ("openai-prod", "API-TOKEN", "invalid environment variable name"),
+        ("not a name", "API_TOKEN", "invalid Secret name"),
+        ("openai$prod", "API_TOKEN", "invalid Secret name"),
+    ],
+)
+def test_a_binding_validates_both_names_locally(secret, variable, message):
+    with pytest.raises(ValueError, match=message):
+        EnvVarSecret(secret_name=secret, env_variable=variable)
+
+
+def test_a_secret_name_admits_what_a_namespace_name_does():
+    """A Secret has to be nameable wherever a namespace already is.
+
+    LanceDB namespace and table names are `[A-Za-z0-9_.-]` with no rule about
+    which character comes first, so a name may lead with `_`, `-` or `.`.
+    Anything narrower here would leave Secrets unaddressable inside namespaces
+    that already exist -- the reason periods are admitted is the reason the
+    edges are too.
+    """
+    for name in ["openai.prod.v1", ".hidden", "_internal", "-lead", "trailing."]:
+        binding = EnvVarSecret(secret_name=name, env_variable="OPENAI_API_KEY")
+        assert binding.secret_name == name
+
+    for name in ["", "with/slash", "with$delimiter", "a" * 256]:
+        with pytest.raises(ValueError, match="invalid Secret name"):
+            EnvVarSecret(secret_name=name, env_variable="OPENAI_API_KEY")
+
+    # A namespace segment follows the same rule, and LanceDB already admits
+    # these shapes as namespace names -- so a Secret is addressable inside one.
+    for segment in [".hidden", "_internal", "-lead", "trailing."]:
+        binding = EnvVarSecret(
+            secret_name="openai-prod",
+            env_variable="OPENAI_API_KEY",
+            secret_namespace_path=[segment],
+        )
+        assert binding.secret_namespace_path == [segment]
+
+    for segment in ["", "with/slash", "with$delimiter"]:
+        with pytest.raises(ValueError, match="invalid namespace path segment"):
+            EnvVarSecret(
+                secret_name="openai-prod",
+                env_variable="OPENAI_API_KEY",
+                secret_namespace_path=[segment],
+            )
 
 
 def _main_udf_source(
@@ -152,6 +441,33 @@ def _run_packaged(definition, *args):
     return namespace[definition.registration_request.artifact.entrypoint](*args)
 
 
+def _execute_registered_array_udf_v1(request: dict, batch: pa.RecordBatch) -> pa.Array:
+    """Exercise adapter-v1 annotation dispatch over a registered artifact."""
+    assert request["artifact"]["adapter"] == {
+        "kind": "scalar_to_arrow_batch",
+        "version": 1,
+    }
+    source = base64.b64decode(request["artifact"]["content"]["data"])
+    namespace = {
+        "pa": pa,
+        "pyarrow": pa,
+        "Array": pa.Array,
+        "RecordBatch": pa.RecordBatch,
+        "typing": typing,
+    }
+    exec(compile(source, "<registered-udf>", "exec"), namespace)
+    function = namespace[request["artifact"]["entrypoint"]]
+    parameters = tuple(inspect.signature(function).parameters.values())
+    annotations = typing.get_type_hints(function)
+    assert parameters and all(
+        annotations.get(parameter.name) is pa.Array for parameter in parameters
+    )
+    assert annotations.get("return") is pa.Array
+    result = function(*(batch.column(parameter.name) for parameter in parameters))
+    assert isinstance(result, pa.Array)
+    return result
+
+
 def test_udf_conda_environment():
     @udf(conda=["scipy", "numpy"], conda_channels=["conda-forge", "defaults"])
     def halve(value: float) -> float:
@@ -172,14 +488,61 @@ def test_udf_conda_environment():
         udf(name="channels", conda_channels=["conda-forge"])(lambda value: value)
 
 
+def test_udf_apt_system_packages():
+    @udf(pip=["torchcodec"], apt=["libavutil58", "libavcodec60", "libavutil58"])
+    def decode(value: float) -> float:
+        return value
+
+    request = json.loads(decode.registration_request.to_canonical_json())
+    assert request["runtime"]["environment"] == {
+        "kind": "pip",
+        "packages": ["torchcodec"],
+        "system_packages": ["libavcodec60", "libavutil58"],
+    }
+
+    @udf(conda=["numpy"], apt=["libsndfile1"])
+    def conda_decode(value: float) -> float:
+        return value
+
+    request = json.loads(conda_decode.registration_request.to_canonical_json())
+    assert request["runtime"]["environment"]["system_packages"] == ["libsndfile1"]
+    pip_request = json.loads(normalize_score.registration_request.to_canonical_json())
+    assert "system_packages" not in pip_request["runtime"]["environment"]
+    with pytest.raises(ValueError, match="trimmed"):
+        udf(name="padded", apt=[" libsndfile1"])(lambda value: value)
+
+
+@pytest.mark.parametrize("packages", [{"pip": ["numpy"]}, {"conda": ["numpy"]}])
+def test_udf_image(packages):
+    image = "ghcr.io/acme/embedder@sha256:" + "a" * 64
+
+    @udf(image=image, **packages)
+    def embed(value: float) -> float:
+        return value
+
+    request = json.loads(embed.registration_request.to_canonical_json())
+    assert request["runtime"]["environment"]["image"] == image
+    pip_request = json.loads(normalize_score.registration_request.to_canonical_json())
+    assert "image" not in pip_request["runtime"]["environment"]
+
+
+@pytest.mark.parametrize(
+    "image", ["ghcr.io/acme/embedder:latest", "embedder@sha256:" + "a" * 64, ""]
+)
+def test_udf_image_requires_digest_reference(image):
+    with pytest.raises(ValueError, match="sha256"):
+        udf(name="pinned", image=image)(lambda value: value)
+
+
 def test_udf_gpu_marker_uses_gpu_runtime():
-    @udf(pip=["cupy-cuda12x"], gpu=True)
+    @udf(pip=["cupy-cuda12x"], gpu=True, gpu_class="a10g")
     def double_on_gpu(value: int) -> int:
         return value * 2
 
     request = json.loads(double_on_gpu.registration_request.to_canonical_json())
     assert request["runtime"]["kind"] == "python_v2"
     assert request["runtime"]["gpu"] is True
+    assert request["runtime"]["gpu_class"] == "a10g"
 
     @udf(pip=["pyarrow"])
     def cpu_function(value: int) -> int:
@@ -190,6 +553,7 @@ def test_udf_gpu_marker_uses_gpu_runtime():
     ]
     assert cpu_runtime["kind"] == "python"
     assert "gpu" not in cpu_runtime
+    assert "gpu_class" not in cpu_runtime
 
     def identity(value: int) -> int:
         return value
@@ -197,6 +561,11 @@ def test_udf_gpu_marker_uses_gpu_runtime():
     for invalid in [None, 0, 1, -1, 1.5, "", "true", "1", "H100"]:
         with pytest.raises(ValueError, match="gpu must be a boolean"):
             udf(name="invalid_gpu", gpu=invalid)(identity)
+    for invalid in ["H100", "a_b", "-a10g", "a10g-", "a" * 64]:
+        with pytest.raises(ValueError, match="gpu_class"):
+            udf(name="invalid_gpu_class", gpu=True, gpu_class=invalid)(identity)
+    with pytest.raises(ValueError, match="requires gpu=True"):
+        udf(name="gpu_class_without_gpu", gpu_class="a10g")(identity)
 
     base_runtime = {
         "kind": "python_v2",
@@ -205,14 +574,26 @@ def test_udf_gpu_marker_uses_gpu_runtime():
     }
     runtime = PythonRuntimeSpec.model_validate({**base_runtime, "gpu": True})
     assert runtime.gpu is True
+    runtime = PythonRuntimeSpec.model_validate(
+        {**base_runtime, "gpu": True, "gpu_class": "a10g"}
+    )
+    assert runtime.gpu_class == "a10g"
     for invalid in [False, 1, 0, "", "true", "1", "H100"]:
         with pytest.raises(ValueError, match="runtime.gpu must be true"):
             PythonRuntimeSpec.model_validate({**base_runtime, "gpu": invalid})
+    with pytest.raises(ValueError, match="gpu_class"):
+        PythonRuntimeSpec.model_validate(
+            {**base_runtime, "gpu": True, "gpu_class": "H100"}
+        )
 
 
 def test_unknown_runtime_discards_payload_before_known_field_validation():
     for payload in [
-        {"kind": "python_v3", "gpu": {"model": "H100"}},
+        {
+            "kind": "python_v3",
+            "gpu": {"model": "H100"},
+            "gpu_class": "a10g",
+        },
         {"kind": "python_v3", "resources": []},
         {
             "kind": "python_v3",
@@ -324,7 +705,6 @@ def test_canonical_arrow_type_prefers_the_compact_grammar():
     for outside in [
         pa.timestamp("us"),
         pa.decimal128(10, 2),
-        pa.large_binary(),
         pa.binary(4),
         pa.duration("s"),
         pa.list_(pa.float32(), 0),
@@ -669,6 +1049,60 @@ def test_blob_fields_use_the_scalar_function_semantic_type():
     assert signature.output.arrow_type == "blob_v2"
 
 
+def test_blob_input_access_is_inferred_from_annotations():
+    @udf
+    def read_blob(video: BlobReader, timestamp_s: float) -> bytes:
+        video.seek(int(timestamp_s))
+        return video.read(4)
+
+    @udf
+    def read_bytes(video: bytes) -> int:
+        return len(video)
+
+    reader = read_blob.registration_request.signature
+    assert reader.inputs[0].arrow_type == "blob_v2"
+    assert reader.inputs[0].blob_access == "reader"
+    assert reader.inputs[1].blob_access is None
+    assert reader.output.arrow_type == "binary"
+    eager = read_bytes.registration_request.signature.inputs[0]
+    assert eager.arrow_type == "binary"
+    assert eager.blob_access == "bytes"
+    encoded = json.loads(read_blob.registration_request.to_canonical_json())
+    assert encoded["signature"]["inputs"][0]["blob_access"] == "reader"
+
+
+def test_nullable_blob_reader_and_explicit_blob_bytes():
+    @udf
+    def nullable(video: Optional[BlobReader]) -> int:
+        return 0 if video is None else video.size()
+
+    @udf(
+        input_schema=pa.schema([lancedb.blob("video", nullable=False)]),
+        output_schema=pa.field("size", pa.int64(), nullable=False),
+    )
+    def eager(video: bytes) -> int:
+        return len(video)
+
+    parameter = nullable.registration_request.signature.inputs[0]
+    assert parameter.nullable is True
+    assert parameter.blob_access == "reader"
+    parameter = eager.registration_request.signature.inputs[0]
+    assert parameter.arrow_type == "blob_v2"
+    assert parameter.blob_access == "bytes"
+
+
+def test_blob_reader_rejects_an_incompatible_explicit_schema():
+    def read(video: BlobReader) -> int:
+        return video.size()
+
+    with pytest.raises(TypeError, match="requires a Blob V2 field"):
+        udf(
+            read,
+            input_schema=pa.schema([pa.field("video", pa.int64(), nullable=False)]),
+            output_schema=pa.field("size", pa.int64(), nullable=False),
+        )
+
+
 def test_whole_named_struct_function_can_include_a_blob_result_field():
     @udf(
         input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
@@ -785,6 +1219,74 @@ def test_struct_blob_signature_supports_multiple_struct_levels():
     [
         pa.list_(lancedb.blob("item", nullable=False)),
         pa.large_list(lancedb.blob("item", nullable=False)),
+        pa.list_(pa.struct([lancedb.blob("image", nullable=False)])),
+    ],
+)
+def test_blob_output_accepts_list_ancestors(data_type):
+    @udf(
+        input_schema=pa.schema([lancedb.blob("video", nullable=False)]),
+        output_schema=pa.field("frames", data_type, nullable=False),
+    )
+    def extract_frames(video: bytes) -> list:
+        return [video]
+
+    output = extract_frames.registration_request.signature.output
+    assert json.loads(output.arrow_type) == _exact_arrow_type(
+        data_type, collection_blobs=True
+    )
+    assert "lance.blob.v2" in output.arrow_type
+
+
+@pytest.mark.parametrize(
+    "data_type",
+    [
+        pa.map_(pa.string(), lancedb.blob("value", nullable=False).type),
+        pa.list_(lancedb.blob("item", nullable=False), 2),
+        pa.list_(pa.list_(lancedb.blob("item", nullable=False), 2)),
+    ],
+)
+def test_blob_output_rejects_map_and_fixed_size_list_ancestors(data_type):
+    with pytest.raises(TypeError, match="nested under collection types"):
+
+        @udf(
+            input_schema=pa.schema([pa.field("id", pa.int64(), nullable=False)]),
+            output_schema=pa.field("frames", data_type, nullable=False),
+        )
+        def frames(id: int) -> dict:
+            return {}
+
+
+def test_blob_output_named_struct_accepts_list_ancestor():
+    frames_type = pa.list_(lancedb.blob("item", nullable=False))
+
+    @udf(
+        input_schema=pa.schema([pa.field("id", pa.int64(), nullable=False)]),
+        output_schema=pa.schema(
+            [
+                pa.field("frames", frames_type, nullable=False),
+                pa.field("count", pa.int64(), nullable=False),
+            ]
+        ),
+    )
+    def extract_frames(id: int) -> dict:
+        return {"frames": [], "count": 0}
+
+    output = extract_frames.registration_request.signature.output
+    assert output.kind == "named_struct"
+    assert [field.name for field in output.fields] == ["frames", "count"]
+    assert json.loads(output.fields[0].arrow_type) == _exact_arrow_type(
+        frames_type, collection_blobs=True
+    )
+    assert "lance.blob.v2" in output.fields[0].arrow_type
+    assert output.fields[1].arrow_type == "int64"
+    assert output.fields[1].nullable is False
+
+
+@pytest.mark.parametrize(
+    "data_type",
+    [
+        pa.list_(lancedb.blob("item", nullable=False)),
+        pa.large_list(lancedb.blob("item", nullable=False)),
         pa.list_(lancedb.blob("item", nullable=False), 2),
         pa.map_(pa.string(), lancedb.blob("value", nullable=False).type),
     ],
@@ -828,6 +1330,57 @@ def test_blob_signature_rejects_collection_below_a_struct():
         )
         def blob_size(value):
             return len(value["images"])
+
+
+def test_blob_fields_support_vectorized_pyarrow_arrays():
+    @udf(
+        input_schema=pa.schema([lancedb.blob("image", nullable=True)]),
+        output_schema=lancedb.blob("result", nullable=False),
+    )
+    def copy_blobs(image: pa.Array) -> pa.Array:
+        return pa.array(
+            [value.as_py() if value.is_valid else b"" for value in image],
+            type=pa.large_binary(),
+        )
+
+    values = pa.array([b"large blob", b"", None], type=pa.large_binary())
+    request = json.loads(copy_blobs.registration_request.to_canonical_json())
+    batch = pa.RecordBatch.from_arrays([values], names=["image"])
+    result = _execute_registered_array_udf_v1(request, batch)
+    assert isinstance(result, pa.LargeBinaryArray)
+    assert result.to_pylist() == [b"large blob", b"", b""]
+
+    signature = copy_blobs.registration_request.signature
+    assert signature.inputs[0].arrow_type == "blob_v2"
+    assert signature.inputs[0].nullable is True
+    assert signature.output.arrow_type == "blob_v2"
+    assert signature.output.nullable is False
+    assert copy_blobs.registration_request.artifact.adapter.kind == (
+        "scalar_to_arrow_batch"
+    )
+    assert copy_blobs.registration_request.artifact.adapter.version == 1
+
+    source = base64.b64decode(
+        copy_blobs.registration_request.artifact.content.data
+    ).decode("utf-8")
+    assert "def copy_blobs(image: pa.Array) -> pa.Array:" in source
+
+
+def test_documented_blob_array_identity_executes_packaged_artifact():
+    @udf(
+        input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
+        output_schema=lancedb.blob("copy", nullable=False),
+    )
+    def copy_blobs(image: pa.Array) -> pa.Array:
+        return image
+
+    values = pa.array([b"large blob", b""], type=pa.large_binary())
+    request = json.loads(copy_blobs.registration_request.to_canonical_json())
+    result = _execute_registered_array_udf_v1(
+        request,
+        pa.RecordBatch.from_arrays([values], names=["image"]),
+    )
+    assert result.equals(values)
 
 
 def test_named_struct_function_can_include_a_blob_result_field():
@@ -982,6 +1535,28 @@ def test_explicit_large_utf8_schemas_use_the_canonical_function_name():
     }
 
 
+def test_large_binary_schemas_use_the_canonical_function_name():
+    payload = pa.field("data", pa.large_binary(), nullable=True)
+
+    @udf(
+        input_schema=pa.schema([payload]),
+        output_schema=pa.field("result", pa.large_binary(), nullable=False),
+    )
+    def preserve(data):
+        return data
+
+    signature = preserve.registration_request.signature
+    assert signature.inputs[0].arrow_type == "large_binary"
+    assert signature.output.arrow_type == "large_binary"
+    cells = pa.large_list(pa.field("item", pa.struct([payload]), nullable=True))
+    assert json.loads(_canonical_arrow_type(cells))["fields"][0]["type"] == {
+        "type": "struct",
+        "fields": [
+            {"name": "data", "nullable": True, "type": {"type": "large_binary"}}
+        ],
+    }
+
+
 def test_nested_struct_output_uses_canonical_exact_json():
     token = pa.struct(
         [
@@ -1100,7 +1675,7 @@ def test_annotation_and_explicit_schema_validation_fail_closed():
         def nullable_output(value: int) -> Optional[int]:
             return value
 
-    with pytest.raises(ValueError, match="provided together"):
+    with pytest.raises(TypeError, match=r"missing Function annotations: \['return'\]"):
 
         @udf(input_schema=pa.schema([pa.field("value", pa.int64())]))
         def partial_schema(value):
@@ -1199,11 +1774,11 @@ def test_local_function_catalog_operations_are_not_supported(tmp_path):
     with pytest.raises(NotImplementedError, match=message):
         db.create_function_async(normalize_score)
     with pytest.raises(NotImplementedError, match=message):
-        db.get_function("normalize_score", version="fv_exact")
+        db.get_function("normalize_score", version=FUNCTION_VERSION)
     with pytest.raises(NotImplementedError, match=message):
-        db.list_functions()
+        list(db.list_functions())
     with pytest.raises(NotImplementedError, match=message):
-        db.drop_function("normalize_score", version="fv_exact")
+        db.drop_function("normalize_score", version=FUNCTION_VERSION)
 
 
 @contextlib.contextmanager
@@ -1227,19 +1802,38 @@ def _mock_remote_function_catalog():
             body = json.loads(self.rfile.read(length) or b"{}")
             state["requests"].append((self.path, body))
             status = 200
-            if self.path == "/v1/function/normalize_score/create":
+            # `{id}` is the Function name, so match on the shape rather than on
+            # one name: these tests register more than one Function.
+            parts = self.path.strip("/").split("/")
+            function_action = (
+                (urllib.parse.unquote(parts[2]), parts[3])
+                if len(parts) == 4 and parts[0] == "v1" and parts[1] == "function"
+                else (None, None)
+            )
+            secret_action = (
+                (urllib.parse.unquote(parts[2]), parts[3])
+                if len(parts) == 4 and parts[0] == "v1" and parts[1] == "secret"
+                else (None, None)
+            )
+            if function_action[1] == "create":
+                *namespace_path, name = function_action[0].split("$")
                 state["version"] = {
-                    "name": "normalize_score",
-                    "version": "fv_exact",
-                    "artifact": {
-                        key: body["artifact"][key]
-                        for key in ("kind", "digest", "entrypoint")
-                    },
+                    "name": name,
+                    **({"namespace_path": namespace_path} if namespace_path else {}),
+                    "version": FUNCTION_VERSION,
+                    "object_id": "fixture",
+                    "location": "memory:///fixture",
+                    "metadata": {},
+                    "disabled": False,
+                    "image": json.loads(
+                        (
+                            FIXTURES / "remote_function_version.canonical.json"
+                        ).read_text()
+                    )["image"],
                     "signature": body["signature"],
-                    "runtime": body["runtime"],
-                    "runtime_digest": "sha256:runtime",
-                    "environment_digest": "sha256:environment",
-                    "created_at": "2026-08-21T00:00:00Z",
+                    "source_digest": body["artifact"]["digest"],
+                    "secret_bindings": body.get("secret_bindings", []),
+                    "created_at_millis": 1787270400000,  # 2026-08-21T00:00:00Z
                 }
                 response = {"job_id": "job-register"}
                 status = 202
@@ -1251,12 +1845,29 @@ def _mock_remote_function_catalog():
                     "job_state": "DONE",
                     "result": state["version"],
                 }
-            elif self.path == "/v1/function/normalize_score/describe":
-                assert body == {"version": "fv_exact"}
+            # A namespaced Function's id is its namespace path and name joined
+            # by `$`, so the name is the last segment of it.
+            elif (
+                function_action[1] == "describe"
+                and function_action[0].split("$")[-1] == "normalize_score"
+            ):
+                assert body == {"version": FUNCTION_VERSION}
                 response = state["version"]
-            elif self.path == "/v1/function/normalize_score/drop":
-                assert body == {"version": "fv_exact"}
+            elif (
+                function_action[1] == "drop"
+                and function_action[0].split("$")[-1] == "normalize_score"
+            ):
+                assert body == {"version": FUNCTION_VERSION}
                 response = {"dropped": True}
+            elif secret_action[1] in ("create", "alter"):
+                # The Secret is the path identifier, so the body is the value.
+                assert set(body) == {"value"}
+                assert secret_action[0] == "openai-prod"
+                response = {}
+            elif secret_action[1] == "drop":
+                assert secret_action[0] == "openai-prod"
+                assert body == {}
+                response = {}
             else:
                 status = 404
                 response = {"error": "not found"}
@@ -1269,7 +1880,18 @@ def _mock_remote_function_catalog():
                 for key, values in urllib.parse.parse_qs(url.query).items()
             }
             state["requests"].append((url.path, query))
-            if url.path != "/v1/namespace/$/function/list":
+            if url.path == "/v1/namespace/$/secret/list":
+                if "page_token" not in query:
+                    self._write_response(
+                        200,
+                        {"secrets": [{"name": "openai-prod"}], "page_token": "next"},
+                    )
+                else:
+                    assert query["page_token"] == "next"
+                    self._write_response(200, {"secrets": [{"name": "hf-prod"}]})
+                return
+            parts = url.path.strip("/").split("/")
+            if parts[:2] != ["v1", "namespace"] or parts[3:] != ["function", "list"]:
                 self._write_response(404, {"error": "not found"})
                 return
             assert query["include_definition"] == "true"
@@ -1278,7 +1900,7 @@ def _mock_remote_function_catalog():
                     "functions": [
                         {
                             "name": "normalize_score",
-                            "version": "fv_exact",
+                            "version": FUNCTION_VERSION,
                             "definition": state["version"],
                         }
                     ],
@@ -1289,102 +1911,186 @@ def _mock_remote_function_catalog():
                 response = {"functions": []}
             self._write_response(200, response)
 
-    with http.server.HTTPServer(("localhost", 0), Handler) as server:
-        thread = threading.Thread(target=server.serve_forever)
-        thread.start()
+    with http.server.HTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = start_server_thread(server)
         try:
-            yield f"http://localhost:{server.server_address[1]}", state
+            yield f"http://127.0.0.1:{server.server_address[1]}", state
         finally:
             server.shutdown()
             thread.join()
 
 
-def test_remote_registration_job_and_exact_version_reopen_round_trip():
-    with _mock_remote_function_catalog() as (host, state):
-        db = lancedb.connect(
-            "db://dev",
-            api_key="fake",
-            host_override=host,
-            client_config={"retry_config": {"retries": 0}},
-        )
-        registration = db.create_function_async(normalize_score)
-        assert registration.id == "job-register"
-        created = registration.wait()
-        reopened = db.get_function("normalize_score", version=created.version)
+def test_building_a_binding_contacts_no_server():
+    """A binding is a local value: it says nothing about whether the Secret exists.
 
-    assert created == reopened
-    assert reopened.name == "normalize_score"
-    assert reopened.version == "fv_exact"
-    create_request = state["requests"][0][1]
-    expected_request = json.loads(
-        normalize_score.registration_request.to_canonical_json()
+    Existence is the server's answer at registration, where a mistyped name is a
+    clear error rather than a client-side check that was already stale.
+    """
+    with _mock_remote_function_catalog() as (_host, state):
+        binding = EnvVarSecret(secret_name="openai-prod", env_variable="OPENAI_API_KEY")
+        assert binding.secret_name == "openai-prod"
+        assert binding.env_variable == "OPENAI_API_KEY"
+
+    assert state["requests"] == []
+
+
+def test_vectorized_blob_udf_executes_packaged_artifact_and_publishes(tmp_path):
+    @udf(
+        input_schema=pa.schema([lancedb.blob("image", nullable=True)]),
+        output_schema=lancedb.blob("copy", nullable=False),
     )
-    expected_request.pop("name")
-    assert create_request == expected_request
-
-
-def test_blocking_remote_registration_returns_function_version():
-    with _mock_remote_function_catalog() as (host, state):
-        db = lancedb.connect(
-            "db://dev",
-            api_key="fake",
-            host_override=host,
-            client_config={"retry_config": {"retries": 0}},
+    def copy_blobs(image: pa.Array) -> pa.Array:
+        assert isinstance(image, pa.LargeBinaryArray)
+        return pa.array(
+            [
+                b"missing" if value.as_py() is None else b"copy:" + value.as_py()
+                for value in image
+            ],
+            type=pa.large_binary(),
         )
-        created = db.create_function(normalize_score)
 
-    assert created.name == "normalize_score"
-    assert created.version == "fv_exact"
-    assert [path for path, _ in state["requests"]] == [
-        "/v1/function/normalize_score/create",
-        "/v1/jobs/describe",
-    ]
+    registration = json.loads(copy_blobs.registration_request.to_canonical_json())
 
-
-def test_remote_list_functions_paginates_and_returns_typed_versions():
-    with _mock_remote_function_catalog() as (host, state):
-        db = lancedb.connect(
-            "db://dev",
-            api_key="fake",
-            host_override=host,
-            client_config={"retry_config": {"retries": 0}},
-        )
-        created = db.create_function(normalize_score)
-        state["requests"].clear()
-        functions = db.list_functions()
-
-    assert functions == [created]
-    assert state["requests"] == [
-        ("/v1/namespace/$/function/list", {"include_definition": "true"}),
-        (
-            "/v1/namespace/$/function/list",
-            {"include_definition": "true", "page_token": "next"},
+    local = lancedb.connect(tmp_path)
+    source = local.create_table(
+        "blob_input",
+        schema=pa.schema(
+            [pa.field("id", pa.int64()), lancedb.blob("image", nullable=True)]
         ),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_async_remote_list_functions_returns_typed_versions():
-    with _mock_remote_function_catalog() as (host, state):
-        db = await lancedb.connect_async(
-            "db://dev",
-            api_key="fake",
-            host_override=host,
-            client_config={"retry_config": {"retries": 0}},
+    )
+    source.add(
+        pa.Table.from_arrays(
+            [
+                pa.array([0, 1, 2], type=pa.int64()),
+                pa.array([b"large blob", b"", None], type=pa.large_binary()),
+            ],
+            names=["id", "image"],
         )
-        registration = await db.create_function_async(normalize_score)
-        created = await registration.wait()
-        state["requests"].clear()
-        functions = await db.list_functions()
+    )
+    input_hits = (
+        source.search()
+        .with_row_id(True)
+        .limit(3)
+        .to_arrow()
+        .sort_by([("id", "ascending")])
+    )
+    hydrated = source.fetch_blobs("image", input_hits)
+    assert isinstance(hydrated, pa.LargeBinaryArray)
+    result = _execute_registered_array_udf_v1(
+        registration,
+        pa.RecordBatch.from_arrays([hydrated], names=["image"]),
+    )
+    assert result.to_pylist() == [b"copy:large blob", b"copy:", b"missing"]
 
-    assert functions == [created]
-    assert [path for path, _ in state["requests"]] == [
-        "/v1/namespace/$/function/list",
-        "/v1/namespace/$/function/list",
+    published = local.create_table(
+        "blob_output",
+        schema=pa.schema(
+            [pa.field("id", pa.int64()), lancedb.blob("copy", nullable=False)]
+        ),
+    )
+    published.add(
+        pa.Table.from_arrays(
+            [pa.array(range(len(result)), type=pa.int64()), result],
+            names=["id", "copy"],
+        )
+    )
+    output_hits = (
+        published.search()
+        .with_row_id(True)
+        .limit(3)
+        .to_arrow()
+        .sort_by([("id", "ascending")])
+    )
+    assert published.fetch_blobs("copy", output_hits).to_pylist() == [
+        b"copy:large blob",
+        b"copy:",
+        b"missing",
     ]
 
 
-def test_remote_drop_function_sends_exact_version():
+@pytest.mark.parametrize(
+    ("declared_list", "physical_list", "array_type", "declared_name"),
+    [
+        (pa.list_, pa.list_, pa.ListArray, "list"),
+        (pa.large_list, pa.large_list, pa.LargeListArray, "large_list"),
+    ],
+    ids=["list", "large_list"],
+)
+def test_blob_list_output_fresh_artifact_survives_local_reopen(
+    tmp_path, declared_list, physical_list, array_type, declared_name
+):
+    input_type = physical_list(pa.int64())
+    item = lancedb.blob("item", nullable=True)
+
+    @udf(
+        input_schema=pa.schema([pa.field("frames", input_type, nullable=False)]),
+        output_schema=pa.field("frames", declared_list(item), nullable=False),
+    )
+    def extract_frames(frames: pa.Array) -> pa.Array:
+        output_type = (
+            pa.large_list(pa.large_binary())
+            if isinstance(frames, pa.LargeListArray)
+            else pa.list_(pa.large_binary())
+        )
+        return pa.array([[b"abc", None, b""], []], type=output_type)
+
+    request = json.loads(extract_frames.registration_request.to_canonical_json())
+    declared = json.loads(request["signature"]["output"]["arrow_type"])
+    assert declared["type"] == declared_name
+    item_field = declared["fields"][0]
+    assert item_field["metadata"]["ARROW:extension:name"] == "lance.blob.v2"
+
+    result = _execute_registered_array_udf_v1(
+        request,
+        pa.RecordBatch.from_arrays(
+            [pa.array([[0], [1]], type=input_type)],
+            names=["frames"],
+        ),
+    )
+    assert isinstance(result, array_type)
+    assert result.type == physical_list(pa.large_binary())
+    assert result.offsets.to_pylist() == [0, 3, 3]
+    assert result.values.to_pylist() == [b"abc", None, b""]
+    assert result.to_pylist() == [[b"abc", None, b""], []]
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "fresh_artifact_frames",
+        schema=pa.schema(
+            [
+                pa.field("id", pa.int64(), nullable=False),
+                pa.field("frames", declared_list(item), nullable=False),
+            ]
+        ),
+    )
+    table.add(
+        pa.Table.from_arrays(
+            [pa.array([1, 2], type=pa.int64()), result],
+            names=["id", "frames"],
+        )
+    )
+
+    reopened = lancedb.connect(tmp_path).open_table("fresh_artifact_frames")
+    reopened_item = reopened.schema.field("frames").type.value_field
+    assert reopened_item.type.extension_name == "lance.blob.v2"
+    assert reopened.blob_columns() == []
+    hits = reopened.search().limit(2).to_arrow().sort_by([("id", "ascending")])
+    lists = hits["frames"].combine_chunks()
+    assert isinstance(lists, array_type)
+    assert lists.offsets.to_pylist() == [0, 3, 3]
+
+    rows = lists.to_pylist()
+    assert rows[1] == []
+    assert [None if value is None else value["size"] for value in rows[0]] == [
+        3,
+        None,
+        0,
+    ]
+
+
+def test_a_function_namespace_path_must_be_a_list_of_segments():
+    """A bare string is refused rather than read as a sequence of one-character
+    segments, and nothing reaches the service."""
     with _mock_remote_function_catalog() as (host, state):
         db = lancedb.connect(
             "db://dev",
@@ -1392,30 +2098,25 @@ def test_remote_drop_function_sends_exact_version():
             host_override=host,
             client_config={"retry_config": {"retries": 0}},
         )
-        assert db.drop_function("normalize_score", version="fv_exact") is True
+        with pytest.raises(TypeError):
+            list(db.list_functions(namespace_path="analytics"))
 
-    assert state["requests"] == [
-        (
-            "/v1/function/normalize_score/drop",
-            {"version": "fv_exact"},
-        )
-    ]
+    assert state["requests"] == []
 
 
-@pytest.mark.asyncio
-async def test_async_remote_drop_function_sends_exact_version():
-    with _mock_remote_function_catalog() as (host, state):
-        db = await lancedb.connect_async(
-            "db://dev",
-            api_key="fake",
-            host_override=host,
-            client_config={"retry_config": {"retries": 0}},
-        )
-        assert await db.drop_function("normalize_score", version="fv_exact") is True
+def test_one_explicit_schema_infers_the_other_from_annotations():
+    @udf(input_schema=pa.schema([pa.field("value", pa.int64())]))
+    def explicit_input(value) -> float:
+        return float(value or 0)
 
-    assert state["requests"] == [
-        (
-            "/v1/function/normalize_score/drop",
-            {"version": "fv_exact"},
-        )
-    ]
+    @udf(output_schema=pa.field("result", pa.float32(), nullable=False))
+    def explicit_output(value: Optional[int]):
+        return float(value or 0)
+
+    for fn in (explicit_input, explicit_output):
+        signature = fn.registration_request.signature
+        assert [(p.name, p.arrow_type, p.nullable) for p in signature.inputs] == [
+            ("value", "int64", True)
+        ]
+    assert explicit_input.registration_request.signature.output.arrow_type == "float64"
+    assert explicit_output.registration_request.signature.output.arrow_type == "float32"

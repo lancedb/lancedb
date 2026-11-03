@@ -1,0 +1,142 @@
+---
+title: "Deduplicate near-duplicate records"
+sidebarTitle: "Dedupe"
+description: "Collapse records that are only approximately alike, judged by embedding distance, without a pairwise scan."
+icon: clone
+keywords: ["dedupe", "duplicate_pairs", "deduplication", "near-duplicate", "embedding", "distance_threshold"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+[Ranking and deduplication](/curation/windowing#dedup) removes records by an
+explicit rule, such as keeping the latest version of a known key. This page
+covers the other kind of duplicate: records with no shared key that are still
+nearly identical, judged by distance between their embeddings -- a stopped
+camera holding one pose for a few seconds, or two scraped pages with the same
+paragraph reworded. `dedupe` and `duplicate_pairs` find these directly over a
+vector index, without a pairwise scan.
+
+## Example data {#example-data}
+
+Connect with an [Enterprise connection](/basics/catalog#enterprise). A small
+fixture keeps the distances easy to check by hand.
+
+<Accordion title="Create the example table">
+
+`curation_embeddings` has eight records. Rows 10 and 20 are near-identical;
+rows 30, 40 and 50 form one looser cluster; the rest are distinct.
+
+<CodeGroup>
+```python Python icon="python"
+import pyarrow as pa
+from lancedb.index import IvfFlat
+
+schema = pa.schema([
+    pa.field("id", pa.int64(), nullable=False),
+    pa.field("caption", pa.utf8()),
+    pa.field("embedding", pa.list_(pa.float32(), 2)),
+])
+table = db.create_table("curation_embeddings", [
+    {"id": 10, "caption": "a cat on a chair",     "embedding": [0.0, 0.0]},
+    {"id": 20, "caption": "a cat on the chair",    "embedding": [0.0, 0.03]},
+    {"id": 30, "caption": "a dog in a field",      "embedding": [5.0, 5.0]},
+    {"id": 40, "caption": "a dog in the field",    "embedding": [5.0, 5.05]},
+    {"id": 50, "caption": "a dog out in a field",  "embedding": [5.0, 5.10]},
+    {"id": 60, "caption": "a bird in a tree",      "embedding": [10.0, 10.0]},
+    {"id": 70, "caption": "a boat on the water",   "embedding": [20.0, 20.0]},
+    {"id": 80, "caption": "a car on the road",     "embedding": [30.0, 30.0]},
+], schema=schema)
+
+table.create_index("embedding", config=IvfFlat(num_partitions=1, distance_type="l2"))
+table.wait_for_index(["embedding_idx"])
+```
+</CodeGroup>
+
+`dedupe` and `duplicate_pairs` read the vector index, so the column needs one
+before either function runs; a query against unindexed fragments is rejected
+rather than silently returning stale or wrong results.
+
+</Accordion>
+
+## Collapse near-duplicates {#dedupe}
+
+`dedupe` returns one representative row per cluster of records within
+`distance_threshold` of each other -- rows 10/20 collapse to one, 30/40/50
+collapse to one, and the four distinct rows pass through unchanged:
+
+<CodeGroup>
+```python Python icon="python"
+reader = db.execute_query("""
+    SELECT id, caption FROM dedupe('curation_embeddings', 'embedding', distance_threshold => 0.06)
+    ORDER BY id
+""")
+print(reader.read_all().to_pylist())
+# [{'id': 10, 'caption': 'a cat on a chair'}, {'id': 30, 'caption': 'a dog in a field'},
+#  {'id': 60, ...}, {'id': 70, ...}, {'id': 80, ...}]
+```
+</CodeGroup>
+
+Every other column survives unchanged, since `dedupe` returns full rows, not
+just which ones matched. Clustering is transitive: 30 and 40 are within
+`distance_threshold` of each other, and so are 40 and 50, so all three
+collapse into one representative even though 30 and 50 alone sit outside the
+threshold. Pass `resolution => 'direct_representative'`
+for a simpler, non-transitive selection instead, if a chained cluster like that
+should not merge into one representative.
+
+Which row survives as the representative is not guaranteed to stay the same
+across appends: a later row that bridges two previously separate clusters can
+change which id represents the merged cluster. Do not treat a representative's
+id as a stable identifier for its cluster.
+
+## Inspect the pairs instead {#pairs}
+
+`duplicate_pairs` returns the matching edges themselves, without collapsing
+anything -- useful for review, or for a threshold that is still being tuned:
+
+<CodeGroup>
+```python Python icon="python"
+db.execute_query("""
+    SELECT id_a, id_b, distance FROM duplicate_pairs(
+        'curation_embeddings', 'embedding', distance_threshold => 0.06, id_column => 'id'
+    )
+    ORDER BY id_a
+""")
+```
+</CodeGroup>
+
+This returns the pairs `(10, 20)`, `(30, 40)` and `(40, 50)` -- note 30 and 50
+are not a direct pair here (they sit `0.10` apart, outside the threshold),
+even though `dedupe` merges all three transitively above.
+
+## Keep it current with a materialized view {#materialized}
+
+Wrap either call in a [materialized view](/management/materialized-view) so
+the deduplicated set stays current as new records arrive, instead of
+recomputing it from scratch on every curation pass:
+
+<CodeGroup>
+```python Python icon="python"
+db.execute_query("""
+    CREATE MATERIALIZED VIEW curation_embeddings_deduped AS
+    SELECT * FROM dedupe('curation_embeddings', 'embedding', distance_threshold => 0.06)
+""")
+```
+</CodeGroup>
+
+See [Refresh a materialized view](/feature-engineering/refresh-materialized-view)
+for manual and automatic refresh options to keep it current as new records land.
+
+## At production scale {#production}
+
+[LeRobotDataset](/integrations/lerobotdataset) runs the same `dedupe`
+call over 27.6 million real embedding rows to remove near-static frames from a
+robotics training set in under 30 seconds -- the mechanism does not change
+with scale, only the table it runs against.
+
+## Continue with the curated data {#next}
+
+[Profile the result](/curation/aggregate) to check how much a threshold
+removes before committing to it, or go back to
+[choosing a curation task](/curation#questions).

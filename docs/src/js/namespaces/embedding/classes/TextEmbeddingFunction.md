@@ -37,7 +37,7 @@ new TextEmbeddingFunction<M>(): TextEmbeddingFunction<M>
 ### computeQueryEmbeddings()
 
 ```ts
-computeQueryEmbeddings(data): Promise<number[] | Uint8Array | Float32Array | Float64Array>
+computeQueryEmbeddings(data): Promise<Float32Array | Float64Array | Uint8Array | number[]>
 ```
 
 Compute the embeddings for a single query
@@ -48,7 +48,7 @@ Compute the embeddings for a single query
 
 #### Returns
 
-`Promise`&lt;`number`[] \| `Uint8Array` \| `Float32Array` \| `Float64Array`&gt;
+`Promise`&lt;`Float32Array` \| `Float64Array` \| `Uint8Array` \| `number`[]&gt;
 
 #### Overrides
 
