@@ -29,15 +29,23 @@ export interface JobProgress {
    * Planned, computed, skipped, remaining, and failed row counters, when the
    * server reports them.
    */
+  // biome-ignore lint/style/useNamingConvention: server wire format
   rows_planned?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
   rows_computed?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
   rows_skipped?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
   rows_remaining?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
   rows_failed?: number | null;
   /** Execution identity and sample time used for client-side ETA derivation. */
+  // biome-ignore lint/style/useNamingConvention: server wire format
   execution_epoch?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
   sample_at_millis?: number | null;
   /** Best-effort remaining milliseconds, present only for a reliable sample. */
+  // biome-ignore lint/style/useNamingConvention: server wire format
   estimated_remaining_time_millis?: number;
   /** Retain job-type-specific and newer-server fields without interpretation. */
   [field: string]: unknown;

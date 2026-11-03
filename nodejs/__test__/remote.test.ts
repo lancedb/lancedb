@@ -32,8 +32,8 @@ import {
   StaticHeaderProvider,
 } from "../lancedb/header";
 import { Index } from "../lancedb/indices";
-import { LocalTable } from "../lancedb/table";
 import type { JobProgress } from "../lancedb/job";
+import { LocalTable } from "../lancedb/table";
 
 // Test-only header providers
 class CustomProvider extends HeaderProvider {
@@ -1475,9 +1475,9 @@ describe("remote connection jobs surface", () => {
               .end(
                 '{"job_id": "job-1", "job_type": "create_index", ' +
                   '"job_state": "FAILED", "creation_ms": 1000, ' +
-                    '"progress": {"rows_planned": 4, "rows_computed": 2, ' +
-                    '"vendor_extension": "kept"}, ' +
-                    '"phase": "running", ' +
+                  '"progress": {"rows_planned": 4, "rows_computed": 2, ' +
+                  '"vendor_extension": "kept"}, ' +
+                  '"phase": "running", ' +
                   '"spec": {"column": "vec"}, "failure": {"phase": "execute", ' +
                   '"message": "worker died", "retryable": true}}',
               );
