@@ -5,6 +5,7 @@
 
 import asyncio
 import json
+import time
 from datetime import timedelta
 from typing import Any, Callable, Generic, Optional, TypeVar, cast
 
@@ -49,6 +50,107 @@ def _timeout_message(
     )
 
 
+def _normalize_job_progress(progress):
+    """Normalize ``wait(progress=...)`` using the same convention as writes."""
+    if progress is True:
+        from tqdm.auto import tqdm
+
+        return tqdm(unit=" rows"), True
+    if progress is False or progress is None:
+        return None, False
+    return progress, False
+
+
+_ETA_MAX_SAMPLE_INTERVAL_MILLIS = 10 * 60 * 1_000
+
+
+def _progress_eta(previous, current):
+    """Best-effort remaining time from two same-execution observations."""
+    if not previous or current.get("state") not in ("running", "finished"):
+        return None
+    remaining = current.get("rows_remaining")
+    if current.get("state") == "finished":
+        return 0 if remaining == 0 else None
+    if current.get("paused") or current.get("phase") in (
+        "queued",
+        "starting",
+        "paused",
+    ):
+        return None
+    epoch = current.get("execution_epoch")
+    if epoch is None or previous.get("execution_epoch") != epoch:
+        return None
+    sample_at = current.get("sample_at_millis")
+    previous_at = previous.get("sample_at_millis")
+    if not isinstance(sample_at, int) or not isinstance(previous_at, int):
+        return None
+    elapsed = sample_at - previous_at
+    if not 0 < elapsed <= _ETA_MAX_SAMPLE_INTERVAL_MILLIS:
+        return None
+    if time.time() * 1_000 - sample_at > _ETA_MAX_SAMPLE_INTERVAL_MILLIS:
+        return None
+    planned = current.get("rows_planned")
+    if not isinstance(planned, int) or not isinstance(remaining, int):
+        return None
+    if remaining == 0:
+        return 0
+    if planned != previous.get("rows_planned"):
+        return None
+    if current.get("fragments_planned") != previous.get("fragments_planned"):
+        return None
+    accounted = current.get("rows_computed", 0) + current.get("rows_skipped", 0)
+    previous_accounted = previous.get("rows_computed", 0) + previous.get(
+        "rows_skipped", 0
+    )
+    advanced = accounted - previous_accounted
+    previous_remaining = previous.get("rows_remaining")
+    if advanced <= 0 or not isinstance(previous_remaining, int):
+        return None
+    if remaining > previous_remaining:
+        return None
+    return remaining * elapsed // advanced
+
+
+def _with_progress_eta(previous, current):
+    snapshot = dict(current)
+    estimate = _progress_eta(previous, snapshot)
+    if estimate is not None:
+        snapshot["estimated_remaining_time_millis"] = estimate
+    return snapshot
+
+
+def _job_progress_callback(progress):
+    """Adapt a callback or tqdm-like object to structured job snapshots."""
+    if progress is None:
+        return None
+    if callable(progress):
+        return progress
+
+    last_rows = 0
+    total_set = False
+    previous_snapshot = None
+
+    def update(snapshot):
+        nonlocal last_rows, total_set, previous_snapshot
+        snapshot = _with_progress_eta(previous_snapshot, snapshot)
+        previous_snapshot = snapshot
+        planned = snapshot.get("rows_planned")
+        computed = snapshot.get("rows_computed")
+        if planned is not None and not total_set:
+            progress.total = planned
+            total_set = True
+        if computed is not None:
+            delta = max(computed - last_rows, 0)
+            last_rows = computed
+            if delta:
+                progress.update(delta)
+        phase = snapshot.get("phase")
+        if phase is not None and hasattr(progress, "set_postfix_str"):
+            progress.set_postfix_str(phase)
+
+    return update
+
+
 class AsyncJob(Generic[T]):
     """A handle to an operation that may still be running.
 
@@ -64,6 +166,7 @@ class AsyncJob(Generic[T]):
     ):
         self._inner = inner
         self._result_decoder = result_decoder
+        self._last_progress_snapshot = None
 
     @property
     def id(self) -> Optional[str]:
@@ -88,7 +191,32 @@ class AsyncJob(Generic[T]):
             return "finished"
         return await self._inner.status()
 
-    async def wait(self, timeout: Optional[timedelta] = None) -> T:
+    async def progress(self) -> Optional[dict[str, Any]]:
+        """Fetch a structured progress snapshot.
+
+        Registry jobs always report lifecycle and queue fields. Job types that
+        publish counters include them in the same mapping; older servers and
+        in-process operations omit them. A missing counter is unknown rather
+        than zero. This is additive to :meth:`status`, whose string contract is
+        unchanged.
+        """
+        if self._inner is None:
+            return None
+        await self._inner.status()
+        description = self._inner._description
+        if description is None or description.progress is None:
+            return None
+        snapshot = _with_progress_eta(
+            self._last_progress_snapshot, description.progress
+        )
+        self._last_progress_snapshot = snapshot
+        return snapshot
+
+    async def wait(
+        self,
+        timeout: Optional[timedelta] = None,
+        progress: Any = False,
+    ) -> T:
         """Wait until the operation reaches a terminal state.
 
         Returns the endpoint's typed result, or ``None`` for a unit-result
@@ -109,6 +237,8 @@ class AsyncJob(Generic[T]):
         """
         if self._inner is None:
             return cast(T, None)
+        progress_obj, owns = _normalize_job_progress(progress)
+        progress_callback = _job_progress_callback(progress_obj)
         last_error = None
 
         async def wait_with_retries():
@@ -122,7 +252,9 @@ class AsyncJob(Generic[T]):
                         await self._inner.status()
                         last_error = None
                         delay = 0.25
-                    return await self._inner.wait()
+                    if progress_callback is None:
+                        return await self._inner.wait()
+                    return await self._inner.wait(progress=progress_callback)
                 except (HttpError, RetryError) as error:
                     cause = error.__cause__ if isinstance(error, RetryError) else error
                     if not isinstance(cause, HttpError) or not cause.is_transport_error:
@@ -132,32 +264,38 @@ class AsyncJob(Generic[T]):
                 delay = min(delay * 2, 30.0)
 
         try:
-            if timeout is None:
-                result = await wait_with_retries()
-            else:
-                result = await asyncio.wait_for(
-                    wait_with_retries(), timeout.total_seconds()
-                )
-        except asyncio.TimeoutError as error:
-            if last_error is None:
+            try:
                 if timeout is None:
-                    raise
-                raise TimeoutError(
-                    _timeout_message(self.id, timeout, self.job_type)
-                ) from error
-            identity = f"job {self.id!r}" if self.id is not None else "the operation"
-            if self.id is not None and self.job_type != "query":
-                reconnect = (
-                    f"Use db.open_job({self.id!r}) to reconnect, then call wait() "
-                    "on the returned job."
+                    result = await wait_with_retries()
+                else:
+                    result = await asyncio.wait_for(
+                        wait_with_retries(), timeout.total_seconds()
+                    )
+            except asyncio.TimeoutError as error:
+                if last_error is None:
+                    if timeout is None:
+                        raise
+                    raise TimeoutError(
+                        _timeout_message(self.id, timeout, self.job_type)
+                    ) from error
+                identity = (
+                    f"job {self.id!r}" if self.id is not None else "the operation"
                 )
-            else:
-                reconnect = "Call wait() on this job handle to reconnect."
-            raise ConnectionError(
-                f"Lost connection while waiting and the timeout expired; "
-                f"{identity} may still be running. "
-                f"{reconnect}"
-            ) from last_error
+                if self.id is not None and self.job_type != "query":
+                    reconnect = (
+                        f"Use db.open_job({self.id!r}) to reconnect, then call wait() "
+                        "on the returned job."
+                    )
+                else:
+                    reconnect = "Call wait() on this job handle to reconnect."
+                raise ConnectionError(
+                    f"Lost connection while waiting and the timeout expired; "
+                    f"{identity} may still be running. "
+                    f"{reconnect}"
+                ) from last_error
+        finally:
+            if owns:
+                progress_obj.close()
         if self._result_decoder is not None:
             return self._result_decoder(result)
         return cast(T, result)
@@ -340,7 +478,11 @@ class Job(Generic[T]):
             return "finished"
         return LOOP.run(self._inner.status())
 
-    def wait(self, timeout: Optional[timedelta] = None) -> T:
+    def wait(
+        self,
+        timeout: Optional[timedelta] = None,
+        progress: Any = False,
+    ) -> T:
         """Block until the operation reaches a terminal state.
 
         Returns the endpoint's typed result, or ``None`` for a unit-result
@@ -361,7 +503,13 @@ class Job(Generic[T]):
         """
         if self._inner is None:
             return cast(T, None)
-        return LOOP.run(self._inner.wait(timeout))
+        return LOOP.run(self._inner.wait(timeout, progress=progress))
+
+    def progress(self) -> Optional[dict[str, Any]]:
+        """Fetch a structured progress snapshot. See :meth:`AsyncJob.progress`."""
+        if self._inner is None:
+            return None
+        return LOOP.run(self._inner.progress())
 
     def cancel(self):
         """Request cancellation. Cancelling a finished operation is a no-op."""

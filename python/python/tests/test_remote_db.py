@@ -4902,6 +4902,9 @@ def test_remote_connection_jobs_surface():
                             job_type="create_index",
                             state="in_progress",
                             created_at_millis=1000,
+                            progress=dict(rows_planned=10, rows_computed=4),
+                            phase="running",
+                            paused=True,
                         )
                     ],
                     page_token="next",
@@ -4955,6 +4958,11 @@ def test_remote_connection_jobs_surface():
                         job_state="FAILED",
                         creation_ms=1000,
                         spec=dict(column="vec"),
+                        progress=dict(rows_planned=10, rows_computed=4),
+                        phase="initializing",
+                        queue_reason="waiting for capacity",
+                        waiting_for_job_id="job-maintenance",
+                        paused_at_millis=1200,
                         failure=dict(
                             phase="execute", message="worker died", retryable=True
                         ),
@@ -5005,6 +5013,16 @@ def test_remote_connection_jobs_surface():
         assert [job.job_id for job in jobs] == ["job-1", "job-2"]
         assert jobs[0].state == "running"
         assert jobs[0].table == "t1"
+        assert jobs[0].progress == {
+            "job_type": "create_index",
+            "state": "running",
+            "creation_ms": 1000,
+            "paused": True,
+            "phase": "running",
+            "rows_planned": 10,
+            "rows_computed": 4,
+        }
+        assert jobs[0].paused is True
         assert jobs[1].state == "finished"
 
         assert db.cancel_job("job-1") is True
@@ -5025,13 +5043,23 @@ def test_remote_connection_jobs_surface():
         # Opening already populated the handle.
         assert job.state == "failed"
         assert job.spec == {"column": "vec"}
+        progress = job.progress()
+        assert progress["state"] == "failed"
+        assert progress["rows_computed"] == 4
+        assert progress["phase"] == "initializing"
+        assert progress["queue_reason"] == "waiting for capacity"
+        assert progress["waiting_for_job_id"] == "job-maintenance"
+        assert progress["paused_at_millis"] == 1200
         assert job.failure.message == "worker died"
         assert repr(job.failure) == (
             'JobFailureInfo(phase="execute", message="worker died", retryable=True)'
         )
         assert job.status() == "failed"
+        observed = []
         with pytest.raises(JobFailedError, match="worker died"):
-            job.wait(timeout=timedelta(seconds=5))
+            job.wait(timeout=timedelta(seconds=5), progress=observed.append)
+        assert observed[0]["state"] == "failed"
+        assert observed[0]["rows_computed"] == 4
 
 
 def test_remote_job_handle_reports_its_own_detail():

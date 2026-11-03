@@ -5,7 +5,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use arrow_array::RecordBatch;
 use async_trait::async_trait;
@@ -17,6 +17,11 @@ use uuid::Uuid;
 
 use crate::database::JobDescription;
 use crate::error::{Error, JobFailure, Result};
+
+/// Observer called with each description fetched by a job's existing wait
+/// poller. Keeping this callback on the poller avoids a second lifecycle or
+/// retry loop just to render progress.
+pub type JobProgressCallback = Arc<Mutex<dyn FnMut(&JobDescription) + Send>>;
 
 /// Which of a job's events [`Job::events`] returns.
 ///
@@ -65,6 +70,14 @@ pub(crate) trait JobHandle: Send + Sync {
     }
     async fn status(&self) -> Result<String>;
     async fn wait(&self) -> Result<TerminalResult>;
+    /// Wait while observing descriptions from the same backend poller.
+    /// Backends without a server-side record keep the default behavior.
+    async fn wait_with_progress(
+        &self,
+        _progress: Option<JobProgressCallback>,
+    ) -> Result<TerminalResult> {
+        self.wait().await
+    }
     async fn cancel(&self) -> Result<()>;
     /// The job's full server-side record. Backends that run the operation in
     /// this process have none and keep the default.
@@ -366,6 +379,15 @@ where
         self.refresh_state().await
     }
 
+    /// The current structured progress snapshot, or `None` for an in-process
+    /// operation. This refreshes the server-side record once, matching
+    /// [`Job::status`]; older servers return lifecycle and queue fields without
+    /// job-type-specific counters.
+    pub async fn progress(&self) -> Result<Option<Value>> {
+        self.refresh_state().await?;
+        Ok(self.with_description(JobDescription::progress_snapshot))
+    }
+
     /// The last lifecycle state this handle observed, without contacting the
     /// backend. `None` until the handle has.
     pub fn state(&self) -> Option<String> {
@@ -447,9 +469,25 @@ where
     /// Returns [`crate::Error::JobFailed`] if the operation failed and
     /// [`crate::Error::JobCancelled`] if it was cancelled.
     pub async fn wait(&self) -> Result<T> {
+        self.wait_with_progress_opt(None).await
+    }
+
+    /// Wait for the operation while observing progress from the backend's
+    /// existing wait poller. The callback is called once for each description
+    /// the poller fetches, including the terminal observation when the server
+    /// supplies one. It does not create another lifecycle or retry loop.
+    pub async fn wait_with_progress<F>(&self, progress: F) -> Result<T>
+    where
+        F: FnMut(&JobDescription) + Send + 'static,
+    {
+        self.wait_with_progress_opt(Some(Arc::new(Mutex::new(progress))))
+            .await
+    }
+
+    async fn wait_with_progress_opt(&self, progress: Option<JobProgressCallback>) -> Result<T> {
         match &self.inner {
             JobInner::Handle { handle, decode } => {
-                let settled = handle.wait().await;
+                let settled = handle.wait_with_progress(progress).await;
                 // Waiting already established a terminal state; record it so
                 // the detail accessors do not need another round trip for it.
                 if let Some(state) = terminal_state(&settled) {
