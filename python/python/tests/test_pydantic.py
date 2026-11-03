@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import json
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from enum import Enum
 from typing import List, Literal, Optional, Tuple
 
@@ -1204,7 +1204,10 @@ def test_literal_time_and_timedelta_types():
         tags: List[Literal["a", "b"]]
         opt_status: Optional[Literal["todo", "done"]] = None
         starts: time
+        starts_list: List[time]
+        opt_starts: Optional[time] = None
         duration: timedelta
+        durations: List[timedelta]
 
     schema = pydantic_to_schema(TestModel)
 
@@ -1215,12 +1218,24 @@ def test_literal_time_and_timedelta_types():
     assert schema.field("opt_status").type == pa.utf8()
     assert schema.field("opt_status").nullable
     assert schema.field("starts").type == pa.time64("us")
+    assert schema.field("starts_list").type == pa.list_(pa.time64("us"))
+    assert schema.field("opt_starts").type == pa.time64("us")
+    assert schema.field("opt_starts").nullable
     assert schema.field("duration").type == pa.duration("us")
+    assert schema.field("durations").type == pa.list_(pa.duration("us"))
 
 
-def test_literal_with_mixed_value_types_raises_type_error():
-    class TestModel(pydantic.BaseModel):
-        value: Literal["a", 1]
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        Literal["a", 1],
+        Optional[Literal["a", 1]],
+        List[Literal["a", 1]],
+    ],
+    ids=["field", "optional", "list"],
+)
+def test_literal_with_mixed_value_types_raises_type_error(annotation):
+    TestModel = pydantic.create_model("TestModel", value=(annotation, ...))
 
     with pytest.raises(TypeError, match="same type"):
         pydantic_to_schema(TestModel)
@@ -1251,3 +1266,39 @@ def test_literal_time_and_timedelta_round_trip(mem_db):
     tbl.add(rows)
 
     assert tbl.search().to_pydantic(TestModel) == rows
+
+
+@pytest.mark.parametrize("container", ["field", "list", "nested", "enum"])
+def test_tz_aware_time_is_rejected_before_write(mem_db, container):
+    class Nested(LanceModel):
+        starts: time
+
+    aware = time(9, 30, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+    AwareTime = Enum("AwareTime", {"MORNING": aware})
+    Model = pydantic.create_model(
+        "TestModel",
+        __base__=LanceModel,
+        **{
+            container: {
+                "field": (time, ...),
+                "list": (List[time], ...),
+                "nested": (Nested, ...),
+                "enum": (AwareTime, ...),
+            }[container]
+        },
+    )
+    row = Model(
+        **{
+            container: {
+                "field": aware,
+                "list": [aware],
+                "nested": Nested(starts=aware),
+                "enum": AwareTime.MORNING,
+            }[container]
+        }
+    )
+
+    table_name = f"timezone_aware_{container}"
+    with pytest.raises(ValueError, match="timezone-naive wall-clock.*tzinfo"):
+        mem_db.create_table(table_name, data=[row])
+    assert table_name not in mem_db.table_names()
