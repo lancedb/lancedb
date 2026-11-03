@@ -70,7 +70,7 @@ case "$suite" in
     run pnpm-build pnpm build
     run node-tests pnpm test -- __test__/remote.test.ts __test__/connection.test.ts
     run node-lint pnpm lint
-    run node-docs pnpm docs
+    run node-docs pnpm run docs
     cd ..
     run rust-clippy mbx +1.97.0 clippy -p lancedb-nodejs --no-deps --tests \
       --locked -- -D warnings --no-deps
