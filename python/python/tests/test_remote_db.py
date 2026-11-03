@@ -5318,6 +5318,24 @@ def test_property_graph_crud_addresses_its_own_routes():
     ]
 
 
+def test_remote_add_columns_reader_not_supported():
+    requests = []
+
+    def handler(request):
+        requests.append(request.path)
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(b'{"version": 1, "schema": {"fields": []}}')
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.open_table("test")
+        requests.clear()
+        with pytest.raises(NotImplementedError, match="Only SQL expressions"):
+            table.add_columns(pa.table({"score": [10]}).to_reader())
+        assert all("/add_columns/" not in path for path in requests)
+
+
 @pytest.mark.asyncio
 async def test_async_property_graph_handles():
     calls = []
