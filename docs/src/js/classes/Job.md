@@ -248,7 +248,10 @@ Wait until the operation reaches a terminal state.
 
 The optional callback observes the same snapshots fetched by the backend
 poller that drives completion; it does not start another poller. Without a
-callback, this preserves the original wait behavior.
+callback, this preserves the original wait behavior. The callback is a
+synchronous observer: its return value is ignored and not awaited. If it
+throws, the error is logged with `console.warn` and waiting continues; a
+callback exception does not reject `wait`.
 
 #### Parameters
 
