@@ -211,7 +211,7 @@ class AsyncJob(Generic[T]):
         if self._inner is None:
             return None
         await self._inner.status()
-        description = self._inner._description
+        description = getattr(self._inner, "_description", None)
         if description is None or description.progress is None:
             return None
         snapshot = _with_progress_eta(

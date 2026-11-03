@@ -243,6 +243,9 @@ class _ProgressJob:
     id = "job-progress"
     job_type = "refresh_column"
 
+    async def status(self):
+        return "finished"
+
     async def wait(self, progress=None):
         if progress is not None:
             progress({"state": "running", "rows_planned": 4, "rows_computed": 2})
@@ -288,6 +291,7 @@ async def test_progress_is_additive_to_string_status_and_returns_none_locally():
     assert await job.status() == "running"
     assert await job.progress() == {"state": "running", "rows_computed": 2}
     assert await AsyncJob(None).progress() is None
+    assert await AsyncJob(_ProgressJob()).progress() is None
     assert Job(AsyncJob(None)).progress() is None
 
 
