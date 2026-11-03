@@ -16,7 +16,6 @@ availability:
 | `USAGE` | database | accessing the namespaces inside |
 | `USAGE` | namespace | accessing the tables inside |
 | `USAGE` | secret | binding it to a Function, and resolving its value at evaluation time |
-| `USAGE` | function | binding it to a column, and refreshing a column it computes |
 | `USAGE` | storage integration | reading through it or importing with it |
 | `SELECT` | table, view | reading rows |
 | `INSERT` | table | appending rows |
@@ -29,9 +28,16 @@ availability:
 | `CREATE_MATERIALIZED_VIEW` | namespace | creating a materialized view in it |
 | `CREATE_VIEW` | namespace | creating a non-materialized view in it |
 | `CREATE_SECRET` | namespace | creating a Secret in it |
-| `CREATE_FUNCTION` | namespace | registering a Function in it |
 | `CREATE_STORAGE_INTEGRATION` | namespace | registering a storage integration in it |
 | `OPERATE` | system | controlling jobs (cancel, pause, resume), managing caches, reading server configuration, and managing role membership |
+
+{/*
+Draft for the Functions release. Add these rows to the table above.
+After the `USAGE` row for secret:
+| `USAGE` | function | binding it to a column, and refreshing a column it computes |
+After the `CREATE_SECRET` row:
+| `CREATE_FUNCTION` | namespace | registering a Function in it |
+*/}
 
 `OWNERSHIP` is never revoked -- granting it again transfers it to a new
 owner instead, and a single `GRANT OWNERSHIP` statement names exactly one
@@ -58,7 +64,7 @@ has not been created yet.
 
 `GRANT` and `REVOKE` reach every object in the table above -- `SYSTEM`,
 `DATABASE`, `SCHEMA`, `NAMESPACE <name> [IN <schema>]`, `TABLE`, `VIEW`,
-`MATERIALIZED VIEW`, `SECRET`, `STORAGE INTEGRATION`, and `FUNCTION` --
+`MATERIALIZED VIEW`, `SECRET`, and `STORAGE INTEGRATION` --
 with the same statement shape. `SCHEMA` and `NAMESPACE` both target a
 namespace, but aren't interchangeable spellings: `SCHEMA` takes a
 namespace's complete path, while `NAMESPACE` takes one unqualified
@@ -72,10 +78,9 @@ GRANT USAGE, CREATE SCHEMA ON DATABASE analytics TO ROLE readers
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE events TO ROLE etl
 GRANT SELECT ON VIEW dashboard TO ROLE analysts
 GRANT SELECT, UPDATE ON MATERIALIZED VIEW daily_rollup TO ROLE analysts
-GRANT CREATE SECRET, CREATE FUNCTION ON SCHEMA platform TO ROLE platform_admins
+GRANT CREATE SECRET ON SCHEMA platform TO ROLE platform_admins
 GRANT USAGE, UPDATE ON SECRET platform.`openai-prod` TO ROLE etl, rotation_service
 GRANT OWNERSHIP ON SECRET platform.`openai-prod` TO ROLE platform_admins
-GRANT USAGE ON FUNCTION platform.embed TO ROLE etl
 GRANT USAGE ON STORAGE INTEGRATION platform.hub TO ROLE research
 REVOKE UPDATE ON SECRET platform.`openai-prod` FROM ROLE etl
 ```
@@ -89,11 +94,10 @@ granting one does not reach the non-materialized `VIEW` beside it.
 | --- | --- |
 | `SYSTEM` | `OPERATE`, `CREATE DATABASE`, `USAGE` -- no `OWNERSHIP`; the system itself has no owner |
 | `DATABASE` | `OWNERSHIP`, `USAGE`, `CREATE SCHEMA` (or `CREATE NAMESPACE`) |
-| `SCHEMA` / `NAMESPACE` | `OWNERSHIP`, `USAGE`, `CREATE NAMESPACE`, `CREATE TABLE`, `CREATE MATERIALIZED VIEW`, `CREATE VIEW`, `CREATE SECRET`, `CREATE STORAGE INTEGRATION`, `CREATE FUNCTION` |
+| `SCHEMA` / `NAMESPACE` | `OWNERSHIP`, `USAGE`, `CREATE NAMESPACE`, `CREATE TABLE`, `CREATE MATERIALIZED VIEW`, `CREATE VIEW`, `CREATE SECRET`, `CREATE STORAGE INTEGRATION` |
 | `TABLE`, `MATERIALIZED VIEW` | `OWNERSHIP`, `SELECT`, `INSERT`, `UPDATE`, `DELETE` |
 | `VIEW` | `OWNERSHIP`, `SELECT` |
 | `SECRET` | `OWNERSHIP`, `USAGE` (bind it to a Function), `UPDATE` (rotate it) |
-| `FUNCTION` | `OWNERSHIP`, `USAGE` (bind it to a column) |
 | `STORAGE INTEGRATION` | `OWNERSHIP`, `USAGE` |
 
 See [GRANT and REVOKE](/sql/ddl/grant) for the full statement syntax,

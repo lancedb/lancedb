@@ -1,0 +1,15 @@
+# Functions are documented before their release. At release, remove these
+# entries, restore the /feature-engineering/functions redirect to
+# /management/function, publish the drafts marked "Draft for the Functions
+# release", restore `availability` frontmatter (removed while gated, since
+# the comparison table on index.mdx links every page that declares one,
+# draft or not) to management/function.mdx and sql/ddl/function.mdx -- each
+# currently carries a plain `<Badge color="red">Enterprise</Badge>` instead
+# -- and re-link curation/chunking.mdx's plain-text `CREATE FUNCTION`/
+# `add_columns` mentions, and curation/create-function.mdx's intro sentence
+# and missing "Function" card in "What to read next", to /management/function
+# and /sql/ddl/function#create now that those pages have a route. Both pages
+# stay published ahead of Functions shipping, so their examples intentionally
+# do not link to either gated page -- only an unrouted page would break.
+management/function.mdx
+sql/ddl/function.mdx

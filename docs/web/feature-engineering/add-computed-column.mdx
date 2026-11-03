@@ -30,6 +30,9 @@ cheap on any table size, because nothing is evaluated until
 transforms, without `computed`, remain available in LanceDB Embedded.
 </Note>
 
+{/*
+Draft for the Functions release.
+
 ## Fill a column with a Function {#functions}
 
 <Badge color="red">Enterprise</Badge>
@@ -63,6 +66,7 @@ new, empty table version the same way a SQL expression does, so the usual
 Both a Function application and a SQL expression accept the same
 `auto_refresh_enabled` and `auto_refresh_interval_seconds` options, and both
 refresh and toggle the same way; see [Auto Refresh](/enterprise/auto-refresh).
+*/}
 
 ## Fill a column with a SQL expression {#expressions}
 
@@ -123,9 +127,11 @@ expression that reads a field inside a struct, such as
 
 - **SQL expressions in `transforms`** are evaluated *now*, for every row, as
   part of the call. Good for a small table, or a column you want populated
-  immediately. A `FunctionApplication` passed through `transforms` instead
+  immediately.
+  {/* Draft for the Functions release:
+  A `FunctionApplication` passed through `transforms` instead
   declares empty Function-bound columns, which a refresh fills; that needs a
-  deployment with Functions enabled, and the embedded library refuses it.
+  deployment with Functions enabled, and the embedded library refuses it. */}
 - **`computed`** stores the expression and evaluates nothing. The column is
   committed empty and filled later by
   [`refresh_column`](/feature-engineering/refresh-column).
@@ -219,7 +225,13 @@ reshape later. Dropping the computed column releases the constraint.
   <Card title="Refresh a computed column" icon="arrows-rotate" href="/feature-engineering/refresh-column">
     Fill the rows that lack values.
   </Card>
+  <Card title="Geneva" icon="layer-group" href="/geneva">
+    Fill a column with Python on LanceDB Enterprise.
+  </Card>
+  {/*
+  Draft for the Functions release. Replaces the Geneva card above:
   <Card title="Functions" icon="code" href="/management/function">
     Fill a column with Python.
   </Card>
+  */}
 </CardGroup>

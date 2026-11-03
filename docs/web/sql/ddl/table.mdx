@@ -61,6 +61,10 @@ The column is committed empty and the expression is stored, not evaluated:
 declaring one on a billion-row table costs what declaring one on an empty table
 costs. [`REFRESH COLUMN`](/sql/dml/refresh-column) fills it.
 
+{/*
+Draft for automatic computed-column refresh. Enable this section when the
+server feature is released.
+
 ### Automatic refresh options {#automatic-refresh-options}
 
 ```sql
@@ -110,8 +114,11 @@ write any row:
 Column SUSPEND/RESUME syntax is not supported; `SET auto_refresh_enabled` is
 the only toggle. The current setting is in the column's own field metadata,
 `computed_column.auto_refresh_enabled`, readable from `DESCRIBE` or the
-SDK's `table.schema` without submitting a job to ask. See
-[Auto Refresh](/enterprise/auto-refresh) for the full scheduling behavior.
+SDK's `table.schema` without submitting a job to ask.
+*/}
+
+{/*
+Draft for the Functions release.
 
 ### A function column {#function-column}
 
@@ -149,6 +156,7 @@ Declaration `WITH` accepts `auto_refresh_enabled` and
 `branch`. Worker resource options such as `num_workers` belong on
 `REFRESH COLUMN ... WITH (...)`.
 </Note>
+*/}
 
 ### Table properties {#properties}
 

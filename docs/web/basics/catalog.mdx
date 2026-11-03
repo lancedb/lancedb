@@ -55,7 +55,6 @@ flowchart TD
     prod --> search["search · namespace"]
     search --> search_docs["documents · table"]
     search --> search_view["recent_documents · view"]
-    search --> search_fn["embed · function"]
     staging --> staging_docs["documents · table"]
 ```
 
@@ -69,7 +68,11 @@ flowchart TD
 | [Materialized view](/management/materialized-view) | The stored results of a query, updated by a refresh. Available in Enterprise. |
 | [Secret](/management/secret) | A named credential that a Function binds by reference. Available in Enterprise. |
 | [Storage integration](/management/storage-integration) | A named credential for reading or importing from storage outside the deployment's own tables, such as an S3 prefix or a HuggingFace repository. Available in Enterprise. |
+
+{/*
+Draft for the Functions release. Add this row to the table above:
 | [Function](/management/function) | Registered code used to compute column values. Available in Enterprise. |
+*/}
 
 <span id="namespace-paths"></span>
 
