@@ -166,10 +166,10 @@ behaves once the view exists.
 ## Working with the view {#working-with-the-view}
 
 `view.table` is the underlying table, for querying, indexing, or search.
-`view.definition` is the recorded query: the select list, predicate, and
-limit. Use it to inspect the query without inferring it from the rows. Both
-are properties; on an async view, the definition is read with
-`await view.definition()`.
+`view.definition` has a single field, `query` -- the recorded query, in the
+canonical spelling the server stores. Use it to inspect the query without
+inferring it from the rows. Both are properties; on an async view, the
+definition is read with `await view.definition()`.
 
 Creation, refresh and drop also have async, job-returning SDK methods; see
 [Materialized view](/management/materialized-view#manage).
