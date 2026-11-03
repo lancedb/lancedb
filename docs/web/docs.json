@@ -360,7 +360,8 @@
               "ingestion/migrate-from-embedded",
               "ingestion/import",
               "enterprise/distributed-write",
-              "ingestion/realtime-write"
+              "ingestion/realtime-write",
+              "enterprise/distributed-real-time-write"
             ]
           },
           {
@@ -373,6 +374,7 @@
               "search/filtering",
               "reranking/index",
               "search/realtime-read",
+              "enterprise/distributed-real-time-read",
               "enterprise/distributed-search",
               "enterprise/data-page-cache",
               "enterprise/tiered-index-cache",
@@ -458,16 +460,11 @@
               },
               "maintenance/compaction",
               "enterprise/distributed-compaction",
+              "enterprise/advanced-conflict-resolution",
               "maintenance/cleanup",
+              "enterprise/automated-cleanup",
+              "enterprise/realtime-engine-compaction",
               "maintenance/background-jobs"
-            ]
-          },
-          {
-            "group": "Deployment",
-            "pages": [
-              "enterprise/index",
-              "deployment/monitoring",
-              "enterprise/deployment/kubernetes"
             ]
           },
           {
@@ -478,6 +475,14 @@
               "governance/principals",
               "governance/privileges",
               "enterprise/security"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "enterprise/index",
+              "deployment/monitoring",
+              "enterprise/deployment/kubernetes"
             ]
           },
           {

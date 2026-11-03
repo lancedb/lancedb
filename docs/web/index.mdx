@@ -118,7 +118,8 @@ move or connect your data.
 | --- | --- | :-: | :-: |
 | **Data Ingestion** | [Insert data](/ingestion/insert) | ✅ | ✅ |
 |  | [Merge](/ingestion/merge-insert) | ✅ | ✅ |
-|  | [Real Time Engine (streaming writes)](/tables/realtime-engine) | ❌ | ✅ |
+|  | [Real Time Write](/ingestion/realtime-write) | ✅ | ✅ |
+|  | [Distributed Real Time Write](/enterprise/distributed-real-time-write) | ❌ | ✅ |
 |  | [Define Storage Integration](/ingestion/define-storage-integration) | ❌ | ✅ |
 |  | [Attach Database](/ingestion/migrate-from-embedded) | ❌ | ✅ |
 |  | [Import Datasets](/ingestion/import) | 🚧 | ✅ |
@@ -128,23 +129,26 @@ move or connect your data.
 |  | [Hybrid search](/search/hybrid-search) | ✅ | ✅ |
 |  | [Filtering](/search/filtering) | ✅ | ✅ |
 |  | [Reranking](/reranking) | ✅ | ✅ |
-|  | [Query plans](/basics/sql#query-plans) | ✅ | ✅ |
 |  | [Distributed search](/enterprise/distributed-search) | ❌ | ✅ |
-|  | [Real Time Engine (streaming reads)](/tables/realtime-engine) | ❌ | ✅ |
+|  | [Real Time Read](/search/realtime-read) | ✅ | ✅ |
+|  | [Distributed Real Time Read](/enterprise/distributed-real-time-read) | ❌ | ✅ |
 | **Data Curation** | [SQL](/basics/sql) | 🚧 | ✅ |
 |  | [Distributed SQL](/enterprise/distributed-sql) | ❌ | ✅ |
 |  | [Inspect Datasets](/curation/inspect-datasets) | 🚧 | ✅ |
-|  | [Aggregation and profiling](/curation/aggregate) | ❌ | ✅ |
-|  | [Statistical Sampling](/curation/statistical-sampling) | ❌ | ✅ |
+|  | [Aggregation and profiling](/curation/aggregate) | 🚧 | ✅ |
+|  | [Statistical Sampling](/curation/statistical-sampling) | 🚧 | ✅ |
 |  | [Selective Sampling](/curation/selective-sampling) | ✅ | ✅ |
-|  | [Joins](/curation/join) | ❌ | ✅ |
-|  | [Ranking and deduplication](/curation/windowing) | ❌ | ✅ |
-|  | [Near-duplicate detection](/curation/dedupe) | ❌ | ✅ |
-|  | [Chunking](/curation/chunking) | ❌ | ✅ |
-|  | [Changes since a version](/curation/changes) | ❌ | ✅ |
+|  | [Joins](/curation/join) | 🚧 | ✅ |
+|  | [Ranking and deduplication](/curation/windowing) | 🚧 | ✅ |
+|  | [Near-duplicate detection](/curation/dedupe) | 🚧 | ✅ |
+|  | [Chunking](/curation/chunking) | 🚧 | ✅ |
+|  | [Changes since a version](/curation/changes) | 🚧 | ✅ |
 |  | [Slurm Integration](/curation/slurm-integration) | ❌ | ✅ |
-| **Feature Engineering** | [Computed columns](/feature-engineering/add-computed-column) | ❌ | ✅ |
+| **Feature Engineering** | [Computed columns](/feature-engineering/add-computed-column) | 🚧 | ✅ |
+|  | [Incremental Refresh](/enterprise/incremental-refresh) | ❌ | ✅ |
+|  | [Auto Refresh](/enterprise/auto-refresh) | ❌ | ✅ |
 |  | [Adaptive Execution](/enterprise/adaptive-execution) | ❌ | ✅ |
+|  | [Refresh Materialized View](/feature-engineering/refresh-materialized-view) | ❌ | ✅ |
 |  | [Embedding registry](/embedding) | ✅ | ✅ |
 | **Training** | [PyTorch data loader](/training/data-loading) | ✅ | ✅ |
 |  | [Permutations](/training/permutation) | ✅ | ✅ |
@@ -157,18 +161,22 @@ move or connect your data.
 |  | [Namespace](/management/namespace) | ✅ | ✅ |
 |  | [Table](/management/table) | ✅ | ✅ |
 |  | [Branches](/tables/branching) | ✅ | ✅ |
-|  | [View](/management/view) | ❌ | ✅ |
-|  | [Materialized view](/management/materialized-view) | ❌ | ✅ |
+|  | [View](/management/view) | 🚧 | ✅ |
+|  | [Materialized view](/management/materialized-view) | 🚧 | ✅ |
 |  | [Secret](/management/secret) | ❌ | ✅ |
-|  | [Function](/management/function) | ❌ | ✅ |
+|  | [Function](/management/function) | 🚧 | ✅ |
 |  | [Storage integration](/management/storage-integration) | ❌ | ✅ |
 | **Maintenance** | [Vector indexes](/indexing/vector-index) | ✅ | ✅ |
 |  | [Full-text indexes](/indexing/fts-index) | ✅ | ✅ |
 |  | [Scalar indexes](/indexing/scalar-index) | ✅ | ✅ |
 |  | [Compaction and cleanup](/maintenance/compaction) | ✅ | ✅ |
+|  | [Cleanup](/maintenance/cleanup) | ✅ | ✅ |
+|  | [Automated Cleanup](/enterprise/automated-cleanup) | ❌ | ✅ |
 |  | [Background jobs](/maintenance/background-jobs) | ❌ | ✅ |
 |  | [Distributed indexing](/enterprise/distributed-indexing) | ❌ | ✅ |
 |  | [Distributed compaction](/enterprise/distributed-compaction) | ❌ | ✅ |
+|  | [Advanced Conflict Resolution](/enterprise/advanced-conflict-resolution) | ❌ | ✅ |
+|  | [Real Time Engine Compaction](/enterprise/realtime-engine-compaction) | ❌ | ✅ |
 | **Security** | [Authentication](/enterprise/authentication) | ❌ | ✅ |
 |  | [Authorization](/governance/authorization) | ❌ | ✅ |
 
