@@ -443,13 +443,16 @@
               "enterprise/incremental-refresh",
               "enterprise/auto-refresh",
               "enterprise/checkpointing",
-              "enterprise/adaptive-execution"
+              "enterprise/adaptive-execution",
+              "enterprise/gpu-refresh-execution",
+              "enterprise/slurm-refresh-scheduling"
             ]
           },
           {
             "group": "Training",
             "pages": [
               "training/data-loading",
+              "training/training-cache",
               "training/permutation",
               "training/observability",
               "training/distributed-training",
