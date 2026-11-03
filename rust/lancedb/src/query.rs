@@ -444,8 +444,8 @@ pub trait QueryBase {
     /// # }
     /// ```
     ///
-    /// Note: Expression filters are not supported for LanceDB Distributed queries.
-    /// Use [`QueryBase::only_if`] with SQL strings in LanceDB Distributed.
+    /// Note: Expression filters are not supported for LanceDB Enterprise queries.
+    /// Use [`QueryBase::only_if`] with SQL strings in LanceDB Enterprise.
     ///
     /// Calling this multiple times combines the expressions with a logical AND
     /// rather than replacing the previous filter.
@@ -1025,7 +1025,7 @@ impl Query {
     /// By default, there is no embedding model, and the input should be
     /// vector/slice of floats.
     /// NaN and infinite components are rejected with [`Error::InvalidInput`]
-    /// after conversion to Float32, in both LanceDB Embedded and LanceDB Distributed.
+    /// after conversion to Float32, in both LanceDB Embedded and LanceDB Enterprise.
     ///
     /// If there is only one vector column (a column whose data type is a
     /// fixed size list of floats) then the column does not need to be specified.
@@ -1269,7 +1269,7 @@ impl VectorQuery {
     /// result.
     ///
     /// NaN and infinite components are rejected with [`Error::InvalidInput`]
-    /// after conversion to Float32, in both LanceDB Embedded and LanceDB Distributed.
+    /// after conversion to Float32, in both LanceDB Embedded and LanceDB Enterprise.
     pub fn add_query_vector(mut self, vector: impl IntoQueryVector) -> Result<Self> {
         self.request.add_query_vector(vector)?;
         Ok(self)
@@ -1476,8 +1476,10 @@ impl VectorQuery {
 
     /// Set the speed / accuracy tradeoff for approximate vector search.
     ///
-    /// This setting is currently only used by RQ-quantized indexes, such as
-    /// IVF_RQ. Other index types ignore this setting.
+    /// This setting is currently used by RQ-quantized indexes (such as IVF_RQ)
+    /// and by prefiltered search on HNSW sub-indexes, where
+    /// [`ApproxMode::Fast`] enables the ACORN traversal. Other index types
+    /// ignore this setting.
     pub fn approx_mode(mut self, approx_mode: ApproxMode) -> Self {
         self.request.approx_mode = Some(approx_mode);
         self

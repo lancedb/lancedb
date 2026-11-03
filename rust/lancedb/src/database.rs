@@ -195,7 +195,7 @@ impl CloneTableRequest {
     }
 }
 
-/// A request to start a SQL statement on a LanceDB Distributed database.
+/// A request to start a SQL statement on a LanceDB Enterprise database.
 #[derive(Clone, Debug)]
 pub struct ExecuteQueryRequest {
     /// The SQL text.
@@ -318,7 +318,7 @@ fn function_catalog_not_supported<T>() -> Result<T> {
 fn gpu_class_catalog_not_supported<T>() -> Result<T> {
     Err(crate::error::Error::NotSupported {
         message: DocLink::GpuClasses
-            .append_to("GPU class discovery is supported only by LanceDB Distributed"),
+            .append_to("GPU class discovery is supported only by LanceDB Enterprise"),
     })
 }
 
@@ -694,7 +694,7 @@ pub trait Database:
     async fn check_sql_connection(&self) -> Result<()> {
         sql_not_supported()
     }
-    /// Start executing a SQL statement on a LanceDB Distributed database.
+    /// Start executing a SQL statement on a LanceDB Enterprise database.
     async fn execute_query_async(
         &self,
         _request: ExecuteQueryRequest,

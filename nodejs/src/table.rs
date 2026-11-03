@@ -831,7 +831,7 @@ impl Table {
         self.inner_ref()?
             .as_native()
             .ok_or_else(|| lancedb::Error::NotSupported {
-                message: "uses_v2_manifest_paths is not supported in LanceDB Distributed.".into(),
+                message: "uses_v2_manifest_paths is not supported in LanceDB Enterprise.".into(),
             })
             .default_error()?
             .uses_v2_manifest_paths()
@@ -844,8 +844,7 @@ impl Table {
         self.inner_ref()?
             .as_native()
             .ok_or_else(|| lancedb::Error::NotSupported {
-                message: "migrate_manifest_paths_v2 is not supported in LanceDB Distributed."
-                    .into(),
+                message: "migrate_manifest_paths_v2 is not supported in LanceDB Enterprise.".into(),
             })
             .default_error()?
             .migrate_manifest_paths_v2()
@@ -868,40 +867,40 @@ pub struct IndexConfig {
     pub columns: Vec<String>,
     /// The UUID of the first segment of the index.
     ///
-    /// `undefined` in LanceDB Distributed, which does not yet surface this.
+    /// `undefined` in LanceDB Enterprise, which does not yet surface this.
     pub index_uuid: Option<String>,
     /// The protobuf type URL, a precise type identifier for the index.
     ///
-    /// `undefined` in LanceDB Distributed.
+    /// `undefined` in LanceDB Enterprise.
     pub type_url: Option<String>,
     /// When the index was created.
     ///
-    /// `undefined` in LanceDB Distributed or indices created before timestamps were tracked.
+    /// `undefined` in LanceDB Enterprise or indices created before timestamps were tracked.
     pub created_at: Option<DateTime<Utc>>,
     /// The number of rows indexed, across all segments.
     ///
-    /// May be `undefined` in LanceDB Distributed if the server does not report it.
+    /// May be `undefined` in LanceDB Enterprise if the server does not report it.
     pub num_indexed_rows: Option<i64>,
     /// The number of rows not yet covered by this index.
     ///
-    /// May be `undefined` in LanceDB Distributed if the server does not report it.
+    /// May be `undefined` in LanceDB Enterprise if the server does not report it.
     pub num_unindexed_rows: Option<i64>,
     /// The total size in bytes of all index files across all segments.
     ///
-    /// `undefined` in LanceDB Distributed or indices without size tracking.
+    /// `undefined` in LanceDB Enterprise or indices without size tracking.
     pub size_bytes: Option<i64>,
     /// The number of segments that make up the index.
     ///
-    /// `undefined` in LanceDB Distributed.
+    /// `undefined` in LanceDB Enterprise.
     pub num_segments: Option<i32>,
     /// The on-disk index format version.
     ///
-    /// `undefined` in LanceDB Distributed.
+    /// `undefined` in LanceDB Enterprise.
     pub index_version: Option<i32>,
     /// Index-type-specific details parsed as a JavaScript object.
     ///
     /// Falls back to a raw string if JSON parsing fails. `undefined` in
-    /// LanceDB Distributed or when details are unavailable.
+    /// LanceDB Enterprise or when details are unavailable.
     pub index_details: Option<serde_json::Value>,
 }
 
@@ -1617,11 +1616,11 @@ impl From<lancedb::function::FunctionErrors> for FunctionErrors {
 
 #[napi(object)]
 pub struct RefreshMaterializedViewResult {
-    /// How the view was brought up to date: "rebuild", or absent for LanceDB Distributed SQL refreshes.
+    /// How the view was brought up to date: "rebuild", or absent for LanceDB Enterprise SQL refreshes.
     pub mode: Option<String>,
-    /// Rows written by this refresh, or absent for LanceDB Distributed SQL refreshes.
+    /// Rows written by this refresh, or absent for LanceDB Enterprise SQL refreshes.
     pub rows_written: Option<i64>,
-    /// Source version refreshed to, or absent for LanceDB Distributed SQL refreshes.
+    /// Source version refreshed to, or absent for LanceDB Enterprise SQL refreshes.
     pub source_version: Option<i64>,
     pub version: i64,
 }

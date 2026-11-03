@@ -171,7 +171,7 @@ pub(crate) fn physical_unnest(
             return Err(Error::NotSupported {
                 message: format!(
                     "'{name}' in FROM position is a Function; views over Function rows are \
-                     supported only in LanceDB Distributed"
+                     supported only in LanceDB Enterprise"
                 ),
             });
         }
@@ -1665,7 +1665,7 @@ impl CreateMaterializedViewBuilder {
         self
     }
 
-    /// Enable or disable automatic refresh in LanceDB Distributed.
+    /// Enable or disable automatic refresh in LanceDB Enterprise.
     /// When omitted, the server determines whether automatic refresh is enabled.
     /// LanceDB Embedded does not support automatic refresh.
     pub fn auto_refresh_enabled(mut self, enabled: bool) -> Self {
@@ -1673,7 +1673,7 @@ impl CreateMaterializedViewBuilder {
         self
     }
 
-    /// Set a positive, finite refresh interval in seconds in LanceDB Distributed.
+    /// Set a positive, finite refresh interval in seconds in LanceDB Enterprise.
     /// When omitted, the server determines when to refresh.
     ///
     /// ```no_run
@@ -1766,7 +1766,7 @@ impl CreateMaterializedViewBuilder {
         crate::require_experimental_functions()?;
         if self.auto_refresh_enabled == Some(true) || self.auto_refresh_interval_seconds.is_some() {
             return Err(Error::NotSupported {
-                message: "automatic materialized-view refresh requires LanceDB Distributed"
+                message: "automatic materialized-view refresh requires LanceDB Enterprise"
                     .to_string(),
             });
         }
@@ -2015,7 +2015,7 @@ impl Connection {
     /// Start dropping a materialized view and return its job.
     ///
     /// This validates that the named resource is a materialized view rather
-    /// than an ordinary table. In LanceDB Distributed the job has type `query`
+    /// than an ordinary table. In LanceDB Enterprise the job has type `query`
     /// and its ID identifies the SQL query. Waiting completes once the catalog
     /// binding is removed; physical cleanup continues in the background.
     ///

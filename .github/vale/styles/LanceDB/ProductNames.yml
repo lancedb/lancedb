@@ -9,6 +9,7 @@ swap:
   '(?:Lancedb|LanceDb|lanceDB|LANCEDB|Lance DB)': LanceDB
   'LanceDB (?:cloud|CLOUD)': LanceDB Cloud
   'LanceDB (?:enterprise|ENTERPRISE)': LanceDB Enterprise
+  'LanceDB\s+Distributed': LanceDB Enterprise
   '(?:HuggingFace|Huggingface|Hugging face)': Hugging Face
   Langchain: LangChain
   Typescript: TypeScript
@@ -30,4 +31,12 @@ tests:
   - name: leaves package names, identifiers and code alone
     input: |
       The lancedb package exposes `HuggingFaceEmbeddings` and LanceDBConnection; see `Typescript` in code.
+    want: ''
+  - name: uses Enterprise for the product and its execution model
+    input: Connect to LanceDB Distributed.
+    want: |
+      1:12:LanceDB.ProductNames:Use 'LanceDB Enterprise' instead of 'LanceDB Distributed'.
+  - name: keeps technical descriptions and API identifiers
+    input: |
+      LanceDB Enterprise supports distributed search. Compare Embedded and Enterprise. Distributed training uses workers. `LanceDB Distributed` and `RemoteTable` are literal code.
     want: ''

@@ -217,6 +217,10 @@ schema still holds the right bytes, but skips the Managed storage path and
 `fetch_blobs`. Declare it explicitly on every function whose output should
 be a blob.
 
+A Blob v2 field may also be an element of an output list or large list. These
+values are queryable as Blob descriptors, but the row-id blob fetch APIs and
+`blob_mode="bytes"` cannot fetch payloads inside lists.
+
 ## What to read next {#next}
 
 <CardGroup cols={2}>

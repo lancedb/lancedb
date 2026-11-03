@@ -12,6 +12,7 @@ import json
 import multiprocessing as mp
 import pickle
 import re
+import socket
 import subprocess
 import sys
 import textwrap
@@ -162,6 +163,7 @@ def test_remote_open_missing_table(cached, namespace_path, missing_table_handler
     assert str(error) == "Table 'missing' was not found"
     assert error.status_code == 404
     assert error.request_id == request_ids[-1]
+    assert error.is_transport_error is False
     assert error.request_id
     assert isinstance(error.__cause__, HttpError)
     assert error.__cause__.request_id == error.request_id
@@ -337,6 +339,7 @@ def test_remote_create_namespace_typed_already_exists():
     assert error.resource_name == "child"
     assert error.namespace_path == ("parent",)
     assert error.status_code == 409
+    assert error.is_transport_error is False
     assert len(requests) == 1
 
 
@@ -953,7 +956,8 @@ def test_remote_permutation_is_picklable():
 
 
 @pytest.mark.parametrize("with_schema", [True, False])
-def test_create_table_embedding_functions(with_schema):
+@pytest.mark.parametrize("source_target", ["text", "`text`"])
+def test_create_table_embedding_functions(with_schema, source_target):
     func = MockNonNormTextEmbeddingFunction.create()
     config = EmbeddingFunctionConfig(
         source_column="text", vector_column="vector", function=func
@@ -1050,6 +1054,11 @@ def test_create_table_embedding_functions(with_schema):
         assert received["insert"]["vector"].to_pylist() == [
             func.compute_source_embeddings(["goodbye world"])[0].tolist()
         ]
+
+        with pytest.raises(
+            ValueError, match="source column 'text'.*vector column 'vector'"
+        ):
+            table.update(values={source_target: "updated text"})
 
 
 def test_create_table_positional_parameters_match_base_contract():
@@ -1151,6 +1160,7 @@ async def test_http_error():
 
         assert exc_info.value.request_id == request_id_holder["request_id"]
         assert "Internal Server Error" in str(exc_info.value)
+        assert exc_info.value.is_transport_error is False
 
 
 @pytest.mark.asyncio
@@ -1175,6 +1185,24 @@ async def test_retry_error():
         assert "Try again later" in str(cause)
         assert cause.request_id == request_id_holder["request_id"]
         assert cause.status_code == 429
+        assert cause.is_transport_error is False
+
+
+def test_connect_retry_error_preserves_transport_classification():
+    # Reserve a port without listening, so connection attempts are refused.
+    with socket.socket() as port_guard:
+        port_guard.bind(("127.0.0.1", 0))
+        port = port_guard.getsockname()[1]
+        db = lancedb.connect(
+            "db://dev",
+            api_key="fake",
+            host_override=f"http://127.0.0.1:{port}",
+            client_config={"retry_config": {"connect_retries": 0}},
+        )
+        with pytest.raises(RetryError) as exc:
+            list(db.list_tables())
+        assert isinstance(exc.value.__cause__, HttpError)
+        assert exc.value.__cause__.is_transport_error is True
 
 
 def test_table_unimplemented_functions():
@@ -1196,7 +1224,7 @@ def test_table_unimplemented_functions():
             message = str(exc_info.value)
             assert method in message
             assert "not" in message and "supported" in message
-            assert "LanceDB Distributed" in message
+            assert "LanceDB Enterprise" in message
             assert "cloud" not in message.lower()
             assert f"search().{method}()" in message
 
@@ -1263,7 +1291,7 @@ async def test_remote_to_lance_rejection(
             await table.to_lance(**options)
         assert requests == opened_requests
 
-    assert "to_lance() is not supported in LanceDB Distributed" in str(sync_error.value)
+    assert "to_lance() is not supported in LanceDB Enterprise" in str(sync_error.value)
     assert "query the server" in str(sync_error.value)
     assert str(sync_error.value) == str(async_error.value)
 
@@ -1931,6 +1959,114 @@ def test_remote_function_errors_lists_the_rows_a_refresh_skipped():
     assert everything.truncated is True
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync", [False, True])
+@pytest.mark.parametrize("failure", ["send", "read"])
+async def test_remote_job_wait_recovers_from_disconnection(sync, failure):
+    polls = 0
+
+    def handler(request):
+        nonlocal polls
+        assert request.path == "/v1/jobs/describe"
+        body = request.rfile.read(int(request.headers["Content-Length"]))
+        assert json.loads(body)["job_id"] == "job-1"
+        polls += 1
+        if polls in (2, 3):
+            # Fail both the initial wait and its first recovery probe, after
+            # open_job has successfully fetched the still-running job.
+            if failure == "read":
+                request.send_response(200)
+                request.send_header("Content-Length", "1000")
+                request.end_headers()
+                request.wfile.write(b'{"job_id":')
+                request.wfile.flush()
+            request.connection.shutdown(socket.SHUT_RDWR)
+            request.close_connection = True
+            return
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        state = "DONE" if polls >= 5 else "IN_PROGRESS"
+        request.wfile.write(json.dumps(dict(job_id="job-1", job_state=state)).encode())
+
+    config = {"retry_config": {"retries": 0, "connect_retries": 0, "read_retries": 0}}
+    if sync:
+        with mock_lancedb_connection(handler, **config) as db:
+            job = db.open_job("job-1")
+            assert job.wait(timeout=timedelta(seconds=5)) is None
+            assert job.state == "finished"
+    else:
+        async with mock_lancedb_connection_async(handler, **config) as db:
+            job = await db.open_job("job-1")
+            assert await job.wait(timeout=timedelta(seconds=5)) is None
+            assert job.state == "finished"
+    assert polls == 5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync", [False, True])
+async def test_remote_job_wait_disconnection_timeout_can_be_resumed(sync):
+    polls = 0
+    finished = False
+
+    def handler(request):
+        nonlocal polls
+        assert request.path == "/v1/jobs/describe"
+        request.rfile.read(int(request.headers["Content-Length"]))
+        polls += 1
+        if polls > 1 and not finished:
+            request.connection.shutdown(socket.SHUT_RDWR)
+            request.close_connection = True
+            return
+        request.send_response(200)
+        request.end_headers()
+        state = "DONE" if finished else "IN_PROGRESS"
+        request.wfile.write(json.dumps(dict(job_id="job-1", job_state=state)).encode())
+
+    if sync:
+        with mock_lancedb_connection(handler) as db:
+            job = db.open_job("job-1")
+            with pytest.raises(ConnectionError) as exc:
+                job.wait(timeout=timedelta(seconds=0.5))
+            finished = True
+            assert db.open_job("job-1").wait() is None
+    else:
+        async with mock_lancedb_connection_async(handler) as db:
+            job = await db.open_job("job-1")
+            with pytest.raises(ConnectionError) as exc:
+                await job.wait(timeout=timedelta(seconds=0.5))
+            finished = True
+            resumed = await db.open_job("job-1")
+            assert await resumed.wait() is None
+    assert "job 'job-1' may still be running" in str(exc.value)
+    assert "db.open_job('job-1')" in str(exc.value)
+    assert isinstance(exc.value.__cause__, HttpError)
+    assert exc.value.__cause__.is_transport_error is True
+
+
+@pytest.mark.parametrize("payload", [b"{", b"{}"])
+def test_remote_job_wait_does_not_retry_malformed_description(payload):
+    polls = 0
+
+    def handler(request):
+        nonlocal polls
+        assert request.path == "/v1/jobs/describe"
+        request.rfile.read(int(request.headers["Content-Length"]))
+        polls += 1
+        request.send_response(200)
+        request.end_headers()
+        request.wfile.write(
+            b'{"job_id":"job-1","job_state":"IN_PROGRESS"}' if polls == 1 else payload
+        )
+
+    with mock_lancedb_connection(handler) as db:
+        job = db.open_job("job-1")
+        with pytest.raises(HttpError, match="failed to parse job description") as exc:
+            job.wait(timeout=timedelta(seconds=5))
+        assert exc.value.is_transport_error is False
+        assert polls == 2
+
+
 def test_remote_job_wait_raises_on_failure():
     from lancedb.exceptions import JobFailedError
     from lancedb.index import BTree
@@ -2158,7 +2294,7 @@ def test_remote_create_index_new_api(caplog, rq_kwargs):
         assert received_requests[5]["replace"] is False
         assert "replace is not supported" not in caplog.text
         assert caplog.messages == [
-            "GPU accelerator is not supported in LanceDB Distributed "
+            "GPU accelerator is not supported in LanceDB Enterprise "
             "and will be ignored."
         ]
 
@@ -2217,7 +2353,7 @@ def test_remote_unsupported_operations_sync(method, args, kwargs, operation):
         with pytest.raises(NotImplementedError) as error:
             getattr(table, method)(*args, **kwargs)
         expected = f"LanceDBError: not supported: {operation} is not supported "
-        expected += "in LanceDB Distributed."
+        expected += "in LanceDB Enterprise."
         if operation == "IVF_HNSW_PQ":
             expected += " Please use IVF_HNSW_SQ instead."
         assert str(error.value) == expected
@@ -2235,7 +2371,7 @@ async def test_remote_unsupported_operations_async(method, args, kwargs, operati
         with pytest.raises(NotImplementedError) as error:
             await getattr(table, method)(*args, **kwargs)
         expected = f"LanceDBError: not supported: {operation} is not supported "
-        expected += "in LanceDB Distributed."
+        expected += "in LanceDB Enterprise."
         if operation == "IVF_HNSW_PQ":
             expected += " Please use IVF_HNSW_SQ instead."
         assert str(error.value) == expected
@@ -2247,7 +2383,7 @@ def test_remote_unsupported_legacy_hnsw_pq():
         with pytest.warns(DeprecationWarning, match="create_index"):
             with pytest.raises(
                 NotImplementedError,
-                match="IVF_HNSW_PQ is not supported in LanceDB Distributed. "
+                match="IVF_HNSW_PQ is not supported in LanceDB Enterprise. "
                 "Please use IVF_HNSW_SQ instead.",
             ):
                 table.create_index(
@@ -2265,7 +2401,7 @@ def test_remote_python_only_messages():
             with pytest.raises(NotImplementedError) as error:
                 getattr(table, method)()
             assert str(error.value) == (
-                f"{method}() is not supported in LanceDB Distributed. "
+                f"{method}() is not supported in LanceDB Enterprise. "
                 f"Use table.search().{method}() instead."
             )
         for method in ["compact_files", "cleanup_old_versions"]:
@@ -2273,7 +2409,7 @@ def test_remote_python_only_messages():
                 getattr(table, method)()
             assert (
                 str(warning[0].message)
-                == f"{method}() is a no-op in LanceDB Distributed."
+                == f"{method}() is a no-op in LanceDB Enterprise."
             )
 
 
@@ -4469,7 +4605,7 @@ async def test_async_remote_to_lance_rejects_storage_access(monkeypatch):
             raise AssertionError("remote table URI must not be requested")
 
         monkeypatch.setattr(table, "uri", fail_uri)
-        with pytest.raises(NotImplementedError, match="LanceDB Distributed"):
+        with pytest.raises(NotImplementedError, match="LanceDB Enterprise"):
             await table.to_lance()
 
 
@@ -5180,6 +5316,24 @@ def test_property_graph_crud_addresses_its_own_routes():
         ("POST", "/v1/property_graph/analytics$social/drop", None),
         ("POST", "/v1/jobs/describe", {"job_id": "j1-pg-drop"}),
     ]
+
+
+def test_remote_add_columns_reader_not_supported():
+    requests = []
+
+    def handler(request):
+        requests.append(request.path)
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(b'{"version": 1, "schema": {"fields": []}}')
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.open_table("test")
+        requests.clear()
+        with pytest.raises(NotImplementedError, match="Only SQL expressions"):
+            table.add_columns(pa.table({"score": [10]}).to_reader())
+        assert all("/add_columns/" not in path for path in requests)
 
 
 @pytest.mark.asyncio

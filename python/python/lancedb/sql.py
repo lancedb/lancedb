@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-"""Handles to SQL queries running on a LanceDB Distributed database."""
+"""Handles to SQL queries running on a LanceDB Enterprise database."""
 
 from typing import Any, Mapping, Optional, Sequence, Union
 from uuid import UUID

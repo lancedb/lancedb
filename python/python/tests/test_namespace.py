@@ -173,6 +173,9 @@ class _FailingSyncInner:
     async def to_arrow(self):
         raise RuntimeError("direct table to_arrow should not be used")
 
+    async def _execute_query(self, query, **kwargs):
+        raise RuntimeError("local execution reached")
+
 
 class _FailingAsyncInner:
     def name(self):
@@ -1264,6 +1267,25 @@ class TestPushdownOperations:
         ]
         assert all(r.k <= 2**31 - 1 for r in namespace_client.requests)
 
+    @pytest.mark.parametrize(
+        "query_kwargs",
+        [
+            {"approx_mode": "fast"},
+            {"search_effort": 0.75},
+            {"approx_mode": "fast", "search_effort": 0.75},
+        ],
+        ids=["approx_mode", "search_effort", "both"],
+    )
+    def test_lance_table_local_only_options_are_not_pushed_down(self, query_kwargs):
+        namespace_client = _NamespaceClient()
+        table = _namespace_lance_table(namespace_client)
+
+        # The QueryTable request cannot carry these options, so the query has to
+        # run locally rather than silently ignore them.
+        with pytest.raises(RuntimeError, match="local execution reached"):
+            table._execute_query(Query(vector=[1.0, 2.0], **query_kwargs))
+        assert namespace_client.requests == []
+
     def test_probe_fields_pass_through_independently(self):
         request = _query_to_namespace_request(
             ["geneva", "hist"],
@@ -1347,6 +1369,31 @@ class TestAsyncPushdownOperations:
             _MAX_QUERY_K,
         ]
         assert all(r.k <= 2**31 - 1 for r in namespace_client.requests)
+
+    @pytest.mark.parametrize(
+        "query_kwargs",
+        [
+            {"approx_mode": "fast"},
+            {"search_effort": 0.75},
+            {"approx_mode": "fast", "search_effort": 0.75},
+        ],
+        ids=["approx_mode", "search_effort", "both"],
+    )
+    async def test_async_table_local_only_options_are_not_pushed_down(
+        self, query_kwargs
+    ):
+        namespace_client = _NamespaceClient()
+
+        table = AsyncTable(
+            _FailingAsyncInner(),
+            namespace_path=["geneva"],
+            namespace_client=namespace_client,
+            pushdown_operations={"QueryTable"},
+        )
+
+        with pytest.raises(AssertionError, match="direct async query"):
+            await table._execute_query(Query(vector=[1.0, 2.0], **query_kwargs))
+        assert namespace_client.requests == []
 
 
 def test_local_table_to_arrow_and_to_pandas_are_unchanged(tmp_path):

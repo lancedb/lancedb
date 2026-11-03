@@ -206,7 +206,7 @@ When a vector index is used, `_distance` is not always the true distance between
 ### Exact vs Approximate Distances
 
 When doing vector search, the meaning of "distance" depends on whether you are using an index and whether `refine_factor` is specified as part of your query.
-`nprobes` controls how many partitions are searched to find candidates, `approx_mode` controls the query-time speed/recall trade-off for RQ-quantized indexes, and `refine_factor` controls how many candidates are rescored on full vectors for better distance fidelity and reranking quality.
+`nprobes` controls how many partitions are searched to find candidates, `approx_mode` controls the query-time speed/recall trade-off for RQ-quantized and filtered HNSW indexes, and `refine_factor` controls how many candidates are rescored on full vectors for better distance fidelity and reranking quality.
 
 The table below summarizes the behavior of `_distance` in search results based on your query configuration:
 
@@ -236,17 +236,17 @@ following sections cover query-time settings.
 
 ### Tuning `approx_mode` {#tuning-approx-mode}
 
-Use `approx_mode` when you want to adjust the speed/recall trade-off for approximate vector search at query time. This setting currently applies only to RQ-quantized indexes, such as `IVF_RQ`; other index types ignore it.
+Use `approx_mode` when you want to adjust the speed/recall trade-off for approximate vector search at query time. It applies to RQ-quantized indexes, such as `IVF_RQ`, and to filtered searches on HNSW indexes. Other index types, and queries that bypass the index, ignore it.
 
 The supported values are:
 
 | Value | Behavior |
 | :--- | :--- |
 | `fast` | Prefer lower query latency, which can reduce recall. |
-| `normal` | Use the default balance between query latency and recall. This only has an effect for RQ indexes built with `num_bits > 1`. |
+| `normal` | Use the default balance between query latency and recall. For RQ indexes built with `num_bits=1`, this uses the same one-bit scoring path as `fast`. |
 | `accurate` | Prefer higher recall, which can increase query latency. |
 
-Only the Rust SDK sets `approx_mode`; the Python and TypeScript SDKs do not expose it. You can change `approx_mode` per query without rebuilding the index. For RQ indexes built with `num_bits=1`, `normal` uses the same one-bit scoring path as `fast`. If you also set `refine_factor`, LanceDB first uses `approx_mode` while finding candidates, then reranks the selected candidates on full vectors.
+`approx_mode` defaults to `normal` and can change per query without rebuilding the index. The Python and Rust APIs call it `approx_mode`, and the TypeScript API calls it `approxMode`. On HNSW, `fast` enables ACORN traversal only when a filter leaves a non-trivial subset of rows; unfiltered or all-row searches use the regular traversal, and very selective filters may use an exact scan instead. If you also set `refine_factor`, LanceDB first uses `approx_mode` while finding candidates, then reranks the selected candidates on full vectors.
 
 ### Tuning `nprobes` {#tuning-nprobes}
 
