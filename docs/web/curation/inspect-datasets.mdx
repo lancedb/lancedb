@@ -124,12 +124,12 @@ db.create_secret("hf_token", "<your-hugging-face-token>")
 
 # create_storage_integration is not in a released SDK yet; use the SQL
 # form below until it ships.
-reader = db.execute_query("""
+db.execute_query("""
     CREATE STORAGE INTEGRATION private_hub
         STORAGE_PROVIDER = 'HUGGINGFACE'
         STORAGE_PREFIX = 'hf://datasets/owner/private/data/'
         HUGGINGFACE_TOKEN_SECRET = hf_token
-""")
+""").read_all()
 
 reader = db.execute_query(
     "SELECT * FROM 'hf://datasets/owner/private/data/*.parquet' LIMIT 10"
@@ -227,7 +227,7 @@ omits the destination's unflushed data.
 
 <CardGroup cols={2}>
   <Card title="Storage Integration" icon="cloud" href="/management/storage-integration">
-    The credential object behind private and anonymous repository access.
+    The credential object behind private repository access.
   </Card>
   <Card title="Create a Function" icon="code" href="/curation/create-function">
     Add embeddings or derived columns to the imported data.

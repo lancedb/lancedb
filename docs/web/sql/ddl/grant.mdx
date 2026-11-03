@@ -103,6 +103,32 @@ registration-time argument to `create_function` in the Python SDK. See
 [Vend a Secret to a Function](/curation/vend-secret).
 </Note>
 
+## SHOW GRANTS {#show-grants}
+
+<CodeGroup>
+```sql SQL icon="database"
+SHOW GRANTS [ON <target>] [TO <grantee>[, <grantee>...]] [LIMIT n]
+```
+</CodeGroup>
+
+<CodeGroup>
+```sql SQL icon="database"
+SHOW GRANTS
+SHOW GRANTS ON TABLE events TO ROLE readers LIMIT 2
+SHOW GRANTS ON NAMESPACE features IN analytics.team
+SHOW GRANTS TO USER ID 'p1'
+```
+</CodeGroup>
+
+Lists grants as rows of `subject_id`, `subject_name`, `object` and
+`privilege`. `ON` filters to one target's own grants; `TO` filters to one
+or more grantees; combine both, or omit both for every grant the caller
+can see. `ON <target>` requires `USAGE` on that target; a target-less call
+requires system `USAGE` instead, since it can surface grants across the
+whole catalog. `SHOW ROLE BINDINGS` is the counterpart for role
+membership rather than object privileges -- see
+[Role membership in SQL](/governance/principals#membership).
+
 ## What to read next {#next}
 
 <CardGroup cols={2}>

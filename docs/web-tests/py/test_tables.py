@@ -1484,6 +1484,7 @@ def test_branches(tmp_db):
 def test_consistency_strong(tmp_path):
     uri = str(tmp_path)
     # --8<-- [start:consistency_strong]
+    import lancedb
     from datetime import timedelta
 
     writer_db = lancedb.connect(uri)
@@ -1502,6 +1503,7 @@ def test_consistency_strong(tmp_path):
 def test_consistency_eventual(tmp_path):
     uri = str(tmp_path)
     # --8<-- [start:consistency_eventual]
+    import lancedb
     from datetime import timedelta
 
     writer_db = lancedb.connect(uri)
@@ -1520,6 +1522,8 @@ def test_consistency_eventual(tmp_path):
 def test_consistency_checkout_latest(tmp_path):
     uri = str(tmp_path)
     # --8<-- [start:consistency_checkout_latest]
+    import lancedb
+
     writer_db = lancedb.connect(uri)
     reader_db = lancedb.connect(uri)
     writer_table = writer_db.create_table(

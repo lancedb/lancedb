@@ -93,13 +93,19 @@ fewer filled rows than you expected.
 
 | | |
 | --- | --- |
-| `LIMIT` | must be between 1 and 100,000 |
+| `LIMIT` | defaults to 10,000; must be between 1 and 100,000 |
 | Failed jobs scanned without `FOR JOB` | 32 most recent |
 | Tables the server does not open directly | not supported |
 
 Without `FOR JOB` this surveys recent failures and stops at 32 jobs. When the
 listing stops at your `LIMIT`, the message says so. Narrow with `FOR JOB`
 rather than raising the limit blindly.
+
+<Note>
+`SHOW JOBS`, `SHOW JOB EVENTS`, `DESCRIBE JOB` and `SHOW ERRORS` require
+system `USAGE`, as do the equivalent REST diagnostics. Explicit table
+listings additionally use the table-list authorization policy.
+</Note>
 
 ## PAUSE JOB {#pause}
 
@@ -130,6 +136,12 @@ nothing after it: a second token on the line is a syntax error rather than
 being ignored. Pause requires the deployment's pause-write opt-in and a
 resumable job type; it may return `pausing` while workers drain, and resume
 may return `still_pausing` until drain finishes.
+
+<Note>
+`PAUSE JOB`, `RESUME JOB` and `CANCEL JOB` require system `OPERATE` -- a
+broader privilege than the `USAGE` that reading job state needs, since
+these change what a running job does.
+</Note>
 
 <Note>
 Cancellation is a request, matching the SDK's

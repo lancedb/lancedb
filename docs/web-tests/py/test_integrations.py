@@ -1346,6 +1346,8 @@ def test_frameworks_pydantic_examples() -> None:
     # --8<-- [end:frameworks_pydantic_base_model]
 
     # --8<-- [start:frameworks_pydantic_set_url]
+    import lancedb
+
     db = lancedb.connect(str(Path(tempfile.mkdtemp()) / "pydantic-docs"))
     # --8<-- [end:frameworks_pydantic_set_url]
 
@@ -1678,6 +1680,8 @@ def test_platforms_pandas_examples() -> None:
 
     # --8<-- [end:platforms_pandas_imports]
     # --8<-- [start:platforms_pandas_create_table]
+    import lancedb
+
     pandas_df = pd.DataFrame(
         [
             {"id": "1", "text": "dragon", "vector": [0.9, 0.1, 0.3]},
@@ -1700,6 +1704,8 @@ def test_platforms_pandas_examples() -> None:
     # --8<-- [end:platforms_pandas_vector_search]
 
     # --8<-- [start:platforms_pandas_async_example]
+    import lancedb
+
     async def run_pandas_async_example() -> pd.DataFrame:
         async_db = await lancedb.connect_async(
             str(Path(tempfile.mkdtemp()) / "pandas-async")
@@ -1739,6 +1745,8 @@ def test_platforms_polars_examples() -> None:
 
     # --8<-- [end:platforms_polars_imports]
     # --8<-- [start:platforms_polars_create_table]
+    import lancedb
+
     birds = pl.DataFrame(
         {
             "text": ["phoenix", "sparrow"],

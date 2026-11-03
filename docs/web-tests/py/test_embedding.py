@@ -25,6 +25,8 @@ def test_create_embedding_function():
 @pytest.mark.skip(reason="OpenAI is not available in the test environment")
 def test_embeddings_openai():
     # --8<-- [start:openai_embeddings]
+    import lancedb
+
     db = lancedb.connect("/tmp/db")
     func = get_registry().get("openai").create(name="text-embedding-ada-002")
 
@@ -46,6 +48,8 @@ def test_embeddings_openai():
 async def test_embeddings_openai_async():
     uri = "memory://"
     # --8<-- [start:async_openai_embeddings]
+    import lancedb
+
     db = await lancedb.connect_async(uri)
     func = get_registry().get("openai").create(name="text-embedding-ada-002")
 
@@ -65,6 +69,8 @@ async def test_embeddings_openai_async():
 @pytest.mark.skip(reason="OpenAI is not available in the test environment")
 def test_embeddings_manual_query():
     # --8<-- [start:manual_query_embeddings]
+    import lancedb
+
     db = lancedb.connect("/tmp/db")
     func = get_registry().get("openai").create(name="text-embedding-ada-002")
 

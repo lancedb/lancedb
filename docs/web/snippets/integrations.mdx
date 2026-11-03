@@ -92,7 +92,7 @@ export const PyFrameworksPydanticBaseModel = "class LanceDocs(LanceModel):\n    
 
 export const PyFrameworksPydanticImports = "import tempfile\nfrom pathlib import Path\n\nimport lancedb\nfrom lancedb.pydantic import LanceModel, Vector\n";
 
-export const PyFrameworksPydanticSetUrl = "db = lancedb.connect(str(Path(tempfile.mkdtemp()) / \"pydantic-docs\"))\n";
+export const PyFrameworksPydanticSetUrl = "import lancedb\n\ndb = lancedb.connect(str(Path(tempfile.mkdtemp()) / \"pydantic-docs\"))\n";
 
 export const PyFrameworksPydanticTypeConversion = "from typing import List, Optional\n\nimport pyarrow as pa\nimport pydantic\nfrom lancedb.pydantic import Vector, pydantic_to_schema\n\nclass FooModel(pydantic.BaseModel):\n    id: int\n    s: str\n    vec: Vector(1536)  # fixed_size_list<item: float32>[1536]\n    li: List[int]\n\nschema = pydantic_to_schema(FooModel)\nassert schema == pa.schema(\n    [\n        pa.field(\"id\", pa.int64(), False),\n        pa.field(\"s\", pa.utf8(), False),\n        pa.field(\"vec\", pa.list_(pa.float32(), 1536)),\n        pa.field(\"li\", pa.list_(pa.int64()), False),\n    ]\n)\n";
 
@@ -118,15 +118,15 @@ export const PyPlatformsDuckdbMeanPrice = "duckdb.query(\"SELECT mean(price) FRO
 
 export const PyPlatformsDuckdbQueryTable = "import duckdb\n\narrow_table = table.to_lance()\n\nduckdb.query(\"SELECT * FROM arrow_table\")\n";
 
-export const PyPlatformsPandasAsyncExample = "async def run_pandas_async_example() -> pd.DataFrame:\n    async_db = await lancedb.connect_async(\n        str(Path(tempfile.mkdtemp()) / \"pandas-async\")\n    )\n    async_df = pd.DataFrame(\n        [\n            {\"id\": \"10\", \"text\": \"sage\", \"vector\": [0.6, 0.4, 0.8]},\n            {\"id\": \"11\", \"text\": \"bard\", \"vector\": [0.2, 0.7, 0.3]},\n        ]\n    )\n    async_table = await async_db.create_table(\n        \"creatures_async\", data=async_df, mode=\"overwrite\"\n    )\n    # An async search returns its query builder from an await\n    query = await async_table.search([0.6, 0.4, 0.8])\n    async_results = await query.select([\"text\", \"_distance\"]).limit(1).to_pandas()\n    print(async_results)\n    return async_results\n\nasync_results = asyncio.run(run_pandas_async_example())\n";
+export const PyPlatformsPandasAsyncExample = "import lancedb\n\nasync def run_pandas_async_example() -> pd.DataFrame:\n    async_db = await lancedb.connect_async(\n        str(Path(tempfile.mkdtemp()) / \"pandas-async\")\n    )\n    async_df = pd.DataFrame(\n        [\n            {\"id\": \"10\", \"text\": \"sage\", \"vector\": [0.6, 0.4, 0.8]},\n            {\"id\": \"11\", \"text\": \"bard\", \"vector\": [0.2, 0.7, 0.3]},\n        ]\n    )\n    async_table = await async_db.create_table(\n        \"creatures_async\", data=async_df, mode=\"overwrite\"\n    )\n    # An async search returns its query builder from an await\n    query = await async_table.search([0.6, 0.4, 0.8])\n    async_results = await query.select([\"text\", \"_distance\"]).limit(1).to_pandas()\n    print(async_results)\n    return async_results\n\nasync_results = asyncio.run(run_pandas_async_example())\n";
 
-export const PyPlatformsPandasCreateTable = "pandas_df = pd.DataFrame(\n    [\n        {\"id\": \"1\", \"text\": \"dragon\", \"vector\": [0.9, 0.1, 0.3]},\n        {\"id\": \"2\", \"text\": \"griffin\", \"vector\": [0.4, 0.5, 0.2]},\n        {\"id\": \"3\", \"text\": \"phoenix\", \"vector\": [0.7, 0.3, 0.6]},\n    ]\n)\npandas_db = lancedb.connect(str(Path(tempfile.mkdtemp()) / \"pandas-demo\"))\npandas_table = pandas_db.create_table(\"creatures\", data=pandas_df, mode=\"overwrite\")\n";
+export const PyPlatformsPandasCreateTable = "import lancedb\n\npandas_df = pd.DataFrame(\n    [\n        {\"id\": \"1\", \"text\": \"dragon\", \"vector\": [0.9, 0.1, 0.3]},\n        {\"id\": \"2\", \"text\": \"griffin\", \"vector\": [0.4, 0.5, 0.2]},\n        {\"id\": \"3\", \"text\": \"phoenix\", \"vector\": [0.7, 0.3, 0.6]},\n    ]\n)\npandas_db = lancedb.connect(str(Path(tempfile.mkdtemp()) / \"pandas-demo\"))\npandas_table = pandas_db.create_table(\"creatures\", data=pandas_df, mode=\"overwrite\")\n";
 
 export const PyPlatformsPandasImports = "import asyncio\nimport tempfile\nfrom pathlib import Path\n\nimport lancedb\nimport pandas as pd\n";
 
 export const PyPlatformsPandasVectorSearch = "pandas_results = (\n    pandas_table.search([0.9, 0.1, 0.3])\n    .select([\"text\", \"_distance\"])\n    .limit(1)\n    .to_pandas()\n)\nprint(pandas_results)\n";
 
-export const PyPlatformsPolarsCreateTable = "birds = pl.DataFrame(\n    {\n        \"text\": [\"phoenix\", \"sparrow\"],\n        \"vector\": [\n            [0.1, 0.2, 0.3],\n            [0.8, 0.6, 0.5],\n        ],\n    }\n)\npolars_db = lancedb.connect(str(Path(tempfile.mkdtemp()) / \"polars-demo\"))\npolars_table = polars_db.create_table(\n    \"birds\", data=birds.to_arrow(), mode=\"overwrite\"\n)\n";
+export const PyPlatformsPolarsCreateTable = "import lancedb\n\nbirds = pl.DataFrame(\n    {\n        \"text\": [\"phoenix\", \"sparrow\"],\n        \"vector\": [\n            [0.1, 0.2, 0.3],\n            [0.8, 0.6, 0.5],\n        ],\n    }\n)\npolars_db = lancedb.connect(str(Path(tempfile.mkdtemp()) / \"polars-demo\"))\npolars_table = polars_db.create_table(\n    \"birds\", data=birds.to_arrow(), mode=\"overwrite\"\n)\n";
 
 export const PyPlatformsPolarsImports = "import tempfile\nfrom pathlib import Path\n\nimport lancedb\nimport polars as pl\nfrom lancedb.pydantic import LanceModel, Vector\n";
 

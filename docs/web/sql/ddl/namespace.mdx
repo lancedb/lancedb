@@ -66,6 +66,15 @@ The result has `operation`, `name`, and `status` columns. The operation is
 `CREATE SCHEMA` for either spelling; the name is the resolved path and the
 status is `created`.
 
+<Note>
+Creation requires `CREATE NAMESPACE` on the database and the parent
+namespace -- the same privileges the
+[namespace REST API](/management/namespace) checks. The caller becomes the
+owner of each newly created namespace, including implicitly created
+ancestors. See [Grant](/sql/ddl/grant#privileges) for the full privilege
+list a namespace accepts.
+</Note>
+
 ## ALTER SCHEMA and ALTER NAMESPACE {#alter}
 
 | Operation | SCHEMA syntax | NAMESPACE syntax |
@@ -81,6 +90,11 @@ for example `SET ("owner.team" = 'search')`.
 Each statement updates metadata atomically and preserves unrelated
 concurrent changes. Metadata changes do not change ownership or grants. Use
 `DESCRIBE` to read the updated properties. A missing namespace is an error.
+
+<Note>
+Requires `USAGE` on the database and the namespace, and `OWNERSHIP` on the
+namespace itself.
+</Note>
 
 <Note>
 `ALTER` metadata is supported by native manifest-backed databases. Legacy
@@ -105,6 +119,10 @@ DESC NAMESPACE features IN team
 Returns one row with `name` (the complete `$`-joined schema path) and
 `properties` (a JSON object). An unannotated namespace returns `{}`. A
 missing namespace is an error. `DESC` is an alias for `DESCRIBE`.
+
+<Note>
+Requires `USAGE` on the database and the namespace.
+</Note>
 
 ## SHOW SCHEMAS and SHOW NAMESPACES {#show}
 
@@ -147,6 +165,13 @@ and all descendant bindings atomically in one catalog commit, then submits
 a background job that cleans up their storage; deployments without cascade
 support reject it. A storage integration used by an attached database
 blocks the drop of its namespace.
+
+<Note>
+Requires `USAGE` and `OWNERSHIP` on the namespace. A dropped Secret is
+eligible for immediate deletion even when jobs still reference it: a
+process that already holds the value keeps it for the rest of its run, but
+a later launch that needs the Secret can fail once it's gone.
+</Note>
 
 `RESTRICT` returns `operation`, `name`, and `status`, with status `dropped`
 or `not_found`. `CASCADE` returns `operation`, `job_id`, and `status`, with
