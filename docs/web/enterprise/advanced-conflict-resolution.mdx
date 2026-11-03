@@ -43,6 +43,14 @@ commit protocol (`lance-table`'s `frag_reuse::gate::classify`), the same one
 every write funnels through -- it is not a lock or a sequencing rule Enterprise
 imposes from outside.
 
+```mermaid
+flowchart TD
+    Commit["Compaction commit"] --> Classify{"Does any index<br/>cover the rewritten<br/>fragments?"}
+    Classify -->|no| Admit["Admitted as<br/>ordinary business --<br/>nothing appended to the FRI"]
+    Classify -->|yes| Append["Must append a transition<br/>before the commit is admitted"]
+    Append --> FRI[("Fragment reuse index")]
+```
+
 ## Enterprise defers and batches the catch-up {#catch-up}
 
 Translating addresses through a long chain of transitions at every read adds

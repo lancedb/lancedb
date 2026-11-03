@@ -88,6 +88,15 @@ on the same collision, and node drain waits for the shard's current pass
 instead of skipping it, since a skipped table is exactly what drain exists
 to flush.
 
+```mermaid
+flowchart TD
+    Shard["Shard's per-shard latch"] --> Held{"Already held by<br/>an in-progress pass?"}
+    Held -->|no| Grant["Grant the latch,<br/>run the pass"]
+    Held -->|yes, periodic trigger| Skip["Skip this tick --<br/>retried next tick"]
+    Held -->|yes, manual POST /v1/compact| Refuse["Refused outright,<br/>never queued"]
+    Held -->|yes, node drain| Wait["Wait for the current<br/>pass to finish, don't skip"]
+```
+
 ## Reading while compaction runs {#reads}
 
 A query against an RTE-enabled table always reads the shard's current

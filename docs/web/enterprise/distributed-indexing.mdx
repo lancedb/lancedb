@@ -15,6 +15,19 @@ registry and commit the finished index together. A vector index build first
 trains a shared IVF/PQ model from sampled data, then workers build storage
 from that model in parallel. See [Architecture](/index#architecture).
 
+```mermaid
+flowchart LR
+    S["Sample data"] --> T["Train shared IVF/PQ model<br/>(vector index only)"]
+    T --> P["Bin-pack build plan<br/>into claimable tasks"]
+    P --> R[("Job registry")]
+    R --> W1["Worker<br/>claims a task"]
+    R --> W2["Worker<br/>claims a task"]
+    R --> W3["Worker<br/>claims a task"]
+    W1 --> C["Commit the<br/>finished index"]
+    W2 --> C
+    W3 --> C
+```
+
 ## Indexing interfaces {#indexing-interfaces}
 
 The shared indexing guides describe how to build and maintain each index
