@@ -249,6 +249,34 @@ pub struct JobInfo {
     pub state: String,
     /// When the job was created, in milliseconds since the epoch.
     pub created_at_millis: i64,
+    /// Latest progress sample for a job type that reports structured progress.
+    pub progress: Option<serde_json::Value>,
+    /// Coarse server-derived phase, including phases introduced by newer
+    /// servers.
+    pub phase: Option<String>,
+    /// Whether an operator has parked this job.
+    pub paused: bool,
+}
+
+impl JobInfo {
+    /// A flat progress mapping for list callers. Lifecycle and pause metadata
+    /// remain available when a job type or older server has no counters.
+    pub fn progress_snapshot(&self) -> serde_json::Value {
+        let mut snapshot = serde_json::Map::new();
+        snapshot.insert("job_type".to_string(), self.job_type.clone().into());
+        snapshot.insert("state".to_string(), self.state.clone().into());
+        snapshot.insert("creation_ms".to_string(), self.created_at_millis.into());
+        snapshot.insert("paused".to_string(), self.paused.into());
+        if let Some(phase) = &self.phase {
+            snapshot.insert("phase".to_string(), phase.clone().into());
+        }
+        if let Some(serde_json::Value::Object(progress)) = &self.progress {
+            for (key, value) in progress {
+                snapshot.insert(key.clone(), value.clone());
+            }
+        }
+        serde_json::Value::Object(snapshot)
+    }
 }
 
 /// The server-side record behind a [`crate::job::Job`] handle: lifecycle
@@ -261,6 +289,17 @@ pub struct JobDescription {
     pub state: String,
     /// When the job was created, in milliseconds since the epoch.
     pub creation_ms: i64,
+    /// Latest progress sample for a job type that reports structured progress.
+    pub progress: Option<serde_json::Value>,
+    /// Coarse server-derived phase, including phases introduced by newer
+    /// servers.
+    pub phase: Option<String>,
+    /// Why this job is queued before execution. Absent once work can start.
+    pub queue_reason: Option<String>,
+    /// Maintenance job this queued job is waiting for, if any.
+    pub waiting_for_job_id: Option<String>,
+    /// When the job was paused, if it is.
+    pub paused_at_millis: Option<i64>,
     /// The job-type-specific specification. Null when the server omits it.
     pub spec: serde_json::Value,
     /// The job-type-specific terminal result, for job types that define one.
@@ -270,6 +309,42 @@ pub struct JobDescription {
     /// Why the job failed, when the job is failed and the server reports a
     /// reason.
     pub failure: Option<crate::error::JobFailure>,
+}
+
+impl JobDescription {
+    /// A flat, job-type-neutral progress snapshot for SDK callers.
+    ///
+    /// Lifecycle metadata is always available. Queue metadata and structured
+    /// progress fields are included when supplied by the server; older servers
+    /// simply omit those fields.
+    pub fn progress_snapshot(&self) -> serde_json::Value {
+        let mut snapshot = serde_json::Map::new();
+        snapshot.insert("job_type".to_string(), self.job_type.clone().into());
+        snapshot.insert("state".to_string(), self.state.clone().into());
+        snapshot.insert("creation_ms".to_string(), self.creation_ms.into());
+        if let Some(phase) = &self.phase {
+            snapshot.insert("phase".to_string(), phase.clone().into());
+        }
+        if let Some(queue_reason) = &self.queue_reason {
+            snapshot.insert("queue_reason".to_string(), queue_reason.clone().into());
+        }
+        if let Some(waiting_for_job_id) = &self.waiting_for_job_id {
+            snapshot.insert(
+                "waiting_for_job_id".to_string(),
+                waiting_for_job_id.clone().into(),
+            );
+        }
+        snapshot.insert("paused".to_string(), self.paused_at_millis.is_some().into());
+        if let Some(paused_at_millis) = self.paused_at_millis {
+            snapshot.insert("paused_at_millis".to_string(), paused_at_millis.into());
+        }
+        if let Some(serde_json::Value::Object(progress)) = &self.progress {
+            for (key, value) in progress {
+                snapshot.insert(key.clone(), value.clone());
+            }
+        }
+        serde_json::Value::Object(snapshot)
+    }
 }
 
 /// The server's answer to a pause request.

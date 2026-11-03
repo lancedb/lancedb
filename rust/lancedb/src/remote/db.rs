@@ -699,6 +699,12 @@ struct RemoteListJobRow {
     state: String,
     #[serde(default)]
     created_at_millis: i64,
+    #[serde(default)]
+    progress: Option<serde_json::Value>,
+    #[serde(default)]
+    phase: Option<String>,
+    #[serde(default)]
+    paused: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -1211,6 +1217,9 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 job_type: row.job_type,
                 state: job_state_to_client(&row.state),
                 created_at_millis: row.created_at_millis,
+                progress: row.progress,
+                phase: row.phase,
+                paused: row.paused,
             })
             .collect();
         Ok(ListingPage {
@@ -3965,7 +3974,7 @@ mod tests {
                     http::Response::builder()
                         .status(200)
                         .body(
-                            r#"{"jobs": [{"job_id": "job-1", "table": "t1", "job_type": "create_index", "state": "in_progress", "created_at_millis": 1000}], "page_token": "next"}"#,
+                            r#"{"jobs": [{"job_id": "job-1", "table": "t1", "job_type": "create_index", "state": "in_progress", "created_at_millis": 1000, "progress": {"rows_planned": 10, "rows_computed": 4}, "phase": "running", "paused": true}], "page_token": "next"}"#,
                         )
                         .unwrap()
                 }
@@ -3989,6 +3998,9 @@ mod tests {
         assert_eq!(jobs[0].job_id, "job-1");
         assert_eq!(jobs[0].table, "t1");
         assert_eq!(jobs[0].state, "running");
+        assert_eq!(jobs[0].progress.as_ref().unwrap()["rows_computed"], 4);
+        assert_eq!(jobs[0].phase.as_deref(), Some("running"));
+        assert!(jobs[0].paused);
         assert_eq!(jobs[1].job_id, "job-2");
         assert_eq!(jobs[1].state, "finished");
         assert_eq!(jobs[1].created_at_millis, 2000);

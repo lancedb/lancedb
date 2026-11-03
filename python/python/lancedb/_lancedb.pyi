@@ -1,6 +1,17 @@
 from datetime import date, datetime, timedelta
 from decimal import Decimal
-from typing import Dict, List, Optional, Sequence, Tuple, Any, TypedDict, Union, Literal
+from typing import (
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+    Any,
+    TypedDict,
+    Union,
+    Literal,
+)
 from uuid import UUID
 
 import pyarrow as pa
@@ -388,7 +399,10 @@ class Job:
     @property
     def _description(self) -> Optional[JobDescription]: ...
     async def status(self) -> str: ...
-    async def wait(self) -> Optional[str]: ...
+    async def wait(
+        self,
+        progress: Optional[Callable[[dict[str, Any]], None]] = None,
+    ) -> Optional[str]: ...
     async def cancel(self) -> None: ...
     async def refresh(self) -> None: ...
     async def events(
@@ -409,6 +423,10 @@ class JobInfo:
     def state(self) -> str: ...
     @property
     def created_at_millis(self) -> int: ...
+    @property
+    def progress(self) -> Optional[dict[str, Any]]: ...
+    @property
+    def paused(self) -> bool: ...
 
 class SessionStatus:
     @property
@@ -466,6 +484,8 @@ class JobDescription:
     def spec(self) -> Optional[Any]: ...
     @property
     def result(self) -> Optional[Any]: ...
+    @property
+    def progress(self) -> Optional[dict[str, Any]]: ...
     @property
     def failure(self) -> Optional[JobFailureInfo]: ...
 

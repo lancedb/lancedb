@@ -2,13 +2,14 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import asyncio
+import time
 from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from lancedb.exceptions import JobCancelledError, JobFailedError
-from lancedb.job import AsyncJob, Job
+from lancedb.job import AsyncJob, Job, _progress_eta
 from lancedb.remote.errors import HttpError, RetryError
 
 
@@ -238,6 +239,20 @@ class _PendingQuery:
         await asyncio.sleep(60)
 
 
+class _ProgressJob:
+    id = "job-progress"
+    job_type = "refresh_column"
+
+    async def status(self):
+        return "finished"
+
+    async def wait(self, progress=None):
+        if progress is not None:
+            progress({"state": "running", "rows_planned": 4, "rows_computed": 2})
+            progress({"state": "finished", "rows_planned": 4, "rows_computed": 4})
+        return None
+
+
 def _assert_timeout(error: TimeoutError) -> None:
     message = str(error)
     assert "job 'job-timeout' still running after 0.01 seconds" in message
@@ -262,6 +277,421 @@ def test_job_wait_timeout_explains_reattach():
         job.wait(timeout=timedelta(seconds=0.01))
 
     _assert_timeout(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_progress_is_additive_to_string_status_and_returns_none_locally():
+    inner = MagicMock(id="job-progress", job_type="refresh_column")
+    inner.status = AsyncMock(return_value="running")
+    inner._description = type(
+        "Description", (), {"progress": {"state": "running", "rows_computed": 2}}
+    )()
+    job = AsyncJob(inner)
+
+    assert await job.status() == "running"
+    assert await job.progress() == {"state": "running", "rows_computed": 2}
+    assert await AsyncJob(None).progress() is None
+    assert await AsyncJob(_ProgressJob()).progress() is None
+    assert Job(AsyncJob(None)).progress() is None
+
+
+def test_progress_eta_uses_two_stable_advancing_same_epoch_samples():
+    now = int(time.time() * 1_000)
+    previous = {
+        "state": "running",
+        "execution_epoch": 7,
+        "sample_at_millis": now - 1_000,
+        "rows_planned": 100,
+        "rows_computed": 20,
+        "rows_skipped": 0,
+        "rows_remaining": 80,
+        "fragments_planned": 4,
+    }
+    current = {
+        **previous,
+        "sample_at_millis": now,
+        "rows_computed": 40,
+        "rows_remaining": 60,
+    }
+    assert _progress_eta(previous, current) == 3_000
+    assert _progress_eta(previous, {**current, "rows_planned": 120}) is None
+    assert _progress_eta(previous, {**current, "execution_epoch": 8}) is None
+    assert _progress_eta(previous, {**current, "rows_computed": 20}) is None
+    stale = {
+        **current,
+        "sample_at_millis": now - 11 * 60 * 1_000,
+    }
+    assert (
+        _progress_eta({**previous, "sample_at_millis": now - 12 * 60 * 1_000}, stale)
+        is None
+    )
+    assert _progress_eta(previous, {**current, "state": "finished"}) is None
+    assert (
+        _progress_eta(previous, {**current, "state": "finished", "rows_remaining": 0})
+        == 0
+    )
+
+
+@pytest.mark.asyncio
+async def test_progress_retains_eta_from_same_handle_observations():
+    now = int(time.time() * 1_000)
+    first = {
+        "state": "running",
+        "execution_epoch": 7,
+        "sample_at_millis": now - 1_000,
+        "rows_planned": 100,
+        "rows_computed": 20,
+        "rows_skipped": 0,
+        "rows_remaining": 80,
+        "fragments_planned": 4,
+    }
+    second = {
+        **first,
+        "sample_at_millis": now,
+        "rows_computed": 40,
+        "rows_remaining": 60,
+    }
+    inner = MagicMock(id="job-progress", job_type="refresh_column")
+    inner.status = AsyncMock(return_value="running")
+    description = type("Description", (), {"progress": first})()
+    inner._description = description
+    job = AsyncJob(inner)
+
+    assert await job.progress() == first
+    description.progress = second
+    assert (await job.progress())["estimated_remaining_time_millis"] == 3_000
+
+
+@pytest.mark.asyncio
+async def test_wait_progress_callback_observes_backend_poll_updates():
+    updates = []
+
+    result = await AsyncJob(_ProgressJob()).wait(progress=updates.append)
+
+    assert result is None
+    assert updates == [
+        {"state": "running", "rows_planned": 4, "rows_computed": 2},
+        {"state": "finished", "rows_planned": 4, "rows_computed": 4},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_wait_progress_callback_uses_the_public_eta_enrichment(monkeypatch):
+    now = 10_000_000
+    monkeypatch.setattr("lancedb.job.time.time", lambda: now / 1_000)
+
+    class EtaJob:
+        id = "job-eta"
+        job_type = "refresh_column"
+
+        async def wait(self, progress):
+            first = {
+                "state": "running",
+                "execution_epoch": 7,
+                "sample_at_millis": now - 1_000,
+                "rows_planned": 100,
+                "rows_computed": 20,
+                "rows_skipped": 0,
+                "rows_remaining": 80,
+                "fragments_planned": 4,
+            }
+            progress(first)
+            progress(
+                {
+                    **first,
+                    "sample_at_millis": now,
+                    "rows_computed": 40,
+                    "rows_remaining": 60,
+                }
+            )
+
+    updates = []
+    assert await AsyncJob(EtaJob()).wait(progress=updates.append) is None
+
+    assert "estimated_remaining_time_millis" not in updates[0]
+    assert updates[1]["estimated_remaining_time_millis"] == 3_000
+
+
+@pytest.mark.asyncio
+async def test_wait_progress_true_updates_and_closes_only_the_owned_bar(monkeypatch):
+    tqdm_module = pytest.importorskip("tqdm.auto")
+
+    class Bar:
+        def __init__(self):
+            self.total = None
+            self.updates = []
+            self.phases = []
+            self.closed = False
+
+        def update(self, delta):
+            self.updates.append(delta)
+
+        def set_postfix_str(self, phase):
+            self.phases.append(phase)
+
+        def close(self):
+            self.closed = True
+
+    bar = Bar()
+    monkeypatch.setattr(tqdm_module, "tqdm", lambda **kwargs: bar)
+
+    assert await AsyncJob(_ProgressJob()).wait(progress=True) is None
+    assert bar.total == 4
+    assert bar.updates == [2, 2]
+    assert bar.phases == ["running", "finished"]
+    assert bar.closed
+
+
+@pytest.mark.asyncio
+async def test_wait_progress_bar_resumes_caller_owned_bar_after_timeout():
+    class ResumableJob:
+        id = "job-resume"
+        job_type = "refresh_column"
+
+        def __init__(self, bar):
+            self.calls = 0
+            self.bar = bar
+
+        async def wait(self, progress):
+            self.calls += 1
+            if self.calls == 1:
+                progress(
+                    {
+                        "state": "running",
+                        "execution_epoch": 1,
+                        "rows_planned": 4,
+                        "rows_remaining": 2,
+                    }
+                )
+                await asyncio.sleep(0.1)
+            else:
+                progress(
+                    {
+                        "state": "running",
+                        "execution_epoch": 2,
+                        "rows_planned": 4,
+                        "rows_remaining": 3,
+                    }
+                )
+                assert self.bar.n == 1
+            progress(
+                {
+                    "state": "finished",
+                    "execution_epoch": 2,
+                    "rows_planned": 4,
+                    "rows_remaining": 0,
+                }
+            )
+
+    class Bar:
+        def __init__(self):
+            self.total = None
+            self.n = 0
+            self.updates = []
+
+        def update(self, delta):
+            self.updates.append(delta)
+            self.n += delta
+
+        def set_postfix_str(self, _phase):
+            pass
+
+    bar = Bar()
+    job = AsyncJob(ResumableJob(bar))
+
+    with pytest.raises(TimeoutError):
+        await job.wait(timeout=timedelta(seconds=0.01), progress=bar)
+
+    assert await job.wait(progress=bar) is None
+    assert bar.total == 4
+    assert bar.n == 4
+    assert bar.updates == [2, 3]
+
+
+@pytest.mark.asyncio
+async def test_wait_progress_bar_resets_display_for_new_plan_or_epoch():
+    class ReplannedJob:
+        id = "job-replanned"
+        job_type = "refresh_column"
+
+        async def wait(self, progress):
+            progress(
+                {
+                    "state": "running",
+                    "execution_epoch": 1,
+                    "rows_planned": 6,
+                    "rows_remaining": 2,
+                }
+            )
+            progress(
+                {
+                    "state": "running",
+                    "execution_epoch": 1,
+                    "rows_planned": 4,
+                    "rows_remaining": 3,
+                }
+            )
+            progress(
+                {
+                    "state": "running",
+                    "execution_epoch": 2,
+                    "rows_planned": 4,
+                    "rows_remaining": 3,
+                }
+            )
+            progress(
+                {
+                    "state": "finished",
+                    "execution_epoch": 2,
+                    "rows_planned": 4,
+                    "rows_remaining": 0,
+                }
+            )
+
+    class Bar:
+        def __init__(self):
+            self.total = None
+            self.n = 0
+            self.updates = []
+            self.resets = []
+
+        def update(self, delta):
+            self.updates.append(delta)
+            self.n += delta
+
+        def reset(self, total=None):
+            self.resets.append(total)
+            self.total = total
+            self.n = 0
+
+        def set_postfix_str(self, _phase):
+            pass
+
+    bar = Bar()
+
+    assert await AsyncJob(ReplannedJob()).wait(progress=bar) is None
+    assert bar.total == 4
+    assert bar.n == 4
+    assert bar.n <= bar.total
+    assert bar.resets == [4, 4]
+    assert bar.updates == [4, 1, 1, 3]
+
+
+@pytest.mark.asyncio
+async def test_wait_progress_bar_uses_remaining_rows_when_computation_is_repeated(
+    monkeypatch,
+):
+    tqdm_module = pytest.importorskip("tqdm.auto")
+
+    class Bar:
+        def __init__(self):
+            self.total = None
+            self.updates = []
+            self.closed = False
+
+        def update(self, delta):
+            self.updates.append(delta)
+
+        def set_postfix_str(self, _phase):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    class RepeatedComputationJob:
+        id = "job-recomputed"
+        job_type = "refresh_column"
+
+        async def wait(self, progress):
+            progress(
+                {
+                    "state": "running",
+                    "rows_planned": 4,
+                    "rows_computed": 6,
+                    "rows_remaining": 2,
+                }
+            )
+            progress(
+                {
+                    "state": "finished",
+                    "rows_planned": 4,
+                    "rows_computed": 8,
+                    "rows_remaining": 0,
+                }
+            )
+
+    bar = Bar()
+    monkeypatch.setattr(tqdm_module, "tqdm", lambda **kwargs: bar)
+
+    assert await AsyncJob(RepeatedComputationJob()).wait(progress=True) is None
+    assert bar.total == 4
+    assert bar.updates == [2, 2]
+    assert bar.closed
+
+
+@pytest.mark.asyncio
+async def test_wait_progress_bar_tracks_late_planning_without_regressing(
+    monkeypatch,
+):
+    tqdm_module = pytest.importorskip("tqdm.auto")
+
+    class Bar:
+        def __init__(self):
+            self.total = None
+            self.updates = []
+            self.closed = False
+
+        def update(self, delta):
+            self.updates.append(delta)
+
+        def set_postfix_str(self, _phase):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    class RegressingPlanJob:
+        id = "job-regressing-plan"
+        job_type = "refresh_column"
+
+        async def wait(self, progress):
+            samples = [
+                (0, 0),
+                (4, 2),
+                (4, 3),
+                (4, 2),
+                (6, 1),
+                (6, 0),
+            ]
+            for planned, remaining in samples:
+                progress(
+                    {
+                        "state": "running",
+                        "rows_planned": planned,
+                        "rows_remaining": remaining,
+                    }
+                )
+
+    bar = Bar()
+    monkeypatch.setattr(tqdm_module, "tqdm", lambda **kwargs: bar)
+
+    assert await AsyncJob(RegressingPlanJob()).wait(progress=True) is None
+    assert bar.total == 6
+    # The remaining-row dip at (4, 3) must not rewind the high-water mark.
+    assert bar.updates == [2, 3, 1]
+    assert bar.closed
+
+
+@pytest.mark.asyncio
+async def test_wait_progress_false_keeps_legacy_inner_wait_call():
+    class NoProgressArgument:
+        id = "job-legacy"
+        job_type = None
+
+        async def wait(self):
+            return None
+
+    assert await AsyncJob(NoProgressArgument()).wait(progress=False) is None
 
 
 @pytest.mark.asyncio
