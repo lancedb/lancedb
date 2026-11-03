@@ -38,6 +38,7 @@ class TestNamespaceCreateTableOptions:
     @pytest.mark.parametrize("version", ["legacy", "stable"])
     @pytest.mark.parametrize("empty", [False, True])
     def test_deprecated_storage_version(self, tmp_path, version, empty):
+        pytest.importorskip("lance")
         db = lancedb.connect_namespace("dir", {"root": str(tmp_path / "namespace")})
         data = None if empty else [{"id": 1}]
         schema = pa.schema([("id", pa.int64())])
@@ -71,6 +72,7 @@ class TestNamespaceCreateTableOptions:
     @pytest.mark.parametrize("version", ["legacy", "stable"])
     @pytest.mark.parametrize("empty", [False, True])
     async def test_deprecated_storage_version_async(self, tmp_path, version, empty):
+        pytest.importorskip("lance")
         root = str(tmp_path / "namespace")
         db = lancedb.connect_namespace_async("dir", {"root": root})
         data = None if empty else [{"id": 1}]

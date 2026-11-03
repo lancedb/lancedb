@@ -10,6 +10,8 @@ import pytest
 
 @pytest.mark.parametrize("with_pylance", [False, True])
 def test_blob_array(with_pylance):
+    if with_pylance:
+        pytest.importorskip("lance")
     # Use fresh processes so each extension class can own Arrow's registry.
     script = textwrap.dedent(
         """\

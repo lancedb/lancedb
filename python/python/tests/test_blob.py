@@ -3005,6 +3005,7 @@ def _openable_descriptors(table, *, by_address):
 def test_open_blob_files_preserve_snapshot_order_nulls_and_empty_values(
     tmp_path, by_address
 ):
+    pytest.importorskip("lance")
     db = lancedb.connect(str(tmp_path))
     schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
     table = db.create_table("videos", schema=schema)
@@ -3075,6 +3076,7 @@ def test_open_blob_files_does_not_open_ahead(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_open_blob_files_async_iterates_snapshot_handles(tmp_path):
+    pytest.importorskip("lance")
     db = lancedb.connect(str(tmp_path))
     table = db.create_table(
         "videos",
