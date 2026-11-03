@@ -9,7 +9,11 @@ fi
 suite=$1
 out=$2
 expected_sha=${EXPECTED_SHA:-5bfcbe77bf9595b05ed1a5f06a803bdce8fe79a8}
-repo=$(cd "$(dirname "$0")/.." && pwd)
+if [[ -n ${SOURCE_DIR:-} ]]; then
+  repo=$(cd "$SOURCE_DIR" && pwd)
+else
+  repo=$(cd "$(dirname "$0")/.." && pwd)
+fi
 cd "$repo"
 
 actual_sha=$(git rev-parse HEAD)
