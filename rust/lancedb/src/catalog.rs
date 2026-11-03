@@ -206,7 +206,8 @@ pub trait Catalog: Send + Sync + std::fmt::Debug + 'static {
     /// Obtain deployment-wide authorization, if supported by this backend.
     fn authz(&self) -> Result<Arc<dyn crate::authz::Authorization>> {
         Err(crate::Error::NotSupported {
-            message: "Authorization administration is not supported by this catalog".into(),
+            message: crate::docs::DocLink::Authorization
+                .append_to("Authorization administration is not supported by this catalog"),
         })
     }
 

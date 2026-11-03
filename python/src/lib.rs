@@ -58,8 +58,25 @@ fn shutdown_runtime(py: Python<'_>) {
     py.detach(|| runtime::shutdown(std::time::Duration::from_secs(5)));
 }
 
+#[pyfunction]
+fn _doc_url(campaign: &str) -> PyResult<String> {
+    let link = lancedb::docs::DocLink::from_campaign(campaign).ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(format!("unknown doc link campaign: {campaign}"))
+    })?;
+    Ok(link.url())
+}
+
+#[pyfunction]
+fn _append_doc_url(message: &str, campaign: &str) -> PyResult<String> {
+    let link = lancedb::docs::DocLink::from_campaign(campaign).ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(format!("unknown doc link campaign: {campaign}"))
+    })?;
+    Ok(link.append_to(message))
+}
+
 #[pymodule]
 pub fn _lancedb(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    lancedb::docs::set_sdk_ident("python", env!("CARGO_PKG_VERSION"));
     let env = Env::new()
         .filter_or("LANCEDB_LOG", "warn")
         .write_style("LANCEDB_LOG_STYLE");
@@ -133,6 +150,8 @@ pub fn _lancedb(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(expr_col, m)?)?;
     m.add_function(wrap_pyfunction!(expr_lit, m)?)?;
     m.add_function(wrap_pyfunction!(expr_func, m)?)?;
+    m.add_function(wrap_pyfunction!(_doc_url, m)?)?;
+    m.add_function(wrap_pyfunction!(_append_doc_url, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add(
         "_experimental_functions_enabled",

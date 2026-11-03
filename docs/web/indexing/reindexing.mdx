@@ -61,6 +61,9 @@ LanceDB Enterprise supports incremental reindexing through an automated backgrou
 The benefit of using LanceDB Enterprise is that it automates the reindexing process
 and operates continuously in the background, minimizing the impact on latency under high loads.
 In LanceDB Embedded, you must manually manage the reindexing cadence based on your data growth and performance needs.
+Opening a table in LanceDB Embedded logs a warning at most once per table per
+process when any index has at least 1,000,000 unindexed rows. Set
+`LANCEDB_LOG=warn` to surface this log if your logger hides warnings by default.
 
 ## Disk utilization {#disk-utilization}
 

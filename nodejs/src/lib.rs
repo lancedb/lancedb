@@ -115,6 +115,7 @@ pub struct ConnectNamespaceOptions {
 
 #[napi_derive::module_init]
 fn init() {
+    lancedb::docs::set_sdk_ident("nodejs", env!("CARGO_PKG_VERSION"));
     let env = Env::new()
         .filter_or("LANCEDB_LOG", "warn")
         .write_style("LANCEDB_LOG_STYLE");

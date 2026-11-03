@@ -28,6 +28,7 @@ use lance_namespace::models::{
 };
 
 use crate::data::scannable::Scannable;
+use crate::docs::DocLink;
 use crate::error::Result;
 use crate::function::GpuClass;
 use crate::graph::{PropertyGraphDefinition, PropertyGraphDescription};
@@ -296,37 +297,52 @@ pub enum ResumeJobStatus {
 
 fn job_op_not_supported<T>(what: &str) -> Result<T> {
     Err(crate::error::Error::NotSupported {
-        message: format!("{} is not supported by this database", what),
+        message: DocLink::Jobs.append_to(format!("{what} is not supported by this database")),
+    })
+}
+
+fn materialized_view_op_not_supported<T>(what: &str) -> Result<T> {
+    Err(crate::error::Error::NotSupported {
+        message: DocLink::MaterializedViews
+            .append_to(format!("{what} is not supported by this database")),
     })
 }
 
 fn function_catalog_not_supported<T>() -> Result<T> {
     Err(crate::error::Error::NotSupported {
-        message: "Function catalog operations are not supported by this database".to_string(),
+        message: DocLink::Functions
+            .append_to("Function catalog operations are not supported by this database"),
     })
 }
 
 fn gpu_class_catalog_not_supported<T>() -> Result<T> {
     Err(crate::error::Error::NotSupported {
-        message: "GPU class discovery is supported only by LanceDB Enterprise".to_string(),
+        message: DocLink::GpuClasses
+            .append_to("GPU class discovery is supported only by LanceDB Enterprise"),
     })
 }
 
 fn secret_catalog_not_supported<T>() -> Result<T> {
     Err(crate::error::Error::NotSupported {
-        message: "Secret operations are not supported by this database".to_string(),
+        message: DocLink::Secrets.append_to("Secret operations are not supported by this database"),
     })
 }
 
 fn view_ops_not_supported<T>() -> Result<T> {
     Err(crate::error::Error::NotSupported {
-        message: "View operations are not supported by this database".to_string(),
+        message: DocLink::Views.append_to("View operations are not supported by this database"),
     })
 }
 
 fn property_graph_ops_not_supported<T>() -> Result<T> {
     Err(crate::error::Error::NotSupported {
         message: "Property graph operations are not supported by this database".to_string(),
+    })
+}
+
+fn sql_not_supported<T>() -> Result<T> {
+    Err(crate::error::Error::NotSupported {
+        message: DocLink::Sql.append_to("SQL is not supported by this database"),
     })
 }
 
@@ -396,7 +412,7 @@ pub trait Database:
         &self,
         _request: CreateMaterializedViewRequest,
     ) -> Result<Job> {
-        job_op_not_supported("remote materialized-view creation")
+        materialized_view_op_not_supported("remote materialized-view creation")
     }
     /// Drop a materialized view through its resource endpoint and return its
     /// cleanup job. Local connections validate the view and use table drop.
@@ -406,7 +422,7 @@ pub trait Database:
         _name: &str,
         _namespace_path: &[String],
     ) -> Result<Job> {
-        job_op_not_supported("remote materialized-view drop")
+        materialized_view_op_not_supported("remote materialized-view drop")
     }
     /// Fetch one page of materialized-view names in a namespace.
     /// Local backends filter a page of table names, so an empty result may
@@ -676,24 +692,18 @@ pub trait Database:
     }
     /// Establish the SQL transport without executing a statement.
     async fn check_sql_connection(&self) -> Result<()> {
-        Err(crate::Error::NotSupported {
-            message: "SQL is not supported by this database".into(),
-        })
+        sql_not_supported()
     }
     /// Start executing a SQL statement on a LanceDB Enterprise database.
     async fn execute_query_async(
         &self,
         _request: ExecuteQueryRequest,
     ) -> Result<crate::sql::Query> {
-        Err(crate::error::Error::NotSupported {
-            message: "SQL is not supported by this database".to_string(),
-        })
+        sql_not_supported()
     }
     /// Describe a submitted SQL query by its connection-scoped id.
     async fn describe_query(&self, _query_id: uuid::Uuid) -> Result<crate::sql::QueryDescription> {
-        Err(crate::error::Error::NotSupported {
-            message: "SQL is not supported by this database".to_string(),
-        })
+        sql_not_supported()
     }
     /// Open a table in the database
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>>;

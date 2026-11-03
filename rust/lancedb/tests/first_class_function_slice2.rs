@@ -113,7 +113,8 @@ async fn local_function_catalog_operations_return_stable_not_supported() {
         assert!(matches!(
             error,
             Error::NotSupported { message }
-                if message == "Function catalog operations are not supported by this database"
+                if message.starts_with("Function catalog operations are not supported by this database")
+                    && message.contains("utm_campaign=functions")
         ));
     }
 }
