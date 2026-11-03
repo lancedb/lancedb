@@ -85,12 +85,11 @@ trading that for lower per-part overhead. See
 
 ## Overriding the defaults {#override}
 
-A refresh can request a specific worker count, GPU class and count, or
-part size directly instead of relying on this adaptive behavior -- see
+A refresh can request a GPU class and count, or part size directly
+instead of relying on this adaptive behavior -- see
 [Configure workers and resources](/feature-engineering/refresh-column#resources).
 Setting `batch_size` explicitly replaces the adaptive part sizer for that
-refresh; `num_workers` replaces the budget-driven worker count the same
-way.
+refresh.
 
 ## What to read next {#next}
 
