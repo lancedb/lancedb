@@ -1979,8 +1979,10 @@ def test_remote_job_wait_raises_on_failure():
     with mock_lancedb_connection(handler) as db:
         table = db.create_table("test", [{"id": 1}])
         job = table.create_index_async("id", config=BTree())
-        with pytest.raises(JobFailedError, match="job-2"):
+        with pytest.raises(JobFailedError, match="job-2") as exc_info:
             job.wait()
+        assert exc_info.value.job_id == "job-2"
+        assert exc_info.value.sql_job_id is None
 
 
 @pytest.mark.parametrize("server_version", ["0.2.0", "0.6.0"])
@@ -4891,11 +4893,14 @@ def test_remote_connection_jobs_surface():
         assert job.spec == {"column": "vec"}
         assert job.failure.message == "worker died"
         assert repr(job.failure) == (
-            'JobFailureInfo(phase="execute", message="worker died", retryable=True)'
+            'JobFailureInfo(phase="execute", message="worker died", retryable=True, '
+            'sql_job_id=None)'
         )
         assert job.status() == "failed"
-        with pytest.raises(JobFailedError, match="worker died"):
+        with pytest.raises(JobFailedError, match="worker died") as exc_info:
             job.wait(timeout=timedelta(seconds=5))
+        assert exc_info.value.job_id == "job-1"
+        assert exc_info.value.sql_job_id is None
 
 
 def test_remote_job_handle_reports_its_own_detail():

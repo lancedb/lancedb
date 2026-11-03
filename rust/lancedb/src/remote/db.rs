@@ -769,16 +769,26 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         } else {
             format!(" WITH ({})", options.join(", "))
         };
-        client
-            .submit_as_job(
+        let submission = client
+            .submit_materialized_view_job(
                 format!(
                     "CREATE MATERIALIZED VIEW \"{name}\"{options} AS {}",
                     request.query
                 ),
                 request.namespace_path,
-                || async { Ok(()) },
             )
-            .await
+            .await?;
+        match submission {
+            crate::remote::sql::materialized_view::MaterializedViewJobSubmission::Registry {
+                job_id,
+            } => Ok(Job::new(Box::new(RemoteJob::new(
+                self.client.clone(),
+                job_id,
+            )))),
+            crate::remote::sql::materialized_view::MaterializedViewJobSubmission::Query(query) => {
+                Ok(client.query_job(query, || async { Ok(()) }))
+            }
+        }
     }
 
     async fn drop_materialized_view_async(

@@ -208,7 +208,9 @@ class AsyncMaterializedView:
         """Submit a refresh and return its job without waiting.
 
         The job may already be complete in LanceDB Embedded. In LanceDB
-        Distributed, refreshes are submitted through the SQL service. Options and
+        Distributed, refreshes are submitted through the SQL service and the
+        returned ``id`` is the registry job ID, usable with ``open_job`` for
+        progress, events, and cancellation while the refresh runs. Options and
         result metrics follow
         [refresh][lancedb.materialized_view.AsyncMaterializedView.refresh].
         """

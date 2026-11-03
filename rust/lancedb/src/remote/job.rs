@@ -75,6 +75,8 @@ pub(super) struct ReportedFailure {
     message: Option<String>,
     #[serde(default)]
     retryable: Option<bool>,
+    #[serde(default)]
+    sql_job_id: Option<String>,
 }
 
 /// Forward-compatible `/v1/jobs/pause` wire envelope.
@@ -123,6 +125,7 @@ impl ReportedFailure {
             phase: self.phase,
             message: self.message,
             retryable: self.retryable,
+            sql_job_id: self.sql_job_id,
             source: None,
         }
     }
@@ -370,5 +373,32 @@ mod tests {
         let response: DescribeJobResponse =
             serde_json::from_str(FUNCTION_JOB).expect("function job fixture");
         assert_eq!(response.job_state, "DONE");
+    }
+
+    #[test]
+    fn reported_failure_fields_are_passed_through() {
+        let response: DescribeJobResponse = serde_json::from_str(
+            r#"{
+                "job_state":"FAILED",
+                "failure":{
+                    "phase":"initialize",
+                    "message":"worker initialization timed out",
+                    "retryable":true,
+                    "sql_job_id":"job-1"
+                }
+            }"#,
+        )
+        .expect("failure description");
+        let failure = response
+            .failure
+            .expect("the wire response has a failure")
+            .into_job_failure();
+        assert_eq!(failure.phase.as_deref(), Some("initialize"));
+        assert_eq!(
+            failure.message.as_deref(),
+            Some("worker initialization timed out")
+        );
+        assert_eq!(failure.retryable, Some(true));
+        assert_eq!(failure.sql_job_id.as_deref(), Some("job-1"));
     }
 }
