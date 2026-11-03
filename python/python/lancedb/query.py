@@ -204,7 +204,7 @@ def _supports_local_blob_fetch(
 def _blob_bytes_without_snapshot_error() -> NotImplementedError:
     return NotImplementedError(
         "blob_mode='bytes' cannot safely materialize blob columns without a "
-        "stable table snapshot. LanceDB Distributed and namespace QueryTable pushdown "
+        "stable table snapshot. LanceDB Enterprise and namespace QueryTable pushdown "
         "run the query on a server, so the blob fetch could read another table "
         "version. Use blob_mode='descriptions'."
     )
@@ -913,6 +913,12 @@ class Query(pydantic.BaseModel):
         The size of the nearest neighbor list maintained during HNSW search
 
         This will only be set on vector search.
+    approx_mode : Optional[str]
+        The speed / accuracy tradeoff to use for approximate vector search
+
+        One of "fast", "normal" or "accurate".
+
+        This will only be set on vector search.
     full_text_query : Optional[Union[str, dict]]
         The full text search query
 
@@ -1014,6 +1020,9 @@ class Query(pydantic.BaseModel):
     # size of the nearest neighbor list maintained during HNSW search
     ef: Optional[int] = None
 
+    # speed / accuracy tradeoff for approximate vector search
+    approx_mode: Optional[str] = None
+
     # Bypass the vector index and use a brute force search
     bypass_vector_index: Optional[bool] = None
 
@@ -1044,6 +1053,7 @@ class Query(pydantic.BaseModel):
         query.lower_bound = req.lower_bound
         query.upper_bound = req.upper_bound
         query.ef = req.ef
+        query.approx_mode = req.approx_mode
         query.refine_factor = req.refine_factor
         query.bypass_vector_index = req.bypass_vector_index
         query.postfilter = req.postfilter
@@ -1212,6 +1222,7 @@ class LanceQueryBuilder(ABC):
         self._vector = None
         self._text = None
         self._ef = None
+        self._approx_mode = None
         self._bypass_vector_index = None
         self._order_by = None
 
@@ -1263,7 +1274,7 @@ class LanceQueryBuilder(ABC):
             mode and for legacy blob columns. Other local blob v2
             queries return descriptors in ``"lazy"`` and ``"descriptions"``
             modes, or payloads in ``"bytes"`` mode, through :meth:`to_arrow`.
-            LanceDB Distributed blob queries support only ``"descriptions"`` until a
+            LanceDB Enterprise blob queries support only ``"descriptions"`` until a
             stable
             table snapshot can bind the query and blob fetches.
         **kwargs
@@ -2136,6 +2147,35 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._ef = ef
         return self
 
+    def approx_mode(
+        self, approx_mode: Literal["fast", "normal", "accurate"]
+    ) -> LanceVectorQueryBuilder:
+        """Set the speed / accuracy tradeoff to use for approximate search.
+
+        This currently affects RQ-quantized indexes, such as IVF_RQ, and
+        prefiltered search on HNSW indexes, where "fast" enables the ACORN
+        traversal. Other index types ignore this setting.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("memory://")
+        >>> table = db.create_table("approx_vectors", [{"vector": [0.1, 0.2]}])
+        >>> query = table.search([0.1, 0.2]).approx_mode("fast")
+
+        Parameters
+        ----------
+        approx_mode: "fast" or "normal" or "accurate"
+            The tradeoff to use. By default "normal" is used.
+
+        Returns
+        -------
+        LanceVectorQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        self._approx_mode = approx_mode
+        return self
+
     def refine_factor(self, refine_factor: int) -> LanceVectorQueryBuilder:
         """Set the refine factor to use, increasing the number of vectors sampled.
 
@@ -2230,6 +2270,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             offset=self._offset,
             fast_search=self._fast_search,
             ef=self._ef,
+            approx_mode=self._approx_mode,
             bypass_vector_index=self._bypass_vector_index,
             order_by=self._order_by,
         )
@@ -3060,6 +3101,43 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._ef = ef
         return self
 
+    def approx_mode(
+        self, approx_mode: Literal["fast", "normal", "accurate"]
+    ) -> LanceHybridQueryBuilder:
+        """
+        Set the speed / accuracy tradeoff to use for approximate search.
+
+        This currently affects RQ-quantized indexes, such as IVF_RQ, and
+        prefiltered search on HNSW indexes, where "fast" enables the ACORN
+        traversal. Other index types ignore this setting.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("memory://")
+        >>> table = db.create_table(
+        ...     "approx_hybrid", [{"vector": [0.1, 0.2], "text": "dog"}]
+        ... )
+        >>> query = (
+        ...     table.search(query_type="hybrid")
+        ...     .vector([0.1, 0.2])
+        ...     .text("dog")
+        ...     .approx_mode("accurate")
+        ... )
+
+        Parameters
+        ----------
+        approx_mode: "fast" or "normal" or "accurate"
+            The tradeoff to use. By default "normal" is used.
+
+        Returns
+        -------
+        LanceHybridQueryBuilder
+            The LanceHybridQueryBuilder object.
+        """
+        self._approx_mode = approx_mode
+        return self
+
     def metric(self, metric: Literal["l2", "cosine", "dot"]) -> LanceHybridQueryBuilder:
         """Set the distance metric to use.
 
@@ -3304,6 +3382,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._vector_query.refine_factor(self._refine_factor)
         if self._ef:
             self._vector_query.ef(self._ef)
+        if self._approx_mode:
+            self._vector_query.approx_mode(self._approx_mode)
         if self._bypass_vector_index:
             self._vector_query.bypass_vector_index()
         if self._lower_bound is not None or self._upper_bound is not None:
@@ -3603,7 +3683,7 @@ class AsyncQueryBase(object):
             ``fetch_blobs`` reads. ``"descriptions"`` returns them without it.
             ``"bytes"`` returns payload bytes and raises for legacy blob columns
             and blobs inside lists.
-            LanceDB Distributed and namespace query pushdown refuse ``"bytes"``.
+            LanceDB Enterprise and namespace query pushdown refuse ``"bytes"``.
         """
         blob_sources = await self._validated_blob_sources(blob_mode)
         batch_iter = await self.to_batches(timeout=timeout)
@@ -3682,7 +3762,7 @@ class AsyncQueryBase(object):
             mode and for legacy blob columns. Other local blob v2
             queries return descriptors in ``"lazy"`` and ``"descriptions"``
             modes, or payloads in ``"bytes"`` mode, through :meth:`to_arrow`.
-            LanceDB Distributed blob queries support only ``"descriptions"`` until a
+            LanceDB Enterprise blob queries support only ``"descriptions"`` until a
             stable
             table snapshot can bind the query and blob fetches.
         **kwargs
@@ -4331,7 +4411,7 @@ class AsyncVectorQueryBase:
         you the desired recall.
 
         LanceDB retains this as `nprobes` through LanceDB Embedded and LanceDB
-        Distributed request construction. Lance sets both probe bounds to this
+        Enterprise request construction. Lance sets both probe bounds to this
         value. Explicit minimum or maximum settings can override their respective
         bounds.
         """
@@ -4428,6 +4508,33 @@ class AsyncVectorQueryBase:
         data and the recall that you need to achieve.
         """
         self._inner.ef(ef)
+        return self
+
+    def approx_mode(self, approx_mode: Literal["fast", "normal", "accurate"]) -> Self:
+        """
+        Set the speed / accuracy tradeoff to use for approximate search
+
+        This currently affects RQ-quantized indexes, such as IVF_RQ, and prefiltered
+        search on HNSW indexes, where "fast" enables the ACORN traversal.  Other index
+        types ignore this setting.
+
+        "fast" favors lower latency and may reduce recall, "normal" (the default) uses
+        the index's default balance, and "accurate" favors higher recall and may
+        increase latency.
+
+        Examples
+        --------
+        >>> import asyncio
+        >>> import lancedb
+        >>> async def build_query():
+        ...     db = await lancedb.connect_async("memory://")
+        ...     table = await db.create_table(
+        ...         "approx_async", [{"vector": [0.1, 0.2]}]
+        ...     )
+        ...     return table.vector_search([0.1, 0.2]).approx_mode("accurate")
+        >>> query = asyncio.run(build_query())
+        """
+        self._inner.approx_mode(approx_mode)
         return self
 
     def refine_factor(self, refine_factor: int) -> Self:

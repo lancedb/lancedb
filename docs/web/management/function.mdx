@@ -331,6 +331,11 @@ blob as a value, use a named-struct output schema with a nullable blob field;
 the struct itself records whether the result has been filled. Read a nested
 blob with `table.fetch_blobs("payload.image", hits)`.
 
+A list or large-list output may also contain Blob v2 elements; inputs and
+fixed-size lists do not support this layout. List-nested values are queryable
+as descriptors, but `fetch_blobs` and `blob_mode="bytes"` cannot fetch their
+payloads.
+
 <Warning>
 `output_schema=lancedb.blob(...)` is what makes a persisted result Blob v2
 rather than plain Arrow `binary`. Returning `bytes` from a function whose

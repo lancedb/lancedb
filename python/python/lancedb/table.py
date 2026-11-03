@@ -9,6 +9,7 @@ import json
 import deprecation
 import warnings
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import cached_property
@@ -34,6 +35,7 @@ from urllib.parse import urlparse
 from lancedb.scannable import _hf_batches, _register_optional_converters, to_scannable
 
 from . import __version__
+from ._lancedb import _parse_field_path
 from ._blob import (
     BlobFile,
     _normalize_blob_descriptor,
@@ -62,6 +64,7 @@ import numpy as np
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
+from .embeddings.registry import _embedding_column_pairs
 from .index import (
     BTree,
     IvfFlat,
@@ -123,6 +126,15 @@ def _should_push_down_query_table(
     namespace_client: Optional[Any], pushdown_operations: set
 ) -> bool:
     return namespace_client is not None and "QueryTable" in pushdown_operations
+
+
+def _requires_local_namespace_execution(query: Query) -> bool:
+    # The namespace QueryTable request does not support these query options.
+    return (
+        query.take_offsets is not None
+        or query.search_effort is not None
+        or query.approx_mode is not None
+    )
 
 
 _CUDA_UNAVAILABLE_MESSAGE = (
@@ -558,7 +570,7 @@ def _into_pyarrow_reader(
         and data.__class__.__name__ == "LazyFrame"
     ):
         return data.collect().to_arrow().to_reader()
-    elif isinstance(data, Iterable):
+    elif isinstance(data, Iterable) and not isinstance(data, str):
         return _iterator_to_reader(data, schema)
     else:
         raise TypeError(
@@ -1577,7 +1589,7 @@ class Table(ABC):
     def to_lance(self, **kwargs) -> lance.LanceDataset:
         """Return a LanceDB Embedded table as a lance.LanceDataset.
 
-        LanceDB Distributed tables cannot be opened as Lance datasets by the
+        LanceDB Enterprise tables cannot be opened as Lance datasets by the
         client. Use
         ``table.search().to_arrow()`` to read them through the server.
 
@@ -1590,7 +1602,7 @@ class Table(ABC):
     def to_polars(self, batch_size=None) -> "pl.LazyFrame":
         """Return the table as a Polars LazyFrame.
 
-        In LanceDB Distributed, use ``table.search().to_polars()`` to convert query
+        In LanceDB Enterprise, use ``table.search().to_polars()`` to convert query
         results to a Polars DataFrame.
 
         Parameters
@@ -2571,7 +2583,7 @@ class Table(ABC):
 
         Blobs inside lists cannot be fetched by row id yet.
 
-        LanceDB Distributed limits each request to 1024 row IDs and 64 MiB of blob
+        LanceDB Enterprise limits each request to 1024 row IDs and 64 MiB of blob
         bytes. The client splits requests automatically and reads an individual
         larger blob through the Range route. This method still materializes all
         bytes in memory; for large values use :meth:`fetch_blob_files`.
@@ -2598,7 +2610,7 @@ class Table(ABC):
         results are returned.
 
         Row IDs can be obtained from a query with ``with_row_id(True)``.
-        LanceDB Distributed reads the requested ranges through version-pinned blob
+        LanceDB Enterprise reads the requested ranges through version-pinned blob
         handles using HTTP byte-range requests.
         """
 
@@ -2615,7 +2627,7 @@ class Table(ABC):
         a ``list[int]``, an integer Arrow array or chunked array, or a query
         ``pyarrow.Table`` carrying row identity via ``_rowid`` or a
         ``_lance_row_id`` field on the blob descriptor. Null blob values return
-        ``None``. LanceDB Distributed requires server version 0.5.0 or newer.
+        ``None``. LanceDB Enterprise requires server version 0.5.0 or newer.
 
         ``_rowid`` values stay valid after compaction when the table has stable
         row ids.
@@ -2767,6 +2779,11 @@ class Table(ABC):
         Either `values` or `values_sql` must be provided. You cannot provide
         both.
 
+        Embeddings are not computed by this method. Updating an embedding source
+        column requires providing all associated vector columns in the same call;
+        otherwise a ValueError is raised. Use `merge_insert` to recompute embeddings
+        automatically.
+
         Parameters
         ----------
         where: str or [Expr][lancedb.expr.Expr], optional
@@ -2852,7 +2869,7 @@ class Table(ABC):
 
         Notes
         -----
-        This function is not available in LanceDB Distributed, which manages
+        This function is not available in LanceDB Enterprise, which manages
         cleanup for you automatically.
         """
 
@@ -2874,7 +2891,7 @@ class Table(ABC):
 
         Notes
         -----
-        This function is not available in LanceDB Distributed, which manages
+        This function is not available in LanceDB Enterprise, which manages
         compaction for you automatically.
         """
 
@@ -2961,7 +2978,7 @@ class Table(ABC):
         Specify exactly one of ``column`` or ``index_name``.
 
         Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
-        rebuilt in the client process from index metadata. In LanceDB Distributed,
+        rebuilt in the client process from index metadata. In LanceDB Enterprise,
         this means the same tokenizer model files must also exist locally
         (under ``LANCE_LANGUAGE_MODEL_HOME``) and must match the files the
         server uses. A mismatch cannot be detected: the returned tokens may
@@ -2988,11 +3005,15 @@ class Table(ABC):
     @abstractmethod
     def add_columns(
         self,
-        transforms: Dict[str, str | FunctionApplication]
+        transforms: Mapping[str, str | FunctionApplication]
         | FunctionApplication
         | pa.Field
         | List[pa.Field]
         | pa.Schema
+        | DATA
+        | pa.RecordBatch
+        | pa.RecordBatchReader
+        | pl.DataFrame
         | None = None,
         *,
         computed: Dict[str, str] | None = None,
@@ -3004,8 +3025,9 @@ class Table(ABC):
 
         Parameters
         ----------
-        transforms: Dict[str, str | FunctionApplication], FunctionApplication,
-            pa.Field, List[pa.Field], pa.Schema
+        transforms: Mapping[str, str | FunctionApplication], FunctionApplication,
+            pa.Field, List[pa.Field], pa.Schema, pandas.DataFrame,
+            polars.DataFrame, pa.Table, pa.RecordBatch, pa.RecordBatchReader
             A map of column name to a SQL expression to use to calculate the
             value of the new column. These expressions will be evaluated for
             each row in the table, and can reference existing columns.
@@ -3018,11 +3040,21 @@ class Table(ABC):
             named-struct application expands its ordered result fields as one
             atomic binding; aliases come from ``rename(columns=...)``.
             Function columns are supported only in LanceDB
-            Distributed.
+            Enterprise.
+
+            On local tables, a pandas or Polars DataFrame, PyArrow Table,
+            RecordBatch, or RecordBatchReader supplies precomputed new-column
+            values. Supply exactly one row per current live table row, in storage
+            scan order; pandas indexes are ignored. The input contains only new
+            columns. Readers are consumed once, and their batch boundaries need
+            not match table fragments. Keep the table unchanged between computing
+            these values and calling add_columns. Data inputs cannot be combined
+            with computed columns. Remote tables do not support data inputs.
+
         computed: Dict[str, str], optional
             LanceDB Embedded declaration and refresh require a source build with the
             ``experimental-functions`` Cargo feature, which published packages
-            do not enable. LanceDB Distributed operations remain available.
+            do not enable. LanceDB Enterprise operations remain available.
 
             A mapping from output column names to SQL expressions derives each
             output field from its expression. A direct projection of a Blob v2
@@ -3041,7 +3073,7 @@ class Table(ABC):
             While a declaration reads a column, that column cannot be renamed,
             retyped or dropped.
 
-            In LanceDB Distributed the expression is planned by the
+            In LanceDB Enterprise the expression is planned by the
             server, and the refresh runs as a server job -- see
             [`refresh_column_async`][lancedb.table.Table.refresh_column_async].
             Cannot be combined with ``transforms``.
@@ -3074,6 +3106,11 @@ class Table(ABC):
            x  doubled
         0  1        2
         1  2        4
+
+        >>> import pyarrow as pa
+        >>> result = table.add_columns(pa.table({"score": [0.25, 0.75]}).to_reader())
+        >>> table.to_arrow()["score"].to_pylist()
+        [0.25, 0.75]
         """
 
     @abstractmethod
@@ -3112,10 +3149,10 @@ class Table(ABC):
             GPU class for Function workers. Must be a lowercase name of 1-63
             letters, digits, or hyphens, without a leading or trailing hyphen.
             None keeps the Function's registered class or the deployment
-            default. LanceDB Distributed only.
+            default. LanceDB Enterprise only.
         gpu_count: int, optional
             Positive aggregate GPU budget for Function workers. None leaves
-            the server's configured budget unchanged. LanceDB Distributed
+            the server's configured budget unchanged. LanceDB Enterprise
             only.
 
         Returns
@@ -3160,10 +3197,10 @@ class Table(ABC):
             GPU class for Function workers. Must be a lowercase name of 1-63
             letters, digits, or hyphens, without a leading or trailing hyphen.
             None keeps the Function's registered class or the deployment
-            default. LanceDB Distributed only.
+            default. LanceDB Enterprise only.
         gpu_count: int, optional
             Positive aggregate GPU budget for Function workers. None leaves
-            the server's configured budget unchanged. LanceDB Distributed
+            the server's configured budget unchanged. LanceDB Enterprise
             only.
 
         Returns
@@ -3200,7 +3237,7 @@ class Table(ABC):
         A refresh running under a skip policy records each row it skipped
         with the input that failed and the error. This lists those records,
         newest job first, plus a summary for any fragment whose per-row
-        detail was capped. LanceDB Distributed only; reading errors
+        detail was capped. LanceDB Enterprise only; reading errors
         needs read access to the table, since a message carries the value
         that failed.
 
@@ -3280,6 +3317,9 @@ class Table(ABC):
             or "nullable". The legacy key "name" is also accepted for renaming.
             Unknown keys raise ValueError before any alterations are applied.
 
+            Local tables reject renaming source or vector columns used by an
+            embedding function with ValueError, preserving the embedding binding.
+
         Returns
         -------
         AlterColumnsResult
@@ -3347,6 +3387,9 @@ class Table(ABC):
     def drop_columns(self, columns: Iterable[str]) -> DropColumnsResult:
         """
         Drop columns from the table.
+
+        Local tables reject dropping source or vector columns used by an
+        embedding function with ValueError, preserving the embedding binding.
 
         Parameters
         ----------
@@ -4287,7 +4330,7 @@ class LanceTable(Table):
 
         This is a hint to the database that the given columns will be accessed
         in the future and the database should prefetch the data if possible.
-        Currently only supported in LanceDB Distributed.
+        Currently only supported in LanceDB Enterprise.
 
         This call initiates prewarming and returns once the request is accepted.
         It is idempotent and safe to call from multiple clients concurrently.
@@ -4923,6 +4966,11 @@ class LanceTable(Table):
         This can be used to update zero to all rows depending on how many
         rows match the where clause.
 
+        Embeddings are not computed by this method. Updating an embedding source
+        column requires providing all associated vector columns in the same call;
+        otherwise a ValueError is raised. Use `merge_insert` to recompute embeddings
+        automatically.
+
         Parameters
         ----------
         where: str or [Expr][lancedb.expr.Expr], optional
@@ -4984,8 +5032,7 @@ class LanceTable(Table):
             )
             and not self._route_pushdown_to_rust
             and self.current_branch() is None
-            and query.take_offsets is None
-            and query.search_effort is None
+            and not _requires_local_namespace_execution(query)
         ):
             from lancedb.namespace import _execute_server_side_query
 
@@ -5178,7 +5225,7 @@ class LanceTable(Table):
         Specify exactly one of ``column`` or ``index_name``.
 
         Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
-        rebuilt in the client process from index metadata. In LanceDB Distributed,
+        rebuilt in the client process from index metadata. In LanceDB Enterprise,
         this means the same tokenizer model files must also exist locally
         (under ``LANCE_LANGUAGE_MODEL_HOME``) and must match the files the
         server uses. A mismatch cannot be detected: the returned tokens may
@@ -5207,11 +5254,15 @@ class LanceTable(Table):
 
     def add_columns(
         self,
-        transforms: Dict[str, str | FunctionApplication]
+        transforms: Mapping[str, str | FunctionApplication]
         | FunctionApplication
         | pa.Field
         | List[pa.Field]
         | pa.Schema
+        | DATA
+        | pa.RecordBatch
+        | pa.RecordBatchReader
+        | pl.DataFrame
         | None = None,
         *,
         computed: Dict[str, str] | None = None,
@@ -6266,7 +6317,7 @@ class AsyncTable:
     async def to_lance(self, **kwargs) -> lance.LanceDataset:
         """Return the Lance dataset backing a LanceDB Embedded table.
 
-        LanceDB Distributed tables cannot be opened as Lance datasets by the
+        LanceDB Enterprise tables cannot be opened as Lance datasets by the
         client. Use
         [to_arrow][lancedb.table.AsyncTable.to_arrow] or
         [query][lancedb.table.AsyncTable.query] to read them through the server.
@@ -6288,7 +6339,7 @@ class AsyncTable:
         """
         if not self._inner._is_native():
             raise NotImplementedError(
-                "to_lance() is not supported in LanceDB Distributed; "
+                "to_lance() is not supported in LanceDB Enterprise; "
                 "query the server instead"
             )
 
@@ -6321,7 +6372,7 @@ class AsyncTable:
         Parameters
         ----------
         blob_mode: str, default "lazy"
-            Controls how Lance blob columns are returned. LanceDB Distributed supports
+            Controls how Lance blob columns are returned. LanceDB Enterprise supports
             "descriptions"; "bytes" and "lazy" are not yet supported.
         **kwargs
             Forwarded to PyArrow / Lance pandas conversion.
@@ -6568,7 +6619,7 @@ class AsyncTable:
 
         This is a hint to the database that the given columns will be accessed
         in the future and the database should prefetch the data if possible.
-        Currently only supported in LanceDB Distributed.
+        Currently only supported in LanceDB Enterprise.
 
         This call initiates prewarming and returns once the request is accepted.
         It is idempotent and safe to call from multiple clients concurrently.
@@ -6612,7 +6663,7 @@ class AsyncTable:
         """
         Get the table URI (storage location).
 
-        In LanceDB Distributed, this fetches the location from the server via describe.
+        In LanceDB Enterprise, this fetches the location from the server via describe.
         In LanceDB Embedded, this returns the dataset URI.
 
         Returns
@@ -7156,6 +7207,8 @@ class AsyncTable:
                 async_query = async_query.column(query.vector_column)
             if query.ef:
                 async_query = async_query.ef(query.ef)
+            if query.approx_mode:
+                async_query = async_query.approx_mode(query.approx_mode)
             if query.bypass_vector_index:
                 async_query = async_query.bypass_vector_index()
 
@@ -7181,8 +7234,7 @@ class AsyncTable:
                 self._namespace_client, self._pushdown_operations
             )
             and not self._route_pushdown_to_rust
-            and query.take_offsets is None
-            and query.search_effort is None
+            and not _requires_local_namespace_execution(query)
         ):
             from lancedb.namespace import _execute_server_side_query
 
@@ -7323,6 +7375,11 @@ class AsyncTable:
         If a filter is provided with `where` then only rows matching the
         filter will be updated.  Otherwise all rows will be updated.
 
+        Embeddings are not computed by this method. Updating an embedding source
+        column requires providing all associated vector columns in the same call;
+        otherwise a ValueError is raised. Use `merge_insert` to recompute embeddings
+        automatically.
+
         Parameters
         ----------
         updates: dict, optional
@@ -7372,16 +7429,38 @@ class AsyncTable:
         if updates is not None:
             updates_sql = {k: value_to_sql(v) for k, v in updates.items()}
 
+        # Only the column mappings are needed here. Restoring embedding functions
+        # could load models even for updates that provide their own vectors.
+        schema = await self.schema()
+        column_pairs = _embedding_column_pairs(schema.metadata)
+        if column_pairs:
+            # Metadata names are literal top-level fields; targets may be quoted.
+            updated_columns = {tuple(_parse_field_path(name)) for name in updates_sql}
+            for source_column, vector_column in column_pairs:
+                source_updated = (source_column,) in updated_columns
+                vector_updated = (vector_column,) in updated_columns
+                if source_updated and not vector_updated:
+                    raise ValueError(
+                        f"Updating embedding source column {source_column!r} requires "
+                        f"updating vector column {vector_column!r} in the same call. "
+                        "Provide both columns or use merge_insert "
+                        "to recompute embeddings."
+                    )
+
         predicate = where.to_sql() if isinstance(where, Expr) else where
         return await self._inner.update(updates_sql, predicate)
 
     async def add_columns(
         self,
-        transforms: dict[str, str | FunctionApplication]
+        transforms: Mapping[str, str | FunctionApplication]
         | FunctionApplication
         | pa.Field
         | List[pa.Field]
         | pa.Schema
+        | DATA
+        | pa.RecordBatch
+        | pa.RecordBatchReader
+        | pl.DataFrame
         | None = None,
         *,
         computed: dict[str, str] | None = None,
@@ -7393,7 +7472,9 @@ class AsyncTable:
 
         Parameters
         ----------
-        transforms: Dict[str, str | FunctionApplication] or FunctionApplication
+        transforms: Mapping[str, str | FunctionApplication], FunctionApplication,
+            pa.Field, List[pa.Field], pa.Schema, pandas.DataFrame,
+            polars.DataFrame, pa.Table, pa.RecordBatch, pa.RecordBatchReader
             A map of column name to a SQL expression to use to calculate the
             value of the new column. These expressions will be evaluated for
             each row in the table, and can reference existing columns.
@@ -7405,11 +7486,21 @@ class AsyncTable:
             named-struct application expands its ordered result fields as one
             atomic binding; aliases come from ``rename(columns=...)``.
             Function columns are supported only in LanceDB
-            Distributed.
+            Enterprise.
+
+            On local tables, a pandas or Polars DataFrame, PyArrow Table,
+            RecordBatch, or RecordBatchReader supplies precomputed new-column
+            values. Supply exactly one row per current live table row, in storage
+            scan order; pandas indexes are ignored. The input contains only new
+            columns. Readers are consumed once, and their batch boundaries need
+            not match table fragments. Keep the table unchanged between computing
+            these values and calling add_columns. Data inputs cannot be combined
+            with computed columns. Remote tables do not support data inputs.
+
         computed: Dict[str, str], optional
             LanceDB Embedded declaration and refresh require a source build with the
             ``experimental-functions`` Cargo feature, which published packages
-            do not enable. LanceDB Distributed operations remain available.
+            do not enable. LanceDB Enterprise operations remain available.
 
             A mapping from output column names to SQL expressions derives each
             output field from its expression. A direct projection of a Blob v2
@@ -7427,13 +7518,13 @@ class AsyncTable:
             While a declaration reads a column, that column cannot be renamed,
             retyped or dropped.
 
-            In LanceDB Distributed the expression is planned by
+            In LanceDB Enterprise the expression is planned by
             the server. Cannot be combined with ``transforms``.
 
         auto_refresh_enabled: bool, optional
             Enable automatic refresh for each computed output declared by this
             call. Defaults to True. LanceDB Embedded stores the setting; automatic
-            scheduling requires LanceDB Distributed.
+            scheduling requires LanceDB Enterprise.
         auto_refresh_interval_seconds: int, optional
             Positive minimum seconds after a successful refresh before another
             automatic refresh is eligible. When omitted, the server determines when
@@ -7474,7 +7565,7 @@ class AsyncTable:
         function_output_name = None
         if isinstance(transforms, FunctionApplication):
             function_application = transforms
-        elif isinstance(transforms, dict) and any(
+        elif isinstance(transforms, Mapping) and any(
             isinstance(value, FunctionApplication) for value in transforms.values()
         ):
             if len(transforms) != 1 or not all(
@@ -7506,7 +7597,10 @@ class AsyncTable:
         ):
             transforms = pa.schema(transforms)
         if computed:
-            if transforms:
+            if transforms is not None and (
+                not isinstance(transforms, (Mapping, list, pa.Schema))
+                or bool(transforms)
+            ):
                 raise ValueError(
                     "add_columns cannot take both transforms and computed columns"
                 )
@@ -7523,8 +7617,11 @@ class AsyncTable:
             raise ValueError("add_columns requires transforms or computed columns")
         if isinstance(transforms, pa.Schema):
             return await self._inner.add_columns_with_schema(transforms)
-        else:
+        if isinstance(transforms, Mapping):
             return await self._inner.add_columns(list(transforms.items()))
+        return await self._inner.add_columns_from_reader(
+            _into_pyarrow_reader(transforms)
+        )
 
     async def refresh_column(
         self,
@@ -7561,10 +7658,10 @@ class AsyncTable:
             GPU class for Function workers. Must be a lowercase name of 1-63
             letters, digits, or hyphens, without a leading or trailing hyphen.
             None keeps the Function's registered class or the deployment
-            default. LanceDB Distributed only.
+            default. LanceDB Enterprise only.
         gpu_count: int, optional
             Positive aggregate GPU budget for Function workers. None leaves
-            the server's configured budget unchanged. LanceDB Distributed
+            the server's configured budget unchanged. LanceDB Enterprise
             only.
 
         Returns
@@ -7591,7 +7688,7 @@ class AsyncTable:
         A refresh running under a skip policy records each row it skipped
         with the input that failed and the error. This lists those records,
         newest job first, plus a summary for any fragment whose per-row
-        detail was capped. LanceDB Distributed only; reading errors
+        detail was capped. LanceDB Enterprise only; reading errors
         needs read access to the table, since a message carries the value
         that failed.
 
@@ -7680,10 +7777,10 @@ class AsyncTable:
             GPU class for Function workers. Must be a lowercase name of 1-63
             letters, digits, or hyphens, without a leading or trailing hyphen.
             None keeps the Function's registered class or the deployment
-            default. LanceDB Distributed only.
+            default. LanceDB Enterprise only.
         gpu_count: int, optional
             Positive aggregate GPU budget for Function workers. None leaves
-            the server's configured budget unchanged. LanceDB Distributed
+            the server's configured budget unchanged. LanceDB Enterprise
             only.
 
         Returns
@@ -7744,6 +7841,9 @@ class AsyncTable:
             or "nullable". The legacy key "name" is also accepted for renaming.
             Unknown keys raise ValueError before any alterations are applied.
 
+            Local tables reject renaming source or vector columns used by an
+            embedding function with ValueError, preserving the embedding binding.
+
         Returns
         -------
         AlterColumnsResult
@@ -7761,6 +7861,9 @@ class AsyncTable:
     async def drop_columns(self, columns: Iterable[str]):
         """
         Drop columns from the table.
+
+        Local tables reject dropping source or vector columns used by an
+        embedding function with ValueError, preserving the embedding binding.
 
         Parameters
         ----------
@@ -8110,7 +8213,7 @@ class AsyncTable:
         Specify exactly one of ``column`` or ``index_name``.
 
         Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
-        rebuilt in the client process from index metadata. In LanceDB Distributed,
+        rebuilt in the client process from index metadata. In LanceDB Enterprise,
         this means the same tokenizer model files must also exist locally
         (under ``LANCE_LANGUAGE_MODEL_HOME``) and must match the files the
         server uses. A mismatch cannot be detected: the returned tokens may

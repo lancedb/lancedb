@@ -189,7 +189,7 @@ def test_function_version_binds_a_column(tmp_path):
     table = lancedb.connect(tmp_path).create_table("t", [{"value": 1.0}])
     with pytest.raises(
         NotImplementedError,
-        match="Function columns are supported only in LanceDB Distributed",
+        match="Function columns are supported only in LanceDB Enterprise",
     ):
         table.add_columns({"doubled": application})
 
