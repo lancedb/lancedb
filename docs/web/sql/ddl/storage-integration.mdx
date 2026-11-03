@@ -11,7 +11,7 @@ availability:
 
 A storage integration is a namespace-scoped catalog object that lets a
 query read from, or import from, a storage location outside the
-deployment's own tables -- an S3, GCS or Azure prefix, or a Hugging Face
+deployment's own tables -- an S3, GCS or Azure prefix, or a HuggingFace
 dataset repository -- without embedding a credential in the query itself.
 It is addressed and scoped the same way a [Secret](/sql/ddl/secret) is:
 `<database>.<namespace_path...>.<name>`.
@@ -103,7 +103,7 @@ prefix, unlike every other provider's options -- names a Secret holding
 the full service-account JSON key. It is required; GCP has no role-based
 alternative here.
 
-### Hugging Face {#huggingface}
+### HuggingFace {#huggingface}
 
 <CodeGroup>
 ```sql SQL icon="database"
@@ -114,10 +114,10 @@ CREATE STORAGE INTEGRATION hub
 ```
 </CodeGroup>
 
-`HUGGINGFACE_TOKEN_SECRET` is the only Hugging Face option, and the only
+`HUGGINGFACE_TOKEN_SECRET` is the only HuggingFace option, and the only
 optional credential option of any provider: omit it to read the prefix
-anonymously, at Hugging Face's default anonymous rate limits. See
-[Read Hugging Face datasets with SQL](/curation/huggingface) for the full
+anonymously, at HuggingFace's default anonymous rate limits. See
+[Read HuggingFace datasets with SQL](/curation/huggingface) for the full
 read and import workflow this integration unlocks.
 
 ### The S3 trust policy {#trust}
@@ -139,8 +139,8 @@ A query or `CREATE TABLE ... AS SELECT` can reference a matching URI
 directly, once an integration covers it -- the integration is never named
 in the statement. What the URI reads depends on the provider:
 
-- **Hugging Face** (`hf://datasets/...`) reads Parquet files from a dataset
-  repository. See [Read Hugging Face datasets with SQL](/curation/huggingface)
+- **HuggingFace** (`hf://datasets/...`) reads Parquet files from a dataset
+  repository. See [Read HuggingFace datasets with SQL](/curation/huggingface)
   for the full workflow, including how a CTAS import distributes across
   plan executors.
 - **S3, GCS and Azure** (`s3://`, `gs://`, `az://`) read an existing Lance
@@ -226,8 +226,8 @@ naming one.
 ## What to read next {#next}
 
 <CardGroup cols={2}>
-  <Card title="Read Hugging Face datasets with SQL" icon="database" href="/curation/huggingface">
-    Query and import Hugging Face datasets, the most common use of a storage integration today.
+  <Card title="Read HuggingFace datasets with SQL" icon="database" href="/curation/huggingface">
+    Query and import HuggingFace datasets, the most common use of a storage integration today.
   </Card>
   <Card title="Secret" icon="key" href="/sql/ddl/secret">
     The credential storage integration options reference.

@@ -12,7 +12,7 @@ availability:
 A **storage integration** is a namespace-scoped catalog object, like a
 [Secret](/management/secret), that names a credential for reading or
 importing from one external storage location: an S3, GCS or Azure prefix,
-or a Hugging Face dataset repository. A query or import statement that
+or a HuggingFace dataset repository. A query or import statement that
 reads a matching URI uses the integration automatically -- it is never
 named in the query itself.
 
@@ -117,8 +117,8 @@ still uses the integration first, then drop it.
   <Card title="Storage Integration" icon="cloud" href="/sql/ddl/storage-integration">
     The complete SQL reference: every provider's options, output columns, and GRANT syntax.
   </Card>
-  <Card title="Read Hugging Face datasets with SQL" icon="database" href="/curation/huggingface">
-    The most common use of a storage integration today: reading and importing Hugging Face datasets.
+  <Card title="Read HuggingFace datasets with SQL" icon="database" href="/curation/huggingface">
+    The most common use of a storage integration today: reading and importing HuggingFace datasets.
   </Card>
   <Card title="Secret" icon="key" href="/management/secret">
     The credential a storage integration's `_SECRET` options reference.

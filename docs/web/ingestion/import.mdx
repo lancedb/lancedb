@@ -1,7 +1,7 @@
 ---
 title: "Import Datasets"
 sidebarTitle: "Import Datasets"
-description: "Create a table directly from a Hugging Face dataset or an existing Lance dataset in object storage, with one CREATE TABLE AS SELECT."
+description: "Create a table directly from a HuggingFace dataset or an existing Lance dataset in object storage, with one CREATE TABLE AS SELECT."
 icon: file-import
 keywords: ["import", "ctas", "create table as select", "huggingface", "s3", "gcs", "azure"]
 availability:
@@ -9,13 +9,13 @@ availability:
   enterprise: available
 ---
 
-A `CREATE TABLE ... AS SELECT` (CTAS) reads directly from a Hugging Face
+A `CREATE TABLE ... AS SELECT` (CTAS) reads directly from a HuggingFace
 dataset or an existing Lance dataset in object storage, once a
 [storage integration](/ingestion/define-storage-integration) covers that
 location -- the integration is never named in the statement, LanceDB
 matches it by URI prefix.
 
-## Import a Hugging Face dataset {#huggingface}
+## Import a HuggingFace dataset {#huggingface}
 
 <CodeGroup>
 ```sql SQL icon="database"
@@ -24,7 +24,7 @@ SELECT * FROM 'hf://datasets/owner/repo/data/train-*.parquet'
 ```
 </CodeGroup>
 
-See [Read Hugging Face datasets with SQL](/curation/huggingface#import) for
+See [Read HuggingFace datasets with SQL](/curation/huggingface#import) for
 the full workflow, including querying a dataset directly without importing
 it first.
 
@@ -45,18 +45,13 @@ Azure examples.
 
 ## How the import runs {#distributed}
 
-When the deployment has an available plan-executor fleet, the planner
-assigns disjoint file and row-group ranges to workers, each writing
-uncommitted Lance files directly to the destination, and a coordinator
-commits the finished table from their transaction metadata once every
-worker finishes. The table becomes queryable only after that commit --
-nothing partial is ever visible. A small import can run as one local task
-without a fleet. See [Distributed write](/enterprise/distributed-write) for
-the write path this shares with other bulk writes.
+See [Distributed write](/enterprise/distributed-write) for how an import's
+writes divide across plan executors, and when a small import instead runs
+as one local task.
 
 <Note>
 Importing requires a native database with `database_manifest_enabled`.
-Combining a Hugging Face source with a WAL-backed destination table in one
+Combining a HuggingFace source with a WAL-backed destination table in one
 CTAS is rejected, since the import cannot publish a base-only read that
 omits the destination's unflushed data.
 </Note>
@@ -67,8 +62,8 @@ omits the destination's unflushed data.
   <Card title="Define Storage Integration" icon="cloud" href="/ingestion/define-storage-integration">
     Set up the credential an import reads through.
   </Card>
-  <Card title="Read Hugging Face datasets with SQL" icon="database" href="/curation/huggingface">
-    Query and import Hugging Face datasets in full.
+  <Card title="Read HuggingFace datasets with SQL" icon="database" href="/curation/huggingface">
+    Query and import HuggingFace datasets in full.
   </Card>
   <Card title="Distributed write" icon="arrows-split-up-and-left" href="/enterprise/distributed-write">
     How an import's writes divide across plan executors.

@@ -89,6 +89,10 @@ it; one must already exist. An Azure location must be account-qualified
 `az://container/path` is refused. `ATTACH DATABASE` requires the same
 creation privileges as `CREATE DATABASE`.
 
+Attaching writes Enterprise's own tracking metadata into the location to
+bring it under management -- it does not rewrite, move, or re-encode any
+existing table's data.
+
 <Warning>
 A relative-path location never accepts an absolute path (`/tmp/db`), a
 `file://` URI, a Windows path (`C:/db`), a `..` segment, an empty string,

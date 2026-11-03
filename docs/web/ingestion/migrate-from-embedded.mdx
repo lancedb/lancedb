@@ -48,12 +48,16 @@ account-qualified URI), `IF NOT EXISTS`, and quoted names.
 
 ## What changes, and what doesn't {#what-changes}
 
-Attaching registers the existing location in Enterprise's catalog; it
-does not rewrite, move, or re-encode any table. Every table already at
-that location becomes reachable through Enterprise's SQL and SDK surface
-immediately, with Enterprise's authorization, Secrets, Functions, and
+Attaching makes the location a database LanceDB Enterprise manages the
+same way as one it created itself: Enterprise writes its own tracking
+metadata into that location to bring it under management, enabling
+capabilities Embedded never had there -- every table becomes reachable
+through Enterprise's SQL and SDK surface immediately, with Enterprise's
+authorization, Secrets, Functions, and
 [background maintenance](/maintenance/background-jobs) now available to
-it. [`DROP DATABASE`](/sql/ddl/database#drop) on an attached database
+it. Attaching does not rewrite, move, or re-encode any table's own data.
+
+[`DROP DATABASE`](/sql/ddl/database#drop) on an attached database
 unregisters it and releases the storage-integration reference, without
 deleting the underlying data -- the location can be reattached at any
 time.

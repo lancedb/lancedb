@@ -1,7 +1,7 @@
 ---
 title: "Define Storage Integration"
 sidebarTitle: "Define Storage Integration"
-description: "Set up a reusable credential for AWS, GCP, Azure or Hugging Face before importing data from it."
+description: "Set up a reusable credential for AWS, GCP, Azure or HuggingFace before importing data from it."
 icon: cloud
 keywords: ["storage integration", "s3", "gcs", "azure", "huggingface", "credentials", "ingestion"]
 availability:
@@ -20,15 +20,20 @@ integration's prefix covers it.
 
 | Provider | Credential | Notes |
 | --- | --- | --- |
-| AWS S3 | An IAM role to assume, or a static access key pair | A role needs one extra step outside LanceDB: [trust policy setup](#aws). |
+| AWS S3 | An IAM role to assume, or a static access key pair | A role needs one extra step outside LanceDB: [trust policy setup](#trust). |
 | Google Cloud Storage | A service account's JSON key | No role-based alternative. |
 | Azure Blob Storage | A service principal's tenant, client ID and client secret | All three required together. |
-| Hugging Face | An access token, or nothing | The only provider you can configure with no credential at all, for anonymous access at Hugging Face's default rate limits. |
+| HuggingFace | An access token, or nothing | The only provider you can configure with no credential at all, for anonymous access at HuggingFace's default rate limits. |
 
 Every credential option takes a [Secret](/management/secret) reference,
 never the value directly -- create the Secret first.
 
 ## Create one {#create}
+
+### AWS S3 {#aws}
+
+Give either an IAM role to assume, or a static access key pair -- mixing
+the two, or supplying only one half of the key pair, is refused.
 
 <CodeGroup>
 ```python Python icon="python"
@@ -37,6 +42,13 @@ db.create_storage_integration(
     storage_provider="S3",
     aws_role_arn="arn:aws:iam::123456789012:role/lancedb-access",
 )
+
+db.create_storage_integration(
+    "raw", "s3://customer-data/raw/",
+    storage_provider="S3",
+    aws_access_key_id_secret="aws_key_id",
+    aws_secret_access_key_secret="aws_key_secret",
+)
 ```
 
 ```sql SQL icon="database"
@@ -44,10 +56,89 @@ CREATE STORAGE INTEGRATION raw
     STORAGE_PROVIDER = 'S3'
     STORAGE_PREFIX = 's3://customer-data/raw/'
     STORAGE_AWS_ROLE_ARN = 'arn:aws:iam::123456789012:role/lancedb-access'
+
+CREATE STORAGE INTEGRATION raw
+    STORAGE_PROVIDER = 'S3'
+    STORAGE_PREFIX = 's3://customer-data/raw/'
+    STORAGE_AWS_ACCESS_KEY_ID_SECRET = aws_key_id
+    STORAGE_AWS_SECRET_ACCESS_KEY_SECRET = aws_key_secret
 ```
 </CodeGroup>
 
-### AWS: finish the trust policy {#aws}
+### Google Cloud Storage {#gcp}
+
+<CodeGroup>
+```python Python icon="python"
+db.create_storage_integration(
+    "gcs", "gs://customer-data/raw/",
+    storage_provider="GCP",
+    gcp_credentials_json_secret="gcp_service_account",
+)
+```
+
+```sql SQL icon="database"
+CREATE STORAGE INTEGRATION gcs
+    STORAGE_PROVIDER = 'GCP'
+    STORAGE_PREFIX = 'gs://customer-data/raw/'
+    GCP_CREDENTIALS_JSON_SECRET = gcp_service_account
+```
+</CodeGroup>
+
+The Secret holds the full service-account JSON key. GCP has no
+role-based alternative.
+
+### Azure Blob Storage {#azure}
+
+<CodeGroup>
+```python Python icon="python"
+db.create_storage_integration(
+    "blobs", "az://customer-data/raw/",
+    storage_provider="AZURE",
+    azure_storage_account="customeraccount",
+    azure_tenant_id_secret="azure_tenant",
+    azure_client_id_secret="azure_client",
+    azure_client_secret_secret="azure_credential",
+)
+```
+
+```sql SQL icon="database"
+CREATE STORAGE INTEGRATION blobs
+    STORAGE_PROVIDER = 'AZURE'
+    STORAGE_PREFIX = 'az://customer-data/raw/'
+    STORAGE_AZURE_STORAGE_ACCOUNT = 'customeraccount'
+    STORAGE_AZURE_TENANT_ID_SECRET = azure_tenant
+    STORAGE_AZURE_CLIENT_ID_SECRET = azure_client
+    STORAGE_AZURE_CLIENT_SECRET_SECRET = azure_credential
+```
+</CodeGroup>
+
+All four options are required together; there is no role-based
+alternative for Azure.
+
+### HuggingFace {#huggingface}
+
+<CodeGroup>
+```python Python icon="python"
+db.create_storage_integration(
+    "hub", "hf://datasets/owner/private/data/",
+    storage_provider="HUGGINGFACE",
+    huggingface_token_secret="hf_token",
+)
+```
+
+```sql SQL icon="database"
+CREATE STORAGE INTEGRATION hub
+    STORAGE_PROVIDER = 'HUGGINGFACE'
+    STORAGE_PREFIX = 'hf://datasets/owner/private/data/'
+    HUGGINGFACE_TOKEN_SECRET = hf_token
+```
+</CodeGroup>
+
+Omit the token to read the prefix anonymously, at HuggingFace's default
+rate limits -- the only provider with no credential at all as a valid
+option.
+
+### Finish the AWS trust policy {#trust}
 
 An IAM role integration needs one step outside LanceDB: describing it
 returns the `trust_policy` and `permissions_policy` documents your role
