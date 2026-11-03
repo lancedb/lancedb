@@ -936,6 +936,11 @@ export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
    * "fast" favors lower latency and may reduce recall, "normal" (the default)
    * uses the index's default balance, and "accurate" favors higher recall and
    * may increase latency.
+   *
+   * @example
+   * ```ts
+   * table.vectorSearch([0.1, 0.2]).approxMode("fast").limit(10);
+   * ```
    */
   approxMode(approxMode: "fast" | "normal" | "accurate"): VectorQuery {
     super.doCall((inner) => inner.approxMode(approxMode));

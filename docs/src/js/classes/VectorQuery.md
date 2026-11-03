@@ -119,11 +119,17 @@ may increase latency.
 
 #### Parameters
 
-* **approxMode**: `"normal"` \| `"fast"` \| `"accurate"`
+* **approxMode**: `"fast"` \| `"normal"` \| `"accurate"`
 
 #### Returns
 
 [`VectorQuery`](VectorQuery.md)
+
+#### Example
+
+```ts
+table.vectorSearch([0.1, 0.2]).approxMode("fast").limit(10);
+```
 
 ***
 

@@ -2156,6 +2156,13 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         prefiltered search on HNSW indexes, where "fast" enables the ACORN
         traversal. Other index types ignore this setting.
 
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("memory://")
+        >>> table = db.create_table("approx_vectors", [{"vector": [0.1, 0.2]}])
+        >>> query = table.search([0.1, 0.2]).approx_mode("fast")
+
         Parameters
         ----------
         approx_mode: "fast" or "normal" or "accurate"
@@ -3103,6 +3110,20 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         This currently affects RQ-quantized indexes, such as IVF_RQ, and
         prefiltered search on HNSW indexes, where "fast" enables the ACORN
         traversal. Other index types ignore this setting.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("memory://")
+        >>> table = db.create_table(
+        ...     "approx_hybrid", [{"vector": [0.1, 0.2], "text": "dog"}]
+        ... )
+        >>> query = (
+        ...     table.search(query_type="hybrid")
+        ...     .vector([0.1, 0.2])
+        ...     .text("dog")
+        ...     .approx_mode("accurate")
+        ... )
 
         Parameters
         ----------
@@ -4500,6 +4521,18 @@ class AsyncVectorQueryBase:
         "fast" favors lower latency and may reduce recall, "normal" (the default) uses
         the index's default balance, and "accurate" favors higher recall and may
         increase latency.
+
+        Examples
+        --------
+        >>> import asyncio
+        >>> import lancedb
+        >>> async def build_query():
+        ...     db = await lancedb.connect_async("memory://")
+        ...     table = await db.create_table(
+        ...         "approx_async", [{"vector": [0.1, 0.2]}]
+        ...     )
+        ...     return table.vector_search([0.1, 0.2]).approx_mode("accurate")
+        >>> query = asyncio.run(build_query())
         """
         self._inner.approx_mode(approx_mode)
         return self
