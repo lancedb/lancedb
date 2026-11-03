@@ -1,34 +1,21 @@
 ---
-title: "Functions"
+title: "Function"
 sidebarTitle: "Function"
-description: "Register a Python function once and apply it as a column, for work SQL cannot express."
+description: "List, describe and drop registered Function versions."
 icon: code
-keywords: ["udf", "functions", "create_function", "embedding", "feature engineering"]
+keywords: ["function", "udf", "list_functions", "drop_function", "describe function", "show functions"]
 ---
 
-import {
-    PyFunctionDefine as FunctionDefine,
-    PyFunctionLocalCall as FunctionLocalCall,
-    PyFunctionCreateTable as FunctionCreateTable,
-    PyFunctionRegister as FunctionRegister,
-    PyFunctionApply as FunctionApply,
-    PyFunctionRefresh as FunctionRefresh,
-    PyFunctionInspect as FunctionInspect,
-    PyFunctionClassDefine as FunctionClassDefine,
-    PyFunctionClassApply as FunctionClassApply,
-} from '/snippets/function.mdx';
-import { PyConnectEnterprisePlaceholders as FunctionConnect } from '/snippets/connection.mdx';
+<Badge color="red">Enterprise</Badge>
 
-Some columns cannot be written as a SQL expression: an embedding, a model call,
-an image decode. A function is a Python callable registered with the database,
-versioned, and then applied as a column. The code runs where the data is
-rather than pulling rows to your process.
+A **Function** is a catalog object, like a table or a namespace: a
+registered Python callable, published as an immutable, numbered version.
+Registering a new version never changes an existing one, so a column or
+query bound to a specific version keeps working after a newer version is
+published. See [Create a Function](/curation/create-function) for shaping
+and registering one.
 
-Registering and running a function needs a LanceDB Enterprise deployment with
-Functions enabled, which they are not by default. On a
-LanceDB Embedded connection `create_function` raises `NotImplementedError`; to
-derive a column there, declare a
-[SQL computed column](/feature-engineering/add-computed-column) instead.
+## List, describe and drop {#manage}
 
 <Note>
 In SQL, a function is registered with [`CREATE FUNCTION`](/sql/ddl/function#create) and listed with [`SHOW FUNCTIONS`](/sql/ddl/function#show).
@@ -134,117 +121,44 @@ name and `version`. Both take `namespace_path`, defaulting to the root
 namespace, the same as `create_function`.
 
 <CodeGroup>
-```python Python icon="python"
-for version in db.list_functions():
-    print(version.name, version.version, version.created_at_millis)
 
-version = db.get_function("double", version="1")
-```
-</CodeGroup>
+```python Python
+for version in db.list_functions(namespace_path=["platform"]):
+    print(version.name, version.version)
 
-<CodeGroup>
-```sql SQL icon="database"
-SHOW FUNCTIONS
-SHOW FUNCTIONS IN "analytics" WITH (name = 'double', limit = 100)
-
-DESCRIBE FUNCTION double WITH (version = '1')
-```
-</CodeGroup>
-
-`list_functions` returns a lazy iterator: `page_limit` bounds each request,
-not the total, and `page_token` resumes from a saved token. Child namespaces
-are not included; list each namespace separately. A version's
-`created_at_millis`, `metadata`, `disabled` flag, and `secret_bindings` are
-all readable this way without applying or calling the function.
-
-## Try it in SQL {#try-sql}
-
-A registered function is callable in SQL by its name, the same as any other
-scalar function. Before applying it as a column, call it directly over the
-table to check the registration succeeded, without committing a schema
-change:
-
-<CodeGroup>
-```python Python icon="python"
-reader = db.execute_query("SELECT value, double(value) AS doubled FROM function_demo")
-print(reader.read_all().to_pylist())
-# [{'value': 1.0, 'doubled': 2.0}, {'value': 2.0, 'doubled': 4.0}, {'value': 3.0, 'doubled': 6.0}]
-```
-</CodeGroup>
-
-<Note>
-Equivalent SQL: `SELECT value, double(value) AS doubled FROM function_demo`.
-See [Querying with SQL](/basics/sql) for `execute_query` and other languages.
-</Note>
-
-## Apply it as a column {#apply}
-
-Calling the registered version binds each parameter, by name, to a column with
-`col(...)`. `add_columns` declares the result as a new column:
-
-<CodeBlock filename="Python" language="Python" icon="python">
-{FunctionApply}
-</CodeBlock>
-
-The column is declared empty; the function has not run yet. A mapping with one
-function application keeps its scalar or named-struct result in the named
-column. A bare named-struct application expands its result fields as one atomic
-binding, with aliases from `rename(columns=...)`.
-
-### Bind more than one input, or fill more than one column {#multi}
-
-Parameters bind by name, so a function that takes several arguments binds
-several columns in one call:
-
-<CodeGroup>
-```python Python icon="python"
-@udf
-def ratio(numerator: float, denominator: float) -> float:
-    return numerator / denominator
-
-version = db.create_function_async(ratio).wait()
-table.add_columns({"ratio": version(numerator=col("value"), denominator=col("count"))})
-```
-</CodeGroup>
-
-A named-struct output fills more than one column from a single application.
-Declare the fields with `output_schema`, then alias each field to the column
-it fills with `rename(columns=...)` and pass the application itself, not a
-mapping, so both columns come from one atomic binding:
-
-<CodeGroup>
-```python Python icon="python"
-import pyarrow as pa
-
-@udf(
-    output_schema=pa.schema([
-        pa.field("half", pa.float64(), nullable=False),
-        pa.field("double", pa.float64(), nullable=False),
-    ]),
+dropped = db.drop_function(
+    "embed", version="1", namespace_path=["platform"]
 )
-def scale(value: float):
-    return {"half": value / 2, "double": value * 2}
-
-version = db.create_function_async(scale).wait()
-application = version(value=col("value")).rename(
-    columns={"half": "value_half", "double": "value_double"}
-)
-table.add_columns(application)
 ```
+
+```sql SQL
+SHOW FUNCTIONS IN platform;
+
+SHOW FUNCTIONS HISTORY IN platform;
+
+DESCRIBE FUNCTION platform.embed WITH (version = '1');
+
+DROP FUNCTION platform.embed WITH (version = '1');
+```
+
 </CodeGroup>
 
-A single refresh fills `value_half` and `value_double` together: there is no
-state where one is filled and the other is still empty.
+| Operation | Python | SQL | Notes |
+| --- | --- | --- | --- |
+| List | `list_functions` | `SHOW FUNCTIONS` | Latest version of each name. Add `HISTORY` / use `drop_function_async` and iterate to see every revision. |
+| Describe | -- | `DESCRIBE FUNCTION` / `DESC` | One exact version, named with `WITH (version = '<v>')`. `include_source` adds the registered source. |
+| Drop | `drop_function` | `DROP FUNCTION ... WITH (version = '<v>')` | Drops one revision, preserving its siblings. |
 
-## Fill the column {#refresh}
+There is no Python `describe_function`; a `FunctionVersion` from
+`list_functions` or from registering one already carries the same
+information a SQL `DESCRIBE` returns.
 
-A refresh runs the function on the cluster as a [job](/basics/jobs). `wait()`
-blocks until the job finishes and returns its result, including how many rows
-it filled:
-
-<CodeBlock filename="Python" language="Python" icon="python">
-{FunctionRefresh}
-</CodeBlock>
+Dropping a Function always names an exact `version` -- there is no
+"latest" shorthand, since a column bound to an older version must keep
+resolving it. Dropping the last visible revision under a name releases
+the name and schedules its physical cleanup in the background; sibling
+revisions and their grants are unaffected. Use `drop_function_async` for
+the query job whose completion confirms catalog removal.
 
 The filled values are read like any other column:
 
@@ -449,16 +363,25 @@ A deployment refuses the drop unless it also allows changes to a function's
 lifecycle, which is a separate setting, off by default even where Functions are
 enabled.
 
+## Privileges {#privileges}
+
+A Function is its own object in the authorization model, a namespace
+child like a table: `CREATE_FUNCTION` on the namespace to register a
+version under a new name, `USAGE` on the Function to bind it to a column
+or call it in a query, `OWNERSHIP` for full control including dropping
+it. See [Privileges](/governance/privileges#sql) for the full grant and
+revoke syntax.
+
 ## What to read next {#next}
 
 <CardGroup cols={2}>
   <Card title="Create a Function" icon="code" href="/curation/create-function">
-    Scalar, batch, stateful, GPU and remote-service examples for common curation tasks.
+    Shape and register a Function: scalar, batch, stateful, GPU and remote-service forms.
   </Card>
-  <Card title="Computed columns" icon="table-columns" href="/feature-engineering/refresh-column">
-    Refresh semantics, and the SQL alternative.
+  <Card title="Vend a Secret to a Function" icon="key" href="/curation/vend-secret">
+    Bind a credential to a Function without putting it in the function's source.
   </Card>
-  <Card title="Embedding functions" icon="vector-square" href="/embedding">
-    Built-in embedding providers, which need no registration.
+  <Card title="GPU Function Execution" icon="microchip" href="/curation/gpu-function-execution">
+    How a GPU-bound Function's worker gets scheduled.
   </Card>
 </CardGroup>
