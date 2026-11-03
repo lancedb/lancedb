@@ -10,7 +10,7 @@ use arrow::{
 };
 use lancedb::job::{JobEventsRequest, JobProgressCallback};
 use pyo3::{
-    Bound, PyAny, PyRef, PyResult, Python,
+    Bound, Py, PyAny, PyRef, PyResult, Python,
     exceptions::PyValueError,
     pyclass, pymethods,
     types::{PyAnyMethods, PyDict, PyDictMethods},
@@ -319,6 +319,7 @@ impl JobDescription {
 
 impl From<lancedb::database::JobDescription> for JobDescription {
     fn from(description: lancedb::database::JobDescription) -> Self {
+        let progress_json = description.progress_snapshot().to_string();
         Self {
             job_id: description.job_id,
             job_type: description.job_type,
@@ -329,7 +330,7 @@ impl From<lancedb::database::JobDescription> for JobDescription {
                 .result
                 .filter(|result| !result.is_null())
                 .map(|result| result.to_string()),
-            _progress_json: Some(description.progress_snapshot().to_string()),
+            _progress_json: Some(progress_json),
             failure: description.failure.map(|failure| JobFailureInfo {
                 phase: failure.phase,
                 message: failure.message,
