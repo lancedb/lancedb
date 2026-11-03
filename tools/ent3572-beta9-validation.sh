@@ -5,6 +5,9 @@ repo=${1:?repo path}
 out=${2:?output directory}
 mkdir -p "$out"
 
+# The workspace uses PyO3/abi3-py310; the host default python3 is 3.9.
+export PYO3_PYTHON=${PYO3_PYTHON:-/home/ec2-user/.local/bin/python3.12}
+
 run() {
     local name=$1
     shift
