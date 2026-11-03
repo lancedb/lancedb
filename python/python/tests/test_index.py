@@ -276,6 +276,9 @@ async def test_create_ngram_index(db_async):
     result = await table.query().where("contains(text, 'cat')").to_arrow()
     assert sorted(result["id"].to_pylist()) == [0, 1, 2, 4]
 
+    plan = await table.query().where("contains(text, 'cat')").explain_plan()
+    assert "ScalarIndexQuery" in plan
+
 
 @pytest.mark.asyncio
 async def test_create_zonemap_index(db_async):
@@ -297,9 +300,6 @@ async def test_create_zonemap_index(db_async):
     # The index narrows a range scan without changing its results.
     result = await table.query().where("value >= 90").to_arrow()
     assert sorted(result["id"].to_pylist()) == list(range(90, 100))
-
-    plan = await table.query().where("contains(text, 'cat')").explain_plan()
-    assert "ScalarIndexQuery" in plan
 
 
 @pytest.mark.asyncio
