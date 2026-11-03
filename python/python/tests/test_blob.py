@@ -541,10 +541,12 @@ def test_nested_blob_to_pandas_bytes(tmp_path):
     assert table.search().select({"b": "info.blob"}).to_pandas(blob_mode="bytes")[
         "b"
     ].tolist() == [b"hello", None, None]
+    assert table.search().select([]).to_pandas(blob_mode="bytes")["info"].tolist() == (
+        table.search().select([]).to_arrow(blob_mode="bytes")["info"].to_pylist()
+    )
 
 
 def test_to_arrow_and_to_list_blob_mode(tmp_path):
-    pytest.importorskip("pandas")
     table = _nested_blob_table(lancedb.connect(tmp_path), "arrow_blob_mode")
     expected = [
         {"name": "first", "blob": b"hello"},
@@ -577,9 +579,6 @@ def test_to_arrow_and_to_list_blob_mode(tmp_path):
     assert [
         row["info"] for row in table.search().select([]).to_list(blob_mode="bytes")
     ] == expected
-    assert table.search().select([]).to_pandas(blob_mode="bytes")["info"].tolist() == (
-        table.search().select([]).to_arrow(blob_mode="bytes")["info"].to_pylist()
-    )
     assert "_rowid" not in table.search().select([]).to_arrow().column_names
     # A flat non-blob column named like the nested blob path keeps its values.
     shadowed = table.search().select({"info": "info", "info.blob": "id"})
