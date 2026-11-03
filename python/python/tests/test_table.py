@@ -3509,6 +3509,40 @@ def test_merge_insert(mem_db: DBConnection):
         )
 
 
+def test_merge_insert_with_schema_metadata(mem_db: DBConnection):
+    schema = pa.schema(
+        [pa.field("id", pa.int64()), pa.field("value", pa.string())],
+        metadata={b"schema_key": b"schema_value"},
+    )
+    table = mem_db.create_table("my_table", schema=schema)
+    new_data = pa.table({"id": [1, 2], "value": ["one", "two"]})
+    assert new_data.schema.metadata is None
+
+    async def do_merge_insert():
+        return await table._inner.execute_merge_insert(
+            new_data.to_reader(),
+            {
+                "on": ["id"],
+                "when_matched_update_all": True,
+                "when_matched_update_all_condition": None,
+                "when_not_matched_insert_all": True,
+                "when_not_matched_by_source_delete": False,
+                "when_not_matched_by_source_condition": None,
+                "when_not_matched_by_source_condition_expr": None,
+                "timeout": None,
+                "use_index": True,
+                "use_rte": None,
+                "validate_single_shard": None,
+            },
+        )
+
+    result = table_module.LOOP.run(do_merge_insert())
+
+    assert result.num_inserted_rows == 2
+    assert table.to_arrow() == new_data
+    assert table.schema.metadata == schema.metadata
+
+
 def test_merge_insert_composite_key(mem_db: DBConnection):
     table = mem_db.create_table(
         "my_table",
