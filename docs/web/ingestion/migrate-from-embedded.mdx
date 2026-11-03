@@ -1,0 +1,70 @@
+---
+title: "Migrate from Embedded"
+sidebarTitle: "Migrate from Embedded"
+description: "Point Enterprise at an existing database in object storage with ATTACH DATABASE, without copying data."
+icon: plug
+keywords: ["attach database", "migrate", "embedded", "object storage", "s3", "gcs", "azure"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+If your LanceDB Embedded database already lives in object storage --
+Embedded reads and writes tables on S3, GCS or Azure as well as local
+disk -- you can move to Enterprise by attaching that same location,
+rather than copying any data. A database on local disk has no such path:
+`ATTACH DATABASE` only accepts an object-storage URI or a path relative
+to Enterprise's own storage root, never a local filesystem path. Move it
+to object storage first if it is not there already.
+
+## Prerequisites {#prerequisites}
+
+A [storage integration](/sql/ddl/storage-integration) covering the
+database's location must already exist. `ATTACH DATABASE` never names an
+integration explicitly -- Enterprise automatically binds the most
+specific integration whose `STORAGE_PREFIX` covers the location you
+attach.
+
+<CodeGroup>
+```sql SQL icon="database"
+CREATE STORAGE INTEGRATION raw
+    STORAGE_PROVIDER = 'S3'
+    STORAGE_PREFIX = 's3://customer-data/embedded-db/'
+    STORAGE_AWS_ROLE_ARN = 'arn:aws:iam::123456789012:role/lancedb-access'
+```
+</CodeGroup>
+
+## Attach the database {#attach}
+
+<CodeGroup>
+```sql SQL icon="database"
+ATTACH DATABASE analytics WITH (location = 's3://customer-data/embedded-db/')
+```
+</CodeGroup>
+
+See [Database](/sql/ddl/database#attach) for the full `ATTACH DATABASE`
+syntax, including GCS and Azure locations (Azure requires an
+account-qualified URI), `IF NOT EXISTS`, and quoted names.
+
+## What changes, and what doesn't {#what-changes}
+
+Attaching registers the existing location in Enterprise's catalog; it
+does not rewrite, move, or re-encode any table. Every table already at
+that location becomes reachable through Enterprise's SQL and SDK surface
+immediately, with Enterprise's authorization, Secrets, Functions, and
+[background maintenance](/maintenance/background-jobs) now available to
+it. [`DROP DATABASE`](/sql/ddl/database#drop) on an attached database
+unregisters it and releases the storage-integration reference, without
+deleting the underlying data -- the location can be reattached at any
+time.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Storage Integration" icon="cloud" href="/sql/ddl/storage-integration">
+    Configure the credential an attach depends on, for S3, GCS, or Azure.
+  </Card>
+  <Card title="Database" icon="database" href="/sql/ddl/database">
+    Full ATTACH, CREATE, DESCRIBE and DROP DATABASE syntax.
+  </Card>
+</CardGroup>

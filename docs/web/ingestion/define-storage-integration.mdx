@@ -1,0 +1,75 @@
+---
+title: "Define Storage Integration"
+sidebarTitle: "Define Storage Integration"
+description: "Set up a reusable credential for AWS, GCP, Azure or Hugging Face before importing data from it."
+icon: cloud
+keywords: ["storage integration", "s3", "gcs", "azure", "huggingface", "credentials", "ingestion"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+Before you can [import data](/ingestion/import) from external storage or
+[attach an existing database](/ingestion/migrate-from-embedded), define a
+storage integration once per location. It is a namespace-scoped catalog
+object that stores the credential -- neither operation names the
+integration directly, LanceDB matches the URI you read against whichever
+integration's prefix covers it.
+
+## What each provider needs {#providers}
+
+| Provider | Credential | Notes |
+| --- | --- | --- |
+| AWS S3 | An IAM role to assume, or a static access key pair | A role needs one extra step outside LanceDB: [trust policy setup](#aws). |
+| Google Cloud Storage | A service account's JSON key | No role-based alternative. |
+| Azure Blob Storage | A service principal's tenant, client ID and client secret | All three required together. |
+| Hugging Face | An access token, or nothing | The only provider you can configure with no credential at all, for anonymous access at Hugging Face's default rate limits. |
+
+Every credential option takes a [Secret](/management/secret) reference,
+never the value directly -- create the Secret first.
+
+## Create one {#create}
+
+<CodeGroup>
+```python Python icon="python"
+db.create_storage_integration(
+    "raw", "s3://customer-data/raw/",
+    storage_provider="S3",
+    aws_role_arn="arn:aws:iam::123456789012:role/lancedb-access",
+)
+```
+
+```sql SQL icon="database"
+CREATE STORAGE INTEGRATION raw
+    STORAGE_PROVIDER = 'S3'
+    STORAGE_PREFIX = 's3://customer-data/raw/'
+    STORAGE_AWS_ROLE_ARN = 'arn:aws:iam::123456789012:role/lancedb-access'
+```
+</CodeGroup>
+
+### AWS: finish the trust policy {#aws}
+
+An IAM role integration needs one step outside LanceDB: describing it
+returns the `trust_policy` and `permissions_policy` documents your role
+needs. Attach them in AWS, then describe the integration again and check
+`access_verified` to confirm LanceDB can assume the role. A static access
+key pair skips this step entirely.
+
+See [Storage Integration](/sql/ddl/storage-integration) for every
+provider's complete option reference, S3's two credential modes in full,
+and the output schema, or [Storage Integration](/management/storage-integration)
+for the Python and SQL CRUD operations at a glance.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Import Datasets" icon="file-import" href="/ingestion/import">
+    Read or import through the integration once it exists.
+  </Card>
+  <Card title="Migrate from Embedded" icon="arrow-right-arrow-left" href="/ingestion/migrate-from-embedded">
+    Attach an existing database at a location the integration covers.
+  </Card>
+  <Card title="Storage Integration" icon="cloud" href="/sql/ddl/storage-integration">
+    The complete SQL reference: every provider's options and output columns.
+  </Card>
+</CardGroup>

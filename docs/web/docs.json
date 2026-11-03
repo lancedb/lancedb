@@ -331,6 +331,10 @@
               "ingestion/merge-insert",
               "ingestion/update",
               "ingestion/delete",
+              "ingestion/define-storage-integration",
+              "ingestion/migrate-from-embedded",
+              "ingestion/import",
+              "enterprise/distributed-write",
               "ingestion/realtime-write"
             ]
           },
