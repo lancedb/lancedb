@@ -151,11 +151,9 @@ example.
 
 Use `availability` in a page's frontmatter to describe the support covered by
 that page. Each product (`embedded` for LanceDB Embedded, `enterprise` for
-LanceDB Enterprise) is `available`, `unavailable`, or `wip` for an offering
-the feature is actively being built for -- distinct from `unavailable`, which
-makes no such promise. Use the body for setup requirements, SDK differences
-and unsupported operations. For example, a page about signing in to
-Enterprise could declare:
+LanceDB Enterprise) is `available` or `unavailable`. Use the body for setup
+requirements, SDK differences and unsupported operations. For example, a page
+about signing in to Enterprise could declare:
 
 ```yaml
 availability:

@@ -127,7 +127,7 @@ move or connect your data.
 |  | [RTE Write](/ingestion/realtime-write) | ✅ | ✅ |
 |  | [Distributed RTE Write](/enterprise/distributed-real-time-write) | ❌ | ✅ |
 |  | [Attach Database](/ingestion/migrate-from-embedded) | ❌ | ✅ |
-|  | [Import Datasets](/ingestion/import) | 🚧 | ✅ |
+|  | [Import Datasets](/ingestion/import) | ❌ | ✅ |
 |  | [Distributed Write](/enterprise/distributed-write) | ❌ | ✅ |
 | **Semantic Search** | [Vector search](/search/vector-search) | ✅ | ✅ |
 |  | [Full-text search](/search/full-text-search) | ✅ | ✅ |
@@ -138,19 +138,19 @@ move or connect your data.
 |  | [RTE Read](/search/realtime-read) | ✅ | ✅ |
 |  | [Distributed RTE Read](/enterprise/distributed-real-time-read) | ❌ | ✅ |
 |  | [Cache Prewarm](/enterprise/cache-prewarm) | ❌ | ✅ |
-| **Data Curation** | [Inspect Datasets](/curation/inspect-datasets) | 🚧 | ✅ |
-|  | [Statistical Sampling](/curation/statistical-sampling) | 🚧 | ✅ |
+| **Data Curation** | [Inspect Datasets](/curation/inspect-datasets) | ❌ | ✅ |
+|  | [Statistical Sampling](/curation/statistical-sampling) | ❌ | ✅ |
 |  | [Selective Sampling](/curation/selective-sampling) | ✅ | ✅ |
-|  | [Aggregation and profiling](/curation/aggregate) | 🚧 | ✅ |
-|  | [Joins](/curation/join) | 🚧 | ✅ |
-|  | [Blob Late Materialization](/curation/blob-late-materialization) | 🚧 | ✅ |
-|  | [Ranking and deduplication](/curation/windowing) | 🚧 | ✅ |
-|  | [Near-duplicate detection](/curation/dedupe) | 🚧 | ✅ |
-|  | [Chunking](/curation/chunking) | 🚧 | ✅ |
-|  | [Changes since a version](/curation/changes) | 🚧 | ✅ |
+|  | [Aggregation and profiling](/curation/aggregate) | ❌ | ✅ |
+|  | [Joins](/curation/join) | ❌ | ✅ |
+|  | [Blob Late Materialization](/curation/blob-late-materialization) | ❌ | ✅ |
+|  | [Ranking and deduplication](/curation/windowing) | ❌ | ✅ |
+|  | [Near-duplicate detection](/curation/dedupe) | ❌ | ✅ |
+|  | [Chunking](/curation/chunking) | ❌ | ✅ |
+|  | [Changes since a version](/curation/changes) | ❌ | ✅ |
 |  | [GPU Function Execution](/curation/gpu-function-execution) | ❌ | ✅ |
 |  | [Slurm Scheduling](/curation/slurm-scheduling) | ❌ | ✅ |
-| **Feature Engineering** | [Computed columns](/feature-engineering/add-computed-column) | 🚧 | ✅ |
+| **Feature Engineering** | [Computed columns](/feature-engineering/add-computed-column) | ❌ | ✅ |
 |  | [Incremental Refresh](/enterprise/incremental-refresh) | ❌ | ✅ |
 |  | [Auto Refresh](/enterprise/auto-refresh) | ❌ | ✅ |
 |  | [Checkpointing](/enterprise/checkpointing) | ❌ | ✅ |
@@ -166,15 +166,15 @@ move or connect your data.
 |  | [Observability](/training/observability) | ✅ | ✅ |
 |  | [Checkpointing](/training/checkpointing) | ✅ | ✅ |
 |  | [Resuming](/training/resuming) | ✅ | ✅ |
-| **Management** | [Catalog](/management/catalog) | 🚧 | ✅ |
+| **Management** | [Catalog](/management/catalog) | ❌ | ✅ |
 |  | [Database](/management/database) | ✅ | ✅ |
 |  | [Namespace](/management/namespace) | ✅ | ✅ |
 |  | [Table](/management/table) | ✅ | ✅ |
 |  | [Branches](/tables/branching) | ✅ | ✅ |
-|  | [View](/management/view) | 🚧 | ✅ |
-|  | [Materialized view](/management/materialized-view) | 🚧 | ✅ |
+|  | [View](/management/view) | ❌ | ✅ |
+|  | [Materialized view](/management/materialized-view) | ❌ | ✅ |
 |  | [Secret](/management/secret) | ❌ | ✅ |
-|  | [Function](/management/function) | 🚧 | ✅ |
+|  | [Function](/management/function) | ❌ | ✅ |
 |  | [Storage integration](/management/storage-integration) | ❌ | ✅ |
 | **Maintenance** | [Intelligent Auto-Maintenance](/enterprise/intelligent-auto-maintenance) | ❌ | ✅ |
 |  | [Vector Indexing](/indexing/vector-index) | ✅ | ✅ |
@@ -184,7 +184,7 @@ move or connect your data.
 |  | [Distributed Indexing](/enterprise/distributed-indexing) | ❌ | ✅ |
 |  | [GPU Indexing](/indexing/gpu-indexing) | ✅ | ✅ |
 |  | [Compaction](/maintenance/compaction) | ✅ | ✅ |
-|  | [RTE Compaction](/enterprise/realtime-engine-compaction) | 🚧 | ✅ |
+|  | [RTE Compaction](/enterprise/realtime-engine-compaction) | ❌ | ✅ |
 |  | [Garbage Collection](/maintenance/cleanup) | ✅ | ✅ |
 |  | [Distributed compaction](/enterprise/distributed-compaction) | ❌ | ✅ |
 |  | [Advanced Conflict Resolution](/enterprise/advanced-conflict-resolution) | ❌ | ✅ |
@@ -194,8 +194,6 @@ move or connect your data.
 | **Deployment** | [Horizontal Scaling](/enterprise/horizontal-scaling) | ❌ | ✅ |
 |  | [OpenTelemetry](/deployment/opentelemetry) | ✅ | ✅ |
 |  | [Kubernetes](/enterprise/deployment/kubernetes) | ❌ | ✅ |
-
-🚧 WIP for Embedded: not available today, but on the roadmap.
 
 ## Projects using LanceDB {#projects-using-lancedb}
 
