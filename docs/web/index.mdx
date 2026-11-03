@@ -117,8 +117,7 @@ move or connect your data.
 | Area | Feature | Embedded | Enterprise |
 | --- | --- | :-: | :-: |
 | **Data Ingestion** | [Insert data](/ingestion/insert) | ✅ | ✅ |
-|  | [Merge insert](/ingestion/merge-insert) | ✅ | ✅ |
-|  | [Import (CTAS from object storage or Hugging Face)](/sql/ddl/storage-integration#read-import) | 🚧 | ✅ |
+|  | [Merge](/ingestion/merge-insert) | ✅ | ✅ |
 |  | [Real Time Engine (streaming writes)](/tables/realtime-engine) | ❌ | ✅ |
 | **Semantic Search** | [Vector search](/search/vector-search) | ✅ | ✅ |
 |  | [Full-text search](/search/full-text-search) | ✅ | ✅ |
@@ -135,6 +134,10 @@ move or connect your data.
 |  | [Near-duplicate detection](/curation/dedupe) | ❌ | ✅ |
 |  | [Chunking](/curation/chunking) | ❌ | ✅ |
 |  | [Changes since a version](/curation/changes) | ❌ | ✅ |
+|  | [Define Storage Integration](/ingestion/define-storage-integration) | ❌ | ✅ |
+|  | [Attach Database](/ingestion/migrate-from-embedded) | ❌ | ✅ |
+|  | [Import Datasets](/ingestion/import) | 🚧 | ✅ |
+|  | [Distributed Write](/enterprise/distributed-write) | ❌ | ✅ |
 | **Feature Engineering** | [Computed columns, with refresh](/feature-engineering/add-computed-column) | ❌ | ✅ |
 |  | [Distributed column refresh](/enterprise/distributed-column-refresh) | ❌ | ✅ |
 |  | [Embedding registry](/embedding) | ✅ | ✅ |
