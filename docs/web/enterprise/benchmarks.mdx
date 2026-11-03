@@ -13,7 +13,38 @@ of LanceDB has no server to provide it. See
 [Architecture](/index#architecture) for what differs between the two.
 
 Benchmark results are specific to a deployment's shape (cluster size, storage
-class, dataset), so they are published with LanceDB Enterprise.
+class, dataset). These are the out-of-the-box latency and throughput LanceDB
+Enterprise reaches on fully cached data, with no custom tuning -- a
+representative floor, not a ceiling. [Talk to support](https://www.lancedb.com/contact)
+to reduce latency or increase throughput further for your workload.
+
+## Vector search {#vector-search}
+
+Measured with 1,536-dimensional embeddings, an IVF-RQ index, `nprobe=8`,
+`k=100`, on the best-performing (fully cached) configuration tested at
+each scale:
+
+| Rows | QPS | p50 | p99 |
+| --- | :-: | :-: | :-: |
+| 100M | 31.7 | 46 ms | 268 ms |
+| 500M | 588.3 | 26 ms | 45 ms |
+| 1B | 817.3 | 28 ms | 58 ms |
+| 5B | 453.2 | 47 ms | 160 ms |
+| 30B | 650.3 | 84 ms | 206 ms |
+
+## Full-text search {#full-text-search}
+
+Measured under a mixed workload of phrase, match-any and match-all
+queries, with an ICU-tokenized FTS v3 index (positions and lowercasing
+enabled, stemming disabled):
+
+| Rows | QPS | p50 | p99 |
+| --- | :-: | :-: | :-: |
+| 100M | 758.2 | 28 ms | 64 ms |
+| 500M | 759.6 | 49 ms | 183 ms |
+| 1B | 702.0 | 62 ms | 274 ms |
+
+## Tune your own workload {#tuning}
 
 For tuning your own workload rather than comparing published numbers, see
 [Query plans](/basics/sql#query-plans) and the performance notes on

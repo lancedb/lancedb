@@ -15,39 +15,6 @@ the remote work -- see [Data Page Cache](/enterprise/data-page-cache) and
 [Tiered Index Cache](/enterprise/tiered-index-cache) for how each cache works.
 See [Architecture](/index#architecture).
 
-## Expected performance {#performance}
-
-These are the out-of-the-box latency and throughput LanceDB Enterprise
-reaches on fully cached data, with no custom tuning -- a representative
-floor, not a ceiling. [Talk to support](https://www.lancedb.com/contact)
-to reduce latency or increase throughput further for your workload.
-
-### Vector search {#performance-vector}
-
-Measured with 1,536-dimensional embeddings, an IVF-RQ index, `nprobe=8`,
-`k=100`, on the best-performing (fully cached) configuration tested at
-each scale:
-
-| Rows | QPS | p50 | p99 |
-| --- | :-: | :-: | :-: |
-| 100M | 31.7 | 46 ms | 268 ms |
-| 500M | 588.3 | 26 ms | 45 ms |
-| 1B | 817.3 | 28 ms | 58 ms |
-| 5B | 453.2 | 47 ms | 160 ms |
-| 30B | 650.3 | 84 ms | 206 ms |
-
-### Full-text search {#performance-fts}
-
-Measured under a mixed workload of phrase, match-any and match-all
-queries, with an ICU-tokenized FTS v3 index (positions and lowercasing
-enabled, stemming disabled):
-
-| Rows | QPS | p50 | p99 |
-| --- | :-: | :-: | :-: |
-| 100M | 758.2 | 28 ms | 64 ms |
-| 500M | 759.6 | 49 ms | 183 ms |
-| 1B | 702.0 | 62 ms | 274 ms |
-
 ## Search interfaces {#search-interfaces}
 
 The shared search guides describe the query APIs and index settings:
@@ -56,3 +23,4 @@ The shared search guides describe the query APIs and index settings:
 - [Full-text search](/search/full-text-search) and [FTS indexes](/indexing/fts-index).
 - [Filtering](/search/filtering) and [scalar indexes](/indexing/scalar-index).
 - [Query plans](/basics/sql#query-plans) for inspecting execution and runtime measurements.
+- [Benchmarks](/enterprise/benchmarks) for expected latency and throughput at scale.
