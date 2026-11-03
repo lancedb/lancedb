@@ -298,7 +298,7 @@ values = table.fetch_blobs("jpeg", hits).to_pylist()
 Or wrap the join and both Functions in a
 [materialized view](/sql/ddl/materialized-view) instead, so the extracted
 frame and its caption stay current as new videos and frames arrive. See
-[Automatic refresh](/feature-engineering/refresh-column#automatic) for
+[Auto Refresh](/enterprise/auto-refresh) for
 keeping either one fresh without calling refresh yourself.
 
 On deployments that support computed-column inputs, another Function can

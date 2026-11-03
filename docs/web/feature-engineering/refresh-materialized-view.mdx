@@ -53,30 +53,11 @@ always matches `rows_written` from the most recent refresh.
 
 ## Automatic refresh {#auto-refresh}
 
-Set scheduling options when [creating the view](/feature-engineering/materialized-views#auto-refresh):
-
-<CodeGroup>
-```python Python icon="python"
-view = db.create_materialized_view(
-    "frames_captioned",
-    source="frames",
-    select=["frame_id", "video_id", "ts", "caption"],
-    where="selected = true",
-    auto_refresh_enabled=True,
-    auto_refresh_interval_seconds=300,
-)
-```
-</CodeGroup>
-
-`auto_refresh_interval_seconds` is a positive minimum delay after the last
-successful refresh before the next automatic one is eligible; omit it to let
-the server decide. The whole view toggles together -- there is no
-per-column granularity the way a computed column has one setting per output.
-
-The view's *initial* population, at creation or when the server first runs
-it, happens regardless of these settings; only refreshes after that are
-gated. Manual `view.refresh()` keeps working whether or not automatic
-refresh is enabled.
+A materialized view can refresh itself on a schedule instead of waiting
+for an explicit `refresh()` call. See [Auto Refresh](/enterprise/auto-refresh)
+for enabling it at creation, the SQL and SDK forms for changing the
+setting afterward, and how it differs from a computed column's
+per-output granularity.
 
 ## When a refresh fails {#failures}
 
@@ -92,5 +73,8 @@ refresh again.
   </Card>
   <Card title="Refresh a computed column" icon="arrows-rotate" href="/feature-engineering/refresh-column">
     The same idea, for a single derived column.
+  </Card>
+  <Card title="Auto Refresh" icon="clock-rotate-left" href="/enterprise/auto-refresh">
+    Refresh on a schedule instead of calling this yourself.
   </Card>
 </CardGroup>
