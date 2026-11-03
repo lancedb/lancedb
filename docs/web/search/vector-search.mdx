@@ -497,6 +497,18 @@ scan, which can reduce query time but omit recent records.
 
 Use this option only when results from indexed data are sufficient.
 
+### Expected performance at scale {#expected-performance}
+
+<Badge color="red">Enterprise</Badge>
+
+At 1 billion rows, LanceDB Enterprise reaches p50 28 ms and p99 58 ms on
+fully cached data with no custom tuning -- a representative floor to plan
+around, not a ceiling. Measured with 1,536-dimensional embeddings, an
+IVF-RQ index, `nprobe=8`, `k=100`, on the best-performing configuration
+tested at that scale. The exact numbers depend on your deployment's shape
+(cluster size, storage class, dataset); for higher performance, talk to
+the sales team.
+
 ## Search without a vector index {#brute-force-search}
 
 ### Search With No Index

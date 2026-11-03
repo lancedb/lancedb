@@ -419,6 +419,17 @@ LanceDB supports searching for substrings in the text column, you can set the `b
 | ngram_max_length | int  | 3       | Maximum length of the n-grams to search for        |
 | prefix_only      | bool | false   | Whether to only search for prefixes of the n-grams |
 
+## Expected performance at scale {#expected-performance}
+
+<Badge color="red">Enterprise</Badge>
+
+At 1 billion rows, LanceDB Enterprise reaches p50 62 ms and p99 274 ms on
+fully cached data with no custom tuning -- a representative floor to plan
+around, not a ceiling. Measured under a mixed workload of phrase,
+match-any and match-all queries, with an ICU-tokenized FTS v3 index
+(positions and lowercasing enabled, stemming disabled). The exact numbers
+depend on your deployment's shape (cluster size, storage class, dataset);
+for higher performance, talk to the sales team.
 
 ## Fuzzy Search and Boosting Example {#fuzzy-search-and-boosting-example}
 
