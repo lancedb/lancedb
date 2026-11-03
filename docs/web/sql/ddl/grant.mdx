@@ -14,7 +14,7 @@ availability:
 GRANT <privilege>[, <privilege>...] ON <target> TO <grantee>[, <grantee>...]
 REVOKE <privilege>[, <privilege>...] ON <target> FROM <grantee>[, <grantee>...]
 
-<target> ::= SYSTEM | DATABASE <name> | SCHEMA <namespace> | NAMESPACE <namespace> | TABLE <name> | VIEW <name>
+<target> ::= SYSTEM | DATABASE <name> | SCHEMA <namespace> | NAMESPACE <name> [IN <schema>] | TABLE <name> | VIEW <name>
           | MATERIALIZED VIEW <name> | SECRET <name> | STORAGE INTEGRATION <name> | FUNCTION <name>
 <grantee> ::= [ROLE] <role> | [USER] { <name> | ID '<id>' } | [GROUP] { <name> | ID '<id>' }
 ```
@@ -70,10 +70,14 @@ such as `TO ROLE "DataEng"`.
 
 A `SECRET` or `FUNCTION` target can be qualified with its namespace and
 database, the same as anywhere else: `SECRET analytics.api_key`,
-`SECRET db1.analytics.api_key`. A `SCHEMA` target is the namespace itself,
-also spelled `NAMESPACE`. A `MATERIALIZED VIEW` is a table for authorization
-purposes: the same privileges apply, and granting one does not reach the
-non-materialized `VIEW` beside it.
+`SECRET db1.analytics.api_key`. `SCHEMA` and `NAMESPACE` both target a
+namespace but aren't interchangeable: `SCHEMA <namespace>` takes the
+namespace's complete path, while `NAMESPACE <name> [IN <schema>]` takes
+one unqualified component, resolved under an explicit parent schema or the
+session's current namespace when `IN` is omitted -- `NAMESPACE a.b` (a
+qualified name with no `IN`) is refused. A `MATERIALIZED VIEW` is a table
+for authorization purposes: the same privileges apply, and granting one
+does not reach the non-materialized `VIEW` beside it.
 
 ## How a statement is applied {#semantics}
 
@@ -82,9 +86,12 @@ non-materialized `VIEW` beside it.
   on it.
 - Granting a privilege a grantee already holds, or revoking one it does not
   hold, is a no-op.
-- Neither the object nor the role has to exist, so a misspelled name still
-  reports `granted`. A `USER` or `GROUP` name is resolved against your
-  identity provider, but only after the caller's `OWNERSHIP` is checked.
+- `GRANT` requires the object to exist; `REVOKE` does not, so an entry left
+  on a dropped object can still be removed. A role need not exist
+  beforehand, but a `USER` or `GROUP` name must resolve to exactly one
+  identity in your identity provider -- checked only after the caller's
+  `OWNERSHIP` -- or the statement fails. The `ID '<id>'` form is not looked
+  up.
 - `GRANT ... ON ... FROM ...` and `REVOKE ... ON ... TO ...` are both
   refused; `GRANT` always takes `TO`, `REVOKE` always takes `FROM`.
 - Returns one row per privilege and grantee, with status `granted`,

@@ -30,7 +30,7 @@ dataset = StreamingDataset(
     shuffle_seed=dataset_state["shuffle_seed"],
     epoch=dataset_state["epoch"],
     rank=rank,
-    world_size=world_size,  # may differ from the run that saved the checkpoint
+    world_size=world_size,  # same as the run that saved the checkpoint
 )
 dataset.load_state_dict(dataset_state)
 
@@ -49,9 +49,10 @@ for batch in dataloader:
 </CodeGroup>
 
 `load_state_dict()` rejects a checkpoint whose `num_splits` or `shuffle_seed` differs from the new dataset. For an
-exact resume, also use the same table snapshot, `epoch`, `shuffle`, `filter`, and other data-selection settings. The
-`world_size` and number of DataLoader workers may change as long as the split and batch-size divisibility constraints
-from [Distributed Training](/training/distributed-training#parallelism-and-elasticity) still hold.
+exact resume, also use the same table snapshot, `epoch`, `shuffle`, `filter`, and other data-selection settings, and
+keep `world_size` the same -- changing it is a topology change, covered next. The number of DataLoader workers may
+still change as long as the batch-size divisibility constraints from
+[Distributed Training](/training/distributed-training#parallelism-and-elasticity) hold.
 
 ## Resuming Across Different Topologies {#resuming-across-different-topologies}
 

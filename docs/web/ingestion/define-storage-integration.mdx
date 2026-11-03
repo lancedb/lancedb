@@ -23,7 +23,7 @@ integration's prefix covers it.
 | AWS S3 | An IAM role to assume, or a static access key pair | A role needs one extra step outside LanceDB: [trust policy setup](#trust). |
 | Google Cloud Storage | A service account's JSON key | No role-based alternative. |
 | Azure Blob Storage | A service principal's tenant, client ID and client secret | All three required together. |
-| HuggingFace | An access token, or nothing | The only provider you can configure with no credential at all, for anonymous access at HuggingFace's default rate limits. |
+| HuggingFace | An access token | Always required to create an integration. For anonymous access at HuggingFace's default rate limits, register no integration for that prefix instead. |
 
 Every credential option takes a [Secret](/management/secret) reference,
 never the value directly -- create the Secret first.
@@ -179,9 +179,10 @@ db.create_storage_integration(
 </CodeGroup>
 */}
 
-Omit the token to read the prefix anonymously, at HuggingFace's default
-rate limits -- the only provider with no credential at all as a valid
-option.
+`HUGGINGFACE_TOKEN_SECRET` is required to create this integration; omitting
+it is rejected, not treated as anonymous. For anonymous access at
+HuggingFace's default rate limits, register no integration for that prefix
+at all.
 
 ### Finish the AWS trust policy {#trust}
 

@@ -12,7 +12,7 @@ availability:
 | Privilege | Granted on | Allows |
 | --- | --- | --- |
 | `OWNERSHIP` | any object | full authority over it, including granting any other privilege |
-| `USAGE` | system | listing jobs and their events, and looking up other identities |
+| `USAGE` | system | listing, describing and reading the events of jobs, and looking up other identities |
 | `USAGE` | database | accessing the namespaces inside |
 | `USAGE` | namespace | accessing the tables inside |
 | `USAGE` | secret | binding it to a Function, and resolving its value at evaluation time |
@@ -31,7 +31,7 @@ availability:
 | `CREATE_SECRET` | namespace | creating a Secret in it |
 | `CREATE_FUNCTION` | namespace | registering a Function in it |
 | `CREATE_STORAGE_INTEGRATION` | namespace | registering a storage integration in it |
-| `OPERATE` | system | describing and controlling jobs, managing caches, reading server configuration, and managing role membership |
+| `OPERATE` | system | controlling jobs (cancel, pause, resume), managing caches, reading server configuration, and managing role membership |
 
 `OWNERSHIP` is never revoked -- granting it again transfers it to a new
 owner instead, and a single `GRANT OWNERSHIP` statement names exactly one
@@ -57,9 +57,13 @@ has not been created yet.
 ## Granting privileges from SQL {#sql}
 
 `GRANT` and `REVOKE` reach every object in the table above -- `SYSTEM`,
-`DATABASE`, `SCHEMA` (a namespace, also spelled `NAMESPACE`), `TABLE`,
-`VIEW`, `MATERIALIZED VIEW`, `SECRET`, `STORAGE INTEGRATION`, and
-`FUNCTION` -- with the same statement shape:
+`DATABASE`, `SCHEMA`, `NAMESPACE <name> [IN <schema>]`, `TABLE`, `VIEW`,
+`MATERIALIZED VIEW`, `SECRET`, `STORAGE INTEGRATION`, and `FUNCTION` --
+with the same statement shape. `SCHEMA` and `NAMESPACE` both target a
+namespace, but aren't interchangeable spellings: `SCHEMA` takes a
+namespace's complete path, while `NAMESPACE` takes one unqualified
+component, resolved under an explicit parent (`IN <schema>`) or the
+session's current namespace when `IN` is omitted:
 
 <CodeGroup>
 ```sql SQL icon="database"

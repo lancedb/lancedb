@@ -94,8 +94,12 @@ compute. Use the SDK version supported by your deployment, or the
 ## Privileges {#privileges}
 
 A materialized view **is** a table (see [Dropping one](/sql/ddl/materialized-view#drop)),
-so the same `OWNERSHIP`, `SELECT`, `INSERT`, `UPDATE` and `DELETE`
-privileges apply, granted through the REST ACL API or SQL `GRANT`/`REVOKE`:
+granted through the REST ACL API or SQL `GRANT`/`REVOKE` with the same
+privilege names as a table, but two of them mean something different here:
+the server refuses a direct `INSERT`, `UPDATE` or `DELETE` on a materialized
+view's rows -- only a refresh writes them. `UPDATE` is instead what
+authorizes calling refresh, and `OWNERSHIP` is what authorizes `ALTER`
+(auto-refresh settings):
 
 <CodeGroup>
 ```sql SQL icon="database"
@@ -103,8 +107,9 @@ GRANT SELECT, UPDATE ON MATERIALIZED VIEW daily_rollup TO ROLE analysts
 ```
 </CodeGroup>
 
-See [Privileges](/governance/privileges#sql) for the full statement syntax
-and every target it reaches.
+That grants `analysts` read access and the ability to refresh `daily_rollup`,
+not row-level write access. See [Privileges](/governance/privileges#sql) for
+the full statement syntax and every target it reaches.
 
 ## Related guides {#next}
 

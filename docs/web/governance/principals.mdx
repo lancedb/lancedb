@@ -26,15 +26,15 @@ optional keyword to disambiguate:
 ```sql SQL icon="database"
 GRANT USAGE ON SECRET platform.`openai-prod` TO ROLE research
 GRANT USAGE ON SECRET platform.`openai-prod` TO USER alice
-GRANT USAGE ON SECRET platform.`openai-prod` TO GROUP data-science
+GRANT USAGE ON SECRET platform.`openai-prod` TO GROUP `data-science`
 ```
 </CodeGroup>
 
 A `USER` or `GROUP` name is resolved against your identity provider, but
-only after the caller's `OWNERSHIP` on the object is checked -- so a grant
-to a misspelled name is still accepted, and quietly applies to no one.
-`ROLE` needs no such lookup, since a role is simply whatever name a grant
-has used.
+only after the caller's `OWNERSHIP` on the object is checked. A name that
+isn't found, or that matches more than one identity, is an error -- not a
+silent no-op. `ROLE` needs no such lookup, since a role is simply whatever
+name a grant has used.
 
 Name several subjects of the same kind in one statement by omitting the
 keyword after the first:
@@ -45,13 +45,25 @@ GRANT USAGE ON SECRET platform.`openai-prod` TO ROLE etl, rotation_service
 ```
 </CodeGroup>
 
-## A role has no membership of its own in SQL {#membership}
+## Role membership in SQL {#membership}
 
-A role is not a group of users that `GRANT` and `REVOKE` can manage.
-Deciding which users or groups a role applies to -- its membership -- is a
-separate, REST and CLI-only operation. Granting a privilege to a role
-before anyone is a member of it is valid; the role simply has no effect
-yet.
+SQL manages which users or groups a role applies to -- its membership --
+directly:
+
+<CodeGroup>
+```sql SQL icon="database"
+GRANT ROLE analysts TO USER alice
+GRANT ROLE analysts TO GROUP `data-science`
+REVOKE ROLE analysts FROM USER alice
+SHOW ROLE BINDINGS
+```
+</CodeGroup>
+
+Changing membership (`GRANT`/`REVOKE ROLE`) needs system `OPERATE`;
+`SHOW ROLE BINDINGS` needs only system `USAGE`. A role binding accepts a
+`USER` or `GROUP` on the receiving side, never another `ROLE` -- granting
+a privilege to a role before anyone is a member of it is still valid; the
+role simply has no effect until it has members.
 
 ## What to read next {#next}
 

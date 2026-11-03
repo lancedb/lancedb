@@ -86,9 +86,10 @@ flatten  range  generate_series
 map  map_keys  map_values  map_entries  map_extract
 ```
 
-Distance functions over arrays -- `cosine_distance`, `distance`,
-`exact_distance`, `inner_product` -- take an options string and can plan as
-vector search; see [Vector distance functions](/sql/dql/vector-distance).
+Distance functions over arrays: `cosine_distance`, `distance`,
+`exact_distance`, `inner_product`. Only `distance` and `exact_distance`
+take an options string, and only `distance` can plan as vector search; see
+[Vector distance functions](/sql/dql/vector-distance).
 
 ## Structs and fields {#structs}
 

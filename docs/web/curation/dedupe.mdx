@@ -57,6 +57,9 @@ table.wait_for_index(["embedding_idx"])
 before either function runs; a query against unindexed fragments is rejected
 rather than silently returning stale or wrong results.
 
+For an `l2` index, `distance_threshold` and the `distance` column below are
+both **squared** L2, not the plain L2 a plain SQL `distance()` call returns.
+
 </Accordion>
 
 ## Collapse near-duplicates {#dedupe}
@@ -72,7 +75,7 @@ SELECT id, caption
 FROM dedupe(
     'curation_embeddings',
     'embedding',
-    distance_threshold => 0.06
+    distance_threshold => 0.003
 )
 ORDER BY id
 ```
@@ -102,7 +105,7 @@ SELECT id_a, id_b, distance
 FROM duplicate_pairs(
     'curation_embeddings',
     'embedding',
-    distance_threshold => 0.06,
+    distance_threshold => 0.003,
     id_column => 'id'
 )
 ORDER BY id_a
@@ -110,7 +113,7 @@ ORDER BY id_a
 </CodeGroup>
 
 This returns the pairs `(10, 20)`, `(30, 40)` and `(40, 50)` -- note 30 and 50
-are not a direct pair here (they sit `0.10` apart, outside the threshold),
+are not a direct pair here (their squared L2 distance is `0.01`, outside the threshold),
 even though `dedupe` merges all three transitively above.
 
 ## Keep it current with a materialized view {#materialized}
@@ -125,7 +128,7 @@ CREATE MATERIALIZED VIEW curation_embeddings_deduped AS
 SELECT * FROM dedupe(
     'curation_embeddings',
     'embedding',
-    distance_threshold => 0.06
+    distance_threshold => 0.003
 )
 ```
 </CodeGroup>

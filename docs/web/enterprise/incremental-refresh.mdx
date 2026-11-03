@@ -9,9 +9,10 @@ availability:
 ---
 
 Refreshing a [computed column](/feature-engineering/add-computed-column)
-is incremental: it fills rows that have no value yet and recomputes rows
-whose inputs changed since they were last computed, and leaves every
-other row alone. A second refresh with nothing changed does nothing. The
+is incremental: it fills rows that have no value yet and recomputes the
+fragments that hold a row whose input changed since it was last computed,
+leaving every other fragment alone. A second refresh with nothing changed
+does nothing. The
 planner finds the rows that actually need work by checking which
 fragments still carry stale or empty values for the column, then groups
 them into claimable units a fleet of job workers can pick up in parallel

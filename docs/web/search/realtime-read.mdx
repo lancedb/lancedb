@@ -42,11 +42,12 @@ bitmap) indexes, a maintained index covers every tier -- base table,
 SSTables, and the active memtable -- so a query rejects outright rather than
 silently skipping un-compacted rows if a resident memtable predates the
 index. Vector (ANN) search is maintained on the base table and SSTables the
-same way, but the active memtable itself needs no index: it is small by
-construction (it freezes into an SSTable once it crosses a size threshold),
-so the LSM scanner simply compares every row in it, which is already fast
-enough to make writes searchable within milliseconds without waiting on an
-index build.
+same way, and the active memtable builds its own in-memory HNSW graph as
+rows land, so writes stay vector-searchable within milliseconds too,
+without waiting on a freeze into an SSTable. That graph search steps aside
+for a full scan of the memtable only when it can't honor the query through
+a graph -- a prefilter, a primary-key override, a distance lower bound, or
+before the memtable has any index yet on a cold start.
 
 ## Embedded: one process, one dataset {#embedded}
 

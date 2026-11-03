@@ -76,12 +76,14 @@ scaling.
 
 ## Throughput {#throughput}
 
-A table shard is the unit of capacity: it accepts roughly 85-90 MB/s of
-durable append before acknowledgement, and throughput scales nearly linearly
-with shard count up to at least 8 shards on one pod -- the bottleneck is the
-durable write itself, not CPU or memory. The deployment enforces this as a
-quota: **90 MB/s per shard, capped at 900 MB/s per table** across all of its
-shards. [Contact support](https://www.lancedb.com/contact) to raise it.
+A table shard is the unit of capacity: measured runs show it sustaining
+roughly 85-90 MB/s of durable append before acknowledgement, and throughput
+scaling nearly linearly with shard count up to at least 8 shards on one
+pod -- the bottleneck is the durable write itself, not CPU or memory. This
+is observed capacity, not an enforced quota; nothing in the deployment caps
+a shard's or a table's throughput below it. [Contact
+support](https://www.lancedb.com/contact) if your workload needs more than
+one pod's worth of capacity for a single table.
 
 ## What to read next {#next}
 

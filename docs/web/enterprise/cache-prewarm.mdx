@@ -29,13 +29,17 @@ to warm, up to 1024 entries), and a concurrency limit for how many it loads
 at once.
 
 Whether this delays the executor from serving queries is a separate setting,
-`startup_prewarm_block_query_ready`:
+`startup_prewarm_block_query_ready`, off by default in the binary itself but
+**on by default in the Helm chart** -- most deployments block on it unless
+the chart value is set otherwise:
 
-- **Unset (default):** the executor becomes query-ready immediately and
+- **Unset:** the executor becomes query-ready immediately and
   prewarm runs concurrently in the background. Early queries may still miss
   the cache; later ones benefit once prewarm catches up.
-- **Set:** query readiness waits for prewarm to finish, up to
-  `startup_prewarm_timeout_secs`.
+- **Set (the Helm chart's default):** query readiness waits for prewarm to
+  finish, up to `startup_prewarm_timeout_secs`. Blocking query readiness
+  this way requires `healthPort` to be set (9096 in the chart's default
+  values), so process health stays reachable while readiness is gated.
 
 If prewarm fails or times out, `startup_prewarm_failure_policy` decides what
 happens next:
@@ -49,7 +53,7 @@ happens next:
 
 <CardGroup cols={2}>
   <Card title="Data Page Cache" icon="database" href="/enterprise/data-page-cache">
-    The raw-data-page cache startup prewarm fills.
+    The raw-data-page cache -- warmed on demand, not by startup prewarm.
   </Card>
   <Card title="Tiered Index Cache" icon="layer-group" href="/enterprise/tiered-index-cache">
     The deserialized-index cache startup prewarm fills.

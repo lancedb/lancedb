@@ -172,12 +172,11 @@ reader = db.execute_query(
 
 A query never names the integration: the planner matches the most specific
 `STORAGE_PREFIX` that covers the URI being read, across every integration
-the caller has `USAGE` on. Omit `HUGGINGFACE_TOKEN_SECRET` to register an
-explicitly anonymous integration for a prefix instead -- useful to pin
-anonymous access even when a cluster-wide token is also configured. With no
-matching integration at all, a deployment falls back to its existing
-behavior: a configured `HF_TOKEN`/`HUGGINGFACE_TOKEN` environment variable,
-or anonymous access. See
+the caller has `USAGE` on. A HuggingFace integration always needs
+`HUGGINGFACE_TOKEN_SECRET`; creating one without it is rejected. For public
+access, register no integration for that prefix at all -- an `hf://` read
+that matches no integration is anonymous, with no environment-variable
+fallback. See
 [Storage Integration](/management/storage-integration) for every provider
 and the full credential model.
 

@@ -222,17 +222,18 @@ frames.disable_rte()
 ```
 </CodeGroup>
 
-## Write throughput {#write-quota}
+## Write throughput {#write-throughput}
 
 RTE acknowledges a write as soon as it is durable in the write-ahead log, so
 ingest is no longer limited by how fast the table can commit. On Embedded,
 durability means your local disk or object store, so throughput is bounded by
-your own machine's resources, not a quota.
+your own machine's resources.
 
-An Enterprise table can be split into shards that write independently, and
-the deployment's WAL-node tier enforces a per-shard and per-table throughput
-cap. See [Distributed Real Time Write](/enterprise/distributed-real-time-write#throughput)
-for the numbers and how to raise them.
+An Enterprise table can be split into shards that write independently, with
+each shard's durable-append throughput bounded by its WAL node's own
+capacity -- measured, not an enforced cap. See
+[Distributed Real Time Write](/enterprise/distributed-real-time-write#throughput)
+for the numbers.
 
 ## Next steps {#next-steps}
 

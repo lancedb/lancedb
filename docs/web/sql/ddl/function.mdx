@@ -48,8 +48,14 @@ version is unaffected.
 | `pip` | pip requirements for the worker environment |
 | `conda` | conda packages instead of pip |
 | `conda_channels` | channels in priority order; requires `conda` |
+| `apt` | OS packages to install in the worker environment |
+| `image` | a specific container image to run the worker in, such as `'host/repo@sha256:...'` |
 | `python_version` | worker Python version; `3.12` when omitted, whatever Python you send the statement from |
 | `gpu` | `'true'` when every execution needs a GPU |
+| `gpu_class` | which configured GPU class to run on, when `gpu = 'true'` |
+| `result_stability` | `'input_and_context'` or `'per_call'` |
+| `batch_size` | maximum rows per Function call |
+| `row_timeout_seconds` | per-row (or per-batch, for a vectorized Function) execution timeout |
 
 **Errors and limits**
 

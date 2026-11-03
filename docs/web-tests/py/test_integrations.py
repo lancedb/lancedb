@@ -171,7 +171,7 @@ def test_frameworks_lerobot_lancedb_usage() -> None:
     from lerobot_lancedb import LanceDBDataset, lance_mp_context
     from torch.utils.data import DataLoader
 
-    dataset = LanceDBDataset(root="s3://lance-format/lerobot-pusht-lance")
+    dataset = LanceDBDataset(root="s3://lance-format/pusht-lance")
     sample = dataset[0]
     print(sample["observation.state"].shape)
     print(sample["action"].shape)
@@ -187,7 +187,7 @@ def test_frameworks_lerobot_lancedb_usage() -> None:
     # --8<-- [start:frameworks_lerobot_open_lance_tables]
     import lancedb
 
-    db = lancedb.connect("hf://datasets/lance-format/lerobot-pusht-lance/data")
+    db = lancedb.connect("hf://datasets/lance-format/pusht-lance/data")
     frames = db.open_table("frames")
     videos = db.open_table("videos")
 

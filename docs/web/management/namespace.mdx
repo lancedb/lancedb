@@ -77,7 +77,7 @@ The hierarchy is logical, not a tree of folders: a directory namespace records i
 
 As a user of LanceDB Embedded, you might never notice namespaces at first, because a plain connection
 uses only the root namespace, which is implicit. Connecting to this namespace is as simple as
-connecting to the catalog root:
+connecting to the namespace root:
 
 <CodeGroup>
 ```python Python icon="python"
@@ -106,7 +106,7 @@ You can also explicitly connect to a namespace using `lancedb.connect_namespace(
 
 <CodeGroup>
 ```python Python icon="python"
-# Local namespace-backed catalog root (DirectoryNamespace)
+# Local DirectoryNamespace root
 # See https://lance.org/format/namespace/dir/catalog-spec/
 db = lancedb.connect_namespace("dir", {"root": "./local_lancedb"})
 
@@ -121,7 +121,7 @@ print(f"Created table: {table.name}")
 ```typescript TypeScript icon="square-js"
 import * as lancedb from "@lancedb/lancedb";
 
-// Local namespace-backed catalog root (DirectoryNamespace)
+// Local DirectoryNamespace root
 // See https://lance.org/format/namespace/dir/catalog-spec/
 const db = await lancedb.connectNamespace("dir", { root: "./local_lancedb" });
 
@@ -139,7 +139,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use arrow_schema::{DataType, Field, Schema};
 
-// Local namespace-backed catalog root (DirectoryNamespace)
+// Local DirectoryNamespace root
 // See https://lance.org/format/namespace/dir/catalog-spec/
 let mut properties = HashMap::new();
 properties.insert("root".to_string(), "./local_lancedb".to_string());
@@ -183,7 +183,7 @@ application code, load credentials from environment variables or a secrets manag
 
 <CodeGroup>
 ```python Python icon="python"
-# Remote namespace-backed catalog root (RestNamespace)
+# Remote RestNamespace root
 # See https://lance.org/format/namespace/rest/catalog-spec/
 db = lancedb.connect_namespace(
     "rest",
@@ -199,7 +199,7 @@ db = lancedb.connect_namespace(
 ```typescript TypeScript icon="square-js"
 import * as lancedb from "@lancedb/lancedb";
 
-// Remote namespace-backed catalog root (RestNamespace)
+// Remote RestNamespace root
 // See https://lance.org/format/namespace/rest/catalog-spec/
 const db = await lancedb.connectNamespace("rest", {
   uri: "https://<your_catalog>.internal.<your_org>.com",
@@ -214,7 +214,7 @@ const db = await lancedb.connectNamespace("rest", {
 ```rust Rust icon="rust"
 use std::collections::HashMap;
 
-// Remote namespace-backed catalog root (RestNamespace)
+// Remote RestNamespace root
 // See https://lance.org/format/namespace/rest/catalog-spec/
 let mut properties = HashMap::new();
 properties.insert(

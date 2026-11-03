@@ -18,8 +18,10 @@ consequence of that shape.
 
 ## Granting a privilege {#granting}
 
-`GRANT` and `REVOKE` cover a Secret or a namespace today, the objects a
-day-to-day user shares most often:
+`GRANT` and `REVOKE` cover every object in the catalog -- system, database,
+schema/namespace, table, view, materialized view, secret, function, and
+storage integration. A Secret, the one a day-to-day user shares most
+often, looks like this:
 
 <CodeGroup>
 ```sql SQL icon="database"
@@ -28,13 +30,14 @@ REVOKE USAGE ON SECRET platform.`openai-prod` FROM ROLE research
 ```
 </CodeGroup>
 
-The caller must already hold `OWNERSHIP` on the object being granted, and
-the role, user or group named need not already exist.
+The caller must already hold `OWNERSHIP` on the object being granted (`GRANT`
+additionally requires the object to already exist; `REVOKE` does not, so an
+entry left on a dropped object can still be removed). A role need not exist
+beforehand, but a `USER` or `GROUP` name must resolve to exactly one identity
+in your identity provider, or the statement fails.
 
-See [Privileges](/governance/privileges) for the full statement syntax,
-every privilege each operation needs, and the broader set of privileges --
-covering databases, tables, views and materialized views -- that the REST
-ACL API grants today, ahead of SQL. See [Principals](/governance/principals)
+See [Privileges](/governance/privileges) for the full statement syntax and
+every privilege each operation needs. See [Principals](/governance/principals)
 for who a grant can name.
 
 ## What to read next {#next}

@@ -23,9 +23,15 @@ Confirm the functions supported by your deployment and inspect SQL
 index-backed plan. See [SQL vector search](/basics/sql#no-vector-sql).
 </Warning>
 
-A third, optional argument is a comma-separated options string. `metric`
-selects `l2` (default, alias `euclidean`), `cosine`, or `dot`; the
-index-search rewrite also reads `nprobes` and `use_index`:
+A third, optional argument is a comma-separated options string, and only
+`distance` and `exact_distance` accept one; `cosine_distance` and
+`inner_product` are plain two-argument functions. `metric` selects `l2`
+(default, alias `euclidean`), `cosine`, or `dot`. `nprobes` and `use_index`
+only affect `distance`, since it's the only one of the two that the
+index-search rewrite applies to in the first place -- `exact_distance` is
+never rewritten into an index search, so passing it `use_index`/`nprobes`
+does nothing; use a plain `distance` call with `use_index=false` to force a
+flat scan instead:
 
 <CodeGroup>
 ```sql SQL icon="database"
@@ -35,7 +41,7 @@ LIMIT 10
 
 -- Force a flat scan, bypassing the index:
 SELECT id FROM documents
-ORDER BY exact_distance(embedding, ARRAY[0.1, 0.2, 0.3], 'use_index=false')
+ORDER BY distance(embedding, ARRAY[0.1, 0.2, 0.3], 'use_index=false')
 LIMIT 10
 ```
 </CodeGroup>

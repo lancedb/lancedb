@@ -28,7 +28,7 @@ export const PyQuickstartOutputPandas = "# Ensure you run `pip install pandas` b
 
 export const PyQuickstartQueryFeature = "features = (\n    table.search().select([\"frame_id\", \"video_id\", \"quality_score\"]).to_polars()\n)\nprint(features)\n";
 
-export const PyQuickstartTraining = "import torch\nfrom lancedb.streaming import StreamingDataset\n\ntable.add_columns(\n    {\n        \"motion\": \"cast(stats.motion as float)\",\n        \"sharpness\": \"cast(stats.sharpness as float)\",\n    }\n)\ndataset = StreamingDataset(table, columns=[\"motion\", \"sharpness\"], shuffle_seed=42)\ndataloader = torch.utils.data.DataLoader(dataset, batch_size=1024, num_workers=0)\n";
+export const PyQuickstartTraining = "import torch\nfrom lancedb.streaming import StreamingDataset\n\ndataset = StreamingDataset(table, columns=[\"motion\", \"sharpness\"], shuffle_seed=42)\ndataloader = torch.utils.data.DataLoader(dataset, batch_size=1024, num_workers=0)\n";
 
 export const PyQuickstartVectorSearch1 = "# Search for frames similar to \"a gripper closing on an object\"\nquery_vector = [0.2, 0.8, 0.4, 0.9]\n\n# Ensure you run `pip install polars` beforehand\nresult = (\n    table.search(query_vector)\n    .select([\"frame_id\", \"video_id\", \"caption\", \"_distance\"])\n    .limit(2)\n    .to_polars()\n)\nprint(result)\n";
 

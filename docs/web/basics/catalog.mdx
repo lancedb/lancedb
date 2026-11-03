@@ -17,6 +17,14 @@ import {
     TsConnectEnterprisePlaceholders,
     TsConnectObjectStorage,
 } from '/snippets/connection.mdx';
+import {
+    PyStorageS3Minio,
+    PyStorageS3Express,
+    PyStorageS3SseKms,
+    TsStorageS3Minio,
+    TsStorageS3Express,
+    TsStorageS3SseKms,
+} from '/snippets/storage.mdx';
 
 ## Catalog Hierarchy {#hierarchy}
 
@@ -201,6 +209,69 @@ Pass credentials as environment variables (uppercase), or as a
 `storage_options` dict at connection or table level (lowercase keys); a
 table's `storage_options` inherit the connection's and override on a
 per-key basis.
+
+Choosing among these is a tradeoff between latency, scalability, cost and
+operational complexity, before you even pick a cloud-specific backend:
+object storage (S3, GCS, Azure Blob) has the highest latency but is the
+cheapest and scales storage effectively without limit; networked file
+storage (EFS, Filestore, Azure Files) and third-party stores (MinIO,
+WekaFS) sit in between; block storage (EBS, Persistent Disk, Managed Disk)
+and local NVMe are the fastest but tie data to one instance, so scaling
+means sharding or copying it yourself.
+
+##### S3-compatible stores {#s3-compatible-stores}
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyStorageS3Minio}
+    </CodeBlock>
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsStorageS3Minio}
+    </CodeBlock>
+</CodeGroup>
+
+If the endpoint is `http://` (common in local development), also set
+`ALLOW_HTTP=true` or pass `allow_http=True` in `storage_options`.
+
+##### S3 Express {#s3-express}
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyStorageS3Express}
+    </CodeBlock>
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsStorageS3Express}
+    </CodeBlock>
+</CodeGroup>
+
+Consult AWS's networking requirements for S3 Express before enabling it.
+
+##### Server-side encryption with KMS {#server-side-encryption-with-kms}
+
+Set `aws_server_side_encryption` to `aws:kms` and `aws_sse_kms_key_id` to
+the key ID or ARN to encrypt at rest with an AWS KMS key. The same options
+apply at connection or table level, and combine with bucket-level default
+encryption.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyStorageS3SseKms}
+    </CodeBlock>
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsStorageS3SseKms}
+    </CodeBlock>
+</CodeGroup>
+
+The IAM principal needs `kms:Encrypt`, `kms:Decrypt` and
+`kms:GenerateDataKey` on the configured KMS key.
+
+<Note>
+**Tencent COS and GooseFS build availability.** Both are bundled by
+default in the Python wheel. In the Node binding, GooseFS is bundled by
+default but COS is not -- build with the `cos` Cargo feature enabled to
+use it there. In Rust, neither is in the default feature set; build with
+the `cos` or `goosefs` Cargo feature enabled to use either one.
+</Note>
 
 #### LanceDB Enterprise {#enterprise}
 

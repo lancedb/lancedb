@@ -87,7 +87,10 @@ deployment automatically binds the most specific
 it; one must already exist. An Azure location must be account-qualified
 (`az://container@account.blob.core.windows.net/path`); a bare
 `az://container/path` is refused. `ATTACH DATABASE` requires the same
-creation privileges as `CREATE DATABASE`.
+creation privileges as `CREATE DATABASE`. For an external location, it also
+requires `USAGE` on the storage integration that binds it, and on that
+integration's own database and namespace; the integration itself must live
+in a native, root-backed database under the catalog root.
 
 Attaching writes Enterprise's own tracking metadata into the location to
 bring it under management -- it does not rewrite, move, or re-encode any

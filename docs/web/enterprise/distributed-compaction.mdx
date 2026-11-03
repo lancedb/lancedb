@@ -12,7 +12,8 @@ Distributed compaction splits a table's fragments into independent,
 fragment-disjoint tasks and fans them out across job workers in LanceDB
 Enterprise. Unlike an index build, a compaction plan needs no bin-packing:
 Lance's own planner already produces disjoint tasks, so workers claim and
-commit them directly through the job registry. See [Architecture](/index#architecture).
+execute them directly through the job registry, with no coordination
+needed to decide who does what. See [Architecture](/index#architecture).
 
 ```mermaid
 flowchart LR
@@ -20,14 +21,25 @@ flowchart LR
     R --> W1["Worker<br/>claims fragments 1-2"]
     R --> W2["Worker<br/>claims fragments 3-4"]
     R --> W3["Worker<br/>claims fragments 5-6"]
-    W1 --> C["Each worker commits<br/>its own task directly"]
+    W1 --> C["Fleet-wide eligibility gate:<br/>one worker claims the commit"]
     W2 --> C
     W3 --> C
 ```
 
-No task depends on another's result, so there is nothing to coordinate
-beyond the claim itself -- a worker that finishes early simply claims
-another task rather than waiting on its peers.
+No task depends on another's result, so a worker that finishes early
+simply claims another task rather than waiting on its peers. Committing is
+where the fleet does coordinate: finished tasks go through a shared
+eligibility gate, and only the one worker that claims the commit actually
+writes it, rather than each worker committing its own task independently.
+
+Whether a failed task can still let the rest commit depends on the remap
+mode. Inline remap is all-or-nothing: one failed task fails the whole job,
+since the commit updates every affected index inline and can't skip a
+task's share of that. Deferred remap can commit a subset -- a failed
+task's fragments are abandoned and replanned in a later round, while the
+rest of the job's tasks commit without waiting on it. See
+[Advanced Conflict Resolution](/enterprise/advanced-conflict-resolution)
+for when compaction defers a remap at all.
 
 ## Compaction interfaces {#compaction-interfaces}
 

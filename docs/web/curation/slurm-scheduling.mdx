@@ -19,18 +19,18 @@ CoreWeave, a major GPU cloud provider, runs Slurm this way through SUNK
 an otherwise ordinary Kubernetes cluster.
 
 LanceDB Enterprise's job workers -- indexing, compaction, cache prewarm,
-and GPU Function execution alike -- all launch as ordinary Kubernetes
-pods through one shared scheduling configuration. Today, that
+registration, and most other background work -- all launch as ordinary
+Kubernetes pods through one shared scheduling configuration. Today, that
 configuration integrates with CoreWeave's SUNK specifically; the rest of
 this page describes its effect. On a Neocloud running SUNK, pointing
-that configuration at SUNK's pod scheduler puts every worker pod LanceDB
-launches under Slurm's scheduling and accounting, instead of plain
+that configuration at SUNK's pod scheduler puts every one of those
+worker pods under Slurm's scheduling and accounting, instead of plain
 Kubernetes bin-packing. See [Architecture](/index#architecture).
 
 ## What SUNK changes {#what-changes}
 
-Every agent-launched worker pod -- a one-pod job worker or a multi-worker
-distributed indexer Job -- shares one scheduling configuration: node
+Most agent-launched worker pods -- a one-pod job worker or a multi-worker
+distributed indexer Job -- share one scheduling configuration: node
 selector, tolerations, scheduler name, and termination grace period.
 Pointing the scheduler name at the cluster's SUNK pod scheduler routes
 pod placement through SUNK instead of the default Kubernetes scheduler,
@@ -38,10 +38,15 @@ so Slurm sees and accounts for the workload. SUNK also expects a short
 termination grace period, kept below Slurm's own kill-wait threshold --
 deployments commonly use 5 to 20 seconds.
 
-This is the same scheduling path [GPU Function execution](/curation/gpu-function-execution)
-uses to place GPU-bound Function workers: a SUNK-backed cluster is one
-way that scheduling reaches real GPU capacity on a Neocloud, not a
-separate code path.
+<Warning>
+Function refresh's own child workers -- including GPU Function execution
+-- get the scheduler name but not this shared termination-grace setting;
+they currently launch with Kubernetes' 30-second default, above most
+SUNK deployments' kill-wait bound. Confirm with your deployment operator
+before running Function refresh on a SUNK-scheduled cluster. See
+[GPU Function execution](/curation/gpu-function-execution) for the
+placement mechanism this affects.
+</Warning>
 
 ## Configuring a SUNK-backed deployment {#config}
 
@@ -60,6 +65,6 @@ to configure or size a SUNK-backed deployment.
     The query, executor, cache and jobs fleets SUNK schedules onto.
   </Card>
   <Card title="Slurm Scheduling for refresh" icon="server" href="/enterprise/slurm-refresh-scheduling">
-    Why there's nothing extra to configure for a computed column or MV refresh.
+    What does and doesn't carry over for a computed column or MV refresh.
   </Card>
 </CardGroup>

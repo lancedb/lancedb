@@ -88,19 +88,18 @@ without a separate network round trip at all.
 
 A join written this way is a **candidate** for the rewrite, not a
 guarantee -- confirm it per query with
-[`EXPLAIN`](/basics/sql#query-plans): a `RemoteTake` node in the plan
-means the deferral happened; its absence means the wide column was read
-eagerly, even for a query shaped exactly like one that does qualify
-elsewhere. `RemoteTake` by itself isn't proof either way -- it's the
-general operator that fetches columns for selected rows from remote
-storage, and shows up in an ordinary, join-free query just as it does
-here (see the [recorded vector-search plan](/basics/sql#5-data-retrieval)).
-What confirms the rewrite specifically is where the join sits relative to
-that node: the join operating on a narrowed schema with a `RemoteTake`
-positioned after it, rather than the wide column already present in the
-scan that feeds the join. Join on a narrow, selective key and project the
-wide columns only in the final select list, rather than alongside the
-join condition:
+[`EXPLAIN`](/basics/sql#query-plans). A `Take` or `RemoteTake` node by
+itself isn't proof either way -- it's the general operator that fetches
+columns for selected rows from remote storage, and shows up in an
+ordinary, join-free query just as it does here (see the
+[recorded vector-search plan](/basics/sql#5-data-retrieval)); the
+rewrite itself inserts a plain `Take`, which only a later, separate pass
+turns into `RemoteTake`. What confirms the deferral specifically is a
+`Take`/`RemoteTake` node sitting above a `HashJoinExec`, fetching a
+column set that includes `__join_late_materialization_key` -- that key
+column only exists when this rewrite fired. Join on a narrow, selective
+key and project the wide columns only in the final select list, rather
+than alongside the join condition:
 
 <CodeGroup>
 ```sql SQL icon="database"

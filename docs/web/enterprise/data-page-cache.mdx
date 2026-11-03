@@ -31,10 +31,27 @@ A table's local disk cache shares one budget with the
 tier where both are enabled on the same executor -- raising one's share of
 that budget lowers the other's.
 
+## Prewarming on demand {#prewarm}
+
+[Cache Prewarm](/enterprise/cache-prewarm)'s `startup_prewarm_idx` only
+warms the [tiered index cache](/enterprise/tiered-index-cache), not this
+one. To warm the data page cache itself, call `prewarm_data`, optionally
+scoped to specific columns:
+
+<CodeGroup>
+```python Python icon="python"
+table.prewarm_data(columns=["embedding"])
+```
+</CodeGroup>
+
+The call returns once the request is accepted, not once prewarming
+finishes; it is idempotent and safe to call concurrently from multiple
+clients. Prewarming has a large upfront cost, so it pays off for workloads
+that repeatedly query the same columns -- large columns such as embeddings
+or binary data may not be practical to prewarm this way.
+
 ## Cache interfaces {#interfaces}
 
-- [Cache Prewarm](/enterprise/cache-prewarm) for how `startup_prewarm_idx`
-  warms this cache ahead of the first request.
 - [Tiered Index Cache](/enterprise/tiered-index-cache) for the related
   cache that holds deserialized index structures instead of raw data pages.
 - [Query plans](/basics/sql#query-plans) for inspecting what a query actually read.

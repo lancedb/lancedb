@@ -63,17 +63,13 @@ claimed. This means:
 
 - **No separate allocation round trip.** The ID range arrives for free
   inside a write the part was already going to make durably.
-- **A retried part can't collide with itself or with other parts.** Two
-  different cases, two different guarantees. If the same part-started
-  event is written again -- the ordinary shape of a retry -- every
-  attempt of that *one* part gets back the exact *same* range, not a new
-  one each time: there is nothing to collide with, because it's the
-  identical range, not a second one alongside it. Across *different*
-  parts, allocation only ever extends past the highest range any earlier
-  part has claimed, so no two distinct parts ever receive overlapping
-  ranges. This keeps a retried part's range from being wasted -- it is
-  not a claim that a part abandoned outright, with no further retry ever
-  recorded, gets its range reclaimed for reuse.
+- **A retried part can't collide with itself or with other parts.** Each
+  attempt at a part writes a new part-started event and gets a fresh range
+  past the highest range already claimed in this log, so no two attempts --
+  of the same part or of different parts -- ever hold overlapping ranges.
+  Re-sending the *same* event, for example after a lost acknowledgement, is
+  idempotent and returns the range it was already given. A range left
+  behind by a failed attempt is not reclaimed.
 
 ## What to read next {#next}
 

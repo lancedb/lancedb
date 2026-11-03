@@ -33,6 +33,12 @@ REFRESH COLUMN doubled ON my_table
 ```
 </CodeGroup>
 
+<Note>
+`table.refresh_column(...)` is the local, blocking form. On an Enterprise
+connection it raises -- use [`refresh_column_async`](#async) or the SQL form
+above instead.
+</Note>
+
 The refresh commits ordinary table versions (the values, then a
 metadata-only record of the inputs they were computed from), so
 [versioning](/management/table#versioning) applies to it like any other write.
@@ -187,10 +193,12 @@ tracking issue is needed before adding equivalent controls.
 
 ## When a refresh fails {#failures}
 
-What a failure keeps depends on where the refresh ran. `refresh_column` in your
-process writes the column in one commit, so a failure leaves the column as it
-was. A refresh job in LanceDB Enterprise commits finished batches as it goes, so some
-values can remain after a failure.
+What a failure keeps depends on where the refresh ran. The local, blocking
+`refresh_column` writes the column in one commit, so a failure leaves the
+column as it was. A refresh job in LanceDB Enterprise -- always
+`refresh_column_async` or `REFRESH COLUMN` there, never the blocking form --
+commits finished batches as it goes, so some values can remain after a
+failure.
 
 Either way, recover by fixing the cause and refreshing again. The new refresh
 fills rows that are still empty or whose inputs changed, and normally skips

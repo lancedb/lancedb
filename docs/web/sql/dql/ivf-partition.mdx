@@ -30,18 +30,22 @@ such as before a pairwise similarity pass.
 
 ## Input {#input}
 
+`ivf_partition` takes exactly 1, 3, or 4 arguments -- the vector column
+alone (scans every partition), or the vector column plus `selection` and
+`count`, plus `seed` only when `selection` is `'random'`:
+
 | Argument | Type | Required | Meaning |
 | --- | --- | --- | --- |
 | vector column | column reference | yes | the indexed vector column to assign |
-| `selection` | `'all'` (default) \| `'first'` \| `'random'` | no | which index partitions to scan |
-| `count` | int | no | number of partitions to sample when `selection => 'random'` or `'first'` |
-| `seed` | int | no | random seed when `selection => 'random'` |
+| `selection` | `'first'` \| `'random'` | required with `count` | which partitions to sample -- there is no explicit `'all'`; omit `selection` and `count` entirely to scan every partition |
+| `count` | int, > 0 | required with `selection` | number of partitions to sample |
+| `seed` | int, >= 0 | required for `'random'`, refused for `'first'` | random seed |
 
 Arguments can be passed positionally, `ivf_partition(embedding, 'random', 100, 42)`,
-or named as shown above. `selection`, `count` and `seed` are the same
-scan-scoping arguments [`dedupe`](/sql/dql/dedupe#sampling) and
-[`duplicate_pairs`](/sql/dql/duplicate-pairs#sampling) accept, so a sampled
-partition estimate from one carries over to the others.
+or named as shown above. `count` and `seed` are the same scan-scoping
+arguments [`duplicate_pairs`](/sql/dql/duplicate-pairs#sampling) accepts,
+so a sampled partition estimate carries over -- but not `dedupe`, which
+always scans every partition and refuses sampling arguments entirely.
 
 ## What to read next {#next}
 

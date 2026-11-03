@@ -12,17 +12,20 @@ availability:
 This page is about [Slurm scheduling](/curation/slurm-scheduling) as it
 applies to a computed column or materialized view refresh specifically --
 the mechanism itself is covered in depth on that Data Curation page. A
-refresh's worker pods are agent-launched job workers like any other, so
-they share the same scheduling configuration a GPU Function call or an
-indexing job uses: on a SUNK-backed deployment, that means the same node
-selector, tolerations, scheduler name and termination grace period that
-route placement through SUNK instead of plain Kubernetes bin-packing.
+refresh's top-level job -- the one that shows up in `SHOW JOBS` -- is an
+agent-launched job worker like any other, and shares the full scheduling
+configuration: node selector, tolerations, scheduler name and
+termination grace period alike.
 
-There is nothing refresh-specific to configure here -- a deployment
-pointed at SUNK already covers refresh workers the moment it's
-configured, the same way it covers every other worker type. See
-[What SUNK changes](/curation/slurm-scheduling#what-changes) for exactly
-what that configuration affects.
+<Warning>
+That job's own *child* workers -- the ones that actually plan, finalize
+and run a Function during the refresh -- are different: they inherit the
+scheduler name, but not the termination grace period, so they launch
+with Kubernetes' 30-second default regardless of the shared
+configuration. See [What SUNK changes](/curation/slurm-scheduling#what-changes)
+for why that matters on most SUNK deployments, and confirm with your
+deployment operator before running a Function-backed refresh there.
+</Warning>
 
 ## What to read next {#next}
 

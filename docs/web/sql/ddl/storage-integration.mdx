@@ -13,8 +13,9 @@ A storage integration is a namespace-scoped catalog object that lets a
 query read from, or import from, a storage location outside the
 deployment's own tables -- an S3, GCS or Azure prefix, or a HuggingFace
 dataset repository -- without embedding a credential in the query itself.
-It is addressed and scoped the same way a [Secret](/sql/ddl/secret) is:
-`<database>.<namespace_path...>.<name>`.
+It is addressed and scoped the same way a [Secret](/sql/ddl/secret) is: a
+1-3 part identifier, `name`, `namespace.name` or `database.namespace.name`,
+with a nested namespace path `$`-joined into that middle part.
 
 ## CREATE STORAGE INTEGRATION {#create}
 
@@ -30,11 +31,13 @@ CREATE STORAGE INTEGRATION <name>
 `STORAGE_PROVIDER` and `STORAGE_PREFIX` are required for every provider.
 `STORAGE_PREFIX` is the URI prefix the integration covers -- a query only
 matches an integration whose prefix is a prefix of the URI it reads.
-Options ending in `_SECRET` take a [Secret](/sql/ddl/secret) reference, not
-a literal value: either `<database>.<namespace_path...>.<name>`, or a bare
-string naming a Secret in the caller's own database and namespace. Passing
-an option a provider does not accept, such as an Azure option on an `S3`
-integration, is refused.
+Options ending in `_SECRET` take a [Secret](/sql/ddl/secret) identifier, not
+a quoted string: `name`, `namespace.name` or `database.namespace.name`, with a
+nested namespace path `$`-joined in the middle part (`` db.`team$prod`.key ``).
+Omitted parts default to the session's current database and namespace.
+Creating the integration requires `USAGE` on each referenced Secret and on its
+database and namespace. Passing an option a provider does not accept, such as
+an Azure option on an `S3` integration, is refused.
 
 ### S3 {#s3}
 
@@ -59,6 +62,7 @@ CREATE STORAGE INTEGRATION raw
 | `STORAGE_AWS_ACCESS_KEY_ID_SECRET` | Secret ref | a static access key ID, paired with the secret key below |
 | `STORAGE_AWS_SECRET_ACCESS_KEY_SECRET` | Secret ref | the matching static secret access key |
 | `STORAGE_AWS_REGION` | string, optional | the bucket's region |
+| `STORAGE_AWS_ENDPOINT` | string, optional | an S3-compatible endpoint URL (MinIO, Tigris, ...) instead of AWS itself |
 
 Give either `STORAGE_AWS_ROLE_ARN` alone, or both key-pair options together
 -- mixing the two, or supplying only one half of the key pair, is refused.
@@ -114,9 +118,10 @@ CREATE STORAGE INTEGRATION hub
 ```
 </CodeGroup>
 
-`HUGGINGFACE_TOKEN_SECRET` is the only HuggingFace option, and the only
-optional credential option of any provider: omit it to read the prefix
-anonymously, at HuggingFace's default anonymous rate limits. See
+`HUGGINGFACE_TOKEN_SECRET` is the only HuggingFace option, and it is
+required: creating an integration without it is refused. For anonymous
+access, at HuggingFace's default anonymous rate limits, register no
+integration for that prefix at all. See
 [Inspect Datasets](/curation/inspect-datasets) for the full
 read and import workflow this integration unlocks.
 

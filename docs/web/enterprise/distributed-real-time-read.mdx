@@ -29,7 +29,7 @@ flowchart LR
     subgraph WN["WAL node (owns this table's shards)"]
     direction TB
     W1["SSTable arm<br/>index-covered"]
-    W2["Active memtable arm<br/>vector: brute-force<br/>FTS/scalar: indexed"]
+    W2["Active memtable arm<br/>vector: in-memory HNSW*<br/>FTS/scalar: indexed"]
     end
 
     U["Union exec<br/>PK-keyed last-write-wins dedup,<br/>top-K cut on distance"]
@@ -71,15 +71,19 @@ an index being added to the maintained set, the query is rejected outright
 rather than silently missing that memtable's rows; there is no code path
 that quietly returns an incomplete result.
 
-Vector (ANN) search follows the same rule for the base table and SSTables,
-with one deliberate exception: the active memtable itself carries no vector
-index. It doesn't need one -- it's small by construction, since it freezes
-into an immutable SSTable as soon as it crosses a size threshold, so
-comparing every row in it directly is already fast enough to keep writes
-searchable within milliseconds. The guarantee this adds up to: every
-committed row is covered by a real index except the newest sliver still
-sitting in the write buffer, and that sliver is cheap enough to scan in
-full rather than needing one.
+Vector (ANN) search follows the same rule for the base table and SSTables.
+The active memtable's rows are ANN-searchable too: it builds its own
+in-memory HNSW graph as rows land, so writes stay vector-searchable within
+milliseconds without waiting for a freeze into an SSTable. \* That graph
+search steps aside for a full scan of the memtable only when it can't
+honor the query correctly through a graph: a prefilter predicate (graph
+traversal can't apply an arbitrary filter first), a primary-key override
+that could let a stale near vector occupy a top-K slot a newer row should
+have, a distance lower bound (only a full scan can exclude the nearest
+rows before the top-K cut), or before the memtable has any index yet on a
+cold start. Outside those cases, every committed row -- base table,
+SSTables, and the active memtable alike -- is covered by a real index,
+with no sliver of unindexed data left to scan in full.
 
 Both guarantees depend on the table's RTE write spec actually maintaining
 the index in question -- by default every index is maintained, but a

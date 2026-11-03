@@ -421,17 +421,15 @@ def test_quickstart_multimodal(db, tmp_path, monkeypatch):
 
 def test_quickstart_training(db):
     table = create_frames(db)
+    # The real walkthrough reaches this step with motion/sharpness already
+    # added back in flatten_stats(); add them here too so this test stands
+    # on its own, without repeating the add_columns call the snippet shows.
+    flatten_stats(table)
 
     # --8<-- [start:quickstart_training]
     import torch
     from lancedb.streaming import StreamingDataset
 
-    table.add_columns(
-        {
-            "motion": "cast(stats.motion as float)",
-            "sharpness": "cast(stats.sharpness as float)",
-        }
-    )
     dataset = StreamingDataset(table, columns=["motion", "sharpness"], shuffle_seed=42)
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=1024, num_workers=0)
     # --8<-- [end:quickstart_training]

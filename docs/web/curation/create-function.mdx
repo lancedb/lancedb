@@ -72,8 +72,9 @@ a model, opening a connection, making a network round trip.
 batches may be smaller. `row_timeout_seconds` bounds each Python call: one
 row for scalar Functions or the entire batch for vectorized Functions. It
 does not include the instance's `__init__`. Both settings are fixed into the
-registered version. Omit them to use adaptive batching and the service's
-default per-call deadline.
+registered version and apply to direct calls, computed columns, and
+materialized-view refreshes alike. Omit them to use adaptive batching and the
+service's default per-call deadline.
 
 ## Stateful Functions: load once, call many times {#stateful}
 
@@ -238,6 +239,11 @@ blob as a value, use a named-struct output schema with a nullable blob field;
 the struct itself records whether the result has been filled. Read a nested
 blob with `table.fetch_blobs("payload.image", hits)`.
 
+A list or large-list output may also contain Blob v2 elements; inputs and
+fixed-size lists do not support this layout. List-nested values are queryable
+as descriptors, but `fetch_blobs` and `blob_mode="bytes"` cannot fetch their
+payloads.
+
 <Warning>
 `output_schema=lancedb.blob(...)` is what makes a persisted result Blob v2
 rather than plain Arrow `binary`. Returning `bytes` from a function whose
@@ -357,10 +363,6 @@ Reader inputs keep the unread payload out of the input batch, but calling
 `video.read()` without a size loads all remaining bytes in Python. Reader
 inputs are supported in row mode. Return values remain ordinary values such
 as `bytes`; this feature does not add streamed outputs.
-
-A Blob v2 field may also be an element of an output list or large list. These
-values are queryable as Blob descriptors, but the row-id blob fetch APIs and
-`blob_mode="bytes"` cannot fetch payloads inside lists.
 
 ## What to read next {#next}
 
