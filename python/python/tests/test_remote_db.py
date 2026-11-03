@@ -5335,6 +5335,7 @@ def test_remote_add_columns_reader_not_supported():
             table.add_columns(pa.table({"score": [10]}).to_reader())
         assert all("/add_columns/" not in path for path in requests)
 
+
 @pytest.mark.asyncio
 async def test_async_property_graph_handles():
     calls = []

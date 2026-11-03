@@ -6140,6 +6140,7 @@ def test_add_columns_data_rejects_computed_metadata(mem_db, kind):
     table.add(pa.table({"id": [1]}))
     assert table.count_rows() == 2
 
+
 @pytest.mark.experimental_functions
 @pytest.mark.parametrize("interval", [None, 300])
 def test_computed_auto_refresh_options(tmp_path, interval):
