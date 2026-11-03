@@ -36,6 +36,18 @@
       "destination": "/enterprise/distributed-search"
     },
     {
+      "source": "/deployment/monitoring",
+      "destination": "/deployment/opentelemetry"
+    },
+    {
+      "source": "/enterprise",
+      "destination": "/#architecture"
+    },
+    {
+      "source": "/enterprise/index",
+      "destination": "/#architecture"
+    },
+    {
       "source": "/enterprise/intelligent-scheduling",
       "destination": "/enterprise/intelligent-planning"
     },
@@ -241,7 +253,7 @@
     },
     {
       "source": "/storage/monitoring",
-      "destination": "/deployment/monitoring"
+      "destination": "/deployment/opentelemetry"
     },
     {
       "source": "/search/sql",
@@ -369,7 +381,6 @@
               "basics/jobs",
               "tables/realtime-engine",
               "tables/consistency",
-              "enterprise/horizontal-scaling",
               "basics/guarantees",
               "basics/limits",
               "basics/naming"
@@ -502,14 +513,15 @@
               "governance/authorization",
               "governance/principals",
               "governance/privileges",
+              "governance/audit-log",
               "enterprise/security"
             ]
           },
           {
             "group": "Deployment",
             "pages": [
-              "enterprise/index",
-              "deployment/monitoring",
+              "enterprise/horizontal-scaling",
+              "deployment/opentelemetry",
               "enterprise/deployment/kubernetes"
             ]
           },
