@@ -106,6 +106,26 @@ The example returns no rows. If your data returns duplicates, decide whether
 they represent valid multiple labels or records that need consolidation.
 A join does not enforce one-to-one matching.
 
+## Call a Function across the join {#functions}
+
+A [Function](/curation/create-function) can read columns from either side
+of a join, the same as any other expression -- it runs once the join has
+matched rows, not before:
+
+<CodeGroup>
+```sql SQL icon="database"
+SELECT d.row_id, l.label, caption_quality(d.caption) AS quality
+FROM curation_documents AS d
+JOIN curation_labels AS l ON l.doc_id = d.doc_id
+WHERE d.caption IS NOT NULL
+ORDER BY d.row_id;
+```
+</CodeGroup>
+
+Scoring after the join, rather than before, means `caption_quality` only
+runs on rows that actually matched a label -- a document with no label
+never pays for the Function call.
+
 ## Join tables across namespaces {#namespaces}
 
 Use a table's qualified path to address it in another

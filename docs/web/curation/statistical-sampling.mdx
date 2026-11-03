@@ -149,6 +149,24 @@ This samples source records, not distinct documents. If you need to sample the
 result of a join or deduplication, first save that result as a table suitable
 for sampling. `TABLESAMPLE` cannot be applied directly to a subquery result.
 
+## Apply a Function to a sample {#functions}
+
+Sample first, then call a [Function](/curation/create-function) only on
+the rows you drew -- useful for trying an expensive Function on a subset
+before running it over the whole table:
+
+<CodeGroup>
+```sql SQL icon="database"
+SELECT row_id, caption, caption_quality(caption) AS quality
+FROM curation_documents TABLESAMPLE (50)
+WHERE caption IS NOT NULL;
+```
+</CodeGroup>
+
+The Function runs only on the sampled rows, not the whole table -- a quick
+way to check a Function's output, cost or latency before committing to a
+full [column refresh](/feature-engineering/refresh-column).
+
 ## Related guides {#reference}
 
 Count the sampled rows and [inspect their distribution](/curation/aggregate)

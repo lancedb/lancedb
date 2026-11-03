@@ -135,6 +135,27 @@ For time-based data, group by the time interval relevant to the task. The
 including approximate counts and percentiles. Use an approximate aggregate when an estimate is sufficient; use an exact
 count when the result must be precise.
 
+## Aggregate over a Function's result {#functions}
+
+An aggregate can summarize a [Function](/curation/create-function)'s
+output the same as any other expression -- the engine computes the
+Function once per row, then aggregates:
+
+<CodeGroup>
+```sql SQL icon="database"
+SELECT source, avg(caption_quality(caption)) AS avg_quality
+FROM curation_documents
+WHERE caption IS NOT NULL
+GROUP BY source
+ORDER BY source;
+```
+</CodeGroup>
+
+`caption_quality` here is a Function registered with
+`db.create_function_async`, scoring free text the same way any other
+curation Function would. Filtering out null captions first avoids calling
+the Function on rows with nothing to score.
+
 ## Profile a sample {#sampling}
 
 A [sample](/curation/statistical-sampling) can help you explore a large dataset before a
