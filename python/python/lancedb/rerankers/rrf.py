@@ -78,7 +78,7 @@ class RRFReranker(Reranker):
         self,
         vector_results: Union[List[pa.Table], List["LanceVectorQueryBuilder"]],
         query: str = None,
-        deduplicate: bool = True,  # noqa: F821 # TODO: automatically deduplicates
+        deduplicate: bool = True,  # noqa: F821
     ):
         """
         Overridden method to rerank the results from multiple vector searches.
