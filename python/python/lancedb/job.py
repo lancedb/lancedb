@@ -232,11 +232,11 @@ class AsyncJob(Generic[T]):
     async def progress(self) -> Optional[dict[str, Any]]:
         """Fetch a structured progress snapshot.
 
-        Registry jobs always report lifecycle and queue fields. Job types that
-        publish counters include them in the same mapping; older servers and
-        in-process operations omit them. A missing counter is unknown rather
-        than zero. This is additive to :meth:`status`, whose string contract is
-        unchanged.
+        Registry jobs always report lifecycle fields. Queue metadata and
+        counters are included when supplied by the server. Older servers may
+        omit counters, and in-process operations return ``None``. A missing
+        counter is unknown rather than zero. This is additive to :meth:`status`,
+        whose string contract is unchanged.
         """
         if self._inner is None:
             return None
