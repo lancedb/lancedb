@@ -1632,6 +1632,7 @@ describe("remote connection jobs surface", () => {
       ready_gpus: 0,
       resource_classes: ["a10g"],
       warm_reused: true,
+      wait_reason: "Job queued, waiting for GPU capacity in class 'a10g'",
       first_launched_at_millis: now - 4000,
     };
     const unknownFleet = {
