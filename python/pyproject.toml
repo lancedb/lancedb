@@ -64,9 +64,8 @@ tests = [
     "polars>=0.19, <=1.32.3",
     "pyarrow<25",
     "pyarrow-stubs>=16.0",
-    # Advance each platform's pin only after matching wheels are published.
-    "pylance==15.0.0b9; sys_platform == 'linux'",
-    "pylance==15.0.0b7; sys_platform != 'linux' and sys_platform != 'darwin'",
+    # pylance 15.0.0b5+ has not published macOS wheels.
+    "pylance==15.0.0b9; sys_platform != 'darwin'",
     "pylance==15.0.0b4; sys_platform == 'darwin'",
     "requests>=2.31.0",
     "datafusion>=54,<55",
