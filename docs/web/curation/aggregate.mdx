@@ -139,9 +139,20 @@ count when the result must be precise.
 
 An aggregate can summarize a [Function](/curation/create-function)'s
 output the same as any other expression -- the engine computes the
-Function once per row, then aggregates:
+Function once per row, then aggregates. Register `caption_quality` the
+same way any other curation Function is registered:
 
 <CodeGroup>
+```python Python icon="python"
+from lancedb import udf
+
+@udf
+def caption_quality(caption: str) -> float:
+    ...  # score the caption, e.g. with a lightweight heuristic or model
+
+db.create_function_async(caption_quality).wait()
+```
+
 ```sql SQL icon="database"
 SELECT source, avg(caption_quality(caption)) AS avg_quality
 FROM curation_documents
@@ -151,10 +162,8 @@ ORDER BY source;
 ```
 </CodeGroup>
 
-`caption_quality` here is a Function registered with
-`db.create_function_async`, scoring free text the same way any other
-curation Function would. Filtering out null captions first avoids calling
-the Function on rows with nothing to score.
+Filtering out null captions first avoids calling the Function on rows with
+nothing to score.
 
 ## Profile a sample {#sampling}
 

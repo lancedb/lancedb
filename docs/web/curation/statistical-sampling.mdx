@@ -153,9 +153,19 @@ for sampling. `TABLESAMPLE` cannot be applied directly to a subquery result.
 
 Sample first, then call a [Function](/curation/create-function) only on
 the rows you drew -- useful for trying an expensive Function on a subset
-before running it over the whole table:
+before running it over the whole table. Register `caption_quality` first:
 
 <CodeGroup>
+```python Python icon="python"
+from lancedb import udf
+
+@udf
+def caption_quality(caption: str) -> float:
+    ...  # score the caption, e.g. with a lightweight heuristic or model
+
+db.create_function_async(caption_quality).wait()
+```
+
 ```sql SQL icon="database"
 SELECT row_id, caption, caption_quality(caption) AS quality
 FROM curation_documents TABLESAMPLE (50)

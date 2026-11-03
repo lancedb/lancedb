@@ -14,7 +14,7 @@ availability:
 GRANT <privilege>[, <privilege>...] ON <target> TO <grantee>[, <grantee>...]
 REVOKE <privilege>[, <privilege>...] ON <target> FROM <grantee>[, <grantee>...]
 
-<target> ::= DATABASE <name> | SCHEMA <namespace> | TABLE <name> | VIEW <name>
+<target> ::= SYSTEM | DATABASE <name> | SCHEMA <namespace> | NAMESPACE <namespace> | TABLE <name> | VIEW <name>
           | MATERIALIZED VIEW <name> | SECRET <name> | STORAGE INTEGRATION <name> | FUNCTION <name>
 <grantee> ::= [ROLE] <role> | [USER] { <name> | ID '<id>' } | [GROUP] { <name> | ID '<id>' }
 ```
@@ -22,6 +22,7 @@ REVOKE <privilege>[, <privilege>...] ON <target> FROM <grantee>[, <grantee>...]
 
 <CodeGroup>
 ```sql SQL icon="database"
+GRANT OPERATE, USAGE ON SYSTEM TO ROLE ops
 GRANT USAGE, CREATE SCHEMA ON DATABASE analytics TO ROLE readers
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE events TO ROLE etl
 GRANT CREATE SECRET, CREATE FUNCTION ON SCHEMA platform TO ROLE platform_admins
@@ -37,6 +38,7 @@ REVOKE USAGE ON FUNCTION platform.embed FROM ROLE research
 
 | Target | Privileges it accepts |
 | --- | --- |
+| `SYSTEM` | `OPERATE`, `CREATE DATABASE`, `USAGE` -- no `OWNERSHIP`; the system itself has no owner |
 | `DATABASE` | `OWNERSHIP`, `USAGE`, `CREATE SCHEMA` (or `CREATE NAMESPACE`) |
 | `SCHEMA` (a namespace) | `OWNERSHIP`, `USAGE`, `CREATE NAMESPACE`, `CREATE TABLE`, `CREATE MATERIALIZED VIEW`, `CREATE VIEW`, `CREATE SECRET`, `CREATE STORAGE INTEGRATION`, `CREATE FUNCTION` |
 | `TABLE`, `MATERIALIZED VIEW` | `OWNERSHIP`, `SELECT`, `INSERT`, `UPDATE`, `DELETE` |

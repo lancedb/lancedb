@@ -34,7 +34,7 @@ table this page describes.
 
 | Column | Type | Nullable | What it holds |
 | --- | --- | --- | --- |
-| `AccessId` | string | no | The record's own unique ID |
+| `AccessId` | string | no | The record's own unique ID, a UUIDv4 in hyphenated text form |
 | `AccessTime` | timestamp (microsecond, UTC) | no | When the check happened |
 | `PrincipalId` | string | no | The checked principal's ID |
 | `PrincipalName` | string | yes | The principal's display name, where known |
@@ -67,6 +67,24 @@ ORDER BY AccessTime DESC
 LIMIT 100
 ```
 </CodeGroup>
+
+## Durability {#durability}
+
+The Lance-backed sink batches records in the background instead of writing
+on the request path: a batch flushes once it reaches a configured size or
+once its oldest record has waited a configured linger period, whichever
+comes first. Its queue holds a bounded number of pending records; once full,
+requests producing new records wait for the writer to drain it rather than
+having a record dropped, and a failed write is retried with growing backoff
+rather than abandoned -- so a sink that cannot keep up applies back pressure
+and, if sustained, eventually blocks request handling instead of silently
+losing entries. The audit table is opened at service startup rather than on
+first use, so a misconfigured or unreachable sink fails startup instead of
+surfacing the first time something needs to be logged.
+
+This page does not cover retention -- how long written records are kept, or
+whether anything prunes them -- which a deployment operator should confirm
+for your version and configuration.
 
 ## Granting access {#grant}
 

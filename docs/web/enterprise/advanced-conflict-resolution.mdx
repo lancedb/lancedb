@@ -15,9 +15,13 @@ row it moves. An index built against the old layout stores exactly those
 addresses, so a naive compaction would leave any index covering the rewritten
 fragments pointing at rows that have moved or no longer exist there.
 
-LanceDB Embedded avoids this by never letting the two run independently:
-`optimize()` compacts and remaps affected indexes in the same call, before
-returning. LanceDB Enterprise runs them as separate, independently scheduled
+LanceDB Embedded avoids this by default by never letting the two run
+independently: `optimize()` compacts and remaps affected indexes in the
+same call, before returning. Compaction's `defer_index_remap` option opts
+out of that -- the call returns once compaction itself commits, leaving
+the remap for later -- which is what lets a custom remapper or a
+stable-row-ID table skip the synchronous step. LanceDB Enterprise runs
+compaction and indexing as separate, independently scheduled
 background jobs -- a table can compact while an index build is still
 catching up from an earlier compaction -- so it needs a way to keep an index
 correct without forcing every compaction to wait for a synchronous remap.
@@ -33,22 +37,29 @@ a rewritten fragment does not need to be rebuilt before the rewrite commits;
 it can instead translate the row addresses it already stores forward through
 the chain of recorded transitions at read time.
 
-Every commit -- compaction included -- is classified against the table's
-current indexes before it is admitted. A rewrite that touches only fragments
-no index covers is admitted as ordinary business, with nothing appended to
-the FRI. A rewrite that touches fragments an index *does* cover must append a
-transition recording how those rows moved, so that index stays correct
-without being rebuilt synchronously. This classification is Lance's own
-commit protocol (`lance-table`'s `frag_reuse::gate::classify`), the same one
-every write funnels through -- it is not a lock or a sequencing rule Enterprise
-imposes from outside.
+Every commit -- compaction included -- is classified before it is
+admitted; that classifier is Lance's own commit protocol (`lance-table`'s
+`frag_reuse::gate::classify`), the same one every write funnels through --
+not a lock or a sequencing rule Enterprise imposes from outside. A table
+starts **untagged**: its rewrites are admitted as ordinary business with
+nothing appended anywhere, until its first rewrite that touches a
+fragment an index covers -- that commit **tags** the table (a sticky
+manifest flag that a later trim never clears) and appends the FRI's first
+transition. Only a tagged table's commits are classified against which
+indexes cover the rewritten fragments the way the rest of this page
+describes:
 
 ```mermaid
 flowchart TD
-    Commit["Compaction commit"] --> Classify{"Does any index<br/>cover the rewritten<br/>fragments?"}
-    Classify -->|no| Admit["Admitted as<br/>ordinary business --<br/>nothing appended to the FRI"]
+    Commit["Compaction commit"] --> Tagged{"Table already<br/>tagged with an FRI?"}
+    Tagged -->|no| First{"Does any index<br/>cover the rewritten<br/>fragments?"}
+    First -->|no| Admit["Admitted as<br/>ordinary business --<br/>nothing appended"]
+    First -->|yes| Tag["Tags the table,<br/>appends the first transition"]
+    Tagged -->|yes| Classify{"Does any index<br/>cover the rewritten<br/>fragments?"}
+    Classify -->|no| Admit
     Classify -->|yes| Append["Must append a transition<br/>before the commit is admitted"]
-    Append --> FRI[("Fragment reuse index")]
+    Tag --> FRI[("Fragment reuse index")]
+    Append --> FRI
 ```
 
 ## Enterprise defers and batches the catch-up {#catch-up}

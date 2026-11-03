@@ -33,8 +33,10 @@ LIMIT 100
   `SELECT *`, especially for a source with large or many columns.
 - **Filter** -- `WHERE` narrows rows before they come back; combine
   predicates with `AND`/`OR` the same as any other table.
-- **Limit** -- `LIMIT n` caps how many rows return, so a first look at an
-  unfamiliar source doesn't read more than you need.
+- **Limit** -- `LIMIT n` caps how many rows return. It bounds the result,
+  not the read: a remote source is still fetched at file or row-group
+  granularity, so a small `LIMIT` on a source with large files or row
+  groups can still touch more data than the row count suggests.
 
 The rest of this page swaps `documents` for a HuggingFace or
 object-storage source -- the `SELECT`/`WHERE`/`LIMIT` syntax above doesn't
@@ -110,13 +112,18 @@ provider's setup.
 
 A private HuggingFace repository, one subject to HuggingFace's
 authenticated rate limits, or any non-public bucket needs a
-[storage integration](/management/storage-integration) bound to a token
-or credential [Secret](/management/secret):
+[storage integration](/management/storage-integration) covering it. For
+HuggingFace that integration is bound to a token
+[Secret](/management/secret); for a non-public S3 bucket it can instead be
+an IAM role integration, which needs no Secret at all -- see
+[AWS S3](/ingestion/define-storage-integration#aws).
 
 <CodeGroup>
 ```python Python icon="python"
 db.create_secret("hf_token", "<your-hugging-face-token>")
 
+# create_storage_integration is not in a released SDK yet; use the SQL
+# form below until it ships.
 db.create_storage_integration(
     "private_hub", "hf://datasets/owner/private/data/",
     storage_provider="HUGGINGFACE",
@@ -169,7 +176,7 @@ FROM 'hf://datasets/owner/repo/data/train-*.parquet'
 db.execute_query("""
     CREATE TABLE imported AS
     SELECT * FROM 'hf://datasets/owner/repo/data/train-*.parquet'
-""")
+""").read_all()
 table = db.open_table("imported")
 ```
 </CodeGroup>

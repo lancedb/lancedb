@@ -91,8 +91,16 @@ guarantee -- confirm it per query with
 [`EXPLAIN`](/basics/sql#query-plans): a `RemoteTake` node in the plan
 means the deferral happened; its absence means the wide column was read
 eagerly, even for a query shaped exactly like one that does qualify
-elsewhere. Join on a narrow, selective key and project the wide columns
-only in the final select list, rather than alongside the join condition:
+elsewhere. `RemoteTake` by itself isn't proof either way -- it's the
+general operator that fetches columns for selected rows from remote
+storage, and shows up in an ordinary, join-free query just as it does
+here (see the [recorded vector-search plan](/basics/sql#5-data-retrieval)).
+What confirms the rewrite specifically is where the join sits relative to
+that node: the join operating on a narrowed schema with a `RemoteTake`
+positioned after it, rather than the wide column already present in the
+scan that feeds the join. Join on a narrow, selective key and project the
+wide columns only in the final select list, rather than alongside the
+join condition:
 
 <CodeGroup>
 ```sql SQL icon="database"
@@ -106,7 +114,9 @@ JOIN frames AS f ON f.frame_id = s.frame_id
 already kept. `frames` is wide -- a BlobV2 `image` and a vector
 `embedding` alongside its key. Neither a passing query nor an `EXPLAIN`
 that omits `RemoteTake` tells you how much I/O a plan did or did not
-save on its own -- read the plan's own row and byte counts for that.
+save on its own -- use [`EXPLAIN ANALYZE`](/sql/dql/explain) for the
+plan's actual row and byte counts, since plain `EXPLAIN` shows the
+planned shape without executing the query.
 
 ## What to read next {#next}
 

@@ -21,8 +21,28 @@ named in the query itself.
 Every provider takes a `storage_prefix` and `storage_provider`, plus
 provider-specific credential options. Credential options take a
 [Secret](/management/secret) reference, never a value directly -- either a
-bare name (resolved in the caller's own database and namespace) or a
+bare name (resolved in the caller's own database, root namespace) or a
 `SecretReference` qualified with a database and namespace path:
+
+<CodeGroup>
+```sql SQL icon="database"
+CREATE STORAGE INTEGRATION hub
+    STORAGE_PROVIDER = 'HUGGINGFACE'
+    STORAGE_PREFIX = 'hf://datasets/owner/private/data/'
+    HUGGINGFACE_TOKEN_SECRET = bootstrap.credentials.hf_token
+
+DESCRIBE STORAGE INTEGRATION hub
+
+SHOW STORAGE INTEGRATIONS
+
+DROP STORAGE INTEGRATION hub
+```
+</CodeGroup>
+
+{/*
+Draft for the storage-integration SDK release (#4618, #4775). Keep this
+section unpublished until create_storage_integration and its siblings ship
+in a release; they are not in v0.41.0.
 
 <CodeGroup>
 ```python Python icon="python"
@@ -41,20 +61,8 @@ info = db.describe_storage_integration("hub")
 names = list(db.list_storage_integrations())
 db.drop_storage_integration("hub")
 ```
-
-```sql SQL icon="database"
-CREATE STORAGE INTEGRATION hub
-    STORAGE_PROVIDER = 'HUGGINGFACE'
-    STORAGE_PREFIX = 'hf://datasets/owner/private/data/'
-    HUGGINGFACE_TOKEN_SECRET = bootstrap.credentials.hf_token
-
-DESCRIBE STORAGE INTEGRATION hub
-
-SHOW STORAGE INTEGRATIONS
-
-DROP STORAGE INTEGRATION hub
-```
 </CodeGroup>
+*/}
 
 See [Storage Integration](/sql/ddl/storage-integration) for every
 provider's exact options, S3's two credential modes, and the full output

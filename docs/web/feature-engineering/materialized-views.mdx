@@ -20,9 +20,9 @@ In SQL this is [`CREATE MATERIALIZED VIEW`](/sql/ddl/materialized-view#create).
 ## Create a view {#create}
 
 A materialized view is defined by a SQL query, so it is created with one.
-From Python, run the statement with
-[`execute_query`](/basics/sql#sql-from-python); the SQL is the same either
-way:
+From Python, run the statement on an [Enterprise connection](/basics/catalog#enterprise)
+with [`execute_query`](/basics/sql#sql-from-python); the SQL is the same
+either way:
 
 <CodeGroup>
 ```python Python icon="python"
@@ -31,7 +31,7 @@ db.execute_query("""
     SELECT frame_id, video_id, ts, caption
     FROM frames
     WHERE selected = true
-""")
+""").read_all()
 view = db.open_materialized_view("frames_captioned")
 ```
 
@@ -43,11 +43,17 @@ WHERE selected = true
 ```
 </CodeGroup>
 
+`execute_query` returns once the result stream is readable, not once the
+statement has finished, so `.read_all()` waits out the full creation before
+the next line opens it.
+
 The query defines the view: here, the `frames` table's `frame_id`,
 `video_id`, `ts` and `caption` columns, filtered to the frames selected for
-captioning. Any `SELECT` the SQL dialect supports works, including joins and
-[Functions](#functions) in the select list -- there is no separate,
-more limited form for defining one.
+captioning. There is no separate, more limited form for defining one --
+joins and [Functions](#functions) in the select list work the same way any
+other `SELECT` does, within the query shapes your deployment's LanceDB
+Enterprise version and configuration accept; see the
+[SQL reference](/sql/ddl/materialized-view#create).
 
 Creating the view computes its rows, so it is ready to read immediately.
 [`db.open_materialized_view`](/management/materialized-view#manage) gets a
@@ -75,7 +81,7 @@ db.execute_query("""
     SELECT frame_id, jpeg, caption(jpeg) AS caption
     FROM frames
     WHERE selected = true
-""")
+""").read_all()
 ```
 
 ```sql SQL icon="database"
@@ -103,7 +109,7 @@ db.execute_query("""
     JOIN frames f ON v.id = f.video_id
     WHERE f.selected = true
     WITH (auto_refresh_enabled = false, auto_refresh_interval_seconds = 5)
-""")
+""").read_all()
 ```
 
 ```sql SQL icon="database"
@@ -136,7 +142,7 @@ db.execute_query("""
     FROM frames
     WHERE selected = true
     WITH (auto_refresh_enabled = true, auto_refresh_interval_seconds = 300)
-""")
+""").read_all()
 ```
 
 ```sql SQL icon="database"

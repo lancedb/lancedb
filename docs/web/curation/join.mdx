@@ -110,9 +110,19 @@ A join does not enforce one-to-one matching.
 
 A [Function](/curation/create-function) can read columns from either side
 of a join, the same as any other expression -- it runs once the join has
-matched rows, not before:
+matched rows, not before. Register `caption_quality` first:
 
 <CodeGroup>
+```python Python icon="python"
+from lancedb import udf
+
+@udf
+def caption_quality(caption: str) -> float:
+    ...  # score the caption, e.g. with a lightweight heuristic or model
+
+db.create_function_async(caption_quality).wait()
+```
+
 ```sql SQL icon="database"
 SELECT d.row_id, l.label, caption_quality(d.caption) AS quality
 FROM curation_documents AS d

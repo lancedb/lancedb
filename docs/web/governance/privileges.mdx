@@ -63,6 +63,7 @@ has not been created yet.
 
 <CodeGroup>
 ```sql SQL icon="database"
+GRANT OPERATE, USAGE ON SYSTEM TO ROLE ops
 GRANT USAGE, CREATE SCHEMA ON DATABASE analytics TO ROLE readers
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE events TO ROLE etl
 GRANT SELECT ON VIEW dashboard TO ROLE analysts
@@ -82,7 +83,7 @@ granting one does not reach the non-materialized `VIEW` beside it.
 
 | Target in the statement | Privileges it accepts |
 | --- | --- |
-| `SYSTEM` | `OPERATE`, `CREATE DATABASE`, `USAGE` |
+| `SYSTEM` | `OPERATE`, `CREATE DATABASE`, `USAGE` -- no `OWNERSHIP`; the system itself has no owner |
 | `DATABASE` | `OWNERSHIP`, `USAGE`, `CREATE SCHEMA` (or `CREATE NAMESPACE`) |
 | `SCHEMA` / `NAMESPACE` | `OWNERSHIP`, `USAGE`, `CREATE NAMESPACE`, `CREATE TABLE`, `CREATE MATERIALIZED VIEW`, `CREATE VIEW`, `CREATE SECRET`, `CREATE STORAGE INTEGRATION`, `CREATE FUNCTION` |
 | `TABLE`, `MATERIALIZED VIEW` | `OWNERSHIP`, `SELECT`, `INSERT`, `UPDATE`, `DELETE` |

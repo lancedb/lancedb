@@ -61,6 +61,46 @@ schema = pa.schema([
 frames = db.create_table("frames", schema=schema)
 frames.set_unenforced_primary_key("frame_id")
 ```
+
+```typescript TypeScript icon="square-js"
+import * as arrow from "apache-arrow";
+
+const dim = 768;
+const schema = new arrow.Schema([
+  new arrow.Field("frame_id", new arrow.Int64(), false),
+  new arrow.Field("video_id", new arrow.Utf8(), false),
+  new arrow.Field(
+    "embedding",
+    new arrow.FixedSizeList(dim, new arrow.Field("item", new arrow.Float32(), true)),
+    true,
+  ),
+  new arrow.Field("caption", new arrow.Utf8(), true),
+]);
+
+const frames = await db.createEmptyTable("frames", schema);
+await frames.setUnenforcedPrimaryKey("frame_id");
+```
+
+```rust
+use std::sync::Arc;
+
+use arrow_schema::{DataType, Field, Schema};
+
+let dim = 768;
+let schema = Arc::new(Schema::new(vec![
+    Field::new("frame_id", DataType::Int64, false),
+    Field::new("video_id", DataType::Utf8, false),
+    Field::new(
+        "embedding",
+        DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), dim),
+        true,
+    ),
+    Field::new("caption", DataType::Utf8, true),
+]));
+
+let frames = db.create_empty_table("frames", schema).execute().await?;
+frames.set_unenforced_primary_key(["frame_id"]).await?;
+```
 </CodeGroup>
 
 Or in SQL:
@@ -91,6 +131,16 @@ frames.wait_for_index(["embedding_idx", "caption_idx", "frame_id_idx"], timeout=
 <CodeGroup>
 ```python Python icon="python"
 frames.enable_rte(RTEWriteSpec.unsharded())
+```
+
+```typescript TypeScript icon="square-js"
+await frames.enableRTE({ specType: "unsharded" });
+```
+
+```rust
+use lancedb::table::RTEWriteSpec;
+
+frames.enable_rte(RTEWriteSpec::unsharded()).await?;
 ```
 </CodeGroup>
 

@@ -36,14 +36,36 @@ rows = tbl.take_row_ids([1001, 1002, 1005]).to_arrow()
 # By offset -- the full range is always [0, len(tbl))
 rows = tbl.take_offsets([0, 1, 2]).to_arrow()
 ```
+
+```typescript TypeScript icon="square-js"
+// By row ID -- from a previous search or scan that selected "_rowid"
+const rowsById = await tbl.takeRowIds([1001n, 1002n, 1005n]).toArray();
+
+// By offset -- the full range is always [0, tbl.countRows())
+const rowsByOffset = await tbl.takeOffsets([0, 1, 2]).toArray();
+```
+
+```rust
+use lancedb::query::ExecutableQuery;
+
+// By row ID -- from a previous search or scan that selected "_rowid"
+let rows_by_id = tbl.take_row_ids(vec![1001, 1002, 1005]).execute().await?;
+
+// By offset -- the full range is always [0, tbl.count_rows().await?)
+let rows_by_offset = tbl.take_offsets(vec![0, 1, 2]).execute().await?;
+```
 </CodeGroup>
 
 Both methods return a query builder; call `.to_arrow()`, `.to_list()` or
-similar to execute it. Repeated IDs or offsets produce repeated rows, so
-`take_offsets` also supports sampling with replacement. Neither method
-guarantees result order matches the order of the input list; pass
+similar to execute it. Repeated *offsets* produce repeated rows, so
+`take_offsets` also supports sampling with replacement -- `take_row_ids`
+does not: a row ID repeated in the input list still returns that row only
+once, since the lookup is a set membership test. Neither method guarantees
+result order matches the order of the input list; for `take_row_ids`, pass
 `with_row_id=True` to add `_rowid` to the output and align the results
-yourself if you need to.
+yourself if you need to. A `take_offsets` result aligns by `_rowoffset`
+instead, which the query already tracks internally to restore repeated rows
+in the first place.
 
 Offsets are mostly useful for sampling: the valid range is always
 `[0, len(table))`, so you can draw a random sample of offsets without

@@ -34,7 +34,7 @@ db.execute_query("""
     SELECT frame_id, video_id, ts, caption
     FROM frames
     WHERE selected = true
-""")
+""").read_all()
 view = db.open_materialized_view("frames_captioned")
 ```
 

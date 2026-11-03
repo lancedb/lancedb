@@ -73,12 +73,13 @@ same [Arrow Flight SQL](https://arrow.apache.org/docs/format/FlightSql.html)
 endpoint, returning results as Arrow record batches:
 
 1. **`db.execute_query()`** on the Python SDK's Enterprise connection, shown
-   below. This is LanceDB's native SQL execution method, and we recommend it
+   below, or **`Connection::execute_query_async()`** on the Rust SDK's. These
+   are LanceDB's native SQL execution methods, and we recommend them
    for the best performance -- see [Adaptive query execution](#adaptive).
-2. **An Arrow Flight SQL client.** Use this from TypeScript and other
-   languages, whose LanceDB SDKs do not expose a SQL execution method, or from
-   any tool with its own Flight SQL integration. A LanceDB-specific SDK is not
-   required to submit SQL.
+2. **An Arrow Flight SQL client.** Use this from TypeScript, whose LanceDB SDK
+   does not expose a SQL execution method, or from any tool with its own
+   Flight SQL integration. A LanceDB-specific SDK is not required to submit
+   SQL.
 3. **The [LanceDB CLI](/tools/cli).** Open an interactive SQL shell, or run a
    statement or file, directly from the command line with no code at all.
 

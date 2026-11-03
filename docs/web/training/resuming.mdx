@@ -18,6 +18,7 @@ terminology from [Distributed Training](/training/distributed-training#paralleli
 <CodeGroup>
 ```py Python icon=Python
 import torch
+from lancedb.streaming import StreamingDataset
 
 checkpoint = torch.load("checkpoint_100.pt")
 model.load_state_dict(checkpoint["model"])
@@ -32,6 +33,10 @@ dataset = StreamingDataset(
     world_size=world_size,  # may differ from the run that saved the checkpoint
 )
 dataset.load_state_dict(dataset_state)
+
+# The combined batch size across every rank, the same value used when the
+# checkpoint was saved; each rank's DataLoader gets its world_size share of it.
+global_batch_size = 48
 dataloader = torch.utils.data.DataLoader(
     dataset,
     batch_size=global_batch_size // world_size,

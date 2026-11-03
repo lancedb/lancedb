@@ -36,6 +36,26 @@ Give either an IAM role to assume, or a static access key pair -- mixing
 the two, or supplying only one half of the key pair, is refused.
 
 <CodeGroup>
+```sql SQL icon="database"
+CREATE STORAGE INTEGRATION raw
+    STORAGE_PROVIDER = 'S3'
+    STORAGE_PREFIX = 's3://customer-data/raw/'
+    STORAGE_AWS_ROLE_ARN = 'arn:aws:iam::123456789012:role/lancedb-access'
+
+CREATE STORAGE INTEGRATION raw
+    STORAGE_PROVIDER = 'S3'
+    STORAGE_PREFIX = 's3://customer-data/raw/'
+    STORAGE_AWS_ACCESS_KEY_ID_SECRET = aws_key_id
+    STORAGE_AWS_SECRET_ACCESS_KEY_SECRET = aws_key_secret
+```
+</CodeGroup>
+
+{/*
+Draft for the storage-integration SDK release (#4618). Keep this section
+unpublished until create_storage_integration ships in a release; it is not
+in v0.41.0.
+
+<CodeGroup>
 ```python Python icon="python"
 db.create_storage_integration(
     "raw", "s3://customer-data/raw/",
@@ -51,21 +71,36 @@ db.create_storage_integration(
 )
 ```
 
-```sql SQL icon="database"
-CREATE STORAGE INTEGRATION raw
-    STORAGE_PROVIDER = 'S3'
-    STORAGE_PREFIX = 's3://customer-data/raw/'
-    STORAGE_AWS_ROLE_ARN = 'arn:aws:iam::123456789012:role/lancedb-access'
+```rust
+use lancedb::storage_integration::CreateStorageIntegrationRequest;
 
-CREATE STORAGE INTEGRATION raw
-    STORAGE_PROVIDER = 'S3'
-    STORAGE_PREFIX = 's3://customer-data/raw/'
-    STORAGE_AWS_ACCESS_KEY_ID_SECRET = aws_key_id
-    STORAGE_AWS_SECRET_ACCESS_KEY_SECRET = aws_key_secret
+let info = db.create_storage_integration(
+    "raw",
+    CreateStorageIntegrationRequest::s3(
+        "s3://customer-data/raw/",
+        "arn:aws:iam::123456789012:role/lancedb-access",
+    ),
+    &[],
+).await?;
+```
+</CodeGroup>
+*/}
+
+### Google Cloud Storage {#gcp}
+
+<CodeGroup>
+```sql SQL icon="database"
+CREATE STORAGE INTEGRATION gcs
+    STORAGE_PROVIDER = 'GCP'
+    STORAGE_PREFIX = 'gs://customer-data/raw/'
+    GCP_CREDENTIALS_JSON_SECRET = gcp_service_account
 ```
 </CodeGroup>
 
-### Google Cloud Storage {#gcp}
+{/*
+Draft for the storage-integration SDK release (#4618). Keep this section
+unpublished until create_storage_integration ships in a release; it is not
+in v0.41.0.
 
 <CodeGroup>
 ```python Python icon="python"
@@ -75,19 +110,30 @@ db.create_storage_integration(
     gcp_credentials_json_secret="gcp_service_account",
 )
 ```
-
-```sql SQL icon="database"
-CREATE STORAGE INTEGRATION gcs
-    STORAGE_PROVIDER = 'GCP'
-    STORAGE_PREFIX = 'gs://customer-data/raw/'
-    GCP_CREDENTIALS_JSON_SECRET = gcp_service_account
-```
 </CodeGroup>
+*/}
 
 The Secret holds the full service-account JSON key. GCP has no
 role-based alternative.
 
 ### Azure Blob Storage {#azure}
+
+<CodeGroup>
+```sql SQL icon="database"
+CREATE STORAGE INTEGRATION blobs
+    STORAGE_PROVIDER = 'AZURE'
+    STORAGE_PREFIX = 'az://customer-data/raw/'
+    STORAGE_AZURE_STORAGE_ACCOUNT = 'customeraccount'
+    STORAGE_AZURE_TENANT_ID_SECRET = azure_tenant
+    STORAGE_AZURE_CLIENT_ID_SECRET = azure_client
+    STORAGE_AZURE_CLIENT_SECRET_SECRET = azure_credential
+```
+</CodeGroup>
+
+{/*
+Draft for the storage-integration SDK release (#4618). Keep this section
+unpublished until create_storage_integration ships in a release; it is not
+in v0.41.0.
 
 <CodeGroup>
 ```python Python icon="python"
@@ -100,22 +146,27 @@ db.create_storage_integration(
     azure_client_secret_secret="azure_credential",
 )
 ```
-
-```sql SQL icon="database"
-CREATE STORAGE INTEGRATION blobs
-    STORAGE_PROVIDER = 'AZURE'
-    STORAGE_PREFIX = 'az://customer-data/raw/'
-    STORAGE_AZURE_STORAGE_ACCOUNT = 'customeraccount'
-    STORAGE_AZURE_TENANT_ID_SECRET = azure_tenant
-    STORAGE_AZURE_CLIENT_ID_SECRET = azure_client
-    STORAGE_AZURE_CLIENT_SECRET_SECRET = azure_credential
-```
 </CodeGroup>
+*/}
 
 All four options are required together; there is no role-based
 alternative for Azure.
 
 ### HuggingFace {#huggingface}
+
+<CodeGroup>
+```sql SQL icon="database"
+CREATE STORAGE INTEGRATION hub
+    STORAGE_PROVIDER = 'HUGGINGFACE'
+    STORAGE_PREFIX = 'hf://datasets/owner/private/data/'
+    HUGGINGFACE_TOKEN_SECRET = hf_token
+```
+</CodeGroup>
+
+{/*
+Draft for the storage-integration SDK release (#4618, #4775). Keep this
+section unpublished until create_storage_integration ships in a release;
+it is not in v0.41.0.
 
 <CodeGroup>
 ```python Python icon="python"
@@ -125,14 +176,8 @@ db.create_storage_integration(
     huggingface_token_secret="hf_token",
 )
 ```
-
-```sql SQL icon="database"
-CREATE STORAGE INTEGRATION hub
-    STORAGE_PROVIDER = 'HUGGINGFACE'
-    STORAGE_PREFIX = 'hf://datasets/owner/private/data/'
-    HUGGINGFACE_TOKEN_SECRET = hf_token
-```
 </CodeGroup>
+*/}
 
 Omit the token to read the prefix anonymously, at HuggingFace's default
 rate limits -- the only provider with no credential at all as a valid

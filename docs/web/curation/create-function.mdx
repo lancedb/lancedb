@@ -226,7 +226,9 @@ from lancedb.functions import udf
 def extract_frame(video: BlobReader, ts: float) -> bytes:
     ...  # decode the frame at ts, encode as JPEG, return its bytes
 
-version = db.create_function_async(extract_frame).wait(timeout=timedelta(minutes=15))
+extract_frame_version = db.create_function_async(extract_frame).wait(
+    timeout=timedelta(minutes=15)
+)
 ```
 </CodeGroup>
 
@@ -281,17 +283,25 @@ node first.
 
 ### Persist it as a column, or a materialized view {#persist}
 
-Apply the same chained expression with `add_columns` to persist it as an
-ordinary table column:
+Apply the same registered version with `add_columns` to persist its output as
+an ordinary table column, on a table that already has both of its inputs --
+here, a single-clip table with its own `video` and `ts`, rather than the two
+tables the join above reads from:
 
 <CodeGroup>
 ```python Python icon="python"
-table.add_columns({"jpeg": extract_frame(video=col("video"), ts=col("ts"))})
-result = table.refresh_column_async("jpeg").wait(timeout=timedelta(minutes=15))
+clips = db.create_table("clips", schema=pa.schema([
+    pa.field("frame_id", pa.int64(), nullable=False),
+    lancedb.blob("video", nullable=False),
+    pa.field("ts", pa.float64(), nullable=False),
+]))
+
+clips.add_columns({"jpeg": extract_frame_version(video=col("video"), ts=col("ts"))})
+result = clips.refresh_column_async("jpeg").wait(timeout=timedelta(minutes=15))
 assert result.rows_failed == 0
 
-hits = table.search().select(["frame_id", "jpeg"]).with_row_id(True).to_arrow()
-values = table.fetch_blobs("jpeg", hits).to_pylist()
+hits = clips.search().select(["frame_id", "jpeg"]).with_row_id(True).to_arrow()
+values = clips.fetch_blobs("jpeg", hits).to_pylist()
 ```
 </CodeGroup>
 

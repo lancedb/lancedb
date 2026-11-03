@@ -32,6 +32,29 @@ apart; deduplication only needs a distance threshold within one:
 table.create_index("embedding", config=IvfFlat(num_partitions=5, distance_type="l2"))
 table.wait_for_index(["embedding_idx"])
 ```
+
+```typescript TypeScript icon="square-js"
+await table.createIndex("embedding", {
+  config: lancedb.Index.ivfFlat({ numPartitions: 5, distanceType: "l2" }),
+});
+await table.waitForIndex(["embedding_idx"], 300);
+```
+
+```rust
+use std::time::Duration;
+
+use lancedb::index::vector::{DistanceType, IvfFlatIndexBuilder};
+use lancedb::index::Index;
+
+table
+    .create_index(
+        &["embedding"],
+        Index::IvfFlat(IvfFlatIndexBuilder::default().num_partitions(5).distance_type(DistanceType::L2)),
+    )
+    .execute()
+    .await?;
+table.wait_for_index(&["embedding_idx"], Duration::from_secs(300)).await?;
+```
 </CodeGroup>
 
 `ivf_partition` reads an existing index's trained centroids; it does not

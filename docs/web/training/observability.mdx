@@ -22,6 +22,8 @@ shuffling could help.
 ```py Python icon=Python
 import threading, time
 
+from lancedb.streaming import StreamingDataset
+
 ds = StreamingDataset(table, shuffle_seed=42)
 
 def log_pipeline_health():

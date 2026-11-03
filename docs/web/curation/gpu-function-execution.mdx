@@ -41,22 +41,25 @@ as a matching node has room. A job stuck waiting indefinitely usually means
 the class's node pool needs more capacity, not that anything is
 misconfigured.
 
+{/*
+Draft for the list_gpu_classes release. Keep this section unpublished
+until that API ships -- v0.41.0 (the latest release) does not have it,
+and there is no SQL equivalent; discovery is a REST call
+(`GET /v1/gpu/classes`), not a SQL statement.
+
 ## Inspecting GPU classes {#inspecting}
 
 <CodeGroup>
 ```python Python icon="python"
 for gpu in db.list_gpu_classes():
-    print(gpu.name, gpu.gpu_model, gpu.gpu_memory, gpu.max_gpu_count_per_worker)
-```
-
-```sql SQL icon="database"
-SHOW GPU CLASSES
+    print(gpu.name, gpu.gpu_model, gpu.gpu_memory_bytes, gpu.max_gpu_count_per_worker)
 ```
 </CodeGroup>
 
-Both return the same operator-configured classes: name, resource name,
-GPU model and memory, and the largest per-worker GPU count the class
-permits. Listing requires the System Usage privilege.
+Returns the operator-configured classes: name, resource name, GPU model
+and memory, and the largest per-worker GPU count the class permits.
+Listing requires the System Usage privilege.
+*/}
 
 ## What to read next {#next}
 

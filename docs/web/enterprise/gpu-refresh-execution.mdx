@@ -36,6 +36,12 @@ resource-consumption-based sizing applies here too: a refresh's GPU
 utilization is measured and fed back into sizing the *next* part the same
 way CPU and memory are.
 
+A single refresh can also override the Function's registered placement for
+that run -- see
+[Configure workers and resources](/feature-engineering/refresh-column#resources)
+for the `gpu_class`/`gpu_count` options on `refresh_column_async` and the
+equivalent SQL `WITH (...)` clause.
+
 ## What to read next {#next}
 
 <CardGroup cols={2}>
@@ -44,5 +50,8 @@ way CPU and memory are.
   </Card>
   <Card title="Adaptive Execution" icon="gauge-high" href="/enterprise/adaptive-execution">
     How a refresh's resource class, part size and worker count adjust themselves.
+  </Card>
+  <Card title="Configure workers and resources" icon="sliders" href="/feature-engineering/refresh-column#resources">
+    Override GPU class and count for one refresh call.
   </Card>
 </CardGroup>

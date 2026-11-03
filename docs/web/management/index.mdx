@@ -84,9 +84,9 @@ enables them; the SDK methods send the view's SQL query to the deployment. See
 | | Python | TypeScript | SQL |
 | --- | --- | --- | --- |
 | create | `create_function`, `create_function_async` | -- | `CREATE FUNCTION` |
-| get | `get_function` | -- | -- |
+| get | `get_function` | -- | `DESCRIBE FUNCTION` |
 | list | `list_functions` | -- | `SHOW FUNCTIONS` |
-| drop | `drop_function` | -- | -- |
+| drop | `drop_function` | -- | `DROP FUNCTION` |
 
 <Badge color="red">Enterprise</Badge> A function runs on the server, and only on
 a deployment that enables functions, so there is no local form. The TypeScript

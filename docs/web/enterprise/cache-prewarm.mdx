@@ -9,10 +9,14 @@ availability:
   enterprise: available
 ---
 
-LanceDB Embedded has no [data page cache](/enterprise/data-page-cache) or
-[tiered index cache](/enterprise/tiered-index-cache) of its own -- a plan
-executor's caches are part of Enterprise's distributed serving layer, so
-there is nothing to prewarm on Embedded. On Enterprise, a cache fills lazily
+This page is about the distributed [data page cache](/enterprise/data-page-cache)
+and [tiered index cache](/enterprise/tiered-index-cache) a plan executor
+keeps as part of Enterprise's serving layer -- LanceDB Embedded has
+neither, so there is nothing for `startup_prewarm_idx` below to warm on
+Embedded. Embedded does have its own, separate `prewarm_index()` on a
+table, an idempotent hint that loads a built index into memory ahead of a
+query; it has no equivalent for raw column data, where only Enterprise
+supports prewarming. On Enterprise, a plan executor's cache fills lazily
 on first read by default; prewarming loads it ahead of that first request
 instead.
 

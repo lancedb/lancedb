@@ -18,6 +18,7 @@ import {
     PyFunctionRefresh as FunctionRefresh,
     PyFunctionInspect as FunctionInspect,
     PyFunctionClassDefine as FunctionClassDefine,
+    PyFunctionClassRegister as FunctionClassRegister,
     PyFunctionClassApply as FunctionClassApply,
 } from '/snippets/function.mdx';
 import { PyConnectEnterprisePlaceholders as FunctionConnect } from '/snippets/connection.mdx';
@@ -125,6 +126,20 @@ for version in db.list_functions():
 
 version = db.get_function("double", version="1")
 ```
+
+```rust
+use futures::TryStreamExt;
+
+# async fn list_and_get(connection: &lancedb::Connection) -> Result<(), Box<dyn std::error::Error>> {
+let mut versions = connection.list_functions(&[], Default::default());
+while let Some(version) = versions.try_next().await? {
+    println!("{} {} {}", version.name(), version.version(), version.created_at_millis());
+}
+
+let version = connection.get_function("double", "1", &[]).await?;
+# Ok(())
+# }
+```
 </CodeGroup>
 
 <CodeGroup>
@@ -179,10 +194,13 @@ binding, with aliases from `rename(columns=...)`.
 ### Bind more than one input, or fill more than one column {#multi}
 
 Parameters bind by name, so a function that takes several arguments binds
-several columns in one call:
+several columns in one call. `ratio` divides two existing columns, so give
+the table a second one first:
 
 <CodeGroup>
 ```python Python icon="python"
+table.add_columns({"count": "value + 1"})
+
 @udf
 def ratio(numerator: float, denominator: float) -> float:
     return numerator / denominator
@@ -202,6 +220,7 @@ mapping, so both columns come from one atomic binding:
 import pyarrow as pa
 
 @udf(
+    input_schema=pa.schema([pa.field("value", pa.float64(), nullable=False)]),
     output_schema=pa.schema([
         pa.field("half", pa.float64(), nullable=False),
         pa.field("double", pa.float64(), nullable=False),
@@ -217,6 +236,12 @@ application = version(value=col("value")).rename(
 table.add_columns(application)
 ```
 </CodeGroup>
+
+<Note>
+`input_schema` and `output_schema` must be given together on v0.41.0. A
+version after it accepts either alone, inferring the other from the
+annotations.
+</Note>
 
 A single refresh fills `value_half` and `value_double` together: there is no
 state where one is filled and the other is still empty.
@@ -262,6 +287,12 @@ worker needs them installed, and declare them in `pip`.
 State belongs to one instance. An instance reuses it across every batch it
 serves, but instances do not share it, so each one holds its own copy of the
 model. Plan memory, or a GPU, for one copy per instance.
+
+Register it the same way as a plain function:
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionClassRegister}
+</CodeBlock>
 
 The annotated parameters of `__init__` are the function's initialization
 fields. Their values come from each binding rather than from the function, so
@@ -413,6 +444,23 @@ Each module in `code` is captured and shipped the same way the function
 itself is: as source, snapshotted at registration.
 
 ## Drop it {#drop}
+
+<CodeGroup>
+```python Python icon="python"
+db.drop_function("double", version="1")
+```
+
+```rust
+# async fn drop_it(connection: &lancedb::Connection) -> Result<(), Box<dyn std::error::Error>> {
+let dropped = connection.drop_function("double", "1", &[]).await?;
+# Ok(())
+# }
+```
+
+```sql SQL icon="database"
+DROP FUNCTION double WITH (version = '1')
+```
+</CodeGroup>
 
 `db.drop_function(name, version=...)` removes only that published revision from
 lookup and listing, preserving other revisions and their grants. It returns

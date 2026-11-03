@@ -52,6 +52,7 @@ For example, to switch between $8$ and $6$ GPUs, use a common multiple such as $
 <CodeGroup>
 ```py Python icon=Python
 import torch.distributed as dist
+from lancedb.streaming import StreamingDataset
 
 dist.init_process_group("nccl")
 rank = dist.get_rank()

@@ -19,6 +19,10 @@ durable, append-only event -- started, then completed -- in a log scoped
 to the data file that part belongs to. A worker failure or restart does
 not require redoing the refresh from scratch: the next attempt reads that
 log, finds which parts already completed, and only works on what's left.
+Retrying is at-least-once at the part level, not exactly-once: a part
+that started but never recorded completion is redone in full on the next
+attempt, so a Function with external side effects (a remote API call, for
+example) can have those side effects repeated for that part's rows.
 
 ```mermaid
 flowchart LR
@@ -59,12 +63,15 @@ claimed. This means:
 
 - **No separate allocation round trip.** The ID range arrives for free
   inside a write the part was already going to make durably.
-- **Retries can't leak or collide.** If the same part-started event is
-  written again -- the ordinary shape of a retry -- it gets back the
-  *same* range it was already assigned, not a new one. A part that never
-  finishes never orphans a dangling block of blob IDs nobody will use,
-  and two attempts of the same part can never be handed overlapping
-  ranges.
+- **A retried part can't collide with itself or with other parts.** If
+  the same part-started event is written again -- the ordinary shape of a
+  retry -- it gets back the *same* range it was already assigned, not a
+  new one, so two attempts of the same part never hold overlapping
+  ranges; a different part's range is always disjoint from it, since
+  allocation only ever extends past the highest range any earlier part
+  has claimed. This keeps a *retried* part's range from being wasted --
+  it is not a claim that a part abandoned outright, with no further
+  retry ever recorded, gets its range reclaimed for reuse.
 
 ## What to read next {#next}
 

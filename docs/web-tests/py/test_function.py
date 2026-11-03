@@ -42,8 +42,8 @@ def double(value: float) -> float:
 
 # --8<-- [end:function_define]
 
-# The definition the walkthrough registers. The Enterprise test registers a copy
-# of it under a name that only its run uses.
+# The definitions the walkthrough registers. The Enterprise test registers a
+# copy of each under a name that only its run uses.
 WALKTHROUGH_DOUBLE = double
 
 
@@ -68,6 +68,8 @@ class embed:
 
 
 # --8<-- [end:function_class_define]
+
+WALKTHROUGH_EMBED = embed
 
 
 # A Function version as the service returns it after registration: the SDK's
@@ -241,6 +243,9 @@ def test_function_enterprise(monkeypatch):
     run = uuid.uuid4().hex[:12]
     table_name = f"function_demo_{run}"
     double = udf(name=f"double_{run}")(WALKTHROUGH_DOUBLE.__wrapped__)
+    embed = udf(name=f"embed_{run}", pip=["sentence-transformers"])(
+        WALKTHROUGH_EMBED.__wrapped__
+    )
     create_table = db.create_table
 
     def create_run_table(name, *args, **kwargs):
@@ -251,6 +256,7 @@ def test_function_enterprise(monkeypatch):
 
     table = None
     version = None
+    embedder = None
     try:
         # --8<-- [start:function_create_table]
         import pyarrow as pa
@@ -294,11 +300,18 @@ def test_function_enterprise(monkeypatch):
             (2.0, 4.0),
             (3.0, 6.0),
         ]
+
+        # --8<-- [start:function_class_register]
+        embedder = db.create_function_async(embed).wait()
+        # --8<-- [end:function_class_register]
+        assert embedder.name == f"embed_{run}"
     finally:
         if table is not None:
             db.drop_table(table_name)
         if version is not None:
             db.drop_function(version.name, version=version.version)
+        if embedder is not None:
+            db.drop_function(embedder.name, version=embedder.version)
 
 
 class ReachedConnection(Exception):
