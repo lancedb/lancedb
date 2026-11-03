@@ -27,8 +27,11 @@ from lance_namespace import (
 from .remote import ClientConfig
 from .types import BaseTokenizerType
 
+__version__: str
 _experimental_functions_enabled: bool
 
+def _doc_url(campaign: str) -> str: ...
+def _append_doc_url(message: str, campaign: str) -> str: ...
 def _parse_field_path(path: str) -> List[str]: ...
 
 IvfHnswPq: type[HnswPq] = HnswPq

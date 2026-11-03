@@ -16,6 +16,7 @@ use tokio::task::{AbortHandle, JoinHandle};
 use uuid::Uuid;
 
 use crate::database::JobDescription;
+use crate::docs::DocLink;
 use crate::error::{Error, JobFailure, Result};
 
 /// Observer called with each description fetched by a job's existing wait
@@ -54,7 +55,7 @@ impl JobEventsRequest {
 
 fn job_detail_not_supported<T>(what: &str) -> Result<T> {
     Err(Error::NotSupported {
-        message: format!("{what} is only available for server-side jobs"),
+        message: DocLink::Jobs.append_to(format!("{what} is only available for server-side jobs")),
     })
 }
 
