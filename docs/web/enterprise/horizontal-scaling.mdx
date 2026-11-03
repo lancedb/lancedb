@@ -25,6 +25,45 @@ the table's RF. Reassigning a table's groups or RF is an operator action
 (through the admin API, not SQL); [contact support](https://www.lancedb.com/contact)
 to change a table's placement.
 
+Replica groups are numbered subsets of the fleet, not per-table resources --
+different tables can share a group, use entirely different groups, or
+overlap partially, and each picks its own RF independently within every
+group it uses:
+
+```mermaid
+flowchart TB
+    subgraph G0["Replica group 0"]
+        direction LR
+        G0A["Plan executor"]
+        G0B["Plan executor"]
+    end
+
+    subgraph G1["Replica group 1"]
+        direction LR
+        G1A["Plan executor"]
+    end
+
+    subgraph G2["Replica group 2"]
+        direction LR
+        G2A["Plan executor"]
+        G2B["Plan executor"]
+        G2C["Plan executor"]
+    end
+
+    TA["Table A<br/>groups 0, 1 · RF 2 in group 0, RF 1 in group 1"] -.-> G0
+    TA -.-> G1
+    TB["Table B<br/>group 2 only · RF 3"] -.-> G2
+```
+
+Table A is assigned to groups 0 and 1, at RF 2 and RF 1 respectively --
+three plan executors total hold a copy of Table A. Table B never touches
+groups 0 or 1 at all; it is assigned only to group 2, at RF 3. Group 2's
+plan executors serve no part of Table A, and group 0's plan executors
+serve no part of Table B. Raising Table B's RF to 3 did not add a single
+plan executor to Table A's serving path, and vice versa -- each table's
+placement decision only changes which plan executors hold *that* table's
+data.
+
 ## Why this scales serving {#why}
 
 More replicas of a hot table's data, across more plan executors, means
