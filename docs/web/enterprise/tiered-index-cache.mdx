@@ -42,8 +42,8 @@ untouched.
 
 ## Index cache interfaces {#interfaces}
 
-- [Cache Prewarm](/enterprise/cache-prewarm) for the
-  `prewarm_index_cache` and `startup_prewarm_idx` jobs that warm this cache.
+- [Cache Prewarm](/enterprise/cache-prewarm) for how `startup_prewarm_idx`
+  warms this cache ahead of the first request.
 - [Data Page Cache](/enterprise/data-page-cache) for the related cache
   that holds raw table data pages instead of deserialized index structures.
 - [Vector indexes](/indexing/vector-index), [full-text indexes](/indexing/fts-index),

@@ -3,7 +3,7 @@ title: "Cache Prewarm"
 sidebarTitle: "Cache Prewarm"
 description: "Populate the data page cache or tiered index cache ahead of a request, instead of filling it lazily on first read."
 icon: "fire"
-keywords: ["prewarm", "cache", "page cache", "index cache", "startup", "admin api"]
+keywords: ["prewarm", "cache", "page cache", "index cache", "startup"]
 availability:
   embedded: unavailable
   enterprise: available
@@ -14,7 +14,7 @@ LanceDB Embedded has no [data page cache](/enterprise/data-page-cache) or
 executor's caches are part of Enterprise's distributed serving layer, so
 there is nothing to prewarm on Embedded. On Enterprise, a cache fills lazily
 on first read by default; prewarming loads it ahead of that first request
-instead, through two different paths depending on when it runs.
+instead.
 
 ## At plan executor startup {#startup}
 
@@ -41,36 +41,14 @@ happens next:
 | `mark_ready_cold` (default) | The executor becomes query-ready anyway, just without a warm cache. |
 | `stay_not_ready` | Combined with blocking query readiness, the executor never becomes ready -- a failed prewarm keeps it out of the fleet rather than serving cold. |
 
-## On demand, through the admin API {#on-demand}
-
-`prewarm_page_cache` and `prewarm_index_cache` are not scheduled by the
-deployment on their own -- an operator submits them explicitly, scoped to
-specific columns or index names, through the CLI's `admin cache` command
-(backed by the same admin API a dashboard could call). The index-cache path
-has two forms:
-
-- **Plan executor, durable job:** `--index <name>` submits a real background
-  job and returns a job ID you can poll or wait on (`--wait`,
-  `--wait-timeout-seconds`), the same pattern as any other job in
-  [`SHOW JOBS`](/sql/ddl/job#show).
-- **Query node, synchronous:** `--query-node --column <name>` runs the
-  prewarm directly against query nodes and returns success or failure per
-  node immediately, with no job to poll. This path takes a column selector
-  only, not an index name.
-
-`--strict` (plan executor path only) fails the prewarm outright if cache
-pressure would prevent the warmed entries from staying fully resident,
-rather than silently accepting a prewarm that cache eviction immediately
-undoes.
-
 ## What to read next {#next}
 
 <CardGroup cols={2}>
   <Card title="Data Page Cache" icon="database" href="/enterprise/data-page-cache">
-    The raw-data-page cache `prewarm_page_cache` and `startup_prewarm_idx` warm.
+    The raw-data-page cache startup prewarm fills.
   </Card>
   <Card title="Tiered Index Cache" icon="layer-group" href="/enterprise/tiered-index-cache">
-    The deserialized-index cache `prewarm_index_cache` and `startup_prewarm_idx` warm.
+    The deserialized-index cache startup prewarm fills.
   </Card>
   <Card title="Architecture" icon="diagram-project" href="/index#architecture">
     Where plan executors and query nodes sit in the serving fleet.

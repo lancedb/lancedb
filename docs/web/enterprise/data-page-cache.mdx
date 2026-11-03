@@ -33,8 +33,8 @@ that budget lowers the other's.
 
 ## Cache interfaces {#interfaces}
 
-- [Cache Prewarm](/enterprise/cache-prewarm) for the
-  `prewarm_page_cache` and `startup_prewarm_idx` jobs that warm this cache.
+- [Cache Prewarm](/enterprise/cache-prewarm) for how `startup_prewarm_idx`
+  warms this cache ahead of the first request.
 - [Tiered Index Cache](/enterprise/tiered-index-cache) for the related
   cache that holds deserialized index structures instead of raw data pages.
 - [Query plans](/basics/sql#query-plans) for inspecting what a query actually read.
