@@ -230,6 +230,13 @@ class AsyncJob(Generic[T]):
         Returns the endpoint's typed result, or ``None`` for a unit-result
         job.
 
+        ``progress=True`` renders a progress bar, ``progress=callable``
+        receives each structured snapshot, and a tqdm-like object is updated in
+        place. Observations use the backend's existing wait poller and never
+        start a second job. The bar advances by remaining rows when available,
+        because completed computation can include repeated work after a plan
+        change. ``False`` preserves the original wait behavior.
+
         Raises `JobFailedError` if the operation failed, `JobCancelledError`
         if it was cancelled, and `TimeoutError` if `timeout` elapses first.
         Transient connection and read errors are retried with capped exponential
