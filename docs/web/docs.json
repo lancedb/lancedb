@@ -72,6 +72,10 @@
       "destination": "/search/full-text-search"
     },
     {
+      "source": "/enterprise/benchmarks",
+      "destination": "/enterprise/expected-performance"
+    },
+    {
       "source": "/search/optimize-queries",
       "destination": "/basics/sql#query-plans"
     },
@@ -356,7 +360,7 @@
               "enterprise/distributed-search",
               "enterprise/data-page-cache",
               "enterprise/tiered-index-cache",
-              "enterprise/benchmarks"
+              "enterprise/expected-performance"
             ]
           },
           {
