@@ -372,6 +372,8 @@
             "pages": [
               "curation/index",
               "curation/create-function",
+              "curation/gpu-function-execution",
+              "curation/sunk-integration",
               "curation/vend-secret",
               "curation/inspect-datasets",
               "curation/chunking",
