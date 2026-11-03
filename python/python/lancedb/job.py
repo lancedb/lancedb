@@ -1,37 +1,78 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-"""Handles to operations a server may run asynchronously."""
+"""Handles to asynchronous registry jobs, SQL queries, and local operations."""
 
 import asyncio
+import json
 from datetime import timedelta
-from typing import Any, Generic, Optional, TypeVar, cast
+from typing import Any, Callable, Generic, Optional, TypeVar, cast
+
+import pyarrow as pa
 
 from lancedb.background_loop import LOOP
 
 from . import _lancedb
-from .functions import FunctionVersion
+from ._lancedb import JobDescription, JobFailureInfo, JobInfo
+from .remote.errors import HttpError, RetryError
 
 T = TypeVar("T")
+
+__all__ = [
+    "AsyncJob",
+    "Job",
+    "JobDescription",
+    "JobFailureInfo",
+    "JobInfo",
+]
+
+
+def _timeout_message(
+    job_id: Optional[str], timeout: timedelta, job_type: Optional[str]
+) -> str:
+    seconds = f"{timeout.total_seconds():g}"
+    unit = "second" if seconds == "1" else "seconds"
+    if job_id is None:
+        return (
+            f"operation still running after {seconds} {unit}; "
+            "it continues on the server"
+        )
+    if job_type == "query":
+        return (
+            f"query {job_id!r} still running after {seconds} {unit}; "
+            "it continues on the server; keep this handle to continue waiting"
+        )
+    return (
+        f"job {job_id!r} still running after {seconds} {unit}; "
+        "it continues on the server; "
+        f"reattach with db.open_job({job_id!r}).wait()"
+    )
 
 
 class AsyncJob(Generic[T]):
     """A handle to an operation that may still be running.
 
-    The operation may already be complete when the handle is created.
+    The operation may already be complete when the handle is created. ``T``
+    is the endpoint's terminal result type; unit-result jobs resolve to
+    ``None``.
     """
 
-    def __init__(self, inner: Optional[Any]):
+    def __init__(
+        self,
+        inner: Optional[Any],
+        result_decoder: Optional[Callable[[Any], T]] = None,
+    ):
         self._inner = inner
+        self._result_decoder = result_decoder
 
     @property
     def id(self) -> Optional[str]:
-        """Identifies the operation on the server that is running it.
+        """The operation's opaque ID, interpreted according to :attr:`job_type`.
 
-        Returned for correlating with server logs or the jobs API. Operations
-        that run in this process have no server id and return `None`. The value
-        is opaque: parsing it or storing it to resume the job later is not
-        supported.
+        Registry jobs expose a registry job ID; SQL-backed jobs expose a
+        connection-scoped query ID as a string. Local operations return ``None``.
+        Query IDs cannot be used with registry job APIs or to resume after a
+        client restart.
         """
         return self._inner.id if self._inner is not None else None
 
@@ -50,17 +91,76 @@ class AsyncJob(Generic[T]):
     async def wait(self, timeout: Optional[timedelta] = None) -> T:
         """Wait until the operation reaches a terminal state.
 
+        Returns the endpoint's typed result, or ``None`` for a unit-result
+        job.
+
         Raises `JobFailedError` if the operation failed, `JobCancelledError`
         if it was cancelled, and `TimeoutError` if `timeout` elapses first.
+        Transient connection and read errors are retried with capped exponential
+        backoff within the same timeout (indefinitely when no timeout is given).
+        If the timeout expires while disconnected, raises `ConnectionError`
+        instead, with the job ID and instructions to resume waiting. The job
+        may still be running; timing out does not cancel it.
+
+        The timeout error identifies the job and explains that it continues on
+        the server. Registry jobs include the ``db.open_job(id).wait()``
+        reattach call; SQL query handles must be kept because their IDs cannot
+        be reopened through the registry jobs API.
         """
         if self._inner is None:
             return cast(T, None)
-        if timeout is None:
-            return cast(T, await self._inner.wait())
-        return cast(
-            T,
-            await asyncio.wait_for(self._inner.wait(), timeout.total_seconds()),
-        )
+        last_error = None
+
+        async def wait_with_retries():
+            nonlocal last_error
+            delay = 0.25
+            while True:
+                try:
+                    if last_error is not None:
+                        # Confirm recovery before restarting the backend poller,
+                        # so a later timeout isn't blamed on an earlier outage.
+                        await self._inner.status()
+                        last_error = None
+                        delay = 0.25
+                    return await self._inner.wait()
+                except (HttpError, RetryError) as error:
+                    cause = error.__cause__ if isinstance(error, RetryError) else error
+                    if not isinstance(cause, HttpError) or not cause.is_transport_error:
+                        raise
+                    last_error = error
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 30.0)
+
+        try:
+            if timeout is None:
+                result = await wait_with_retries()
+            else:
+                result = await asyncio.wait_for(
+                    wait_with_retries(), timeout.total_seconds()
+                )
+        except asyncio.TimeoutError as error:
+            if last_error is None:
+                if timeout is None:
+                    raise
+                raise TimeoutError(
+                    _timeout_message(self.id, timeout, self.job_type)
+                ) from error
+            identity = f"job {self.id!r}" if self.id is not None else "the operation"
+            if self.id is not None and self.job_type != "query":
+                reconnect = (
+                    f"Use db.open_job({self.id!r}) to reconnect, then call wait() "
+                    "on the returned job."
+                )
+            else:
+                reconnect = "Call wait() on this job handle to reconnect."
+            raise ConnectionError(
+                f"Lost connection while waiting and the timeout expired; "
+                f"{identity} may still be running. "
+                f"{reconnect}"
+            ) from last_error
+        if self._result_decoder is not None:
+            return self._result_decoder(result)
+        return cast(T, result)
 
     async def cancel(self):
         """Request cancellation. Cancelling a finished operation is a no-op."""
@@ -68,9 +168,156 @@ class AsyncJob(Generic[T]):
             return
         await self._inner.cancel()
 
+    async def refresh(self) -> None:
+        """Ask the backend for this job's current state, and for a server-side
+        job its full record, then cache it for the properties below.
+
+        Registry details are `None` until this runs, because submitting an
+        operation does not fetch its full registry record. Query-backed jobs
+        expose only lifecycle state through this method. For registry jobs,
+        `status` fetches the whole record too; `wait` records only the terminal
+        state it establishes.
+        """
+        if self._inner is None:
+            return
+        await self._inner.refresh()
+
+    @property
+    def state(self) -> Optional[str]:
+        """The last observed lifecycle state, without contacting the backend.
+
+        `None` until the handle has talked to it. See :meth:`AsyncJob.refresh`.
+        """
+        if self._inner is None:
+            return "finished"
+        return self._inner._state
+
+    @property
+    def job_type(self) -> Optional[str]:
+        """The job's kind of work, without contacting the backend.
+
+        SQL-backed handles report ``"query"`` immediately. Registry handles
+        report the server's job type after :meth:`refresh` or :meth:`status`.
+        In-process handles return ``None``.
+        """
+        return self._inner.job_type if self._inner is not None else None
+
+    @property
+    def creation_ms(self) -> Optional[int]:
+        """When the job was created, in milliseconds since the epoch."""
+        return self._field("creation_ms")
+
+    @property
+    def spec(self) -> Optional[Any]:
+        """The job-type-specific specification it was submitted with."""
+        return self._field("spec")
+
+    @property
+    def result(self) -> Optional[Any]:
+        """The job-type-specific terminal result, as reported data rather than
+        the typed model :meth:`AsyncJob.wait` returns.
+
+        `None` until the job succeeds, so a job that never terminates reports
+        its progress through :meth:`AsyncJob.events` instead.
+        """
+        return self._field("result")
+
+    @property
+    def failure(self) -> Optional[JobFailureInfo]:
+        """Why the job failed, when it failed and the server reports a reason."""
+        return self._field("failure")
+
+    @property
+    def _spec_json(self) -> Optional[str]:
+        return self._field("_spec_json")
+
+    @property
+    def _result_json(self) -> Optional[str]:
+        return self._field("_result_json")
+
+    def _field(self, name: str) -> Optional[Any]:
+        description = self._inner._description if self._inner is not None else None
+        return getattr(description, name) if description is not None else None
+
+    async def events(
+        self,
+        *,
+        limit: Optional[int] = None,
+        filter: Optional[str] = None,
+    ) -> "pa.Table":
+        """This job's recorded lifecycle events.
+
+        Where the properties above report a terminal result only once the job
+        reaches one, events are written as the job runs and outlive the workers
+        that produced them. A distributed job records a `claim`/`claim_complete`
+        pair per unit of work, each carrying `rows_processed`, so a job that
+        never finishes still accounts for what it did.
+
+        Parameters
+        ----------
+        limit: int, optional
+            Maximum event rows to return. The server caps results at 1000 by
+            default and 10,000 at most, and truncates without saying so, so
+            pass this for a job that emits an event per fragment.
+        filter: str, optional
+            SQL-like expression over the `state`, `updated_by`, `emitted_from`,
+            `emitted_by`, and `claim_entity` columns, such as
+            ``state = 'claim_complete'``.
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "job event history is only available for server-side jobs"
+            )
+        return await self._inner.events(limit=limit, filter=filter)
+
+    def __repr__(self) -> str:
+        return _job_repr("AsyncJob", self)
+
+
+_REPR_INDENT = " " * 4
+
+
+def _repr_payload(value: Any) -> str:
+    """Render a job payload as indented JSON, aligned under its field."""
+    try:
+        rendered = json.dumps(value, indent=4)
+    except TypeError:
+        return repr(value)
+    return rendered.replace("\n", "\n" + _REPR_INDENT)
+
+
+def _job_repr(kind: str, job: Any) -> str:
+    """Render every field the handle currently knows, omitting the rest.
+
+    One field per line, with the JSON payloads indented, because a refresh
+    job's spec and result are the point of printing it.
+    """
+    state = job.state
+    if state is None:
+        # Nothing has been fetched yet, so there is nothing to lay out.
+        known = f"id={job.id!r}, " if job.id is not None else ""
+        return f"{kind}({known}not refreshed)"
+
+    fields = []
+    if job.id is not None:
+        fields.append(f"id={job.id!r}")
+    fields.append(f"state={state!r}")
+    for name in ("job_type", "creation_ms"):
+        value = getattr(job, name)
+        if value is not None:
+            fields.append(f"{name}={value!r}")
+    for name in ("spec", "result"):
+        value = getattr(job, name)
+        if value is not None:
+            fields.append(f"{name}={_repr_payload(value)}")
+    if job.failure is not None:
+        fields.append(f"failure={job.failure!r}")
+    body = "".join(f"\n{_REPR_INDENT}{field}," for field in fields)
+    return f"{kind}({body}\n)"
+
 
 class Job(Generic[T]):
-    """Synchronous counterpart of `AsyncJob`."""
+    """Synchronous counterpart of `AsyncJob` with the same result type."""
 
     def __init__(self, inner: Optional[AsyncJob[T]]):
         self._inner = inner
@@ -96,8 +343,21 @@ class Job(Generic[T]):
     def wait(self, timeout: Optional[timedelta] = None) -> T:
         """Block until the operation reaches a terminal state.
 
+        Returns the endpoint's typed result, or ``None`` for a unit-result
+        job.
+
         Raises `JobFailedError` if the operation failed, `JobCancelledError`
         if it was cancelled, and `TimeoutError` if `timeout` elapses first.
+        Transient connection and read errors are retried within that timeout;
+        if it expires while disconnected, raises `ConnectionError` with
+        instructions to reconnect. Timing out does not cancel the job.
+
+        The timeout error identifies the job and explains that it continues on
+        the server. Registry jobs include the ``db.open_job(id).wait()``
+        reattach call; SQL query handles must be kept because their IDs cannot
+        be reopened through the registry jobs API.
+
+        See :meth:`AsyncJob.wait`.
         """
         if self._inner is None:
             return cast(T, None)
@@ -109,24 +369,78 @@ class Job(Generic[T]):
             return
         LOOP.run(self._inner.cancel())
 
+    def refresh(self) -> None:
+        """Ask the backend for this job's current state and record.
 
-class _FunctionJobAdapter:
-    def __init__(self, inner: "_lancedb.FunctionJob"):
-        self._inner = inner
+        See :meth:`AsyncJob.refresh`.
+        """
+        if self._inner is None:
+            return
+        LOOP.run(self._inner.refresh())
 
     @property
-    def id(self) -> Optional[str]:
-        return self._inner.id
+    def state(self) -> Optional[str]:
+        """The last observed lifecycle state. See :attr:`AsyncJob.state`."""
+        return self._inner.state if self._inner is not None else "finished"
 
-    async def status(self) -> str:
-        return await self._inner.status()
+    @property
+    def job_type(self) -> Optional[str]:
+        """The job's type. See :attr:`AsyncJob.job_type`."""
+        return self._inner.job_type if self._inner is not None else None
 
-    async def wait(self) -> FunctionVersion:
-        return FunctionVersion.from_json(await self._inner.wait())
+    @property
+    def creation_ms(self) -> Optional[int]:
+        """When the job was created. See :attr:`AsyncJob.creation_ms`."""
+        return self._field("creation_ms")
 
-    async def cancel(self):
-        await self._inner.cancel()
+    @property
+    def spec(self) -> Optional[Any]:
+        """The job's specification. See :attr:`AsyncJob.spec`."""
+        return self._field("spec")
+
+    @property
+    def result(self) -> Optional[Any]:
+        """The job's terminal result. See :attr:`AsyncJob.result`."""
+        return self._field("result")
+
+    @property
+    def failure(self) -> Optional[JobFailureInfo]:
+        """Why the job failed. See :attr:`AsyncJob.failure`."""
+        return self._field("failure")
+
+    @property
+    def _spec_json(self) -> Optional[str]:
+        return self._field("_spec_json")
+
+    @property
+    def _result_json(self) -> Optional[str]:
+        return self._field("_result_json")
+
+    def _field(self, name: str) -> Optional[Any]:
+        return getattr(self._inner, name) if self._inner is not None else None
+
+    def events(
+        self,
+        *,
+        limit: Optional[int] = None,
+        filter: Optional[str] = None,
+    ) -> "pa.Table":
+        """This job's recorded lifecycle events.
+
+        See :meth:`AsyncJob.events`.
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "job event history is only available for server-side jobs"
+            )
+        return LOOP.run(self._inner.events(limit=limit, filter=filter))
+
+    def __repr__(self) -> str:
+        return _job_repr("Job", self)
 
 
-def _function_job(inner: "_lancedb.FunctionJob") -> AsyncJob[FunctionVersion]:
-    return AsyncJob(_FunctionJobAdapter(inner))
+def _typed_job(
+    inner: "_lancedb.Job", result_decoder: Callable[[str], T]
+) -> AsyncJob[T]:
+    """Bind an internal JSON-producing job to its public result model."""
+    return AsyncJob(inner, result_decoder)

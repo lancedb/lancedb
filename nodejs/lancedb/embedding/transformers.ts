@@ -3,7 +3,7 @@
 
 import { Float, Float32 } from "../arrow";
 import { EmbeddingFunction } from "./embedding_function";
-import { register } from "./registry";
+import { registerBuiltIn } from "./registry";
 
 export type XenovaTransformerOptions = {
   /** The wasm compatible model to use */
@@ -31,7 +31,6 @@ export type XenovaTransformerOptions = {
   };
 };
 
-@register("huggingface")
 export class TransformersEmbeddingFunction extends EmbeddingFunction<
   string,
   Partial<XenovaTransformerOptions>
@@ -39,6 +38,7 @@ export class TransformersEmbeddingFunction extends EmbeddingFunction<
   #model?: import("@huggingface/transformers").PreTrainedModel;
   #tokenizer?: import("@huggingface/transformers").PreTrainedTokenizer;
   #modelName: XenovaTransformerOptions["model"];
+  #tokenizerName: string;
   #initialized = false;
   #tokenizerOptions: XenovaTransformerOptions["tokenizerOptions"];
   #ndims?: number;
@@ -59,6 +59,7 @@ export class TransformersEmbeddingFunction extends EmbeddingFunction<
 
     this.#ndims = options.ndims;
     this.#modelName = modelName;
+    this.#tokenizerName = options.tokenizer ?? modelName;
   }
 
   async init() {
@@ -87,11 +88,11 @@ export class TransformersEmbeddingFunction extends EmbeddingFunction<
     }
     try {
       this.#tokenizer = await transformers.AutoTokenizer.from_pretrained(
-        this.#modelName,
+        this.#tokenizerName,
       );
     } catch (e) {
       throw new Error(
-        `error loading tokenizer for ${this.#modelName}. Make sure you are using a wasm compatible model:\nReason: ${e}`,
+        `error loading tokenizer ${this.#tokenizerName}. Make sure you are using a wasm compatible model:\nReason: ${e}`,
       );
     }
     this.#initialized = true;
@@ -157,6 +158,8 @@ export class TransformersEmbeddingFunction extends EmbeddingFunction<
     return (await this.computeSourceEmbeddings([data]))[0];
   }
 }
+
+registerBuiltIn("huggingface", TransformersEmbeddingFunction);
 
 const tensorDiv = (
   src: import("@huggingface/transformers").Tensor,

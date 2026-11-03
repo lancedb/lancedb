@@ -36,7 +36,7 @@ Estimated in-memory size.
 generation: number;
 ```
 
-The generation this memtable will become once sealed.
+The generation this memtable will become once frozen.
 
 ***
 

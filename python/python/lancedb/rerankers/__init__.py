@@ -11,6 +11,7 @@ from .jinaai import JinaReranker
 from .rrf import RRFReranker
 from .mrr import MRRReranker
 from .answerdotai import AnswerdotaiRerankers
+from .typesafe import TypeSafeReranker
 from .voyageai import VoyageAIReranker
 from .watsonx import WatsonxReranker
 
@@ -27,6 +28,7 @@ __all__ = [
     "JinaReranker",
     "RRFReranker",
     "AnswerdotaiRerankers",
+    "TypeSafeReranker",
     "VoyageAIReranker",
     "MRRReranker",
     "WatsonxReranker",

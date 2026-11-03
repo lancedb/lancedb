@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! A DataFusion projection that rejects vectors containing NaN values.
+//! A DataFusion projection that rejects vectors containing NaN or null elements.
 
 use std::sync::{Arc, LazyLock};
 
@@ -31,10 +31,12 @@ fn is_vector_field(field: &Field) -> bool {
     }
 }
 
-/// Wraps the input plan with a projection that checks vector columns for NaN values.
+/// Wraps the input plan with a projection that checks vector columns for NaN or
+/// null elements.
 ///
 /// Non-vector columns pass through unchanged. Vector columns are wrapped with a
-/// UDF that returns the column as-is if no NaNs are present, or errors otherwise.
+/// UDF that returns the column as-is if no NaN or null elements are present, or
+/// errors otherwise. Whole null vectors pass through unchanged.
 pub fn reject_nan_vectors(input: Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>> {
     let schema = input.schema();
     let config = Arc::new(ConfigOptions::default());
@@ -70,7 +72,7 @@ pub fn reject_nan_vectors(input: Arc<dyn ExecutionPlan>) -> Result<Arc<dyn Execu
 }
 
 /// A scalar UDF that passes through FixedSizeList arrays unchanged, but errors
-/// if any float values in the list are NaN.
+/// if any float values in a valid list are NaN or null.
 #[derive(Debug, Hash, PartialEq, Eq)]
 struct RejectNanUdf {
     signature: Signature,
@@ -122,11 +124,14 @@ fn check_no_nans(array: &dyn Array) -> datafusion_common::Result<()> {
             )
         })?;
 
-    // Only inspect elements that are both in a valid parent row and non-null
-    // themselves. Values backing null parent rows or null child elements may
-    // contain garbage (including NaN) per the Arrow spec.
-    let has_nan = (0..fsl.len()).filter(|i| fsl.is_valid(*i)).any(|i| {
+    // Values backing null parent rows may contain garbage per the Arrow spec.
+    // A null child in a valid row is an invalid vector component, however:
+    // pandas can represent NaN components as Arrow nulls.
+    let has_bad_values = (0..fsl.len()).filter(|i| fsl.is_valid(*i)).any(|i| {
         let row = fsl.value(i);
+        if row.null_count() > 0 {
+            return true;
+        }
         match row.data_type() {
             DataType::Float16 => row
                 .as_any()
@@ -150,10 +155,10 @@ fn check_no_nans(array: &dyn Array) -> datafusion_common::Result<()> {
         }
     });
 
-    if has_nan {
+    if has_bad_values {
         return Err(datafusion_common::DataFusionError::ArrowError(
             Box::new(arrow_schema::ArrowError::ComputeError(
-                "Vector column contains NaN values".to_string(),
+                "Vector column contains NaN or null values".to_string(),
             )),
             None,
         ));
@@ -165,7 +170,7 @@ fn check_no_nans(array: &dyn Array) -> datafusion_common::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow_array::Float32Array;
+    use arrow_array::{Float16Array, Float32Array, Float64Array};
 
     #[test]
     fn test_passes_clean_vectors() {
@@ -209,23 +214,43 @@ mod tests {
     }
 
     #[test]
-    fn test_skips_null_elements_within_valid_row() {
-        // A valid row with null child elements: the underlying buffer may hold
-        // NaN but the null bitmap says they're absent — should not reject.
-        let values = Float32Array::from(vec![
-            Some(1.0),
-            None, // null element — buffer may contain NaN
-            Some(3.0),
-            None, // null element
-        ]);
+    fn test_rejects_null_elements_within_valid_row() {
+        let arrays: Vec<Arc<dyn Array>> = vec![
+            Arc::new(Float16Array::from(vec![Some(half::f16::ONE), None])),
+            Arc::new(Float32Array::from(vec![Some(1.0), None])),
+            Arc::new(Float64Array::from(vec![Some(1.0), None])),
+        ];
+        for values in arrays {
+            let fsl = FixedSizeListArray::try_new(
+                Arc::new(Field::new("item", values.data_type().clone(), true)),
+                2,
+                values,
+                None,
+            )
+            .unwrap();
+            let err = check_no_nans(&fsl).unwrap_err();
+            assert!(err.to_string().contains("null"));
+        }
+    }
+
+    #[test]
+    fn test_skips_null_elements_in_null_rows_and_outside_slice() {
         let fsl = FixedSizeListArray::try_new(
             Arc::new(Field::new("item", DataType::Float32, true)),
             2,
-            Arc::new(values),
-            None, // both rows are valid
+            Arc::new(Float32Array::from(vec![
+                None,
+                Some(1.0),
+                Some(2.0),
+                Some(3.0),
+                None,
+                None,
+            ])),
+            Some(vec![true, true, false].into()),
         )
         .unwrap();
-        assert!(check_no_nans(&fsl).is_ok());
+        assert!(check_no_nans(&fsl.slice(1, 2)).is_ok());
+        assert!(check_no_nans(&fsl.slice(0, 2)).is_err());
     }
 
     #[test]

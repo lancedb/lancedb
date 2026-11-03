@@ -68,27 +68,29 @@ ignore = [
     # https://rustsec.org/advisories/RUSTSEC-2025-0119
     { id = "RUSTSEC-2025-0119", reason = "transitive via hf-hub/indicatif; cosmetic formatting crate" },
 
-    # rustls-webpki 0.101.7 (old major line): name-constraint checks for
-    # URI / wildcard names. Pulled in only via the legacy rustls 0.21 chain
-    # from aws-smithy-http-client. The 0.103 line we actively use is patched.
-    # Clearing the 0.101 copy requires the aws-sdk chain to migrate off
-    # rustls 0.21.
-    # https://rustsec.org/advisories/RUSTSEC-2026-0098
-    # https://rustsec.org/advisories/RUSTSEC-2026-0099
-    { id = "RUSTSEC-2026-0098", reason = "only affects rustls-webpki 0.101 from legacy aws-smithy/rustls 0.21 chain" },
-    { id = "RUSTSEC-2026-0099", reason = "only affects rustls-webpki 0.101 from legacy aws-smithy/rustls 0.21 chain" },
-
-    # rustls-webpki 0.101.7: reachable panic in CRL parsing. Same legacy
-    # rustls 0.21 chain from aws-smithy-http-client as above. The 0.103 line
-    # we actively use is upgraded to 0.103.13 which contains the fix.
-    # https://rustsec.org/advisories/RUSTSEC-2026-0104
-    { id = "RUSTSEC-2026-0104", reason = "only affects rustls-webpki 0.101 from legacy aws-smithy/rustls 0.21 chain" },
+    # unsafe-libyaml: unmaintained. Transitive via lance-tokenizer → lindera
+    # → serde_yaml_ng. No maintained upgrade exists; clearing it requires
+    # lindera to move off serde_yaml_ng.
+    # https://rustsec.org/advisories/RUSTSEC-2024-0449
+    { id = "RUSTSEC-2024-0449", reason = "transitive via lindera (lance-tokenizer); no maintained upgrade available" },
 
     # pyo3 advisories in the Python bindings; tracked pending a patched pyo3 release.
     # https://rustsec.org/advisories/RUSTSEC-2026-0176
     # https://rustsec.org/advisories/RUSTSEC-2026-0177
     { id = "RUSTSEC-2026-0176", reason = "pyo3 in Python bindings; awaiting patched pyo3 release" },
     { id = "RUSTSEC-2026-0177", reason = "pyo3 in Python bindings; awaiting patched pyo3 release" },
+
+    # zip < 9.0.0: SUID/SGID bits, symlink targets and permissions applied through
+    # symlinks during archive extraction. Transitive via candle-core (optional
+    # local-embedding feature); every published candle release pins zip < 9
+    # (0.9.x/0.10.x ^7.2, 0.11.0 ^8.6), so no dependency bump clears it.
+    # LanceDB never extracts archives; the zip crate is only linked.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0367
+    # https://rustsec.org/advisories/RUSTSEC-2026-0368
+    # https://rustsec.org/advisories/RUSTSEC-2026-0369
+    { id = "RUSTSEC-2026-0367", reason = "zip via candle-core; candle pins zip < 9 and lancedb never extracts archives" },
+    { id = "RUSTSEC-2026-0368", reason = "zip via candle-core; candle pins zip < 9 and lancedb never extracts archives" },
+    { id = "RUSTSEC-2026-0369", reason = "zip via candle-core; candle pins zip < 9 and lancedb never extracts archives" },
 
     # quick-xml < 0.41.0: quadratic runtime on duplicate attribute names (DoS).
     # quick-xml < 0.41.0: unbounded namespace-declaration allocation in NsReader (DoS).
@@ -108,13 +110,29 @@ ignore = [
     # compact_str/smol_str, so clearing this requires polars to migrate.
     # https://rustsec.org/advisories/RUSTSEC-2026-0249
     { id = "RUSTSEC-2026-0249", reason = "smartstring unmaintained via polars; no fixed upstream release" },
+    # crypto-bigint < 0.7.6: timing side-channels in constant-time ops,
+    # incl. subtraction, zero counting, division and Montgomery multiplication.
+    # Reached only through aws-sdk-s3 sigv4a -> aws-sigv4 (p256/ecdsa); signed
+    # requests carry the SigV4a credential-derived key. The patched 0.7.6 was
+    # published 2026-10-23, but no published aws-sigv4 release uses it yet
+    # (latest 1.6.3 pins crypto-bigint ^0.5), so clearing requires smithy-rs to
+    # ship an updated aws-sigv4.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0387
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint via aws-sigv4 (sigv4a); no fixed upstream aws-sigv4 release yet" },
 
-    # h2 0.3: empty DATA frames can be queued without limit. The patched
-    # h2 0.4 line is locked to 0.4.16, but no patched 0.3 release exists.
-    # The old copy is pulled in by aws-smithy's legacy hyper 0.14 client.
-    # https://rustsec.org/advisories/RUSTSEC-2026-0258
-    { id = "RUSTSEC-2026-0258", reason = "h2 0.3 via legacy aws-smithy/hyper 0.14; no patched 0.3 release" },
+    # zstd: arrow-ipc 58.x pins zstd ^0.13, while the patches require zstd
+    # >=0.14.3 and zstd-safe >=8.2.0. Arrow 59+ updates the dependency, but it
+    # cannot be used until DataFusion and Lance move to the matching Arrow line.
+    # LanceDB uses zstd::bulk through arrow-ipc and does not use the affected
+    # with_context, seekable, or decompress_stream APIs.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0391
+    # https://rustsec.org/advisories/RUSTSEC-2026-0398
+    # https://rustsec.org/advisories/RUSTSEC-2026-0403
+    { id = "RUSTSEC-2026-0391", reason = "zstd 0.13 via arrow-ipc 58; affected with_context API is unused" },
+    { id = "RUSTSEC-2026-0398", reason = "zstd-safe 7 via arrow-ipc 58; affected seekable API is not enabled" },
+    { id = "RUSTSEC-2026-0403", reason = "zstd-safe 7 via arrow-ipc 58; affected streaming decoder API is unused" },
 ]
+
 
 # ---------------------------------------------------------------------------
 # Licenses: only allow licenses we've reviewed as compatible with Apache-2.0.
@@ -131,18 +149,13 @@ allow = [
     "BSD-3-Clause",
     "ISC",
     "Unicode-3.0",
-    "Unicode-DFS-2016",
     "Zlib",
     "CC0-1.0",
     "MPL-2.0",
     "BSL-1.0",
-    "OpenSSL",
     # 0BSD ("BSD Zero Clause") is effectively public domain — no attribution
     # required. Pulled in by `mock_instant`.
     "0BSD",
-    # bzip2-1.0.6 is the permissive upstream bzip2 license (BSD-like). Pulled
-    # in by `libbz2-rs-sys`, the pure-Rust bzip2 implementation.
-    "bzip2-1.0.6",
     # CDLA-Permissive-2.0 is a permissive data license used by `webpki-roots`
     # for the Mozilla CA root bundle. Data-only, distribution-compatible.
     "CDLA-Permissive-2.0",
@@ -150,12 +163,7 @@ allow = [
 confidence-threshold = 0.8
 # Per-crate license exceptions: allow a license for a specific crate only,
 # rather than globally via the `allow` list above.
-exceptions = [
-    # CDDL-1.0 (copyleft) is pulled in only as a dev/profiling dependency via
-    # `inferno` -> `pprof` -> `lance-testing`; it is a test dependency that we
-    # do not distribute, so scope the allowance to `inferno` alone.
-    { allow = ["CDDL-1.0"], crate = "inferno" },
-]
+exceptions = []
 # Crates whose license cannot be determined from Cargo metadata but whose
 # license we've manually confirmed from upstream. Keep this list minimal.
 [[licenses.clarify]]
@@ -181,7 +189,9 @@ wildcards = "deny"
 # `[workspace.dependencies]` table: any crate used by more than one member must
 # go through `workspace = true`, and entries nothing uses are an error. This
 # keeps versions from drifting between the core crate and the bindings.
-workspace-dependencies = { duplicates = "deny", unused = "deny" }
+# Python bundles a patched path crate while the Rust SDK uses the overridable
+# upstream source. Check shared external declarations, not these path bindings.
+workspace-dependencies = { duplicates = "deny", unused = "deny", include-path-dependencies = false }
 # Internal workspace crates reference each other via `path = "..."`, which
 # cargo-deny sees as a wildcard version. That's fine for private workspace
 # members (not published to crates.io), so allow it specifically for paths.
@@ -207,4 +217,6 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # releases are cut to crates.io. Allow that specific host.
 allow-git = [
     "https://github.com/lance-format/lance",
+    # Pinned by Lance for the multipart write mode API (see [patch.crates-io] in Cargo.toml).
+    "https://github.com/apache/arrow-rs-object-store",
 ]

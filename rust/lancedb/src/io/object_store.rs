@@ -10,13 +10,10 @@ use lance::io::WrappingObjectStore;
 use object_store::{
     CopyOptions, Error, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta,
     ObjectStore, ObjectStoreExt, PutMultipartOptions, PutOptions, PutPayload, PutResult, Result,
-    UploadPart, path::Path,
+    UploadPart, list::PaginatedListStore, path::Path,
 };
 
 use async_trait::async_trait;
-
-#[cfg(test)]
-pub mod io_tracking;
 
 #[derive(Debug)]
 struct MirroringObjectStore {
@@ -186,6 +183,14 @@ impl WrappingObjectStore for MirroringObjectStoreWrapper {
             primary,
             secondary: self.secondary.clone(),
         })
+    }
+
+    fn wrap_paginated(
+        &self,
+        _store_prefix: &str,
+        original: Arc<dyn PaginatedListStore>,
+    ) -> Option<Arc<dyn PaginatedListStore>> {
+        Some(original)
     }
 }
 

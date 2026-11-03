@@ -100,6 +100,8 @@ optional numPartitions: number;
 
 The number of IVF partitions to create.
 
+When set, this takes precedence over `targetPartitionSize`.
+
 For HNSW, we recommend a small number of partitions. Setting this to 1 works
 well for most tables. For very large tables, training just one HNSW graph
 will require too much memory. Each partition becomes its own HNSW graph, so
@@ -118,7 +120,7 @@ Number of sub-vectors of PQ.
 This value controls how much the vector is compressed during the quantization step.
 The more sub vectors there are the less the vector is compressed.  The default is
 the dimension of the vector divided by 16.  If the dimension is not evenly divisible
-by 16 we use the dimension divded by 8.
+by 16 we use the dimension divided by 8.
 
 The above two cases are highly preferred.  Having 8 or 16 values per subvector allows
 us to use efficient SIMD instructions.
@@ -147,3 +149,23 @@ number of vectors used to train the index is `sample_rate * num_partitions`.
 
 Increasing this value might improve the quality of the index but in most cases the
 default should be sufficient.
+
+***
+
+### targetPartitionSize?
+
+```ts
+optional targetPartitionSize: number;
+```
+
+The target number of rows in each IVF partition.
+
+This is an alternative to `numPartitions`. When it is set and
+`numPartitions` is not, the number of partitions is derived by dividing
+the number of rows by this value. When both are set, `numPartitions` is
+used and this value is ignored. When neither is set, the target is
+1,048,576 rows.
+
+Larger partitions mean fewer of them, which makes the first part of the
+search (picking the right partitions) faster and the second part
+(searching within a partition) slower.

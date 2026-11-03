@@ -2,11 +2,42 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import importlib
+import importlib.metadata
 import re
 import sys
 from pathlib import Path
 
 import pytest
+
+
+@pytest.mark.parametrize("distribution", ["lancedb", "lancedb-compat"])
+def test_version_matches_package_metadata(distribution):
+    import lancedb
+
+    try:
+        package_version = importlib.metadata.version(distribution)
+    except importlib.metadata.PackageNotFoundError:
+        pytest.skip(f"{distribution} is not installed")
+
+    assert lancedb.__version__ == package_version
+
+
+@pytest.mark.parametrize("name", ["JobInfo", "JobDescription", "JobFailureInfo"])
+def test_job_metadata_types_have_resolvable_modules(name):
+    """Documentation tools resolve re-exports through each type's module."""
+    public_type = getattr(importlib.import_module("lancedb.job"), name)
+    defining_module = importlib.import_module(public_type.__module__)
+
+    assert getattr(defining_module, public_type.__name__, None) is public_type
+
+
+def test_gpu_class_reexport_has_resolvable_module():
+    import lancedb
+
+    public_type = lancedb.GpuClass
+    defining_module = importlib.import_module(public_type.__module__)
+
+    assert getattr(defining_module, public_type.__name__, None) is public_type
 
 
 def test_pyo3_abi_matches_minimum_supported_python():
@@ -23,8 +54,10 @@ def test_pyo3_abi_matches_minimum_supported_python():
     expected_abi = f"abi3-py{major}{minor}"
     configured_abis = re.findall(r'"(abi3-py\d+)"', cargo_manifest)
 
-    assert configured_abis == [expected_abi, expected_abi], (
-        "the pyo3 runtime and build ABI features must both match requires-python"
+    # PyO3 0.29 configures the ABI through the runtime dependency; its
+    # build-config crate no longer exposes ABI features.
+    assert configured_abis == [expected_abi], (
+        "the pyo3 runtime ABI feature must match requires-python"
     )
 
 
