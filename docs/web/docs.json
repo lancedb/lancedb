@@ -371,11 +371,8 @@
             "group": "Data Curation",
             "pages": [
               "curation/index",
-              "curation/create-function",
-              "curation/gpu-function-execution",
-              "curation/sunk-integration",
-              "curation/vend-secret",
               "curation/inspect-datasets",
+              "curation/create-function",
               "curation/chunking",
               "curation/changes",
               "curation/aggregate",
@@ -384,7 +381,10 @@
               "curation/join",
               "curation/windowing",
               "curation/clustering",
-              "curation/dedupe"
+              "curation/dedupe",
+              "curation/vend-secret",
+              "curation/gpu-function-execution",
+              "curation/sunk-integration"
             ]
           },
           {
