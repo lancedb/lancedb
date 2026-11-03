@@ -108,7 +108,11 @@ export {
 
 export { JobFailureInfo, JobInfo, Session } from "./native.js";
 
-export { Job, JobEventsOptions } from "./job";
+export {
+  Job,
+  JobEventsOptions,
+} from "./job";
+export type { JobProgress, JobProgressCallback } from "./job";
 
 export {
   AutoQuery,

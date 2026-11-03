@@ -6,9 +6,13 @@ use std::sync::Arc;
 use arrow_array::RecordBatch;
 use lancedb::job::JobEventsRequest;
 use napi::bindgen_prelude::Buffer;
+use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
 use crate::error::NapiErrorExt;
+
+type JobProgressFn =
+    ThreadsafeFunction<serde_json::Value, (), serde_json::Value, napi::Status, false>;
 
 /// A handle to an operation that may still be running.
 #[napi]
@@ -47,10 +51,38 @@ impl Job {
         self.inner.status().await.default_error()
     }
 
-    /// Wait until the operation reaches a terminal state.
-    #[napi(catch_unwind)]
-    pub async fn wait(&self) -> napi::Result<()> {
-        self.inner.wait().await.default_error()
+    /// The current structured progress snapshot, or null for an in-process
+    /// operation. Registry snapshots include lifecycle and queue metadata even
+    /// when the job type or server does not report counters.
+    #[napi(
+        catch_unwind,
+        ts_return_type = "Promise<Record<string, unknown> | null>"
+    )]
+    pub async fn progress(&self) -> napi::Result<Option<serde_json::Value>> {
+        self.inner.progress().await.default_error()
+    }
+
+    /// Wait until the operation reaches a terminal state. When a callback is
+    /// supplied, observe the same progress snapshots fetched by the existing
+    /// backend poller without starting another polling loop.
+    #[napi(
+        catch_unwind,
+        ts_args_type = "progressCallback?: (progress: Record<string, unknown>) => void"
+    )]
+    pub async fn wait(&self, progress_callback: Option<JobProgressFn>) -> napi::Result<()> {
+        if let Some(progress_callback) = progress_callback {
+            self.inner
+                .wait_with_progress(move |description| {
+                    progress_callback.call(
+                        description.progress_snapshot(),
+                        ThreadsafeFunctionCallMode::NonBlocking,
+                    );
+                })
+                .await
+                .default_error()
+        } else {
+            self.inner.wait().await.default_error()
+        }
     }
 
     /// Request cancellation. Cancelling a finished operation is a no-op.
@@ -159,16 +191,24 @@ pub struct JobInfo {
     pub state: String,
     /// When the job was created, in milliseconds since the epoch.
     pub created_at_millis: i64,
+    /// Structured lifecycle, queue, pause, and job-type-specific progress.
+    #[napi(ts_type = "Record<string, unknown>")]
+    pub progress: serde_json::Value,
+    /// Whether an operator has parked this job.
+    pub paused: bool,
 }
 
 impl From<lancedb::database::JobInfo> for JobInfo {
     fn from(info: lancedb::database::JobInfo) -> Self {
+        let progress = info.progress_snapshot();
         Self {
             job_id: info.job_id,
             table: info.table,
             job_type: info.job_type,
             state: info.state,
             created_at_millis: info.created_at_millis,
+            progress,
+            paused: info.paused,
         }
     }
 }

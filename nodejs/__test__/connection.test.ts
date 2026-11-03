@@ -211,6 +211,7 @@ describe("given a connection", () => {
     const job = await db.dropTableAsync("async-drop");
     expect(job.id).toBeNull();
     await expect(job.status()).resolves.toBe("finished");
+    await expect(job.progress()).resolves.toBeNull();
     await job.wait();
     await expect(db.tableNames()).resolves.toEqual([]);
   });
