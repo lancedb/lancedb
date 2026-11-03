@@ -34,7 +34,9 @@ default. The name says which algorithm is building, not a separate feature.
 ## Incremental Reindexing {#incremental-reindexing}
 
 In the embedded library, you trigger an incremental indexing operation on
-updated data with the `optimize()` method on a table. A deployment does this
+updated data with the `optimize()` method on a table. For index-only
+maintenance, `optimize_indices()` (Python/Node) folds newly added rows into
+existing indexes without compaction or pruning. A deployment does this
 for you and does not support `optimize()`, as described below.
 
 Table optimization performs three maintenance operations:
