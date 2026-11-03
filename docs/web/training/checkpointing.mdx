@@ -1,0 +1,105 @@
+---
+title: "Checkpointing"
+sidebarTitle: "Checkpointing"
+description: "Save StreamingDataset's read position alongside your model, so a failed run can pick back up."
+icon: floppy-disk
+availability:
+  embedded: available
+  enterprise: available
+---
+
+[`StreamingDataset`](/training/data-loading) provides checkpointing in case your model training fails partway through a run. Use `StreamingDataset.state_dict()` to capture the current number of samples consumed from each split in a Python dictionary, save it alongside your model weights, and `load_state_dict()` to restore the last saved position -- see [Resuming](/training/resuming) for the load side.
+
+This page assumes the `rank`, `world_size`, `num_splits` and `shuffle_seed`
+terminology from [Distributed Training](/training/distributed-training#parallelism-and-elasticity).
+
+A stored `StreamingDataset` state reflects only round-robin cycles that have been completed across all splits; samples completed partway through a cycle at the time of saving can be replayed. To ensure efficient saving, make sure `global_batch_size` is a multiple of `num_splits`, as in the example below.
+
+<CodeGroup>
+```py Python icon=Python
+import torch
+
+global_batch_size = 48  # one sample per split in each global step
+batch_size = global_batch_size // world_size
+
+dataset = StreamingDataset(
+    table,
+    num_splits=48,
+    shuffle_seed=42,
+    epoch=current_epoch,
+    rank=rank,
+    world_size=world_size,
+)
+dataloader = torch.utils.data.DataLoader(
+    dataset,
+    batch_size=batch_size,
+    num_workers=0,
+)
+
+for step, batch in enumerate(dataloader):
+    train_step(batch)
+
+    if (step + 1) % checkpoint_interval == 0:
+        torch.save(
+            {"model": model.state_dict(), "dataset": dataset.state_dict()},
+            f"checkpoint_{step + 1}.pt",
+        )
+```
+</CodeGroup>
+
+## Checkpointing with Multiple DataLoader Workers {#checkpointing-with-multiple-dataloader-workers}
+
+Python's built-in `torch.utils.data.DataLoader` produces a safe checkpoint when `num_workers = 0`. With `num_workers > 0`, calling `state_dict()` often raises `RuntimeError`. In this case, use `StreamingDataLoader` for multi-worker prefetch and exact resumability. It carries a state snapshot
+alongside every internal batch and commits it to the parent `StreamingDataset` only when that batch is returned to the
+trainer. The trainer receives the same collated batch it would receive from a standard `DataLoader`.
+
+<CodeGroup>
+```py Python icon=Python
+from lancedb.streaming import StreamingDataset, StreamingDataLoader
+
+dataset = StreamingDataset(
+    table,
+    num_splits=48,
+    shuffle_seed=42,
+    epoch=current_epoch,
+    rank=rank,
+    world_size=world_size,
+)
+dataloader = StreamingDataLoader(
+    dataset,
+    batch_size=batch_size,
+    num_workers=4,
+)
+
+for step, batch in enumerate(dataloader):
+    train_step(batch)
+
+    if (step + 1) % checkpoint_interval == 0:
+        torch.save(
+            {"model": model.state_dict(), "dataset": dataset.state_dict()},
+            f"checkpoint_{step + 1}.pt",
+        )
+```
+</CodeGroup>
+
+`StreamingDataLoader` accepts the same arguments as `torch.utils.data.DataLoader`, with a few restrictions:
+
+- `dataset` must be a `StreamingDataset` (subclasses that override `__iter__` are not supported).
+- `in_order = True` is required so that consumer-committed checkpoints stay deterministic.
+- `persistent_workers = True` is not supported, because prefetched worker copies cannot be restored from parent-committed state.
+- `drop_last = True` is not supported, because incomplete tails discarded by worker replicas cannot be checkpointed topology-independently.
+
+With more than one worker, call `state_dict()` at a complete logical step boundary where every split assigned to the
+rank has the same consumed-sample count. Calling it mid-step raises `RuntimeError` asking you to consume more batches
+first.
+
+## Next steps {#next}
+
+<CardGroup cols={2}>
+  <Card title="Resuming" icon="rotate-left" href="/training/resuming">
+    Load a saved checkpoint back, on the same or a different topology.
+  </Card>
+  <Card title="Distributed Training" icon="server" href="/training/distributed-training">
+    The rank, world size and split terminology checkpointing builds on.
+  </Card>
+</CardGroup>
