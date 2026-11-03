@@ -22,6 +22,7 @@ impl SqlClient {
         request: FunctionRegistrationRequest,
         namespace: &[String],
     ) -> Result<Job<FunctionVersion>> {
+        request.validate()?;
         validate_function_name(&request.name)?;
         validate_namespace(namespace)?;
         let name = quote_identifier(&request.name);

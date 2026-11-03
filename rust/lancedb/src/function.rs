@@ -663,17 +663,67 @@ pub struct FunctionArtifactRequest {
     pub adapter: PythonAdapterSpec,
 }
 
+fn deserialize_batch_size<'de, D>(deserializer: D) -> std::result::Result<Option<u32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<u32>::deserialize(deserializer)
+        .map_err(|error| de::Error::custom(format!("batch_size: {error}")))?;
+    validate_batch_size_value(value).map_err(de::Error::custom)?;
+    Ok(value)
+}
+
+fn deserialize_row_timeout<'de, D>(deserializer: D) -> std::result::Result<Option<f64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<f64>::deserialize(deserializer)
+        .map_err(|error| de::Error::custom(format!("row_timeout_seconds: {error}")))?;
+    validate_row_timeout_value(value).map_err(de::Error::custom)?;
+    Ok(value)
+}
+
+fn validate_batch_size_value(value: Option<u32>) -> std::result::Result<(), &'static str> {
+    if value == Some(0) {
+        return Err("batch_size must be between 1 and u32::MAX");
+    }
+    Ok(())
+}
+
+fn validate_row_timeout_value(value: Option<f64>) -> std::result::Result<(), &'static str> {
+    if value.is_some_and(|seconds| !seconds.is_finite() || seconds <= 0.0) {
+        return Err("row_timeout_seconds must be positive and finite");
+    }
+    Ok(())
+}
+
 /// Stable request envelope for remote immutable Function registration.
 ///
 /// Credential values deliberately have no field here. The only secret-shaped
 /// thing a client sends is `secret_bindings`: the name of a Secret the
 /// database already holds, which Sophon resolves inside the remote runtime.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FunctionRegistrationRequest {
     pub name: String,
     pub artifact: FunctionArtifactRequest,
     pub signature: FunctionSignature,
     pub runtime: PythonRuntimeSpec,
+    /// Maximum rows in one execution batch; the executor may use fewer.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_batch_size"
+    )]
+    pub batch_size: Option<u32>,
+    /// Deadline for each Python call, in seconds: one row for scalar Functions
+    /// and one batch for vectorized Functions. It does not govern Function
+    /// initialization.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_row_timeout"
+    )]
+    pub row_timeout_seconds: Option<f64>,
     /// Declared environment variable name to the Secret it binds. A binding is
     /// a reference: whether the Secret exists is answered when a column is
     /// declared against this version, not here.
@@ -681,7 +731,28 @@ pub struct FunctionRegistrationRequest {
     pub secret_bindings: Vec<SecretBinding>,
 }
 
-impl_json!(FunctionRegistrationRequest);
+impl FunctionRegistrationRequest {
+    /// Decode a registration request supplied by an SDK language binding.
+    pub fn from_json(json: &str) -> Result<Self> {
+        from_json(json)
+    }
+
+    /// Encode the known client contract with bytewise-sorted JSON keys.
+    pub fn to_canonical_json(&self) -> Result<String> {
+        self.validate()?;
+        canonical_json(self)
+    }
+
+    /// Reject explicit execution controls that cannot be submitted safely.
+    pub fn validate(&self) -> Result<()> {
+        let invalid_input = |message: &'static str| Error::InvalidInput {
+            message: message.to_string(),
+        };
+        validate_batch_size_value(self.batch_size).map_err(invalid_input)?;
+        validate_row_timeout_value(self.row_timeout_seconds).map_err(invalid_input)?;
+        Ok(())
+    }
+}
 
 /// Exact FunctionVersion reference embedded in applications and bindings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
