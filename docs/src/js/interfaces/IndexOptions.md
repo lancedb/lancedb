@@ -77,6 +77,7 @@ optional waitTimeoutSeconds: number;
 
 Timeout in seconds to wait for index creation to complete.
 
-Only applies to remote tables, which build the index in the background.
+Only applies to LanceDB Enterprise tables, which build the index in the
+background.
 If not specified, `createIndex` returns once the build is scheduled.
-Local tables always build the index before `createIndex` returns.
+LanceDB Embedded tables always build the index before `createIndex` returns.
