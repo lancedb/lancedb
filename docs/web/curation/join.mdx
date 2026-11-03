@@ -129,7 +129,7 @@ Check the row count, unmatched keys and duplicate matches before using a
 joined dataset. Select only the columns needed for the next step, especially
 when source records include large media or embedding columns.
 
-Use [Explain a query plan](/search/explain) to see how the query reads and
+Use [Query plans](/basics/sql#query-plans) to see how the query reads and
 combines data. Check the plan to see whether the query uses indexes and how it performs the
 join. An index on a key does not guarantee that the join will use it.
 
@@ -161,7 +161,7 @@ to discard most of them after the join.
 
 This is query planning the optimizer may or may not apply to a given query,
 not a guarantee from writing the join this way. Confirm it per query with
-[`EXPLAIN`](/search/explain): a plan containing `RemoteTake` deferred the
+[`EXPLAIN`](/basics/sql#query-plans): a plan containing `RemoteTake` deferred the
 wide read; a plan without it read the wide columns eagerly, even for a query
 shaped exactly like the one above. See
 [Late materialization for wide columns](/sql/dql/join#late-materialization)

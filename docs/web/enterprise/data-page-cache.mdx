@@ -16,17 +16,10 @@ the pages they serve. A background prewarm job can populate a cache ahead
 of a request that needs it, rather than filling it lazily on first read.
 See [Architecture](/index#architecture).
 
-## Embedded data access {#embedded}
-
-LanceDB Embedded reads table data directly into your application process's
-own memory through the Lance format's standard object-store client. There
-is no separate page cache layer, and no fleet of servers to prewarm one
-across.
-
 ## Cache interfaces {#interfaces}
 
 - [Background jobs](/maintenance/background-jobs#cache) for the
   `prewarm_page_cache` and `startup_prewarm_idx` jobs that warm this cache.
 - [Tiered Index Cache](/enterprise/tiered-index-cache) for the related
   cache that holds deserialized index structures instead of raw data pages.
-- [Query plans](/search/explain) for inspecting what a query actually read.
+- [Query plans](/basics/sql#query-plans) for inspecting what a query actually read.

@@ -116,7 +116,7 @@ from `1` to the maximum number you want per class. A class with fewer records
 cannot supply the full cap.
 
 This selects by score, not at random. For a random subset, use
-[sampling](/curation/sampling) instead of ordering by score or ID.
+[sampling](/curation/statistical-sampling) instead of ordering by score or ID.
 
 ## Training and evaluation splits {#splits}
 
@@ -155,7 +155,7 @@ row 2 follows a score of 0.80 and row 5 follows a score of 0.70.
 
 Window operations can require sorting. Filter out records you do not need
 before ranking, and inspect the
-[query plan](/search/explain) when cost matters.
+[query plan](/basics/sql#query-plans) when cost matters.
 
 For cumulative counts, sums and other running summaries, use an aggregate
 with an explicit window order and frame. The

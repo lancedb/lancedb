@@ -15,13 +15,6 @@ the remote work -- see [Data Page Cache](/enterprise/data-page-cache) and
 [Tiered Index Cache](/enterprise/tiered-index-cache) for how each cache works.
 See [Architecture](/index#architecture).
 
-## Embedded search {#embedded-search}
-
-LanceDB Embedded runs inside your application process. It searches indexes and reads
-table data using that process's resources, including its index cache. Reading a
-table from object storage does not by itself distribute query execution across
-machines.
-
 ## Expected performance {#performance}
 
 These are the out-of-the-box latency and throughput LanceDB Enterprise
@@ -62,4 +55,4 @@ The shared search guides describe the query APIs and index settings:
 - [Vector search](/search/vector-search) and [vector indexes](/indexing/vector-index).
 - [Full-text search](/search/full-text-search) and [FTS indexes](/indexing/fts-index).
 - [Filtering](/search/filtering) and [scalar indexes](/indexing/scalar-index).
-- [Query plans](/search/explain) for inspecting execution and runtime measurements.
+- [Query plans](/basics/sql#query-plans) for inspecting execution and runtime measurements.

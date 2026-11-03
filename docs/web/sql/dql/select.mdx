@@ -68,7 +68,7 @@ await tbl.query().where("identifier > 0 AND identifier < 1000000").toArrow();
 
 The SDK `where` takes the same expression language, so a predicate moves between
 them unchanged. A supported predicate can use a scalar index; confirm the chosen plan with
-[`explain_plan`](/search/explain). See
+[`explain_plan`](/basics/sql#query-plans). See
 [Filtering](/search/filtering) for the operators and their pushdown behaviour.
 
 ## Ordering and limiting {#order-limit}
@@ -148,4 +148,4 @@ EXPLAIN ANALYZE SELECT * FROM documents WHERE identifier < 1000
 ```
 </CodeGroup>
 
-See [Explain](/search/explain) and [Explain Analyze](/search/explain).
+See [Explain](/basics/sql#inspect-a-query-plan) and [Explain Analyze](/basics/sql#analyze-a-query-plan).

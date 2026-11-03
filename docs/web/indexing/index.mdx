@@ -62,7 +62,7 @@ The distance metric is fixed once the index is built. Pick the distance metric b
 
 Scalar indexes can reduce the rows scanned for selective filters and speed up
 `merge_insert` key lookups. Start with columns used frequently in those operations,
-then use [query plans](/search/explain) to check whether the index helps. Choose
+then use [query plans](/basics/sql#query-plans) to check whether the index helps. Choose
 the index type based on the column's values:
 
 | Index | Best for |
