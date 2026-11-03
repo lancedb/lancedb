@@ -100,7 +100,9 @@ a separate `videos` table and captioning it in the same statement:
 <CodeGroup>
 ```python Python icon="python"
 db.execute_query("""
-    CREATE MATERIALIZED VIEW frames_captioned AS
+    CREATE MATERIALIZED VIEW frames_captioned
+    WITH (auto_refresh_enabled = false, auto_refresh_interval_seconds = 5)
+    AS
     SELECT
         f.frame_id,
         extract_frame(v.video, f.ts) AS jpeg,
@@ -108,12 +110,13 @@ db.execute_query("""
     FROM videos v
     JOIN frames f ON v.id = f.video_id
     WHERE f.selected = true
-    WITH (auto_refresh_enabled = false, auto_refresh_interval_seconds = 5)
 """).read_all()
 ```
 
 ```sql SQL icon="database"
-CREATE MATERIALIZED VIEW frames_captioned AS
+CREATE MATERIALIZED VIEW frames_captioned
+WITH (auto_refresh_enabled = false, auto_refresh_interval_seconds = 5)
+AS
 SELECT
     f.frame_id,
     extract_frame(v.video, f.ts) AS jpeg,
@@ -121,7 +124,6 @@ SELECT
 FROM videos v
 JOIN frames f ON v.id = f.video_id
 WHERE f.selected = true
-WITH (auto_refresh_enabled = false, auto_refresh_interval_seconds = 5)
 ```
 </CodeGroup>
 
@@ -137,20 +139,22 @@ clause to schedule refreshes instead of calling
 <CodeGroup>
 ```python Python icon="python"
 db.execute_query("""
-    CREATE MATERIALIZED VIEW frames_captioned AS
+    CREATE MATERIALIZED VIEW frames_captioned
+    WITH (auto_refresh_enabled = true, auto_refresh_interval_seconds = 300)
+    AS
     SELECT frame_id, video_id, ts, caption
     FROM frames
     WHERE selected = true
-    WITH (auto_refresh_enabled = true, auto_refresh_interval_seconds = 300)
 """).read_all()
 ```
 
 ```sql SQL icon="database"
-CREATE MATERIALIZED VIEW frames_captioned AS
+CREATE MATERIALIZED VIEW frames_captioned
+WITH (auto_refresh_enabled = true, auto_refresh_interval_seconds = 300)
+AS
 SELECT frame_id, video_id, ts, caption
 FROM frames
 WHERE selected = true
-WITH (auto_refresh_enabled = true, auto_refresh_interval_seconds = 300)
 ```
 </CodeGroup>
 

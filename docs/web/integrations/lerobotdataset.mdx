@@ -7,8 +7,7 @@ keywords: ["lerobot", "robotics", "droid", "training", "dataloader"]
 
 import {
   PyFrameworksLerobotFilterFrames,
-  PyFrameworksLerobotLancedbImageDataset,
-  PyFrameworksLerobotLancedbVideoDataset,
+  PyFrameworksLerobotLancedbDataset,
   PyFrameworksLerobotOpenLanceTables,
 } from '/snippets/integrations.mdx';
 
@@ -49,7 +48,7 @@ Same model, same loss, 33 minutes sooner, and no 384 GB download first. The diff
 <CodeGroup>
 ```bash Bash icon="terminal"
 pip install "lerobot[lancedb]"   # the reader, inside lerobot itself
-pip install lerobot-lancedb      # the converter
+pip install --extra-index-url https://pypi.fury.io/lancedb/ lerobot-lancedb  # the converter
 ```
 </CodeGroup>
 
@@ -69,20 +68,18 @@ Host the result anywhere: an HF dataset repo (`hf upload`, tag it `v3.0`), an HF
 
 ## Load and train
 
-`lerobot-lancedb` provides a dataset class for image features and one for
-video features, both reading from the Hub or any object store with
-nothing downloaded up front:
+`lerobot-lancedb` provides one map-style dataset class for both image and
+video features, reading from a local path or an `s3://`, `gs://` or `hf://`
+URI with nothing downloaded up front. Pair it with `lance_mp_context()` so
+multi-worker `DataLoader`s share Lance's own multiprocessing context instead
+of the default one:
 
 <CodeBlock filename="Python" language="Python" icon="python">
-  {PyFrameworksLerobotLancedbImageDataset}
+  {PyFrameworksLerobotLancedbDataset}
 </CodeBlock>
 
-<CodeBlock filename="Python" language="Python" icon="python">
-  {PyFrameworksLerobotLancedbVideoDataset}
-</CodeBlock>
-
-`delta_timestamps` configures temporal windows the same way on both
-classes; `DataLoader` and the rest of the training stack work unchanged.
+Items are bit-exact with `LeRobotDataset`, and `delta_timestamps` configures
+temporal windows the same way.
 
 Or from the CLI. Held-out evaluation on a remote dataset needs random access, so it only works on the Lance path:
 

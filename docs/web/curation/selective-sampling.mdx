@@ -63,9 +63,10 @@ does not: a row ID repeated in the input list still returns that row only
 once, since the lookup is a set membership test. Neither method guarantees
 result order matches the order of the input list; for `take_row_ids`, pass
 `with_row_id=True` to add `_rowid` to the output and align the results
-yourself if you need to. A `take_offsets` result aligns by `_rowoffset`
-instead, which the query already tracks internally to restore repeated rows
-in the first place.
+yourself if you need to. `take_offsets` tracks `_rowoffset` internally to
+restore repeated rows, but drops that column from the output again
+afterward unless you explicitly `select` it -- add `_rowoffset` to your
+selection when you need it to align a `take_offsets` result yourself.
 
 Offsets are mostly useful for sampling: the valid range is always
 `[0, len(table))`, so you can draw a random sample of offsets without

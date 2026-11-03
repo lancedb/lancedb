@@ -32,13 +32,16 @@ flowchart LR
 
 Where enabled, the index disk tier and the
 [data page cache](/enterprise/data-page-cache)'s disk tier draw from one
-combined disk allocation per executor, split between them by a configurable
-share -- for example, reserving 25% of a 200 GiB volume for the index disk
-tier leaves the remaining 75% for data pages. An exact byte split overrides
-the percentage split when you need one tier sized precisely rather than
-proportionally. Setting the index disk tier's share to zero disables it
-while leaving the in-memory index cache and the data page cache's disk tier
-untouched.
+combined disk allocation per executor: a configurable percentage of the
+provisioned volume (90% by default, leaving headroom for filesystem
+metadata and kubelet usage), out of which the index disk tier reserves its
+own configurable share of the *full* provisioned volume. On a 200 GiB
+volume, the 90% default leaves 180 GiB combined; reserving 25% of the full
+200 GiB (50 GiB) for the index disk tier leaves the remaining 130 GiB for
+data pages. An exact byte split overrides the percentage split when you
+need one tier sized precisely rather than proportionally. Setting the
+index disk tier's share to zero disables it while leaving the in-memory
+index cache and the data page cache's disk tier untouched.
 
 ## Index cache interfaces {#interfaces}
 

@@ -18,11 +18,12 @@ them into claimable units a fleet of job workers can pick up in parallel
 -- see [Architecture](/index#architecture).
 
 <Note>
-A **materialized view** does not work this way: every refresh rebuilds
-the view completely from its source query, with no incremental step.
-See [Refresh a materialized view](/feature-engineering/refresh-materialized-view)
-for why a saved query, rather than a tracked set of stale rows, doesn't
-have a smaller unit than "the whole view" to recompute.
+A **materialized view** doesn't track stale rows the way a computed
+column does -- there's no smaller unit than the whole view to recompute
+from a saved query. In LanceDB Embedded, every refresh rebuilds the view
+completely with no incremental step; LanceDB Enterprise's server chooses
+the refresh mode instead, unless the caller forces a full rebuild. See
+[Refresh a materialized view](/feature-engineering/refresh-materialized-view).
 </Note>
 
 ## Why this matters {#why}
@@ -30,9 +31,12 @@ have a smaller unit than "the whole view" to recompute.
 Appending rows is cheap: the next refresh only fills what's new, not what
 it already computed. Updating an input row is also cheap in the same
 way -- the derived column keeps its old value until the next refresh
-notices the input changed and recomputes just that row. Nothing is
-recomputed between refreshes, so a derived column can be stale right up
-until you call for one.
+notices the input changed. Staleness is tracked per fragment, not per
+row: the refresh recomputes every row in a fragment where at least one
+input moved, which can re-evaluate rows whose own value didn't actually
+need it, not strictly only the row that changed. Nothing is recomputed
+between refreshes, so a derived column can be stale right up until you
+call for one.
 
 ## What to read next {#next}
 

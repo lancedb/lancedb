@@ -24,11 +24,13 @@ view.refresh()
 ```
 </CodeGroup>
 
-Every refresh rebuilds the view completely from its source query -- there is
-no incremental refresh. Calling it again with no source changes still
-rebuilds and commits a new table version.
+In LanceDB Embedded, every refresh rebuilds the view completely from its
+source query -- there is no incremental refresh there. Calling it again
+with no source changes still rebuilds and commits a new table version. In
+LanceDB Enterprise, the server chooses the refresh mode instead; pass
+`full=True` to force a full rebuild there too.
 
-The result reports what the refresh did:
+In LanceDB Embedded, the result reports what the refresh did:
 
 <CodeGroup>
 ```python Python icon="python"
@@ -39,17 +41,23 @@ result.version  # the view's own new table version
 ```
 </CodeGroup>
 
+LanceDB Enterprise refreshes run through its SQL job adapter, which doesn't
+expose these metrics: `mode`, `rows_written` and `source_version` are all
+`None` on an Enterprise result, even though the refresh itself ran.
+
 Pass `source_version=N` to refresh against a particular source version
-instead of the latest:
+instead of the latest. This is a LanceDB Embedded capability only --
+LanceDB Enterprise's SQL refresh does not support pinning a source version:
 
 <CodeGroup>
 ```python Python icon="python"
-view.refresh(source_version=12)
+view.refresh(source_version=12)  # LanceDB Embedded only
 ```
 </CodeGroup>
 
-Use `view.table.count_rows()` for the view's row count at any time; it
-always matches `rows_written` from the most recent refresh.
+Use `view.table.count_rows()` for the view's row count at any time; on
+LanceDB Embedded it always matches `rows_written` from the most recent
+refresh.
 
 ## Automatic refresh {#auto-refresh}
 

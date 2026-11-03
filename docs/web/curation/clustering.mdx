@@ -43,8 +43,9 @@ await table.waitForIndex(["embedding_idx"], 300);
 ```rust
 use std::time::Duration;
 
-use lancedb::index::vector::{DistanceType, IvfFlatIndexBuilder};
+use lancedb::index::vector::IvfFlatIndexBuilder;
 use lancedb::index::Index;
+use lancedb::DistanceType;
 
 table
     .create_index(

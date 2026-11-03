@@ -177,6 +177,12 @@ AS cast((price * 0.9) as float)
 ```
 </CodeGroup>
 
+SQL's `ADD COLUMN ... AS` always declares the column empty and defers the
+expression to a refresh, the same as `computed` does -- there is no SQL
+form of eager `transforms`. The Python call above is the only way to get
+discounted_price filled immediately; declaring it in SQL fills it only
+once [`REFRESH COLUMN`](/sql/dml/refresh-column) runs.
+
 For feature engineering on large existing tables, group related derived
 features into one `add_columns` call instead of running many separate
 writes: this creates one new table version for the schema change and

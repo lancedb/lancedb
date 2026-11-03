@@ -35,7 +35,9 @@ Set scheduling options at creation, continuing the join and chained
 Functions from [Create a Function](/curation/create-function#chain):
 
 ```sql
-CREATE MATERIALIZED VIEW frames_captioned AS
+CREATE MATERIALIZED VIEW frames_captioned
+WITH (auto_refresh_enabled = false, auto_refresh_interval_seconds = 5)
+AS
 SELECT
     f.frame_id,
     extract_frame(v.video, f.ts) AS jpeg,
@@ -43,7 +45,6 @@ SELECT
 FROM videos v
 JOIN frames f ON v.id = f.video_id
 WHERE f.selected = true
-WITH (auto_refresh_enabled = false, auto_refresh_interval_seconds = 5)
 ```
 
 `auto_refresh_enabled` and `auto_refresh_interval_seconds` work the same way

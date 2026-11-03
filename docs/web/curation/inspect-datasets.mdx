@@ -124,11 +124,12 @@ db.create_secret("hf_token", "<your-hugging-face-token>")
 
 # create_storage_integration is not in a released SDK yet; use the SQL
 # form below until it ships.
-db.create_storage_integration(
-    "private_hub", "hf://datasets/owner/private/data/",
-    storage_provider="HUGGINGFACE",
-    huggingface_token_secret="hf_token",
-)
+reader = db.execute_query("""
+    CREATE STORAGE INTEGRATION private_hub
+        STORAGE_PROVIDER = 'HUGGINGFACE'
+        STORAGE_PREFIX = 'hf://datasets/owner/private/data/'
+        HUGGINGFACE_TOKEN_SECRET = hf_token
+""")
 
 reader = db.execute_query(
     "SELECT * FROM 'hf://datasets/owner/private/data/*.parquet' LIMIT 10"
@@ -146,6 +147,28 @@ CREATE STORAGE INTEGRATION private_hub
 SELECT * FROM 'hf://datasets/owner/private/data/*.parquet' LIMIT 10
 ```
 </CodeGroup>
+
+{/*
+Draft for the storage-integration SDK release (#4618, #4775). Keep this
+section unpublished until create_storage_integration ships in a release; it
+is not in v0.41.0.
+
+<CodeGroup>
+```python Python icon="python"
+db.create_secret("hf_token", "<your-hugging-face-token>")
+
+db.create_storage_integration(
+    "private_hub", "hf://datasets/owner/private/data/",
+    storage_provider="HUGGINGFACE",
+    huggingface_token_secret="hf_token",
+)
+
+reader = db.execute_query(
+    "SELECT * FROM 'hf://datasets/owner/private/data/*.parquet' LIMIT 10"
+)
+```
+</CodeGroup>
+*/}
 
 A query never names the integration: the planner matches the most specific
 `STORAGE_PREFIX` that covers the URI being read, across every integration

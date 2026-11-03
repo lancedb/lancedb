@@ -167,46 +167,31 @@ def test_embedding_huggingface_usage() -> None:
 def test_frameworks_lerobot_lancedb_usage() -> None:
     require_flag("RUN_LEROBOT_LANCEDB_SNIPPETS")
 
-    # --8<-- [start:frameworks_lerobot_lancedb_image_dataset]
-    from lerobot_lancedb import LeRobotLanceDataset
+    # --8<-- [start:frameworks_lerobot_lancedb_dataset]
+    from lerobot_lancedb import LanceDBDataset, lance_mp_context
+    from torch.utils.data import DataLoader
 
-    dataset = LeRobotLanceDataset(
-        repo_id="your-org/your-lerobot-lance-images",
-        delta_timestamps={
-            "observation.images.front": [-0.2, -0.1, 0.0],
-        },
-        return_uint8=True,
-    )
-
+    dataset = LanceDBDataset(root="s3://lance-format/lerobot-pusht-lance")
     sample = dataset[0]
     print(sample["observation.state"].shape)
     print(sample["action"].shape)
-    # --8<-- [end:frameworks_lerobot_lancedb_image_dataset]
 
-    # --8<-- [start:frameworks_lerobot_lancedb_video_dataset]
-    from lerobot_lancedb import LeRobotLanceVideoDataset
-
-    video_dataset = LeRobotLanceVideoDataset(
-        repo_id="lance-format/lerobot-pusht-lance",
-        delta_timestamps={
-            "observation.images.image": [-0.2, -0.1, 0.0],
-        },
-        return_uint8=True,
+    loader = DataLoader(
+        dataset,
+        batch_size=32,
+        num_workers=8,
+        multiprocessing_context=lance_mp_context(),
     )
-
-    video_sample = video_dataset[0]
-    print(video_sample["observation.images.image"].shape)
-    # --8<-- [end:frameworks_lerobot_lancedb_video_dataset]
+    # --8<-- [end:frameworks_lerobot_lancedb_dataset]
 
     # --8<-- [start:frameworks_lerobot_open_lance_tables]
     import lancedb
 
     db = lancedb.connect("hf://datasets/lance-format/lerobot-pusht-lance/data")
     frames = db.open_table("frames")
-    episodes = db.open_table("episodes")
     videos = db.open_table("videos")
 
-    print(len(frames), len(episodes), len(videos))
+    print(len(frames), len(videos))
     print(frames.schema)
     # --8<-- [end:frameworks_lerobot_open_lance_tables]
 
@@ -723,7 +708,9 @@ def test_embedding_voyageai_multimodal() -> None:
     # Add images using URLs
     tbl.add(
         [
-            {"image_uri": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/PNG_transparency_demonstration_1.png/300px-PNG_transparency_demonstration_1.png"},
+            {
+                "image_uri": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/PNG_transparency_demonstration_1.png/300px-PNG_transparency_demonstration_1.png"
+            },
         ]
     )
 

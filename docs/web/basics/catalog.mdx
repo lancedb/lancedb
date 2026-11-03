@@ -63,6 +63,8 @@ flowchart TD
 | [Storage integration](/management/storage-integration) | A named credential for reading or importing from storage outside the deployment's own tables, such as an S3 prefix or a HuggingFace repository. Available in Enterprise. |
 | [Function](/management/function) | Registered code used to compute column values. Available in Enterprise. |
 
+<span id="namespace-paths"></span>
+
 ### Namespace name and path {#namespace-path}
 
 A namespace's **name** is just its own component, such as `search`. Its
@@ -77,13 +79,19 @@ forms below are how SQL actually writes one.
 
 SQL addresses a namespace path as a **schema**, the ANSI standard's term for
 the same concept: a nested path collapses into one identifier, its
-components joined by `$` instead of `.`. `search` nested inside `prod` has
-schema name `` `prod$search` `` -- one backtick-quoted identifier, since `$`
-can't appear in an ordinary name and so can always be split back
-unambiguously. A namespace directly under the database root uses the
-reserved schema name `public`. (This "schema" is the namespace path as a SQL
-identifier -- distinct from a table's Arrow schema, its column names and
-types.)
+components joined by `$` instead of `.`. The path's length changes what the
+schema looks like:
+
+| Path | Schema |
+| --- | --- |
+| `[]` (the database root) | `public` -- the reserved name for the empty path |
+| `["prod"]` | `prod` -- one component needs no joining |
+| `["prod", "search"]` | `` `prod$search` `` -- joined, and backtick-quoted because `$` isn't a bare-identifier character |
+
+`$` can't appear in an ordinary name, so a schema can always be split back
+into its exact path, unlike a dot-joined one. (This "schema" is the
+namespace path as a SQL identifier -- distinct from a table's Arrow schema,
+its column names and types.)
 
 ### Object identifier {#identifier}
 
