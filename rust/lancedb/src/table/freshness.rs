@@ -4,20 +4,24 @@
 //! Source-change detection for computed columns.
 //!
 //! A refresh fills nulls, so once a value is durable nothing recomputes it and
-//! a later write to one of its inputs leaves it stale forever. Two stamps in
-//! the column's field metadata close that: the definition it was computed
-//! under, and a per-fragment signature of the input storage it was computed
-//! from. A refresh compares both with the manifest and recomputes what
-//! disagrees. Signatures are read from manifests, never from data.
+//! a later write to one of its inputs leaves it stale forever. The column's
+//! field metadata records the definition it was computed under, a
+//! per-fragment signature of the input storage it was computed from, and the
+//! rows whose retained values are not current for that signature. A refresh
+//! compares the stamps with the manifest and recomputes what disagrees.
+//! Signatures are read from manifests, never from data.
 //!
 //! The map is not stored in the manifest: it is one entry per fragment per
 //! column, which would dominate the manifest of a large table with many
 //! computed columns. It lives in an immutable sidecar object under
 //! `_computed/`, named by its content digest, and the field metadata holds
-//! only the reference. Sidecars no retained version references are removed
-//! by [`prune_sidecars`].
+//! only the reference. The sidecar also carries row-level exceptions and the
+//! accepted repair basis, so old readers reject the newer format and
+//! conservatively recompute. Sidecars no retained version references are
+//! removed by [`prune_sidecars`].
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io::{Cursor, Read};
 use std::ops::Range;
 
 use arrow_array::{Array, UInt64Array};
@@ -45,6 +49,106 @@ const MAX_CARRY_FORWARD_VERSIONS: u64 = 1024;
 
 /// `{fragment id -> input signature}`.
 pub type SignatureMap = BTreeMap<u32, String>;
+
+/// Rows whose retained values are not current for the fragment signature.
+///
+/// `AllExcept` represents a fragment whose basis changed after a partial
+/// refresh: every physical row is dirty except the offsets recorded as clean.
+/// It avoids materializing a full bitmap while preserving a partially filled
+/// fragment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DirtyRows {
+    /// The listed physical offsets are dirty.
+    Rows(RoaringBitmap),
+    /// Every physical offset is dirty except the listed clean offsets.
+    AllExcept(RoaringBitmap),
+}
+
+impl DirtyRows {
+    fn mark_dirty(&mut self, rows: &RoaringBitmap) {
+        match self {
+            Self::Rows(dirty) => *dirty |= rows,
+            Self::AllExcept(clean) => *clean -= rows,
+        }
+    }
+
+    fn mark_clean(&mut self, rows: &RoaringBitmap) {
+        match self {
+            Self::Rows(dirty) => *dirty -= rows,
+            Self::AllExcept(clean) => *clean |= rows,
+        }
+    }
+
+    fn is_explicitly_empty(&self) -> bool {
+        matches!(self, Self::Rows(rows) if rows.is_empty())
+    }
+
+    /// Materialize the dirty offsets among `live_rows`.
+    pub fn live_dirty_rows(&self, live_rows: &RoaringBitmap) -> RoaringBitmap {
+        match self {
+            Self::Rows(dirty) => dirty & live_rows,
+            Self::AllExcept(clean) => live_rows - clean,
+        }
+    }
+}
+
+/// `{fragment id -> row-level dirty state}`. A missing fragment is clean.
+pub type RowStateMap = BTreeMap<u32, DirtyRows>;
+
+/// The single owning value of the freshness sidecar.
+///
+/// `SignatureMap` remains the public facade for callers that only need input
+/// signatures. The row state and accepted basis live here so a reader can
+/// never observe one half of a mixed-generation freshness record.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct FreshnessState {
+    signatures: SignatureMap,
+    row_state: RowStateMap,
+    basis: String,
+}
+
+impl FreshnessState {
+    fn normalize(mut self) -> Result<Self> {
+        self.row_state.retain(|_, rows| !rows.is_explicitly_empty());
+        if self
+            .row_state
+            .keys()
+            .any(|fragment_id| !self.signatures.contains_key(fragment_id))
+        {
+            return Err(invalid(
+                "row state names a fragment without a signature".to_string(),
+            ));
+        }
+        if self
+            .signatures
+            .values()
+            .any(|signature| !is_signature_hex(signature))
+        {
+            return Err(invalid(
+                "freshness signature is not a 64-bit hex digest".to_string(),
+            ));
+        }
+        if self.basis.len() > u16::MAX as usize {
+            return Err(invalid("freshness basis exceeds u16 bytes".to_string()));
+        }
+        Ok(self)
+    }
+}
+
+/// Opaque accepted-basis evidence returned by [`begin_row_repair`] and required by
+/// [`finish_row_repair`].
+///
+/// The digest identifies the unified freshness state established before
+/// publication, and the selected-row bitmaps bound which rows finalization
+/// may change. The digest is not a per-row lease: overlapping publications
+/// are settled by their data-commit witnesses, while disjoint accepted
+/// repairs compose.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RowStateToken {
+    pub basis: String,
+    pub intent_digest: String,
+    pub selected_rows: BTreeMap<u32, RoaringBitmap>,
+}
 
 /// Every field an input covers, keyed by column path: the field's own id
 /// first, then its ancestors', because a packed file records the physical
@@ -270,12 +374,24 @@ pub enum StoredSignatures {
     Unreadable,
 }
 
-/// Directory of signature sidecars, under the dataset root.
+/// What the column's stored row-level state says.
+#[derive(Debug, PartialEq, Eq)]
+pub enum StoredRowStates {
+    /// No row-level state has been written; every live value is clean.
+    Absent,
+    /// Explicit dirty state for the fragments named in the map.
+    Present(RowStateMap),
+    /// The owning freshness sidecar cannot be read.
+    Unreadable,
+}
+
+/// Directory of freshness sidecars, under the dataset root.
 const SIDECAR_DIR: &str = "_computed";
 /// Metadata value prefix referencing a sidecar by its content digest.
 const SIDECAR_REF: &str = "sidecar:";
 const SIDECAR_MAGIC: &[u8; 4] = b"CSIG";
-const SIDECAR_FORMAT: u8 = 1;
+const SIDECAR_FORMAT_V1: u8 = 1;
+const SIDECAR_FORMAT: u8 = 2;
 /// How long an unreferenced sidecar is presumed to be a stamp in flight:
 /// lance's own threshold for unverified files, independent of how much
 /// version history a cleanup keeps.
@@ -293,12 +409,19 @@ fn sidecar_path(dataset: &Dataset, digest: &str) -> Result<Path> {
         .join(format!("{digest}.sig")))
 }
 
-/// `CSIG`, format byte, entry count, then one fragment id and 8-byte
-/// signature per entry, all little-endian; 12 bytes per fragment.
-fn encode_sidecar(map: &SignatureMap) -> Result<Vec<u8>> {
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn is_signature_hex(value: &str) -> bool {
+    value.len() == 16 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+#[cfg(test)]
+fn encode_legacy_sidecar(map: &SignatureMap) -> Result<Vec<u8>> {
     let mut bytes = Vec::with_capacity(9 + map.len() * 12);
     bytes.extend_from_slice(SIDECAR_MAGIC);
-    bytes.push(SIDECAR_FORMAT);
+    bytes.push(SIDECAR_FORMAT_V1);
     bytes.extend_from_slice(
         &u32::try_from(map.len())
             .map_err(|_| invalid("too many fragments for a signature sidecar".to_string()))?
@@ -316,9 +439,54 @@ fn encode_sidecar(map: &SignatureMap) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn decode_sidecar(bytes: &[u8]) -> Result<SignatureMap> {
+/// `CSIG`, format byte, basis, entry count, then for each fragment its id,
+/// 8-byte signature, dirty-row mode and serialized bitmap. All integers are
+/// little-endian. Format 1 remains readable as clean row state.
+fn encode_sidecar(state: &FreshnessState) -> Result<Vec<u8>> {
+    let state = state.clone().normalize()?;
+    let basis_len = u16::try_from(state.basis.len())
+        .map_err(|_| invalid("freshness basis exceeds u16 bytes".to_string()))?;
+    let fragment_count = u32::try_from(state.signatures.len())
+        .map_err(|_| invalid("too many fragments for a freshness sidecar".to_string()))?;
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(SIDECAR_MAGIC);
+    bytes.push(SIDECAR_FORMAT);
+    bytes.extend_from_slice(&basis_len.to_le_bytes());
+    bytes.extend_from_slice(state.basis.as_bytes());
+    bytes.extend_from_slice(&fragment_count.to_le_bytes());
+    for (fragment_id, signature) in &state.signatures {
+        let hash = u64::from_str_radix(signature, 16).map_err(|_| {
+            invalid(format!(
+                "signature '{signature}' is not a 64-bit hex digest"
+            ))
+        })?;
+        let rows = state
+            .row_state
+            .get(fragment_id)
+            .cloned()
+            .unwrap_or_else(|| DirtyRows::Rows(RoaringBitmap::new()));
+        let (kind, bitmap) = match rows {
+            DirtyRows::Rows(bitmap) => (0u8, bitmap),
+            DirtyRows::AllExcept(clean) => (1u8, clean),
+        };
+        let mut encoded = Vec::with_capacity(bitmap.serialized_size());
+        bitmap
+            .serialize_into(&mut encoded)
+            .map_err(|error| invalid(format!("encoding freshness bitmap: {error}")))?;
+        let bitmap_len = u32::try_from(encoded.len())
+            .map_err(|_| invalid("freshness bitmap exceeds u32 bytes".to_string()))?;
+        bytes.extend_from_slice(&fragment_id.to_le_bytes());
+        bytes.extend_from_slice(&hash.to_le_bytes());
+        bytes.push(kind);
+        bytes.extend_from_slice(&bitmap_len.to_le_bytes());
+        bytes.extend_from_slice(&encoded);
+    }
+    Ok(bytes)
+}
+
+fn decode_legacy_sidecar(bytes: &[u8]) -> Result<FreshnessState> {
     let malformed = || invalid("signature sidecar is malformed".to_string());
-    if bytes.len() < 9 || &bytes[..4] != SIDECAR_MAGIC || bytes[4] != SIDECAR_FORMAT {
+    if bytes.len() < 9 || &bytes[..4] != SIDECAR_MAGIC || bytes[4] != SIDECAR_FORMAT_V1 {
         return Err(malformed());
     }
     let count = u32::from_le_bytes(bytes[5..9].try_into().map_err(|_| malformed())?) as usize;
@@ -326,14 +494,88 @@ fn decode_sidecar(bytes: &[u8]) -> Result<SignatureMap> {
     if body.len() != count * 12 {
         return Err(malformed());
     }
-    Ok(body
+    let signatures = body
         .chunks_exact(12)
         .map(|entry| {
             let fragment_id = u32::from_le_bytes(entry[..4].try_into().unwrap());
             let hash = u64::from_le_bytes(entry[4..].try_into().unwrap());
             (fragment_id, format!("{hash:016x}"))
         })
-        .collect())
+        .collect();
+    Ok(FreshnessState {
+        signatures,
+        ..Default::default()
+    })
+}
+
+fn decode_sidecar(bytes: &[u8]) -> Result<FreshnessState> {
+    if bytes.len() >= 5 && &bytes[..4] == SIDECAR_MAGIC && bytes[4] == SIDECAR_FORMAT_V1 {
+        return decode_legacy_sidecar(bytes);
+    }
+    let malformed = || invalid("freshness sidecar is malformed".to_string());
+    let mut cursor = Cursor::new(bytes);
+    let mut magic = [0u8; 4];
+    cursor.read_exact(&mut magic).map_err(|_| malformed())?;
+    let mut format = [0u8; 1];
+    cursor.read_exact(&mut format).map_err(|_| malformed())?;
+    if &magic != SIDECAR_MAGIC || format[0] != SIDECAR_FORMAT {
+        return Err(malformed());
+    }
+    let mut basis_len = [0u8; 2];
+    cursor.read_exact(&mut basis_len).map_err(|_| malformed())?;
+    let mut basis = vec![0u8; u16::from_le_bytes(basis_len) as usize];
+    cursor.read_exact(&mut basis).map_err(|_| malformed())?;
+    let basis = String::from_utf8(basis).map_err(|_| malformed())?;
+    let mut count = [0u8; 4];
+    cursor.read_exact(&mut count).map_err(|_| malformed())?;
+    let count = u32::from_le_bytes(count) as usize;
+    let mut state = FreshnessState {
+        basis,
+        ..Default::default()
+    };
+    for _ in 0..count {
+        let mut fragment_id = [0u8; 4];
+        cursor
+            .read_exact(&mut fragment_id)
+            .map_err(|_| malformed())?;
+        let fragment_id = u32::from_le_bytes(fragment_id);
+        let mut signature = [0u8; 8];
+        cursor.read_exact(&mut signature).map_err(|_| malformed())?;
+        let mut kind = [0u8; 1];
+        cursor.read_exact(&mut kind).map_err(|_| malformed())?;
+        let mut bitmap_len = [0u8; 4];
+        cursor
+            .read_exact(&mut bitmap_len)
+            .map_err(|_| malformed())?;
+        let bitmap_len = u32::from_le_bytes(bitmap_len) as usize;
+        let mut encoded = vec![0u8; bitmap_len];
+        cursor.read_exact(&mut encoded).map_err(|_| malformed())?;
+        let mut bitmap_reader = Cursor::new(encoded.as_slice());
+        let bitmap =
+            RoaringBitmap::deserialize_from(&mut bitmap_reader).map_err(|_| malformed())?;
+        if bitmap_reader.position() != bitmap_len as u64 {
+            return Err(malformed());
+        }
+        let dirty = match kind[0] {
+            0 => DirtyRows::Rows(bitmap),
+            1 => DirtyRows::AllExcept(bitmap),
+            _ => return Err(malformed()),
+        };
+        if state.signatures.contains_key(&fragment_id) {
+            return Err(malformed());
+        }
+        state.signatures.insert(
+            fragment_id,
+            format!("{:016x}", u64::from_le_bytes(signature)),
+        );
+        if !dirty.is_explicitly_empty() {
+            state.row_state.insert(fragment_id, dirty);
+        }
+    }
+    if cursor.position() != bytes.len() as u64 {
+        return Err(malformed());
+    }
+    state.normalize()
 }
 
 fn digest_of(bytes: &[u8]) -> String {
@@ -347,11 +589,14 @@ async fn store(dataset: &Dataset) -> Result<std::sync::Arc<ObjectStore>> {
     Ok(dataset.object_store(None).await?)
 }
 
-/// Write `map` as a sidecar and return the metadata value referencing it.
-/// The object is named by its digest, so two columns with the same map
+/// Write `state` as a sidecar and return the metadata value referencing it.
+/// The object is named by its digest, so two columns with the same state
 /// share one object and a rewrite is idempotent.
-async fn write_sidecar(dataset: &Dataset, map: &SignatureMap) -> Result<String> {
-    let bytes = encode_sidecar(map)?;
+async fn write_sidecar(dataset: &Dataset, state: &FreshnessState) -> Result<String> {
+    write_sidecar_bytes(dataset, encode_sidecar(state)?).await
+}
+
+async fn write_sidecar_bytes(dataset: &Dataset, bytes: Vec<u8>) -> Result<String> {
     let digest = digest_of(&bytes);
     store(dataset)
         .await?
@@ -360,11 +605,11 @@ async fn write_sidecar(dataset: &Dataset, map: &SignatureMap) -> Result<String> 
     Ok(format!("{SIDECAR_REF}{digest}"))
 }
 
-/// A map is read from the table's own directory, then through the bases a
+/// A sidecar is read from the table's own directory, then through the bases a
 /// shallow clone reads its data from, where the source stamped it. A copy
 /// found through a base is put in the table's own directory so it outlives
 /// the source's pruning; a failed copy only costs the next lookup.
-async fn read_sidecar(dataset: &Dataset, digest: &str) -> Result<SignatureMap> {
+async fn read_sidecar_bytes(dataset: &Dataset, digest: &str) -> Result<bytes::Bytes> {
     let own = sidecar_path(dataset, digest)?;
     let store = store(dataset).await?;
     let bytes = match store.read_one_all(&own).await {
@@ -373,7 +618,7 @@ async fn read_sidecar(dataset: &Dataset, digest: &str) -> Result<SignatureMap> {
             let bytes = read_sidecar_through_bases(dataset, digest).await?;
             if let Err(error) = store.put(&own, &bytes).await {
                 log::warn!(
-                    "computed column signature sidecar {digest} could not be copied to {own}: {error}"
+                    "computed column freshness sidecar {digest} could not be copied to {own}: {error}"
                 );
             }
             bytes
@@ -382,10 +627,14 @@ async fn read_sidecar(dataset: &Dataset, digest: &str) -> Result<SignatureMap> {
     };
     if digest_of(&bytes) != digest {
         return Err(invalid(format!(
-            "signature sidecar {digest} does not match its digest"
+            "freshness sidecar {digest} does not match its digest"
         )));
     }
-    decode_sidecar(&bytes)
+    Ok(bytes)
+}
+
+async fn read_sidecar(dataset: &Dataset, digest: &str) -> Result<FreshnessState> {
+    decode_sidecar(&read_sidecar_bytes(dataset, digest).await?)
 }
 
 async fn read_sidecar_through_bases(dataset: &Dataset, digest: &str) -> Result<bytes::Bytes> {
@@ -416,11 +665,11 @@ async fn read_sidecar_through_bases(dataset: &Dataset, digest: &str) -> Result<b
         }
     }
     Err(invalid(format!(
-        "signature sidecar {digest} is in neither the table's directory nor a base's"
+        "freshness sidecar {digest} is in neither the table's directory nor a base's"
     )))
 }
 
-/// Remove signature sidecars that no version still present references,
+/// Remove freshness sidecars that no version still present references,
 /// the counterpart of lance's version cleanup for `_computed/`, with the
 /// same protection for objects still being published: a sidecar is put
 /// before the commit that references it, so one younger than
@@ -492,26 +741,63 @@ async fn referenced_digests(dataset: &Dataset, into: &mut HashSet<String>) -> Re
     Ok(())
 }
 
-/// Read the column's stored map. An unreadable map is a state, not an error:
-/// failing here would make the column permanently unrefreshable, and the
-/// unknown recomputes like every other unknown here.
-pub async fn stored_signatures(dataset: &Dataset, column: &str) -> StoredSignatures {
+enum StoredFreshnessState {
+    Absent,
+    Present {
+        state: FreshnessState,
+        digest: Option<String>,
+    },
+    Unreadable,
+}
+
+async fn stored_freshness_state(dataset: &Dataset, column: &str) -> StoredFreshnessState {
     let Some(encoded) = field_meta(dataset, column, SOURCE_SIGNATURE_META_KEY) else {
-        return StoredSignatures::Absent;
+        return StoredFreshnessState::Absent;
     };
     // Inline JSON is the declaration's empty seed and the pre-sidecar form.
-    let read = match encoded.strip_prefix(SIDECAR_REF) {
-        Some(digest) => read_sidecar(dataset, digest).await,
-        None => serde_json::from_str(&encoded).map_err(|e| invalid(e.to_string())),
+    let (read, digest) = match encoded.strip_prefix(SIDECAR_REF) {
+        Some(digest) => (
+            read_sidecar(dataset, digest).await,
+            Some(digest.to_string()),
+        ),
+        None => (
+            serde_json::from_str::<SignatureMap>(&encoded)
+                .map(|signatures| FreshnessState {
+                    signatures,
+                    ..Default::default()
+                })
+                .map_err(|e| invalid(e.to_string())),
+            None,
+        ),
     };
     match read {
-        Ok(map) => StoredSignatures::Present(map),
+        Ok(state) => StoredFreshnessState::Present { state, digest },
         Err(error) => {
             log::warn!(
-                "computed column '{column}' source signature map is unreadable ({error}); every fragment will be recomputed"
+                "computed column '{column}' freshness state is unreadable ({error}); every fragment will be recomputed"
             );
-            StoredSignatures::Unreadable
+            StoredFreshnessState::Unreadable
         }
+    }
+}
+
+/// Read the column's stored signature map through the versioned freshness
+/// state. An unreadable sidecar remains a distinct fail-closed state.
+pub async fn stored_signatures(dataset: &Dataset, column: &str) -> StoredSignatures {
+    match stored_freshness_state(dataset, column).await {
+        StoredFreshnessState::Absent => StoredSignatures::Absent,
+        StoredFreshnessState::Present { state, .. } => StoredSignatures::Present(state.signatures),
+        StoredFreshnessState::Unreadable => StoredSignatures::Unreadable,
+    }
+}
+
+/// Read the explicit row-level dirty state associated with the column's
+/// current signature map.
+pub async fn stored_row_states(dataset: &Dataset, column: &str) -> StoredRowStates {
+    match stored_freshness_state(dataset, column).await {
+        StoredFreshnessState::Absent => StoredRowStates::Absent,
+        StoredFreshnessState::Present { state, .. } => StoredRowStates::Present(state.row_state),
+        StoredFreshnessState::Unreadable => StoredRowStates::Unreadable,
     }
 }
 
@@ -523,6 +809,8 @@ pub struct StalenessPlan {
     /// Fragments whose inputs moved since they were computed, or that were
     /// never recorded.
     pub dirty: HashSet<u32>,
+    /// Current-signature fragments with only some rows dirty.
+    pub row_dirty: RowStateMap,
     /// Fragments a compaction produced from fresh ones, at their current
     /// signature: not dirty, and for the seal to record.
     pub inherited: SignatureMap,
@@ -531,6 +819,20 @@ pub struct StalenessPlan {
 impl StalenessPlan {
     pub fn is_dirty(&self, fragment_id: u32) -> bool {
         self.recompute_all || self.dirty.contains(&fragment_id)
+    }
+
+    /// Whether any retained row in the fragment is known to be non-current.
+    pub fn has_dirty_rows(&self, fragment_id: u32) -> bool {
+        !self.recompute_all
+            && self
+                .row_dirty
+                .get(&fragment_id)
+                .is_some_and(|rows| !rows.is_explicitly_empty())
+    }
+
+    /// Whether the fragment requires any recomputation, whole or row-level.
+    pub fn needs_recompute(&self, fragment_id: u32) -> bool {
+        self.is_dirty(fragment_id) || self.has_dirty_rows(fragment_id)
     }
 }
 
@@ -691,23 +993,32 @@ async fn holds_values_in(
 /// compaction since, so a chain of them carries too. Returns the produced
 /// fragments' signatures at production; the caller compares each with the
 /// current manifest, which catches anything written to them afterwards.
+#[derive(Default)]
+struct CarriedForward {
+    inherited: SignatureMap,
+    dirty_products: HashSet<u32>,
+}
+
 async fn carried_forward(
     dataset: &Dataset,
     column: &str,
     stored: &SignatureMap,
+    row_state: &RowStateMap,
     inputs: &InputFields,
-) -> Result<SignatureMap> {
+) -> Result<CarriedForward> {
     let Some(recorded_at) = field_meta(dataset, column, RECORDED_AT_VERSION_META_KEY)
         .and_then(|version| version.parse::<u64>().ok())
     else {
-        return Ok(SignatureMap::new());
+        return Ok(CarriedForward::default());
     };
     let to = dataset.version().version;
     if to <= recorded_at || to - recorded_at > MAX_CARRY_FORWARD_VERSIONS {
-        return Ok(SignatureMap::new());
+        return Ok(CarriedForward::default());
     }
     let mut fresh = stored.clone();
     let mut inherited = SignatureMap::new();
+    let mut dirty_products = HashSet::new();
+    let mut known_dirty: HashSet<u32> = row_state.keys().copied().collect();
     let mut appends = Vec::new();
     let mut manifests = Manifests {
         dataset,
@@ -723,6 +1034,7 @@ async fn carried_forward(
             Some(Step::Compaction(compactions)) => compactions,
         };
         for (consumed, produced) in compactions {
+            let source_dirty = consumed.iter().any(|id| known_dirty.contains(id));
             // Each source's signature and live rows just before the
             // compaction; live rows place its contribution in the product.
             let mut sources = Vec::with_capacity(consumed.len());
@@ -787,11 +1099,21 @@ async fn carried_forward(
                 if let Some(signature) = signature_of(after, *id, inputs)? {
                     fresh.insert(*id, signature.clone());
                     inherited.insert(*id, signature);
+                    if source_dirty {
+                        inherited.remove(id);
+                        dirty_products.insert(*id);
+                        known_dirty.insert(*id);
+                    } else {
+                        known_dirty.remove(id);
+                    }
                 }
             }
         }
     }
-    Ok(inherited)
+    Ok(CarriedForward {
+        inherited,
+        dirty_products,
+    })
 }
 
 /// Decide what is stale, from the manifest alone.
@@ -809,15 +1131,15 @@ pub async fn staleness_against(
     definition_version: &str,
     inputs: &InputFields,
 ) -> Result<StalenessPlan> {
-    let stored = match stored_signatures(dataset, column).await {
-        StoredSignatures::Absent => return Ok(StalenessPlan::default()),
-        StoredSignatures::Unreadable => {
+    let stored = match stored_freshness_state(dataset, column).await {
+        StoredFreshnessState::Absent => return Ok(StalenessPlan::default()),
+        StoredFreshnessState::Unreadable => {
             return Ok(StalenessPlan {
                 recompute_all: true,
                 ..Default::default()
             });
         }
-        StoredSignatures::Present(stored) => stored,
+        StoredFreshnessState::Present { state: stored, .. } => stored,
     };
     let stored_version = field_meta(dataset, column, DEFINITION_VERSION_META_KEY);
     if stored_version.is_some_and(|version| version != definition_version) {
@@ -826,16 +1148,23 @@ pub async fn staleness_against(
             ..Default::default()
         });
     }
+    let FreshnessState {
+        signatures: stored,
+        row_state,
+        ..
+    } = stored;
     let unrecorded = dataset
         .get_fragments()
         .iter()
         .any(|fragment| !stored.contains_key(&(fragment.id() as u32)));
-    let mut inherited = if unrecorded {
-        carried_forward(dataset, column, &stored, inputs).await?
+    let carried = if unrecorded {
+        carried_forward(dataset, column, &stored, &row_state, inputs).await?
     } else {
-        SignatureMap::new()
+        CarriedForward::default()
     };
-    let mut dirty = HashSet::new();
+    let mut inherited = carried.inherited;
+    let mut dirty = carried.dirty_products;
+    let mut row_dirty = RowStateMap::new();
     let mut live = HashSet::new();
     let bases = Bases::of(dataset)?;
     for fragment in dataset.get_fragments() {
@@ -844,12 +1173,16 @@ pub async fn staleness_against(
         let current = fragment_input_signature(&bases, fragment.metadata(), inputs)?;
         if stored.get(&id).or_else(|| inherited.get(&id)) != Some(&current) {
             dirty.insert(id);
+        } else if let Some(rows) = row_state.get(&id) {
+            row_dirty.insert(id, rows.clone());
         }
     }
     inherited.retain(|id, _| live.contains(id) && !dirty.contains(id));
+    row_dirty.retain(|id, _| live.contains(id) && !dirty.contains(id));
     Ok(StalenessPlan {
         recompute_all: false,
         dirty,
+        row_dirty,
         inherited,
     })
 }
@@ -938,40 +1271,394 @@ pub async fn write_signatures(
         .iter()
         .map(|fragment| fragment.id() as u32)
         .collect();
-    // An unreadable map is discarded rather than merged: nothing in it can be
-    // trusted, and its fragments recompute until a later refresh records them.
-    let mut merged = match stored_signatures(dataset, column).await {
-        StoredSignatures::Present(stored) => stored,
-        StoredSignatures::Absent | StoredSignatures::Unreadable => SignatureMap::new(),
+    // An unreadable state is discarded rather than merged: nothing in it can
+    // be trusted, and its fragments recompute until a later refresh records
+    // them.
+    let stored = stored_freshness_state(dataset, column).await;
+    let state_unreadable = matches!(&stored, StoredFreshnessState::Unreadable);
+    let mut state = match stored {
+        StoredFreshnessState::Present { state, .. } => state,
+        StoredFreshnessState::Absent | StoredFreshnessState::Unreadable => {
+            FreshnessState::default()
+        }
     };
-    merged.extend(entries);
-    merged.retain(|fragment_id, _| live.contains(fragment_id));
-    // The sidecar is durable before the commit references it; a failure in
-    // between leaves an unreferenced object for `prune_sidecars`.
-    let encoded = if merged.is_empty() {
-        "{}".to_string()
+    let recomputed: HashSet<u32> = entries.keys().copied().collect();
+    let signatures_changed = entries
+        .iter()
+        .any(|(fragment_id, signature)| state.signatures.get(fragment_id) != Some(signature));
+    if state_unreadable
+        && !live
+            .iter()
+            .all(|fragment_id| recomputed.contains(fragment_id))
+    {
+        return Err(invalid(
+            "cannot replace an unreadable freshness state from a partial signature stamp"
+                .to_string(),
+        ));
+    }
+    // A signature entry written through this API means the fragment was
+    // recomputed in full. Whole callers keep their old semantics while
+    // clearing any partial retry state left by a previous publication.
+    for fragment_id in &recomputed {
+        state.row_state.remove(fragment_id);
+    }
+    state.signatures.extend(entries);
+    state
+        .signatures
+        .retain(|fragment_id, _| live.contains(fragment_id));
+    state
+        .row_state
+        .retain(|fragment_id, _| live.contains(fragment_id));
+    if state.row_state.is_empty() || state_unreadable || signatures_changed {
+        state.basis.clear();
+    }
+    Ok(
+        write_freshness_state(dataset, column, definition_version, state, false, None)
+            .await?
+            .version,
+    )
+}
+
+struct FreshnessWrite {
+    version: u64,
+    intent_digest: Option<String>,
+}
+
+async fn write_freshness_state(
+    dataset: &mut Dataset,
+    column: &str,
+    definition_version: &str,
+    state: FreshnessState,
+    retain_empty_sidecar: bool,
+    expected_latest_version: Option<u64>,
+) -> Result<FreshnessWrite> {
+    let state = state.normalize()?;
+    let inline_empty = state.signatures.is_empty()
+        && state.row_state.is_empty()
+        && state.basis.is_empty()
+        && !retain_empty_sidecar;
+    // The sidecar is durable before the metadata commit references it.
+    // Unreferenced objects are removed by `prune_sidecars`.
+    let (signature_ref, intent_digest) = if inline_empty {
+        ("{}".to_string(), None)
     } else {
-        write_sidecar(dataset, &merged).await?
+        let reference = write_sidecar(dataset, &state).await?;
+        let digest = reference
+            .strip_prefix(SIDECAR_REF)
+            .expect("sidecar reference has its prefix")
+            .to_string();
+        (reference, Some(digest))
     };
     let describes = dataset.version().version;
-    dataset
-        .update_field_metadata()
-        .update(
-            column,
-            [
-                (SOURCE_SIGNATURE_META_KEY.to_string(), encoded),
-                (
-                    DEFINITION_VERSION_META_KEY.to_string(),
-                    definition_version.to_string(),
-                ),
-                (
-                    RECORDED_AT_VERSION_META_KEY.to_string(),
-                    describes.to_string(),
-                ),
-            ],
-        )?
-        .await?;
-    Ok(dataset.version().version)
+    let updates = vec![
+        (SOURCE_SIGNATURE_META_KEY.to_string(), Some(signature_ref)),
+        (
+            DEFINITION_VERSION_META_KEY.to_string(),
+            Some(definition_version.to_string()),
+        ),
+        (
+            RECORDED_AT_VERSION_META_KEY.to_string(),
+            Some(describes.to_string()),
+        ),
+    ];
+    let builder = dataset.update_field_metadata().update(column, updates)?;
+    match expected_latest_version {
+        Some(expected) => builder.with_expected_latest_version(expected).await?,
+        None => builder.await?,
+    };
+    Ok(FreshnessWrite {
+        version: dataset.version().version,
+        intent_digest,
+    })
+}
+
+/// One fragment's rows selected by an accepted refresh request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowRepair {
+    /// Input signature of the request's pinned source.
+    pub signature: String,
+    /// Selected physical offsets. They become dirty before publication.
+    pub rows: RoaringBitmap,
+}
+
+/// Durably mark every selected row dirty before its data publication.
+///
+/// The returned token binds the subsequent filled-row clear to the accepted
+/// input basis and selected rows. This function checks the accepted
+/// signatures against the latest manifest and does not retry a concurrent
+/// metadata conflict with stale state.
+pub async fn begin_row_repair(
+    dataset: &mut Dataset,
+    column: &str,
+    definition_version: &str,
+    inputs: &InputFields,
+    basis: impl Into<String>,
+    repairs: &BTreeMap<u32, RowRepair>,
+) -> Result<RowStateToken> {
+    let basis = basis.into();
+    if basis.is_empty() {
+        return Err(invalid("row repair basis must not be empty".to_string()));
+    }
+    if repairs.is_empty() {
+        return Err(invalid("row repair has no fragments".to_string()));
+    }
+    for repair in repairs.values() {
+        if !is_signature_hex(&repair.signature) {
+            return Err(invalid(
+                "row repair signature is not a 64-bit hex digest".to_string(),
+            ));
+        }
+    }
+    dataset.checkout_latest().await?;
+    let live: HashSet<u32> = dataset
+        .get_fragments()
+        .iter()
+        .map(|fragment| fragment.id() as u32)
+        .collect();
+    if let Some(missing) = repairs.keys().find(|id| !live.contains(id)) {
+        return Err(invalid(format!(
+            "row repair names fragment {missing}, which is not live"
+        )));
+    }
+
+    let stored_version = field_meta(dataset, column, DEFINITION_VERSION_META_KEY);
+    let definition_changed = stored_version.is_some_and(|version| version != definition_version);
+    let stored = stored_freshness_state(dataset, column).await;
+    let was_absent = matches!(&stored, StoredFreshnessState::Absent);
+    let state_unreadable = matches!(&stored, StoredFreshnessState::Unreadable);
+    let mut freshness = match stored {
+        StoredFreshnessState::Present { state, .. } => state,
+        StoredFreshnessState::Absent | StoredFreshnessState::Unreadable => {
+            FreshnessState::default()
+        }
+    };
+
+    if was_absent && !state_unreadable {
+        freshness.signatures =
+            signatures_for(dataset, &live.iter().copied().collect::<Vec<_>>(), inputs)?;
+        freshness.row_state.clear();
+        freshness.basis.clear();
+    }
+    if state_unreadable || definition_changed {
+        freshness.signatures =
+            signatures_for(dataset, &live.iter().copied().collect::<Vec<_>>(), inputs)?;
+        freshness.row_state = live
+            .iter()
+            .map(|id| (*id, DirtyRows::AllExcept(RoaringBitmap::new())))
+            .collect();
+    }
+
+    for (fragment_id, repair) in repairs {
+        let current = signature_of(dataset, *fragment_id, inputs)?.ok_or_else(|| {
+            invalid(format!(
+                "row repair fragment {fragment_id} disappeared from the latest manifest"
+            ))
+        })?;
+        if current != repair.signature {
+            return Err(invalid(format!(
+                "row repair fragment {fragment_id} input basis changed before dirty intent"
+            )));
+        }
+        let preserve = !state_unreadable
+            && !definition_changed
+            && freshness.signatures.get(fragment_id) == Some(&current);
+        let dirty = if preserve {
+            freshness
+                .row_state
+                .entry(*fragment_id)
+                .or_insert_with(|| DirtyRows::Rows(RoaringBitmap::new()))
+        } else {
+            freshness
+                .row_state
+                .insert(*fragment_id, DirtyRows::AllExcept(RoaringBitmap::new()));
+            freshness
+                .row_state
+                .get_mut(fragment_id)
+                .expect("row state was just inserted")
+        };
+        dirty.mark_dirty(&repair.rows);
+        freshness.signatures.insert(*fragment_id, current);
+    }
+    freshness
+        .signatures
+        .retain(|fragment_id, _| live.contains(fragment_id));
+    freshness
+        .row_state
+        .retain(|fragment_id, _| live.contains(fragment_id));
+    freshness.basis = basis.clone();
+
+    let write =
+        write_freshness_state(dataset, column, definition_version, freshness, true, None).await?;
+    let intent_digest = write
+        .intent_digest
+        .ok_or_else(|| invalid("row repair dirty intent produced no sidecar".to_string()))?;
+    Ok(RowStateToken {
+        basis,
+        intent_digest,
+        selected_rows: repairs
+            .iter()
+            .map(|(fragment_id, repair)| (*fragment_id, repair.rows.clone()))
+            .collect(),
+    })
+}
+
+fn apply_row_repair(
+    rows: &mut RowStateMap,
+    selections: &BTreeMap<u32, RoaringBitmap>,
+    filled_rows: &BTreeMap<u32, RoaringBitmap>,
+    skipped_rows: &BTreeMap<u32, RoaringBitmap>,
+) -> Result<()> {
+    if filled_rows
+        .keys()
+        .chain(skipped_rows.keys())
+        .any(|fragment_id| !selections.contains_key(fragment_id))
+    {
+        return Err(invalid(
+            "row repair result names a fragment outside its token".to_string(),
+        ));
+    }
+    for (fragment_id, selected) in selections {
+        if filled_rows
+            .get(fragment_id)
+            .zip(skipped_rows.get(fragment_id))
+            .is_some_and(|(filled, skipped)| !(filled & skipped).is_empty())
+        {
+            return Err(invalid(format!(
+                "row repair fragment {fragment_id} marks a row both filled and skipped"
+            )));
+        }
+        if filled_rows
+            .get(fragment_id)
+            .is_some_and(|filled| !filled.is_subset(selected))
+            || skipped_rows
+                .get(fragment_id)
+                .is_some_and(|skipped| !skipped.is_subset(selected))
+        {
+            return Err(invalid(format!(
+                "row repair fragment {fragment_id} changes a row outside its selected set"
+            )));
+        }
+        let state = rows
+            .entry(*fragment_id)
+            .or_insert_with(|| DirtyRows::Rows(RoaringBitmap::new()));
+        if let Some(filled) = filled_rows.get(fragment_id) {
+            state.mark_clean(filled);
+        }
+        if let Some(skipped) = skipped_rows.get(fragment_id) {
+            state.mark_dirty(skipped);
+        }
+    }
+    rows.retain(|_, state| !state.is_explicitly_empty());
+    Ok(())
+}
+
+/// Clear rows whose publication was accepted and keep every skipped row dirty.
+///
+/// The token names the accepted input basis and the exact rows it may change.
+/// Finalization applies only that row-scoped delta to the latest state, so
+/// disjoint accepted repairs compose. Replaying the same accepted transition
+/// is idempotent. Overlapping publications are settled by their data-commit
+/// witnesses; this API deliberately does not invent a second per-row lease.
+///
+/// `verified_version` is the latest version whose publication survival the
+/// caller verified. With `Some`, finalization commits field metadata
+/// conditionally from that exact version, so a Restore before or during the
+/// commit fails instead of being rebased underneath the verified publication;
+/// with `None`, it uses ordinary metadata-commit semantics and provides no
+/// version fence.
+#[allow(clippy::too_many_arguments)]
+pub async fn finish_row_repair(
+    dataset: &mut Dataset,
+    column: &str,
+    definition_version: &str,
+    inputs: &InputFields,
+    token: &RowStateToken,
+    filled_rows: &BTreeMap<u32, RoaringBitmap>,
+    skipped_rows: &BTreeMap<u32, RoaringBitmap>,
+    verified_version: Option<u64>,
+) -> Result<u64> {
+    if !is_sha256_hex(&token.intent_digest) {
+        return Err(invalid("row repair token is malformed".to_string()));
+    }
+    if filled_rows
+        .keys()
+        .chain(skipped_rows.keys())
+        .any(|fragment_id| !token.selected_rows.contains_key(fragment_id))
+    {
+        return Err(invalid(
+            "row repair result names a fragment outside its token".to_string(),
+        ));
+    }
+    dataset.checkout_latest().await?;
+    if verified_version.is_some_and(|version| dataset.version().version != version) {
+        return Err(invalid(
+            "row repair latest version changed after publication verification".to_string(),
+        ));
+    }
+    let (mut state, current_digest) = match stored_freshness_state(dataset, column).await {
+        StoredFreshnessState::Present {
+            state,
+            digest: Some(digest),
+        } => (state, digest),
+        StoredFreshnessState::Present { digest: None, .. } => {
+            return Err(invalid(
+                "row repair token cannot name an inline freshness state".to_string(),
+            ));
+        }
+        StoredFreshnessState::Absent | StoredFreshnessState::Unreadable => {
+            return Err(invalid(
+                "row repair freshness state disappeared before finalization".to_string(),
+            ));
+        }
+    };
+    if state.basis != token.basis {
+        return Err(invalid(
+            "row repair token does not match the current dirty intent".to_string(),
+        ));
+    }
+    for fragment_id in token.selected_rows.keys() {
+        let expected = state.signatures.get(fragment_id).ok_or_else(|| {
+            invalid(format!(
+                "row repair fragment {fragment_id} lost its signature"
+            ))
+        })?;
+        let current = signature_of(dataset, *fragment_id, inputs)?.ok_or_else(|| {
+            invalid(format!(
+                "row repair fragment {fragment_id} disappeared before finalization"
+            ))
+        })?;
+        if expected != &current {
+            return Err(invalid(format!(
+                "row repair fragment {fragment_id} input basis changed before finalization"
+            )));
+        }
+    }
+    let before = state.row_state.clone();
+    apply_row_repair(
+        &mut state.row_state,
+        &token.selected_rows,
+        filled_rows,
+        skipped_rows,
+    )?;
+    if state.row_state == before {
+        return Ok(dataset.version().version);
+    }
+    if current_digest != token.intent_digest.as_str() {
+        return Err(invalid(
+            "row repair dirty intent changed before finalization".to_string(),
+        ));
+    }
+    state.basis = token.basis.clone();
+    let write = write_freshness_state(
+        dataset,
+        column,
+        definition_version,
+        state,
+        true,
+        verified_version,
+    )
+    .await?;
+    Ok(write.version)
 }
 
 #[cfg(test)]
@@ -1061,6 +1748,651 @@ mod tests {
         write_signatures(dataset, COLUMN, &definition_version(EXPRESSION), entries)
             .await
             .unwrap();
+    }
+
+    fn fragment_signature(dataset: &Dataset, fragment_id: u32) -> String {
+        signature_of(dataset, fragment_id, &inputs(dataset))
+            .unwrap()
+            .unwrap()
+    }
+
+    fn repair(dataset: &Dataset, fragment_id: u32, rows: RoaringBitmap) -> RowRepair {
+        RowRepair {
+            signature: fragment_signature(dataset, fragment_id),
+            rows,
+        }
+    }
+
+    #[test]
+    fn unified_sidecar_round_trips_partial_clean_exceptions() {
+        let state = FreshnessState {
+            signatures: SignatureMap::from([
+                (3, "0000000000000003".to_string()),
+                (7, "0000000000000007".to_string()),
+            ]),
+            basis: "job-generation".to_string(),
+            row_state: RowStateMap::from([
+                (3, DirtyRows::Rows(RoaringBitmap::from_iter([1, 4, 9]))),
+                (7, DirtyRows::AllExcept(RoaringBitmap::from_iter([0, 2]))),
+            ]),
+        };
+        let encoded = encode_sidecar(&state).unwrap();
+        assert_eq!(encoded[4], SIDECAR_FORMAT);
+        assert!(
+            decode_legacy_sidecar(&encoded).is_err(),
+            "an old reader must reject the row-aware format"
+        );
+        assert_eq!(decode_sidecar(&encoded).unwrap(), state);
+    }
+
+    #[test]
+    fn legacy_sidecar_is_read_as_clean_rows() {
+        let signatures = SignatureMap::from([
+            (1, "0000000000000001".to_string()),
+            (2, "0000000000000002".to_string()),
+        ]);
+        let state = decode_sidecar(&encode_legacy_sidecar(&signatures).unwrap()).unwrap();
+        assert_eq!(state.signatures, signatures);
+        assert!(state.row_state.is_empty());
+        assert!(state.basis.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_row_repair_clears_filled_rows_and_retains_skipped_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dataset = table(dir.path().to_str().unwrap()).await;
+        stamp_all(&mut dataset).await;
+        let definition = definition_version(EXPRESSION);
+        let ids = inputs(&dataset);
+        let repairs = BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([1, 2])))]);
+        let token = begin_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            "accepted-job-generation-a",
+            &repairs,
+        )
+        .await
+        .unwrap();
+
+        let before = plan(&dataset).await;
+        assert!(before.dirty.is_empty());
+        assert_eq!(
+            before.row_dirty.get(&0),
+            Some(&DirtyRows::Rows(RoaringBitmap::from_iter([1, 2])))
+        );
+
+        let version = finish_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            &token,
+            &BTreeMap::from([(0, RoaringBitmap::from_iter([1]))]),
+            &BTreeMap::from([(0, RoaringBitmap::from_iter([2]))]),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            stored_row_states(&dataset, COLUMN).await,
+            StoredRowStates::Present(RowStateMap::from([(
+                0,
+                DirtyRows::Rows(RoaringBitmap::from_iter([2])),
+            )]))
+        );
+        assert_eq!(
+            plan(&dataset).await.row_dirty.get(&0),
+            Some(&DirtyRows::Rows(RoaringBitmap::from_iter([2])))
+        );
+
+        // Replaying the accepted transition changes nothing.
+        assert_eq!(
+            finish_row_repair(
+                &mut dataset,
+                COLUMN,
+                &definition,
+                &ids,
+                &token,
+                &BTreeMap::from([(0, RoaringBitmap::from_iter([1]))]),
+                &BTreeMap::from([(0, RoaringBitmap::from_iter([2]))]),
+                None,
+            )
+            .await
+            .unwrap(),
+            version
+        );
+    }
+
+    #[tokio::test]
+    async fn a_definition_change_preserves_filled_clean_exceptions() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dataset = table(dir.path().to_str().unwrap()).await;
+        stamp_all(&mut dataset).await;
+        let ids = inputs(&dataset);
+        let definition = "definition-generation-b";
+        let repairs = BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([0])))]);
+        let token = begin_row_repair(
+            &mut dataset,
+            COLUMN,
+            definition,
+            &ids,
+            "accepted-job-generation-b",
+            &repairs,
+        )
+        .await
+        .unwrap();
+        finish_row_repair(
+            &mut dataset,
+            COLUMN,
+            definition,
+            &ids,
+            &token,
+            &BTreeMap::from([(0, RoaringBitmap::from_iter([0]))]),
+            &BTreeMap::new(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let plan = staleness_against(&dataset, COLUMN, definition, &ids)
+            .await
+            .unwrap();
+        assert!(plan.dirty.is_empty());
+        assert_eq!(
+            plan.row_dirty.get(&0),
+            Some(&DirtyRows::AllExcept(RoaringBitmap::from_iter([0])))
+        );
+        assert_eq!(
+            plan.row_dirty.get(&1),
+            Some(&DirtyRows::AllExcept(RoaringBitmap::new()))
+        );
+    }
+
+    #[tokio::test]
+    async fn one_token_finishes_disjoint_fragments_without_clearing_other_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dataset = table(dir.path().to_str().unwrap()).await;
+        stamp_all(&mut dataset).await;
+        let definition = definition_version(EXPRESSION);
+        let ids = inputs(&dataset);
+        let repairs = BTreeMap::from([
+            (0, repair(&dataset, 0, RoaringBitmap::from_iter([1]))),
+            (1, repair(&dataset, 1, RoaringBitmap::from_iter([2]))),
+        ]);
+        let token = begin_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            "accepted-input-basis",
+            &repairs,
+        )
+        .await
+        .unwrap();
+        finish_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            &token,
+            &BTreeMap::from([(0, RoaringBitmap::from_iter([1]))]),
+            &BTreeMap::from([(1, RoaringBitmap::from_iter([2]))]),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            stored_row_states(&dataset, COLUMN).await,
+            StoredRowStates::Present(RowStateMap::from([(
+                1,
+                DirtyRows::Rows(RoaringBitmap::from_iter([2])),
+            )]))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_new_intent_blocks_a_stale_non_noop_finish() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dataset = table(dir.path().to_str().unwrap()).await;
+        stamp_all(&mut dataset).await;
+        let definition = definition_version(EXPRESSION);
+        let ids = inputs(&dataset);
+        let first_repair =
+            BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([1])))]);
+        let first = begin_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            "accepted-input-basis",
+            &first_repair,
+        )
+        .await
+        .unwrap();
+        let second_repair =
+            BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([3])))]);
+        begin_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            "accepted-input-basis",
+            &second_repair,
+        )
+        .await
+        .unwrap();
+        let before = stored_row_states(&dataset, COLUMN).await;
+        let error = finish_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            &first,
+            &BTreeMap::from([(0, RoaringBitmap::from_iter([1]))]),
+            &BTreeMap::new(),
+            None,
+        )
+        .await
+        .expect_err("a newer dirty intent must fence a non-noop finish");
+        assert!(
+            error.to_string().contains("dirty intent changed"),
+            "{error}"
+        );
+        assert_eq!(stored_row_states(&dataset, COLUMN).await, before);
+    }
+
+    #[tokio::test]
+    async fn recovery_rejects_a_restore_after_publication_verification() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dataset = table(dir.path().to_str().unwrap()).await;
+        stamp_all(&mut dataset).await;
+        let definition = definition_version(EXPRESSION);
+        let ids = inputs(&dataset);
+        let repairs = BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([1])))]);
+        let token = begin_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            "accepted-input-basis",
+            &repairs,
+        )
+        .await
+        .unwrap();
+        let intent_version = dataset.version().version;
+        let mut publication = dataset.clone();
+        publication
+            .update_field_metadata()
+            .update(COLUMN, [("fixture.publication", "1")])
+            .unwrap()
+            .await
+            .unwrap();
+        let verified = publication.version().version;
+
+        let mut intent = dataset.checkout_version(intent_version).await.unwrap();
+        intent.restore().await.unwrap();
+        let before = stored_row_states(&dataset, COLUMN).await;
+        let error = finish_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            &token,
+            &BTreeMap::from([(0, RoaringBitmap::from_iter([1]))]),
+            &BTreeMap::new(),
+            Some(verified),
+        )
+        .await
+        .expect_err("a restore after verification must fence recovery finalization");
+
+        assert!(
+            error
+                .to_string()
+                .contains("latest version changed after publication verification"),
+            "{error}"
+        );
+        assert_eq!(stored_row_states(&dataset, COLUMN).await, before);
+        assert_eq!(
+            plan(&dataset).await.row_dirty.get(&0),
+            Some(&DirtyRows::Rows(RoaringBitmap::from_iter([1]))),
+            "the recovered row must remain retryable"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_all_success_finish_replays_without_a_legacy_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dataset = table(dir.path().to_str().unwrap()).await;
+        stamp_all(&mut dataset).await;
+        let definition = definition_version(EXPRESSION);
+        let ids = inputs(&dataset);
+        let repairs = BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([1])))]);
+        let token = begin_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            "accepted-input-basis",
+            &repairs,
+        )
+        .await
+        .unwrap();
+        let filled = BTreeMap::from([(0, RoaringBitmap::from_iter([1]))]);
+        let version = finish_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            &token,
+            &filled,
+            &BTreeMap::new(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            stored_row_states(&dataset, COLUMN).await,
+            StoredRowStates::Present(RowStateMap::new()),
+            "an accepted all-success transition keeps an empty freshness sidecar for replay"
+        );
+        assert_eq!(
+            finish_row_repair(
+                &mut dataset,
+                COLUMN,
+                &definition,
+                &ids,
+                &token,
+                &filled,
+                &BTreeMap::new(),
+                None,
+            )
+            .await
+            .unwrap(),
+            version
+        );
+
+        corrupt_current_sidecar(&dataset).await;
+        let error = finish_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            &token,
+            &filled,
+            &BTreeMap::new(),
+            None,
+        )
+        .await
+        .expect_err("legacy absence cannot prove an accepted generation");
+        assert!(
+            error
+                .to_string()
+                .contains("disappeared before finalization"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn finish_rejects_rows_outside_the_token_selection() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dataset = table(dir.path().to_str().unwrap()).await;
+        stamp_all(&mut dataset).await;
+        let definition = definition_version(EXPRESSION);
+        let ids = inputs(&dataset);
+        let repairs = BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([1])))]);
+        let token = begin_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            "accepted-input-basis",
+            &repairs,
+        )
+        .await
+        .unwrap();
+        let before = stored_row_states(&dataset, COLUMN).await;
+        let error = finish_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            &token,
+            &BTreeMap::from([(0, RoaringBitmap::from_iter([2]))]),
+            &BTreeMap::new(),
+            None,
+        )
+        .await
+        .expect_err("a token must not clear rows it did not select");
+        assert!(
+            error
+                .to_string()
+                .contains("changes a row outside its selected set"),
+            "{error}"
+        );
+        assert_eq!(stored_row_states(&dataset, COLUMN).await, before);
+    }
+
+    #[tokio::test]
+    async fn unreadable_row_state_keeps_unselected_fragments_dirty() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dataset = table(dir.path().to_str().unwrap()).await;
+        stamp_all(&mut dataset).await;
+        let definition = definition_version(EXPRESSION);
+        let ids = inputs(&dataset);
+        let repairs = BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([1])))]);
+        let stale = begin_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            "accepted-input-basis",
+            &repairs,
+        )
+        .await
+        .unwrap();
+        finish_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            &stale,
+            &BTreeMap::new(),
+            &BTreeMap::from([(0, RoaringBitmap::from_iter([1]))]),
+            None,
+        )
+        .await
+        .unwrap();
+        corrupt_current_sidecar(&dataset).await;
+
+        let retry = BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([2])))]);
+        begin_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            "retry-input-basis",
+            &retry,
+        )
+        .await
+        .unwrap();
+        let plan = plan(&dataset).await;
+        assert_eq!(
+            plan.row_dirty.get(&0),
+            Some(&DirtyRows::AllExcept(RoaringBitmap::new()))
+        );
+        assert_eq!(
+            plan.row_dirty.get(&1),
+            Some(&DirtyRows::AllExcept(RoaringBitmap::new())),
+            "unreadable state outside the selected fragment must stay dirty"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_signatures_fails_closed_for_unreadable_row_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dataset = table(dir.path().to_str().unwrap()).await;
+        stamp_all(&mut dataset).await;
+        let definition = definition_version(EXPRESSION);
+        let ids = inputs(&dataset);
+        let repairs = BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([1])))]);
+        let stale = begin_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            "accepted-input-basis",
+            &repairs,
+        )
+        .await
+        .unwrap();
+        finish_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            &stale,
+            &BTreeMap::new(),
+            &BTreeMap::from([(0, RoaringBitmap::from_iter([1]))]),
+            None,
+        )
+        .await
+        .unwrap();
+        corrupt_current_sidecar(&dataset).await;
+
+        let partial = SignatureMap::from([(0, fragment_signature(&dataset, 0))]);
+        let error = write_signatures(&mut dataset, COLUMN, &definition, partial)
+            .await
+            .expect_err("a partial stamp cannot replace unreadable state");
+        assert!(
+            error.to_string().contains("partial signature stamp"),
+            "{error}"
+        );
+        assert!(plan(&dataset).await.recompute_all);
+    }
+
+    #[tokio::test]
+    async fn concurrent_field_metadata_writes_on_one_field_conflict() {
+        let dir = tempfile::tempdir().unwrap();
+        let dataset = table(dir.path().to_str().unwrap()).await;
+        let mut left = dataset.clone();
+        let mut right = dataset.clone();
+        let left_write = async {
+            left.update_field_metadata()
+                .update(COLUMN, [("computed_refresh.concurrent_a", "1")])
+                .unwrap()
+                .await
+        };
+        let right_write = async {
+            right
+                .update_field_metadata()
+                .update(COLUMN, [("computed_refresh.concurrent_b", "2")])
+                .unwrap()
+                .await
+        };
+        let (left_result, right_result) = tokio::join!(left_write, right_write);
+        assert_eq!(
+            usize::from(left_result.is_ok()) + usize::from(right_result.is_ok()),
+            1,
+            "same-field metadata writes must conflict: {left_result:?} {right_result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn pruning_tracks_unified_freshness_sidecars() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dataset = table(dir.path().to_str().unwrap()).await;
+        stamp_all(&mut dataset).await;
+        let definition = definition_version(EXPRESSION);
+        let ids = inputs(&dataset);
+        let repairs = BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([1])))]);
+        begin_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            "accepted-input-basis",
+            &repairs,
+        )
+        .await
+        .unwrap();
+        assert_eq!(sidecar_names(&dataset).await.len(), 2);
+        assert_eq!(prune_sidecars(&dataset, true).await.unwrap(), 0);
+
+        dataset
+            .update_field_metadata()
+            .update(
+                COLUMN,
+                [(SOURCE_SIGNATURE_META_KEY.to_string(), "{}".to_string())],
+            )
+            .unwrap()
+            .await
+            .unwrap();
+        dataset
+            .cleanup_old_versions(chrono::Duration::zero(), Some(true), None)
+            .await
+            .unwrap();
+        assert_eq!(prune_sidecars(&dataset, true).await.unwrap(), 2);
+        assert!(sidecar_names(&dataset).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn corrupt_unified_freshness_state_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dataset = table(dir.path().to_str().unwrap()).await;
+        stamp_all(&mut dataset).await;
+        let definition = definition_version(EXPRESSION);
+        let ids = inputs(&dataset);
+        let repairs = BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([1])))]);
+        begin_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            "accepted-job-generation-a",
+            &repairs,
+        )
+        .await
+        .unwrap();
+        corrupt_current_sidecar(&dataset).await;
+        assert!(plan(&dataset).await.recompute_all);
+    }
+
+    #[tokio::test]
+    async fn compaction_from_a_partially_dirty_source_recomputes_the_product() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dataset = table(dir.path().to_str().unwrap()).await;
+        stamp_all(&mut dataset).await;
+        let definition = definition_version(EXPRESSION);
+        let ids = inputs(&dataset);
+        let repairs = BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([1])))]);
+        let token = begin_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            "accepted-job-generation-a",
+            &repairs,
+        )
+        .await
+        .unwrap();
+        finish_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            &token,
+            &BTreeMap::new(),
+            &BTreeMap::from([(0, RoaringBitmap::from_iter([1]))]),
+            None,
+        )
+        .await
+        .unwrap();
+        let product = compact(&mut dataset).await;
+        let plan = plan(&dataset).await;
+        assert!(plan.dirty.contains(&product), "{plan:?}");
+        assert!(!plan.row_dirty.contains_key(&product), "{plan:?}");
     }
 
     /// Strip the refresh's own keys: a column from before signatures existed.
@@ -1255,6 +2587,19 @@ mod tests {
         field_meta(dataset, column, SOURCE_SIGNATURE_META_KEY).unwrap()
     }
 
+    async fn corrupt_current_sidecar(dataset: &Dataset) {
+        let digest = signature_ref(dataset, COLUMN)
+            .strip_prefix(SIDECAR_REF)
+            .unwrap()
+            .to_string();
+        store(dataset)
+            .await
+            .unwrap()
+            .put(&sidecar_path(dataset, &digest).unwrap(), b"CSIG garbage")
+            .await
+            .unwrap();
+    }
+
     /// The manifest carries only a digest; the map itself is a sidecar the
     /// reader fetches and verifies. The declaration's empty seed stays inline.
     #[tokio::test]
@@ -1399,7 +2744,15 @@ mod tests {
         let mut dataset = table(dir.path().to_str().unwrap()).await;
         let ids = inputs(&dataset);
         let entries = signatures_for(&dataset, &[0, 1], &ids).unwrap();
-        let reference = write_sidecar(&dataset, &entries).await.unwrap();
+        let reference = write_sidecar(
+            &dataset,
+            &FreshnessState {
+                signatures: entries,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
 
         let removed = prune_sidecars(&dataset, false).await.unwrap();
         assert_eq!(removed, 0);
@@ -1414,9 +2767,15 @@ mod tests {
             StoredSignatures::Present(_)
         ));
 
-        let orphan = write_sidecar(&dataset, &SignatureMap::from([(9, "0".repeat(16))]))
-            .await
-            .unwrap();
+        let orphan = write_sidecar(
+            &dataset,
+            &FreshnessState {
+                signatures: SignatureMap::from([(9, "0".repeat(16))]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(
             prune_sidecars(&dataset, false).await.unwrap(),
             0,
