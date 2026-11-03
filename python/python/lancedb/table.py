@@ -128,6 +128,15 @@ def _should_push_down_query_table(
     return namespace_client is not None and "QueryTable" in pushdown_operations
 
 
+def _requires_local_namespace_execution(query: Query) -> bool:
+    # The namespace QueryTable request does not support these query options.
+    return (
+        query.take_offsets is not None
+        or query.search_effort is not None
+        or query.approx_mode is not None
+    )
+
+
 _CUDA_UNAVAILABLE_MESSAGE = (
     "CUDA acceleration is unavailable in this Python environment. Install a "
     "CUDA-enabled PyTorch build and verify that the CUDA device is accessible, or "
@@ -5023,8 +5032,7 @@ class LanceTable(Table):
             )
             and not self._route_pushdown_to_rust
             and self.current_branch() is None
-            and query.take_offsets is None
-            and query.search_effort is None
+            and not _requires_local_namespace_execution(query)
         ):
             from lancedb.namespace import _execute_server_side_query
 
@@ -7199,6 +7207,8 @@ class AsyncTable:
                 async_query = async_query.column(query.vector_column)
             if query.ef:
                 async_query = async_query.ef(query.ef)
+            if query.approx_mode:
+                async_query = async_query.approx_mode(query.approx_mode)
             if query.bypass_vector_index:
                 async_query = async_query.bypass_vector_index()
 
@@ -7224,8 +7234,7 @@ class AsyncTable:
                 self._namespace_client, self._pushdown_operations
             )
             and not self._route_pushdown_to_rust
-            and query.take_offsets is None
-            and query.search_effort is None
+            and not _requires_local_namespace_execution(query)
         ):
             from lancedb.namespace import _execute_server_side_query
 
