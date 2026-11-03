@@ -677,7 +677,8 @@ async def test_wait_progress_bar_tracks_late_planning_without_regressing(
 
     assert await AsyncJob(RegressingPlanJob()).wait(progress=True) is None
     assert bar.total == 6
-    assert bar.updates == [2, 1, 3, 1]
+    # The remaining-row dip at (4, 3) must not rewind the high-water mark.
+    assert bar.updates == [2, 3, 1]
     assert bar.closed
 
 

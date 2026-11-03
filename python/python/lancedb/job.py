@@ -179,7 +179,7 @@ def _job_progress_callback(progress, enrich):
                 last_rows = completed
                 progress.update(delta)
             first_snapshot = False
-        phase = snapshot.get("phase")
+        phase = snapshot.get("phase") or snapshot.get("state")
         if phase is not None and hasattr(progress, "set_postfix_str"):
             progress.set_postfix_str(phase)
 
