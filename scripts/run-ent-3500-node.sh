@@ -32,6 +32,7 @@ export TMPDIR=/var/tmp
 export RUSTFLAGS=""
 export RUSTUP_TOOLCHAIN=1.97.0
 export PATH="/home/ec2-user/tools/node-v24.22.2-linux-x64/bin:$PATH"
+export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 
 run() {
   local name=$1
@@ -45,7 +46,7 @@ run() {
   printf '\n'
   node --version
   pnpm --version
-  mbx +1.97.0 cargo --version
+  rustup run 1.97.0 cargo --version
   set +e
   "$@" 2>&1 | tee "$log"
   pipeline_status=("${PIPESTATUS[@]}")
