@@ -3518,11 +3518,23 @@ def test_merge_insert_with_schema_metadata(mem_db: DBConnection):
     new_data = pa.table({"id": [1, 2], "value": ["one", "two"]})
     assert new_data.schema.metadata is None
 
-    result = (
-        table.merge_insert("id")
-        .when_matched_update_all()
-        .when_not_matched_insert_all()
-        .execute(new_data)
+    result = table_module.LOOP.run(
+        table._inner.execute_merge_insert(
+            new_data.to_reader(),
+            {
+                "on": ["id"],
+                "when_matched_update_all": True,
+                "when_matched_update_all_condition": None,
+                "when_not_matched_insert_all": True,
+                "when_not_matched_by_source_delete": False,
+                "when_not_matched_by_source_condition": None,
+                "when_not_matched_by_source_condition_expr": None,
+                "timeout": None,
+                "use_index": True,
+                "use_rte": None,
+                "validate_single_shard": None,
+            },
+        )
     )
 
     assert result.num_inserted_rows == 2
