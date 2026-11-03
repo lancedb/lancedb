@@ -70,13 +70,17 @@ Create a database, or open an existing database when existOk is true.
 dropDatabase(name, options): Promise<void>
 ```
 
-Drop an empty database. The server rejects nonempty databases.
+Drop a database. A nonempty database is an error unless `cascade` is set,
+which drops everything in it first; the name stays taken until the server
+finishes cleaning up their storage.
 
 #### Parameters
 
 * **name**: `string`
 
 * **options** = `{}`
+
+* **options.cascade?**: `boolean`
 
 * **options.ignoreMissing?**: `boolean`
 
@@ -89,19 +93,30 @@ Drop an empty database. The server rejects nonempty databases.
 ### listDatabases()
 
 ```ts
-listDatabases(options): Promise<ListDatabasesResponse>
+listDatabases(options): DatabaseNames
 ```
 
-List one page of databases; pass pageToken from a response for the next page.
+Iterate lazily over all database names using `for await...of`.
+pageToken resumes from a saved token; omitted starts at the beginning.
+pageLimit limits each REST response, not the total; omitted uses the server default.
+Request errors are raised during iteration and terminate the iterator.
 
 #### Parameters
 
 * **options** = `{}`
 
-* **options.limit?**: `number`
+* **options.pageLimit?**: `number`
 
 * **options.pageToken?**: `string`
 
 #### Returns
 
-`Promise`&lt;[`ListDatabasesResponse`](../interfaces/ListDatabasesResponse.md)&gt;
+[`DatabaseNames`](DatabaseNames.md)
+
+#### Example
+
+```ts
+for await (const name of catalog.listDatabases({ pageLimit: 20 })) {
+  console.log(name);
+}
+```

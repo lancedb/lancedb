@@ -45,6 +45,10 @@ The timeout for reading data from the server in seconds. Default is 300
 seconds (5 minutes). This can also be set via the environment variable
 `LANCE_CLIENT_READ_TIMEOUT`, as an integer number of seconds.
 
+This also applies while waiting for response headers during an upload.
+A large or slowly produced request body (for example, when creating a
+table) may need a longer timeout even if data is still being uploaded.
+
 ***
 
 ### timeout?

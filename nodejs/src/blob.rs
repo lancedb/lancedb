@@ -154,7 +154,7 @@ impl BlobFile {
 
 /// Runs `fut` on the napi runtime. Aborting `signal` drops the future, which
 /// cancels in-flight reads.
-pub(crate) fn spawn_abortable<'env, T>(
+pub fn spawn_abortable<'env, T>(
     env: &'env Env,
     signal: Option<AbortSignal>,
     fut: impl Future<Output = napi::Result<T>> + Send + 'static,

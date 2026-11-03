@@ -14,7 +14,7 @@ from lancedb.rerankers import RRFReranker
 
 
 def _wal_table(schema: pa.Schema) -> mock.Mock:
-    """A MemWAL-backed table a previous query has already been refused
+    """An RTE-backed table a previous query has already been refused
     `_rowid` on, so the fusion goes straight to the primary key."""
     table = mock.Mock()
     table._hybrid_pk_fusion_learned.return_value = True
@@ -51,7 +51,7 @@ def test_wal_hybrid_projects_the_key_instead_of_asking_for_row_ids():
     assert builder._pk_fusion.injected == ["id"]
     for leg in (builder._vector_query, builder._fts_query):
         assert leg._columns == ["text", "id"]
-        # A MemWAL table rejects with_row_id before it plans.
+        # An RTE table rejects with_row_id before it plans.
         assert leg._with_row_id is not True
 
 
@@ -81,15 +81,15 @@ def test_base_table_hybrid_still_joins_on_row_ids():
     assert builder._vector_query._columns is None
 
 
-def test_wal_hybrid_with_use_lsm_false_joins_on_row_ids():
-    builder = _wal_hybrid().use_lsm(False)
+def test_wal_hybrid_with_use_rte_false_joins_on_row_ids():
+    builder = _wal_hybrid().use_rte(False)
     builder._create_query_builders()
     assert builder._pk_fusion is None
 
 
 def test_wal_hybrid_refuses_an_explicit_with_row_id():
     builder = _wal_hybrid().with_row_id(True)
-    with pytest.raises(NotImplementedError, match="use_lsm"):
+    with pytest.raises(NotImplementedError, match="use_rte"):
         builder._create_query_builders()
 
 
@@ -119,7 +119,9 @@ def test_wal_hybrid_fuses_on_the_key_and_drops_it_again():
         limit=10,
         with_row_ids=True,
     )
-    results = builder._finish_hybrid_results(combined)
+    results = builder._finish_hybrid_results(
+        combined, blob_mode="lazy", blob_sources={}
+    )
 
     assert "_rowid" not in results.column_names, "the surrogate is internal"
     assert "id" not in results.column_names, "the caller selected only `text`"
@@ -139,7 +141,7 @@ def test_wal_hybrid_refuses_row_id_even_with_return_score_all(row_id_first: bool
     else:
         builder = builder.rerank(reranker).with_row_id(True)
 
-    with pytest.raises(NotImplementedError, match="use_lsm"):
+    with pytest.raises(NotImplementedError, match="use_rte"):
         builder._create_query_builders()
 
 
@@ -197,7 +199,7 @@ def test_fallback_explains_the_refusal_to_a_caller_who_asked_for_row_ids():
     def run():
         raise _REFUSAL
 
-    with pytest.raises(NotImplementedError, match="use_lsm") as info:
+    with pytest.raises(NotImplementedError, match="use_rte") as info:
         with_pk_fallback(
             run, mock.Mock(), fused=lambda: False, caller_requested_row_id=True
         )

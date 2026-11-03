@@ -3,7 +3,7 @@
 
 
 from functools import cached_property
-from typing import List, Any
+from typing import List, Any, Optional, Tuple
 
 import numpy as np
 
@@ -34,7 +34,11 @@ class TransformersEmbeddingFunction(EmbeddingFunction):
         Whether or not to allow for custom models defined on the HuggingFace
         Hub in their own modeling files. This option should only be set to True
         for repositories you trust and in which you have read the code, as it
-        will execute code present on the Hub on your local machine.
+        will execute code present on the Hub on your local machine. When
+        restored from table metadata, this is only enabled for models allowed with
+        [allow_remote_code][lancedb.embeddings.EmbeddingFunctionRegistry.allow_remote_code].
+    revision : Optional[str]
+        The model revision to load, such as a commit hash. Default is None.
 
     to download package, run :
         `pip install transformers`
@@ -45,6 +49,7 @@ class TransformersEmbeddingFunction(EmbeddingFunction):
     name: str = "colbert-ir/colbertv2.0"
     device: str = "cpu"
     trust_remote_code: bool = False
+    revision: Optional[str] = None
     _tokenizer: Any = PrivateAttr()
     _model: Any = PrivateAttr()
 
@@ -52,11 +57,16 @@ class TransformersEmbeddingFunction(EmbeddingFunction):
         super().__init__(*args, **kwargs)
         self._ndims = None
         transformers = attempt_import_or_raise("transformers")
-        self._tokenizer = transformers.AutoTokenizer.from_pretrained(self.name)
+        self._tokenizer = transformers.AutoTokenizer.from_pretrained(
+            self.name, revision=self.revision
+        )
         self._model = transformers.AutoModel.from_pretrained(
-            self.name, trust_remote_code=self.trust_remote_code
+            self.name, trust_remote_code=self.trust_remote_code, revision=self.revision
         )
         self._model.to(self.device)
+
+    def remote_code_model(self) -> Optional[Tuple[str, Optional[str]]]:
+        return (self.name, self.revision)
 
     model_config = ConfigDict(ignored_types=(cached_property,))
 
