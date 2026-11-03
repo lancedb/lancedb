@@ -4324,6 +4324,7 @@ mod tests {
 
     use super::*;
 
+    use crate::remote::client::test_utils::client_with_handler;
     use crate::remote::client::{ClientConfig, RetryConfig};
     use crate::table::{AddDataMode, FieldMetadataUpdate, FtsToken};
 
