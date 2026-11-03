@@ -128,9 +128,9 @@ includes index and refresh handles returned directly by their async submission
 methods, as well as handles reopened with `open_job()`. Call `progress()` for a
 point-in-time snapshot, or pass a callback to `wait()` to observe the same
 server polls that drive completion. The callback receives running and terminal
-observations; it does not start another polling loop. Progress snapshots and
-wait observers are currently available in Python and Rust; TypeScript does not
-yet expose this API.
+observations; it does not start another polling loop. It is a synchronous
+observer and is not awaited. If it throws, `wait()` logs the error and continues
+waiting; callback exceptions do not reject `wait()`.
 
 ```python
 def show_progress(progress):
@@ -147,6 +147,25 @@ if snapshot is not None:
     show_progress(snapshot)
 
 result = job.wait(progress=show_progress)
+```
+
+```typescript
+const showProgress = (progress: lancedb.JobProgress) => {
+  console.log(
+    progress.state,
+    progress.phase,
+    progress.rows_computed,
+    progress.rows_planned,
+  );
+};
+
+const job = await tbl.refreshColumnAsync("embedding");
+const snapshot = await job.progress();
+if (snapshot !== null) {
+  showProgress(snapshot);
+}
+
+await job.wait(showProgress);
 ```
 
 ```rust
@@ -179,6 +198,10 @@ counter; it does not mean zero, complete, or failed. Embedded handles and
 SQL-backed query handles do not have registry progress records. Use their
 `status()` and `wait()` APIs, and use registry progress only on handles backed
 by the jobs API.
+
+`estimated_remaining_time_millis` is a best-effort client-side estimate. It is
+omitted while a job is initializing, queued, or paused, and when there is no
+positive progress rate from two compatible samples.
 */}
 
 ## Embedded and Enterprise execution {#in-process}

@@ -32,6 +32,7 @@ import {
   StaticHeaderProvider,
 } from "../lancedb/header";
 import { Index } from "../lancedb/indices";
+import type { JobProgress } from "../lancedb/job";
 import { LocalTable } from "../lancedb/table";
 
 // Test-only header providers
@@ -1441,7 +1442,9 @@ describe("remote connection jobs surface", () => {
                 .end(
                   '{"jobs": [{"job_id": "job-1", "table": "t1", ' +
                     '"job_type": "create_index", "state": "in_progress", ' +
-                    '"created_at_millis": 1000}], "page_token": "next"}',
+                    '"created_at_millis": 1000, ' +
+                    '"progress": {"rows_planned": 4, "rows_computed": 2}, ' +
+                    '"phase": "running", "paused": false}], "page_token": "next"}',
                 );
             } else {
               res
@@ -1472,6 +1475,9 @@ describe("remote connection jobs surface", () => {
               .end(
                 '{"job_id": "job-1", "job_type": "create_index", ' +
                   '"job_state": "FAILED", "creation_ms": 1000, ' +
+                  '"progress": {"rows_planned": 4, "rows_computed": 2, ' +
+                  '"vendor_extension": "kept"}, ' +
+                  '"phase": "running", ' +
                   '"spec": {"column": "vec"}, "failure": {"phase": "execute", ' +
                   '"message": "worker died", "retryable": true}}',
               );
@@ -1518,6 +1524,19 @@ describe("remote connection jobs surface", () => {
         expect(jobs.map((job) => job.jobId)).toEqual(["job-1", "job-2"]);
         expect(jobs[0].state).toEqual("running");
         expect(jobs[1].state).toEqual("finished");
+        expect(jobs[0].progress).toEqual({
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          job_type: "create_index",
+          state: "running",
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          creation_ms: 1000,
+          paused: false,
+          phase: "running",
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          rows_planned: 4,
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          rows_computed: 2,
+        });
 
         expect(await db.cancelJob("job-1")).toBe(true);
         expect(await db.cancelJob("missing")).toBe(false);
@@ -1546,6 +1565,21 @@ describe("remote connection jobs surface", () => {
         expect(job.spec).toEqual({ column: "vec" });
         expect(job.result).toBeNull();
         expect(job.failure?.message).toEqual("worker died");
+        expect(await job.progress()).toEqual({
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          job_type: "create_index",
+          state: "failed",
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          creation_ms: 1000,
+          paused: false,
+          phase: "running",
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          rows_planned: 4,
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          rows_computed: 2,
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          vendor_extension: "kept",
+        });
 
         // The handle reaches its own events, supplying its job id.
         const jobEvents = await job.events({
@@ -1583,6 +1617,146 @@ describe("remote connection jobs surface", () => {
 
         expect(await job.status()).toEqual("failed");
         await expect(job.wait()).rejects.toThrow("worker died");
+      },
+    );
+  });
+
+  it("observes structured progress through the existing wait poller", async () => {
+    const now = Date.now();
+    const descriptions = [
+      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":100,"rows_computed":20,"rows_skipped":0,"rows_remaining":80,"fragments_planned":4,"execution_epoch":7,"sample_at_millis":${now - 3000}}}`,
+      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":100,"rows_computed":20,"rows_skipped":0,"rows_remaining":80,"fragments_planned":4,"execution_epoch":7,"sample_at_millis":${now - 2000}}}`,
+      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":100,"rows_computed":40,"rows_skipped":0,"rows_remaining":60,"fragments_planned":4,"execution_epoch":7,"sample_at_millis":${now - 1000}}}`,
+      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"DONE","creation_ms":1000,"result":{},"progress":{"rows_planned":100,"rows_computed":60,"rows_skipped":0,"rows_remaining":0,"fragments_planned":4,"execution_epoch":7,"sample_at_millis":${now}}}`,
+    ];
+    let describeCount = 0;
+
+    await withMockDatabase(
+      (req, res) => {
+        if (req.url === "/v1/jobs/describe") {
+          describeCount++;
+          const description = descriptions.shift();
+          if (description === undefined) {
+            res.writeHead(500).end("unexpected describe");
+            return;
+          }
+          res
+            .writeHead(200, { "Content-Type": "application/json" })
+            .end(description);
+          return;
+        }
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const job = await db.openJob("job-wait");
+        const first = await job.progress();
+        expect(first).toMatchObject({
+          state: "running",
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          rows_computed: 20,
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          rows_remaining: 80,
+        });
+        expect(first).not.toHaveProperty("estimated_remaining_time_millis");
+
+        const observed: JobProgress[] = [];
+        await job.wait((progress) => observed.push(progress));
+
+        expect(observed).toHaveLength(2);
+        expect(observed[0]).toMatchObject({
+          state: "running",
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          rows_computed: 40,
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          estimated_remaining_time_millis: 3000,
+        });
+        expect(observed[1]).toMatchObject({
+          state: "finished",
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          rows_remaining: 0,
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          estimated_remaining_time_millis: 0,
+        });
+      },
+    );
+
+    expect(describeCount).toBe(4);
+  });
+
+  it("does not derive ETA across a zero-rate, epoch, or pause boundary", async () => {
+    const now = Date.now();
+    const descriptions = [
+      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":100,"rows_computed":20,"rows_skipped":0,"rows_remaining":80,"fragments_planned":4,"execution_epoch":1,"sample_at_millis":${now - 5000}}}`,
+      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":100,"rows_computed":20,"rows_skipped":0,"rows_remaining":80,"fragments_planned":4,"execution_epoch":1,"sample_at_millis":${now - 4000}}}`,
+      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":100,"rows_computed":40,"rows_skipped":0,"rows_remaining":60,"fragments_planned":4,"execution_epoch":2,"sample_at_millis":${now - 3000}}}`,
+      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"phase":"initializing","progress":{"rows_planned":100,"rows_computed":60,"rows_skipped":0,"rows_remaining":40,"fragments_planned":4,"execution_epoch":2,"sample_at_millis":${now - 2000}}}`,
+      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"paused_at_millis":5000,"progress":{"rows_planned":100,"rows_computed":60,"rows_skipped":0,"rows_remaining":40,"fragments_planned":4,"execution_epoch":2,"sample_at_millis":${now - 1500}}}`,
+      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":100,"rows_computed":80,"rows_skipped":0,"rows_remaining":20,"fragments_planned":4,"execution_epoch":2,"sample_at_millis":${now - 1000}}}`,
+    ];
+
+    await withMockDatabase(
+      (req, res) => {
+        if (req.url === "/v1/jobs/describe") {
+          const description = descriptions.shift();
+          if (description === undefined) {
+            res.writeHead(500).end("unexpected describe");
+            return;
+          }
+          res
+            .writeHead(200, { "Content-Type": "application/json" })
+            .end(description);
+          return;
+        }
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const job = await db.openJob("job-eta");
+        for (let i = 0; i < 5; i++) {
+          const progress = await job.progress();
+          expect(progress).not.toHaveProperty(
+            "estimated_remaining_time_millis",
+          );
+        }
+      },
+    );
+  });
+
+  it("keeps a thrown progress observer from escaping wait", async () => {
+    const descriptions = [
+      '{"job_id":"job-throw","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":4,"rows_computed":2}}',
+      '{"job_id":"job-throw","job_type":"refresh_column","job_state":"DONE","creation_ms":1000,"result":{}}',
+    ];
+
+    await withMockDatabase(
+      (req, res) => {
+        if (req.url === "/v1/jobs/describe") {
+          const description = descriptions.shift();
+          if (description === undefined) {
+            res.writeHead(500).end("unexpected describe");
+            return;
+          }
+          res
+            .writeHead(200, { "Content-Type": "application/json" })
+            .end(description);
+          return;
+        }
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const job = await db.openJob("job-throw");
+        const warn = jest
+          .spyOn(console, "warn")
+          .mockImplementation(() => undefined);
+        try {
+          await expect(
+            job.wait(() => {
+              throw new Error("observer failed");
+            }),
+          ).resolves.toBeUndefined();
+          expect(warn).toHaveBeenCalled();
+        } finally {
+          warn.mockRestore();
+        }
       },
     );
   });
