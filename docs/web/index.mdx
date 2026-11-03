@@ -119,6 +119,10 @@ move or connect your data.
 | **Data Ingestion** | [Insert data](/ingestion/insert) | ✅ | ✅ |
 |  | [Merge](/ingestion/merge-insert) | ✅ | ✅ |
 |  | [Real Time Engine (streaming writes)](/tables/realtime-engine) | ❌ | ✅ |
+|  | [Define Storage Integration](/ingestion/define-storage-integration) | ❌ | ✅ |
+|  | [Attach Database](/ingestion/migrate-from-embedded) | ❌ | ✅ |
+|  | [Import Datasets](/ingestion/import) | 🚧 | ✅ |
+|  | [Distributed Write](/enterprise/distributed-write) | ❌ | ✅ |
 | **Semantic Search** | [Vector search](/search/vector-search) | ✅ | ✅ |
 |  | [Full-text search](/search/full-text-search) | ✅ | ✅ |
 |  | [Hybrid search](/search/hybrid-search) | ✅ | ✅ |
@@ -127,7 +131,10 @@ move or connect your data.
 |  | [Query plans](/basics/sql#query-plans) | ✅ | ✅ |
 |  | [Distributed search](/enterprise/distributed-search) | ❌ | ✅ |
 |  | [Real Time Engine (streaming reads)](/tables/realtime-engine) | ❌ | ✅ |
-| **Data Curation** | [Aggregation and profiling](/curation/aggregate) | ❌ | ✅ |
+| **Data Curation** | [SQL](/basics/sql) | 🚧 | ✅ |
+|  | [Distributed SQL](/enterprise/distributed-sql) | ❌ | ✅ |
+|  | [Inspect Datasets](/curation/inspect-datasets) | 🚧 | ✅ |
+|  | [Aggregation and profiling](/curation/aggregate) | ❌ | ✅ |
 |  | [Statistical Sampling](/curation/statistical-sampling) | ❌ | ✅ |
 |  | [Selective Sampling](/curation/selective-sampling) | ✅ | ✅ |
 |  | [Joins](/curation/join) | ❌ | ✅ |
@@ -135,37 +142,35 @@ move or connect your data.
 |  | [Near-duplicate detection](/curation/dedupe) | ❌ | ✅ |
 |  | [Chunking](/curation/chunking) | ❌ | ✅ |
 |  | [Changes since a version](/curation/changes) | ❌ | ✅ |
-|  | [Define Storage Integration](/ingestion/define-storage-integration) | ❌ | ✅ |
-|  | [Attach Database](/ingestion/migrate-from-embedded) | ❌ | ✅ |
-|  | [Import Datasets](/ingestion/import) | 🚧 | ✅ |
-|  | [Distributed Write](/enterprise/distributed-write) | ❌ | ✅ |
-| **Feature Engineering** | [Computed columns, with refresh](/feature-engineering/add-computed-column) | ❌ | ✅ |
+|  | [Slurm Integration](/curation/slurm-integration) | ❌ | ✅ |
+| **Feature Engineering** | [Computed columns](/feature-engineering/add-computed-column) | ❌ | ✅ |
 |  | [Adaptive Execution](/enterprise/adaptive-execution) | ❌ | ✅ |
 |  | [Embedding registry](/embedding) | ✅ | ✅ |
 | **Training** | [PyTorch data loader](/training/data-loading) | ✅ | ✅ |
 |  | [Permutations](/training/permutation) | ✅ | ✅ |
 |  | [Distributed training](/training/distributed-training) | ✅ | ✅ |
-| **Management** | [Database](/management/database) | ✅ | ✅ |
+|  | [Observability](/training/observability) | ✅ | ✅ |
+|  | [Checkpointing](/training/checkpointing) | ✅ | ✅ |
+|  | [Resuming](/training/resuming) | ✅ | ✅ |
+| **Management** | [Catalog](/management/catalog) | ❌ | ✅ |
+|  | [Database](/management/database) | ✅ | ✅ |
 |  | [Namespace](/management/namespace) | ✅ | ✅ |
 |  | [Table](/management/table) | ✅ | ✅ |
 |  | [Branches](/tables/branching) | ✅ | ✅ |
 |  | [View](/management/view) | ❌ | ✅ |
 |  | [Materialized view](/management/materialized-view) | ❌ | ✅ |
 |  | [Secret](/management/secret) | ❌ | ✅ |
+|  | [Function](/management/function) | ❌ | ✅ |
 |  | [Storage integration](/management/storage-integration) | ❌ | ✅ |
-|  | Function | ❌ | ✅ |
 | **Maintenance** | [Vector indexes](/indexing/vector-index) | ✅ | ✅ |
 |  | [Full-text indexes](/indexing/fts-index) | ✅ | ✅ |
 |  | [Scalar indexes](/indexing/scalar-index) | ✅ | ✅ |
 |  | [Compaction and cleanup](/maintenance/compaction) | ✅ | ✅ |
-|  | [Background jobs (managed indexing and maintenance)](/maintenance/background-jobs) | ❌ | ✅ |
+|  | [Background jobs](/maintenance/background-jobs) | ❌ | ✅ |
 |  | [Distributed indexing](/enterprise/distributed-indexing) | ❌ | ✅ |
 |  | [Distributed compaction](/enterprise/distributed-compaction) | ❌ | ✅ |
-|  | [Advanced conflict resolution](/maintenance/background-jobs) | ❌ | ✅ |
 | **Security** | [Authentication](/enterprise/authentication) | ❌ | ✅ |
 |  | [Authorization](/governance/authorization) | ❌ | ✅ |
-| **SQL Reference** | [SQL (Arrow Flight SQL)](/basics/sql) | 🚧 | ✅ |
-|  | [Distributed SQL](/enterprise/distributed-sql) | ❌ | ✅ |
 
 🚧 WIP for Embedded: not available today, but on the roadmap.
 
