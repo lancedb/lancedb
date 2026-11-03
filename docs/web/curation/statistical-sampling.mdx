@@ -1,27 +1,23 @@
 ---
-title: "Sampling"
-sidebarTitle: "Sampling"
-description: "Choose a sample for exploration or evaluation and preserve the selected records when reproducibility matters."
+title: "Statistical Sampling"
+sidebarTitle: "Statistical Sampling"
+description: "Draw a random subset of a table with SQL TABLESAMPLE, by rows or by fragments."
 icon: dice
-keywords: ["sampling", "tablesample", "subset", "eval set", "reproducible", "shuffle"]
+keywords: ["sampling", "tablesample", "bernoulli", "system", "repeatable", "random", "eval set"]
 availability:
-  embedded: available
+  embedded: unavailable
   enterprise: available
 ---
 
-import { PySampleDataset } from '/snippets/curation_sampling.mdx';
-
-Sampling selects records from a larger table. Use it to explore unfamiliar
-data, run a smaller experiment, or prepare an evaluation dataset. Enterprise
-SQL provides `TABLESAMPLE` for selecting a percentage or number of rows.
-
-Sampling works in LanceDB Embedded and LanceDB Enterprise through the
-[Python SDK](#training). SQL sampling, the sections marked Enterprise below, needs
-LanceDB Enterprise.
+Statistical sampling draws a random subset of a table's rows using SQL's
+`TABLESAMPLE` clause, attached directly to a table in `FROM`. Use it to
+explore unfamiliar data, run a smaller experiment, or estimate aggregate
+statistics without reading every row. For a random subset through the
+Python SDK instead -- in Embedded or Enterprise -- see
+[Permutation](/training/permutation). To select specific, known rows
+rather than a random fraction, see [Selective Sampling](/curation/selective-sampling).
 
 ## Example data {#example-data}
-
-<Badge color="red">Enterprise</Badge>
 
 Connect with an [Enterprise SQL client](/basics/sql). The examples use a small
 document table and a separate label table. Expand the setup below to create them.
@@ -63,8 +59,6 @@ has no label. These cases let you check the effect of each operation.
 
 ## Basic sampling {#quick}
 
-<Badge color="red">Enterprise</Badge>
-
 A percentage selects a fraction of the source; `ROWS` requests a row count:
 
 <CodeGroup>
@@ -83,8 +77,6 @@ rather than assuming it contains every category you need.
 change a production table's write configuration just to try an example.
 
 ## Sampling methods {#methods}
-
-<Badge color="red">Enterprise</Badge>
 
 Choose a method according to how records should be selected:
 
@@ -109,8 +101,6 @@ all records or none. Row sampling also needs an adequate sample size to
 represent rare groups; check that the resulting sample covers the groups you need.
 
 ## Repeatable samples {#fixed}
-
-<Badge color="red">Enterprise</Badge>
 
 A seed requests a repeatable draw:
 
@@ -140,8 +130,6 @@ training or evaluation.
 
 ## Sampling with joins {#joins}
 
-<Badge color="red">Enterprise</Badge>
-
 Sampling both input tables independently changes which pairs can match.
 For a one-to-one match, independent 10% row samples retain a given pair with
 about 1% probability, not 10%.
@@ -161,33 +149,10 @@ This samples source records, not distinct documents. If you need to sample the
 result of a join or deduplication, first save that result as a table suitable
 for sampling. `TABLESAMPLE` cannot be applied directly to a subquery result.
 
-## Sample without SQL {#training}
-
-The Python SDK provides a permutation builder for selecting and ordering rows
-in LanceDB Embedded and LanceDB Enterprise. A split selects a subset; a shuffle changes the order
-in which records are read. `Permutation.identity(table)` retains stored order.
-
-<Accordion title="Complete Python example: read a random subset">
-
-Install the Python SDK with `pip install lancedb`, save the program as
-`sample_dataset.py`, and run `python sample_dataset.py`. It creates a temporary
-local database with ten rows and reads a random split containing three rows.
-The temporary database is removed when the program finishes.
-
-<CodeBlock filename="sample_dataset.py" language="python" icon="python">
-{PySampleDataset}
-</CodeBlock>
-
-The program prints three distinct IDs. It uses a fixed seed, but does not
-promise the same IDs across SDK versions or changes to the source dataset.
-
-</Accordion>
-
-For shuffled training reads, worker configuration and data loaders, see
-[PyTorch Data Loader](/training/data-loading).
-
 ## Related guides {#reference}
 
 Count the sampled rows and [inspect their distribution](/curation/aggregate)
 before using them. Preserve the selected data when the exact membership matters.
-See [SQL sampling](/sql/dql/sampling) for syntax and restrictions.
+See [SQL sampling](/sql/dql/sampling) for the complete syntax and restrictions,
+and [Permutation](/training/permutation) for a random subset through the
+Python SDK.

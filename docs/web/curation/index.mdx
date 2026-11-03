@@ -23,15 +23,16 @@ records belong, and save the selected data or the rules used to produce it.
 | [Chunk records](/curation/chunking) | How to split one record into several -- passages, clips, or tiles. |
 | [Scope to what changed](/curation/changes) | How to process only the rows added since your last run. |
 | [Profile a dataset](/curation/aggregate) | Whether coverage, missing values and class balance suit the task. |
-| [Sample records](/curation/sampling) | Which subset to inspect or use for an experiment. |
+| [Statistical Sampling](/curation/statistical-sampling) | Which random fraction to inspect or use for an experiment. |
+| [Selective Sampling](/curation/selective-sampling) | How to re-fetch specific rows by ID, address or offset. |
 | [Join datasets](/curation/join) | How to attach labels, metadata or scores stored elsewhere. |
 | [Rank and deduplicate](/curation/windowing) | Which records to keep when several share an explicit key. |
 | [Cluster by index partition](/curation/clustering) | How to group records by vector proximity without training a new clustering model. |
 | [Deduplicate near-duplicates](/curation/dedupe) | Which records to collapse when they only look alike, with no shared key. |
 
 The analytical examples in this section use **Enterprise SQL**. Connect with
-the [SQL guide](/basics/sql). For sampling through the Python SDK in LanceDB Embedded or
-LanceDB Enterprise, see [Sample without SQL](/curation/sampling#training).
+the [SQL guide](/basics/sql). For a random subset through the Python SDK in
+LanceDB Embedded or LanceDB Enterprise, see [Permutation](/training/permutation).
 
 ## Prepare a labeled document dataset {#shape}
 
@@ -115,7 +116,7 @@ This example has two cats and one dog. That distribution may be appropriate
 for exploration, but it does not establish a representative evaluation set.
 
 [Profiling](/curation/aggregate) provides the counts to inspect.
-[Sampling](/curation/sampling) and [ranking](/curation/windowing) help you
+[Statistical Sampling](/curation/statistical-sampling) and [ranking](/curation/windowing) help you
 adjust the selection without changing the original records.
 
 ## Save and reuse the result {#next}
