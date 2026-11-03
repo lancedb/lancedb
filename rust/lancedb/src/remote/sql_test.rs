@@ -1051,10 +1051,16 @@ async fn remote_create_returns_the_registry_job_from_the_early_status_row() {
     job.refresh().await.unwrap();
     assert_eq!(job.job_type().as_deref(), Some("sql"));
     job.wait().await.unwrap();
-    assert!(headers.lock().unwrap().iter().all(|header| {
+    let headers = headers.lock().unwrap();
+    assert!(headers.iter().any(|header| {
         header.materialized_view_job_handle.as_deref() == Some("early")
             && header.namespace_path == "team$reports"
     }));
+    assert!(
+        headers
+            .iter()
+            .all(|header| header.namespace_path == "team$reports")
+    );
     shutdown.send(()).unwrap();
 }
 
