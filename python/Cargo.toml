@@ -36,6 +36,7 @@ pyo3-async-runtimes = { version = "0.29", features = [
     "attributes",
     "tokio-runtime",
 ] }
+reqwest.workspace = true
 pin-project.workspace = true
 futures.workspace = true
 serde.workspace = true

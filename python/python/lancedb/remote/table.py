@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+from __future__ import annotations
+
+from collections.abc import Mapping
 from datetime import timedelta
 import deprecation
 import logging
@@ -992,6 +995,11 @@ class RemoteTable(Table):
         This can be used to update zero to all rows depending on how many
         rows match the where clause.
 
+        Embeddings are not computed by this method. Updating an embedding source
+        column requires providing all associated vector columns in the same call;
+        otherwise a ValueError is raised. Use `merge_insert` to recompute embeddings
+        automatically.
+
         Parameters
         ----------
         where: str or [Expr][lancedb.expr.Expr], optional
@@ -1088,11 +1096,15 @@ class RemoteTable(Table):
 
     def add_columns(
         self,
-        transforms: Dict[str, str | FunctionApplication]
+        transforms: Mapping[str, str | FunctionApplication]
         | FunctionApplication
         | pa.Field
         | List[pa.Field]
         | pa.Schema
+        | DATA
+        | pa.RecordBatch
+        | pa.RecordBatchReader
+        | pl.DataFrame
         | None = None,
         *,
         computed: Dict[str, str] | None = None,

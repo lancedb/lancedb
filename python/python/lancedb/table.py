@@ -9,6 +9,7 @@ import json
 import deprecation
 import warnings
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import cached_property
@@ -34,6 +35,7 @@ from urllib.parse import urlparse
 from lancedb.scannable import _hf_batches, _register_optional_converters, to_scannable
 
 from . import __version__
+from ._lancedb import _parse_field_path
 from ._blob import (
     BlobFile,
     _normalize_blob_descriptor,
@@ -62,6 +64,7 @@ import numpy as np
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
+from .embeddings.registry import _embedding_column_pairs
 from .index import (
     BTree,
     IvfFlat,
@@ -558,7 +561,7 @@ def _into_pyarrow_reader(
         and data.__class__.__name__ == "LazyFrame"
     ):
         return data.collect().to_arrow().to_reader()
-    elif isinstance(data, Iterable):
+    elif isinstance(data, Iterable) and not isinstance(data, str):
         return _iterator_to_reader(data, schema)
     else:
         raise TypeError(
@@ -2767,6 +2770,11 @@ class Table(ABC):
         Either `values` or `values_sql` must be provided. You cannot provide
         both.
 
+        Embeddings are not computed by this method. Updating an embedding source
+        column requires providing all associated vector columns in the same call;
+        otherwise a ValueError is raised. Use `merge_insert` to recompute embeddings
+        automatically.
+
         Parameters
         ----------
         where: str or [Expr][lancedb.expr.Expr], optional
@@ -2988,11 +2996,15 @@ class Table(ABC):
     @abstractmethod
     def add_columns(
         self,
-        transforms: Dict[str, str | FunctionApplication]
+        transforms: Mapping[str, str | FunctionApplication]
         | FunctionApplication
         | pa.Field
         | List[pa.Field]
         | pa.Schema
+        | DATA
+        | pa.RecordBatch
+        | pa.RecordBatchReader
+        | pl.DataFrame
         | None = None,
         *,
         computed: Dict[str, str] | None = None,
@@ -3004,8 +3016,9 @@ class Table(ABC):
 
         Parameters
         ----------
-        transforms: Dict[str, str | FunctionApplication], FunctionApplication,
-            pa.Field, List[pa.Field], pa.Schema
+        transforms: Mapping[str, str | FunctionApplication], FunctionApplication,
+            pa.Field, List[pa.Field], pa.Schema, pandas.DataFrame,
+            polars.DataFrame, pa.Table, pa.RecordBatch, pa.RecordBatchReader
             A map of column name to a SQL expression to use to calculate the
             value of the new column. These expressions will be evaluated for
             each row in the table, and can reference existing columns.
@@ -3019,6 +3032,16 @@ class Table(ABC):
             atomic binding; aliases come from ``rename(columns=...)``.
             Function columns are supported only in LanceDB
             Enterprise.
+
+            On local tables, a pandas or Polars DataFrame, PyArrow Table,
+            RecordBatch, or RecordBatchReader supplies precomputed new-column
+            values. Supply exactly one row per current live table row, in storage
+            scan order; pandas indexes are ignored. The input contains only new
+            columns. Readers are consumed once, and their batch boundaries need
+            not match table fragments. Keep the table unchanged between computing
+            these values and calling add_columns. Data inputs cannot be combined
+            with computed columns. Remote tables do not support data inputs.
+
         computed: Dict[str, str], optional
             LanceDB Embedded declaration and refresh require a source build with the
             ``experimental-functions`` Cargo feature, which published packages
@@ -3074,6 +3097,11 @@ class Table(ABC):
            x  doubled
         0  1        2
         1  2        4
+
+        >>> import pyarrow as pa
+        >>> result = table.add_columns(pa.table({"score": [0.25, 0.75]}).to_reader())
+        >>> table.to_arrow()["score"].to_pylist()
+        [0.25, 0.75]
         """
 
     @abstractmethod
@@ -3280,6 +3308,9 @@ class Table(ABC):
             or "nullable". The legacy key "name" is also accepted for renaming.
             Unknown keys raise ValueError before any alterations are applied.
 
+            Local tables reject renaming source or vector columns used by an
+            embedding function with ValueError, preserving the embedding binding.
+
         Returns
         -------
         AlterColumnsResult
@@ -3347,6 +3378,9 @@ class Table(ABC):
     def drop_columns(self, columns: Iterable[str]) -> DropColumnsResult:
         """
         Drop columns from the table.
+
+        Local tables reject dropping source or vector columns used by an
+        embedding function with ValueError, preserving the embedding binding.
 
         Parameters
         ----------
@@ -4923,6 +4957,11 @@ class LanceTable(Table):
         This can be used to update zero to all rows depending on how many
         rows match the where clause.
 
+        Embeddings are not computed by this method. Updating an embedding source
+        column requires providing all associated vector columns in the same call;
+        otherwise a ValueError is raised. Use `merge_insert` to recompute embeddings
+        automatically.
+
         Parameters
         ----------
         where: str or [Expr][lancedb.expr.Expr], optional
@@ -5207,11 +5246,15 @@ class LanceTable(Table):
 
     def add_columns(
         self,
-        transforms: Dict[str, str | FunctionApplication]
+        transforms: Mapping[str, str | FunctionApplication]
         | FunctionApplication
         | pa.Field
         | List[pa.Field]
         | pa.Schema
+        | DATA
+        | pa.RecordBatch
+        | pa.RecordBatchReader
+        | pl.DataFrame
         | None = None,
         *,
         computed: Dict[str, str] | None = None,
@@ -7323,6 +7366,11 @@ class AsyncTable:
         If a filter is provided with `where` then only rows matching the
         filter will be updated.  Otherwise all rows will be updated.
 
+        Embeddings are not computed by this method. Updating an embedding source
+        column requires providing all associated vector columns in the same call;
+        otherwise a ValueError is raised. Use `merge_insert` to recompute embeddings
+        automatically.
+
         Parameters
         ----------
         updates: dict, optional
@@ -7372,16 +7420,38 @@ class AsyncTable:
         if updates is not None:
             updates_sql = {k: value_to_sql(v) for k, v in updates.items()}
 
+        # Only the column mappings are needed here. Restoring embedding functions
+        # could load models even for updates that provide their own vectors.
+        schema = await self.schema()
+        column_pairs = _embedding_column_pairs(schema.metadata)
+        if column_pairs:
+            # Metadata names are literal top-level fields; targets may be quoted.
+            updated_columns = {tuple(_parse_field_path(name)) for name in updates_sql}
+            for source_column, vector_column in column_pairs:
+                source_updated = (source_column,) in updated_columns
+                vector_updated = (vector_column,) in updated_columns
+                if source_updated and not vector_updated:
+                    raise ValueError(
+                        f"Updating embedding source column {source_column!r} requires "
+                        f"updating vector column {vector_column!r} in the same call. "
+                        "Provide both columns or use merge_insert "
+                        "to recompute embeddings."
+                    )
+
         predicate = where.to_sql() if isinstance(where, Expr) else where
         return await self._inner.update(updates_sql, predicate)
 
     async def add_columns(
         self,
-        transforms: dict[str, str | FunctionApplication]
+        transforms: Mapping[str, str | FunctionApplication]
         | FunctionApplication
         | pa.Field
         | List[pa.Field]
         | pa.Schema
+        | DATA
+        | pa.RecordBatch
+        | pa.RecordBatchReader
+        | pl.DataFrame
         | None = None,
         *,
         computed: dict[str, str] | None = None,
@@ -7393,7 +7463,9 @@ class AsyncTable:
 
         Parameters
         ----------
-        transforms: Dict[str, str | FunctionApplication] or FunctionApplication
+        transforms: Mapping[str, str | FunctionApplication], FunctionApplication,
+            pa.Field, List[pa.Field], pa.Schema, pandas.DataFrame,
+            polars.DataFrame, pa.Table, pa.RecordBatch, pa.RecordBatchReader
             A map of column name to a SQL expression to use to calculate the
             value of the new column. These expressions will be evaluated for
             each row in the table, and can reference existing columns.
@@ -7406,6 +7478,16 @@ class AsyncTable:
             atomic binding; aliases come from ``rename(columns=...)``.
             Function columns are supported only in LanceDB
             Enterprise.
+
+            On local tables, a pandas or Polars DataFrame, PyArrow Table,
+            RecordBatch, or RecordBatchReader supplies precomputed new-column
+            values. Supply exactly one row per current live table row, in storage
+            scan order; pandas indexes are ignored. The input contains only new
+            columns. Readers are consumed once, and their batch boundaries need
+            not match table fragments. Keep the table unchanged between computing
+            these values and calling add_columns. Data inputs cannot be combined
+            with computed columns. Remote tables do not support data inputs.
+
         computed: Dict[str, str], optional
             LanceDB Embedded declaration and refresh require a source build with the
             ``experimental-functions`` Cargo feature, which published packages
@@ -7474,7 +7556,7 @@ class AsyncTable:
         function_output_name = None
         if isinstance(transforms, FunctionApplication):
             function_application = transforms
-        elif isinstance(transforms, dict) and any(
+        elif isinstance(transforms, Mapping) and any(
             isinstance(value, FunctionApplication) for value in transforms.values()
         ):
             if len(transforms) != 1 or not all(
@@ -7506,7 +7588,10 @@ class AsyncTable:
         ):
             transforms = pa.schema(transforms)
         if computed:
-            if transforms:
+            if transforms is not None and (
+                not isinstance(transforms, (Mapping, list, pa.Schema))
+                or bool(transforms)
+            ):
                 raise ValueError(
                     "add_columns cannot take both transforms and computed columns"
                 )
@@ -7523,8 +7608,11 @@ class AsyncTable:
             raise ValueError("add_columns requires transforms or computed columns")
         if isinstance(transforms, pa.Schema):
             return await self._inner.add_columns_with_schema(transforms)
-        else:
+        if isinstance(transforms, Mapping):
             return await self._inner.add_columns(list(transforms.items()))
+        return await self._inner.add_columns_from_reader(
+            _into_pyarrow_reader(transforms)
+        )
 
     async def refresh_column(
         self,
@@ -7744,6 +7832,9 @@ class AsyncTable:
             or "nullable". The legacy key "name" is also accepted for renaming.
             Unknown keys raise ValueError before any alterations are applied.
 
+            Local tables reject renaming source or vector columns used by an
+            embedding function with ValueError, preserving the embedding binding.
+
         Returns
         -------
         AlterColumnsResult
@@ -7761,6 +7852,9 @@ class AsyncTable:
     async def drop_columns(self, columns: Iterable[str]):
         """
         Drop columns from the table.
+
+        Local tables reject dropping source or vector columns used by an
+        embedding function with ValueError, preserving the embedding binding.
 
         Parameters
         ----------
