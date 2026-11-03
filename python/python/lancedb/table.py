@@ -1967,7 +1967,7 @@ class Table(ABC):
         the server returns a job ID. If it does not, the job is already
         complete and does not wait for the background build; use
         ``wait_for_index`` and account for the replacement caveat described in
-        :meth:`create_index`.
+        [create_index][lancedb.table.Table.create_index].
         """
         raise NotImplementedError(
             "create_index_async is not supported for this table type"
@@ -4316,7 +4316,7 @@ class LanceTable(Table):
         the server returns a job ID. If it does not, the job is already
         complete and does not wait for the background build; use
         ``wait_for_index`` and account for the replacement caveat described in
-        :meth:`create_index`.
+        [create_index][lancedb.table.Table.create_index].
         """
         return Job(
             LOOP.run(
@@ -6627,7 +6627,7 @@ class AsyncTable:
         the server returns a job ID. If it does not, the job is already
         complete and does not wait for the background build; use
         ``wait_for_index`` and account for the replacement caveat described in
-        :meth:`create_index`.
+        [create_index][lancedb.table.AsyncTable.create_index].
         """
         job = await self._inner.create_index_async(
             column,

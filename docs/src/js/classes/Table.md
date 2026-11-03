@@ -363,9 +363,8 @@ scheduled. Until the build finishes, a vector index may be missing from
 [Table.listIndices](Table.md#listindices), a scalar or FTS index may be listed with 0
 indexed rows, and queries won't use the index. To wait until the index is
 ready, set [IndexOptions.waitTimeoutSeconds](../interfaces/IndexOptions.md#waittimeoutseconds), call
-[Table.waitForIndex](Table.md#waitforindex), or use
-[Table.createIndexAsync](Table.md#createindexasync) and wait on its job when the server
-returned a job ID.
+[Table.waitForIndex](Table.md#waitforindex), or use [Table.createIndexAsync](Table.md#createindexasync) and wait
+on its job when the server returned a job ID.
 
 `waitTimeoutSeconds` waits for the submitted build when the server returns
 a job ID. On older servers that don't return one, it falls back to polling
