@@ -455,6 +455,7 @@
           {
             "group": "Maintenance",
             "pages": [
+              "enterprise/intelligent-scheduling",
               "indexing/index",
               "indexing/vector-index",
               "indexing/fts-index",
