@@ -3559,23 +3559,32 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         Ok(())
     }
-    /// Only `OptimizeAction::Compact` without a custom `remap_options` is
-    /// supported remotely: it submits a durable compaction job through the
-    /// server's `OPTIMIZE TABLE ... REWRITE DATA` SQL statement, the same
-    /// atomic, single-worker, index-safe path the server uses for its own
-    /// automatic compaction. The job runs asynchronously, so this returns as
-    /// soon as it is accepted rather than once it completes.
-    /// `OptimizeStats::compaction` is `Some(CompactionMetrics::default())`, a
-    /// placeholder rather than `None` -- callers (including the Python/Node
-    /// bindings) unwrap it unconditionally on success -- because the SQL job
-    /// adapter does not expose per-job compaction metrics.
+    /// Only `OptimizeAction::Compact` with default `options` and no custom
+    /// `remap_options` is supported remotely: it submits a durable
+    /// compaction job through the server's `OPTIMIZE TABLE ... REWRITE DATA`
+    /// SQL statement, the same atomic, single-worker, index-safe path the
+    /// server uses for its own automatic compaction. The job runs
+    /// asynchronously, so this returns as soon as it is accepted rather than
+    /// once it completes. `OptimizeStats::compaction` is
+    /// `Some(CompactionMetrics::default())`, a placeholder rather than
+    /// `None` -- callers (including the Python/Node bindings) unwrap it
+    /// unconditionally on success -- because the SQL job adapter does not
+    /// expose per-job compaction metrics.
     /// `OptimizeAction::All`, `::Prune`, and `::Index` remain unsupported
     /// remotely: there is no SQL statement yet for version pruning or index
     /// optimization. A branch-scoped table handle is also unsupported: the
-    /// SQL statement has the same gap `CREATE INDEX` over SQL has.
+    /// SQL statement has the same gap `CREATE INDEX` over SQL has. A
+    /// non-default `CompactionOptions` (for example `target_rows_per_fragment`
+    /// or `max_source_bytes`) is also rejected: the SQL statement has no
+    /// `WITH` clause to carry it yet, so accepting it would silently ignore
+    /// settings a caller may be relying on to bound the job.
     async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats> {
         self.check_mutable().await?;
-        let OptimizeAction::Compact { remap_options, .. } = &action else {
+        let OptimizeAction::Compact {
+            options,
+            remap_options,
+        } = &action
+        else {
             return Err(Error::NotSupported {
                 message: "optimize is only supported in LanceDB Enterprise for \
                           OptimizeAction::Compact; version pruning and index \
@@ -3588,6 +3597,17 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 message: "a custom index remap strategy is not supported in LanceDB \
                           Enterprise; omit remap_options to use the server's managed, \
                           index-safe compaction path."
+                    .into(),
+            });
+        }
+        if *options != lance::dataset::optimize::CompactionOptions::default() {
+            return Err(Error::NotSupported {
+                message: "custom CompactionOptions are not supported in LanceDB \
+                          Enterprise; the OPTIMIZE TABLE ... REWRITE DATA SQL \
+                          statement has no WITH clause to carry them yet, so a \
+                          non-default value would be silently ignored rather than \
+                          applied. Omit options to use the server's managed \
+                          compaction settings."
                     .into(),
             });
         }
@@ -15276,6 +15296,28 @@ mod tests {
 
         assert!(matches!(error, Error::NotSupported { .. }));
         assert!(error.to_string().contains("remap"));
+    }
+
+    #[tokio::test]
+    async fn test_optimize_rejects_non_default_compaction_options() {
+        let table = Table::new_with_handler("my_table", move |_| -> http::Response<String> {
+            panic!("custom compaction options must be rejected before any request is sent")
+        });
+
+        let error = table
+            .optimize(OptimizeAction::Compact {
+                options: crate::table::optimize::CompactionOptions {
+                    target_rows_per_fragment: 17,
+                    max_source_bytes: Some(1024),
+                    ..Default::default()
+                },
+                remap_options: None,
+            })
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, Error::NotSupported { .. }));
+        assert!(error.to_string().contains("CompactionOptions"));
     }
 
     #[tokio::test]
