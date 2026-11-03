@@ -51,7 +51,11 @@ import pyarrow as pa
 import pyarrow.compute as pc
 from lancedb import udf
 
-@udf(pip=["numpy==2.2.0"])
+@udf(
+    pip=["numpy==2.2.0"],
+    batch_size=32,
+    row_timeout_seconds=90,
+)
 def score_batch(value: pa.Array) -> pa.Array:
     return pc.multiply(value, 2)
 ```
@@ -60,6 +64,13 @@ def score_batch(value: pa.Array) -> pa.Array:
 Batching amortizes per-call overhead across many rows, which matters most
 once a function also does something with real fixed cost per call -- loading
 a model, opening a connection, making a network round trip.
+
+`batch_size` caps the number of input rows in each execution batch; actual
+batches may be smaller. `row_timeout_seconds` bounds each Python call: one
+row for scalar Functions or the entire batch for vectorized Functions. It
+does not include the instance's `__init__`. Both settings are fixed into the
+registered version. Omit them to use adaptive batching and the service's
+default per-call deadline.
 
 ## Stateful Functions: load once, call many times {#stateful}
 
