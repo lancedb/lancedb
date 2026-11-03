@@ -14,8 +14,58 @@ aggregates, and prepare datasets. SQL queries work with the same Lance tables
 you create and update through the SDKs, without exporting the data to another
 system.
 
-This guide covers the three ways to run SQL, connection settings, a first query,
+This guide starts with when to reach for SQL instead of SDK table operations,
+then covers the three ways to run SQL, connection settings, a first query,
 parameterized queries, and how to read and manage the results.
+
+## Choose SQL or SDK table operations {#choosing}
+
+An SDK gives you a programming-language-specific API for invoking LanceDB's
+functionality: create a table, insert rows, build an index, run a vector
+search, each its own method call. Every one of those functionalities also
+has a corresponding SQL operation. SQL covers a wider surface than any one
+SDK method and lets you chain operations together in a single statement --
+running a vector search and then joining the results with another table,
+for example -- where SDK methods stay separate calls.
+
+Use **SQL** for joins, aggregations, window functions, analytical queries,
+and whenever you want to chain operations together. Use **SDK table
+operations** to build applications around table management, ingestion,
+filtering, and search, including applications that run with LanceDB
+Embedded, where SQL is not available.
+
+You can combine them. For example, create and populate a table with an SDK,
+then query it with SQL to prepare a training dataset. In Python, both
+workflows can use the same Enterprise connection.
+
+Both interfaces work with the same Lance tables, through the same Arrow
+schema. Applications in different languages can work with the same tables:
+connect to the same database and namespace, use the appropriate credentials,
+and account for [read consistency](/tables/consistency) when another process
+writes data. A fixed-size vector column stores vectors of a consistent
+dimension; see the [data types reference](/sql/data-types) for the supported
+element types and other column types.
+
+### Common SQL operations {#sdk-parity}
+
+Several tasks are available through both interfaces, but the methods and SQL
+statements do not have identical coverage. SDK support also differs by
+language. These SQL reference pages describe the supported statements:
+
+| Task | SQL reference |
+| --- | --- |
+| Create a table | [CREATE TABLE](/sql/ddl/table) |
+| Insert or change rows | [INSERT](/sql/dml/insert), [UPDATE](/sql/dml/update), [DELETE](/sql/dml/delete) |
+| Build an index | [CREATE INDEX](/sql/ddl/index) |
+| Join and aggregate data | [SELECT](/sql/dql/select) |
+| Save a query as a view | [CREATE VIEW](/sql/ddl/view) |
+
+[Computed columns](/feature-engineering/add-computed-column) store SQL
+expressions whose values are populated by a refresh. {/* Draft for the Functions release:
+They are separate from registered Python Functions. */}
+See the computed-column and
+[materialized-view](/management/materialized-view) guides for their SDK and SQL
+operations and Enterprise setup requirements.
 
 ## Access LanceDB with SQL {#access}
 
@@ -736,46 +786,6 @@ rows processed, bytes read, timings and returned results. For ANN changes,
 measure recall too: doing less work is useful only if retrieval quality meets
 your application's needs. See [vector indexes](/indexing/vector-index) and
 [scalar indexes](/indexing/scalar-index) for index choices.
-
-## Choose SQL or SDK table operations {#choosing}
-
-Use **SQL** for joins, aggregations, window functions, and analytical queries
-written in SQL. Use **SDK table operations** to build applications around table
-management, ingestion, filtering, and search, including applications that run
-with LanceDB Embedded.
-
-You can combine them. For example, create and populate a table with an SDK,
-then query it with SQL to prepare a training dataset. In Python, both workflows
-can use the same Enterprise connection.
-
-Both interfaces work with the same Lance tables, through the same Arrow
-schema. Applications in different languages can work with the same tables:
-connect to the same database and namespace, use the appropriate credentials,
-and account for [read consistency](/tables/consistency) when another process
-writes data. A fixed-size vector column stores vectors of a consistent
-dimension; see the [data types reference](/sql/data-types) for the supported
-element types and other column types.
-
-### Common SQL operations {#sdk-parity}
-
-Several tasks are available through both interfaces, but the methods and SQL
-statements do not have identical coverage. SDK support also differs by
-language. These SQL reference pages describe the supported statements:
-
-| Task | SQL reference |
-| --- | --- |
-| Create a table | [CREATE TABLE](/sql/ddl/table) |
-| Insert or change rows | [INSERT](/sql/dml/insert), [UPDATE](/sql/dml/update), [DELETE](/sql/dml/delete) |
-| Build an index | [CREATE INDEX](/sql/ddl/index) |
-| Join and aggregate data | [SELECT](/sql/dql/select) |
-| Save a query as a view | [CREATE VIEW](/sql/ddl/view) |
-
-[Computed columns](/feature-engineering/add-computed-column) store SQL
-expressions whose values are populated by a refresh. {/* Draft for the Functions release:
-They are separate from registered Python Functions. */}
-See the computed-column and
-[materialized-view](/management/materialized-view) guides for their SDK and SQL
-operations and Enterprise setup requirements.
 
 ## Vector and full-text search {#no-vector-sql}
 
