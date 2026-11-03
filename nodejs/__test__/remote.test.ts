@@ -1744,7 +1744,9 @@ describe("remote connection jobs surface", () => {
       },
       async (db) => {
         const job = await db.openJob("job-throw");
-        const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+        const warn = jest
+          .spyOn(console, "warn")
+          .mockImplementation(() => undefined);
         try {
           await expect(
             job.wait(() => {
