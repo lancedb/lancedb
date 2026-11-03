@@ -2071,6 +2071,59 @@ async fn remote_drop_materialized_view_uses_a_query_job() {
 }
 
 #[tokio::test]
+async fn remote_optimize_submits_a_compaction_job_over_sql() {
+    let service = TestSqlService {
+        adaptive: true,
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let headers = service.headers.clone();
+    let (sql_client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let client = client_with_handler(|request| -> http::Response<String> {
+        panic!("unexpected REST request: {}", request.url().path());
+    });
+    let table = RemoteTable::new_with_sql_client(
+        client,
+        "analytics".into(),
+        "events".into(),
+        vec!["team".into(), "reports".into()],
+        "team$reports$events".into(),
+        Default::default(),
+        Some(sql_client),
+    );
+
+    let stats = table
+        .optimize(crate::table::optimize::OptimizeAction::Compact {
+            options: crate::table::optimize::CompactionOptions::default(),
+            remap_options: None,
+        })
+        .await
+        .unwrap();
+
+    // The SQL job adapter does not expose compaction metrics, so
+    // `compaction` is a zeroed placeholder, not real numbers -- but it must
+    // be `Some`: callers (including the Python/Node bindings) unwrap it
+    // unconditionally on success.
+    assert_eq!(
+        stats.compaction,
+        Some(lance::dataset::optimize::CompactionMetrics::default())
+    );
+    assert!(stats.prune.is_none());
+    assert_eq!(
+        *statements.lock().unwrap(),
+        ["OPTIMIZE TABLE \"events\" REWRITE DATA"]
+    );
+    assert!(
+        headers
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|header| header.namespace_path == "team$reports")
+    );
+    shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
 async fn remote_mv_listing_uses_scoped_sql_keyset_pagination() {
     for defer in [false, true] {
         let result = RecordBatch::try_from_iter(vec![(

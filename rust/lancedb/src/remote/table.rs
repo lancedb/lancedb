@@ -3559,10 +3559,65 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         Ok(())
     }
-    async fn optimize(&self, _action: OptimizeAction) -> Result<OptimizeStats> {
+    /// Only `OptimizeAction::Compact` without a custom `remap_options` is
+    /// supported remotely: it submits a durable compaction job through the
+    /// server's `OPTIMIZE TABLE ... REWRITE DATA` SQL statement, the same
+    /// atomic, single-worker, index-safe path the server uses for its own
+    /// automatic compaction. The job runs asynchronously, so this returns as
+    /// soon as it is accepted rather than once it completes.
+    /// `OptimizeStats::compaction` is `Some(CompactionMetrics::default())`, a
+    /// placeholder rather than `None` -- callers (including the Python/Node
+    /// bindings) unwrap it unconditionally on success -- because the SQL job
+    /// adapter does not expose per-job compaction metrics.
+    /// `OptimizeAction::All`, `::Prune`, and `::Index` remain unsupported
+    /// remotely: there is no SQL statement yet for version pruning or index
+    /// optimization. A branch-scoped table handle is also unsupported: the
+    /// SQL statement has the same gap `CREATE INDEX` over SQL has.
+    async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats> {
         self.check_mutable().await?;
-        Err(Error::NotSupported {
-            message: "optimize is not supported in LanceDB Enterprise.".into(),
+        let OptimizeAction::Compact { remap_options, .. } = &action else {
+            return Err(Error::NotSupported {
+                message: "optimize is only supported in LanceDB Enterprise for \
+                          OptimizeAction::Compact; version pruning and index \
+                          optimization are not yet supported remotely."
+                    .into(),
+            });
+        };
+        if remap_options.is_some() {
+            return Err(Error::NotSupported {
+                message: "a custom index remap strategy is not supported in LanceDB \
+                          Enterprise; omit remap_options to use the server's managed, \
+                          index-safe compaction path."
+                    .into(),
+            });
+        }
+        if self.branch.is_some() {
+            return Err(Error::NotSupported {
+                message: "optimize does not yet support a branch-scoped table in \
+                          LanceDB Enterprise; OPTIMIZE TABLE ... REWRITE DATA has \
+                          the same gap CREATE INDEX over SQL does."
+                    .into(),
+            });
+        }
+        let sql_client = self.sql_client.clone().ok_or_else(|| Error::NotSupported {
+            message: "SQL is unavailable for this remote table client".to_string(),
+        })?;
+        let statement = format!(
+            "OPTIMIZE TABLE {} REWRITE DATA",
+            quote_sql_identifier(&self.name)
+        );
+        // `OptimizeStats` carries `lance::dataset::optimize` metric types that
+        // are not `Serialize`/`Deserialize`/`Clone`, which `Job<T>` requires,
+        // so the job itself only signals completion; the real (placeholder)
+        // value is built afterward.
+        sql_client
+            .submit_as_job(statement, self.namespace.clone(), || async { Ok(()) })
+            .await?
+            .wait()
+            .await?;
+        Ok(OptimizeStats {
+            compaction: Some(lance::dataset::optimize::CompactionMetrics::default()),
+            prune: None,
         })
     }
     async fn add_columns(
@@ -6691,10 +6746,9 @@ mod tests {
         let mut fts = FullTextSearchQuery::new("test".into());
         fts.wand_factor = Some(1.0);
         let results = [
-            (
-                "optimize",
-                table.optimize(OptimizeAction::All).await.map(|_| ()),
-            ),
+            // `optimize` has its own action-specific messages now and its
+            // own dedicated tests (`test_optimize_*`), not the generic
+            // boilerplate this loop checks.
             (
                 "Wand factor",
                 table
@@ -15189,6 +15243,90 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("SQL is unavailable"));
+    }
+
+    #[tokio::test]
+    async fn test_optimize_requires_sql() {
+        let table = Table::new_with_handler("my_table", |request| -> http::Response<String> {
+            panic!("unexpected REST request: {}", request.url().path())
+        });
+        let error = table
+            .optimize(OptimizeAction::Compact {
+                options: crate::table::optimize::CompactionOptions::default(),
+                remap_options: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("SQL is unavailable"));
+    }
+
+    #[tokio::test]
+    async fn test_optimize_rejects_custom_remap_options() {
+        let table = Table::new_with_handler("my_table", move |_| -> http::Response<String> {
+            panic!("a custom remap strategy must be rejected before any request is sent")
+        });
+
+        let error = table
+            .optimize(OptimizeAction::Compact {
+                options: crate::table::optimize::CompactionOptions::default(),
+                remap_options: Some(Arc::new(lance::dataset::optimize::IgnoreRemap::default())),
+            })
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, Error::NotSupported { .. }));
+        assert!(error.to_string().contains("remap"));
+    }
+
+    #[tokio::test]
+    async fn test_optimize_rejects_all_prune_and_index() {
+        for action in [
+            OptimizeAction::All,
+            OptimizeAction::Prune {
+                older_than: None,
+                delete_unverified: None,
+                error_if_tagged_old_versions: None,
+            },
+            OptimizeAction::Index(Default::default()),
+        ] {
+            let table = Table::new_with_handler("my_table", move |_| -> http::Response<String> {
+                panic!(
+                    "an unsupported remote optimize action must be rejected before any request is sent"
+                )
+            });
+
+            let error = table.optimize(action).await.unwrap_err();
+            assert!(matches!(error, Error::NotSupported { .. }));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_optimize_rejects_a_branch_scoped_table() {
+        use lance::dataset::refs::Ref;
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/branches/create/" => http::Response::builder()
+                    .status(200)
+                    .body(b"{}".to_vec())
+                    .unwrap(),
+                path => panic!("unexpected request on a branch-scoped optimize call: {path}"),
+            });
+
+        let branch = table
+            .create_branch("dev", Ref::Version(None, None))
+            .await
+            .unwrap();
+
+        let error = branch
+            .optimize(OptimizeAction::Compact {
+                options: crate::table::optimize::CompactionOptions::default(),
+                remap_options: None,
+            })
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, Error::NotSupported { .. }));
+        assert!(error.to_string().contains("branch"));
     }
 
     #[tokio::test]
