@@ -334,8 +334,8 @@ impl JobDescription {
                 waiting_for_job_id.clone().into(),
             );
         }
+        snapshot.insert("paused".to_string(), self.paused_at_millis.is_some().into());
         if let Some(paused_at_millis) = self.paused_at_millis {
-            snapshot.insert("paused".to_string(), true.into());
             snapshot.insert("paused_at_millis".to_string(), paused_at_millis.into());
         }
         if let Some(serde_json::Value::Object(progress)) = &self.progress {

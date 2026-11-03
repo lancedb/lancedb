@@ -429,6 +429,22 @@ mod tests {
         assert_eq!(snapshot["paused_at_millis"], 20);
     }
 
+    #[test]
+    fn describe_progress_reports_stable_unpaused_state() {
+        let response: DescribeJobResponse = serde_json::from_str(
+            r#"{
+                "job_id":"job-1",
+                "job_type":"refresh_column",
+                "job_state":"IN_PROGRESS",
+                "creation_ms":10
+            }"#,
+        )
+        .expect("job description");
+        let snapshot = response.into_description().progress_snapshot();
+        assert_eq!(snapshot["paused"], false);
+        assert!(snapshot.get("paused_at_millis").is_none());
+    }
+
     #[tokio::test(start_paused = true)]
     async fn wait_progress_observes_the_existing_poll_loop() {
         let describes = Arc::new(AtomicUsize::new(0));

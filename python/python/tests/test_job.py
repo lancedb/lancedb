@@ -443,6 +443,128 @@ async def test_wait_progress_true_updates_and_closes_only_the_owned_bar(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_wait_progress_bar_resumes_caller_owned_bar_after_timeout():
+    class ResumableJob:
+        id = "job-resume"
+        job_type = "refresh_column"
+
+        def __init__(self):
+            self.calls = 0
+
+        async def wait(self, progress):
+            self.calls += 1
+            if self.calls == 1:
+                progress(
+                    {
+                        "state": "running",
+                        "rows_planned": 4,
+                        "rows_remaining": 2,
+                    }
+                )
+                await asyncio.sleep(0.1)
+            progress(
+                {
+                    "state": "finished",
+                    "rows_planned": 4,
+                    "rows_remaining": 0,
+                }
+            )
+
+    class Bar:
+        def __init__(self):
+            self.total = None
+            self.n = 0
+            self.updates = []
+
+        def update(self, delta):
+            self.updates.append(delta)
+            self.n += delta
+
+        def set_postfix_str(self, _phase):
+            pass
+
+    bar = Bar()
+    job = AsyncJob(ResumableJob())
+
+    with pytest.raises(TimeoutError):
+        await job.wait(timeout=timedelta(seconds=0.01), progress=bar)
+
+    assert await job.wait(progress=bar) is None
+    assert bar.total == 4
+    assert bar.n == 4
+    assert bar.updates == [2, 2]
+
+
+@pytest.mark.asyncio
+async def test_wait_progress_bar_resets_display_for_new_plan_or_epoch():
+    class ReplannedJob:
+        id = "job-replanned"
+        job_type = "refresh_column"
+
+        async def wait(self, progress):
+            progress(
+                {
+                    "state": "running",
+                    "execution_epoch": 1,
+                    "rows_planned": 6,
+                    "rows_remaining": 2,
+                }
+            )
+            progress(
+                {
+                    "state": "running",
+                    "execution_epoch": 1,
+                    "rows_planned": 4,
+                    "rows_remaining": 3,
+                }
+            )
+            progress(
+                {
+                    "state": "running",
+                    "execution_epoch": 2,
+                    "rows_planned": 4,
+                    "rows_remaining": 3,
+                }
+            )
+            progress(
+                {
+                    "state": "finished",
+                    "execution_epoch": 2,
+                    "rows_planned": 4,
+                    "rows_remaining": 0,
+                }
+            )
+
+    class Bar:
+        def __init__(self):
+            self.total = None
+            self.n = 0
+            self.updates = []
+            self.resets = []
+
+        def update(self, delta):
+            self.updates.append(delta)
+            self.n += delta
+
+        def reset(self, total=None):
+            self.resets.append(total)
+            self.total = total
+            self.n = 0
+
+        def set_postfix_str(self, _phase):
+            pass
+
+    bar = Bar()
+
+    assert await AsyncJob(ReplannedJob()).wait(progress=bar) is None
+    assert bar.total == 4
+    assert bar.n == 4
+    assert bar.n <= bar.total
+    assert bar.resets == [4, 4]
+    assert bar.updates == [4, 1, 1, 3]
+
+
+@pytest.mark.asyncio
 async def test_wait_progress_bar_uses_remaining_rows_when_computation_is_repeated(
     monkeypatch,
 ):

@@ -5046,6 +5046,7 @@ def test_remote_connection_jobs_surface():
         progress = job.progress()
         assert progress["state"] == "failed"
         assert progress["rows_computed"] == 4
+        assert progress["paused"] is True
         assert progress["phase"] == "initializing"
         assert progress["queue_reason"] == "waiting for capacity"
         assert progress["waiting_for_job_id"] == "job-maintenance"
@@ -5060,6 +5061,7 @@ def test_remote_connection_jobs_surface():
             job.wait(timeout=timedelta(seconds=5), progress=observed.append)
         assert observed[0]["state"] == "failed"
         assert observed[0]["rows_computed"] == 4
+        assert finished.progress()["paused"] is False
 
 
 def test_remote_job_handle_reports_its_own_detail():

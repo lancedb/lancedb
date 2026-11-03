@@ -62,9 +62,17 @@ case "$suite" in
     run rust-list mbx +$toolchain test -p lancedb --features remote \
       wait_progress_observes_the_existing_poll_loop -- --list
     grep -Fq 'wait_progress_observes_the_existing_poll_loop' "$out/rust-list.log"
+    run rust-list-paused mbx +$toolchain test -p lancedb --features remote \
+      describe_progress_reports_stable_unpaused_state -- --list
+    grep -Fq 'describe_progress_reports_stable_unpaused_state' \
+      "$out/rust-list-paused.log"
     run rust-test mbx +$toolchain test -p lancedb --features remote \
       wait_progress_observes_the_existing_poll_loop -- --nocapture
     grep -Eq 'test result: ok\. [1-9][0-9]* passed' "$out/rust-test.log"
+    run rust-test-paused mbx +$toolchain test -p lancedb --features remote \
+      describe_progress_reports_stable_unpaused_state -- --nocapture
+    grep -Eq 'test result: ok\. [1-9][0-9]* passed' \
+      "$out/rust-test-paused.log"
     ;;
   python)
     cd python
@@ -76,6 +84,10 @@ case "$suite" in
     run python-collect uv run --frozen --python 3.12 --extra tests --extra dev \
       pytest --collect-only -q python/tests/test_job.py -k 'progress or wait_progress'
     grep -Fq 'test_wait_progress_true_updates_and_closes_only_the_owned_bar' \
+      "$out/python-collect.log"
+    grep -Fq 'test_wait_progress_bar_resumes_caller_owned_bar_after_timeout' \
+      "$out/python-collect.log"
+    grep -Fq 'test_wait_progress_bar_resets_display_for_new_plan_or_epoch' \
       "$out/python-collect.log"
     run python-job-tests uv run --frozen --python 3.12 --extra tests --extra dev \
       pytest -q python/tests/test_job.py -k 'progress or wait_progress'

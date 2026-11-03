@@ -126,16 +126,37 @@ def _job_progress_callback(progress, enrich):
     if callable(progress):
         return lambda snapshot: progress(enrich(snapshot))
 
-    last_rows = 0
+    # A caller-owned bar can outlive one wait call. Resume from its displayed
+    # position instead of adding the same completed rows on the next call.
+    last_rows = getattr(progress, "n", 0) or 0
+    last_planned = getattr(progress, "total", None)
+    last_epoch = None
 
     def update(snapshot):
-        nonlocal last_rows
+        nonlocal last_epoch, last_planned, last_rows
         snapshot = enrich(snapshot)
         planned = snapshot.get("rows_planned")
         remaining = snapshot.get("rows_remaining")
         computed = snapshot.get("rows_computed")
         if isinstance(planned, int):
+            epoch = snapshot.get("execution_epoch")
+            reset = (
+                isinstance(last_planned, int) and planned < last_planned
+            ) or (
+                isinstance(last_epoch, int)
+                and isinstance(epoch, int)
+                and epoch != last_epoch
+            )
+            if reset:
+                last_rows = 0
+                if hasattr(progress, "reset"):
+                    progress.reset(total=planned)
+                elif hasattr(progress, "n"):
+                    progress.n = 0
             progress.total = planned
+            last_planned = planned
+            if isinstance(epoch, int):
+                last_epoch = epoch
         completed = None
         if isinstance(planned, int) and isinstance(remaining, int):
             completed = max(planned - remaining, 0)
@@ -232,7 +253,8 @@ class AsyncJob(Generic[T]):
         place. Observations use the backend's existing wait poller and never
         start a second job. The bar advances by remaining rows when available,
         because completed computation can include repeated work after a plan
-        change. ``False`` preserves the original wait behavior.
+        change. A new execution epoch or smaller plan resets the bar to that
+        plan. ``False`` preserves the original wait behavior.
 
         Raises `JobFailedError` if the operation failed, `JobCancelledError`
         if it was cancelled, and `TimeoutError` if `timeout` elapses first.
