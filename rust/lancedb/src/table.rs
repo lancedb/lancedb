@@ -1904,6 +1904,17 @@ impl Table {
         self.inner.optimize(action).await
     }
 
+    /// Optimize (incrementally reindex) the table's indices.
+    ///
+    /// This folds newly added rows into existing indices without recreating them.
+    /// See [`OptimizeOptions`] for tuning.
+    pub async fn optimize_indices(&self, options: OptimizeOptions) -> Result<()> {
+        let native = self.as_native().ok_or_else(|| Error::NotSupported {
+            message: "optimize_indices is not supported in LanceDB Enterprise.".into(),
+        })?;
+        optimize::optimize_indices(native, &options).await
+    }
+
     /// Prune versions committed before an absolute timestamp.
     ///
     /// This is an internal entry point for language bindings whose public API

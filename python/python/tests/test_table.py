@@ -6236,3 +6236,12 @@ async def test_async_computed_auto_refresh_uses_server_interval(tmp_path):
     metadata = (await table.schema()).field("doubled").metadata
     assert metadata[b"computed_column.auto_refresh_enabled"] == b"true"
     assert b"computed_column.auto_refresh_interval_seconds" not in metadata
+
+
+def test_optimize_indices_smoke(tmp_db: DBConnection):
+    table = tmp_db.create_table("t", data=[{"id": i} for i in range(10)])
+    table.create_index("id", config=BTree())
+    table.add([{"id": 10}])
+    assert table.index_stats("id_idx").num_unindexed_rows == 1
+    table.optimize_indices(index_names=["id_idx"], max_rows_per_task=5)
+    assert table.index_stats("id_idx").num_unindexed_rows == 0

@@ -160,6 +160,7 @@ export {
   AddDataOptions,
   UpdateOptions,
   OptimizeOptions,
+  OptimizeIndicesOptions,
   Version,
   WriteProgress,
   FtsToken,

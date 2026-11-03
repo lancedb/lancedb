@@ -647,6 +647,17 @@ class Table:
         delete_unverified: Optional[bool] = None,
         compaction_options: Optional[Dict[str, Any]] = None,
     ) -> OptimizeStats: ...
+    async def optimize_indices(
+        self,
+        *,
+        num_indices_to_merge: Optional[int] = None,
+        enable_partition_rebalancing: bool = False,
+        index_names: Optional[List[str]] = None,
+        retrain: bool = False,
+        max_rows_per_task: Optional[int] = None,
+        max_rows_per_segment: Optional[int] = None,
+        max_rows_to_consolidate: Optional[int] = None,
+    ) -> None: ...
     async def uri(self) -> str: ...
     async def initial_storage_options(self) -> Optional[Dict[str, str]]: ...
     async def latest_storage_options(self) -> Optional[Dict[str, str]]: ...
