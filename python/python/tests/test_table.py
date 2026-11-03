@@ -3518,8 +3518,8 @@ def test_merge_insert_with_schema_metadata(mem_db: DBConnection):
     new_data = pa.table({"id": [1, 2], "value": ["one", "two"]})
     assert new_data.schema.metadata is None
 
-    result = table_module.LOOP.run(
-        table._inner.execute_merge_insert(
+    async def do_merge_insert():
+        return await table._inner.execute_merge_insert(
             new_data.to_reader(),
             {
                 "on": ["id"],
@@ -3535,7 +3535,8 @@ def test_merge_insert_with_schema_metadata(mem_db: DBConnection):
                 "validate_single_shard": None,
             },
         )
-    )
+
+    result = table_module.LOOP.run(do_merge_insert())
 
     assert result.num_inserted_rows == 2
     assert table.to_arrow() == new_data
