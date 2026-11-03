@@ -5637,3 +5637,22 @@ describe("computed columns", () => {
     expect(rows.map((r) => r.doubled).sort()).toEqual([10, 2]);
   });
 });
+
+describe("optimizeIndices", () => {
+  let tmpDir: tmp.DirResult;
+  let table: Table;
+  beforeEach(async () => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+    const con = await connect(tmpDir.name);
+    table = await con.createTable("t", [{ id: 1 }]);
+    await table.createIndex("id", { config: Index.btree() });
+    await table.add([{ id: 2 }]);
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  it("runs incremental reindexing", async () => {
+    await table.optimizeIndices({ indexNames: ["id_idx"], maxRowsPerTask: 10 });
+    const stats = await table.indexStats("id_idx");
+    expect(stats?.numUnindexedRows).toBe(0);
+  });
+});

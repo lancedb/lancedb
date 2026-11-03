@@ -1092,6 +1092,29 @@ class RemoteTable(Table):
             )
         )
 
+    def optimize_indices(
+        self,
+        *,
+        num_indices_to_merge: Optional[int] = None,
+        enable_partition_rebalancing: bool = False,
+        index_names: Optional[List[str]] = None,
+        retrain: bool = False,
+        max_rows_per_task: Optional[int] = None,
+        max_rows_per_segment: Optional[int] = None,
+        max_rows_to_consolidate: Optional[int] = None,
+    ) -> None:
+        LOOP.run(
+            self._table.optimize_indices(
+                num_indices_to_merge=num_indices_to_merge,
+                enable_partition_rebalancing=enable_partition_rebalancing,
+                index_names=index_names,
+                retrain=retrain,
+                max_rows_per_task=max_rows_per_task,
+                max_rows_per_segment=max_rows_per_segment,
+                max_rows_to_consolidate=max_rows_to_consolidate,
+            )
+        )
+
     def count_rows(self, filter: Optional[str] = None) -> int:
         return LOOP.run(self._table.count_rows(filter))
 

@@ -1823,6 +1823,41 @@ impl Table {
         })
     }
 
+    /// Incrementally reindex the table's indices.
+    #[pyo3(signature = (
+        num_indices_to_merge=None,
+        enable_partition_rebalancing=false,
+        index_names=None,
+        retrain=false,
+        max_rows_per_task=None,
+        max_rows_per_segment=None,
+        max_rows_to_consolidate=None,
+    ))]
+    pub fn optimize_indices<'py>(
+        self_: PyRef<'py, Self>,
+        num_indices_to_merge: Option<usize>,
+        enable_partition_rebalancing: bool,
+        index_names: Option<Vec<String>>,
+        retrain: bool,
+        max_rows_per_task: Option<u64>,
+        max_rows_per_segment: Option<u64>,
+        max_rows_to_consolidate: Option<u64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        let mut options = OptimizeOptions::default();
+        options.num_indices_to_merge = num_indices_to_merge;
+        options.enable_partition_rebalancing = enable_partition_rebalancing;
+        options.index_names = index_names;
+        options.retrain = retrain;
+        options.max_rows_per_task = max_rows_per_task;
+        options.max_rows_per_segment = max_rows_per_segment;
+        options.max_rows_to_consolidate = max_rows_to_consolidate;
+        future_into_py(self_.py(), async move {
+            inner.optimize_indices(options).await.infer_error()?;
+            Ok(())
+        })
+    }
+
     pub fn execute_merge_insert<'a>(
         self_: PyRef<'a, Self>,
         data: Bound<'a, PyAny>,

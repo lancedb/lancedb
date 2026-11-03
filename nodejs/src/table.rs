@@ -781,6 +781,34 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn optimize_indices(
+        &self,
+        num_indices_to_merge: Option<u32>,
+        enable_partition_rebalancing: Option<bool>,
+        index_names: Option<Vec<String>>,
+        retrain: Option<bool>,
+        max_rows_per_task: Option<i64>,
+        max_rows_per_segment: Option<i64>,
+        max_rows_to_consolidate: Option<i64>,
+    ) -> napi::Result<()> {
+        let inner = self.inner_ref()?;
+        let mut options = OptimizeOptions::default();
+        options.num_indices_to_merge = num_indices_to_merge.map(|v| v as usize);
+        if let Some(v) = enable_partition_rebalancing {
+            options.enable_partition_rebalancing = v;
+        }
+        options.index_names = index_names;
+        if let Some(v) = retrain {
+            options.retrain = v;
+        }
+        options.max_rows_per_task = max_rows_per_task.map(|v| v as u64);
+        options.max_rows_per_segment = max_rows_per_segment.map(|v| v as u64);
+        options.max_rows_to_consolidate = max_rows_to_consolidate.map(|v| v as u64);
+        inner.optimize_indices(options).await.default_error()?;
+        Ok(())
+    }
+
+    #[napi(catch_unwind)]
     pub async fn list_indices(&self) -> napi::Result<Vec<IndexConfig>> {
         Ok(self
             .inner_ref()?

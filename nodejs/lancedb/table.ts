@@ -180,6 +180,16 @@ export interface OptimizeOptions {
   deleteUnverified: boolean;
 }
 
+export interface OptimizeIndicesOptions {
+  numIndicesToMerge?: number;
+  enablePartitionRebalancing?: boolean;
+  indexNames?: string[];
+  retrain?: boolean;
+  maxRowsPerTask?: number;
+  maxRowsPerSegment?: number;
+  maxRowsToConsolidate?: number;
+}
+
 export interface Version {
   version: number;
   timestamp: Date;
@@ -998,6 +1008,9 @@ export abstract class Table {
    *  modification operations.
    */
   abstract optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats>;
+  abstract optimizeIndices(
+    options?: Partial<OptimizeIndicesOptions>,
+  ): Promise<void>;
   /** List all indices that have been created with {@link Table.createIndex} */
   abstract listIndices(): Promise<IndexConfig[]>;
   /**
@@ -1585,6 +1598,20 @@ export class LocalTable extends Table {
     return await this.inner.optimize(
       options?.cleanupOlderThan?.getTime(),
       options?.deleteUnverified,
+    );
+  }
+
+  async optimizeIndices(
+    options?: Partial<OptimizeIndicesOptions>,
+  ): Promise<void> {
+    await this.inner.optimizeIndices(
+      options?.numIndicesToMerge,
+      options?.enablePartitionRebalancing,
+      options?.indexNames,
+      options?.retrain,
+      options?.maxRowsPerTask,
+      options?.maxRowsPerSegment,
+      options?.maxRowsToConsolidate,
     );
   }
 
