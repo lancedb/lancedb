@@ -20,6 +20,7 @@ if [[ $actual_sha != "$expected_sha" ]]; then
 fi
 
 mkdir -p "$out"
+trap 'status=$?; printf "%s\n" "$status" > "$out/run.exit.tmp"; mv "$out/run.exit.tmp" "$out/run.exit"; exit "$status"' EXIT
 export TMPDIR=/var/tmp
 export RUSTFLAGS=""
 export RUSTUP_TOOLCHAIN=1.97.1
