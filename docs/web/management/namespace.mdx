@@ -34,7 +34,9 @@ language: Python uses `namespace_path`, Rust uses builder methods like `.namespa
 TypeScript uses `namespacePath` arguments.
 
 <Note>
-In LanceDB Enterprise SQL, a namespaced table is addressed as a [dotted path](/sql/dql/select#namespaces).
+In LanceDB Enterprise SQL, a namespaced table is addressed by its
+[schema](/basics/catalog#schema) -- the namespace path joined by `$`, not
+by `.` -- [before the table name](/sql/dql/select#namespaces).
 </Note>
 
 ## Namespace hierarchy {#namespace-hierarchy}

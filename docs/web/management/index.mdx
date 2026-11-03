@@ -138,11 +138,12 @@ const tbl = await db.openTable("clicks", ["prod", "events"]);
 ```
 
 ```sql SQL
-SELECT * FROM prod.events.clicks
+SELECT * FROM `prod$events`.clicks
 ```
 </CodeGroup>
 
-In SQL the path is written as dotted identifiers instead.
+In SQL the path is written as a `$`-joined schema instead; see
+[Namespace](/basics/catalog#schema) for why it isn't dotted.
 
 ## Delete catalog objects {#dropping}
 

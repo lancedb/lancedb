@@ -41,11 +41,13 @@ a nested `search` namespace:
 
 ```mermaid
 flowchart TD
-    catalog["catalog · root, unnamed"] --> database["ai_data · database"]
+    catalog["root catalog"] --> database["ai_data · database"]
     database --> prod["prod · namespace"]
     database --> staging["staging · namespace"]
     prod --> search["search · namespace"]
     search --> search_docs["documents · table"]
+    search --> search_view["recent_documents · view"]
+    search --> search_fn["embed · function"]
     staging --> staging_docs["documents · table"]
 ```
 
@@ -53,7 +55,7 @@ flowchart TD
 | --- | --- |
 | [Catalog](/management/catalog) | The unnamed root of an Enterprise deployment, identified by its endpoint; lists, creates and drops databases. Not present in Embedded. |
 | [Database](/management/database) | A container for namespaces and their data objects. |
-| [Namespace](/management/namespace) | A named group of tables, views or nested namespaces, addressed by its namespace path. |
+| [Namespace](/management/namespace) | A named group of catalog objects -- tables, views, secrets, functions, storage integrations, or nested namespaces -- addressed by its namespace path. |
 | [Table](/management/table) | Data stored as rows and columns. |
 | [View](/management/view) | A saved query, evaluated when read. Available in Enterprise. |
 | [Materialized view](/management/materialized-view) | The stored results of a query, updated by a refresh. Available in Enterprise. |
@@ -61,15 +63,39 @@ flowchart TD
 | [Storage integration](/management/storage-integration) | A named credential for reading or importing from storage outside the deployment's own tables, such as an S3 prefix or a HuggingFace repository. Available in Enterprise. |
 | [Function](/management/function) | Registered code used to compute column values. Available in Enterprise. |
 
-### Namespace paths {#namespace-paths}
+### Namespace name and path {#namespace-path}
 
-A **namespace path** is the sequence of namespace names from the database
-down to a given namespace. In the diagram above, `search` sits inside `prod`,
-so its namespace path is `prod.search`. Each part of that path is itself a
-namespace with its own name: `prod` is a namespace named `prod` directly
-under the database, and `search` is a namespace named `search` nested inside
-`prod`. SQL and the SDKs address a namespace, or a table within one, by its
-full path, such as `prod.search.documents`.
+A namespace's **name** is just its own component, such as `search`. Its
+**path** is the full sequence of names from the database down to it: in the
+diagram above, `search` sits inside `prod`, so its path is the sequence
+`prod`, `search`. A namespace path is never written by joining those names
+with `.` -- a dot is a valid character inside a name, so a dot-joined path
+couldn't always be split back into its components unambiguously. The two
+forms below are how SQL actually writes one.
+
+### Schema {#schema}
+
+SQL addresses a namespace path as a **schema**, the ANSI standard's term for
+the same concept: a nested path collapses into one identifier, its
+components joined by `$` instead of `.`. `search` nested inside `prod` has
+schema name `` `prod$search` `` -- one backtick-quoted identifier, since `$`
+can't appear in an ordinary name and so can always be split back
+unambiguously. A namespace directly under the database root uses the
+reserved schema name `public`. (This "schema" is the namespace path as a SQL
+identifier -- distinct from a table's Arrow schema, its column names and
+types.)
+
+### Object identifier {#identifier}
+
+An object -- a table, view, function, secret, or storage integration -- is
+addressed in SQL by the ANSI three-part identifier `database.schema.name`,
+where `schema` is exactly the `$`-joined path above. The `documents` table
+in `search`, nested inside `prod`, in database `ai_data`, is
+`` ai_data.`prod$search`.documents ``. One directly under the database root
+uses `public`: `ai_data.public.documents`.
+
+See [Namespace](/sql/ddl/namespace) for the full `CREATE`/`ALTER`/`DROP`
+syntax.
 
 ## Connecting {#connecting}
 
@@ -78,8 +104,6 @@ operations go through SQL instead. The same Python, TypeScript and Rust SDKs
 reach a database and the catalog separately.
 
 ### Connecting to Catalog {#connecting-to-catalog}
-
-<Badge color="red">Enterprise</Badge>
 
 `connect_catalog(endpoint)` connects to Enterprise's root catalog, which can
 list, create and drop databases across the whole deployment. Its

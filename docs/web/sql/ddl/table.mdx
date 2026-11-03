@@ -22,8 +22,8 @@ WHERE created_at > now() - INTERVAL '7 days'
 
 Column types are Arrow types under SQL names. See [Data types](/sql/data-types).
 
-A table inside a [namespace](/sql/ddl/namespace) is written as a dotted path:
-`prod.events.clicks`.
+A table inside a [namespace](/sql/ddl/namespace) is written with its
+[schema](/basics/catalog#schema) before the name: `` `prod$events`.clicks ``.
 
 ## DESCRIBE {#describe}
 

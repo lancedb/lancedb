@@ -129,11 +129,13 @@ WHERE category_id IN (SELECT id FROM categories WHERE active)
 
 ## Namespaced tables {#namespaces}
 
-A table inside a [namespace](/management/namespace) is written as a dotted path:
+A table inside a [namespace](/management/namespace) is written with its
+schema -- the `$`-joined namespace path, not a dotted one -- before the
+table name; see [Schema](/basics/catalog#schema) for why:
 
 <CodeGroup>
 ```sql SQL icon="database"
-SELECT * FROM prod.events.clicks
+SELECT * FROM `prod$events`.clicks
 ```
 </CodeGroup>
 

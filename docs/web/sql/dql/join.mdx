@@ -34,8 +34,9 @@ avoids repeating it in the select list.
 
 ## Across namespaces {#namespaces}
 
-Tables in different [namespaces](/management/namespace) join by their dotted paths. The
-catalog is one catalog, so there is nothing to federate:
+Tables in different [namespaces](/management/namespace) join like any other table, each
+addressed by its full `database.schema.table` identifier. The catalog is one
+catalog, so there is nothing to federate:
 
 <CodeGroup>
 ```sql SQL icon="database"
