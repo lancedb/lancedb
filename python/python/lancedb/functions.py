@@ -1797,7 +1797,12 @@ class _SourcePackager:
 
 def _code_files(modules: Sequence[Any]) -> tuple[dict[str, str], frozenset[str]]:
     """The Python source files of the modules and packages in ``code=``,
-    keyed by their path on the Function's import path."""
+    keyed by their path on the Function's import path.
+
+    Package resources are not part of the source artifact. Warn about files
+    and excluded directories that the walk leaves behind instead of silently
+    producing a Function that will fail later on the worker.
+    """
     import os
     from pathlib import Path
 
@@ -1833,19 +1838,39 @@ def _code_files(modules: Sequence[Any]) -> tuple[dict[str, str], frozenset[str]]
                 )
             root = Path(paths[0])
             sources = []
+            skipped = set()
             for directory, subdirectories, filenames in os.walk(root):
                 # Only importable modules travel: data files, caches, and
                 # directories that are not identifiers cannot be imported.
-                subdirectories[:] = sorted(
-                    child
-                    for child in subdirectories
-                    if _SOURCE_PATH_COMPONENT.fullmatch(child)
-                    and child != "__pycache__"
-                )
-                for filename in filenames:
+                kept = []
+                for child in sorted(subdirectories):
+                    if child == "__pycache__":
+                        continue
+                    if _SOURCE_PATH_COMPONENT.fullmatch(child):
+                        kept.append(child)
+                    else:
+                        relative = (Path(directory) / child).relative_to(root)
+                        skipped.add(f"{name}/{relative.as_posix()}/")
+                subdirectories[:] = kept
+                for filename in sorted(filenames):
                     stem, suffix = os.path.splitext(filename)
+                    if suffix in {".pyc", ".pyo"}:
+                        continue
                     if suffix == ".py" and _SOURCE_PATH_COMPONENT.fullmatch(stem):
                         sources.append(Path(directory) / filename)
+                    else:
+                        relative = (Path(directory) / filename).relative_to(root)
+                        skipped.add(f"{name}/{relative.as_posix()}")
+            if skipped:
+                skipped_paths = ", ".join(sorted(skipped))
+                warnings.warn(
+                    f"code= ships Python .py modules only; package {name!r} "
+                    f"will not include: {skipped_paths}. Install a package that "
+                    "includes the required resources with pip= or conda=, and "
+                    f"remove {name!r} from code= so the copied package cannot "
+                    "shadow the installed distribution.",
+                    UserWarning,
+                )
             for path in sources:
                 relative = path.relative_to(root).as_posix()
                 files[f"{name}/{relative}"] = _source_text(path)
@@ -1965,14 +1990,20 @@ def _class_call(cls: type) -> Callable[..., Any]:
 class UdfDefinition:
     """A Python callable prepared for remote Function registration.
 
-    Instances are created with :func:`udf`. Calling an instance executes the
-    original Python function, or constructs the original class, which keeps
-    local unit testing ordinary. Remote execution adapts the callable to the
-    internal Arrow batch ABI described by the registration artifact. By
-    default it invokes the callable once per row. A callable whose parameters
-    are all annotated as ``pyarrow.Array`` receives whole Arrow arrays and
-    returns a ``pyarrow.Array`` instead. This authoring choice is independent
-    of the internal artifact adapter in the registration request.
+    Instances are created with :func:`udf`. Calling an instance is ordinary
+    local Python: a decorated function is called directly, while a decorated
+    class is constructed using its initialization fields and the returned
+    instance is called with each input. Reuse the instance and call its
+    ``close`` method when it defines one. This public call does not create a
+    remote application or build the declared remote runtime, and it does not
+    need the private implementation attribute.
+
+    Remote execution adapts the callable to the internal Arrow batch ABI
+    described by the registration artifact. By default it invokes the callable
+    once per row. A callable whose parameters are all annotated as
+    ``pyarrow.Array`` receives whole Arrow arrays and returns a
+    ``pyarrow.Array`` instead. This authoring choice is independent of the
+    internal artifact adapter in the registration request.
     """
 
     def __init__(
@@ -2370,7 +2401,12 @@ def udf(
         selected through ``refresh_column`` instead of registration.
     code : sequence of module, optional
         Top-level modules or packages whose importable ``.py`` files ship
-        with the Function and are importable by their own names.
+        with the Function and are importable by their own names. Package data
+        files are not copied. To use a package that includes required data
+        resources, install it with ``pip=`` or ``conda=`` and remove that
+        package from ``code=`` so the copied Python package cannot shadow the
+        installed distribution. ``@udf`` warns when it skips files from a
+        package in ``code=``.
 
     Returns
     -------
@@ -2410,8 +2446,14 @@ def udf(
     ...         self.factor, self.offset = factor, offset
     ...     def __call__(self, value: float) -> float:
     ...         return value * self.factor + self.offset
-    >>> scale(factor=2.0)(1.5)
+    ...     def close(self):
+    ...         self.factor = 0.0
+    >>> scale_fn = scale(factor=2.0)
+    >>> scale_fn(1.5)
     3.0
+    >>> scale_fn(2.0)
+    4.0
+    >>> scale_fn.close()
     >>> [field.name for field in scale.registration_request.signature.initialization]
     ['factor', 'offset']
     >>> import lancedb
@@ -2421,6 +2463,27 @@ def udf(
     ... )
     ... def copy_blobs(image: pa.Array) -> pa.Array:
     ...     return image
+
+    **Local execution.** A function definition is callable with its decorated
+    input signature and runs the original function in the current Python
+    environment. A class definition is called with its initialization
+    arguments and constructs one instance; call that instance for row inputs,
+    reuse it as needed, and call ``close`` if it defines that method. This path
+    does not create a registered
+    [FunctionVersion][lancedb.functions.FunctionVersion], build the declared
+    remote environment, resolve Secrets, or run the remote Arrow adapter or
+    sandbox. A registered ``FunctionVersion`` call is different: it binds
+    ``col(...)`` inputs and returns a remote
+    [FunctionApplication][lancedb.functions.FunctionApplication].
+
+    ```python
+    scaled = scale(factor=2.0)
+    try:
+        assert scaled(1.5) == 3.0
+        assert scaled(2.0) == 4.0
+    finally:
+        scaled.close()
+    ```
 
     Blob v2 input is exposed as ``pyarrow.LargeBinaryArray`` in vectorized
     mode (and as ``bytes`` in row mode). Return a ``LargeBinaryArray`` with the
