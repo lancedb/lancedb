@@ -6092,6 +6092,7 @@ def test_add_columns_dataframe_computed_conflict(mem_db):
     assert table.to_arrow().equals(before)
 
 
+@pytest.mark.experimental_functions
 @pytest.mark.parametrize(
     "transforms", [{}, pa.schema([]), UserDict(), MappingProxyType({})]
 )
