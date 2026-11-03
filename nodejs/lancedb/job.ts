@@ -13,6 +13,40 @@ export interface JobEventsOptions {
 }
 
 /**
+ * A forward-compatible structured progress snapshot for a server-side job.
+ *
+ * Fields are optional because older servers and different job types report
+ * different counters. A missing counter is unknown; it is not zero.
+ */
+export interface JobProgress {
+  /** Lifecycle state, including states from newer servers. */
+  state?: string;
+  /** Coarse server-derived phase, including phases from newer servers. */
+  phase?: string | null;
+  /** Whether an operator has parked the job. */
+  paused?: boolean;
+  /**
+   * Planned, computed, skipped, remaining, and failed row counters, when the
+   * server reports them.
+   */
+  rows_planned?: number | null;
+  rows_computed?: number | null;
+  rows_skipped?: number | null;
+  rows_remaining?: number | null;
+  rows_failed?: number | null;
+  /** Execution identity and sample time used for client-side ETA derivation. */
+  execution_epoch?: number | null;
+  sample_at_millis?: number | null;
+  /** Best-effort remaining milliseconds, present only for a reliable sample. */
+  estimated_remaining_time_millis?: number;
+  /** Retain job-type-specific and newer-server fields without interpretation. */
+  [field: string]: unknown;
+}
+
+/** Callback for progress snapshots observed while waiting for a job. */
+export type JobProgressCallback = (progress: JobProgress) => void;
+
+/**
  * A handle to an operation that may still be running.
  *
  * The operation may already be complete when the handle is created.
@@ -98,9 +132,32 @@ export class Job {
     return this.inner.status();
   }
 
-  /** Wait until the operation reaches a terminal state. */
-  async wait(): Promise<void> {
-    return this.inner.wait();
+  /**
+   * Fetch a structured progress snapshot.
+   *
+   * Registry jobs include lifecycle and queue metadata even when their job
+   * type does not report counters. The returned object is forward-compatible
+   * with newer servers and job types. In-process operations return null.
+   */
+  async progress(): Promise<JobProgress | null> {
+    const progress = await this.inner.progress();
+    return progress === null ? null : this.enrichProgress(progress);
+  }
+
+  /**
+   * Wait until the operation reaches a terminal state.
+   *
+   * The optional callback observes the same snapshots fetched by the backend
+   * poller that drives completion; it does not start another poller. Without a
+   * callback, this preserves the original wait behavior.
+   */
+  async wait(progressCallback?: JobProgressCallback): Promise<void> {
+    if (progressCallback === undefined) {
+      return this.inner.wait();
+    }
+    return this.inner.wait((progress) => {
+      progressCallback(this.enrichProgress(progress));
+    });
   }
 
   /** Request cancellation. Cancelling a finished operation is a no-op. */
@@ -136,6 +193,17 @@ export class Job {
       return new ArrowTable();
     }
     return tableFromIPC(buf);
+  }
+
+  private lastProgress: JobProgress | null = null;
+
+  private enrichProgress(progress: Record<string, unknown>): JobProgress {
+    const enriched = withProgressEta(
+      this.lastProgress,
+      progress as JobProgress,
+    );
+    this.lastProgress = enriched;
+    return enriched;
   }
 
   /**
@@ -179,6 +247,103 @@ export class Job {
 }
 
 const REPR_INDENT = "    ";
+
+const ETA_MAX_SAMPLE_INTERVAL_MILLIS = 10 * 60 * 1_000;
+
+function withProgressEta(
+  previous: JobProgress | null,
+  current: JobProgress,
+): JobProgress {
+  const snapshot = { ...current };
+  const estimate = progressEta(previous, current);
+  if (estimate !== null) {
+    snapshot.estimated_remaining_time_millis = estimate;
+  }
+  return snapshot;
+}
+
+function progressEta(
+  previous: JobProgress | null,
+  current: JobProgress,
+): number | null {
+  if (
+    previous === null ||
+    (current.state !== "running" && current.state !== "finished")
+  ) {
+    return null;
+  }
+  const remaining = integerValue(current.rows_remaining);
+  if (current.state === "finished") {
+    return remaining === 0 ? 0 : null;
+  }
+  if (
+    current.paused === true ||
+    previous.paused === true ||
+    isTransitionalPhase(current.phase) ||
+    isTransitionalPhase(previous.phase)
+  ) {
+    return null;
+  }
+  const epoch = integerValue(current.execution_epoch);
+  const previousEpoch = integerValue(previous.execution_epoch);
+  if (epoch === null || previousEpoch !== epoch) {
+    return null;
+  }
+  const sampleAt = integerValue(current.sample_at_millis);
+  const previousAt = integerValue(previous.sample_at_millis);
+  if (sampleAt === null || previousAt === null) {
+    return null;
+  }
+  const elapsed = sampleAt - previousAt;
+  if (
+    elapsed <= 0 ||
+    elapsed > ETA_MAX_SAMPLE_INTERVAL_MILLIS ||
+    Date.now() - sampleAt > ETA_MAX_SAMPLE_INTERVAL_MILLIS
+  ) {
+    return null;
+  }
+  const planned = integerValue(current.rows_planned);
+  const currentRemaining = integerValue(current.rows_remaining);
+  const previousRemaining = integerValue(previous.rows_remaining);
+  if (
+    planned === null ||
+    currentRemaining === null ||
+    previousRemaining === null
+  ) {
+    return null;
+  }
+  if (currentRemaining === 0) {
+    return 0;
+  }
+  if (planned !== previous.rows_planned) {
+    return null;
+  }
+  if (current.fragments_planned !== previous.fragments_planned) {
+    return null;
+  }
+  const currentComputed = integerValue(current.rows_computed);
+  const previousComputed = integerValue(previous.rows_computed);
+  if (currentComputed === null || previousComputed === null) {
+    return null;
+  }
+  const currentAccounted =
+    currentComputed + (integerValue(current.rows_skipped) ?? 0);
+  const previousAccounted =
+    previousComputed + (integerValue(previous.rows_skipped) ?? 0);
+  const advanced = currentAccounted - previousAccounted;
+  if (advanced <= 0 || currentRemaining > previousRemaining) {
+    return null;
+  }
+  return Math.floor((currentRemaining * elapsed) / advanced);
+}
+
+function integerValue(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) ? value : null;
+}
+
+function isTransitionalPhase(phase: unknown): boolean {
+  return phase === "queued" || phase === "starting" || phase === "paused";
+}
 
 // biome-ignore lint/suspicious/noExplicitAny: shape varies by job type
 function indentJson(value: any): string {
