@@ -200,13 +200,14 @@ pub struct JobInfo {
 
 impl From<lancedb::database::JobInfo> for JobInfo {
     fn from(info: lancedb::database::JobInfo) -> Self {
+        let progress = info.progress_snapshot();
         Self {
             job_id: info.job_id,
             table: info.table,
             job_type: info.job_type,
             state: info.state,
             created_at_millis: info.created_at_millis,
-            progress: info.progress_snapshot(),
+            progress,
             paused: info.paused,
         }
     }
