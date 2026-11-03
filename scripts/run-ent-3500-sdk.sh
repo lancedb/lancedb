@@ -8,7 +8,7 @@ fi
 
 suite=$1
 out=$2
-expected_sha=${EXPECTED_SHA:?EXPECTED_SHA is required}
+expected_sha=${EXPECTED_SHA:-5bfcbe77bf9595b05ed1a5f06a803bdce8fe79a8}
 repo=$(cd "$(dirname "$0")/.." && pwd)
 cd "$repo"
 
@@ -59,20 +59,14 @@ run() {
 
 case "$suite" in
   rust)
-    run rust-list mbx +$toolchain test -p lancedb --features remote \
-      wait_progress_observes_the_existing_poll_loop -- --list
-    grep -Fq 'wait_progress_observes_the_existing_poll_loop' "$out/rust-list.log"
-    run rust-list-paused mbx +$toolchain test -p lancedb --features remote \
-      describe_progress_reports_stable_unpaused_state -- --list
-    grep -Fq 'describe_progress_reports_stable_unpaused_state' \
-      "$out/rust-list-paused.log"
     run rust-test mbx +$toolchain test -p lancedb --features remote \
-      wait_progress_observes_the_existing_poll_loop -- --nocapture
-    grep -Eq 'test result: ok\. [1-9][0-9]* passed' "$out/rust-test.log"
+      remote::job::tests::wait_progress_observes_the_existing_poll_loop \
+      -- --exact --nocapture
+    grep -Fq 'test result: ok. 1 passed;' "$out/rust-test.log"
     run rust-test-paused mbx +$toolchain test -p lancedb --features remote \
-      describe_progress_reports_stable_unpaused_state -- --nocapture
-    grep -Eq 'test result: ok\. [1-9][0-9]* passed' \
-      "$out/rust-test-paused.log"
+      remote::job::tests::describe_progress_reports_stable_unpaused_state \
+      -- --exact --nocapture
+    grep -Fq 'test result: ok. 1 passed;' "$out/rust-test-paused.log"
     ;;
   python)
     cd python
@@ -81,20 +75,25 @@ case "$suite" in
     run python-provenance uv run --frozen --python 3.12 --extra tests --extra dev \
       python -c \
       "import lancedb; print(lancedb.__file__); assert lancedb.__file__.startswith('$repo/python/')"
-    run python-collect uv run --frozen --python 3.12 --extra tests --extra dev \
-      pytest --collect-only -q python/tests/test_job.py -k 'progress or wait_progress'
-    grep -Fq 'test_wait_progress_true_updates_and_closes_only_the_owned_bar' \
-      "$out/python-collect.log"
-    grep -Fq 'test_wait_progress_bar_resumes_caller_owned_bar_after_timeout' \
-      "$out/python-collect.log"
-    grep -Fq 'test_wait_progress_bar_resets_display_for_new_plan_or_epoch' \
-      "$out/python-collect.log"
+    python_job_tests=(
+      python/tests/test_job.py::test_progress_is_additive_to_string_status_and_returns_none_locally
+      python/tests/test_job.py::test_progress_eta_uses_two_stable_advancing_same_epoch_samples
+      python/tests/test_job.py::test_progress_retains_eta_from_same_handle_observations
+      python/tests/test_job.py::test_wait_progress_callback_observes_backend_poll_updates
+      python/tests/test_job.py::test_wait_progress_callback_uses_the_public_eta_enrichment
+      python/tests/test_job.py::test_wait_progress_true_updates_and_closes_only_the_owned_bar
+      python/tests/test_job.py::test_wait_progress_bar_resumes_caller_owned_bar_after_timeout
+      python/tests/test_job.py::test_wait_progress_bar_resets_display_for_new_plan_or_epoch
+      python/tests/test_job.py::test_wait_progress_bar_uses_remaining_rows_when_computation_is_repeated
+      python/tests/test_job.py::test_wait_progress_bar_tracks_late_planning_without_regressing
+      python/tests/test_job.py::test_wait_progress_false_keeps_legacy_inner_wait_call
+    )
     run python-job-tests uv run --frozen --python 3.12 --extra tests --extra dev \
-      pytest -q python/tests/test_job.py -k 'progress or wait_progress'
-    grep -Eq '[1-9][0-9]* passed' "$out/python-job-tests.log"
+      pytest -q "${python_job_tests[@]}"
+    grep -Fq '11 passed' "$out/python-job-tests.log"
     run python-remote-test uv run --frozen --python 3.12 --extra tests --extra dev \
       pytest -q python/tests/test_remote_db.py::test_remote_connection_jobs_surface
-    grep -Eq '[1-9][0-9]* passed' "$out/python-remote-test.log"
+    grep -Fq '1 passed' "$out/python-remote-test.log"
     ;;
   lint)
     run clippy mbx +$toolchain clippy -p lancedb --features remote --no-deps --tests \
