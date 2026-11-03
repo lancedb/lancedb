@@ -1,0 +1,216 @@
+---
+title: "Distributed Training"
+sidebarTitle: "Distributed Training"
+description: "Shard StreamingDataset across ranks and workers, with elastic determinism and checkpointing."
+icon: server
+availability:
+  embedded: available
+  enterprise: available
+---
+
+To understand the wide range of scenarios handled by [`StreamingDataset`](/training/data-loading) across a
+distributed job, consider a model trained with stochastic gradient descent (SGD) and distributed data parallelism
+(DDP). In this example, we need to load batches onto multiple GPUs across multiple servers. After each batch is
+processed, the GPUs exchange weights and the next batch is loaded. We fix the following terminology:
+
+- **World size** - The number of GPUs being loaded simultaneously. For example, if we have $2$ servers with $4$
+  GPUs each, the world size is $8$.
+- **Rank** - The identifier of an individual GPU. It is an integer in the range `[0, world_size)`.
+  Each rank is allocated a disjoint portion of the source data.
+- **Batch size** - The number of rows processed by one GPU in a single training step. For example, $128$.
+- **Global batch size** - The total number of rows processed across all GPUs in a training step (sometimes called a "minibatch" in machine learning literature). For
+  example, if we have $8$ GPUs with batch size $128$, the global batch size is $1024$.
+
+Other concepts, such as read batch size and `num_workers`, are introduced in [PyTorch Data Loader](/training/data-loading).
+
+## Parallelism & Elasticity {#parallelism-&-elasticity}
+
+When loading data, `StreamingDataset` partitions the source dataset among disjoint parallel threads called **splits**. Each rank is allocated a contiguous group of splits, and each DataLoader worker associated to a rank gets a contiguous subgroup of its rank's splits.
+
+If using `shuffle=False`, data is allocated to splits naively in ordered contiguous blocks of equal size. With `shuffle=True`
+(the default), the rows of the source dataset are shuffled and distributed among splits such that each split receives the same
+number of rows; with `shuffle_clump_size` set, they are shuffled in clumps of that many contiguous rows.
+
+The number of splits defaults to `world_size` if `num_splits` is omitted during initialization. This is not recommended, as a later run using a different world size will then construct a different layout and structure of global batches.
+
+To get **elastic determinism**, choose a fixed `num_splits` that is compatible with every topology you plan to use.
+For example, a run with `num_splits=8` and $4$ GPUs assigns $2$ splits to each rank. The ranks pull from their splits in
+round-robin order, producing the same global batches as a run with $8$ GPUs and the same `num_splits`, `shuffle_seed`,
+and `epoch`.
+
+The following constraints apply:
+
+- `num_splits` must be divisible by `world_size`.
+- With DataLoader worker processes, `num_splits` must be divisible by `world_size * num_workers`.
+- For the same samples to form each global training step across topologies, `global_batch_size` must be a multiple of
+  `num_splits`.
+- The filtered row count must be at least `num_splits`. If it is not evenly divisible by `num_splits`, up to
+  `num_splits - 1` surplus rows are dropped so that every split has the same length.
+
+For example, to switch between $8$ and $6$ GPUs, use a common multiple such as $24$ for `num_splits`. Highly composite values can support many layouts; for example, `num_splits = 48` is compatible with $10$ distinct possible GPU counts. Remember to include `num_workers` when checking divisibility.
+
+<CodeGroup>
+```py Python icon=Python
+import torch.distributed as dist
+
+dist.init_process_group("nccl")
+rank = dist.get_rank()
+world_size = dist.get_world_size()
+
+# num_splits=48 is divisible by many integers,
+# so this dataset works unchanged as you add or remove GPUs.
+ds = StreamingDataset(
+    table,
+    num_splits=48,
+    shuffle_seed=42,
+    epoch=current_epoch,
+    rank=rank,
+    world_size=world_size,
+)
+
+for sample in ds:
+    train_step(sample)
+```
+</CodeGroup>
+
+## Checkpointing {#checkpointing}
+
+`StreamingDataset` provides checkpointing in case your model training fails partway through a run. Use `StreamingDataset.state_dict()` to capture the current number of samples consumed from each split in a Python dictionary, and `load_state_dict()` to restore the last saved position.
+
+A stored `StreamingDataset` state reflects only round-robin cycles that have been completed across all splits; samples completed partway through a cycle at the time of saving can be replayed. To ensure efficient saving, make sure `global_batch_size` is a multiple of `num_splits`, as in the example below.
+
+<CodeGroup>
+```py Python icon=Python
+import torch
+
+global_batch_size = 48  # one sample per split in each global step
+batch_size = global_batch_size // world_size
+
+dataset = StreamingDataset(
+    table,
+    num_splits=48,
+    shuffle_seed=42,
+    epoch=current_epoch,
+    rank=rank,
+    world_size=world_size,
+)
+dataloader = torch.utils.data.DataLoader(
+    dataset,
+    batch_size=batch_size,
+    num_workers=0,
+)
+
+for step, batch in enumerate(dataloader):
+    train_step(batch)
+
+    if (step + 1) % checkpoint_interval == 0:
+        torch.save(
+            {"model": model.state_dict(), "dataset": dataset.state_dict()},
+            f"checkpoint_{step + 1}.pt",
+        )
+
+# --- resuming after a crash ---
+checkpoint = torch.load("checkpoint_100.pt")
+model.load_state_dict(checkpoint["model"])
+
+dataset_state = checkpoint["dataset"]
+dataset = StreamingDataset(
+    table,
+    num_splits=dataset_state["num_splits"],
+    shuffle_seed=dataset_state["shuffle_seed"],
+    epoch=dataset_state["epoch"],
+    rank=rank,
+    world_size=world_size,  # may differ from the run that saved the checkpoint
+)
+dataset.load_state_dict(dataset_state)
+dataloader = torch.utils.data.DataLoader(
+    dataset,
+    batch_size=global_batch_size // world_size,
+    num_workers=0,
+)
+
+for batch in dataloader:
+    train_step(batch)
+```
+</CodeGroup>
+
+`load_state_dict()` rejects a checkpoint whose `num_splits` or `shuffle_seed` differs from the new dataset. For an
+exact resume, also use the same table snapshot, `epoch`, `shuffle`, `filter`, and other data-selection settings. The
+`world_size` and number of DataLoader workers may change as long as the split and batch-size divisibility constraints
+still hold.
+
+### Checkpointing with Multiple DataLoader Workers {#checkpointing-with-multiple-dataloader-workers}
+
+Python's built-in `torch.utils.data.DataLoader` produces a safe checkpoint when `num_workers = 0`. With `num_workers > 0`, calling `state_dict()` often raises `RuntimeError`. In this case, use `StreamingDataLoader` for multi-worker prefetch and exact resumability. It carries a state snapshot
+alongside every internal batch and commits it to the parent `StreamingDataset` only when that batch is returned to the
+trainer. The trainer receives the same collated batch it would receive from a standard `DataLoader`.
+
+<CodeGroup>
+```py Python icon=Python
+from lancedb.streaming import StreamingDataset, StreamingDataLoader
+
+dataset = StreamingDataset(
+    table,
+    num_splits=48,
+    shuffle_seed=42,
+    epoch=current_epoch,
+    rank=rank,
+    world_size=world_size,
+)
+dataloader = StreamingDataLoader(
+    dataset,
+    batch_size=batch_size,
+    num_workers=4,
+)
+
+for step, batch in enumerate(dataloader):
+    train_step(batch)
+
+    if (step + 1) % checkpoint_interval == 0:
+        torch.save(
+            {"model": model.state_dict(), "dataset": dataset.state_dict()},
+            f"checkpoint_{step + 1}.pt",
+        )
+```
+</CodeGroup>
+
+`StreamingDataLoader` accepts the same arguments as `torch.utils.data.DataLoader`, with a few restrictions:
+
+- `dataset` must be a `StreamingDataset` (subclasses that override `__iter__` are not supported).
+- `in_order = True` is required so that consumer-committed checkpoints stay deterministic.
+- `persistent_workers = True` is not supported, because prefetched worker copies cannot be restored from parent-committed state.
+- `drop_last = True` is not supported, because incomplete tails discarded by worker replicas cannot be checkpointed topology-independently.
+
+With more than one worker, call `state_dict()` at a complete logical step boundary where every split assigned to the
+rank has the same consumed-sample count. Calling it mid-step raises `RuntimeError` asking you to consume more batches
+first.
+
+### Resuming Across Different Topologies {#resuming-across-different-topologies}
+
+When training across ranks, each rank owns its own subset of splits and only its own splits have exact progress. To
+resume on a different `world_size`, collect the `state_dict()` from every rank of the previous run and merge them with
+`StreamingDataset.merge_state_dicts` before calling `load_state_dict()` on the new run. The merge is topology-agnostic:
+pass the full list of per-rank states in, and hand the identical merged dict to every rank of the resumed job,
+regardless of whether the topology grew, shrank, or stayed the same.
+
+<CodeGroup>
+```py Python icon=Python
+# On each rank of the previous run:
+state = dataset.state_dict()
+# ...gather `state` from every rank into a single list `states` (for example
+# via torch.distributed all-gather or by saving one file per rank).
+
+merged = StreamingDataset.merge_state_dicts(states)
+
+# On each rank of the resumed run (world_size may differ):
+dataset = StreamingDataset(
+    table,
+    num_splits=merged["num_splits"],
+    shuffle_seed=merged["shuffle_seed"],
+    epoch=merged["epoch"],
+    rank=rank,
+    world_size=new_world_size,
+)
+dataset.load_state_dict(merged)
+```
+</CodeGroup>

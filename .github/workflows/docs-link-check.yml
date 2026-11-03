@@ -50,6 +50,10 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
 
+      - name: Extract SDK documentation links
+        run: |
+          python3 ci/extract_sdk_doc_links.py --output ./lychee-inputs/sdk-doc-links.md
+
       - name: Check links
         id: lychee
         continue-on-error: true
@@ -64,10 +68,12 @@ jobs:
           args: >-
             --scheme https
             --scheme http
+            --include-fragments
             --no-progress
             --max-retries 3
             --timeout 20
             'docs/src/**/*.md'
+            './lychee-inputs/sdk-doc-links.md'
           format: json
           output: ./lychee/out.json
           jobSummary: false

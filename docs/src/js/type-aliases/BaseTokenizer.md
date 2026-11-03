@@ -12,6 +12,7 @@ type BaseTokenizer:
   | "whitespace"
   | "raw"
   | "ngram"
+  | "code"
   | "icu"
   | "icu/split"
   | `jieba/${string}`

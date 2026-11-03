@@ -100,6 +100,8 @@ optional numPartitions: number;
 
 The number of IVF partitions to create.
 
+When set, this takes precedence over `targetPartitionSize`.
+
 For HNSW, we recommend a small number of partitions. Setting this to 1 works
 well for most tables. For very large tables, training just one HNSW graph
 will require too much memory. Each partition becomes its own HNSW graph, so
@@ -147,3 +149,23 @@ number of vectors used to train the index is `sample_rate * num_partitions`.
 
 Increasing this value might improve the quality of the index but in most cases the
 default should be sufficient.
+
+***
+
+### targetPartitionSize?
+
+```ts
+optional targetPartitionSize: number;
+```
+
+The target number of rows in each IVF partition.
+
+This is an alternative to `numPartitions`. When it is set and
+`numPartitions` is not, the number of partitions is derived by dividing
+the number of rows by this value. When both are set, `numPartitions` is
+used and this value is ignored. When neither is set, the target is
+1,048,576 rows.
+
+Larger partitions mean fewer of them, which makes the first part of the
+search (picking the right partitions) faster and the second part
+(searching within a partition) slower.

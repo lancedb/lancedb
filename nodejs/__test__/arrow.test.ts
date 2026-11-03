@@ -790,6 +790,43 @@ describe.each(arrowVersions)("Arrow %#", (arrow: ApacheArrow) => {
       }
     });
 
+    it("will allow null values around struct values with a schema", function () {
+      const schema = new Schema([
+        new Field("value", new Struct([new Field("nested", new Int32())])),
+      ]);
+      for (const { records, nullIndex } of [
+        {
+          records: [{ value: null }, { value: { nested: 2 } }],
+          nullIndex: 0,
+        },
+        {
+          records: [{ value: { nested: 1 } }, { value: null }],
+          nullIndex: 1,
+        },
+      ]) {
+        const table = makeArrowTable(records, { schema });
+        const values = table.getChild("value");
+
+        expect(values?.nullCount).toBe(1);
+        expect(values?.get(nullIndex)).toBeNull();
+      }
+    });
+
+    it("will reject non-object values for struct fields in a schema", function () {
+      const schema = new Schema([
+        new Field("value", new Struct([new Field("nested", new Int32())])),
+      ]);
+      for (const records of [
+        [{ value: 5 }],
+        [{ value: 5 }, { value: { nested: 1 } }],
+        [{ value: { nested: 1 } }, { value: "oops" }],
+      ]) {
+        expect(() => makeArrowTable(records, { schema })).toThrow(
+          /Expected a struct value for field value at row \d, got/,
+        );
+      }
+    });
+
     it("will allow a schema to be provided", async function () {
       await checkTableCreation(
         async (records, _, schema) =>

@@ -19,6 +19,47 @@ use crate::{Error, Result};
 /// Semantic Function type for a Blob v2 value.
 pub const FUNCTION_BLOB_V2_TYPE: &str = "blob_v2";
 
+/// Configured placement-independent hardware and worker limits of a Function
+/// GPU class.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct GpuClass {
+    /// Stable class name accepted by Function registration and refresh options.
+    pub name: String,
+    /// Kubernetes extended resource requested by this class.
+    pub resource_name: String,
+    /// Human-readable GPU model, when configured by the operator.
+    pub gpu_model: Option<String>,
+    /// Usable memory of one GPU in the class, in bytes.
+    pub gpu_memory_bytes: Option<u64>,
+    /// Maximum GPUs one worker in this class may request.
+    pub max_gpu_count_per_worker: Option<u32>,
+    /// CPU limit for a worker in this class, in millicores.
+    pub cpu_millis: Option<u64>,
+    /// Memory limit for a worker in this class, in bytes.
+    pub memory_bytes: Option<u64>,
+    /// Ephemeral-storage limit for a worker in this class, in bytes.
+    pub ephemeral_storage_bytes: Option<u64>,
+}
+
+pub(crate) const GPU_CLASS_NAME_ERROR: &str = "gpu_class must be a lowercase name of at most 63 letters, digits, or hyphens, and cannot start or end with a hyphen";
+
+pub(crate) fn validate_gpu_class_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || name.len() > 63
+        || name.starts_with('-')
+        || name.ends_with('-')
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        return Err(Error::InvalidInput {
+            message: GPU_CLASS_NAME_ERROR.to_string(),
+        });
+    }
+    Ok(())
+}
+
 fn invalid_json(error: impl std::fmt::Display) -> Error {
     Error::InvalidInput {
         message: format!("invalid remote Function JSON: {error}"),
@@ -156,11 +197,20 @@ pub struct FunctionArtifact {
 }
 
 /// One ordered Arrow input parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlobAccess {
+    Bytes,
+    Reader,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionParameter {
     pub name: String,
     pub arrow_type: String,
     pub nullable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob_access: Option<BlobAccess>,
 }
 
 /// One field of an ordered named-struct result.
@@ -215,6 +265,10 @@ pub struct PythonEnvironmentSpec {
     pub modules: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+    /// Debian packages (`name` or `name=version`) added to the Function's
+    /// image before its Python environment is installed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub system_packages: Vec<String>,
 }
 
 /// Reproducible Python runtime definition understood by Sophon.
@@ -244,8 +298,10 @@ pub enum PythonRuntimeSpec {
     ///         path: None,
     ///         modules: Vec::new(),
     ///         image: None,
+    ///         system_packages: Vec::new(),
     ///     },
     ///     env: BTreeMap::new(),
+    ///     gpu_class: Some("a10g".to_string()),
     /// };
     /// assert!(runtime.requires_gpu());
     /// ```
@@ -253,6 +309,8 @@ pub enum PythonRuntimeSpec {
         python_version: String,
         environment: PythonEnvironmentSpec,
         env: BTreeMap<String, String>,
+        /// Operator-defined GPU class; absent uses the deployment default.
+        gpu_class: Option<String>,
     },
     /// A runtime kind introduced by a newer server.
     ///
@@ -303,6 +361,14 @@ impl PythonRuntimeSpec {
     pub fn requires_gpu(&self) -> bool {
         matches!(self, Self::PythonV2 { .. })
     }
+
+    /// Operator-defined GPU class, or `None` to use the deployment default.
+    pub fn gpu_class(&self) -> Option<&str> {
+        match self {
+            Self::PythonV2 { gpu_class, .. } => gpu_class.as_deref(),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -313,6 +379,8 @@ struct PythonRuntimeV1Wire {
     env: BTreeMap<String, String>,
     #[serde(default)]
     gpu: Option<Value>,
+    #[serde(default)]
+    gpu_class: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -322,6 +390,8 @@ struct PythonRuntimeV2Wire {
     #[serde(default)]
     env: BTreeMap<String, String>,
     gpu: bool,
+    #[serde(default)]
+    gpu_class: Option<String>,
 }
 
 impl<'de> Deserialize<'de> for PythonRuntimeSpec {
@@ -342,6 +412,11 @@ impl<'de> Deserialize<'de> for PythonRuntimeSpec {
                         "python runtime with gpu requires kind='python_v2'",
                     ));
                 }
+                if wire.gpu_class.is_some() {
+                    return Err(de::Error::custom(
+                        "python runtime with gpu_class requires kind='python_v2'",
+                    ));
+                }
                 Ok(Self::Python {
                     python_version: wire.python_version,
                     environment: wire.environment,
@@ -354,10 +429,14 @@ impl<'de> Deserialize<'de> for PythonRuntimeSpec {
                 if !wire.gpu {
                     return Err(de::Error::custom("runtime.gpu must be true"));
                 }
+                if let Some(gpu_class) = wire.gpu_class.as_deref() {
+                    validate_gpu_class_name(gpu_class).map_err(de::Error::custom)?;
+                }
                 Ok(Self::PythonV2 {
                     python_version: wire.python_version,
                     environment: wire.environment,
                     env: wire.env,
+                    gpu_class: wire.gpu_class,
                 })
             }
             _ => Ok(Self::Unrecognized { kind }),
@@ -376,6 +455,8 @@ impl Serialize for PythonRuntimeSpec {
             env: &'a BTreeMap<String, String>,
             #[serde(skip_serializing_if = "Option::is_none")]
             gpu: Option<bool>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            gpu_class: Option<&'a str>,
         }
 
         #[derive(Serialize)]
@@ -394,18 +475,21 @@ impl Serialize for PythonRuntimeSpec {
                 environment,
                 env,
                 gpu: None,
+                gpu_class: None,
             }
             .serialize(serializer),
             Self::PythonV2 {
                 python_version,
                 environment,
                 env,
+                gpu_class,
             } => PythonRuntimeRef {
                 kind: "python_v2",
                 python_version,
                 environment,
                 env,
                 gpu: Some(true),
+                gpu_class: gpu_class.as_deref(),
             }
             .serialize(serializer),
             Self::Unrecognized { kind } => UnrecognizedRuntimeRef { kind }.serialize(serializer),
@@ -450,12 +534,18 @@ pub struct FunctionVersion {
     #[serde(deserialize_with = "deserialize_object_version")]
     version: String,
     image: FunctionImage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_digest: Option<String>,
     signature: FunctionSignature,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     secret_bindings: Vec<SecretBinding>,
-    created_at: String,
+    /// When this version was created, in milliseconds since the epoch.
+    created_at_millis: i64,
     metadata: BTreeMap<String, String>,
     disabled: bool,
+    /// Operator-defined GPU class declared at registration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    gpu_class: Option<String>,
 }
 
 impl FunctionVersion {
@@ -493,6 +583,28 @@ impl FunctionVersion {
     pub fn image(&self) -> &FunctionImage {
         &self.image
     }
+
+    /// Digest of the registered source artifact, when provided by the server.
+    ///
+    /// Compare this with [`FunctionArtifactRequest::digest`] to identify matching
+    /// source, independently of the built image's manifest digest.
+    ///
+    /// ```
+    /// use lancedb::function::{FunctionArtifactRequest, FunctionVersion};
+    ///
+    /// fn has_same_source(version: &FunctionVersion, artifact: &FunctionArtifactRequest) -> bool {
+    ///     version.source_digest() == Some(artifact.digest.as_str())
+    /// }
+    /// ```
+    pub fn source_digest(&self) -> Option<&str> {
+        self.source_digest.as_deref()
+    }
+
+    /// Operator-defined GPU class declared at registration.
+    pub fn gpu_class(&self) -> Option<&str> {
+        self.gpu_class.as_deref()
+    }
+
     pub fn signature(&self) -> &FunctionSignature {
         &self.signature
     }
@@ -507,8 +619,9 @@ impl FunctionVersion {
         &self.secret_bindings
     }
 
-    pub fn created_at(&self) -> &str {
-        &self.created_at
+    /// When this version was created, in milliseconds since the epoch.
+    pub fn created_at_millis(&self) -> i64 {
+        self.created_at_millis
     }
 }
 
@@ -524,9 +637,12 @@ pub struct FunctionArtifactContent {
 
 /// Internal execution adapter selected for a Python callable artifact.
 ///
-/// The adapter converts the public scalar callable to the Arrow batch ABI
-/// used by the remote executor. It is part of the request envelope, not a
-/// public batch-UDF authoring mode.
+/// This is part of the executor request envelope, not the user-facing UDF
+/// authoring mode. For version 1, the executor selects vectorized execution
+/// when every callable parameter is annotated as `pyarrow.Array`; it passes one
+/// Arrow array per declared input and requires an Arrow array matching the
+/// declared output. Other callables are invoked row by row. Both modes use the
+/// same internal adapter kind.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PythonAdapterSpec {
     pub kind: String,
@@ -547,17 +663,67 @@ pub struct FunctionArtifactRequest {
     pub adapter: PythonAdapterSpec,
 }
 
+fn deserialize_batch_size<'de, D>(deserializer: D) -> std::result::Result<Option<u32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<u32>::deserialize(deserializer)
+        .map_err(|error| de::Error::custom(format!("batch_size: {error}")))?;
+    validate_batch_size_value(value).map_err(de::Error::custom)?;
+    Ok(value)
+}
+
+fn deserialize_row_timeout<'de, D>(deserializer: D) -> std::result::Result<Option<f64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<f64>::deserialize(deserializer)
+        .map_err(|error| de::Error::custom(format!("row_timeout_seconds: {error}")))?;
+    validate_row_timeout_value(value).map_err(de::Error::custom)?;
+    Ok(value)
+}
+
+fn validate_batch_size_value(value: Option<u32>) -> std::result::Result<(), &'static str> {
+    if value == Some(0) {
+        return Err("batch_size must be between 1 and u32::MAX");
+    }
+    Ok(())
+}
+
+fn validate_row_timeout_value(value: Option<f64>) -> std::result::Result<(), &'static str> {
+    if value.is_some_and(|seconds| !seconds.is_finite() || seconds <= 0.0) {
+        return Err("row_timeout_seconds must be positive and finite");
+    }
+    Ok(())
+}
+
 /// Stable request envelope for remote immutable Function registration.
 ///
 /// Credential values deliberately have no field here. The only secret-shaped
 /// thing a client sends is `secret_bindings`: the name of a Secret the
 /// database already holds, which Sophon resolves inside the remote runtime.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FunctionRegistrationRequest {
     pub name: String,
     pub artifact: FunctionArtifactRequest,
     pub signature: FunctionSignature,
     pub runtime: PythonRuntimeSpec,
+    /// Maximum rows in one execution batch; the executor may use fewer.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_batch_size"
+    )]
+    pub batch_size: Option<u32>,
+    /// Deadline for each Python call, in seconds: one row for scalar Functions
+    /// and one batch for vectorized Functions. It does not govern Function
+    /// initialization.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_row_timeout"
+    )]
+    pub row_timeout_seconds: Option<f64>,
     /// Declared environment variable name to the Secret it binds. A binding is
     /// a reference: whether the Secret exists is answered when a column is
     /// declared against this version, not here.
@@ -565,7 +731,28 @@ pub struct FunctionRegistrationRequest {
     pub secret_bindings: Vec<SecretBinding>,
 }
 
-impl_json!(FunctionRegistrationRequest);
+impl FunctionRegistrationRequest {
+    /// Decode a registration request supplied by an SDK language binding.
+    pub fn from_json(json: &str) -> Result<Self> {
+        from_json(json)
+    }
+
+    /// Encode the known client contract with bytewise-sorted JSON keys.
+    pub fn to_canonical_json(&self) -> Result<String> {
+        self.validate()?;
+        canonical_json(self)
+    }
+
+    /// Reject explicit execution controls that cannot be submitted safely.
+    pub fn validate(&self) -> Result<()> {
+        let invalid_input = |message: &'static str| Error::InvalidInput {
+            message: message.to_string(),
+        };
+        validate_batch_size_value(self.batch_size).map_err(invalid_input)?;
+        validate_row_timeout_value(self.row_timeout_seconds).map_err(invalid_input)?;
+        Ok(())
+    }
+}
 
 /// Exact FunctionVersion reference embedded in applications and bindings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -760,8 +947,8 @@ impl_json!(FunctionBinding);
 /// Stable terminal result of an expression-backed or Function-backed column
 /// refresh [`crate::Job`].
 ///
-/// Local refresh jobs produce this value in process. LanceDB Cloud and
-/// Enterprise decode the same value from the durable job's terminal payload.
+/// LanceDB Embedded refresh jobs produce this value in process. LanceDB
+/// Enterprise decodes the same value from the durable job's terminal payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RefreshColumnResult {
     /// Rows assigned a value by this refresh.
@@ -829,6 +1016,12 @@ pub struct FunctionErrorRecord {
     /// detail was capped and only the fragment summary remains.
     #[serde(default)]
     pub row_offset: Option<u32>,
+    /// Portable physical row address, `(fragment_id << 32) | row_offset`.
+    ///
+    /// `None` when the record covers a fragment rather than one row, or when
+    /// an older server does not report row addresses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row_address: Option<u64>,
     /// The column being computed.
     pub column: String,
     /// The Function that failed.
@@ -909,6 +1102,27 @@ mod conda_environment_tests {
     }
 
     #[test]
+    fn system_packages_round_trip_and_stay_absent_when_empty() {
+        let apt: PythonEnvironmentSpec = serde_json::from_str(
+            r#"{"kind":"pip","packages":["torchcodec"],"system_packages":["libavutil58"]}"#,
+        )
+        .unwrap();
+        assert_eq!(apt.system_packages, ["libavutil58"]);
+        assert!(
+            serde_json::to_string(&apt)
+                .unwrap()
+                .contains(r#""system_packages":["libavutil58"]"#)
+        );
+        let pip: PythonEnvironmentSpec =
+            serde_json::from_str(r#"{"kind":"pip","packages":["numpy"]}"#).unwrap();
+        assert!(
+            !serde_json::to_string(&pip)
+                .unwrap()
+                .contains("system_packages")
+        );
+    }
+
+    #[test]
     fn gpu_python_runtime_marker_round_trips_and_validates() {
         let runtime: PythonRuntimeSpec = serde_json::from_str(
             r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":true}"#,
@@ -920,14 +1134,26 @@ mod conda_environment_tests {
             super::canonical_json(&runtime).unwrap(),
             r#"{"environment":{"kind":"pip"},"gpu":true,"kind":"python_v2","python_version":"3.12"}"#
         );
+        let runtime: PythonRuntimeSpec = serde_json::from_str(
+            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":true,"gpu_class":"a10g"}"#,
+        )
+        .unwrap();
+        assert_eq!(runtime.gpu_class(), Some("a10g"));
+        assert_eq!(
+            super::canonical_json(&runtime).unwrap(),
+            r#"{"environment":{"kind":"pip"},"gpu":true,"gpu_class":"a10g","kind":"python_v2","python_version":"3.12"}"#
+        );
 
         for invalid in [
             r#"{"kind":"python","python_version":"3.12","environment":{"kind":"pip"},"gpu":true}"#,
+            r#"{"kind":"python","python_version":"3.12","environment":{"kind":"pip"},"gpu_class":"a10g"}"#,
             r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"}}"#,
             r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":1}"#,
             r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":false}"#,
             r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":"true"}"#,
             r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":"H100"}"#,
+            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":true,"gpu_class":"H100"}"#,
+            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":true,"gpu_class":"-bad"}"#,
         ] {
             assert!(serde_json::from_str::<PythonRuntimeSpec>(invalid).is_err());
         }
@@ -953,6 +1179,52 @@ mod conda_environment_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn function_version_preserves_source_digest() {
+        const VERSION: &str = include_str!(
+            "../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
+        );
+        let mut document: Value = serde_json::from_str(VERSION).unwrap();
+        let legacy = FunctionVersion::from_json(VERSION).unwrap();
+        assert_eq!(legacy.source_digest(), None);
+        assert_eq!(legacy.to_canonical_json().unwrap(), VERSION.trim_end());
+
+        for digest in [Value::Null, serde_json::json!("sha256:source-artifact")] {
+            document["source_digest"] = digest.clone();
+            let version = FunctionVersion::from_json(&document.to_string()).unwrap();
+            assert_eq!(version.source_digest(), digest.as_str());
+            assert_eq!(version.image(), legacy.image());
+            let encoded = version.to_canonical_json().unwrap();
+            let encoded_value: Value = serde_json::from_str(&encoded).unwrap();
+            if digest.is_null() {
+                assert!(encoded_value.get("source_digest").is_none());
+            } else {
+                assert_eq!(encoded_value["source_digest"], digest);
+            }
+            assert_eq!(FunctionVersion::from_json(&encoded).unwrap(), version);
+        }
+
+        document["gpu_class"] = serde_json::json!("a10g");
+        let version = FunctionVersion::from_json(&document.to_string()).unwrap();
+        assert_eq!(version.gpu_class(), Some("a10g"));
+        let encoded: Value = serde_json::from_str(&version.to_canonical_json().unwrap()).unwrap();
+        assert_eq!(encoded["gpu_class"], "a10g");
+    }
+
+    #[test]
+    fn blob_reader_access_survives_signature_round_trip() {
+        let parameter: FunctionParameter = serde_json::from_value(serde_json::json!({
+            "name": "video", "arrow_type": "blob_v2", "nullable": false,
+            "blob_access": "reader"
+        }))
+        .unwrap();
+        assert_eq!(parameter.blob_access, Some(BlobAccess::Reader));
+        assert_eq!(
+            serde_json::to_value(parameter).unwrap()["blob_access"],
+            "reader"
+        );
+    }
 
     /// Canonical form is what the FunctionVersion hash is taken over, so key
     /// order must come from the keys and not from however serde happened to
