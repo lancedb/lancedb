@@ -1,0 +1,46 @@
+---
+title: "Incremental Refresh"
+sidebarTitle: "Incremental Refresh"
+description: "Why refreshing a computed column only recomputes rows whose inputs actually changed."
+icon: "arrow-rotate-right"
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+Refreshing a [computed column](/feature-engineering/add-computed-column)
+is incremental: it fills rows that have no value yet and recomputes rows
+whose inputs changed since they were last computed, and leaves every
+other row alone. A second refresh with nothing changed does nothing. The
+planner finds the rows that actually need work by checking which
+fragments still carry stale or empty values for the column, then groups
+them into claimable units a fleet of job workers can pick up in parallel
+-- see [Architecture](/index#architecture).
+
+<Note>
+A **materialized view** does not work this way: every refresh rebuilds
+the view completely from its source query, with no incremental step.
+See [Refresh a materialized view](/feature-engineering/refresh-materialized-view)
+for why a saved query, rather than a tracked set of stale rows, doesn't
+have a smaller unit than "the whole view" to recompute.
+</Note>
+
+## Why this matters {#why}
+
+Appending rows is cheap: the next refresh only fills what's new, not what
+it already computed. Updating an input row is also cheap in the same
+way -- the derived column keeps its old value until the next refresh
+notices the input changed and recomputes just that row. Nothing is
+recomputed between refreshes, so a derived column can be stale right up
+until you call for one.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Refresh a computed column" icon="arrows-rotate" href="/feature-engineering/refresh-column#idempotent">
+    The exact fill/recompute/leave-alone rules, with examples.
+  </Card>
+  <Card title="Adaptive Execution" icon="gauge-high" href="/enterprise/adaptive-execution">
+    How the units this planner produces get sized and run.
+  </Card>
+</CardGroup>

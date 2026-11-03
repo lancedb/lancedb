@@ -1,0 +1,53 @@
+---
+title: "Auto Refresh"
+sidebarTitle: "Auto Refresh"
+description: "Let a computed column or materialized view refresh itself on a schedule, instead of calling refresh explicitly."
+icon: "clock-rotate-left"
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+Both a [computed column](/feature-engineering/add-computed-column) and a
+[materialized view](/feature-engineering/materialized-views) can refresh
+themselves on a schedule instead of waiting for an explicit
+`refresh_column()`, `view.refresh()`, or `REFRESH` statement. Either way,
+`auto_refresh_enabled` turns it on and `auto_refresh_interval_seconds` sets
+a minimum delay after the last successful refresh before the next
+automatic one is eligible -- omit the interval to let the server decide.
+See [Architecture](/index#architecture) for the scheduler's place among the
+jobs fleet.
+
+## Where the two differ {#granularity}
+
+A computed column's auto-refresh setting is per output: each column
+declared in the same `add_columns` call gets its own independent
+interval, set when you declare it or changed later with `ALTER TABLE ...
+ALTER COLUMN ... SET auto_refresh_enabled`. Automatic execution additionally
+needs the deployment's `column_refresh.enabled` switch, which is off in the
+base configuration.
+
+A materialized view's setting is whole-view -- there is no per-column
+granularity the way a computed column has one setting per output. The
+view's *initial* population always happens regardless of this setting;
+only the refreshes after that are gated. A view's setting is fixed when creating it, not
+altered afterward through SQL the way a column's setting can be.
+
+## Catching up {#catch-up}
+
+Re-enabling a column's auto-refresh after it was off catches up the
+entire accumulated backlog in one pass, not just rows written from that
+point on -- "catch up," not "resume cadence." Disabling never skips or
+drops writes either: rows written while disabled simply commit with no
+computed value yet, the same as a row written before the column existed.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Refresh a computed column" icon="arrows-rotate" href="/feature-engineering/refresh-column#automatic">
+    The exact settings, SQL form, and job-history caveats for a column.
+  </Card>
+  <Card title="Refresh a materialized view" icon="table" href="/feature-engineering/refresh-materialized-view#auto-refresh">
+    The same settings at view-creation time.
+  </Card>
+</CardGroup>

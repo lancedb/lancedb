@@ -1,0 +1,61 @@
+---
+title: "Adaptive Execution"
+sidebarTitle: "Adaptive Execution"
+description: "How a Function refresh's batch size and worker count adjust themselves to observed throughput and available resources."
+icon: "gauge-high"
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+When a [computed column](/feature-engineering/add-computed-column) or
+[materialized view](/feature-engineering/materialized-views) is filled by
+a registered [Function](/curation/create-function), LanceDB Enterprise
+adapts the refresh to the Function's actual behavior along three axes --
+how many rows go in one unit of work, how many worker processes run
+inside one worker, and how many workers run at all -- rather than running
+it at one fixed shape regardless of how slow, fast, or resource-hungry
+that Function turns out to be. See [Architecture](/index#architecture).
+
+## Part size follows observed throughput {#part-size}
+
+A Function refresh starts with a small probe part -- 10 rows -- and grows
+it based on an exponentially-weighted average of rows processed per
+millisecond, aiming each next part at roughly 45 seconds of work. A part
+can grow or shrink by at most 16x from the previous one, so one unusually
+slow or fast part doesn't swing sizing to an extreme; the ceiling is
+1,000,000 rows per part regardless of how fast the Function appears to
+run. A consistently slow Function converges on small parts that finish
+reliably; a fast one converges on large parts that keep worker overhead
+-- a fresh scanner and registry round trip per part -- small relative to
+the work done.
+
+## Process and worker count follow the resource budget {#sizing}
+
+Within one worker, the number of executor processes is chosen to be the
+largest count that still fits the worker's memory budget, since memory
+per process shrinks as the count grows. Across workers, the fleet claims
+as many additional workers as the configured CPU, memory and GPU budget
+has room for, given what's already running -- the worker count grows to
+use available budget rather than running at a single fixed count
+regardless of how much of the budget sits idle.
+
+## Overriding the defaults {#override}
+
+A refresh can request a specific worker count, GPU class and count, or
+part size directly instead of relying on this adaptive behavior -- see
+[Configure workers and resources](/feature-engineering/refresh-column#resources).
+Setting `batch_size` explicitly replaces the adaptive part sizer for that
+refresh; `num_workers` replaces the budget-driven worker count the same
+way.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Incremental Refresh" icon="arrow-rotate-right" href="/enterprise/incremental-refresh">
+    How the rows a Function refresh works on are chosen in the first place.
+  </Card>
+  <Card title="GPU Function Execution" icon="microchip" href="/curation/gpu-function-execution">
+    How a GPU-bound Function's worker gets placed on a GPU-capable node.
+  </Card>
+</CardGroup>

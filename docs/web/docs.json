@@ -306,6 +306,10 @@
     {
       "source": "/basics/apis",
       "destination": "/basics/sdk"
+    },
+    {
+      "source": "/enterprise/distributed-column-refresh",
+      "destination": "/enterprise/adaptive-execution"
     }
   ],
   "navigation": {
@@ -399,8 +403,9 @@
               "feature-engineering/index",
               "feature-engineering/add-computed-column",
               "feature-engineering/refresh-column",
-              "enterprise/distributed-column-refresh",
-              "feature-engineering/view",
+              "enterprise/incremental-refresh",
+              "enterprise/auto-refresh",
+              "enterprise/adaptive-execution",
               "feature-engineering/materialized-views",
               "feature-engineering/refresh-materialized-view"
             ]
