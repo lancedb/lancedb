@@ -61,7 +61,8 @@ threshold exists to clear a lingering FRI -- and the per-read remap cost that
 comes with it -- on a table that stops compacting before reaching the count
 threshold, without scheduling a catch-up job on every table that is still
 actively compacting. This is what lets compaction and index maintenance run
-as separate background jobs in [Background jobs](/maintenance/background-jobs#index)
+as separate background jobs (see
+[Index maintenance jobs](/indexing/incremental-indexing#index))
 rather than one blocking on the other: a handful of compactions can land
 before their indexes are physically remapped, and the catch-up job amortizes
 that remap across all of them in one job instead of one per compaction.
@@ -81,8 +82,8 @@ flowchart LR
   <Card title="Compaction and cleanup" icon="broom" href="/maintenance/compaction">
     What compaction merges, and how the embedded library runs it in one call.
   </Card>
-  <Card title="Background jobs" icon="gears" href="/maintenance/background-jobs#index">
-    The `index_remap` job type, and the other maintenance jobs Enterprise schedules.
+  <Card title="Incremental Indexing" icon="arrows-rotate" href="/indexing/incremental-indexing#index">
+    The `index_remap` job type, and keeping an index current as the table changes.
   </Card>
   <Card title="Distributed compaction" icon="layer-group" href="/enterprise/distributed-compaction">
     How compaction itself scales across the jobs fleet.

@@ -34,6 +34,16 @@ values remain NULL. Children are read-only diagnostic identities.
 following backend continuation pages up to that limit. Child history can be
 `available`, `not_yet_recorded`, or `unavailable` after archival.
 
+<Note>
+A job you completed weeks ago eventually stops appearing here -- it was
+archived, not deleted. Two deployment-scheduled jobs sweep the registry on a
+per-database schedule: `job_registry_archive` moves terminal jobs out of the
+active registry into archival storage, and `job_events_export` separately
+copies terminal jobs' event histories into a curated system table for
+metering, where the deployment enables it. A job's events can survive in
+that exported table after the job itself is archived.
+</Note>
+
 ## SHOW JOB EVENTS {#events}
 
 <CodeGroup>
@@ -144,7 +154,7 @@ form.
   <Card title="Query and job" icon="hourglass-half" href="/basics/jobs">
     The handle these statements are the SQL view of.
   </Card>
-  <Card title="Background jobs" icon="gears" href="/maintenance/background-jobs">
-    Job types you did not start yourself.
+  <Card title="Automated Cleanup" icon="clock" href="/enterprise/automated-cleanup">
+    A job type the deployment schedules on its own, without a call.
   </Card>
 </CardGroup>

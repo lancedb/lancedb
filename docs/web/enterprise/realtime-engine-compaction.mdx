@@ -14,10 +14,10 @@ base-table fragments and reclaims deleted rows -- the same operation
 table with the [real time engine](/tables/realtime-engine) enabled has a
 second, unrelated compaction: folding a shard's accumulated SSTables into
 the base table and catching the base table's indexes up over the rows that
-just landed. [Background jobs](/maintenance/background-jobs#wal) names the
-two job types this produces -- `memwal_compaction` and
-`memwal_catchup_<type>` -- as already distinct from ordinary `compact`. This
-page covers how Enterprise decides when to run them, not just what they do.
+just landed. This produces two job types, `memwal_compaction` and
+`memwal_catchup_<type>`, already distinct from ordinary `compact` in
+`SHOW JOBS` and `list_jobs`. This page covers how Enterprise decides when
+to run them, not just what they do.
 
 ## What triggers a compaction pass {#trigger}
 
@@ -112,10 +112,10 @@ for what a live RTE read sees instead.
   <Card title="Real Time Engine" icon="bolt" href="/tables/realtime-engine">
     The MemWAL format, shards, and WAL nodes this page assumes.
   </Card>
-  <Card title="Background jobs" icon="gears" href="/maintenance/background-jobs#wal">
-    The memwal_compaction and memwal_catchup_&lt;type&gt; job types.
-  </Card>
   <Card title="Distributed compaction" icon="compress" href="/enterprise/distributed-compaction">
     The unrelated, ordinary compaction every table -- WAL-enabled or not -- gets.
+  </Card>
+  <Card title="Job Framework" icon="list-check" href="/basics/jobs">
+    Job handles, waiting, and inspecting jobs -- memwal_compaction included.
   </Card>
 </CardGroup>

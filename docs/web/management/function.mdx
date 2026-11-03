@@ -5,7 +5,7 @@ description: "Register a Python function once and apply it as a column, for work
 icon: code
 keywords: ["udf", "functions", "create_function", "embedding", "feature engineering"]
 availability:
-  embedded: unavailable
+  embedded: wip
   enterprise: available
 ---
 
@@ -419,7 +419,7 @@ lookup and listing, preserving other revisions and their grants. It returns
 `False` for a repeated drop or a name that is already gone. A revision never
 published under an existing name is an error. The last visible revision's drop
 releases the name and schedules object cleanup, which can finish after the call
-returns as a [background job](/maintenance/background-jobs).
+returns as a [background job](/basics/jobs#teardown).
 `drop_function_async` returns `(dropped, job)`, where `job` is a query-backed
 handle. Waiting confirms the revision's catalog removal; physical cleanup can
 continue afterward.

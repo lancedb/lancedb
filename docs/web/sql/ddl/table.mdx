@@ -185,8 +185,8 @@ scalar index on that key. `maintained_indexes` chooses which indexes are kept
 current against WAL rows; omitted, every supported index is kept current,
 including ones created later. A table with a computed column cannot take a
 write-ahead log. See
-[Background jobs](/maintenance/background-jobs#wal) for how the log gets
-folded back into the table.
+[Real Time Engine compaction](/enterprise/realtime-engine-compaction) for how
+the log gets folded back into the table.
 
 <Warning>
 [`TABLESAMPLE`](/sql/dql/sampling) is refused on a WAL-backed table, because
@@ -245,7 +245,7 @@ Removes the table and every version of it. There is no undrop.
 <Note>
 **Enterprise job type:** `drop_table` or `drop_object`, depending on how the
 deployment stores its catalog. See
-[Background jobs](/maintenance/background-jobs#teardown).
+[Object teardown](/basics/jobs#teardown).
 </Note>
 
 ## What to read next {#next}

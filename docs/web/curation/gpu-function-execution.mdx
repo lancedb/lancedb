@@ -25,7 +25,7 @@ When a job needs to run a GPU Function, the agent resolves its `gpu_class`
 name, and requests a worker pod shaped accordingly -- this is a separate
 placement path from the ordinary CPU worker ladder used by non-GPU
 Functions and other background jobs (see
-[Background jobs](/maintenance/background-jobs) for that general job
+the [Job Framework](/basics/jobs) for that general job
 machinery). The resulting pod can only schedule onto a node matching the
 class's selector and tolerations, so a class is really naming a pool of
 nodes, not just a resource count.
@@ -64,7 +64,7 @@ permits. Listing requires the System Usage privilege.
   <Card title="Create a Function" icon="code" href="/curation/create-function#gpu">
     Register a GPU Function and pin it to a specific class.
   </Card>
-  <Card title="Background jobs" icon="gears" href="/maintenance/background-jobs">
+  <Card title="Job Framework" icon="list-check" href="/basics/jobs">
     The job types a deployment runs on its own schedule.
   </Card>
 </CardGroup>

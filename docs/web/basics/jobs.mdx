@@ -267,10 +267,21 @@ capabilities and can be unsupported.
 The server decides whether SQL executes on its serving fleet or starts SQL job
 workers. That placement does not change the handle's query-backed identity.
 
+### Object teardown {#teardown}
+
+The "physical cleanup continues in the background" behavior above, for a
+dropped table, view, materialized view, Secret or Function, is a job type of
+its own: `drop_object` deletes the dropped object's content, then clears it
+from the database's cleanup backlog. You trigger it indirectly, by dropping
+one of those objects or a [namespace](/management/namespace) -- it runs as
+this job rather than inline with the call. Whether a dropped table runs as
+`drop_object` or as [`drop_table`](/management/table#drop), which fences the
+table's directory with its own marker instead, depends on how the deployment
+stores its catalog.
+
 ## Learn more {#next}
 
-- [Build and repair indexes](/indexing/reindexing): submit index work.
+- [Incremental Indexing](/indexing/incremental-indexing): submit index work.
 - [Refresh a computed column](/feature-engineering/refresh-column): populate derived values.
-- [Background jobs](/maintenance/background-jobs): understand Enterprise maintenance.
 - [SQL job commands](/sql/ddl/job): list jobs and inspect errors.
 - [SDKs](/basics/sdk): find the job API for your client.
