@@ -391,7 +391,18 @@ def test_code_packages_ship_as_a_bundle_and_version_with_their_source(
         importlib.invalidate_caches()
         return importlib.import_module("fx_helpers_functions").limited
 
-    first = define()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        first = define()
+    assert len(caught) == 1
+    warning = str(caught[0].message)
+    assert "fx_helpers/fixtures/data.json" in warning
+    assert "fx_helpers/not-a-module.py" in warning
+    assert warning.index("fx_helpers/fixtures/data.json") < warning.index(
+        "fx_helpers/not-a-module.py"
+    )
+    assert "__pycache__" not in warning
+    assert ".pyc" not in warning
     shipped = bundle_files(first)
     assert sorted(shipped) == [
         "fx_helpers/__init__.py",
@@ -407,12 +418,65 @@ def test_code_packages_ship_as_a_bundle_and_version_with_their_source(
     helper_package(
         "fx_helpers", {**files, "rate.py": textwrap.dedent(files["rate.py"]) + "# v2\n"}
     )
-    second = define()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        second = define()
+    assert len(caught) == 1
     assert (
         first.registration_request.artifact.digest
         != second.registration_request.artifact.digest
     )
     assert first.registration_request.runtime == second.registration_request.runtime
+
+
+def test_code_package_cache_artifacts_do_not_warn(helper_package):
+    cache = helper_package(
+        "fx_cache",
+        {
+            "__init__.py": "",
+            "__pycache__/ignored.cpython-312.pyc": "",
+            "stale.pyo": "",
+        },
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+
+        @udf(code=[cache])
+        def cache_only(value: int) -> int:
+            return value
+
+    assert not caught
+    assert sorted(bundle_files(cache_only)) == [
+        "fx_cache/__init__.py",
+        "user_function.py",
+    ]
+
+
+def test_code_package_nonidentifier_resource_dir_warns_at_boundary(helper_package):
+    resources = helper_package(
+        "fx_resources",
+        {
+            "__init__.py": "",
+            "label-maps/labels.json": "{}",
+        },
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+
+        @udf(code=[resources])
+        def resource_boundary(value: int) -> int:
+            return value
+
+    assert len(caught) == 1
+    warning = str(caught[0].message)
+    assert "fx_resources/label-maps/" in warning
+    assert "labels.json" not in warning
+    assert sorted(bundle_files(resource_boundary)) == [
+        "fx_resources/__init__.py",
+        "user_function.py",
+    ]
 
 
 def test_code_rejects_submodules_duplicates_and_non_modules(helper_package):

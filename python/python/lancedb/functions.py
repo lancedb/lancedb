@@ -1764,7 +1764,12 @@ class _SourcePackager:
 
 def _code_files(modules: Sequence[Any]) -> tuple[dict[str, str], frozenset[str]]:
     """The Python source files of the modules and packages in ``code=``,
-    keyed by their path on the Function's import path."""
+    keyed by their path on the Function's import path.
+
+    Package resources are not part of the source artifact. Warn about files
+    and excluded directories that the walk leaves behind instead of silently
+    producing a Function that will fail later on the worker.
+    """
     import os
     from pathlib import Path
 
@@ -1800,19 +1805,37 @@ def _code_files(modules: Sequence[Any]) -> tuple[dict[str, str], frozenset[str]]
                 )
             root = Path(paths[0])
             sources = []
+            skipped = set()
             for directory, subdirectories, filenames in os.walk(root):
                 # Only importable modules travel: data files, caches, and
                 # directories that are not identifiers cannot be imported.
-                subdirectories[:] = sorted(
-                    child
-                    for child in subdirectories
-                    if _SOURCE_PATH_COMPONENT.fullmatch(child)
-                    and child != "__pycache__"
-                )
-                for filename in filenames:
+                kept = []
+                for child in sorted(subdirectories):
+                    if child == "__pycache__":
+                        continue
+                    if _SOURCE_PATH_COMPONENT.fullmatch(child):
+                        kept.append(child)
+                    else:
+                        relative = (Path(directory) / child).relative_to(root)
+                        skipped.add(f"{name}/{relative.as_posix()}/")
+                subdirectories[:] = kept
+                for filename in sorted(filenames):
                     stem, suffix = os.path.splitext(filename)
+                    if suffix in {".pyc", ".pyo"}:
+                        continue
                     if suffix == ".py" and _SOURCE_PATH_COMPONENT.fullmatch(stem):
                         sources.append(Path(directory) / filename)
+                    else:
+                        relative = (Path(directory) / filename).relative_to(root)
+                        skipped.add(f"{name}/{relative.as_posix()}")
+            if skipped:
+                paths = ", ".join(sorted(skipped))
+                warnings.warn(
+                    f"code= ships Python .py modules only; package {name!r} "
+                    f"will not include: {paths}. Install a package that includes "
+                    "the required resources with pip= or conda=.",
+                    UserWarning,
+                )
             for path in sources:
                 relative = path.relative_to(root).as_posix()
                 files[f"{name}/{relative}"] = _source_text(path)
@@ -2320,7 +2343,10 @@ def udf(
         selected through ``refresh_column`` instead of registration.
     code : sequence of module, optional
         Top-level modules or packages whose importable ``.py`` files ship
-        with the Function and are importable by their own names.
+        with the Function and are importable by their own names. Package data
+        files are not copied. Install a package that includes required data
+        resources with ``pip=`` or ``conda=``; ``@udf`` warns when it skips
+        files from a package in ``code=``.
 
     Returns
     -------
