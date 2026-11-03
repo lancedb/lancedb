@@ -392,8 +392,8 @@
           {
             "group": "Training",
             "pages": [
-              "training/permutation",
               "training/data-loading",
+              "training/permutation",
               "training/observability",
               "training/distributed-training",
               "training/checkpointing",
