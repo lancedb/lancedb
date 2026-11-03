@@ -1662,8 +1662,8 @@ describe("remote connection jobs surface", () => {
         queue_reason: "Waiting for Function worker capacity",
       });
     const descriptions = [
-      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"queue_reason":"Waiting for Function worker capacity","progress":${progress(20, 80, 3000, knownFleet)}}`,
-      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"queue_reason":"Waiting for Function worker capacity","progress":${progress(20, 80, 2000, unknownFleet)}}`,
+      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"queue_reason":"Waiting for Function worker capacity","progress":${progress(20, 80, 3000, unknownFleet)}}`,
+      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"queue_reason":"Waiting for Function worker capacity","progress":${progress(20, 80, 2000, knownFleet)}}`,
       `{"job_id":"job-wait","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"queue_reason":"Waiting for Function worker capacity","progress":${progress(40, 60, 1000, unknownFleet)}}`,
       `{"job_id":"job-wait","job_type":"refresh_column","job_state":"DONE","creation_ms":1000,"result":{},"progress":${progress(60, 0, 0, unknownFleet)}}`,
     ];
