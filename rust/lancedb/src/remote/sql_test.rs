@@ -2124,6 +2124,43 @@ async fn remote_optimize_submits_a_compaction_job_over_sql() {
 }
 
 #[tokio::test]
+async fn remote_optimize_on_a_branch_submits_a_with_clause_over_sql() {
+    let service = TestSqlService {
+        adaptive: true,
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let (sql_client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let client = client_with_handler(|request| -> http::Response<String> {
+        panic!("unexpected REST request: {}", request.url().path());
+    });
+    let table = RemoteTable::new_with_sql_client(
+        client,
+        "analytics".into(),
+        "events".into(),
+        vec!["team".into(), "reports".into()],
+        "team$reports$events".into(),
+        Default::default(),
+        Some(sql_client),
+    )
+    .with_branch(Some("o'brien".to_string()));
+
+    table
+        .optimize(crate::table::optimize::OptimizeAction::Compact {
+            options: crate::table::optimize::CompactionOptions::default(),
+            remap_options: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        *statements.lock().unwrap(),
+        ["OPTIMIZE TABLE \"events\" REWRITE DATA WITH (branch = 'o''brien')"]
+    );
+    shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
 async fn remote_mv_listing_uses_scoped_sql_keyset_pagination() {
     for defer in [false, true] {
         let result = RecordBatch::try_from_iter(vec![(

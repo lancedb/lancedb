@@ -346,6 +346,10 @@ fn quote_sql_identifier(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
 }
 
+fn quote_sql_string(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
 fn freshness_headers_snapshot(
     freshness: &Mutex<FreshnessState>,
     interval: Option<Duration>,
@@ -771,7 +775,7 @@ impl<S: HttpSend> RemoteTable<S> {
     /// Return a new handle scoped to `branch`, sharing the client but with fresh
     /// caches and version/freshness state (the branch tracks its own latest).
     /// Mirrors `NativeTable`'s handle-per-branch model.
-    fn with_branch(&self, branch: Option<String>) -> Self {
+    pub(super) fn with_branch(&self, branch: Option<String>) -> Self {
         Self {
             client: self.client.clone(),
             db_name: self.db_name.clone(),
@@ -3572,11 +3576,13 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     /// expose per-job compaction metrics.
     /// `OptimizeAction::All`, `::Prune`, and `::Index` remain unsupported
     /// remotely: there is no SQL statement yet for version pruning or index
-    /// optimization. A branch-scoped table handle is also unsupported: the
-    /// SQL statement has the same gap `CREATE INDEX` over SQL has. A
-    /// non-default `CompactionOptions` (for example `target_rows_per_fragment`
-    /// or `max_source_bytes`) is also rejected: the SQL statement has no
-    /// `WITH` clause to carry it yet, so accepting it would silently ignore
+    /// optimization. A branch-scoped table handle submits a
+    /// `WITH (branch = '<branch>')` clause; the statement does not itself
+    /// validate the branch exists, so a nonexistent branch surfaces as an
+    /// async job failure rather than an error from this call. A non-default
+    /// `CompactionOptions` (for example `target_rows_per_fragment` or
+    /// `max_source_bytes`) is rejected: the SQL statement has no `WITH`
+    /// clause to carry it yet, so accepting it would silently ignore
     /// settings a caller may be relying on to bound the job.
     async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats> {
         self.check_mutable().await?;
@@ -3611,21 +3617,16 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                     .into(),
             });
         }
-        if self.branch.is_some() {
-            return Err(Error::NotSupported {
-                message: "optimize does not yet support a branch-scoped table in \
-                          LanceDB Enterprise; OPTIMIZE TABLE ... REWRITE DATA has \
-                          the same gap CREATE INDEX over SQL does."
-                    .into(),
-            });
-        }
         let sql_client = self.sql_client.clone().ok_or_else(|| Error::NotSupported {
             message: "SQL is unavailable for this remote table client".to_string(),
         })?;
-        let statement = format!(
+        let mut statement = format!(
             "OPTIMIZE TABLE {} REWRITE DATA",
             quote_sql_identifier(&self.name)
         );
+        if let Some(branch) = &self.branch {
+            statement.push_str(&format!(" WITH (branch = {})", quote_sql_string(branch)));
+        }
         // `OptimizeStats` carries `lance::dataset::optimize` metric types that
         // are not `Serialize`/`Deserialize`/`Clone`, which `Job<T>` requires,
         // so the job itself only signals completion; the real (placeholder)
@@ -15343,7 +15344,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_optimize_rejects_a_branch_scoped_table() {
+    async fn test_optimize_on_a_branch_requires_sql() {
         use lance::dataset::refs::Ref;
         let table =
             Table::new_with_handler("my_table", move |request| match request.url().path() {
@@ -15359,6 +15360,10 @@ mod tests {
             .await
             .unwrap();
 
+        // No SQL client is wired to this REST-only mock, so the branch-scoped
+        // handle hits the same "SQL is unavailable" check `optimize` runs for
+        // main -- it does not reject the branch itself, and it does not send
+        // a REST request (see `test_optimize_requires_sql`).
         let error = branch
             .optimize(OptimizeAction::Compact {
                 options: crate::table::optimize::CompactionOptions::default(),
@@ -15367,8 +15372,7 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(matches!(error, Error::NotSupported { .. }));
-        assert!(error.to_string().contains("branch"));
+        assert!(error.to_string().contains("SQL is unavailable"));
     }
 
     #[tokio::test]
