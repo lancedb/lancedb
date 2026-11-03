@@ -11,11 +11,6 @@ availability:
 
 import {
     PySchemaAddSetup,
-    TsSchemaAddSetup,
-    RsSchemaAddSetup,
-    PyAddColumnsCalculated,
-    TsAddColumnsCalculated,
-    RsAddColumnsCalculated,
 } from '/snippets/tables.mdx';
 
 Lance can write a new column without rewriting the columns already in the
@@ -45,6 +40,10 @@ table = db.create_table("computed_demo", [{"x": 1}, {"x": 2}])
 
 table.add_columns(computed={"doubled": "x * 2"})
 # AddColumnsResult(version=2)
+```
+
+```sql SQL icon="database"
+ALTER TABLE computed_demo ADD COLUMN doubled AS x * 2
 ```
 </CodeGroup>
 
@@ -81,9 +80,14 @@ table.add_columns(
     auto_refresh_interval_seconds=300,
 )
 ```
+
+```sql SQL icon="database"
+ALTER TABLE computed_demo ADD COLUMN doubled AS x * 2
+WITH (auto_refresh_interval_seconds = 300)
+```
 </CodeGroup>
 
-See [Automatic refresh](/feature-engineering/refresh-column#automatic) for the
+See [Auto Refresh](/enterprise/auto-refresh) for the
 full behavior, including how to change the setting later.
 
 An eager `transforms` call looks like this, starting from a small product
@@ -93,28 +97,18 @@ table:
     <CodeBlock filename="Python" language="Python" icon="python">
     {PySchemaAddSetup}
     </CodeBlock>
-
-    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
-    {TsSchemaAddSetup}
-    </CodeBlock>
-
-    <CodeBlock filename="Rust" language="Rust" icon="rust">
-    {RsSchemaAddSetup}
-    </CodeBlock>
 </CodeGroup>
 
 <CodeGroup>
-    <CodeBlock filename="Python" language="Python" icon="python">
-    {PyAddColumnsCalculated}
-    </CodeBlock>
+```python Python icon="python"
+# Add a discounted price column (10% discount)
+table.add_columns({"discounted_price": "cast((price * 0.9) as float)"})
+```
 
-    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
-    {TsAddColumnsCalculated}
-    </CodeBlock>
-
-    <CodeBlock filename="Rust" language="Rust" icon="rust">
-    {RsAddColumnsCalculated}
-    </CodeBlock>
+```sql SQL icon="database"
+ALTER TABLE schema_evolution_add_example ADD COLUMN discounted_price
+AS cast((price * 0.9) as float)
+```
 </CodeGroup>
 
 For feature engineering on large existing tables, group related derived
@@ -147,6 +141,11 @@ table.add_columns(computed={
     "power_score": "cast(x as double) / 2.0",
     "is_strong":   "power_score > 0.5",
 })
+```
+
+```sql SQL icon="database"
+ALTER TABLE computed_demo ADD COLUMN power_score AS cast(x as double) / 2.0
+ALTER TABLE computed_demo ADD COLUMN is_strong AS power_score > 0.5
 ```
 </CodeGroup>
 
@@ -193,21 +192,32 @@ is a string, keyed by the column name --
 ```python Python icon="python"
 table.add_columns(computed={"caption_length": "length(caption)"})
 ```
+
+```sql SQL icon="database"
+ALTER TABLE frames ADD COLUMN caption_length AS length(caption)
+```
 </CodeGroup>
 
 -- while a Function application is the registered version itself, called with
 its parameters bound to source columns through `col(...)`, keyed the same way
-but passed positionally rather than through `computed`:
+but passed positionally rather than through `computed`. Continuing the
+[`caption` Function](/curation/create-function#chain) registered in Create a
+Function:
 
 <CodeGroup>
 ```python Python icon="python"
-table.add_columns({"caption": caption_version(jpeg=col("jpeg"))})
+version = db.create_function_async(caption).wait()
+table.add_columns({"caption": version(jpeg=col("jpeg"))})
+```
+
+```sql SQL icon="database"
+ALTER TABLE frames ADD COLUMN caption AS caption(jpeg) WITH (version = 'fv_1')
 ```
 </CodeGroup>
 
 Both accept the same `auto_refresh_enabled` and `auto_refresh_interval_seconds`
 options, and both refresh and toggle the same way; see
-[Refresh a computed column](/feature-engineering/refresh-column#automatic).
+[Auto Refresh](/enterprise/auto-refresh).
 
 ## Related guides {#next}
 
