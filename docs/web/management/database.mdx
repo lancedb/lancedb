@@ -63,8 +63,6 @@ tables created through the connection:
 
 <CodeGroup>
 ```python Python icon="python"
-import lancedb
-
 db = lancedb.connect(
     "s3://bucket/path",
     storage_options={"new_table_enable_stable_row_ids": "true"},
@@ -95,8 +93,6 @@ every five seconds:
 <CodeGroup>
 ```python Python icon="python"
 from datetime import timedelta
-import lancedb
-
 db = lancedb.connect(
     "./.lancedb", read_consistency_interval=timedelta(seconds=5)
 )
@@ -147,8 +143,6 @@ when working in an asynchronous application:
 
 <CodeGroup>
 ```python Python icon="python"
-import lancedb
-
 db = await lancedb.connect_async("./.lancedb")
 table = await db.open_table("documents")
 ```

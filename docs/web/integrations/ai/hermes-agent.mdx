@@ -274,8 +274,6 @@ from:
 
 <CodeGroup>
 ```python Python icon="python"
-import lancedb
-
 db = lancedb.connect("~/.hermes/lancedb")
 tbl = db.open_table("memories")
 print(tbl.to_pandas()[["kind", "category", "content"]].head())

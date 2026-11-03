@@ -65,7 +65,6 @@ First, open or create the table you want to search:
 
 <CodeGroup>
 ```python Python icon="python"
-import lancedb
 from lancedb.index import FTS
 
 uri = "data/sample-lancedb"
@@ -434,7 +433,6 @@ Run the following steps in order. They use a temporary local database with four 
 ```python Python icon="python"
 from tempfile import TemporaryDirectory
 
-import lancedb
 import pandas as pd
 from lancedb.index import FTS
 from lancedb.query import MatchQuery, PhraseQuery, BoostQuery, MultiMatchQuery
@@ -903,8 +901,6 @@ First, create a table with sample text data and configure n-gram tokenization:
 <CodeGroup>
 ```python Python icon="python"
 import pyarrow as pa
-import lancedb
-
 from tempfile import TemporaryDirectory
 from lancedb.index import FTS
 
@@ -1005,7 +1001,6 @@ This example uses a temporary local database. Run the steps in order.
 ```python Python icon="python"
 from tempfile import TemporaryDirectory
 
-import lancedb
 import pyarrow as pa
 from lancedb.index import FTS
 from lancedb.query import MatchQuery, PhraseQuery

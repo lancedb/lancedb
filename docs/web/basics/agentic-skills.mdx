@@ -87,7 +87,7 @@ the first try. Adapt the dataset names, columns, and models to your own data.
 
 <CodeGroup>
 ```text Prompt
-Import the Hugging Face dataset `lance-format/koch_pick_place_5_lego-lance`
+Import the HuggingFace dataset `lance-format/koch_pick_place_5_lego-lance`
 into LanceDB.
 
 Create a Function `extract_frames(video, timestamp)` that extracts each frame
@@ -111,7 +111,7 @@ Create a full-text search index on `koch_frames.caption`.
 
 <CodeGroup>
 ```text Prompt
-Import the Hugging Face dataset `lance-format/BDD100K-enriched` into LanceDB.
+Import the HuggingFace dataset `lance-format/BDD100K-enriched` into LanceDB.
 
 Create a Function `phash(image)` that computes a perceptual hash with the
 `ImageHash` package, and add it as a column named `phash`.
@@ -131,7 +131,7 @@ largest clusters with sample image ids.
 
 <CodeGroup>
 ```text Prompt
-Import the C, C++, and Python metadata from the Hugging Face dataset
+Import the C, C++, and Python metadata from the HuggingFace dataset
 `bigcode/the-stack-v2` into a single table `stack_v2_code`, with an extra
 `language` column recording which of the three it is.
 

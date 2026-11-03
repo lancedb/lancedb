@@ -14,7 +14,6 @@ in the order its rows are stored, through an identity `Permutation`. A table its
 
 <CodeGroup>
 ```py Python icon=Python
-import lancedb
 from lancedb.permutation import Permutation
 
 db = lancedb.connect("file://some/db/path")
@@ -97,7 +96,6 @@ a subset of columns, you can significantly reduce your I/O requirements by selec
 
 <CodeGroup>
 ```python Python icon="python"
-import lancedb
 import pyarrow as pa
 import torch
 from lancedb.permutation import Permutation

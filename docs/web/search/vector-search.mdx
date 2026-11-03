@@ -607,7 +607,6 @@ Connect to a local LanceDB database and import the required libraries.
 
 <CodeGroup>
 ```python Python icon="python"
-import lancedb
 import numpy as np
 import pyarrow as pa
 
@@ -714,7 +713,7 @@ results_multi = tbl.search(query_multi).limit(5).to_pandas()
 </CodeGroup>
 
 
-Visit the [Hugging Face embedding integration](/integrations/embedding/huggingface/) page for information on embedding models.
+Visit the [HuggingFace embedding integration](/integrations/embedding/huggingface/) page for information on embedding models.
 
 ### Simple Example: ColBERT Embeddings
 
@@ -734,7 +733,6 @@ pip install pylate lancedb pandas
 ```python Python icon="python"
 import numpy as np
 import pyarrow as pa
-import lancedb
 from pylate import models
 
 ## 1) Load a late-interaction model via PyLate

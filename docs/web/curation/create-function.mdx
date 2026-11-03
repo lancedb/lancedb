@@ -186,7 +186,6 @@ one timestamp per clip to extract, with a `selected` flag to skip some:
 
 <CodeGroup>
 ```python Python icon="python"
-import lancedb
 import pyarrow as pa
 
 videos = db.create_table("videos", schema=pa.schema([

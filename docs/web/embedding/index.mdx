@@ -136,7 +136,7 @@ In Python, the embedding definition is stored in the table, so anyone who can wr
 To keep a table from running code or sending data where you didn't intend, two kinds of settings are only honored
 when this process has approved them:
 
-- `trust_remote_code=True`, which runs code from the model's Hugging Face repository.
+- `trust_remote_code=True`, which runs code from the model's HuggingFace repository.
 - Custom endpoints such as OpenAI `base_url`, Ollama `host`, or watsonx `url`, which receive your data and API keys.
 
 Embedding functions you create in the current process are approved automatically. When you open a table in a new
@@ -178,7 +178,7 @@ LanceDB supports most popular embedding providers.
 |----------|----------|---------------|
 | OpenAI | `openai` | `text-embedding-ada-002` |
 | Sentence Transformers | `sentence-transformers` | `all-MiniLM-L6-v2` |
-| Hugging Face | `huggingface` | `colbert-ir/colbertv2.0` |
+| HuggingFace | `huggingface` | `colbert-ir/colbertv2.0` |
 | Cohere | `cohere` | `embed-multilingual-v3.0` |
 | ... | ... | ... |
 

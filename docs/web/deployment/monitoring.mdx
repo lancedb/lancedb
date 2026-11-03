@@ -48,7 +48,6 @@ Call `instrument_lancedb_metrics()` once at startup, before opening any tables. 
 
 <CodeGroup>
 ```python Python icon="python"
-import lancedb
 from lancedb.otel import instrument_lancedb_metrics
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import (

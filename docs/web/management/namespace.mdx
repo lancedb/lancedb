@@ -79,8 +79,6 @@ connecting to the catalog root:
 
 <CodeGroup>
 ```python Python icon="python"
-import lancedb
-
 # Connect to the directory namespace root
 db = lancedb.connect("./local_lancedb")
 ```
@@ -106,8 +104,6 @@ You can also explicitly connect to a namespace using `lancedb.connect_namespace(
 
 <CodeGroup>
 ```python Python icon="python"
-import lancedb
-
 # Local namespace-backed catalog root (DirectoryNamespace)
 # See https://lance.org/format/namespace/dir/catalog-spec/
 db = lancedb.connect_namespace("dir", {"root": "./local_lancedb"})
@@ -185,8 +181,6 @@ application code, load credentials from environment variables or a secrets manag
 
 <CodeGroup>
 ```python Python icon="python"
-import lancedb
-
 # Remote namespace-backed catalog root (RestNamespace)
 # See https://lance.org/format/namespace/rest/catalog-spec/
 db = lancedb.connect_namespace(

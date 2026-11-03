@@ -1,7 +1,7 @@
 ---
-title: "Read Hugging Face datasets with SQL"
-sidebarTitle: "Hugging Face Datasets"
-description: "Query Parquet files on Hugging Face directly from SQL, and import the result into a table with distributed CTAS."
+title: "Read HuggingFace datasets with SQL"
+sidebarTitle: "HuggingFace Datasets"
+description: "Query Parquet files on HuggingFace directly from SQL, and import the result into a table with distributed CTAS."
 icon: database
 keywords: ["hugging face", "huggingface", "import", "ingestion", "parquet", "ctas", "storage integration", "sql"]
 availability:
@@ -9,7 +9,7 @@ availability:
   enterprise: available
 ---
 
-A single-quoted Hugging Face dataset URI works directly in a SQL `FROM`
+A single-quoted HuggingFace dataset URI works directly in a SQL `FROM`
 clause, the same as a table name -- no separate download, no intermediate
 file on disk. Curate a sample before committing to a full import, or skip
 straight to importing the whole thing into a table.
@@ -57,7 +57,7 @@ not automatically converted into a fixed-size vector column.
 
 ## Access a private repository {#access}
 
-A private repository, or one subject to Hugging Face's authenticated rate
+A private repository, or one subject to HuggingFace's authenticated rate
 limits, needs a [storage integration](/management/storage-integration)
 bound to a token [Secret](/management/secret):
 
@@ -98,7 +98,7 @@ behavior: a configured `HF_TOKEN`/`HUGGINGFACE_TOKEN` environment variable,
 or anonymous access. See
 [Storage Integration](/management/storage-integration) for every provider
 and the full credential model -- the same object also covers S3, GCS and
-Azure prefixes, not just Hugging Face.
+Azure prefixes, not just HuggingFace.
 
 ## Import into a table {#import}
 
@@ -135,7 +135,7 @@ instead, drop the partial table and rerun the statement.
 
 <Note>
 Importing requires a native database with `database_manifest_enabled`.
-Combining a Hugging Face source with a WAL-backed destination table in one
+Combining a HuggingFace source with a WAL-backed destination table in one
 CTAS is rejected, since the import cannot publish a base-only read that
 omits the destination's unflushed data.
 </Note>

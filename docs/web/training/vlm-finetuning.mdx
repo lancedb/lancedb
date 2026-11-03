@@ -210,7 +210,7 @@ def matches_text_dense(row: dict) -> bool:
 ```
 </CodeGroup>
 
-The Colab-ready bake ingests a small train split, backfills Tier 3 on that train table, ingests a held-out validation split, and optionally pushes the result to Hugging Face:
+The Colab-ready bake ingests a small train split, backfills Tier 3 on that train table, ingests a held-out validation split, and optionally pushes the result to HuggingFace:
 
 <CodeGroup>
 ```bash Bash icon="terminal"
@@ -270,7 +270,6 @@ The notebook downloads the public pre-baked subset:
 <CodeGroup>
 ```python Python icon="python"
 from huggingface_hub import snapshot_download
-import lancedb
 import os
 
 local = snapshot_download(
