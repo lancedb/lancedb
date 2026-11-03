@@ -3567,13 +3567,15 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     /// `remap_options` is supported remotely: it submits a durable
     /// compaction job through the server's `OPTIMIZE TABLE ... REWRITE DATA`
     /// SQL statement, the same atomic, single-worker, index-safe path the
-    /// server uses for its own automatic compaction. The job runs
-    /// asynchronously, so this returns as soon as it is accepted rather than
-    /// once it completes. `OptimizeStats::compaction` is
-    /// `Some(CompactionMetrics::default())`, a placeholder rather than
-    /// `None` -- callers (including the Python/Node bindings) unwrap it
-    /// unconditionally on success -- because the SQL job adapter does not
-    /// expose per-job compaction metrics.
+    /// server uses for its own automatic compaction. `.wait()` below waits
+    /// for that SQL statement's own execution to finish, which only confirms
+    /// the compaction job was accepted into the server's job registry; the
+    /// compaction job itself then runs asynchronously on the server, so this
+    /// call can return well before the table is actually compacted.
+    /// `OptimizeStats::compaction` is `Some(CompactionMetrics::default())`,
+    /// a placeholder rather than `None` -- callers (including the
+    /// Python/Node bindings) unwrap it unconditionally on success -- because
+    /// the SQL job adapter does not expose per-job compaction metrics.
     /// `OptimizeAction::All`, `::Prune`, and `::Index` remain unsupported
     /// remotely: there is no SQL statement yet for version pruning or index
     /// optimization. A branch-scoped table handle submits a

@@ -1894,6 +1894,13 @@ impl Table {
     /// optimize should be run frequently.  A good rule of thumb is to run optimize if
     /// you have added or modified 100,000 or more records or run more than 20 data
     /// modification operations.
+    ///
+    /// # LanceDB Enterprise (remote tables)
+    ///
+    /// Only [`OptimizeAction::Compact`] with default `options` and no custom
+    /// `remap_options` is supported; `All`, `Prune`, and `Index` return
+    /// [`crate::Error::NotSupported`]. See [`OptimizeAction::Compact`] for
+    /// what a remote call submits and what it does and does not wait for.
     pub async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats> {
         self.inner.optimize(action).await
     }
