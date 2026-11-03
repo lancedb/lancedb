@@ -580,10 +580,13 @@ impl Outcome {
     fn into_result(self) -> Result<TerminalResult> {
         match self {
             Self::Succeeded(result) => Ok(result),
-            Self::Failed(source) => Err(Error::JobFailed {
-                job_id: None,
-                failure: JobFailure::from_source(source),
-            }),
+            Self::Failed(source) => {
+                let (job_id, failure) = match source.as_ref() {
+                    Error::JobFailed { job_id, failure } => (job_id.clone(), failure.clone()),
+                    _ => (None, JobFailure::from_source(source)),
+                };
+                Err(Error::JobFailed { job_id, failure })
+            }
             Self::Cancelled => Err(Error::JobCancelled { job_id: None }),
         }
     }
