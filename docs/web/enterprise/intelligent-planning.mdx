@@ -1,9 +1,9 @@
 ---
-title: "Intelligent Maintenance"
-sidebarTitle: "Intelligent Maintenance"
+title: "Intelligent Planning"
+sidebarTitle: "Intelligent Planning"
 description: "How Enterprise continuously tracks table activity and decides what maintenance a table needs next."
 icon: "brain"
-keywords: ["agent", "scheduling", "maintenance", "planner", "table events", "coverage"]
+keywords: ["agent", "planning", "scheduling", "maintenance", "planner", "table events", "coverage"]
 availability:
   embedded: unavailable
   enterprise: available
@@ -18,23 +18,23 @@ hand.
 
 ```mermaid
 flowchart LR
-    K["Table events<br/>Kafka or Job Registry notifications"] --> P
+    E["Table event notifications"] --> P
     S["Periodic sweep<br/>every table, on a timer"] --> P
     P["Planner<br/>evaluates one table"]
-    P -->|Decision 1: correctness| W["WAL index catch-up"]
-    P -->|Decision 3: gated by compaction| I["Index operations"]
-    P -->|Decision 4| C["Compaction"]
-    P -->|Decision 5: independent| CL["Cleanup"]
-    P -->|Decision 6: deferred| R["Remap catch-up"]
+    P --> W["Possible next step:<br/>WAL index catch-up"]
+    P --> I["Possible next step:<br/>Index operations"]
+    P --> C["Possible next step:<br/>Compaction"]
+    P --> CL["Possible next step:<br/>Cleanup"]
+    P --> R["Possible next step:<br/>Remap catch-up"]
 ```
 
 ## Tracking activity {#tracking}
 
 An agent's long-running process watches two independent sources for a
-table: **table events** (either Kafka or Job Registry notifications, so it
-learns about a write, a schema change, or a new index almost immediately)
-and a **periodic sweep** that revisits every table it owns on a timer --
-600 seconds by default -- so a table that stops producing events still gets
+table: **table events** (Job Registry notifications, so it learns about a
+write, a schema change, or a new index almost immediately) and a
+**periodic sweep** that revisits every table it owns on a timer -- 600
+seconds by default -- so a table that stops producing events still gets
 re-evaluated rather than going stale. A hot table producing a flood of
 events does not get to monopolize evaluation: notifications and the
 periodic sweep share a bounded per-tick budget, and reads for a given table
