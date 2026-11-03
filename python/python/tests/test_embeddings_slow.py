@@ -272,7 +272,7 @@ def test_cohere_embedding_function():
     cohere = (
         get_registry()
         .get("cohere")
-        .create(name="embed-multilingual-v2.0", max_retries=0)
+        .create(name="embed-multilingual-v3.0", max_retries=0)
     )
 
     class TextModel(LanceModel):

@@ -102,8 +102,8 @@ TypeScript bindings changes:
 
 1. Add napi-rs method binding on `Table` in `nodejs/src/table.rs`.
 2. Run `pnpm build` to generate TypeScript definitions.
-3. Add typescript method on abstract class `Table` in `nodejs/src/table.ts`.
-4. Add concrete method on `LocalTable` class in `nodejs/src/native_table.ts`.
+3. Add typescript method on abstract class `Table` in `nodejs/lancedb/table.ts`.
+4. Add concrete method on `LocalTable` class in `nodejs/lancedb/table.ts`.
     * Note: despite the name, this class is also used for remote tables.
 5. Add test in `nodejs/__test__/table.test.ts`.
 6. Run `pnpm run docs` to generate TypeScript documentation.

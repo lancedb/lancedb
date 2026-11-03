@@ -3,7 +3,12 @@
 
 
 # ruff: noqa: F401
-from .base import EmbeddingFunction, EmbeddingFunctionConfig, TextEmbeddingFunction
+from .base import (
+    EmbeddingFunction,
+    EmbeddingFunctionConfig,
+    TextEmbeddingFunction,
+    UntrustedEmbeddingConfigError,
+)
 from .bedrock import BedRockText
 from .cohere import CohereEmbeddingFunction
 from .gemini_text import GeminiText
@@ -12,6 +17,7 @@ from .oci_genai import OCIGenAIEmbeddings
 from .ollama import OllamaEmbeddings
 from .open_clip import OpenClipEmbeddings
 from .openai import OpenAIEmbeddings
+from .nvidia import NvidiaEmbeddings
 from .registry import EmbeddingFunctionRegistry, get_registry, register
 from .sentence_transformers import SentenceTransformerEmbeddings
 from .gte import GteEmbeddings
@@ -30,11 +36,13 @@ __all__ = [
     "EmbeddingFunction",
     "EmbeddingFunctionConfig",
     "TextEmbeddingFunction",
+    "UntrustedEmbeddingConfigError",
     "EmbeddingFunctionRegistry",
     "get_registry",
     "register",
     "SentenceTransformerEmbeddings",
     "OpenAIEmbeddings",
+    "NvidiaEmbeddings",
     "OpenClipEmbeddings",
     "BedRockText",
     "CohereEmbeddingFunction",

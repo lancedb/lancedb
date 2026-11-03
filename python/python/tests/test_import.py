@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import os
 import re
 import shutil
 import subprocess
@@ -31,3 +32,54 @@ def test_native_extension_does_not_link_openssl():
         "the LanceDB native extension must use rustls instead of linking OpenSSL: "
         f"{openssl_libraries}"
     )
+
+
+@pytest.mark.parametrize(
+    "native_version, expected_version",
+    [
+        ("0.41.0", "0.41.0"),
+        ("0.41.0-alpha.1", "0.41.0a1"),
+        ("0.41.0-beta.17", "0.41.0b17"),
+        ("0.41.0-rc.1", "0.41.0rc1"),
+        ("0.41.0-dev.1", "0.41.0.dev1"),
+    ],
+)
+def test_top_level_version_comes_from_native_module(native_version, expected_version):
+    child_code = """
+import importlib
+import importlib.metadata
+import sys
+
+from packaging.version import Version
+
+orig_version = importlib.metadata.version
+
+def fail_version_lookup(_: str) -> str:
+    if _ in {"lancedb", "lancedb-compat"}:
+        raise AssertionError("lancedb import should not query distribution metadata")
+    return orig_version(_)
+
+importlib.metadata.version = fail_version_lookup
+
+import lancedb
+import lancedb._lancedb as native_module
+import lancedb.db
+
+assert lancedb.__version__ == str(Version(native_module.__version__))
+
+native_module.__version__ = sys.argv[1]
+importlib.reload(lancedb)
+assert lancedb.__version__ == sys.argv[2]
+"""
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(path for path in sys.path if path)
+
+    result = subprocess.run(
+        [sys.executable, "-c", child_code, native_version, expected_version],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout

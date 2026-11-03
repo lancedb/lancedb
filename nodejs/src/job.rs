@@ -29,8 +29,8 @@ impl Job {
 
 #[napi]
 impl Job {
-    /// Identifies the operation on the server that is running it. Operations
-    /// that run in this process have no server id. The value is opaque.
+    /// The operation's opaque ID. Interpret registry and query IDs using job_type().
+    /// Local handles have no ID.
     #[napi(getter)]
     pub fn id(&self) -> Option<String> {
         self.inner.id().map(str::to_string)
@@ -62,8 +62,8 @@ impl Job {
     /// Ask the backend for this job's current state, and for a server-side job
     /// its full record, then cache it for the getters below.
     ///
-    /// They are all null until this runs, because submitting an operation
-    /// returns only a job id. {@link Job.status} fetches the whole record too;
+    /// Registry details are null until this runs; query handles already expose
+    /// job_type "query". {@link Job.status} fetches the whole registry record too;
     /// {@link Job.wait} records only the terminal state it establishes.
     #[napi(catch_unwind)]
     pub async fn refresh(&self) -> napi::Result<()> {
@@ -76,8 +76,8 @@ impl Job {
         self.inner.state()
     }
 
-    /// The job's type, as the server names it. Null for an in-process job,
-    /// which has no server-side record.
+    /// "query" immediately for SQL-backed handles; otherwise the cached
+    /// server-reported job type. Null for in-process handles.
     #[napi(getter)]
     pub fn job_type(&self) -> Option<String> {
         self.inner.job_type()

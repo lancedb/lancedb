@@ -50,6 +50,19 @@ pnpm install
 pnpm build
 ```
 
+Local SQL computed columns and materialized-view creation/refresh are experimental
+and disabled in published packages. To opt in when building from this directory:
+
+```shell
+pnpm build:debug --features experimental-functions
+pnpm tsc
+pnpm test --runInBand table.test.ts materialized_view.test.ts
+```
+
+Rebuild without `--features experimental-functions` to test the default package.
+The tests detect the compiled feature; remote operations, metadata protections,
+and ordinary eager `addColumns` transforms remain available in both builds.
+
 Lint:
 
 ```shell

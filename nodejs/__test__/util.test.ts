@@ -14,6 +14,9 @@ test.each([
   [new ArrayBuffer(8), "X'0000000000000000'"],
   [Buffer.from("hello"), "X'68656c6c6f'"],
   ["Hello 'world'", "'Hello ''world'''"],
+  [NaN, "CAST('NaN' AS DOUBLE)"],
+  [Infinity, "CAST('Infinity' AS DOUBLE)"],
+  [-Infinity, "CAST('-Infinity' AS DOUBLE)"],
 ])("toSQL(%p) === %p", (value, expected) => {
   expect(toSQL(value)).toBe(expected);
 });

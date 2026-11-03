@@ -6,27 +6,59 @@ import * as tmp from "tmp";
 import { Connection, connect } from "../lancedb";
 import {
   DEFINITION_META_KEY,
+  MaterializedView,
   definitionFromMetadata,
 } from "../lancedb/materialized_view";
+import { experimentalFunctionsEnabled } from "../lancedb/native";
 
 describe("materialized views", () => {
+  const experimentalTest = experimentalFunctionsEnabled() ? it : it.skip;
   let tmpDir: tmp.DirResult;
   let db: Connection;
 
   beforeEach(async () => {
     tmpDir = tmp.dirSync({ unsafeCleanup: true });
     db = await connect(tmpDir.name);
-    await db.createTable(
-      "people",
-      [
-        { name: "ada", age: 36 },
-        { name: "kid", age: 7 },
-        { name: "grace", age: 85 },
-      ],
-      { storageOptions: { newTableEnableStableRowIds: "true" } },
-    );
+    await db.createTable("people", [
+      { name: "ada", age: 36 },
+      { name: "kid", age: 7 },
+      { name: "grace", age: 85 },
+    ]);
   });
   afterEach(() => tmpDir.removeCallback());
+
+  it("reads stored queries and legacy layouts", () => {
+    const read = (stored: string) =>
+      definitionFromMetadata(new Map([[DEFINITION_META_KEY, stored]]), "v");
+    const query =
+      "SELECT id, c.chunk FROM ns.docs, UNNEST(chunks) AS c WHERE id > 1";
+    expect(read(`{"format":1,"query":${JSON.stringify(query)}}`).query).toBe(
+      query,
+    );
+
+    // The structured layout written before the format number reads as the
+    // query it described, under either of its kind tags.
+    expect(
+      read(
+        '{"kind":"namespaced_select","source_table":"people","source_namespace":["ns"],' +
+          '"projections":[{"output":"name","expression":"`name`"},' +
+          '{"output":"Shout","expression":"upper(name)"}],"filter":"age >= 18","limit":42}',
+      ).query,
+    ).toBe(
+      "SELECT `name`, upper(name) AS `Shout` FROM ns.people WHERE age >= 18 LIMIT 42",
+    );
+    expect(read('{"kind":"select","source_table":"people"}').query).toBe(
+      "SELECT * FROM people",
+    );
+
+    // A newer writer's layout is reported, never guessed at.
+    for (const newer of [
+      `{"format":3,"query":${JSON.stringify(query)}}`,
+      '{"kind":"select_v3","source_table":"people"}',
+    ]) {
+      expect(() => read(newer)).toThrow(/cannot refresh/);
+    }
+  });
 
   it("rejects a stored limit a number cannot carry", () => {
     const big = new Map([
@@ -38,39 +70,9 @@ describe("materialized views", () => {
     expect(() => definitionFromMetadata(big, "v")).toThrow(
       /too large to represent exactly/,
     );
-
-    const safe = new Map([
-      [
-        DEFINITION_META_KEY,
-        '{"kind":"select","source_table":"people","limit":42}',
-      ],
-    ]);
-    expect(definitionFromMetadata(safe, "v").limit).toBe(42);
   });
 
-  it("reads the namespaced select kind and refuses unknown kinds", () => {
-    // "namespaced_select" is the namespaced form of "select": same shape, a
-    // separate kind so readers that predate it refuse instead of resolving
-    // the source at the root.
-    const namespaced = new Map([
-      [
-        DEFINITION_META_KEY,
-        '{"kind":"namespaced_select","source_table":"people","source_namespace":["ns"]}',
-      ],
-    ]);
-    const definition = definitionFromMetadata(namespaced, "v");
-    expect(definition.sourceTable).toBe("people");
-    expect(definition.sourceNamespace).toEqual(["ns"]);
-
-    const unknown = new Map([
-      [DEFINITION_META_KEY, '{"kind":"select_v3","source_table":"people"}'],
-    ]);
-    expect(() => definitionFromMetadata(unknown, "v")).toThrow(
-      /cannot refresh/,
-    );
-  });
-
-  it("creates, refreshes and queries a view", async () => {
+  experimentalTest("creates, refreshes and queries a view", async () => {
     const view = await db.createMaterializedView("adults", "people", {
       select: ["name", ["shout", "upper(name)"]],
       where: "age >= 18",
@@ -82,42 +84,51 @@ describe("materialized views", () => {
     expect(rows.map((r) => r.shout).sort()).toEqual(["ADA", "GRACE"]);
   });
 
-  it("round-trips the definition", async () => {
+  experimentalTest("round-trips the definition", async () => {
     await db.createMaterializedView("adults", "people", {
       where: "age >= 18",
     });
     const view = await db.openMaterializedView("adults");
     const definition = await view.definition();
-    expect(definition.sourceTable).toBe("people");
-    expect(definition.filter).toBe("age >= 18");
-    expect(definition.projections).toEqual([
-      ["name", "`name`"],
-      ["age", "`age`"],
-    ]);
-    expect(definition.inputs).toEqual(["age", "name"]);
+    expect(definition.query).toBe(
+      "SELECT name, age FROM people WHERE age >= 18",
+    );
   });
 
-  it("refreshes incrementally after an append", async () => {
-    const view = await db.createMaterializedView("copy", "people", {
-      withNoData: true,
-    });
-    await view.refresh();
+  experimentalTest.each([false, true])(
+    "fully refreshes after an append (full=%s)",
+    async (full) => {
+      const view = await db.createMaterializedView("copy", "people", {
+        withNoData: true,
+      });
+      await view.refresh();
 
-    const people = await db.openTable("people");
-    await people.add([{ name: "alan", age: 41 }]);
-    const result = await view.refresh();
-    expect(result.mode).toBe("incremental");
-    expect(Number(result.rowsWritten)).toBe(1);
-    expect(await view.table().countRows()).toBe(4);
+      const people = await db.openTable("people");
+      await people.add([{ name: "alan", age: 41 }]);
+      const result = await view.refresh({ full });
+      expect(result.mode).toBe("rebuild");
+      expect(Number(result.rowsWritten)).toBe(4);
+      expect(await view.table().countRows()).toBe(4);
 
-    expect((await view.refresh()).mode).toBe("no_op");
+      expect((await view.refresh()).mode).toBe("rebuild");
+    },
+  );
+
+  it("forwards a forced refresh and preserves absent remote metrics", async () => {
+    const view = new MaterializedView(await db.openTable("people"));
+    const remoteResult = { version: 42 };
+    const refresh = jest
+      .spyOn(view.table(), "refreshMaterializedView")
+      .mockResolvedValue(remoteResult);
+    expect(await view.refresh({ full: true })).toEqual(remoteResult);
+    expect(refresh).toHaveBeenCalledWith(undefined, true);
   });
 
-  it("lists views and rejects non-views", async () => {
+  experimentalTest("lists views and rejects non-views", async () => {
     await db.createMaterializedView("adults", "people", {
       where: "age >= 18",
     });
-    expect(await db.listMaterializedViews()).toEqual(["adults"]);
+    expect(await collect(db.listMaterializedViews())).toEqual(["adults"]);
     await expect(db.openMaterializedView("people")).rejects.toThrow(
       "not a materialized view",
     );
@@ -126,19 +137,23 @@ describe("materialized views", () => {
     );
 
     await db.dropMaterializedView("adults");
-    expect(await db.listMaterializedViews()).toEqual([]);
+    expect(await collect(db.listMaterializedViews())).toEqual([]);
   });
 
-  it("returns a job when dropping a view asynchronously", async () => {
-    await db.createMaterializedView("adults", "people");
+  experimentalTest(
+    "returns a job when dropping a view asynchronously",
+    async () => {
+      await db.createMaterializedView("adults", "people");
 
-    const job = await db.dropMaterializedViewAsync("adults");
-    expect(job.id).toBeNull();
-    await job.wait();
-    expect(await db.listMaterializedViews()).toEqual([]);
-  });
+      const job = await db.dropMaterializedViewAsync("adults");
+      expect(job.id).toBeNull();
+      expect(job.jobType).toBeNull();
+      await job.wait();
+      expect(await collect(db.listMaterializedViews())).toEqual([]);
+    },
+  );
 
-  it("rejects an invalid expression at create time", async () => {
+  experimentalTest("rejects an invalid expression at create time", async () => {
     await expect(
       db.createMaterializedView("bad", "people", {
         select: [["x", "missing + 1"]],
@@ -152,20 +167,23 @@ describe("materialized views", () => {
         db.createMaterializedView("bad", "people", { limit }),
       ).rejects.toThrow("non-negative integer");
     }
-    expect(await db.listMaterializedViews()).toEqual([]);
-
-    const view = await db.createMaterializedView("copy", "people");
-    for (const sourceVersion of [-1, 1.5, Infinity, NaN]) {
-      await expect(view.refresh({ sourceVersion })).rejects.toThrow(
-        "non-negative integer",
-      );
-    }
+    expect(await collect(db.listMaterializedViews())).toEqual([]);
   });
 
-  it("quotes bare select names", async () => {
-    await db.createTable("odd_names", [{ "order item": "widget" }], {
-      storageOptions: { newTableEnableStableRowIds: "true" },
-    });
+  experimentalTest(
+    "rejects invalid source versions before refreshing",
+    async () => {
+      const view = await db.createMaterializedView("copy", "people");
+      for (const sourceVersion of [-1, 1.5, Infinity, NaN]) {
+        await expect(view.refresh({ sourceVersion })).rejects.toThrow(
+          "non-negative integer",
+        );
+      }
+    },
+  );
+
+  experimentalTest("quotes bare select names", async () => {
+    await db.createTable("odd_names", [{ "order item": "widget" }]);
     const view = await db.createMaterializedView("quoted", "odd_names", {
       select: ["order item"],
       withNoData: true,
@@ -174,10 +192,18 @@ describe("materialized views", () => {
     expect(Number(result.rowsWritten)).toBe(1);
   });
 
-  it("requires stable row ids on the source", async () => {
-    await db.createTable("plain", [{ x: 1 }]);
-    await expect(db.createMaterializedView("v", "plain")).rejects.toThrow(
-      "stable row ids",
-    );
-  });
+  experimentalTest(
+    "does not require stable row ids on the source",
+    async () => {
+      await db.createTable("plain", [{ x: 1 }]);
+      const view = await db.createMaterializedView("v", "plain");
+      expect(await view.table().countRows()).toBe(1);
+    },
+  );
 });
+
+async function collect<T>(items: AsyncIterable<T>): Promise<T[]> {
+  const result: T[] = [];
+  for await (const item of items) result.push(item);
+  return result;
+}

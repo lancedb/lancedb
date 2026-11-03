@@ -81,6 +81,11 @@ impl Job {
         self.inner.id().map(str::to_string)
     }
 
+    #[getter]
+    pub fn job_type(&self) -> Option<String> {
+        self.inner.job_type()
+    }
+
     pub fn status(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(
@@ -195,10 +200,20 @@ pub struct JobFailureInfo {
 #[pymethods]
 impl JobFailureInfo {
     fn __repr__(&self) -> String {
-        format!(
-            "JobFailureInfo(phase={:?}, message={:?}, retryable={:?})",
-            self.phase, self.message, self.retryable
-        )
+        let phase = self
+            .phase
+            .as_ref()
+            .map_or_else(|| "None".to_string(), |value| format!("{value:?}"));
+        let message = self
+            .message
+            .as_ref()
+            .map_or_else(|| "None".to_string(), |value| format!("{value:?}"));
+        let retryable = match self.retryable {
+            Some(true) => "True",
+            Some(false) => "False",
+            None => "None",
+        };
+        format!("JobFailureInfo(phase={phase}, message={message}, retryable={retryable})")
     }
 }
 

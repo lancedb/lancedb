@@ -71,9 +71,9 @@ jobs:
             # https://github.com/napi-rs/napi-rs/blob/main/debian.Dockerfile
             docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian
             pre_build: |-
-              set -e &&
-              apt-get update &&
-              apt-get install -y protobuf-compiler pkg-config &&
+              set -e
+              apt-get update
+              apt-get install -y protobuf-compiler pkg-config
               # The base image (manylinux2014-cross) sets TARGET_CC to the old
               # GCC 4.8 cross-compiler. aws-lc-sys checks TARGET_CC before CC,
               # so it picks up GCC even though the napi-rs image sets CC=clang.
@@ -84,10 +84,10 @@ jobs:
             host: ubuntu-2404-8x-x64
             features: fp16kernels
             pre_build: |-
-              set -e &&
-              sudo apt-get update &&
-              sudo apt-get install -y protobuf-compiler pkg-config &&
-              rustup target add x86_64-unknown-linux-musl &&
+              set -e
+              sudo apt-get update
+              sudo apt-get install -y protobuf-compiler pkg-config
+              rustup target add x86_64-unknown-linux-musl
               export EXTRA_ARGS="-x"
           - target: aarch64-unknown-linux-gnu
             host: ubuntu-2404-8x-x64
@@ -103,13 +103,13 @@ jobs:
             # linker process 7.0 -> 4.0 GiB (lancedb/sophon#7313).
             linker: /tmp/aarch64-lld-clang
             pre_build: |-
-              set -e &&
-              apt-get update &&
-              apt-get install -y protobuf-compiler pkg-config &&
-              export TARGET_CC=clang TARGET_CXX=clang++ &&
+              set -e
+              apt-get update
+              apt-get install -y protobuf-compiler pkg-config
+              export TARGET_CC=clang TARGET_CXX=clang++
               # The manylinux2014 sysroot has glibc 2.17 headers which lack
               # AT_HWCAP2 (added in Linux 3.17). Define it for aws-lc-sys.
-              export CFLAGS="$CFLAGS -DAT_HWCAP2=26" &&
+              export CFLAGS="$CFLAGS -DAT_HWCAP2=26"
               rustup target add aarch64-unknown-linux-gnu
               # Not `&&`-chained: in dash, errexit does not fire for a
               # non-final command in an `&&` list, so failures were ignored.
@@ -136,10 +136,10 @@ jobs:
             lto: thin
             codegen_units: 16
             pre_build: |-
-              set -e &&
-              sudo apt-get update &&
-              sudo apt-get install -y protobuf-compiler &&
-              rustup target add aarch64-unknown-linux-musl &&
+              set -e
+              sudo apt-get update
+              sudo apt-get install -y protobuf-compiler
+              rustup target add aarch64-unknown-linux-musl
               export EXTRA_ARGS="-x"
     name: build - ${{ matrix.settings.target }}
     runs-on: ${{ matrix.settings.host }}

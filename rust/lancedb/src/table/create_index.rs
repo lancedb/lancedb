@@ -29,8 +29,8 @@ use crate::index::Index;
 use crate::index::vector::{VectorIndex, suggested_num_sub_vectors};
 use crate::utils::{
     resolve_lance_fts_field_path, supported_bitmap_data_type, supported_btree_data_type,
-    supported_fm_data_type, supported_fts_data_type, supported_label_list_data_type,
-    supported_vector_data_type, supported_zonemap_data_type,
+    supported_fm_data_type, supported_label_list_data_type, supported_vector_data_type,
+    supported_zonemap_data_type, validate_fts_field,
 };
 
 use super::NativeTable;
@@ -160,6 +160,12 @@ impl NativeTable {
             builder = builder.name(name);
         }
         builder.await?;
+        // A writer already open was built before this index existed, so it has
+        // to pick it up here or a read needing it is refused until it reopens.
+        self.dataset
+            .shard_writer()
+            .refresh_maintained_indexes(&dataset)
+            .await;
         self.dataset.update(dataset);
         Ok(())
     }
@@ -286,7 +292,7 @@ impl NativeTable {
                 ))
             }
             Index::FTS(fts_opts) => {
-                Self::validate_index_type(field, "FTS", supported_fts_data_type)?;
+                validate_fts_field(field)?;
                 Ok(Box::new(fts_opts))
             }
             Index::IvfFlat(index) => {
@@ -349,7 +355,10 @@ impl NativeTable {
                     index.sample_rate,
                     index.max_iterations,
                 );
-                let rq_params = RQBuildParams::new(index.num_bits.unwrap_or(1) as u8);
+                let rq_params = index
+                    .num_bits
+                    .map(|num_bits| RQBuildParams::new(num_bits as u8))
+                    .unwrap_or_default();
                 let lance_idx_params = VectorIndexParams::with_ivf_rq_params(
                     index.distance_type.into(),
                     ivf_params,
@@ -471,7 +480,7 @@ mod tests {
     use arrow_array::{
         Array, ArrayRef, BinaryArray, BooleanArray, FixedSizeListArray, Float32Array, Int32Array,
         LargeBinaryArray, LargeStringArray, ListArray, RecordBatch, StringArray, StructArray,
-        UInt32Array,
+        UInt32Array, UInt64Array,
     };
     use arrow_data::ArrayDataBuilder;
     use arrow_schema::{DataType, Field, Schema};
@@ -492,6 +501,55 @@ mod tests {
     use crate::table::optimize::{CompactionOptions, OptimizeAction};
     use lance_index::scalar::FullTextSearchQuery;
     use lance_index::scalar::inverted::query::{FtsQuery, MatchQuery};
+
+    struct OrderPreservingShuffler;
+
+    struct SinglePartitionReader {
+        batches: Vec<RecordBatch>,
+    }
+
+    #[async_trait::async_trait]
+    impl lance_index::vector::v3::shuffler::Shuffler for OrderPreservingShuffler {
+        async fn shuffle(
+            &self,
+            data: Box<dyn lance_io::stream::RecordBatchStream + Unpin + 'static>,
+        ) -> lance_core::Result<Box<dyn lance_index::vector::v3::shuffler::ShuffleReader>> {
+            Ok(Box::new(SinglePartitionReader {
+                batches: data.try_collect().await?,
+            }))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl lance_index::vector::v3::shuffler::ShuffleReader for SinglePartitionReader {
+        async fn read_partition(
+            &self,
+            partition_id: usize,
+        ) -> lance_core::Result<
+            Option<Box<dyn lance_io::stream::RecordBatchStream + Unpin + 'static>>,
+        > {
+            if partition_id != 0 || self.batches.is_empty() {
+                return Ok(None);
+            }
+            let schema = self.batches[0].schema();
+            let stream = futures::stream::iter(self.batches.clone().into_iter().map(Ok));
+            Ok(Some(Box::new(
+                lance_io::stream::RecordBatchStreamAdapter::new(schema, stream),
+            )))
+        }
+
+        fn partition_size(&self, partition_id: usize) -> lance_core::Result<usize> {
+            Ok(if partition_id == 0 {
+                self.batches.iter().map(RecordBatch::num_rows).sum()
+            } else {
+                0
+            })
+        }
+
+        fn total_loss(&self) -> Option<f64> {
+            Some(0.0)
+        }
+    }
 
     fn create_fixed_size_list<T: Array>(
         values: T,
@@ -1001,6 +1059,135 @@ mod tests {
         assert_eq!(stats.num_indexed_rows, 512);
         assert_eq!(stats.num_unindexed_rows, 0);
         assert_eq!(stats.distance_type, Some(crate::DistanceType::L2));
+    }
+
+    #[tokio::test]
+    async fn test_ivf_hnsw_sq_merge_preserves_shuffled_row_order() {
+        use lance::index::vector::builder::IvfIndexBuilder;
+        use lance_core::{ROW_ID, ROW_ID_FIELD, cache::LanceCache};
+        use lance_encoding::decoder::{DecoderPlugins, FilterExpression};
+        use lance_file::reader::{FileReader, FileReaderOptions};
+        use lance_index::INDEX_AUXILIARY_FILE_NAME;
+        use lance_index::vector::hnsw::{HNSW, builder::HnswBuildParams};
+        use lance_index::vector::ivf::IvfBuildParams;
+        use lance_index::vector::sq::{ScalarQuantizer, builder::SQBuildParams};
+        use lance_io::ReadBatchParams;
+        use lance_io::object_store::ObjectStore;
+        use lance_io::scheduler::{ScanScheduler, SchedulerConfig};
+        use lance_io::stream::RecordBatchStreamAdapter;
+        use lance_io::utils::CachedFileSize;
+
+        const NUM_ROWS: usize = 64;
+        const DIMENSION: i32 = 16;
+
+        let tmp_dir = tempdir().unwrap();
+        let conn = connect(tmp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let vector_field = Field::new(
+            "embeddings",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                DIMENSION,
+            ),
+            false,
+        );
+        let values = Float32Array::from_iter_values(
+            (0..NUM_ROWS * DIMENSION as usize).map(|value| (value % 97) as f32),
+        );
+        let vectors = Arc::new(create_fixed_size_list(values, DIMENSION).unwrap());
+        let table_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![vector_field.clone()])),
+            vec![vectors.clone()],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("test", table_batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let dataset_guard = table.as_native().unwrap().dataset.get().await.unwrap();
+        let dataset = (*dataset_guard).clone();
+        drop(dataset_guard);
+
+        // Descending row IDs are a small sentinel for the removed merge-time
+        // sort. The old sort reordered this batch and used FixedSizeList::take,
+        // which overflowed for the large partitions reported in #3126.
+        let expected_row_ids = (0..NUM_ROWS as u64).rev().collect::<Vec<_>>();
+        let input_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![ROW_ID_FIELD.clone(), vector_field])),
+            vec![
+                Arc::new(UInt64Array::from(expected_row_ids.clone())),
+                vectors,
+            ],
+        )
+        .unwrap();
+        let input = RecordBatchStreamAdapter::new(
+            input_batch.schema(),
+            futures::stream::iter(vec![Ok(input_batch)]),
+        );
+
+        let index_dir = dataset.indices_dir().join(uuid::Uuid::new_v4().to_string());
+        let mut builder = IvfIndexBuilder::<HNSW, ScalarQuantizer>::new(
+            dataset,
+            "embeddings".to_string(),
+            index_dir.clone(),
+            lance_linalg::distance::DistanceType::L2,
+            Box::new(OrderPreservingShuffler),
+            Some(IvfBuildParams::new(1)),
+            Some(SQBuildParams::default()),
+            HnswBuildParams::default(),
+            None,
+        )
+        .unwrap();
+        builder.shuffle_data_input(Some(input));
+        builder.build().await.unwrap();
+
+        let object_store = Arc::new(ObjectStore::local());
+        let scheduler = ScanScheduler::new(object_store, SchedulerConfig::default_for_testing());
+        let auxiliary_path = index_dir.join(INDEX_AUXILIARY_FILE_NAME);
+        let reader = FileReader::try_open(
+            scheduler
+                .open_file(&auxiliary_path, &CachedFileSize::unknown())
+                .await
+                .unwrap(),
+            None,
+            Arc::<DecoderPlugins>::default(),
+            &LanceCache::no_cache(),
+            FileReaderOptions::default(),
+        )
+        .await
+        .unwrap();
+        let batches = reader
+            .read_stream(
+                ReadBatchParams::RangeFull,
+                u32::MAX,
+                1,
+                FilterExpression::no_filter(),
+            )
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let stored_row_ids = batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column_by_name(ROW_ID)
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<UInt64Array>()
+                    .unwrap()
+                    .values()
+                    .iter()
+                    .copied()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(stored_row_ids, expected_row_ids);
     }
 
     #[tokio::test]
@@ -2076,6 +2263,50 @@ mod tests {
         let index = index_configs.into_iter().next().unwrap();
         assert_eq!(index.index_type, crate::index::IndexType::LabelList);
         assert_eq!(index.columns, vec!["tags".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_list_indices_with_missing_fts_index_files() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = connect(uri).execute().await.unwrap();
+        let batch = record_batch!(
+            ("id", Int32, [1, 2, 3]),
+            ("text", Utf8, ["alpha", "beta", "gamma"])
+        )
+        .unwrap();
+        let table = conn.create_table("t", batch).execute().await.unwrap();
+        table
+            .create_index(&["text"], Index::FTS(FtsIndexBuilder::default()))
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(&["id"], Index::BTree(BTreeIndexBuilder::default()))
+            .execute()
+            .await
+            .unwrap();
+
+        let fts_uuid = table
+            .list_indices()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|index| index.name == "text_idx")
+            .and_then(|index| index.index_uuid)
+            .unwrap();
+        std::fs::remove_dir_all(tmp_dir.path().join("t.lance/_indices").join(fts_uuid)).unwrap();
+
+        // A new connection, so the index cache cannot serve the deleted files.
+        let conn = connect(uri).execute().await.unwrap();
+        let table = conn.open_table("t").execute().await.unwrap();
+        let mut indices = table.list_indices().await.unwrap();
+        indices.sort_by(|a, b| a.name.cmp(&b.name));
+        let names = indices.iter().map(|i| i.name.as_str()).collect::<Vec<_>>();
+        assert_eq!(names, vec!["id_idx", "text_idx"]);
+        assert_eq!(indices[1].index_type, crate::index::IndexType::FTS);
+        assert_eq!(indices[1].index_details, None);
+        assert!(indices[0].index_details.is_some());
     }
 
     #[tokio::test]

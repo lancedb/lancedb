@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
 use arrow_array::StructArray;
@@ -21,7 +20,7 @@ use datafusion_physical_plan::{ExecutionPlan, PhysicalExpr};
 use lance_arrow::json::{ARROW_JSON_EXT_NAME, has_json_fields, is_arrow_json_field, is_json_field};
 use lance_arrow::{ARROW_EXT_NAME_KEY, FieldExt};
 
-use super::blob_coerce::coerce_blob_expr;
+use super::blob_coerce::{coerce_blob_expr, coerce_blob_list_expr};
 use crate::{Error, Result};
 
 pub fn cast_to_table_schema(
@@ -34,9 +33,12 @@ pub fn cast_to_table_schema(
         return Ok(input);
     }
 
-    let exprs = build_field_exprs(input_schema.fields(), table_schema.fields(), &|idx| {
-        Arc::new(Column::new(input_schema.field(idx).name(), idx)) as Arc<dyn PhysicalExpr>
-    })?;
+    let exprs = build_field_exprs(
+        input_schema.fields(),
+        table_schema.fields(),
+        &|idx| Arc::new(Column::new(input_schema.field(idx).name(), idx)) as Arc<dyn PhysicalExpr>,
+        &[],
+    )?;
 
     let exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = exprs
         .into_iter()
@@ -53,10 +55,13 @@ pub fn cast_to_table_schema(
 /// For each table field that exists in the input, produce an expression that
 /// reads from the input and casts if needed. Fields in the table but not in the
 /// input are omitted (the storage layer handles missing columns).
-fn build_field_exprs(
+/// `ancestors` carries validity for blob range validation without nullifying
+/// non-nullable children hidden beneath a null parent.
+pub(super) fn build_field_exprs(
     input_fields: &Fields,
     table_fields: &Fields,
     get_input_expr: &dyn Fn(usize) -> Arc<dyn PhysicalExpr>,
+    ancestors: &[Arc<dyn PhysicalExpr>],
 ) -> Result<Vec<(Arc<dyn PhysicalExpr>, FieldRef)>> {
     let config = Arc::new(ConfigOptions::default());
     let mut result = Vec::new();
@@ -73,8 +78,12 @@ fn build_field_exprs(
         let input_expr = get_input_expr(input_idx);
 
         // PyArrow's pa.json_() is already labelled arrow.json, which is what lance-core wants
-        // to see, so pass it straight through.
-        if is_json_field(table_field) && is_arrow_json_field(input_field) {
+        // to see, so pass it straight through once its extension metadata matches the table's
+        // (see `arrow_json_field`); otherwise it takes the relabelling cast below.
+        if is_json_field(table_field)
+            && is_arrow_json_field(input_field)
+            && input_field.as_ref() == &arrow_json_field(table_field, input_field.data_type())
+        {
             result.push((input_expr, Arc::clone(input_field) as FieldRef));
             continue;
         }
@@ -106,7 +115,16 @@ fn build_field_exprs(
                 input_field,
                 table_field,
                 &config,
+                ancestors,
             )?);
+            continue;
+        }
+
+        // Blob values in lists need the same coercion as top-level blob columns.
+        if let Some(coerced) =
+            coerce_blob_list_expr(input_expr.clone(), input_field, table_field, ancestors)?
+        {
+            result.push(coerced);
             continue;
         }
 
@@ -127,30 +145,38 @@ fn build_field_exprs(
             (DataType::Struct(in_children), DataType::Struct(tbl_children))
                 if in_children != tbl_children =>
             {
-                let sub_exprs = build_field_exprs(in_children, tbl_children, &|child_idx| {
-                    let child_name = in_children[child_idx].name();
-                    Arc::new(ScalarFunctionExpr::new(
-                        &format!("get_field({child_name})"),
-                        get_field(),
-                        vec![
-                            input_expr.clone(),
-                            Arc::new(Literal::new(ScalarValue::from(child_name.as_str()))),
-                        ],
-                        Arc::new(in_children[child_idx].as_ref().clone()),
-                        config.clone(),
-                    )) as Arc<dyn PhysicalExpr>
-                })?;
+                let mut child_ancestors = ancestors.to_vec();
+                child_ancestors.push(input_expr.clone());
+                let sub_exprs = build_field_exprs(
+                    in_children,
+                    tbl_children,
+                    &|child_idx| {
+                        let child_name = in_children[child_idx].name();
+                        Arc::new(ScalarFunctionExpr::new(
+                            &format!("get_field({child_name})"),
+                            get_field(),
+                            vec![
+                                input_expr.clone(),
+                                Arc::new(Literal::new(ScalarValue::from(child_name.as_str()))),
+                            ],
+                            Arc::new(in_children[child_idx].as_ref().clone()),
+                            config.clone(),
+                        )) as Arc<dyn PhysicalExpr>
+                    },
+                    &child_ancestors,
+                )?;
 
                 let output_struct_fields: Fields = sub_exprs
                     .iter()
                     .map(|(_, f)| f.clone())
                     .collect::<Vec<_>>()
                     .into();
-                let output_field: FieldRef = Arc::new(Field::new(
-                    table_field.name(),
-                    DataType::Struct(output_struct_fields),
-                    table_field.is_nullable(),
-                ));
+                let output_field: FieldRef = Arc::new(
+                    table_field
+                        .as_ref()
+                        .clone()
+                        .with_data_type(DataType::Struct(output_struct_fields)),
+                );
 
                 // Build named_struct(lit("a"), expr_a, lit("b"), expr_b, ...)
                 let mut ns_args: Vec<Arc<dyn PhysicalExpr>> = Vec::new();
@@ -299,11 +325,25 @@ fn arrow_json_storage_type(input: &DataType) -> Option<DataType> {
     }
 }
 
-fn arrow_json_field(name: &str, storage: DataType, nullable: bool) -> Field {
-    Field::new(name, storage, nullable).with_metadata(HashMap::from([(
+/// The arrow.json field lance-core should see for `table_field`, a lance.json leaf.
+///
+/// Lance-core converts the leaf to lance.json by swapping the extension name and keeping the
+/// rest of the field metadata, and the file writer then requires the result to match the stored
+/// field exactly, `ARROW:extension:metadata` included. PyArrow exports every extension field
+/// with that key (empty for JSON), while a schema built in Rust omits it, so the relabelled
+/// field mirrors the table field's metadata rather than carrying a fixed set of keys.
+fn arrow_json_field(table_field: &Field, storage: &DataType) -> Field {
+    let mut metadata = table_field.metadata().clone();
+    metadata.insert(
         ARROW_EXT_NAME_KEY.to_string(),
         ARROW_JSON_EXT_NAME.to_string(),
-    )]))
+    );
+    Field::new(
+        table_field.name(),
+        storage.clone(),
+        table_field.is_nullable(),
+    )
+    .with_metadata(metadata)
 }
 
 /// Rewrite `table_field` so that every lance.json leaf the input supplies as text becomes an
@@ -320,11 +360,7 @@ fn json_write_target(input_field: &Field, table_field: &Field) -> Option<Field> 
         } else {
             arrow_json_storage_type(input_field.data_type())?
         };
-        return Some(arrow_json_field(
-            table_field.name(),
-            storage,
-            table_field.is_nullable(),
-        ));
+        return Some(arrow_json_field(table_field, &storage));
     }
 
     if !has_json_fields(table_field) {
@@ -401,6 +437,7 @@ fn null_literal(field: &FieldRef) -> Result<Arc<dyn PhysicalExpr>> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::Arc;
 
     use arrow::buffer::OffsetBuffer;
@@ -408,7 +445,7 @@ mod tests {
         Array, Float32Array, Float64Array, Int32Array, Int64Array, ListArray, RecordBatch,
         StringArray, StructArray, UInt32Array, UInt64Array,
     };
-    use arrow_schema::{DataType, Field, Fields, Schema};
+    use arrow_schema::{DataType, Field, FieldRef, Fields, Schema};
     use datafusion::prelude::SessionContext;
     use datafusion_catalog::MemTable;
     use futures::TryStreamExt;
@@ -1007,7 +1044,7 @@ mod tests {
         )]);
 
         let input_item = if input_labelled {
-            Arc::new(arrow_json_field("item", item_type, true))
+            Arc::new(arrow_json_field(&json_field("item", true), &item_type))
         } else {
             Arc::new(Field::new("item", item_type, true))
         };
@@ -1317,5 +1354,151 @@ mod tests {
         let result = collect(projected).await;
         assert_eq!(result.num_rows(), 2);
         assert_eq!(result.column(0).null_count(), 2);
+    }
+
+    /// PyArrow records `ARROW:extension:metadata` (empty) alongside the extension name when it
+    /// exports a `pa.json_()` column, so a table created from one stores that key. Lance-core
+    /// swaps the name of a relabelled leaf back to lance.json but keeps the other metadata, and
+    /// the file writer then requires the field to match the stored one key for key. The
+    /// relabelled field must therefore mirror the table field's metadata.
+    #[rstest::rstest]
+    #[case::unlabelled_text(false)]
+    #[case::arrow_json_without_metadata_key(true)]
+    #[tokio::test]
+    async fn test_relabelled_json_mirrors_table_extension_metadata(#[case] input_labelled: bool) {
+        use lance_arrow::json::{ARROW_JSON_EXT_NAME, JSON_EXT_NAME};
+        use lance_arrow::{ARROW_EXT_META_KEY, ARROW_EXT_NAME_KEY};
+
+        let table_schema = Schema::new(vec![
+            Field::new("data", DataType::LargeBinary, true).with_metadata(HashMap::from([
+                (ARROW_EXT_NAME_KEY.to_string(), JSON_EXT_NAME.to_string()),
+                (ARROW_EXT_META_KEY.to_string(), String::new()),
+            ])),
+        ]);
+
+        let mut input_field = Field::new("data", DataType::Utf8, true);
+        if input_labelled {
+            input_field = input_field.with_metadata(HashMap::from([(
+                ARROW_EXT_NAME_KEY.to_string(),
+                ARROW_JSON_EXT_NAME.to_string(),
+            )]));
+        }
+        let input_schema = Arc::new(Schema::new(vec![input_field]));
+        let values = StringArray::from(vec![Some(r#"{"x": 1}"#), None]);
+        let input_batch = RecordBatch::try_new(input_schema, vec![Arc::new(values)]).unwrap();
+
+        let plan = plan_from_batch(input_batch).await;
+        let projected = cast_to_table_schema(plan, &table_schema).unwrap();
+
+        let out_field = projected.schema().field_with_name("data").unwrap().clone();
+        assert_eq!(out_field.data_type(), &DataType::Utf8);
+        assert_eq!(
+            out_field.metadata(),
+            &HashMap::from([
+                (
+                    ARROW_EXT_NAME_KEY.to_string(),
+                    ARROW_JSON_EXT_NAME.to_string()
+                ),
+                (ARROW_EXT_META_KEY.to_string(), String::new()),
+            ]),
+            "the arrow.json label must carry the table field's other extension metadata"
+        );
+
+        let result = collect(projected).await;
+        assert_eq!(result.num_rows(), 2);
+        assert_eq!(result.column(0).null_count(), 1);
+    }
+
+    /// The inverse: a table built in Rust records only the extension name, so an input that
+    /// carries the empty metadata key (what pyarrow exports) must drop it, or lance-core sees a
+    /// field the file schema does not describe.
+    #[tokio::test]
+    async fn test_arrow_json_input_drops_metadata_key_the_table_lacks() {
+        use lance_arrow::json::{ARROW_JSON_EXT_NAME, json_field};
+        use lance_arrow::{ARROW_EXT_META_KEY, ARROW_EXT_NAME_KEY};
+
+        let table_schema = Schema::new(vec![json_field("data", true)]);
+
+        let input_field = Field::new("data", DataType::Utf8, true).with_metadata(HashMap::from([
+            (
+                ARROW_EXT_NAME_KEY.to_string(),
+                ARROW_JSON_EXT_NAME.to_string(),
+            ),
+            (ARROW_EXT_META_KEY.to_string(), String::new()),
+        ]));
+        let input_schema = Arc::new(Schema::new(vec![input_field]));
+        let values = StringArray::from(vec![Some(r#"{"x": 1}"#)]);
+        let input_batch = RecordBatch::try_new(input_schema, vec![Arc::new(values)]).unwrap();
+
+        let plan = plan_from_batch(input_batch).await;
+        let projected = cast_to_table_schema(plan, &table_schema).unwrap();
+
+        let out_field = projected.schema().field_with_name("data").unwrap().clone();
+        assert_eq!(out_field.data_type(), &DataType::Utf8);
+        assert_eq!(
+            out_field.metadata(),
+            &HashMap::from([(
+                ARROW_EXT_NAME_KEY.to_string(),
+                ARROW_JSON_EXT_NAME.to_string()
+            )])
+        );
+        assert_eq!(collect(projected).await.num_rows(), 1);
+    }
+
+    /// Nested leaves mirror their table leaf's metadata too, since lance-core checks each
+    /// child of a list, map or struct against the stored child.
+    #[tokio::test]
+    async fn test_nested_relabelled_json_mirrors_table_extension_metadata() {
+        use lance_arrow::json::{ARROW_JSON_EXT_NAME, JSON_EXT_NAME};
+        use lance_arrow::{ARROW_EXT_META_KEY, ARROW_EXT_NAME_KEY};
+
+        let table_item =
+            Field::new("item", DataType::LargeBinary, true).with_metadata(HashMap::from([
+                (ARROW_EXT_NAME_KEY.to_string(), JSON_EXT_NAME.to_string()),
+                (ARROW_EXT_META_KEY.to_string(), String::new()),
+            ]));
+        let table_schema = Schema::new(vec![Field::new(
+            "docs",
+            DataType::List(Arc::new(table_item)),
+            true,
+        )]);
+
+        let input_item: FieldRef = Arc::new(Field::new("item", DataType::Utf8, true));
+        let input_schema = Arc::new(Schema::new(vec![Field::new(
+            "docs",
+            DataType::List(input_item.clone()),
+            true,
+        )]));
+        let values = StringArray::from(vec![Some(r#"{"k": 1}"#), Some(r#"{"k": 2}"#)]);
+        let input_batch = RecordBatch::try_new(
+            input_schema,
+            vec![Arc::new(ListArray::new(
+                input_item,
+                OffsetBuffer::new(vec![0, 1, 2].into()),
+                Arc::new(values),
+                None,
+            ))],
+        )
+        .unwrap();
+
+        let plan = plan_from_batch(input_batch).await;
+        let projected = cast_to_table_schema(plan, &table_schema).unwrap();
+
+        let out_field = projected.schema().field_with_name("docs").unwrap().clone();
+        let DataType::List(out_item) = out_field.data_type() else {
+            panic!("expected a list, got {}", out_field.data_type());
+        };
+        assert_eq!(out_item.data_type(), &DataType::Utf8);
+        assert_eq!(
+            out_item.metadata(),
+            &HashMap::from([
+                (
+                    ARROW_EXT_NAME_KEY.to_string(),
+                    ARROW_JSON_EXT_NAME.to_string()
+                ),
+                (ARROW_EXT_META_KEY.to_string(), String::new()),
+            ])
+        );
+        assert_eq!(collect(projected).await.num_rows(), 2);
     }
 }

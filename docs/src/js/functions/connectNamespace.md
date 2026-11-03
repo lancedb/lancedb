@@ -18,7 +18,7 @@ function connectNamespace(
 Connect to a LanceDB database through a namespace.
 
 Unlike [connect](connect.md), which routes by URI scheme (local path vs.
-`db://` cloud), `connectNamespace` always returns a namespace-backed
+`db://`), `connectNamespace` always returns a namespace-backed
 connection. The `implName` selects the namespace implementation:
 
 - `"dir"` — directory namespace, configured with [DirNamespaceConfig](../interfaces/DirNamespaceConfig.md).
