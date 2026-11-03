@@ -409,6 +409,7 @@
               "curation/statistical-sampling",
               "curation/selective-sampling",
               "curation/join",
+              "curation/blob-late-materialization",
               "curation/distributed-shuffle",
               "curation/windowing",
               "curation/clustering",
