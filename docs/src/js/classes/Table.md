@@ -357,6 +357,24 @@ vector and non-vector searches)
 We currently don't support custom named indexes.
 The index name will always be `${column}_idx`.
 
+On LanceDB Embedded tables the index is built before the returned promise
+resolves. On LanceDB Enterprise tables it resolves once the build is
+scheduled. Until the build finishes, a vector index may be missing from
+[Table.listIndices](Table.md#listindices), a scalar or FTS index may be listed with 0
+indexed rows, and queries won't use the index. To wait until the index is
+ready, set [IndexOptions.waitTimeoutSeconds](../interfaces/IndexOptions.md#waittimeoutseconds), call
+[Table.waitForIndex](Table.md#waitforindex), or use [Table.createIndexAsync](Table.md#createindexasync) and wait
+on its job when the server returned a job ID.
+
+`waitTimeoutSeconds` waits for the submitted build when the server returns
+a job ID. On older servers that don't return one, it falls back to polling
+the index by name. [Table.waitForIndex](Table.md#waitforindex) always waits by name. When
+replacing an existing index, those name-based waits may return before the
+new build finishes because the old index can still match.
+`createIndexAsync` can track a specific build only when the server returned
+a job ID; otherwise it returns an already-complete job and callers must
+use [Table.waitForIndex](Table.md#waitforindex) for that build.
+
 #### Parameters
 
 * **column**: `string`
@@ -412,6 +430,11 @@ Create an index, returning a handle to the indexing job.
 
 The job may already be complete when returned; callers must not assume
 the index exists until [Job.wait](Job.md#wait) resolves.
+
+In LanceDB Enterprise, the returned job tracks this submission only if the
+server returns a job ID. If it does not, the job is already complete and
+does not wait for the background build; use [Table.waitForIndex](Table.md#waitforindex) and
+account for the replacement caveat described in [Table.createIndex](Table.md#createindex).
 
 #### Parameters
 
@@ -848,6 +871,11 @@ abstract listIndices(): Promise<IndexConfig[]>
 ```
 
 List all indices that have been created with [Table.createIndex](Table.md#createindex)
+
+On LanceDB Enterprise tables, an index whose build hasn't finished may be
+missing (vector indices) or listed with 0 indexed rows (scalar and FTS
+indices), and `numUnindexedRows` may be undefined. Use
+[Table.waitForIndex](Table.md#waitforindex) to wait until an index is ready.
 
 #### Returns
 

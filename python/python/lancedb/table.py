@@ -1901,11 +1901,33 @@ class Table(ABC):
         replace : bool, default True
             Whether to replace an existing index on this column.
         wait_timeout : timedelta, optional
-            Timeout to wait for async indexing to complete.
+            LanceDB Enterprise only: how long to wait for the index build to finish.
+            If not set, the call returns once the build is scheduled.
         name : str, optional
             Custom name for the index.
         train : bool, default True
             Whether to train the index with existing data.
+
+        Notes
+        -----
+        On LanceDB Embedded tables the index is built before this method
+        returns. On LanceDB Enterprise tables it returns once the build is
+        scheduled. Until the build finishes, a vector index may be missing
+        from [list_indices][lancedb.table.Table.list_indices], a scalar or FTS
+        index may be listed with 0 indexed rows, and queries won't use the
+        index. To block until the index is ready, pass ``wait_timeout``, call
+        [wait_for_index][lancedb.table.Table.wait_for_index], or use
+        [create_index_async][lancedb.table.Table.create_index_async] and wait
+        on its job when the server returned a job ID.
+
+        ``wait_timeout`` waits for the submitted build when the server returns
+        a job ID. On older servers that don't return one, it falls back to
+        polling the index by name. ``wait_for_index`` always waits by name.
+        When replacing an existing index, those name-based waits may return
+        before the new build finishes because the old index can still match.
+        ``create_index_async`` can track a specific build only when the server
+        returned a job ID; otherwise it returns an already-complete job and
+        callers must use ``wait_for_index`` for that build.
 
         Examples
         --------
@@ -1940,6 +1962,12 @@ class Table(ABC):
         Takes the same arguments as :meth:`create_index`. The job may already
         be complete when returned; callers must not assume the index exists
         until :meth:`Job.wait` returns.
+
+        In LanceDB Enterprise, the returned job tracks this submission only if
+        the server returns a job ID. If it does not, the job is already
+        complete and does not wait for the background build; use
+        ``wait_for_index`` and account for the replacement caveat described in
+        [create_index][lancedb.table.Table.create_index].
         """
         raise NotImplementedError(
             "create_index_async is not supported for this table type"
@@ -2962,6 +2990,12 @@ class Table(ABC):
         """
         List all indices that have been created with
         [Table.create_index][lancedb.table.Table.create_index]
+
+        On LanceDB Enterprise tables, an index whose build hasn't finished may
+        be missing (vector indices) or listed with 0 indexed rows (scalar and
+        FTS indices), and ``num_unindexed_rows`` may be ``None``. Use
+        [wait_for_index][lancedb.table.Table.wait_for_index] to wait until an
+        index is ready.
         """
 
     @abstractmethod
@@ -4277,6 +4311,12 @@ class LanceTable(Table):
 
         The job may already be complete when returned; callers must not assume
         the index exists until :meth:`Job.wait` returns.
+
+        In LanceDB Enterprise, the returned job tracks this submission only if
+        the server returns a job ID. If it does not, the job is already
+        complete and does not wait for the background build; use
+        ``wait_for_index`` and account for the replacement caveat described in
+        [create_index][lancedb.table.Table.create_index].
         """
         return Job(
             LOOP.run(
@@ -6481,12 +6521,34 @@ class AsyncTable:
             like to create.   You can also specify index-specific parameters when
             creating an index object.
         wait_timeout: timedelta, optional
-            The timeout to wait if indexing is asynchronous.
+            LanceDB Enterprise only: how long to wait for the index build to finish.
+            If not set, the call returns once the build is scheduled.
         name: str, optional
             The name of the index. If not provided, a default name will be generated.
         train: bool, default True
             Whether to train the index with existing data. Vector indices always train
             with existing data.
+
+        Notes
+        -----
+        On LanceDB Embedded tables the index is built before this method
+        returns. On LanceDB Enterprise tables it returns once the build is
+        scheduled. Until the build finishes, a vector index may be missing
+        from [list_indices][lancedb.table.AsyncTable.list_indices], a scalar or
+        FTS index may be listed with 0 indexed rows, and queries won't use the
+        index. To block until the index is ready, pass ``wait_timeout``, call
+        [wait_for_index][lancedb.table.AsyncTable.wait_for_index], or use
+        [create_index_async][lancedb.table.AsyncTable.create_index_async] and
+        wait on its job when the server returned a job ID.
+
+        ``wait_timeout`` waits for the submitted build when the server returns
+        a job ID. On older servers that don't return one, it falls back to
+        polling the index by name. ``wait_for_index`` always waits by name.
+        When replacing an existing index, those name-based waits may return
+        before the new build finishes because the old index can still match.
+        ``create_index_async`` can track a specific build only when the server
+        returned a job ID; otherwise it returns an already-complete job and
+        callers must use ``wait_for_index`` for that build.
         """
         if config is not None:
             if not isinstance(
@@ -6560,6 +6622,12 @@ class AsyncTable:
         Takes the same arguments as :meth:`create_index`. The job may already
         be complete when returned; callers must not assume the index exists
         until :meth:`AsyncJob.wait` resolves.
+
+        In LanceDB Enterprise, the returned job tracks this submission only if
+        the server returns a job ID. If it does not, the job is already
+        complete and does not wait for the background build; use
+        ``wait_for_index`` and account for the replacement caveat described in
+        [create_index][lancedb.table.AsyncTable.create_index].
         """
         job = await self._inner.create_index_async(
             column,
@@ -8197,6 +8265,12 @@ class AsyncTable:
     async def list_indices(self) -> Iterable[IndexConfig]:
         """
         List all indices that have been created with Self::create_index
+
+        On LanceDB Enterprise tables, an index whose build hasn't finished may
+        be missing (vector indices) or listed with 0 indexed rows (scalar and
+        FTS indices), and ``num_unindexed_rows`` may be ``None``. Use
+        [wait_for_index][lancedb.table.AsyncTable.wait_for_index] to wait until
+        an index is ready.
         """
         return await self._inner.list_indices()
 

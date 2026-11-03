@@ -302,6 +302,7 @@ def test_table_to_pandas_invalid_blob_mode_non_blob_table(tmp_db: DBConnection):
 
 @pytest.mark.parametrize("blob_mode", ["lazy", "bytes", "descriptions"])
 def test_table_to_pandas_blob_modes(tmp_db: DBConnection, blob_mode):
+    pytest.importorskip("pandas")
     pytest.importorskip("lance")
     table = tmp_db.create_table(
         f"test_to_pandas_blob_{blob_mode}",
@@ -324,6 +325,7 @@ def test_table_to_pandas_blob_modes(tmp_db: DBConnection, blob_mode):
 
 @pytest.mark.parametrize("blob_schema", ["v1", "v2"])
 def test_table_to_pandas_blob_bytes(tmp_db: DBConnection, blob_schema):
+    pytest.importorskip("pandas")
     pytest.importorskip("lance")
     table = _blob_table(tmp_db, f"test_to_pandas_blob_{blob_schema}_bytes", blob_schema)
 
@@ -349,6 +351,7 @@ def test_table_to_pandas_kwargs(tmp_db: DBConnection):
 async def test_async_table_to_pandas_blob_bytes(
     tmp_db_async: AsyncConnection, blob_schema
 ):
+    pytest.importorskip("pandas")
     pytest.importorskip("lance")
     table = await _blob_table_async(
         tmp_db_async, f"test_async_to_pandas_blob_{blob_schema}_bytes", blob_schema
@@ -932,8 +935,8 @@ def test_add_nullability(mem_db: DBConnection):
     assert table.to_arrow() == expected
 
 
-def test_add_pydantic_model(mem_db: DBConnection):
-    pytest.importorskip("pandas")
+@pytest.fixture
+def pydantic_model_table(mem_db: DBConnection):
     # https://github.com/lancedb/lancedb/issues/562
 
     class Metadata(BaseModel):
@@ -951,9 +954,6 @@ def test_add_pydantic_model(mem_db: DBConnection):
         payload: Document
 
     tbl = mem_db.create_table("mytable", schema=LanceSchema, mode="overwrite")
-    assert tbl.schema == LanceSchema.to_arrow_schema()
-
-    # add works
     expected = LanceSchema(
         id="id",
         vector=[0.0, 0.0],
@@ -963,11 +963,21 @@ def test_add_pydantic_model(mem_db: DBConnection):
         ),
     )
     add_res = tbl.add([expected])
+    return tbl, LanceSchema, expected, add_res
+
+
+def test_add_pydantic_model(pydantic_model_table):
+    tbl, LanceSchema, expected, add_res = pydantic_model_table
+    assert tbl.schema == LanceSchema.to_arrow_schema()
     assert add_res.version == 2
 
     result = tbl.search([0.0, 0.0]).limit(1).to_pydantic(LanceSchema)[0]
     assert result == expected
 
+
+def test_add_pydantic_model_pandas(pydantic_model_table):
+    pytest.importorskip("pandas")
+    tbl, _, _, _ = pydantic_model_table
     flattened = tbl.search([0.0, 0.0]).limit(1).to_pandas(flatten=1)
     assert len(flattened.columns) == 6  # _distance is automatically added
 

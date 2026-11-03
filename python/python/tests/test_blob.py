@@ -7,12 +7,9 @@ import subprocess
 import sys
 import textwrap
 
-import lance
-import pandas as pd
 import pyarrow as pa
 import pyarrow.compute as pc
 import pytest
-from lance.blob import Blob, BlobType as LanceBlobType
 
 import lancedb
 from lancedb import schema as schema_module
@@ -114,6 +111,7 @@ def _assert_fetch_apis_reject_missing_row_ids(table, row_ids):
 
 
 def test_blob_factory_declares_v2_field():
+    LanceBlobType = pytest.importorskip("lance.blob").BlobType
     field = lancedb.blob("image")
     assert isinstance(field.type, pa.ExtensionType)
     assert field.type.extension_name == "lance.blob.v2"
@@ -163,6 +161,8 @@ def test_blob_without_thresholds_has_no_threshold_metadata():
     ],
 )
 def test_blob_thresholds_match_pylance(monkeypatch, nullable, thresholds):
+    lance = pytest.importorskip("lance")
+    LanceBlobType = pytest.importorskip("lance.blob").BlobType
     expected = lance.blob_field("payload", nullable=nullable, **thresholds)
     actual = lancedb.blob("payload", nullable=nullable, **thresholds)
     assert type(actual.type) is LanceBlobType
@@ -304,6 +304,7 @@ def test_local_schema_restores_blob_extensions(tmp_path, use_async, with_pylance
 
 
 def test_blob_resolves_pylance_type_without_eager_import():
+    pytest.importorskip("lance.blob")
     script = textwrap.dedent(
         """\
         import sys
@@ -375,6 +376,7 @@ def test_blob_fallback_fails_if_name_already_registered():
 
 
 def test_blob_type_rejects_competing_registration_with_pylance():
+    pytest.importorskip("lance.blob")
     script = textwrap.dedent(
         """\
         import pyarrow as pa
@@ -515,6 +517,7 @@ def _nested_blob_table(db, name):
 
 
 def test_nested_blob_to_pandas_bytes(tmp_path):
+    pytest.importorskip("pandas")
     table = _nested_blob_table(lancedb.connect(tmp_path), "nested_pandas_bytes")
     expected = [
         {"name": "first", "blob": b"hello"},
@@ -538,6 +541,9 @@ def test_nested_blob_to_pandas_bytes(tmp_path):
     assert table.search().select({"b": "info.blob"}).to_pandas(blob_mode="bytes")[
         "b"
     ].tolist() == [b"hello", None, None]
+    assert table.search().select([]).to_pandas(blob_mode="bytes")["info"].tolist() == (
+        table.search().select([]).to_arrow(blob_mode="bytes")["info"].to_pylist()
+    )
 
 
 def test_to_arrow_and_to_list_blob_mode(tmp_path):
@@ -573,9 +579,6 @@ def test_to_arrow_and_to_list_blob_mode(tmp_path):
     assert [
         row["info"] for row in table.search().select([]).to_list(blob_mode="bytes")
     ] == expected
-    assert table.search().select([]).to_pandas(blob_mode="bytes")["info"].tolist() == (
-        table.search().select([]).to_arrow(blob_mode="bytes")["info"].to_pylist()
-    )
     assert "_rowid" not in table.search().select([]).to_arrow().column_names
     # A flat non-blob column named like the nested blob path keeps its values.
     shadowed = table.search().select({"info": "info", "info.blob": "id"})
@@ -694,6 +697,7 @@ def test_vector_query_to_arrow_blob_mode_bytes(tmp_path):
 
 @pytest.mark.asyncio
 async def test_nested_blob_to_pandas_bytes_async(tmp_path):
+    pytest.importorskip("pandas")
     db = await lancedb.connect_async(tmp_path)
     schema = pa.schema(
         [
@@ -809,6 +813,7 @@ def test_blob_query_explicit_row_id_opt_in():
 
 
 def test_table_to_pandas_descriptions_mode_omits_row_id():
+    pytest.importorskip("pandas")
     table = _blob_table("descriptions_no_leak", [{"id": 1, "image": b"x"}])
     df = table.to_pandas(blob_mode="descriptions")
     descriptor = df["image"].iloc[0]
@@ -818,6 +823,7 @@ def test_table_to_pandas_descriptions_mode_omits_row_id():
 
 @pytest.mark.asyncio
 async def test_async_table_to_pandas_descriptions_mode_omits_row_id():
+    pytest.importorskip("pandas")
     db = await lancedb.connect_async("memory:///")
     schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
     table = await db.create_table("descriptions_no_leak_async", schema=schema)
@@ -983,6 +989,7 @@ def test_to_batches_validates_blob_mode():
 
 
 def test_to_pandas_keeps_to_arrow_overrides_without_blob_mode():
+    pytest.importorskip("pandas")
     from lancedb.query import LanceEmptyQueryBuilder
 
     class ToArrowWithoutBlobMode(LanceEmptyQueryBuilder):
@@ -1000,6 +1007,7 @@ def test_to_pandas_keeps_to_arrow_overrides_without_blob_mode():
 
 
 def test_take_queries_honor_blob_mode():
+    pytest.importorskip("pandas")
     table = _blob_table(
         "take_blob_mode", [{"id": 1, "image": b"one"}, {"id": 2, "image": b"two"}]
     )
@@ -1449,6 +1457,7 @@ def test_merge_insert_bytes_after_reopen_without_pylance(tmp_path):
 
 
 def test_merge_insert_blob_array_into_reopened_table(tmp_path):
+    pytest.importorskip("lance")
     db = lancedb.connect(tmp_path)
     schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
     table = db.create_table("images", schema=schema)
@@ -1624,6 +1633,8 @@ def test_row_addressable_paths_exclude_list_children():
 
 
 def test_merge_insert_writes_pylance_blob_array():
+    lance = pytest.importorskip("lance")
+    LanceBlobType = pytest.importorskip("lance.blob").BlobType
     table = _blob_table("merge_pylance", [{"id": 1, "image": b"before"}])
     image = lance.blob_array([b"updated", b"inserted"])
     assert type(image.type) is LanceBlobType
@@ -2085,6 +2096,7 @@ def test_fetch_legacy_v1_blobs():
 
 @pytest.mark.asyncio
 async def test_async_fetch_legacy_v1_blobs(tmp_path):
+    lance = pytest.importorskip("lance")
     table = _legacy_v1_table("legacy_async_source")
     # Open a dataset written by Lance independently of the LanceDB connection.
     lance.write_dataset(
@@ -2193,6 +2205,7 @@ def _blob_query_shape(table, shape):
 @pytest.mark.parametrize("blob_mode", ["bytes", "descriptions"])
 @pytest.mark.parametrize("shape", ["scan", "vector", "fts", "hybrid"])
 def test_blob_mode_for_every_query_shape(shape, blob_mode, with_row_id):
+    pytest.importorskip("pandas")
     table = _hybrid_blob_table(lancedb.connect("memory:///"))
     query = _blob_query_shape(table, shape).select(["id", "image"]).limit(2)
     if with_row_id is not None:
@@ -2218,6 +2231,7 @@ def test_blob_mode_for_every_query_shape(shape, blob_mode, with_row_id):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("shape", ["scan", "vector", "fts", "hybrid"])
 async def test_async_blob_bytes_for_every_query_shape(shape):
+    pytest.importorskip("pandas")
     db = await lancedb.connect_async("memory:///")
     table = await _hybrid_blob_table_async(db)
     query = table.query()
@@ -2750,13 +2764,15 @@ def test_add_external_blob_range_matches_storage_schema(
     table = db.create_table(
         "ranges", schema=pa.schema([pa.field("id", pa.int64()), field])
     )
-    value = (
-        Blob.from_uri(blob_path.as_uri(), position=position, size=6)
-        if as_blob
-        else {"uri": blob_path.as_uri(), "position": position, "size": 6}
-    )
+    if as_blob:
+        Blob = pytest.importorskip("lance.blob").Blob
+        value = Blob.from_uri(blob_path.as_uri(), position=position, size=6)
+    else:
+        value = {"uri": blob_path.as_uri(), "position": position, "size": 6}
     rows = [{"id": 1, "image": b"inline"}, {"id": 2, "image": value}]
-    data = pd.DataFrame(rows) if as_pandas else rows
+    data = rows
+    if as_pandas:
+        data = pytest.importorskip("pandas").DataFrame(rows)
 
     if minimal_schema:
         with pytest.raises(ValueError, match="Blob column 'image'.*storage schema"):
@@ -2775,6 +2791,7 @@ def test_add_external_blob_range_matches_storage_schema(
 def test_add_minimal_blob_schema_preserves_whole_file_and_inline_values(
     tmp_path, as_pandas
 ):
+    Blob = pytest.importorskip("lance.blob").Blob
     payload = b"whole-file"
     blob_path = tmp_path / "payload.bin"
     blob_path.write_bytes(payload)
@@ -2797,10 +2814,10 @@ def test_add_minimal_blob_schema_preserves_whole_file_and_inline_values(
         {"uri": uri, "position": None, "size": None},
     ]
     rows = [{"id": i, "image": value} for i, value in enumerate(values)]
-    table.add(
-        pd.DataFrame(rows) if as_pandas else rows,
-        allow_external_blob_outside_bases=True,
-    )
+    data = rows
+    if as_pandas:
+        data = pytest.importorskip("pandas").DataFrame(rows)
+    table.add(data, allow_external_blob_outside_bases=True)
 
     by_id = _row_ids_by_id(table)
     assert table.fetch_blobs(
@@ -2828,10 +2845,10 @@ def test_add_bytes_and_uri_in_one_batch_preserves_external_uri(tmp_path, as_pand
     schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
     table = db.create_table("mixed", schema=schema)
 
-    table.add(
-        pd.DataFrame(rows) if as_pandas else rows,
-        allow_external_blob_outside_bases=True,
-    )
+    data = rows
+    if as_pandas:
+        data = pytest.importorskip("pandas").DataFrame(rows)
+    table.add(data, allow_external_blob_outside_bases=True)
 
     by_id = _row_ids_by_id(table)
     assert table.fetch_blobs("image", [by_id[1], by_id[2]]).to_pylist() == [
@@ -2842,6 +2859,7 @@ def test_add_bytes_and_uri_in_one_batch_preserves_external_uri(tmp_path, as_pand
 
 @pytest.mark.parametrize("as_pandas", [False, True])
 def test_add_mixed_python_blob_values_preserves_external_uris(tmp_path, as_pandas):
+    Blob = pytest.importorskip("lance.blob").Blob
     payload = b"external-payload"
     blob_path = tmp_path / "payload.bin"
     blob_path.write_bytes(payload)
@@ -2859,10 +2877,10 @@ def test_add_mixed_python_blob_values_preserves_external_uris(tmp_path, as_panda
     schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
     table = db.create_table("mixed", schema=schema)
 
-    table.add(
-        pd.DataFrame(rows) if as_pandas else rows,
-        allow_external_blob_outside_bases=True,
-    )
+    data = rows
+    if as_pandas:
+        data = pytest.importorskip("pandas").DataFrame(rows)
+    table.add(data, allow_external_blob_outside_bases=True)
 
     by_id = _row_ids_by_id(table)
     assert table.fetch_blobs("image", [by_id[i] for i in range(1, 8)]).to_pylist() == [
@@ -2886,18 +2904,22 @@ def test_merge_insert_mixed_python_blobs_validates_external_uri(tmp_path, as_pan
         {"id": 2, "image": blob_path.as_uri()},
     ]
 
+    data = rows
+    if as_pandas:
+        data = pytest.importorskip("pandas").DataFrame(rows)
     with pytest.raises(ValueError, match="outside registered external bases"):
         (
             table.merge_insert("id")
             .when_matched_update_all()
             .when_not_matched_insert_all()
-            .execute(pd.DataFrame(rows) if as_pandas else rows)
+            .execute(data)
         )
     assert table.count_rows() == 1
 
 
 @pytest.mark.parametrize("as_pandas", [False, True])
 def test_merge_insert_python_blob_dicts_and_objects(as_pandas):
+    Blob = pytest.importorskip("lance.blob").Blob
     table = _blob_table("merge_python_blobs", [{"id": 1, "image": b"before"}])
     rows = [
         {"id": 1, "image": b"updated"},
@@ -2905,11 +2927,14 @@ def test_merge_insert_python_blob_dicts_and_objects(as_pandas):
         {"id": 3, "image": Blob.from_bytes(b"from-blob")},
     ]
 
+    data = rows
+    if as_pandas:
+        data = pytest.importorskip("pandas").DataFrame(rows)
     result = (
         table.merge_insert("id")
         .when_matched_update_all()
         .when_not_matched_insert_all()
-        .execute(pd.DataFrame(rows) if as_pandas else rows)
+        .execute(data)
     )
 
     assert result.num_updated_rows == 1
@@ -2923,6 +2948,7 @@ def test_merge_insert_python_blob_dicts_and_objects(as_pandas):
 
 
 def test_create_table_with_python_blob_dict_and_object():
+    Blob = pytest.importorskip("lance.blob").Blob
     db = lancedb.connect("memory:///")
     schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
     table = db.create_table(
@@ -2979,6 +3005,7 @@ def _openable_descriptors(table, *, by_address):
 def test_open_blob_files_preserve_snapshot_order_nulls_and_empty_values(
     tmp_path, by_address
 ):
+    pytest.importorskip("lance")
     db = lancedb.connect(str(tmp_path))
     schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
     table = db.create_table("videos", schema=schema)
@@ -3049,6 +3076,7 @@ def test_open_blob_files_does_not_open_ahead(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_open_blob_files_async_iterates_snapshot_handles(tmp_path):
+    pytest.importorskip("lance")
     db = lancedb.connect(str(tmp_path))
     table = db.create_table(
         "videos",

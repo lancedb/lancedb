@@ -1307,7 +1307,7 @@ def test_remote_conversion_blob_mode_errors(method, blob_mode):
 async def test_remote_to_lance_rejection(
     tmp_path, version, expose_location, monkeypatch
 ):
-    import lance
+    lance = pytest.importorskip("lance")
 
     location = tmp_path / "test.lance"
     lance.write_dataset(pa.table({"id": [1]}), location)
@@ -4691,7 +4691,8 @@ def test_remote_blob_columns_and_fetch():
 def test_sync_remote_blob_pandas_avoids_storage_access(
     tmp_path, monkeypatch, blob_mode
 ):
-    import lance
+    pytest.importorskip("pandas")
+    lance = pytest.importorskip("lance")
 
     location = tmp_path / "remote.lance"
     lance.write_dataset(pa.table({"id": [7], "image": [b"server-owned"]}), location)
@@ -4764,6 +4765,7 @@ async def test_async_remote_to_lance_rejects_storage_access(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_async_remote_blob_descriptions_to_pandas_uses_server(monkeypatch):
+    pytest.importorskip("pandas")
     with blob_remote_table() as remote_table:
         table = remote_table._table
 
@@ -4859,6 +4861,7 @@ async def test_async_remote_to_arrow_bytes_refused_before_query(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("blob_mode", ["bytes", "lazy"])
 async def test_async_remote_nonblob_projection_to_pandas(blob_mode):
+    pytest.importorskip("pandas")
     with blob_remote_table() as remote_table:
         df = await (
             remote_table._table.query().select(["id"]).to_pandas(blob_mode=blob_mode)
@@ -4933,6 +4936,7 @@ def test_remote_blob_query_stashes_row_ids_for_fetch():
 
 
 def test_remote_blob_query_to_pandas():
+    pytest.importorskip("pandas")
     with blob_remote_table() as table:
         query = table.search().select(["id", "image"]).limit(3)
         df = query.to_pandas(blob_mode="descriptions", split_blocks=True)
@@ -4959,6 +4963,7 @@ def test_remote_blob_query_to_pandas_rejects_unpinned_fetch(monkeypatch, blob_mo
 
 @pytest.mark.parametrize("blob_mode", ["lazy", "bytes"])
 def test_remote_nonblob_projection_to_pandas(blob_mode):
+    pytest.importorskip("pandas")
     with blob_remote_table() as table:
         df = table.search().select(["id"]).to_pandas(blob_mode=blob_mode)
 
@@ -4968,6 +4973,7 @@ def test_remote_nonblob_projection_to_pandas(blob_mode):
 
 @pytest.mark.asyncio
 async def test_async_remote_blob_query_to_pandas_flatten():
+    pytest.importorskip("pandas")
     with blob_remote_table() as table:
         df = (
             await table._table.query()

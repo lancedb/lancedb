@@ -365,6 +365,24 @@ export abstract class Table {
    * We currently don't support custom named indexes.
    * The index name will always be `${column}_idx`.
    *
+   * On LanceDB Embedded tables the index is built before the returned promise
+   * resolves. On LanceDB Enterprise tables it resolves once the build is
+   * scheduled. Until the build finishes, a vector index may be missing from
+   * {@link Table.listIndices}, a scalar or FTS index may be listed with 0
+   * indexed rows, and queries won't use the index. To wait until the index is
+   * ready, set {@link IndexOptions.waitTimeoutSeconds}, call
+   * {@link Table.waitForIndex}, or use {@link Table.createIndexAsync} and wait
+   * on its job when the server returned a job ID.
+   *
+   * `waitTimeoutSeconds` waits for the submitted build when the server returns
+   * a job ID. On older servers that don't return one, it falls back to polling
+   * the index by name. {@link Table.waitForIndex} always waits by name. When
+   * replacing an existing index, those name-based waits may return before the
+   * new build finishes because the old index can still match.
+   * `createIndexAsync` can track a specific build only when the server returned
+   * a job ID; otherwise it returns an already-complete job and callers must
+   * use {@link Table.waitForIndex} for that build.
+   *
    * @example
    * // If the column has a vector (fixed size list) data type then
    * // an IvfPq vector index will be created.
@@ -399,6 +417,11 @@ export abstract class Table {
    *
    * The job may already be complete when returned; callers must not assume
    * the index exists until {@link Job.wait} resolves.
+   *
+   * In LanceDB Enterprise, the returned job tracks this submission only if the
+   * server returns a job ID. If it does not, the job is already complete and
+   * does not wait for the background build; use {@link Table.waitForIndex} and
+   * account for the replacement caveat described in {@link Table.createIndex}.
    */
   abstract createIndexAsync(
     column: string,
@@ -998,7 +1021,14 @@ export abstract class Table {
    *  modification operations.
    */
   abstract optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats>;
-  /** List all indices that have been created with {@link Table.createIndex} */
+  /**
+   * List all indices that have been created with {@link Table.createIndex}
+   *
+   * On LanceDB Enterprise tables, an index whose build hasn't finished may be
+   * missing (vector indices) or listed with 0 indexed rows (scalar and FTS
+   * indices), and `numUnindexedRows` may be undefined. Use
+   * {@link Table.waitForIndex} to wait until an index is ready.
+   */
   abstract listIndices(): Promise<IndexConfig[]>;
   /**
    * Tokenize a full-text search query using the tokenizer configured on an FTS index.

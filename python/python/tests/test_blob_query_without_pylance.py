@@ -11,6 +11,8 @@ import pytest
 @pytest.mark.parametrize("api", ["sync", "async"])
 @pytest.mark.parametrize("result", ["pandas", "batches", "lazy_error"])
 def test_blob_query_without_pylance(tmp_path, api, result):
+    if result == "pandas":
+        pytest.importorskip("pandas")
     script = """\
 import importlib.abc
 import sys
