@@ -8,7 +8,7 @@ use arrow::{
     datatypes::Schema,
     pyarrow::{IntoPyArrow, Table as PyArrowTable},
 };
-use lancedb::job::{JobEventsRequest, JobProgressCallback};
+use lancedb::job::JobEventsRequest;
 use pyo3::{
     Bound, Py, PyAny, PyRef, PyResult, Python,
     exceptions::PyValueError,
@@ -99,7 +99,7 @@ impl Job {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
             let result = if let Some(progress) = progress {
-                let observer: JobProgressCallback = Arc::new(Mutex::new(move |description| {
+                let observer = move |description| {
                     Python::attach(|py| {
                         let snapshot = description.progress_snapshot();
                         let callback_result: PyResult<()> = (|| {
@@ -113,7 +113,7 @@ impl Job {
                             log::warn!("job progress callback error: {error}");
                         }
                     });
-                }));
+                };
                 inner.wait_with_progress(observer).await.infer_error()?
             } else {
                 inner.wait().await.infer_error()?
