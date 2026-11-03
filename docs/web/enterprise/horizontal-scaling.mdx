@@ -42,10 +42,34 @@ no healthy plan executor. Keeping one query's reads co-located protects the
 locality of whichever group's cache is already warm for it, rather than
 letting each table's read drift to a different group.
 
-## Embedded scaling {#embedded-scaling}
+```mermaid
+flowchart LR
+    Q["Query node<br/>routes to the lead group"]
 
-LanceDB Embedded runs in a single process with a single copy of each table.
-There is no fleet to assign a table to, and no replica group to scale.
+    subgraph G0["Replica group 0 (lead)"]
+        direction LR
+        A0["Plan executor<br/>copy 1"]
+        A1["Plan executor<br/>copy 2"]
+    end
+
+    subgraph G1["Replica group 1 (fallback)"]
+        direction LR
+        B0["Plan executor<br/>copy 1"]
+        B1["Plan executor<br/>copy 2"]
+    end
+
+    Q --> A0
+    Q --> A1
+    Q -. "only if group 0 has no healthy PE" .-> B0
+    Q -. "only if group 0 has no healthy PE" .-> B1
+```
+
+This table is assigned to two replica groups, each at replication factor
+2: four plan executors in total, each holding a full copy of the table's
+data. Adding a third group, or raising RF within a group, adds more
+plan executors that can serve this table's reads in parallel -- scaling
+throughput for this one table without touching any other table's
+placement.
 
 ## Scaling interfaces {#scaling-interfaces}
 
