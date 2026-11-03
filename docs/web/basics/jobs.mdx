@@ -117,6 +117,63 @@ Event responses have [row limits](/basics/limits#jobs). An explicit limit can
 request more than the default, but it does not guarantee a complete event
 history.
 
+### Progress snapshots and observers
+
+Enterprise registry handles expose a structured progress snapshot. This
+includes index and refresh handles returned directly by their async submission
+methods, as well as handles reopened with `open_job()`. Call `progress()` for a
+point-in-time snapshot, or pass a callback to `wait()` to observe the same
+server polls that drive completion. The callback receives running and terminal
+observations; it does not start another polling loop.
+
+```python
+def show_progress(progress):
+    print(
+        progress.get("state"),
+        progress.get("phase"),
+        progress.get("rows_computed"),
+        progress.get("rows_planned"),
+    )
+
+job = tbl.refresh_column_async("embedding")
+snapshot = job.progress()
+if snapshot is not None:
+    show_progress(snapshot)
+
+result = job.wait(progress=show_progress)
+```
+
+```rust
+let job = table.refresh_column_async("embedding").await?;
+if let Some(progress) = job.progress().await? {
+    println!(
+        "state={:?} rows={:?}/{:?}",
+        progress.get("state"),
+        progress.get("rows_computed"),
+        progress.get("rows_planned"),
+    );
+}
+
+let result = job
+    .wait_with_progress(|description| {
+        let progress = description.progress_snapshot();
+        println!(
+            "state={:?} rows={:?}/{:?}",
+            progress.get("state"),
+            progress.get("rows_computed"),
+            progress.get("rows_planned"),
+        );
+    })
+    .await?;
+```
+
+Job-type-specific counters are optional. A missing `rows_computed`,
+`rows_planned`, or `rows_remaining` field means the server did not report that
+counter; it does not mean zero, complete, or failed. Embedded handles and
+SQL-backed query handles do not have registry progress records. Use their
+`status()` and `wait()` APIs, and use registry progress only on handles backed
+by the jobs API.
+
 ## Embedded and Enterprise execution {#in-process}
 
 The following table describes LanceDB Embedded operations and registry jobs on

@@ -1738,12 +1738,16 @@ def test_remote_create_index_async_returns_job():
             assert json.loads(body)["job_id"] == "job-1"
             describe_calls.append(1)
             state = "IN_PROGRESS" if len(describe_calls) == 1 else "DONE"
+            response = dict(job_id="job-1", job_state=state)
+            if len(describe_calls) == 1:
+                response.update(
+                    progress=dict(rows_planned=10, rows_computed=3),
+                    phase="building",
+                )
             request.send_response(200)
             request.send_header("Content-Type", "application/json")
             request.end_headers()
-            request.wfile.write(
-                json.dumps(dict(job_id="job-1", job_state=state)).encode()
-            )
+            request.wfile.write(json.dumps(response).encode())
         elif request.path == "/v1/jobs/cancel":
             assert json.loads(body)["job_id"] == "job-1"
             request.send_response(200)
@@ -1779,8 +1783,13 @@ def test_remote_create_index_async_returns_job():
         table = db.create_table("test", [{"id": 1}])
         job = table.create_index_async("id", config=BTree())
         assert job.id == "job-1"
-        assert job.wait(timeout=timedelta(seconds=30)) is None
+        observed = []
+        assert job.wait(timeout=timedelta(seconds=30), progress=observed.append) is None
         assert len(describe_calls) == 2
+        assert observed[0]["state"] == "running"
+        assert observed[0]["rows_planned"] == 10
+        assert observed[0]["rows_computed"] == 3
+        assert observed[-1]["state"] == "finished"
         job.cancel()
 
 
@@ -1884,6 +1893,91 @@ async def test_remote_refresh_async_returns_typed_terminal_result(
     assert result.model_dump() == terminal_result
     assert result.rows_filled == 12
     assert result.version == 8
+
+
+def test_remote_refresh_async_forwards_progress_from_submitted_handle():
+    terminal_result = {
+        "rows_assigned": 12,
+        "rows_failed": 0,
+        "rows_remaining": 0,
+        "source_version": 7,
+        "published_version": 8,
+    }
+    describe_calls = []
+
+    def handler(request):
+        content_len = int(request.headers.get("Content-Length", 0))
+        body = request.rfile.read(content_len) if content_len > 0 else b""
+        if request.path == "/v1/table/test/backfill_column":
+            assert json.loads(body) == {"column": "derived"}
+            request.send_response(202)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b'{"job_id": "refresh-progress"}')
+        elif request.path == "/v1/jobs/describe":
+            assert json.loads(body)["job_id"] == "refresh-progress"
+            describe_calls.append(1)
+            if len(describe_calls) == 1:
+                response = {
+                    "job_id": "refresh-progress",
+                    "job_type": "function_refresh",
+                    "job_state": "IN_PROGRESS",
+                    "progress": {"rows_planned": 12, "rows_computed": 4},
+                    "phase": "running",
+                }
+            else:
+                response = {
+                    "job_id": "refresh-progress",
+                    "job_type": "function_refresh",
+                    "job_state": "DONE",
+                    "result": terminal_result,
+                }
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(json.dumps(response).encode())
+        elif request.path == "/v1/table/test/create/?mode=create":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b"{}")
+        elif request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "schema": {
+                            "fields": [
+                                {
+                                    "name": "id",
+                                    "type": {"type": "int64"},
+                                    "nullable": False,
+                                }
+                            ]
+                        },
+                    }
+                ).encode()
+            )
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.create_table("test", [{"id": 1}])
+        job = table.refresh_column_async("derived")
+        observed = []
+        result = job.wait(timeout=timedelta(seconds=30), progress=observed.append)
+
+    assert result.rows_filled == 12
+    assert result.version == 8
+    assert len(describe_calls) == 2
+    assert observed[0]["state"] == "running"
+    assert observed[0]["rows_planned"] == 12
+    assert observed[0]["rows_computed"] == 4
+    assert observed[-1]["state"] == "finished"
 
 
 @pytest.mark.parametrize(

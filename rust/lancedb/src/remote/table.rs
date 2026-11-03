@@ -289,7 +289,14 @@ impl<S: HttpSend> crate::job::JobHandle for FreshnessJob<S> {
     }
 
     async fn wait(&self) -> Result<crate::job::TerminalResult> {
-        let result = crate::job::JobHandle::wait(&self.inner).await?;
+        crate::job::JobHandle::wait_with_progress(self, None).await
+    }
+
+    async fn wait_with_progress(
+        &self,
+        progress: Option<crate::job::JobProgressCallback>,
+    ) -> Result<crate::job::TerminalResult> {
+        let result = crate::job::JobHandle::wait_with_progress(&self.inner, progress).await?;
         let version = self.version.read().await;
         if version.is_none() {
             let result_version = match self.tracked_result {
@@ -10913,6 +10920,168 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+    }
+
+    /// A newly submitted refresh returns a freshness-wrapped handle. Waiting
+    /// through it must forward progress observations and still establish the
+    /// published-version read fence after success.
+    #[tokio::test]
+    async fn test_new_refresh_handle_forwards_progress_and_keeps_read_freshness() {
+        let polls = Arc::new(AtomicUsize::new(0));
+        let polls_in_handler = polls.clone();
+        let saw_version = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let saw_version_in_handler = saw_version.clone();
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/backfill_column" => http::Response::builder()
+                    .status(202)
+                    .body(r#"{"job_id": "j-progress"}"#.to_string())
+                    .unwrap(),
+                "/v1/jobs/describe" => {
+                    let response = if polls_in_handler.fetch_add(1, Ordering::SeqCst) == 0 {
+                        json!({
+                            "job_id": "j-progress",
+                            "job_type": "refresh_column",
+                            "job_state": "IN_PROGRESS",
+                            "progress": {"rows_planned": 12, "rows_computed": 4},
+                            "phase": "running",
+                        })
+                    } else {
+                        serde_json::from_str(&refresh_done("j-progress")).unwrap()
+                    };
+                    http::Response::builder()
+                        .status(200)
+                        .body(response.to_string())
+                        .unwrap()
+                }
+                "/v1/table/my_table/count_rows/" => {
+                    saw_version_in_handler.store(
+                        request
+                            .headers()
+                            .get("x-lancedb-min-read-version")
+                            .and_then(|value| value.to_str().ok())
+                            == Some("8"),
+                        Ordering::SeqCst,
+                    );
+                    http::Response::builder()
+                        .status(200)
+                        .body("1".to_string())
+                        .unwrap()
+                }
+                path => panic!("unexpected path {path}"),
+            });
+
+        let job = table.refresh_column_async("doubled").await.unwrap();
+        let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed_in_callback = observed.clone();
+        let result = job
+            .wait_with_progress(move |description| {
+                observed_in_callback
+                    .lock()
+                    .unwrap()
+                    .push(description.progress_snapshot());
+            })
+            .await
+            .unwrap();
+        assert_eq!(result.rows_assigned, 12);
+
+        let observed = observed.lock().unwrap();
+        assert_eq!(observed.len(), 2);
+        assert_eq!(observed[0]["state"], "running");
+        assert_eq!(observed[0]["rows_planned"], 12);
+        assert_eq!(observed[0]["rows_computed"], 4);
+        assert_eq!(observed[1]["state"], "finished");
+
+        table.count_rows(None).await.unwrap();
+        assert!(
+            saw_version.load(Ordering::SeqCst),
+            "new refresh handle lost its published-version freshness fence"
+        );
+    }
+
+    /// Index submissions use the same freshness wrapper. Its wait must forward
+    /// observations and retain the successful-wait timestamp bookkeeping.
+    #[tokio::test]
+    async fn test_new_index_handle_forwards_progress_and_keeps_read_freshness() {
+        let polls = Arc::new(AtomicUsize::new(0));
+        let polls_in_handler = polls.clone();
+        let saw_timestamp = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let saw_timestamp_in_handler = saw_timestamp.clone();
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
+                    http::Response::builder()
+                        .status(200)
+                        .body(describe_response(&schema))
+                        .unwrap()
+                }
+                "/v1/table/my_table/create_index/" => http::Response::builder()
+                    .status(200)
+                    .body(r#"{"job_id": "j-index-progress"}"#.to_string())
+                    .unwrap(),
+                "/v1/jobs/describe" => {
+                    let response = if polls_in_handler.fetch_add(1, Ordering::SeqCst) == 0 {
+                        json!({
+                            "job_id": "j-index-progress",
+                            "job_type": "create_index",
+                            "job_state": "IN_PROGRESS",
+                            "progress": {"rows_planned": 10, "rows_computed": 3},
+                            "phase": "building",
+                        })
+                    } else {
+                        json!({
+                            "job_id": "j-index-progress",
+                            "job_type": "create_index",
+                            "job_state": "DONE",
+                        })
+                    };
+                    http::Response::builder()
+                        .status(200)
+                        .body(response.to_string())
+                        .unwrap()
+                }
+                "/v1/table/my_table/count_rows/" => {
+                    saw_timestamp_in_handler.store(
+                        request.headers().contains_key("x-lancedb-min-timestamp"),
+                        Ordering::SeqCst,
+                    );
+                    http::Response::builder()
+                        .status(200)
+                        .body("1".to_string())
+                        .unwrap()
+                }
+                path => panic!("unexpected path {path}"),
+            });
+
+        let job = table
+            .create_index(&["a"], Index::BTree(Default::default()))
+            .execute_async()
+            .await
+            .unwrap();
+        let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed_in_callback = observed.clone();
+        job.wait_with_progress(move |description| {
+            observed_in_callback
+                .lock()
+                .unwrap()
+                .push(description.progress_snapshot());
+        })
+        .await
+        .unwrap();
+
+        let observed = observed.lock().unwrap();
+        assert_eq!(observed.len(), 2);
+        assert_eq!(observed[0]["state"], "running");
+        assert_eq!(observed[0]["rows_planned"], 10);
+        assert_eq!(observed[0]["rows_computed"], 3);
+        assert_eq!(observed[1]["state"], "finished");
+
+        table.count_rows(None).await.unwrap();
+        assert!(
+            saw_timestamp.load(Ordering::SeqCst),
+            "new index handle lost its successful-wait timestamp bookkeeping"
+        );
     }
 
     #[tokio::test]
