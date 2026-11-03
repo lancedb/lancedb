@@ -601,7 +601,7 @@ $Q$ represents the query embeddings, and $D = \{d_1, d_2, ..., d_{|D|}\}$ repres
 
 ### Using Multivector Search
 
-#### 1. Setup
+#### 1\. Setup
 
 Connect to a local LanceDB database and import the required libraries.
 
@@ -620,7 +620,7 @@ To run this walkthrough on LanceDB Enterprise, connect with
 instead. The remaining steps are the same.
 </Note>
 
-#### 2. Define Schema
+#### 2\. Define Schema
 
 Define a schema that specifies a multivector field. A multivector field is a nested list structure in which each document contains multiple vectors. In this case, we'll create a schema with:
 
@@ -642,7 +642,7 @@ schema = pa.schema(
 ```
 </CodeGroup>
 
-#### 3. Generate Multivectors
+#### 3\. Generate Multivectors
 
 Generate sample data where each document contains multiple vector embeddings, which can represent different aspects or views of the same document.
 
@@ -660,7 +660,7 @@ data = [
 ```
 </CodeGroup>
 
-#### 4. Create a Table
+#### 4\. Create a Table
 
 Create a table with the defined schema and sample data, which will store multiple vectors per document for similarity search.
 
@@ -670,7 +670,7 @@ tbl = db.create_table("multivector_example", data=data, schema=schema)
 ```
 </CodeGroup>
 
-#### 5. Build an Index
+#### 5\. Build an Index
 
 Only cosine similarity is supported for multivector search operations.
 For faster search, build the standard `IVF_PQ` index over your vectors:
@@ -690,7 +690,7 @@ In LanceDB Embedded, the query will just run, so a large unindexed multivector t
 On LanceDB Cloud, the brute-force KNN safety check applies a stricter row threshold to multivector columns; roughly 10× lower than for single-vector columns. So an unindexed multivector table can be rejected with a "vector search would use brute-force KNN" error well before a comparable single-vector table would. LanceDB Enterprise doesn't have the limit. Build the index before you start hitting it from production traffic, even if the dataset is small enough that you'd skip indexing for a single-vector workload.
 </Info>
 
-#### 6. Query a Single Vector
+#### 6\. Query a Single Vector
 
 When searching with a single query vector, it will be compared against all vectors in each document, and the similarity scores will be aggregated to find the most relevant documents.
 
@@ -701,7 +701,7 @@ results_single = tbl.search(query).limit(5).to_pandas()
 ```
 </CodeGroup>
 
-#### 7. Query Multiple Vectors
+#### 7\. Query Multiple Vectors
 
 With multiple query vectors, LanceDB calculates similarity using late interaction, a late-interaction technique that computes relevance by finding the best-matching pairs between query and document vectors. This approach provides more nuanced matching while maintaining fast retrieval speeds.
 

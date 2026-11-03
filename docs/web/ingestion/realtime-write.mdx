@@ -16,7 +16,7 @@ page covers enabling it and writing to a table; for querying an RTE table, see
 
 ## Getting started {#getting-started}
 
-### 1. Create a table with a primary key {#primary-key}
+### 1\. Create a table with a primary key {#primary-key}
 
 RTE deduplicates writes by primary key. Create the table with a non-nullable
 key column, then declare it with `set_unenforced_primary_key`. The key is a
@@ -59,7 +59,7 @@ ALTER TABLE frames SET UNENFORCED PRIMARY KEY (frame_id)
 ```
 </CodeGroup>
 
-### 2. Create indexes {#indexes}
+### 2\. Create indexes {#indexes}
 
 By default, RTE maintains every supported index on the table, including
 indexes created after it is enabled. A scalar index on the primary key is
@@ -74,7 +74,7 @@ frames.wait_for_index(["embedding_idx", "caption_idx", "frame_id_idx"], timeout=
 ```
 </CodeGroup>
 
-### 3. Enable RTE {#enable}
+### 3\. Enable RTE {#enable}
 
 <CodeGroup>
 ```python Python icon="python"
@@ -90,7 +90,7 @@ ALTER TABLE frames SET RTE
 ```
 </CodeGroup>
 
-### 4. Write {#write}
+### 4\. Write {#write}
 
 <Warning>
 On an RTE table, an upsert through `merge_insert` is the only way to write
