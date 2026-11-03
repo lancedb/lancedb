@@ -1623,11 +1623,49 @@ describe("remote connection jobs surface", () => {
 
   it("observes structured progress through the existing wait poller", async () => {
     const now = Date.now();
+    const knownFleet = {
+      desired: 2,
+      launched: 1,
+      pending_workers: 1,
+      ready: 0,
+      requested_gpus: 1,
+      ready_gpus: 0,
+      resource_classes: ["a10g"],
+      warm_reused: true,
+      first_launched_at_millis: now - 4000,
+    };
+    const unknownFleet = {
+      desired: 2,
+      launched: 1,
+      pending_workers: 1,
+      ready: 0,
+      requested_gpus: 1,
+      ready_gpus: 0,
+      resource_classes: ["a10g"],
+      first_launched_at_millis: now - 4000,
+    };
+    const progress = (
+      rowsComputed: number,
+      rowsRemaining: number,
+      sampleOffset: number,
+      workerFleet: typeof knownFleet | typeof unknownFleet,
+    ) =>
+      JSON.stringify({
+        rows_planned: 100,
+        rows_computed: rowsComputed,
+        rows_skipped: 0,
+        rows_remaining: rowsRemaining,
+        fragments_planned: 4,
+        execution_epoch: 7,
+        sample_at_millis: now - sampleOffset,
+        worker_fleet: workerFleet,
+        queue_reason: "Waiting for Function worker capacity",
+      });
     const descriptions = [
-      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":100,"rows_computed":20,"rows_skipped":0,"rows_remaining":80,"fragments_planned":4,"execution_epoch":7,"sample_at_millis":${now - 3000}}}`,
-      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":100,"rows_computed":20,"rows_skipped":0,"rows_remaining":80,"fragments_planned":4,"execution_epoch":7,"sample_at_millis":${now - 2000}}}`,
-      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":100,"rows_computed":40,"rows_skipped":0,"rows_remaining":60,"fragments_planned":4,"execution_epoch":7,"sample_at_millis":${now - 1000}}}`,
-      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"DONE","creation_ms":1000,"result":{},"progress":{"rows_planned":100,"rows_computed":60,"rows_skipped":0,"rows_remaining":0,"fragments_planned":4,"execution_epoch":7,"sample_at_millis":${now}}}`,
+      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"queue_reason":"Waiting for Function worker capacity","progress":${progress(20, 80, 3000, knownFleet)}}`,
+      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"queue_reason":"Waiting for Function worker capacity","progress":${progress(20, 80, 2000, unknownFleet)}}`,
+      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"queue_reason":"Waiting for Function worker capacity","progress":${progress(40, 60, 1000, unknownFleet)}}`,
+      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"DONE","creation_ms":1000,"result":{},"progress":${progress(60, 0, 0, unknownFleet)}}`,
     ];
     let describeCount = 0;
 
@@ -1657,6 +1695,14 @@ describe("remote connection jobs surface", () => {
           // biome-ignore lint/style/useNamingConvention: server wire format
           rows_remaining: 80,
         });
+        expect(first?.worker_fleet).toMatchObject(knownFleet);
+        expect(
+          (first?.worker_fleet as Record<string, unknown> | null | undefined)
+            ?.warm_reused,
+        ).toBe(true);
+        expect(first?.queue_reason).toBe(
+          "Waiting for Function worker capacity",
+        );
         expect(first).not.toHaveProperty("estimated_remaining_time_millis");
 
         const observed: JobProgress[] = [];
@@ -1670,6 +1716,9 @@ describe("remote connection jobs surface", () => {
           // biome-ignore lint/style/useNamingConvention: server wire format
           estimated_remaining_time_millis: 3000,
         });
+        expect(observed[0].worker_fleet).toEqual(unknownFleet);
+        expect(observed[0].worker_fleet).not.toHaveProperty("warm_reused");
+        expect(observed[0].queue_reason).toBe("Waiting for Function worker capacity");
         expect(observed[1]).toMatchObject({
           state: "finished",
           // biome-ignore lint/style/useNamingConvention: server wire format
