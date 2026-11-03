@@ -42,7 +42,8 @@ pip install --pre --extra-index-url https://pypi.fury.io/lancedb/ lancedb
 
 Most applications only need `lancedb`. Install the optional `pylance` extra and
 include the Lance preview index only when building query engines or connectors,
-or when calling format-level `lance` APIs directly:
+calling format-level `lance` APIs directly, or converting plain-scan lazy or
+legacy blob columns with `to_pandas()`:
 
 ```bash
 pip install --pre \
