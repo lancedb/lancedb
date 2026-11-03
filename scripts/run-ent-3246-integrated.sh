@@ -3,7 +3,7 @@ set -euo pipefail
 
 target=${1:?target checkout}
 output=${2:?new evidence directory}
-expected=c41f2f00ff2627be9d3f9fe16865d47f4f5648ba
+expected=f58e55c535a7df310db14d691b329402ca4baaf5
 export PATH="$HOME/.local/share/mbx/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 export RUSTUP_TOOLCHAIN=1.97.0
 export TMPDIR=/var/tmp
