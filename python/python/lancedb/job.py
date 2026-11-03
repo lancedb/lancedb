@@ -131,9 +131,10 @@ def _job_progress_callback(progress, enrich):
     last_rows = getattr(progress, "n", 0) or 0
     last_planned = getattr(progress, "total", None)
     last_epoch = None
+    first_snapshot = True
 
     def update(snapshot):
-        nonlocal last_epoch, last_planned, last_rows
+        nonlocal first_snapshot, last_epoch, last_planned, last_rows
         snapshot = enrich(snapshot)
         planned = snapshot.get("rows_planned")
         remaining = snapshot.get("rows_remaining")
@@ -165,10 +166,19 @@ def _job_progress_callback(progress, enrich):
         if completed is not None:
             if isinstance(planned, int):
                 completed = min(completed, planned)
+            if first_snapshot and completed < last_rows:
+                # The server may have started a new execution while a
+                # caller-owned bar retained its old position.
+                last_rows = completed
+                if hasattr(progress, "n"):
+                    progress.n = completed
+                if hasattr(progress, "refresh"):
+                    progress.refresh()
             if completed > last_rows:
                 delta = completed - last_rows
                 last_rows = completed
                 progress.update(delta)
+            first_snapshot = False
         phase = snapshot.get("phase")
         if phase is not None and hasattr(progress, "set_postfix_str"):
             progress.set_postfix_str(phase)
@@ -253,8 +263,11 @@ class AsyncJob(Generic[T]):
         place. Observations use the backend's existing wait poller and never
         start a second job. The bar advances by remaining rows when available,
         because completed computation can include repeated work after a plan
-        change. A new execution epoch or smaller plan resets the bar to that
-        plan. ``False`` preserves the original wait behavior.
+        change. On each wait call, the first complete observation synchronizes
+        a caller-owned bar with the server's current completed rows and total;
+        later observations in a stable execution epoch use a high-water mark. A
+        new execution epoch or smaller plan resets the bar to that plan.
+        ``False`` preserves the original wait behavior.
 
         Raises `JobFailedError` if the operation failed, `JobCancelledError`
         if it was cancelled, and `TimeoutError` if `timeout` elapses first.

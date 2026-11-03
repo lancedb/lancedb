@@ -448,8 +448,9 @@ async def test_wait_progress_bar_resumes_caller_owned_bar_after_timeout():
         id = "job-resume"
         job_type = "refresh_column"
 
-        def __init__(self):
+        def __init__(self, bar):
             self.calls = 0
+            self.bar = bar
 
         async def wait(self, progress):
             self.calls += 1
@@ -457,14 +458,26 @@ async def test_wait_progress_bar_resumes_caller_owned_bar_after_timeout():
                 progress(
                     {
                         "state": "running",
+                        "execution_epoch": 1,
                         "rows_planned": 4,
                         "rows_remaining": 2,
                     }
                 )
                 await asyncio.sleep(0.1)
+            else:
+                progress(
+                    {
+                        "state": "running",
+                        "execution_epoch": 2,
+                        "rows_planned": 4,
+                        "rows_remaining": 3,
+                    }
+                )
+                assert self.bar.n == 1
             progress(
                 {
                     "state": "finished",
+                    "execution_epoch": 2,
                     "rows_planned": 4,
                     "rows_remaining": 0,
                 }
@@ -484,7 +497,7 @@ async def test_wait_progress_bar_resumes_caller_owned_bar_after_timeout():
             pass
 
     bar = Bar()
-    job = AsyncJob(ResumableJob())
+    job = AsyncJob(ResumableJob(bar))
 
     with pytest.raises(TimeoutError):
         await job.wait(timeout=timedelta(seconds=0.01), progress=bar)
@@ -492,7 +505,7 @@ async def test_wait_progress_bar_resumes_caller_owned_bar_after_timeout():
     assert await job.wait(progress=bar) is None
     assert bar.total == 4
     assert bar.n == 4
-    assert bar.updates == [2, 2]
+    assert bar.updates == [2, 3]
 
 
 @pytest.mark.asyncio
