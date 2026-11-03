@@ -350,6 +350,8 @@
               "search/explain",
               "search/realtime-read",
               "enterprise/distributed-search",
+              "enterprise/data-page-cache",
+              "enterprise/tiered-index-cache",
               "enterprise/benchmarks"
             ]
           },
@@ -423,7 +425,8 @@
               "maintenance/compaction",
               "enterprise/distributed-compaction",
               "maintenance/cleanup",
-              "maintenance/background-jobs"
+              "maintenance/background-jobs",
+              "enterprise/horizontal-scaling"
             ]
           },
           {

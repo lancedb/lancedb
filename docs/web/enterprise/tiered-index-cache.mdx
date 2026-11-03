@@ -1,0 +1,34 @@
+---
+title: "Tiered Index Cache"
+sidebarTitle: "Tiered Index Cache"
+description: "How LanceDB Enterprise caches deserialized index structures across memory and local disk."
+icon: "layer-group"
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+The tiered index cache holds deserialized vector, full-text and scalar
+index structures in memory, backed by a local-disk tier beneath it. When
+memory fills, the cache serializes evicted entries and spills them to disk
+instead of dropping them; a later hit on a spilled entry promotes it back
+into memory. This lets a plan executor serve an index larger than its
+available memory without re-reading and re-deserializing it from object
+storage on every eviction. See [Architecture](/index#architecture).
+
+## Embedded indexing cache {#embedded}
+
+LanceDB Embedded deserializes and caches index structures inside your
+application process, using whatever memory your process has. There is no
+disk tier beneath it, and no fleet of plan executors to distribute the
+cache across.
+
+## Index cache interfaces {#interfaces}
+
+- [Background jobs](/maintenance/background-jobs#cache) for the
+  `prewarm_index_cache` and `startup_prewarm_idx` jobs that warm this cache.
+- [Data Page Cache](/enterprise/data-page-cache) for the related cache
+  that holds raw table data pages instead of deserialized index structures.
+- [Vector indexes](/indexing/vector-index), [full-text indexes](/indexing/fts-index),
+  and [scalar indexes](/indexing/scalar-index) for the index types this
+  cache serves.
