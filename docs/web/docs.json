@@ -73,7 +73,11 @@
     },
     {
       "source": "/search/optimize-queries",
-      "destination": "/search/explain"
+      "destination": "/basics/sql#query-plans"
+    },
+    {
+      "source": "/search/explain",
+      "destination": "/basics/sql#query-plans"
     },
     {
       "source": "/lance",
@@ -153,7 +157,7 @@
     },
     {
       "source": "/search/explain-analyze",
-      "destination": "/search/explain"
+      "destination": "/basics/sql#query-plans"
     },
     {
       "source": "/indexing/quantization",
@@ -317,6 +321,7 @@
               "basics/jobs",
               "tables/realtime-engine",
               "tables/consistency",
+              "enterprise/horizontal-scaling",
               "basics/guarantees",
               "basics/limits",
               "basics/naming"
@@ -347,7 +352,6 @@
               "search/hybrid-search",
               "search/filtering",
               "reranking/index",
-              "search/explain",
               "search/realtime-read",
               "enterprise/distributed-search",
               "enterprise/data-page-cache",
@@ -365,7 +369,9 @@
               "curation/chunking",
               "curation/changes",
               "curation/aggregate",
-              "curation/sampling",
+              "curation/statistical-sampling",
+              "curation/selective-sampling",
+              "training/permutation",
               "curation/join",
               "curation/windowing",
               "curation/clustering",
@@ -387,9 +393,11 @@
           {
             "group": "Training",
             "pages": [
-              "training/permutation",
               "training/data-loading",
-              "training/distributed-training"
+              "training/observability",
+              "training/distributed-training",
+              "training/checkpointing",
+              "training/resuming"
             ]
           },
           {
@@ -425,8 +433,7 @@
               "maintenance/compaction",
               "enterprise/distributed-compaction",
               "maintenance/cleanup",
-              "maintenance/background-jobs",
-              "enterprise/horizontal-scaling"
+              "maintenance/background-jobs"
             ]
           },
           {
