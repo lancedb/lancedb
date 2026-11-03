@@ -1242,3 +1242,9 @@ def test_cohere_default_model_is_not_a_retired_v2_model():
     assert cohere.name == "embed-multilingual-v3.0"
     assert "v2.0" not in cohere.name
     assert cohere.ndims() == 1024
+
+
+def test_cohere_embed_v4_is_supported():
+    cohere = get_registry().get("cohere").create(name="embed-v4.0")
+
+    assert cohere.ndims() == 1536
