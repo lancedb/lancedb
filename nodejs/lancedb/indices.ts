@@ -939,7 +939,10 @@ export interface IndexOptions {
   /**
    * Timeout in seconds to wait for index creation to complete.
    *
-   * If not specified, the method will return immediately after starting the index creation.
+   * Only applies to LanceDB Enterprise tables, which build the index in the
+   * background.
+   * If not specified, `createIndex` returns once the build is scheduled.
+   * LanceDB Embedded tables always build the index before `createIndex` returns.
    */
   waitTimeoutSeconds?: number;
 
