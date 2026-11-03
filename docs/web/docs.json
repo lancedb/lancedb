@@ -28,6 +28,10 @@
   "favicon": "/static/favicon.ico",
   "redirects": [
     {
+      "source": "/enterprise/expected-performance",
+      "destination": "/search/vector-search#expected-performance"
+    },
+    {
       "source": "/enterprise/intelligent-scheduling",
       "destination": "/enterprise/intelligent-maintenance"
     },
@@ -390,8 +394,7 @@
               "enterprise/distributed-search",
               "enterprise/data-page-cache",
               "enterprise/tiered-index-cache",
-              "enterprise/cache-prewarm",
-              "enterprise/expected-performance"
+              "enterprise/cache-prewarm"
             ]
           },
           {
@@ -426,6 +429,7 @@
               "feature-engineering/refresh-materialized-view",
               "enterprise/incremental-refresh",
               "enterprise/auto-refresh",
+              "enterprise/checkpointing",
               "enterprise/adaptive-execution"
             ]
           },
