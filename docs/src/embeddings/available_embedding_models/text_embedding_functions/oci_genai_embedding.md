@@ -29,6 +29,8 @@ Supported parameters (to be passed in `create` method) are:
 | `query_input_type` | `str` | `"SEARCH_QUERY"` | `input_type` used when embedding queries. |
 | `output_dimensions` | `int` | `None` | Embedding size for models that support it (`cohere.embed-v4.0`: 256, 512, 1024, 1536). |
 
+When a table is opened in a new process, an explicit `service_endpoint` or a non-default `region` restored from table metadata requires approval with `get_registry().allow_endpoint(...)`. The default `us-chicago-1` endpoint does not need approval.
+
 Authentication options:
 
 | `auth_type` | Identity used |

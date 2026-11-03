@@ -91,20 +91,26 @@ def test_oci_genai_registered():
 
 
 def test_oci_genai_service_endpoint(fake_oci):
-    _create()._client
+    default = _create()
+    assert default.endpoints() == []
+    default._client
     assert (
         _client_kwargs(fake_oci)["service_endpoint"]
         == "https://inference.generativeai.us-chicago-1.oci.oraclecloud.com"
     )
 
-    _create(region="eu-frankfurt-1")._client
-    assert (
-        _client_kwargs(fake_oci)["service_endpoint"]
-        == "https://inference.generativeai.eu-frankfurt-1.oci.oraclecloud.com"
+    regional = _create(region="eu-frankfurt-1")
+    regional_endpoint = (
+        "https://inference.generativeai.eu-frankfurt-1.oci.oraclecloud.com"
     )
+    assert regional.endpoints() == [regional_endpoint]
+    regional._client
+    assert _client_kwargs(fake_oci)["service_endpoint"] == regional_endpoint
 
     custom = "https://inference.generativeai.us-langley-1.oci.oraclegovcloud.com"
-    _create(region="us-chicago-1", service_endpoint=custom)._client
+    explicit = _create(region="us-chicago-1", service_endpoint=custom)
+    assert explicit.endpoints() == [custom]
+    explicit._client
     assert _client_kwargs(fake_oci)["service_endpoint"] == custom
 
 

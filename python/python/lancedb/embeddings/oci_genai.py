@@ -21,6 +21,7 @@ EMBEDDING_BATCH_SIZE = 96
 # A ``name`` that is a dedicated AI cluster endpoint OCID is routed with
 # DedicatedServingMode instead of the on-demand model catalog.
 _DEDICATED_ENDPOINT_PREFIX = "ocid1.generativeaiendpoint"
+_DEFAULT_REGION = "us-chicago-1"
 
 _SERVICE_ERROR_HELP = """
     Common causes:
@@ -128,11 +129,16 @@ class OCIGenAIEmbeddings(TextEmbeddingFunction):
     tbl = db.create_table("docs", schema=TextModel, mode="overwrite")
     tbl.add([{"text": "hello world"}, {"text": "goodbye world"}])
     rs = tbl.search("hello").limit(1).to_pandas()
+
+    When restored from table metadata in a new process, an explicit
+    ``service_endpoint`` or non-default ``region`` must be approved with
+    [allow_endpoint][lancedb.embeddings.EmbeddingFunctionRegistry.allow_endpoint].
+    The default region does not need approval.
     """
 
     name: str = "cohere.embed-v4.0"
     compartment_id: Optional[str] = None
-    region: str = "us-chicago-1"
+    region: str = _DEFAULT_REGION
     service_endpoint: Optional[str] = None
     auth_type: Literal[
         "API_KEY", "SECURITY_TOKEN", "INSTANCE_PRINCIPAL", "RESOURCE_PRINCIPAL"
@@ -156,6 +162,12 @@ class OCIGenAIEmbeddings(TextEmbeddingFunction):
             "cohere.embed-english-light-v3.0",
             "cohere.embed-multilingual-light-v3.0",
         ]
+
+    def endpoints(self) -> List[str]:
+        # Metadata only selects the default endpoint by omitting both fields.
+        if self.service_endpoint or self.region != _DEFAULT_REGION:
+            return [self._resolve_service_endpoint()]
+        return []
 
     def ndims(self) -> int:
         return self._resolved_ndims
