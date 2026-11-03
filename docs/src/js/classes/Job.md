@@ -171,6 +171,24 @@ per fragment. `filter` is a SQL-like expression over the `state`,
 
 ***
 
+### progress()
+
+```ts
+progress(): Promise<null | JobProgress>
+```
+
+Fetch a structured progress snapshot.
+
+Registry jobs include lifecycle and queue metadata even when their job
+type does not report counters. The returned object is forward-compatible
+with newer servers and job types. In-process operations return null.
+
+#### Returns
+
+`Promise`&lt;`null` \| [`JobProgress`](../interfaces/JobProgress.md)&gt;
+
+***
+
 ### refresh()
 
 ```ts
@@ -223,10 +241,18 @@ printing it.
 ### wait()
 
 ```ts
-wait(): Promise<void>
+wait(progressCallback?): Promise<void>
 ```
 
 Wait until the operation reaches a terminal state.
+
+The optional callback observes the same snapshots fetched by the backend
+poller that drives completion; it does not start another poller. Without a
+callback, this preserves the original wait behavior.
+
+#### Parameters
+
+* **progressCallback?**: [`JobProgressCallback`](../type-aliases/JobProgressCallback.md)
 
 #### Returns
 
