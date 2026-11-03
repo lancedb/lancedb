@@ -16,8 +16,8 @@ a column or called in a query -- the code runs where the data is, not pulled
 into your process first. This page covers how to shape one; later curation
 tasks such as [Chunking](/curation/chunking) assume you have read it. The
 full registration, listing, refresh and drop lifecycle is covered on the
-Function management reference; the examples below focus on shaping a
-Function for common curation tasks.
+[Function management reference](/management/function); the examples below
+focus on shaping a Function for common curation tasks.
 
 ## Scalar: once per row {#scalar}
 
@@ -355,6 +355,9 @@ values are queryable as Blob descriptors, but the row-id blob fetch APIs and
 ## What to read next {#next}
 
 <CardGroup cols={2}>
+  <Card title="Function" icon="code" href="/management/function">
+    List, describe and drop registered Function versions.
+  </Card>
   <Card title="Vend a Secret to a Function" icon="key" href="/curation/vend-secret">
     Bind a credential by reference instead of putting it in the function's source.
   </Card>

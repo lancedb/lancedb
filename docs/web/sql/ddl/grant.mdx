@@ -1,38 +1,49 @@
 ---
 title: "Grant"
 sidebarTitle: "Grant"
-description: "GRANT and REVOKE: privileges on Secrets and Functions."
+description: "GRANT and REVOKE: privileges on every catalog object, from a database down to a Function."
 icon: user-lock
 keywords: ["grant", "revoke", "privileges", "authorization", "sql", "ownership"]
+availability:
+  embedded: unavailable
+  enterprise: available
 ---
-
-<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 <CodeGroup>
 ```sql SQL icon="database"
-GRANT <privilege>[, ...] ON { SECRET | FUNCTION } <name> TO <grantee>[, ...]
-GRANT <privilege>[, ...] ON SCHEMA <namespace> TO <grantee>[, ...]
-REVOKE <privilege>[, ...] ON ... FROM <grantee>[, ...]
+GRANT <privilege>[, <privilege>...] ON <target> TO <grantee>[, <grantee>...]
+REVOKE <privilege>[, <privilege>...] ON <target> FROM <grantee>[, <grantee>...]
+
+<target> ::= DATABASE <name> | SCHEMA <namespace> | TABLE <name> | VIEW <name>
+          | MATERIALIZED VIEW <name> | SECRET <name> | STORAGE INTEGRATION <name> | FUNCTION <name>
+<grantee> ::= [ROLE] <role> | [USER] { <name> | ID '<id>' } | [GROUP] { <name> | ID '<id>' }
 ```
 </CodeGroup>
 
 <CodeGroup>
 ```sql SQL icon="database"
-GRANT USAGE, UPDATE ON SECRET api_key TO ROLE readers, writers
-GRANT CREATE FUNCTION ON SCHEMA analytics TO ROLE data_science
-REVOKE USAGE ON FUNCTION embed FROM ROLE readers
+GRANT USAGE, CREATE SCHEMA ON DATABASE analytics TO ROLE readers
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE events TO ROLE etl
+GRANT CREATE SECRET, CREATE FUNCTION ON SCHEMA platform TO ROLE platform_admins
+GRANT USAGE, UPDATE ON SECRET platform.`openai-prod` TO ROLE etl, rotation_service
+GRANT USAGE ON SECRET platform.`openai-prod` TO USER alice, GROUP ID 'g1'
+GRANT USAGE ON FUNCTION platform.embed TO ROLE research
+GRANT OWNERSHIP ON SECRET platform.`openai-prod` TO ROLE platform_admins
+REVOKE USAGE ON FUNCTION platform.embed FROM ROLE research
 ```
 </CodeGroup>
 
 ## Privileges {#privileges}
 
-| Privilege | Allows |
+| Target | Privileges it accepts |
 | --- | --- |
-| `OWNERSHIP` | everything on the object |
-| `USAGE` | using it: binding a Secret's value, calling a Function |
-| `UPDATE` | changing it |
-| `CREATE SECRET` | creating a Secret inside a `SCHEMA` |
-| `CREATE FUNCTION` | creating a Function inside a `SCHEMA` |
+| `DATABASE` | `OWNERSHIP`, `USAGE`, `CREATE SCHEMA` (or `CREATE NAMESPACE`) |
+| `SCHEMA` (a namespace) | `OWNERSHIP`, `USAGE`, `CREATE NAMESPACE`, `CREATE TABLE`, `CREATE MATERIALIZED VIEW`, `CREATE VIEW`, `CREATE SECRET`, `CREATE STORAGE INTEGRATION`, `CREATE FUNCTION` |
+| `TABLE`, `MATERIALIZED VIEW` | `OWNERSHIP`, `SELECT`, `INSERT`, `UPDATE`, `DELETE` |
+| `VIEW` | `OWNERSHIP`, `SELECT` |
+| `SECRET` | `OWNERSHIP`, `USAGE` (bind it to a Function), `UPDATE` (rotate it) |
+| `STORAGE INTEGRATION` | `OWNERSHIP`, `USAGE` |
+| `FUNCTION` | `OWNERSHIP`, `USAGE` (call it in a query, bind it to a column, or refresh a column it computes) |
 
 <Warning>
 `OWNERSHIP` cannot be revoked, only granted to someone else, which transfers
@@ -40,39 +51,48 @@ it: an object always has exactly one owner. `GRANT OWNERSHIP` is refused with
 more than one grantee for the same reason.
 </Warning>
 
-These are a subset of the full privilege model; see
-[Privileges](/governance/privileges) for privileges on tables, views,
-databases and namespaces, which this statement does not grant.
+See [Privileges](/governance/privileges) for what each privilege allows in
+full, and how a creation privilege resolves against an object's parent when
+the object doesn't exist yet.
 
 ## Grantees {#grantees}
-
-<CodeGroup>
-```sql SQL icon="database"
-<grantee> ::= [ ROLE ] <role> | [ { USER | GROUP } ] { <name> | ID '<id>' }
-```
-</CodeGroup>
-
-<CodeGroup>
-```sql SQL icon="database"
-GRANT USAGE ON SECRET api_key TO ROLE readers, USER alice, GROUP ID 'g1'
-```
-</CodeGroup>
 
 A grantee is a role, or a user or group named by its identity-directory name
 or its directory ID. A grantee with no leading `ROLE`/`USER`/`GROUP` keyword
 takes the kind of the one before it, so `TO ROLE a, b` names two roles --
 but the first grantee in the list always needs its keyword. An unquoted name
-is folded to lowercase before it is looked up; a quoted name is looked up
-exactly as written.
+is folded to lowercase before it is looked up; quote one that has capitals,
+such as `TO ROLE "DataEng"`.
 
 ## Naming the target {#targets}
 
 A `SECRET` or `FUNCTION` target can be qualified with its namespace and
 database, the same as anywhere else: `SECRET analytics.api_key`,
-`SECRET db1.analytics.api_key`. A `SCHEMA` target is the namespace itself.
-`DATABASE`, `TABLE`, `VIEW`, `MATERIALIZED VIEW` and `STORAGE INTEGRATION`
-targets also exist, granting the broader privilege set covered on
-[Privileges](/governance/privileges#sql), not reproduced on this page.
+`SECRET db1.analytics.api_key`. A `SCHEMA` target is the namespace itself,
+also spelled `NAMESPACE`. A `MATERIALIZED VIEW` is a table for authorization
+purposes: the same privileges apply, and granting one does not reach the
+non-materialized `VIEW` beside it.
+
+## How a statement is applied {#semantics}
+
+- A statement applies all of its changes or none of them.
+- The caller must already hold `OWNERSHIP` on the object to change any grant
+  on it.
+- Granting a privilege a grantee already holds, or revoking one it does not
+  hold, is a no-op.
+- Neither the object nor the role has to exist, so a misspelled name still
+  reports `granted`. A `USER` or `GROUP` name is resolved against your
+  identity provider, but only after the caller's `OWNERSHIP` is checked.
+- `GRANT ... ON ... FROM ...` and `REVOKE ... ON ... TO ...` are both
+  refused; `GRANT` always takes `TO`, `REVOKE` always takes `FROM`.
+- Returns one row per privilege and grantee, with status `granted`,
+  `already_granted`, `revoked` or `not_granted`.
+
+<Note>
+SQL has no syntax for binding a Secret to a Function; that's a
+registration-time argument to `create_function` in the Python SDK. See
+[Vend a Secret to a Function](/curation/vend-secret).
+</Note>
 
 ## What to read next {#next}
 

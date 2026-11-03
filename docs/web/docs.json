@@ -268,6 +268,10 @@
       "destination": "/sql/dql/scalar-functions"
     },
     {
+      "source": "/feature-engineering/functions",
+      "destination": "/management/function"
+    },
+    {
       "source": "/sql/prepared-statements",
       "destination": "/basics/sql#prepared-statements"
     },
@@ -433,6 +437,7 @@
               "management/view",
               "management/materialized-view",
               "management/secret",
+              "management/function",
               "management/storage-integration"
             ]
           },
@@ -490,9 +495,11 @@
                   "sql/ddl/view",
                   "sql/ddl/materialized-view",
                   "sql/ddl/secret",
+                  "sql/ddl/function",
                   "sql/ddl/storage-integration",
                   "sql/ddl/index",
-                  "sql/ddl/job"
+                  "sql/ddl/job",
+                  "sql/ddl/grant"
                 ],
                 "icon": "sitemap"
               },
