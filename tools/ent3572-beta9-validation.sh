@@ -26,9 +26,9 @@ status=0
 run fmt env CARGO_BUILD_JOBS=4 mbx +1.97.1 fmt --all -- --check || status=1
 run clippy env CARGO_BUILD_JOBS=4 mbx +1.97.1 clippy --quiet --workspace --tests --all-features -- -D warnings || status=1
 run lsm_mem_wal env CARGO_BUILD_JOBS=4 mbx +1.97.1 test --quiet --locked -p lancedb --lib table::merge::lsm_tests::lsm_writer_of_a_retired_mem_wal_is_replaced -- --nocapture || status=1
-run ci_tests python3 -m unittest discover -s ci/tests -v || status=1
+run ci_tests uv run --no-project --python 3.12 --with packaging python -m unittest discover -s ci/tests -v || status=1
 run uv_lock bash -c 'cd python && uv lock --check' || status=1
-run python_ruff bash -c 'cd python && uv run --extra dev ruff format --check . && uv run --extra dev ruff check .' || status=1
+run python_ruff bash -c 'cd python && uv run --no-project --python 3.12 --with ruff==0.9.9 ruff format --check . && uv run --no-project --python 3.12 --with ruff==0.9.9 ruff check .' || status=1
 
 printf 'OVERALL_EXIT=%s\n' "$status"
 exit "$status"
