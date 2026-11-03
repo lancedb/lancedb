@@ -192,7 +192,9 @@ async fn execute_refresh_column_with_source(
         // A recompute rewrites every live row, so it is staged without the
         // probe and counted as it fills; a null fill probes first, since a
         // fragment with nothing to gain is not worth a write.
-        let recompute = staleness.is_dirty(fragment_id);
+        // Expression refreshes replace a whole column file, so any row-level
+        // dirty state makes this fragment a whole-fragment recompute here.
+        let recompute = staleness.needs_recompute(fragment_id);
         let whole = recompute || {
             let (gained, unfilled) =
                 count_fragment_gains(&dataset, &fragment, &bound, column).await?;
