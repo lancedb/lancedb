@@ -3668,6 +3668,7 @@ def test_default_checkpoint_resumes_after_compaction(lance_table):
     on this path -- instead of relying on shuffle_seed/num_splits alone, as it
     does -- would reject this resume even though the seeded permutation itself
     is unchanged."""
+    pytest.importorskip("lance")
     lance_table.add(pa.table({"id": [NUM_ROWS]}))  # a second fragment to compact
 
     ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
