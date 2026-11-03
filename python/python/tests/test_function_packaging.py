@@ -401,6 +401,9 @@ def test_code_packages_ship_as_a_bundle_and_version_with_their_source(
     assert warning.index("fx_helpers/fixtures/data.json") < warning.index(
         "fx_helpers/not-a-module.py"
     )
+    assert "remove 'fx_helpers' from code=" in warning
+    assert "pip=" in warning
+    assert "conda=" in warning
     assert "__pycache__" not in warning
     assert ".pyc" not in warning
     shipped = bundle_files(first)
@@ -472,6 +475,7 @@ def test_code_package_nonidentifier_resource_dir_warns_at_boundary(helper_packag
     assert len(caught) == 1
     warning = str(caught[0].message)
     assert "fx_resources/label-maps/" in warning
+    assert "remove 'fx_resources' from code=" in warning
     assert "labels.json" not in warning
     assert sorted(bundle_files(resource_boundary)) == [
         "fx_resources/__init__.py",

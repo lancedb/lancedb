@@ -568,8 +568,10 @@ Each module in `code` is captured and shipped the same way the function
 itself is: as source, snapshotted at registration. Only `.py` source files are
 included; package data such as JSON, YAML, prompt, or tokenizer files is not
 copied. `@udf` warns before registration when it skips such files from a
-package in `code`, naming the affected paths. Install a package that includes
-the required resources with `pip=` or `conda=` instead.
+package in `code`, naming the affected paths. To use a package that includes
+the required resources, install it with `pip=` or `conda=` and remove that
+package from `code`; otherwise the Python-only copied package shadows the
+installed distribution.
 
 ## Drop it {#drop}
 

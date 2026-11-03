@@ -1829,11 +1829,13 @@ def _code_files(modules: Sequence[Any]) -> tuple[dict[str, str], frozenset[str]]
                         relative = (Path(directory) / filename).relative_to(root)
                         skipped.add(f"{name}/{relative.as_posix()}")
             if skipped:
-                paths = ", ".join(sorted(skipped))
+                skipped_paths = ", ".join(sorted(skipped))
                 warnings.warn(
                     f"code= ships Python .py modules only; package {name!r} "
-                    f"will not include: {paths}. Install a package that includes "
-                    "the required resources with pip= or conda=.",
+                    f"will not include: {skipped_paths}. Install a package that "
+                    "includes the required resources with pip= or conda=, and "
+                    f"remove {name!r} from code= so the copied package cannot "
+                    "shadow the installed distribution.",
                     UserWarning,
                 )
             for path in sources:
@@ -2344,9 +2346,11 @@ def udf(
     code : sequence of module, optional
         Top-level modules or packages whose importable ``.py`` files ship
         with the Function and are importable by their own names. Package data
-        files are not copied. Install a package that includes required data
-        resources with ``pip=`` or ``conda=``; ``@udf`` warns when it skips
-        files from a package in ``code=``.
+        files are not copied. To use a package that includes required data
+        resources, install it with ``pip=`` or ``conda=`` and remove that
+        package from ``code=`` so the copied Python package cannot shadow the
+        installed distribution. ``@udf`` warns when it skips files from a
+        package in ``code=``.
 
     Returns
     -------
