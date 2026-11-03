@@ -414,7 +414,7 @@ mod test {
                 || path_str.contains("_transactions")
         };
 
-        let primary_files: Vec<_> = WalkDir::new(&primary_location)
+        let mut primary_files: Vec<_> = WalkDir::new(&primary_location)
             .into_iter()
             .filter_entry(|e| !should_skip(e.path()))
             .filter_map(|e| e.ok())
@@ -425,8 +425,9 @@ mod test {
                     .to_path_buf()
             })
             .collect();
+        primary_files.sort();
 
-        let secondary_files: Vec<_> = WalkDir::new(&secondary_location)
+        let mut secondary_files: Vec<_> = WalkDir::new(&secondary_location)
             .into_iter()
             .filter_entry(|e| !should_skip(e.path()))
             .filter_map(|e| e.ok())
@@ -437,6 +438,7 @@ mod test {
                     .to_path_buf()
             })
             .collect();
+        secondary_files.sort();
 
         assert_eq!(primary_files, secondary_files, "File lists should match");
     }
