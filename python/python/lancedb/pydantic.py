@@ -9,16 +9,19 @@ import inspect
 import sys
 import types
 from abc import ABC, abstractmethod
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 from enum import Enum
 from typing import (
     TYPE_CHECKING,
     Any,
     List,
+    Literal,
     Type,
     Union,
     _GenericAlias,
     GenericAlias,
+    get_args,
+    get_origin,
 )
 
 import pyarrow as pa
@@ -247,6 +250,19 @@ def _py_type_to_arrow_type(py_type: Type[Any], field: FieldInfo) -> pa.DataType:
     elif py_type is datetime:
         tz = get_extras(field, "tz")
         return pa.timestamp("us", tz=tz)
+    elif py_type is time:
+        return pa.time64("us")
+    elif py_type is timedelta:
+        return pa.duration("us")
+    elif get_origin(py_type) is Literal:
+        # Store a Literal as the type of its values, e.g. Literal["a", "b"] as utf8.
+        value_types = {type(value) for value in get_args(py_type)}
+        if len(value_types) != 1:
+            raise TypeError(
+                "Converting Pydantic type to Arrow Type: unsupported type "
+                f"{py_type}. All values of a Literal must have the same type."
+            )
+        return _pydantic_type_to_arrow_type(value_types.pop(), field)
     elif getattr(py_type, "__origin__", None) in (list, tuple):
         # A bare, unparameterised ``typing.List`` / ``typing.Tuple`` matches this
         # branch (its ``__origin__`` is ``list`` / ``tuple``) but has no
@@ -561,21 +577,36 @@ def get_extras(field_info: FieldInfo, key: str) -> Any:
 
 
 def model_to_dict(model: pydantic.BaseModel) -> dict[str, Any]:
-    """Convert a Pydantic model to a dictionary."""
-    return _enum_members_to_values(model.model_dump())
+    """Convert a Pydantic model to a dictionary.
+
+    Raises
+    ------
+    ValueError
+        If a ``datetime.time`` value has a non-null ``tzinfo``. LanceDB stores
+        times as timezone-naive wall-clock values and cannot preserve the offset.
+    """
+    return _model_value_to_arrow_compatible(model.model_dump())
 
 
-def _enum_members_to_values(value: Any) -> Any:
+def _model_value_to_arrow_compatible(value: Any) -> Any:
     # model_dump() keeps Enum members, and Arrow cannot convert a member of a
     # plain Enum (one without a str or int mixin). Write its value instead,
     # which is what the Arrow type of the field is derived from.
     if isinstance(value, Enum):
-        return value.value
+        value = value.value
+    if isinstance(value, time):
+        if value.tzinfo is not None:
+            raise ValueError(
+                "LanceDB supports timezone-naive wall-clock datetime.time values "
+                "only; time values with tzinfo cannot be written losslessly. Remove "
+                "the timezone offset or store it in a separate field."
+            )
+        return value
     if isinstance(value, dict):
-        return {k: _enum_members_to_values(v) for k, v in value.items()}
+        return {k: _model_value_to_arrow_compatible(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)) and value:
         # Skip lists of plain scalars, such as vectors, without walking them.
         if isinstance(value[0], (int, float, str, bytes)):
             return value
-        return [_enum_members_to_values(v) for v in value]
+        return [_model_value_to_arrow_compatible(v) for v in value]
     return value
