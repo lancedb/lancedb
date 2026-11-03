@@ -10,7 +10,6 @@ suite=$1
 out=$2
 expected_sha=${EXPECTED_SHA:?EXPECTED_SHA is required}
 repo=$(cd "$(dirname "$0")/.." && pwd)
-venv=/home/ec2-user/Code/wt/ent-3246-sdk/python/.venv
 cd "$repo"
 
 actual_sha=$(git rev-parse HEAD)
@@ -35,8 +34,8 @@ run() {
   printf 'sha=%s\ncommand=' "$actual_sha"
   printf '%q ' "$@"
   printf '\n'
-  rustc --version
-  cargo --version
+  mbx +1.97.1 rustc --version
+  mbx +1.97.1 cargo --version
   set +e
   "$@" 2>&1 | tee "$log"
   status=${PIPESTATUS[0]}
@@ -51,36 +50,40 @@ run() {
 
 case "$suite" in
   rust)
-    run rust-list cargo test -p lancedb --features remote \
+    run rust-list mbx +1.97.1 test -p lancedb --features remote \
       wait_progress_observes_the_existing_poll_loop -- --list
     grep -Fq 'wait_progress_observes_the_existing_poll_loop' "$out/rust-list.log"
-    run rust-test cargo test -p lancedb --features remote \
+    run rust-test mbx +1.97.1 test -p lancedb --features remote \
       wait_progress_observes_the_existing_poll_loop -- --nocapture
     grep -Eq 'test result: ok\. [1-9][0-9]* passed' "$out/rust-test.log"
     ;;
   python)
-    source "$venv/bin/activate"
-    run python-collect "$venv/bin/pytest" --collect-only -q \
-      python/tests/test_job.py -k 'progress or wait_progress'
+    cd python
+    run python-collect uv run --frozen --python 3.12 --extra tests --extra dev \
+      pytest --collect-only -q tests/test_job.py -k 'progress or wait_progress'
     grep -Fq 'test_wait_progress_true_updates_and_closes_only_the_owned_bar' \
       "$out/python-collect.log"
-    run python-build "$venv/bin/maturin" develop
-    run python-provenance "$venv/bin/python" -c \
+    run python-build uv run --frozen --python 3.12 --extra tests --extra dev \
+      maturin develop --extras tests,dev
+    run python-provenance uv run --frozen --python 3.12 --extra tests --extra dev \
+      python -c \
       "import lancedb; print(lancedb.__file__); assert lancedb.__file__.startswith('$repo/python/')"
-    run python-job-tests "$venv/bin/pytest" -q python/tests/test_job.py \
-      -k 'progress or wait_progress'
+    run python-job-tests uv run --frozen --python 3.12 --extra tests --extra dev \
+      pytest -q tests/test_job.py -k 'progress or wait_progress'
     grep -Eq '[1-9][0-9]* passed' "$out/python-job-tests.log"
-    run python-remote-test "$venv/bin/pytest" -q \
-      python/tests/test_remote_db.py::test_remote_connection_jobs_surface
+    run python-remote-test uv run --frozen --python 3.12 --extra tests --extra dev \
+      pytest -q tests/test_remote_db.py::test_remote_connection_jobs_surface
     grep -Eq '[1-9][0-9]* passed' "$out/python-remote-test.log"
     ;;
   lint)
-    run clippy cargo clippy -p lancedb --features remote --no-deps --tests \
+    run clippy mbx +1.97.1 clippy -p lancedb --features remote --no-deps --tests \
       --benches --locked -- -D warnings --no-deps
-    run rust-fmt cargo fmt --all -- --check
-    source "$venv/bin/activate"
-    run ruff-format "$venv/bin/ruff" format --check python
-    run ruff-check "$venv/bin/ruff" check python
+    run rust-fmt rustup run 1.97.1 cargo fmt --all -- --check
+    cd python
+    run ruff-format uv run --frozen --python 3.12 --extra tests --extra dev \
+      ruff format --check .
+    run ruff-check uv run --frozen --python 3.12 --extra tests --extra dev \
+      ruff check .
     ;;
   *)
     echo "unsupported suite: $suite" >&2
