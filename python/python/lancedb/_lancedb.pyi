@@ -1,6 +1,17 @@
 from datetime import date, datetime, timedelta
 from decimal import Decimal
-from typing import Callable, Dict, List, Optional, Sequence, Tuple, Any, TypedDict, Union, Literal
+from typing import (
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+    Any,
+    TypedDict,
+    Union,
+    Literal,
+)
 from uuid import UUID
 
 import pyarrow as pa

@@ -141,9 +141,7 @@ def _job_progress_callback(progress, enrich):
         computed = snapshot.get("rows_computed")
         if isinstance(planned, int):
             epoch = snapshot.get("execution_epoch")
-            reset = (
-                isinstance(last_planned, int) and planned < last_planned
-            ) or (
+            reset = (isinstance(last_planned, int) and planned < last_planned) or (
                 isinstance(last_epoch, int)
                 and isinstance(epoch, int)
                 and epoch != last_epoch
