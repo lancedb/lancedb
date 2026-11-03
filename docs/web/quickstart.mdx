@@ -5,7 +5,7 @@ description: "Install LanceDB, create a table, and run your first vector search.
 icon: rocket
 ---
 import { PyConnect, TsConnect, RsConnect, PyConnectObjectStorage, TsConnectObjectStorage, RsConnectObjectStorage, PyConnectEnterprisePlaceholders, TsConnectEnterprisePlaceholders, RsConnectEnterprisePlaceholders } from '/snippets/connection.mdx';
-import { PyQuickstartData, PyQuickstartCreateTable, PyQuickstartAddData, PyQuickstartAddFeature, PyQuickstartComputedFeature, PyQuickstartComputedFeatureEnterprise, PyQuickstartMultimodalBytes, PyQuickstartTraining, TsQuickstartData, TsQuickstartCreateTable, TsQuickstartAddData, TsQuickstartVectorSearch1, TsQuickstartCurateWithMetadata, TsQuickstartAddFeature, TsQuickstartQueryFeature, TsQuickstartMultimodalBytes, RsQuickstartDefineStruct, RsQuickstartData, RsQuickstartCreateTable, RsQuickstartAddData, RsQuickstartVectorSearch1, RsQuickstartCurateWithMetadata, RsQuickstartAddFeature, RsQuickstartQueryFeature, RsQuickstartMultimodalBytes } from '/snippets/quickstart.mdx';
+import { PyQuickstartData, PyQuickstartCreateTable, PyQuickstartCreateIndexes, PyQuickstartAddData, PyQuickstartAddFeature, PyQuickstartComputedFeature, PyQuickstartComputedFeatureEnterprise, PyQuickstartMultimodalBytes, PyQuickstartTraining, TsQuickstartData, TsQuickstartCreateTable, TsQuickstartCreateIndexes, TsQuickstartAddData, TsQuickstartVectorSearch1, TsQuickstartCurateWithMetadata, TsQuickstartAddFeature, TsQuickstartQueryFeature, TsQuickstartMultimodalBytes, RsQuickstartDefineStruct, RsQuickstartData, RsQuickstartCreateTable, RsQuickstartCreateIndexes, RsQuickstartAddData, RsQuickstartVectorSearch1, RsQuickstartCurateWithMetadata, RsQuickstartAddFeature, RsQuickstartQueryFeature, RsQuickstartMultimodalBytes } from '/snippets/quickstart.mdx';
 
 This quickstart uses LanceDB Embedded with a local database and works without an account or API key.
 LanceDB Embedded runs in your application's process; your data can live on local disk or in object storage.
@@ -216,6 +216,22 @@ Create a `frames` table from those records:
 </CodeGroup>
 
 This example uses overwrite mode so you can run it again. It replaces any existing `frames` table in the database you connect to.
+
+Index the columns you search and filter on: a vector index for the embedding, and a scalar index for the `stats.motion` filter used in [step 5](#5-curation):
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyQuickstartCreateIndexes}
+    </CodeBlock>
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsQuickstartCreateIndexes}
+    </CodeBlock>
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsQuickstartCreateIndexes}
+    </CodeBlock>
+</CodeGroup>
+
+Without indexes, every search and filter reads every row. A table this small doesn't need them, but a table of millions of rows does, so create them with the table. A vector index needs a few hundred rows before it can be trained; until then, searches read every row and return the same results. In LanceDB Embedded, call `optimize()` after adding data to bring indexes up to date. LanceDB Enterprise does this in the background. See [Set up the table for your workload](/ingestion/create-table#set-up-for-your-workload) to choose indexes for your own data.
 
 Add one more frame:
 

@@ -260,6 +260,110 @@ def test_create_empty_table_pydantic():
         assert tbl.count_rows() == 0
 
 
+def scene_table_helpers():
+    # --8<-- [start:table_setup_data]
+    import numpy as np
+    import pyarrow as pa
+
+    dim = 64
+    schema = pa.schema(
+        [
+            pa.field("scene_id", pa.int64(), nullable=False),
+            pa.field("camera_id", pa.utf8()),
+            pa.field("weather", pa.utf8()),
+            pa.field("caption", pa.utf8()),
+            pa.field("embedding", pa.list_(pa.float32(), dim)),
+        ]
+    )
+
+    def make_scenes(start, count):
+        rng = np.random.default_rng(start)
+        ids = range(start, start + count)
+        return pa.table(
+            {
+                "scene_id": pa.array(ids, pa.int64()),
+                "camera_id": [f"cam-{i % 500:03d}" for i in ids],
+                "weather": [("clear", "rain", "fog", "snow")[i % 4] for i in ids],
+                "caption": [f"a car turning left at intersection {i}" for i in ids],
+                "embedding": pa.FixedSizeListArray.from_arrays(
+                    pa.array(rng.random(count * dim, dtype=np.float32)), dim
+                ),
+            },
+            schema=schema,
+        )
+
+    # --8<-- [end:table_setup_data]
+
+    return schema, make_scenes
+
+
+def test_table_setup_load_then_index(db_path_factory):
+    schema, make_scenes = scene_table_helpers()
+    import lancedb
+
+    db = lancedb.connect(db_path_factory("table_setup_load"))
+
+    # --8<-- [start:table_setup_load_then_index]
+    from lancedb.index import FTS, Bitmap, BTree, IvfRq
+
+    tbl = db.create_table("scenes", make_scenes(0, 5_000))
+    tbl.create_index(
+        "embedding",
+        config=IvfRq(distance_type="cosine", target_partition_size=8192),
+    )
+    tbl.create_index("camera_id", config=BTree())
+    tbl.create_index("weather", config=Bitmap())
+    tbl.create_index("caption", config=FTS())
+    # --8<-- [end:table_setup_load_then_index]
+
+    for index in tbl.list_indices():
+        assert tbl.index_stats(index.name).num_unindexed_rows == 0
+
+    # --8<-- [start:table_setup_optimize]
+    tbl.add(make_scenes(5_000, 1_000))
+    print(tbl.index_stats("embedding_idx").num_unindexed_rows)  # 1000
+    tbl.optimize()  # brings every index up to date
+    print(tbl.index_stats("embedding_idx").num_unindexed_rows)  # 0
+    # --8<-- [end:table_setup_optimize]
+
+    for index in tbl.list_indices():
+        assert tbl.index_stats(index.name).num_unindexed_rows == 0
+
+
+def test_table_setup_stream(db_path_factory):
+    schema, make_scenes = scene_table_helpers()
+    import lancedb
+
+    db = lancedb.connect(db_path_factory("table_setup_stream"))
+
+    # --8<-- [start:table_setup_stream]
+    from lancedb.index import FTS, Bitmap, BTree, IvfRq
+
+    tbl = db.create_table("scenes", schema=schema)
+    tbl.create_index(
+        "embedding",
+        config=IvfRq(distance_type="cosine", target_partition_size=8192),
+        train=False,
+    )
+    tbl.create_index("scene_id", config=BTree(), train=False)
+    tbl.create_index("camera_id", config=BTree(), train=False)
+    tbl.create_index("weather", config=Bitmap(), train=False)
+    tbl.create_index("caption", config=FTS(), train=False)
+    # --8<-- [end:table_setup_stream]
+
+    assert len(tbl.list_indices()) == 5
+    tbl.merge_insert(
+        "scene_id"
+    ).when_matched_update_all().when_not_matched_insert_all().execute(
+        make_scenes(0, 5_000)
+    )
+    tbl.optimize()
+    for index in tbl.list_indices():
+        stats = tbl.index_stats(index.name)
+        assert stats.num_indexed_rows == 5_000
+        assert stats.num_unindexed_rows == 0
+
+
 def test_open_existing_table():
     # --8<-- [start:open_existing_table]
     from tempfile import TemporaryDirectory
