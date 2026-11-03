@@ -26,25 +26,6 @@ flowchart LR
     O --> Fill["Fills memory and disk,<br/>served"]
 ```
 
-For a Helm deployment, configure the volume size and a StorageClass backed
-by the intended disks. This example assumes the cluster provides an
-NVMe-backed StorageClass named `local-nvme`; use the actual StorageClass
-name for your cluster. Enabling disk caching alone does not select NVMe
-hardware -- the node storage and StorageClass determine the backing device:
-
-```yaml Helm values
-planExecutorNodes:
-  diskCache:
-    enabled: true
-    storageSize: "200Gi"
-    storageClassName: "local-nvme"
-```
-
-The chart budgets disk capacity between the data page cache and, when
-enabled, the separate tiered index cache -- see
-[Sharing the disk budget](/enterprise/tiered-index-cache#disk-budget) for
-`capacityPercent` and the index tier's own reserved share.
-
 A table's local disk cache shares one budget with the
 [tiered index cache](/enterprise/tiered-index-cache#disk-budget)'s disk
 tier where both are enabled on the same executor -- raising one's share of

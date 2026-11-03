@@ -66,8 +66,8 @@ the column's configured interval has elapsed, the scheduler can lose that
 last-success record and refresh earlier than the interval implies. Leave
 archival disabled, or retain live history for at least the longest
 configured interval you rely on. A deployment archives completed jobs by
-default, after a default seven-day retention threshold -- both are Helm
-values an operator can change.
+default, after a default seven-day retention threshold; check with your
+deployment operator if you rely on a different setting.
 
 A materialized view's pacing instead reads a timestamp the view itself
 persists for when it was last checked, not Job Registry history -- so
