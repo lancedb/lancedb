@@ -461,12 +461,14 @@ mod tests {
         });
         let snapshots = Arc::new(Mutex::new(Vec::new()));
         let observed = snapshots.clone();
-        let progress: JobProgressCallback = Arc::new(Mutex::new(move |description| {
-            observed
-                .lock()
-                .expect("snapshot lock")
-                .push(description.progress_snapshot());
-        }));
+        let progress: JobProgressCallback = Arc::new(Mutex::new(
+            move |description: &crate::database::JobDescription| {
+                observed
+                    .lock()
+                    .expect("snapshot lock")
+                    .push(description.progress_snapshot());
+            },
+        ));
 
         RemoteJob::new(client, "job-1".to_string())
             .wait_with_progress(Some(progress))
