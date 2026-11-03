@@ -119,27 +119,23 @@ def _with_progress_eta(previous, current):
     return snapshot
 
 
-def _job_progress_callback(progress):
+def _job_progress_callback(progress, enrich):
     """Adapt a callback or tqdm-like object to structured job snapshots."""
     if progress is None:
         return None
     if callable(progress):
-        return progress
+        return lambda snapshot: progress(enrich(snapshot))
 
     last_rows = 0
-    total_set = False
-    previous_snapshot = None
 
     def update(snapshot):
-        nonlocal last_rows, total_set, previous_snapshot
-        snapshot = _with_progress_eta(previous_snapshot, snapshot)
-        previous_snapshot = snapshot
+        nonlocal last_rows
+        snapshot = enrich(snapshot)
         planned = snapshot.get("rows_planned")
         remaining = snapshot.get("rows_remaining")
         computed = snapshot.get("rows_computed")
-        if planned is not None and not total_set:
+        if isinstance(planned, int):
             progress.total = planned
-            total_set = True
         completed = None
         if isinstance(planned, int) and isinstance(remaining, int):
             completed = max(planned - remaining, 0)
@@ -148,9 +144,9 @@ def _job_progress_callback(progress):
         if completed is not None:
             if isinstance(planned, int):
                 completed = min(completed, planned)
-            delta = max(completed - last_rows, 0)
-            last_rows = completed
-            if delta:
+            if completed > last_rows:
+                delta = completed - last_rows
+                last_rows = completed
                 progress.update(delta)
         phase = snapshot.get("phase")
         if phase is not None and hasattr(progress, "set_postfix_str"):
@@ -175,6 +171,11 @@ class AsyncJob(Generic[T]):
         self._inner = inner
         self._result_decoder = result_decoder
         self._last_progress_snapshot = None
+
+    def _enrich_progress(self, snapshot):
+        enriched = _with_progress_eta(self._last_progress_snapshot, snapshot)
+        self._last_progress_snapshot = enriched
+        return enriched
 
     @property
     def id(self) -> Optional[str]:
@@ -214,11 +215,7 @@ class AsyncJob(Generic[T]):
         description = getattr(self._inner, "_description", None)
         if description is None or description.progress is None:
             return None
-        snapshot = _with_progress_eta(
-            self._last_progress_snapshot, description.progress
-        )
-        self._last_progress_snapshot = snapshot
-        return snapshot
+        return self._enrich_progress(description.progress)
 
     async def wait(
         self,
@@ -253,7 +250,7 @@ class AsyncJob(Generic[T]):
         if self._inner is None:
             return cast(T, None)
         progress_obj, owns = _normalize_job_progress(progress)
-        progress_callback = _job_progress_callback(progress_obj)
+        progress_callback = _job_progress_callback(progress_obj, self._enrich_progress)
         last_error = None
 
         async def wait_with_retries():

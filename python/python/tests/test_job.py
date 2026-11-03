@@ -376,6 +376,43 @@ async def test_wait_progress_callback_observes_backend_poll_updates():
 
 
 @pytest.mark.asyncio
+async def test_wait_progress_callback_uses_the_public_eta_enrichment(monkeypatch):
+    now = 10_000_000
+    monkeypatch.setattr("lancedb.job.time.time", lambda: now / 1_000)
+
+    class EtaJob:
+        id = "job-eta"
+        job_type = "refresh_column"
+
+        async def wait(self, progress):
+            first = {
+                "state": "running",
+                "execution_epoch": 7,
+                "sample_at_millis": now - 1_000,
+                "rows_planned": 100,
+                "rows_computed": 20,
+                "rows_skipped": 0,
+                "rows_remaining": 80,
+                "fragments_planned": 4,
+            }
+            progress(first)
+            progress(
+                {
+                    **first,
+                    "sample_at_millis": now,
+                    "rows_computed": 40,
+                    "rows_remaining": 60,
+                }
+            )
+
+    updates = []
+    assert await AsyncJob(EtaJob()).wait(progress=updates.append) is None
+
+    assert "estimated_remaining_time_millis" not in updates[0]
+    assert updates[1]["estimated_remaining_time_millis"] == 3_000
+
+
+@pytest.mark.asyncio
 async def test_wait_progress_true_updates_and_closes_only_the_owned_bar(monkeypatch):
     tqdm_module = pytest.importorskip("tqdm.auto")
 
@@ -454,6 +491,58 @@ async def test_wait_progress_bar_uses_remaining_rows_when_computation_is_repeate
     assert await AsyncJob(RepeatedComputationJob()).wait(progress=True) is None
     assert bar.total == 4
     assert bar.updates == [2, 2]
+    assert bar.closed
+
+
+@pytest.mark.asyncio
+async def test_wait_progress_bar_tracks_late_planning_without_regressing(
+    monkeypatch,
+):
+    tqdm_module = pytest.importorskip("tqdm.auto")
+
+    class Bar:
+        def __init__(self):
+            self.total = None
+            self.updates = []
+            self.closed = False
+
+        def update(self, delta):
+            self.updates.append(delta)
+
+        def set_postfix_str(self, _phase):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    class RegressingPlanJob:
+        id = "job-regressing-plan"
+        job_type = "refresh_column"
+
+        async def wait(self, progress):
+            samples = [
+                (0, 0),
+                (4, 2),
+                (4, 3),
+                (4, 2),
+                (6, 1),
+                (6, 0),
+            ]
+            for planned, remaining in samples:
+                progress(
+                    {
+                        "state": "running",
+                        "rows_planned": planned,
+                        "rows_remaining": remaining,
+                    }
+                )
+
+    bar = Bar()
+    monkeypatch.setattr(tqdm_module, "tqdm", lambda **kwargs: bar)
+
+    assert await AsyncJob(RegressingPlanJob()).wait(progress=True) is None
+    assert bar.total == 6
+    assert bar.updates == [2, 1, 3, 1]
     assert bar.closed
 
 
