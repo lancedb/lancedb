@@ -1,20 +1,50 @@
 ---
-title: "Read HuggingFace datasets with SQL"
-sidebarTitle: "HuggingFace Datasets"
-description: "Query Parquet files on HuggingFace directly from SQL, and import the result into a table with distributed CTAS."
+title: "Inspect Datasets"
+sidebarTitle: "Inspect Datasets"
+description: "Query a table, a HuggingFace dataset, or a dataset in object storage the same way, with plain SELECT, WHERE, projection and LIMIT."
 icon: database
-keywords: ["hugging face", "huggingface", "import", "ingestion", "parquet", "ctas", "storage integration", "sql"]
+keywords: ["select", "where", "filter", "projection", "limit", "huggingface", "storage integration", "sql", "inspect"]
 availability:
-  embedded: unavailable
+  embedded: wip
   enterprise: available
 ---
 
+The same `SELECT` statement inspects three kinds of source: a table
+already in your database, a HuggingFace dataset, or a dataset in object
+storage -- once a [storage integration](/management/storage-integration)
+covers the latter two. Nothing is downloaded or imported until you choose
+to import it.
+
+## The basics: project, filter, limit {#basics}
+
+A table name, a HuggingFace URI, and an object-storage URI all work the
+same way after `FROM`:
+
+<CodeGroup>
+```sql SQL icon="database"
+SELECT id, text
+FROM documents
+WHERE text IS NOT NULL
+LIMIT 100
+```
+</CodeGroup>
+
+- **Project** -- name the columns you need (`id, text`) instead of
+  `SELECT *`, especially for a source with large or many columns.
+- **Filter** -- `WHERE` narrows rows before they come back; combine
+  predicates with `AND`/`OR` the same as any other table.
+- **Limit** -- `LIMIT n` caps how many rows return, so a first look at an
+  unfamiliar source doesn't read more than you need.
+
+The rest of this page swaps `documents` for a HuggingFace or
+object-storage source -- the `SELECT`/`WHERE`/`LIMIT` syntax above doesn't
+change.
+
+## Inspect a HuggingFace dataset {#huggingface}
+
 A single-quoted HuggingFace dataset URI works directly in a SQL `FROM`
 clause, the same as a table name -- no separate download, no intermediate
-file on disk. Curate a sample before committing to a full import, or skip
-straight to importing the whole thing into a table.
-
-## Read a dataset directly {#read}
+file on disk:
 
 <CodeGroup>
 ```sql SQL icon="database"
@@ -55,11 +85,33 @@ split. Nested Parquet values come through as-is; a floating-point list is
 not automatically converted into a fixed-size vector column.
 </Note>
 
-## Access a private repository {#access}
+## Inspect a dataset in object storage {#object-storage}
 
-A private repository, or one subject to HuggingFace's authenticated rate
-limits, needs a [storage integration](/management/storage-integration)
-bound to a token [Secret](/management/secret):
+An `s3://`, `gs://` or `az://` prefix covered by a storage integration
+reads an existing **Lance** dataset at that prefix, the same way as a
+managed table:
+
+<CodeGroup>
+```sql SQL icon="database"
+SELECT id, text
+FROM 's3://customer-data/raw/documents.lance'
+WHERE text IS NOT NULL
+LIMIT 100
+```
+</CodeGroup>
+
+This reads a dataset another process already wrote in Lance format, not
+an arbitrary file format -- there is no Parquet-style reader for cloud
+storage the way there is for `hf://`. See
+[Storage Integration](/sql/ddl/storage-integration#read-import) for every
+provider's setup.
+
+## Access a private repository or bucket {#access}
+
+A private HuggingFace repository, one subject to HuggingFace's
+authenticated rate limits, or any non-public bucket needs a
+[storage integration](/management/storage-integration) bound to a token
+or credential [Secret](/management/secret):
 
 <CodeGroup>
 ```python Python icon="python"
@@ -97,10 +149,12 @@ matching integration at all, a deployment falls back to its existing
 behavior: a configured `HF_TOKEN`/`HUGGINGFACE_TOKEN` environment variable,
 or anonymous access. See
 [Storage Integration](/management/storage-integration) for every provider
-and the full credential model -- the same object also covers S3, GCS and
-Azure prefixes, not just HuggingFace.
+and the full credential model.
 
 ## Import into a table {#import}
+
+Once you've inspected a source and it looks right, `CREATE TABLE ... AS
+SELECT` imports it:
 
 <CodeGroup>
 ```sql SQL icon="database"

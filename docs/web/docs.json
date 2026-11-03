@@ -76,6 +76,10 @@
       "destination": "/enterprise/expected-performance"
     },
     {
+      "source": "/curation/huggingface",
+      "destination": "/curation/inspect-datasets"
+    },
+    {
       "source": "/search/optimize-queries",
       "destination": "/basics/sql#query-plans"
     },
@@ -369,7 +373,7 @@
               "curation/index",
               "curation/create-function",
               "curation/vend-secret",
-              "curation/huggingface",
+              "curation/inspect-datasets",
               "curation/chunking",
               "curation/changes",
               "curation/aggregate",

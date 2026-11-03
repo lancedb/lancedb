@@ -117,7 +117,7 @@ CREATE STORAGE INTEGRATION hub
 `HUGGINGFACE_TOKEN_SECRET` is the only HuggingFace option, and the only
 optional credential option of any provider: omit it to read the prefix
 anonymously, at HuggingFace's default anonymous rate limits. See
-[Read HuggingFace datasets with SQL](/curation/huggingface) for the full
+[Inspect Datasets](/curation/inspect-datasets) for the full
 read and import workflow this integration unlocks.
 
 ### The S3 trust policy {#trust}
@@ -140,7 +140,7 @@ directly, once an integration covers it -- the integration is never named
 in the statement. What the URI reads depends on the provider:
 
 - **HuggingFace** (`hf://datasets/...`) reads Parquet files from a dataset
-  repository. See [Read HuggingFace datasets with SQL](/curation/huggingface)
+  repository. See [Inspect Datasets](/curation/inspect-datasets)
   for the full workflow, including how a CTAS import distributes across
   plan executors.
 - **S3, GCS and Azure** (`s3://`, `gs://`, `az://`) read an existing Lance
@@ -226,8 +226,8 @@ naming one.
 ## What to read next {#next}
 
 <CardGroup cols={2}>
-  <Card title="Read HuggingFace datasets with SQL" icon="database" href="/curation/huggingface">
-    Query and import HuggingFace datasets, the most common use of a storage integration today.
+  <Card title="Inspect Datasets" icon="database" href="/curation/inspect-datasets">
+    Query and import HuggingFace or object-storage datasets, the most common use of a storage integration today.
   </Card>
   <Card title="Secret" icon="key" href="/sql/ddl/secret">
     The credential storage integration options reference.
