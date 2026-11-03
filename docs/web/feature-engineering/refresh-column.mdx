@@ -19,8 +19,8 @@ Computed columns require LanceDB Enterprise.
 
 <CodeGroup>
 ```python Python icon="python"
-table.refresh_column("doubled")
-# RefreshColumnResult(rows_filled=2, version=4)
+job = table.refresh_column_async("doubled")
+job.wait()
 
 table.to_arrow().sort_by("x").to_pandas()
 #    x  doubled
@@ -34,9 +34,11 @@ REFRESH COLUMN doubled ON my_table
 </CodeGroup>
 
 <Note>
-`table.refresh_column(...)` is the local, blocking form. On an Enterprise
-connection it raises -- use [`refresh_column_async`](#async) or the SQL form
-above instead.
+`table.refresh_column(...)` (sync) is also a local, blocking form, but it
+raises on an Enterprise connection -- use `refresh_column_async`, shown
+above, or the SQL form instead. See
+[Run a refresh on Enterprise](#async) below for what the returned job
+supports.
 </Note>
 
 The refresh commits ordinary table versions (the values, then a
@@ -44,7 +46,7 @@ metadata-only record of the inputs they were computed from), so
 [versioning](/management/table#versioning) applies to it like any other write.
 
 <Note>
-The SQL form is [`REFRESH COLUMN`](/sql/refresh#refresh-column), with the same resource options.
+The SQL form is [`REFRESH COLUMN`](/sql/dml/refresh-column), with the same resource options.
 </Note>
 
 ## What a refresh recomputes {#idempotent}

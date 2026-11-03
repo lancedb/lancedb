@@ -57,7 +57,7 @@ for the full walkthrough, including joins and Functions in the query.
 | open | `open_materialized_view` | `openMaterializedView` | -- |
 | list | `list_materialized_views` | `listMaterializedViews` | `SHOW MATERIALIZED VIEWS` |
 | refresh | `refresh` | `refresh` | `REFRESH MATERIALIZED VIEW` |
-| drop | `drop_table` | `dropTable` | `DROP TABLE` |
+| drop | `drop_materialized_view` | `dropMaterializedView` | `DROP MATERIALIZED VIEW` |
 
 <Badge color="red">Enterprise</Badge> Creating, refreshing and dropping a
 materialized view each have an async, job-returning counterpart --
@@ -75,14 +75,16 @@ views. On Enterprise, it asks the server for the view listing, as
 `SHOW MATERIALIZED VIEWS` does.
 </Note>
 
-A view is dropped with `drop_table`, because a materialized view **is** a table.
-That also means dropping one removes stored rows, unlike dropping a
+A view is dropped with `drop_materialized_view`, a dedicated operation, even
+though a materialized view **is** a table underneath. That also means
+dropping one removes stored rows, unlike dropping a
 [view](/management/view), which removes only a saved query.
 
 ## Read the view and its definition {#working}
 
 `view.table` is the underlying table, for querying, indexing, or search.
-`view.definition` contains the query's select list, predicate and limit. Both are properties; on an async view, the definition is read with
+`view.definition` has a single field, `query` -- the defining query, in the
+canonical spelling the server stores. Both are properties; on an async view, the definition is read with
 `await view.definition()`.
 
 ## Enterprise compatibility {#deployment}

@@ -11,7 +11,7 @@ import {
   PyFrameworksLerobotOpenLanceTables,
 } from '/snippets/integrations.mdx';
 
-[LeRobot](https://huggingface.co/docs/lerobot/index) is HuggingFace's open-source robotics stack. Since [lerobot#4363](https://github.com/huggingface/lerobot/pull/4363) it reads Lance datasets natively, and `lerobot-lancedb` wraps that into ready-made dataset classes for image and video features: same items, same training pipeline.
+[LeRobot](https://huggingface.co/docs/lerobot/index) is HuggingFace's open-source robotics stack. Since [lerobot#4363](https://github.com/huggingface/lerobot/pull/4363) it reads Lance datasets natively, and `lerobot-lancedb` wraps that into a ready-made dataset class for video features: same items, same training pipeline. Image-backed features are not supported -- re-encode them as video first.
 
 What you get:
 
@@ -48,7 +48,7 @@ Same model, same loss, 33 minutes sooner, and no 384 GB download first. The diff
 <CodeGroup>
 ```bash Bash icon="terminal"
 pip install "lerobot[lancedb]"   # the reader, inside lerobot itself
-pip install --extra-index-url https://pypi.fury.io/lancedb/ lerobot-lancedb  # the converter
+pip install lerobot-lancedb      # the converter
 ```
 </CodeGroup>
 

@@ -44,15 +44,21 @@ it is admitted; that classifier is Lance's own commit protocol
 (`lance-table`'s `frag_reuse::gate::classify`), the same one every write
 funnels through -- not a lock or a sequencing rule Enterprise imposes from
 outside. A table starts **untagged**: its deferred rewrites are admitted
-as ordinary business with nothing appended, until a rewrite that touches
-a fragment an index covers -- that commit **tags** the table (a sticky
-manifest flag that a later trim never clears) and appends the FRI's first
-transition. Only a tagged table's commits are classified against which
-indexes cover the rewritten fragments the way the rest of this page
-describes. A table that was never tagged, or one without stable row IDs,
-can still pick up a legacy, untagged ("v0") FRI entry from a deferred
-compaction instead of a tagged transition -- an older format this page
-does not otherwise cover.
+as ordinary business with nothing appended, unless the rewrite has
+stable row IDs to translate or touches a fragment an index covers -- either
+one makes that commit record a legacy, untagged ("v0") FRI entry, which
+does **not** tag the table. Tagging is a separate, one-way transition (a
+sticky manifest flag that a later trim never clears) that publishes the
+FRI's first real transition; this page does not cover what triggers it.
+Once a table is tagged, its commits are classified against which indexes
+cover the rewritten fragments the way the rest of this page describes, and
+every entry it records from then on is a tagged transition, never v0
+again. A table with stable row IDs is permanently confined to the
+untagged, v0 form -- Lance refuses to tag it at all -- so its deferred
+compactions keep recording v0 entries indefinitely, for every rewrite that
+moves row addresses, not only ones that touch an indexed fragment: the
+address translation itself depends on that record, independent of
+indexing.
 
 Once a table is tagged, Lance refuses a compaction that does not set
 `defer_index_remap`, including a plain Embedded `optimize()` call: an
@@ -62,13 +68,13 @@ by a writer that can remap the tagged history eagerly.
 ```mermaid
 flowchart TD
     Commit["Compaction commit<br/>(defer_index_remap only)"] --> Tagged{"Table already<br/>tagged with an FRI?"}
-    Tagged -->|no| First{"Does any index<br/>cover the rewritten<br/>fragments?"}
+    Tagged -->|no| First{"Stable row IDs, or does<br/>any index cover the<br/>rewritten fragments?"}
     First -->|no| Admit["Admitted as<br/>ordinary business --<br/>nothing appended"]
-    First -->|yes| Tag["Tags the table,<br/>appends the first transition"]
+    First -->|yes| V0["Records a legacy v0 entry --<br/>table stays untagged"]
     Tagged -->|yes| Classify{"Does any index<br/>cover the rewritten<br/>fragments?"}
     Classify -->|no| Admit
-    Classify -->|yes| Append["Must append a transition<br/>before the commit is admitted"]
-    Tag --> FRI[("Fragment reuse index")]
+    Classify -->|yes| Append["Must append a tagged<br/>transition before the<br/>commit is admitted"]
+    V0 --> FRI[("Fragment reuse index")]
     Append --> FRI
 ```
 

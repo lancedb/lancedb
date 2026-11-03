@@ -103,13 +103,18 @@ that are gated by the setting.
 
 ## Dropping one {#drop}
 
-A materialized view **is** a table, so it is dropped with
-[`DROP TABLE`](/sql/ddl/table#drop). For the same reason, dropping one removes
-stored rows, unlike dropping a [view](/sql/ddl/view#drop).
+```sql
+DROP MATERIALIZED VIEW <name>
+```
+
+A dedicated statement; the SDKs emit it rather than
+[`DROP TABLE`](/sql/ddl/table#drop), even though a materialized view **is**
+a table underneath. For the same reason, dropping one removes stored rows,
+unlike dropping a [view](/sql/ddl/view#drop).
 
 <Note>
 **Enterprise job type for a refresh:** `sql`. Dropping, by contrast, runs the
-same job as dropping any table, `drop_table` or `drop_object`.
+same underlying job as dropping any table, `drop_table` or `drop_object`.
 </Note>
 
 ## What to read next {#next}

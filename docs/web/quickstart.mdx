@@ -257,9 +257,9 @@ Frames 2 and 4 come back first -- the gripper closing on the cup, then lowering 
 ## 5\. Curate data with SQL {#5-curate-with-sql}
 
 <Info>
-Steps 5 and 6 need LanceDB Enterprise: SQL and Functions are both Enterprise
-features. If you're using LanceDB Embedded, skip ahead to
-[step 7](#7-store-multimodal-data).
+Step 5 needs LanceDB Enterprise: SQL is an Enterprise feature. If you're
+using LanceDB Embedded, skip ahead to
+[Flatten nested fields](#flatten-nested-fields) below.
 </Info>
 
 LanceDB Enterprise accepts SQL over the same connection, for sampling, joins, and
@@ -307,17 +307,24 @@ repeatable draws, and sampling across a join.
 
 ## 6\. Add a derived feature {#6-add-a-derived-feature}
 
-<Info>
-This step also needs LanceDB Enterprise -- see [step 5](#5-curate-with-sql).
-</Info>
+### Flatten nested fields {#flatten-nested-fields}
 
-A UDF binds to top-level columns, so flatten the fields inside `stats` first:
+A UDF binds to top-level columns, so flatten the fields inside `stats` first.
+This is a plain eager `add_columns` call, so it works the same on LanceDB
+Embedded and LanceDB Enterprise -- [step 8](#8-train) needs these columns
+either way:
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
     {PyQuickstartFlattenStats}
     </CodeBlock>
 </CodeGroup>
+
+<Info>
+The rest of this step needs LanceDB Enterprise -- Functions are an
+Enterprise feature. If you're using LanceDB Embedded, skip ahead to
+[step 7](#7-store-multimodal-data).
+</Info>
 
 Register a UDF as a Function, then call it to fill a column computed from
 those flattened fields. This fills every existing row once, immediately:

@@ -74,9 +74,9 @@ export const PyFrameworksLangchainVectorStoreConfig = "db_url = \"db://lang_test
 
 export const PyFrameworksLerobotFilterFrames = "frame_rows = (\n    frames.search()\n    .where(\"episode_index = 0 AND frame_index < 10\", prefilter=True)\n    .select([\"episode_index\", \"frame_index\", \"timestamp\", \"action\"])\n    .limit(10)\n    .to_list()\n)\n\nfor row in frame_rows:\n    print(row[\"episode_index\"], row[\"frame_index\"], row[\"timestamp\"])\n";
 
-export const PyFrameworksLerobotLancedbDataset = "from lerobot_lancedb import LanceDBDataset, lance_mp_context\nfrom torch.utils.data import DataLoader\n\ndataset = LanceDBDataset(root=\"s3://lance-format/pusht-lance\")\nsample = dataset[0]\nprint(sample[\"observation.state\"].shape)\nprint(sample[\"action\"].shape)\n\nloader = DataLoader(\n    dataset,\n    batch_size=32,\n    num_workers=8,\n    multiprocessing_context=lance_mp_context(),\n)\n";
+export const PyFrameworksLerobotLancedbDataset = "from lerobot_lancedb import LanceDBDataset, lance_mp_context\nfrom torch.utils.data import DataLoader\n\ndataset = LanceDBDataset(root=\"hf://datasets/lance-format/pusht-lance\")\nsample = dataset[0]\nprint(sample[\"observation.state\"].shape)\nprint(sample[\"action\"].shape)\n\nloader = DataLoader(\n    dataset,\n    batch_size=32,\n    num_workers=8,\n    multiprocessing_context=lance_mp_context(),\n)\n";
 
-export const PyFrameworksLerobotOpenLanceTables = "import lancedb\n\ndb = lancedb.connect(\"hf://datasets/lance-format/pusht-lance/data\")\nframes = db.open_table(\"frames\")\nvideos = db.open_table(\"videos\")\n\nprint(len(frames), len(videos))\nprint(frames.schema)\n";
+export const PyFrameworksLerobotOpenLanceTables = "import lancedb\n\ndb = lancedb.connect(\"hf://datasets/lance-format/pusht-lance\")\nframes = db.open_table(\"frames\")\nvideos = db.open_table(\"videos\")\n\nprint(len(frames), len(videos))\nprint(frames.schema)\n";
 
 export const PyFrameworksLlamaindexAddReranker = "from lancedb.rerankers import ColbertReranker\n\nreranker = ColbertReranker()\nvector_store._add_reranker(reranker)\n";
 

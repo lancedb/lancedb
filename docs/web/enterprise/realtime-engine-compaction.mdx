@@ -122,9 +122,11 @@ own millisecond-scale freshness. A shard under steady write pressure
 compacts on the count or bytes trigger, within `WAL_COMPACTION_INTERVAL_SECS`
 plus the compaction job's own runtime. A shard that never gathers enough
 siblings or bytes instead waits on the age trigger, up to 7 days by
-default, before it's compacted at all -- so a slow table's staleness bound
-without the live path can be days, not one interval plus one job's
-runtime. Either way, the bound also assumes a free compaction slot when
+default, before it's compacted at all. `WAL_MAX_DATA_AGE_SECS` bounds two
+independent stages -- the memtable freeze and this compaction age trigger
+-- so a slow table's worst-case staleness without the live path is up to
+roughly twice that default, not one interval plus one job's runtime.
+Either way, the bound also assumes a free compaction slot when
 the shard becomes eligible; an eligible shard can wait in queue behind
 `WAL_COMPACT_CONCURRENCY` other passes already running, so the actual
 delay can run longer than the trigger alone suggests. See

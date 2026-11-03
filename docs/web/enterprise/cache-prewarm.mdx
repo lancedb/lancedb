@@ -1,7 +1,7 @@
 ---
 title: "Cache Prewarm"
 sidebarTitle: "Cache Prewarm"
-description: "Populate the data page cache or tiered index cache ahead of a request, instead of filling it lazily on first read."
+description: "Populate the tiered index cache ahead of a request, instead of filling it lazily on first read."
 icon: "fire"
 keywords: ["prewarm", "cache", "page cache", "index cache", "startup"]
 availability:
@@ -9,16 +9,17 @@ availability:
   enterprise: available
 ---
 
-This page is about the distributed [data page cache](/enterprise/data-page-cache)
-and [tiered index cache](/enterprise/tiered-index-cache) a plan executor
-keeps as part of Enterprise's serving layer -- LanceDB Embedded has
-neither, so there is nothing for `startup_prewarm_idx` below to warm on
-Embedded. Embedded does have its own, separate `prewarm_index()` on a
-table, an idempotent hint that loads a built index into memory ahead of a
-query; it has no equivalent for raw column data, where only Enterprise
-supports prewarming. On Enterprise, a plan executor's cache fills lazily
-on first read by default; prewarming loads it ahead of that first request
-instead.
+This page is about `startup_prewarm_idx`, which warms the distributed
+[tiered index cache](/enterprise/tiered-index-cache) a plan executor keeps
+as part of Enterprise's serving layer -- LanceDB Embedded has no such
+cache, so there is nothing for it to warm on Embedded. Embedded does have
+its own, separate `prewarm_index()` on a table, an idempotent hint that
+loads a built index into memory ahead of a query; it has no equivalent for
+raw column data, where only Enterprise supports prewarming. On Enterprise,
+the index cache fills lazily on first read by default; `startup_prewarm_idx`
+loads it ahead of that first request instead. The
+[data page cache](/enterprise/data-page-cache) is a separate cache with its
+own, on-demand prewarm -- `startup_prewarm_idx` does not touch it.
 
 ## At plan executor startup {#startup}
 

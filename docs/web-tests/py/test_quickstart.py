@@ -45,6 +45,7 @@ class OwnedTables:
         self.db = db
         self.suffix = uuid.uuid4().hex[:12]
         self.claimed = []
+        self.claimed_namespaces = []
 
     def claim(self, name, existing, mode):
         owned = f"{name}_{self.suffix}"
@@ -67,11 +68,42 @@ class OwnedTables:
         owned, mode = self.claim(name, self.table_names(), mode)
         return self.db.create_table(owned, *args, mode=mode, **kwargs)
 
+    def claim_namespace(self):
+        """A namespace only this test can see, for SQL text that must show
+        readers a literal, unqualified table name (so suffixing the name
+        itself, as `claim` does, isn't an option). The namespace is created
+        exclusively (no check-then-act): a collision raises instead of
+        silently sharing someone else's. `drop_claimed` cascades through it,
+        so individual tables and views inside never need their own claim.
+        """
+        namespace_path = [f"quickstart_{self.suffix}"]
+        self.db.create_namespace(namespace_path, mode="create")
+        self.claimed_namespaces.append(namespace_path)
+        return NamespacedDB(self.db, namespace_path)
+
     def drop_claimed(self):
         existing = self.table_names()
         for name in self.claimed:
             if name in existing:
                 self.db.drop_table(name)
+        for namespace_path in self.claimed_namespaces:
+            self.db.drop_namespace(namespace_path, mode="skip", behavior="cascade")
+
+
+class NamespacedDB:
+    """A `db.create_table` / `db.execute_query` view scoped to one namespace."""
+
+    def __init__(self, db, namespace_path):
+        self.db = db
+        self.namespace_path = namespace_path
+
+    def create_table(self, name, *args, **kwargs):
+        kwargs.setdefault("namespace_path", self.namespace_path)
+        return self.db.create_table(name, *args, **kwargs)
+
+    def execute_query(self, query, **kwargs):
+        kwargs.setdefault("default_namespace_path", self.namespace_path)
+        return self.db.execute_query(query, **kwargs)
 
 
 class AsyncOwnedTables(OwnedTables):
@@ -231,16 +263,12 @@ async def test_quickstart_async_api(async_db):
 
 
 def test_quickstart_curate_with_sql(deployment):
-    db = deployment.db
     # create_frames and the dedupe statement below name tables directly, to
-    # keep the extracted snippets reading like the quickstart. Claim each
-    # name explicitly first, so this only ever overwrites or drops a table
-    # this run created.
-    existing = deployment.table_names()
-    if "frames" in existing:
-        raise RuntimeError("'frames' already exists and is not this test's")
+    # keep the extracted snippets reading like the quickstart. Run inside a
+    # namespace only this test can see, so a concurrent run can never
+    # overwrite this run's 'frames' or drop it out from under this one.
+    db = deployment.claim_namespace()
     table = create_frames(db)
-    deployment.claimed.append("frames")
 
     # --8<-- [start:quickstart_curate_sample]
     sample = db.execute_query(
@@ -272,9 +300,6 @@ def test_quickstart_curate_with_sql(deployment):
     table.wait_for_index(["embedding_idx"])
     # --8<-- [end:quickstart_curate_dedupe_setup]
 
-    if "frames_deduped" in deployment.table_names():
-        raise RuntimeError("'frames_deduped' already exists and is not this test's")
-
     # --8<-- [start:quickstart_curate_dedupe]
     db.execute_query("""
         CREATE MATERIALIZED VIEW frames_deduped AS
@@ -285,7 +310,6 @@ def test_quickstart_curate_with_sql(deployment):
         )
     """)
     # --8<-- [end:quickstart_curate_dedupe]
-    deployment.claimed.append("frames_deduped")
 
     # --8<-- [start:quickstart_curate_dedupe_query]
     deduped = db.execute_query(

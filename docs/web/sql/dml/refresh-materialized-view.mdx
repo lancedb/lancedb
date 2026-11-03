@@ -14,30 +14,34 @@ A LanceDB extension with no DataFusion equivalent.
 <CodeGroup>
 ```sql SQL icon="database"
 REFRESH MATERIALIZED VIEW <name>
+  [WITH (full = <boolean>)]
 ```
 </CodeGroup>
 
 <CodeGroup>
 ```sql SQL icon="database"
 REFRESH MATERIALIZED VIEW chunks
+REFRESH MATERIALIZED VIEW chunks WITH (full = true)
 ```
 </CodeGroup>
 
 A refresh updates the view's stored result. Refresh views in dependency order,
-starting with their source views.
+starting with their source views. `full = true` forces a complete rebuild
+even when the sources are unchanged; the default, `false`, refreshes
+incrementally when supported and rebuilds otherwise.
 
 <Note>
-Some older server versions accepted `WITH (full = true)` and `CASCADE`.
-Those options are not accepted by the SQL implementation described here.
-Use the basic statement above; do not assume that the options accepted by a
-local SDK's `refresh()` method are also SQL options.
+`CASCADE` is not accepted by the SQL implementation described here,
+regardless of what a local SDK's `refresh()` method accepts -- do not
+assume the two option sets match.
 </Note>
 
 ## Watching a refresh {#watching}
 
 A refresh submits work that outlives the call. Track it with
 [`SHOW JOBS`](/sql/ddl/job#show), and diagnose failures with
-[`SHOW ERRORS`](/sql/ddl/job#errors).
+[`SHOW ERRORS`](/sql/ddl/job#errors). For per-split progress, worker fleet
+detail, and a `DESCRIBE JOB` example, see [Watching a refresh](/sql/dml/refresh#watching).
 
 ## See also {#see-also}
 

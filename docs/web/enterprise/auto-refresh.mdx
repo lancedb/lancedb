@@ -13,10 +13,11 @@ Both a [computed column](/feature-engineering/add-computed-column) and a
 themselves on a schedule instead of waiting for an explicit
 `refresh_column()`, `view.refresh()`, or `REFRESH` statement. Either way,
 `auto_refresh_enabled` turns it on and `auto_refresh_interval_seconds` sets
-a minimum delay after the last successful refresh before the next
-automatic one is eligible -- omit the interval to let the server decide.
-See [Architecture](/index#architecture) for the scheduler's place among the
-jobs fleet.
+a minimum delay before the next automatic refresh is eligible -- omit the
+interval to let the server decide. What that delay is measured from differs
+between the two; see [Pacing follows different state for
+each](#history) below. See [Architecture](/index#architecture) for the
+scheduler's place among the jobs fleet.
 
 ## Where the two differ {#granularity}
 
@@ -52,7 +53,9 @@ ALTER MATERIALIZED VIEW my_view SET auto_refresh_interval_seconds = 300;
 Each `SET` above changes the scheduling setting immediately and
 synchronously; it does not itself run a refresh. Whether and when a
 refresh actually runs next is a separate, asynchronous decision the
-scheduler makes against the pacing rules below.
+scheduler makes against the pacing rules below. If values stop appearing
+after a `SET`, check the column's Job Registry history rather than assuming
+the setting itself failed to apply.
 
 ## Pacing follows different state for each {#history}
 
@@ -62,8 +65,9 @@ timestamp LanceDB keeps elsewhere. If completed jobs are archived before
 the column's configured interval has elapsed, the scheduler can lose that
 last-success record and refresh earlier than the interval implies. Leave
 archival disabled, or retain live history for at least the longest
-configured interval you rely on. Archival is disabled in the base
-configuration; its default retention threshold is seven days.
+configured interval you rely on. A deployment archives completed jobs by
+default, after a default seven-day retention threshold -- both are Helm
+values an operator can change.
 
 A materialized view's pacing instead reads a timestamp the view itself
 persists for when it was last checked, not Job Registry history -- so

@@ -122,9 +122,11 @@ SELECT animal, noise, vector, _hybrid_score, _distance, _score
 
 ## Directory namespace model {#directory-namespace-model}
 
-A directory namespace maps a LanceDB catalog root to namespace-qualified table identifiers in DuckDB. This keeps table discovery and table naming stable as your project grows.
+A directory namespace maps a LanceDB namespace root -- there's no catalog in
+Embedded -- to namespace-qualified table identifiers in DuckDB. This keeps
+table discovery and table naming stable as your project grows.
 
-To learn more about the catalog and namespace model, see [Namespaces and the Catalog Model](/management/namespace).
+To learn more about the namespace and catalog model, see [Namespaces and the Catalog Model](/management/namespace).
 
 
 ## Advanced usage {#advanced-usage}

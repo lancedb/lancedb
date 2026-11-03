@@ -67,16 +67,17 @@ table:
 | --- | --- | --- |
 | `row_id_a` | uint64 | internal row ID of the first row in the pair, the same identifier as the [`_rowid`](/sql/data-types#pseudo-columns) pseudo-column |
 | `row_id_b` | uint64 | internal row ID of the second row in the pair |
-| `distance` | float32 | distance between the pair's vectors, at or below `distance_threshold` |
-| `segment_id` | int64 | which index segment the pair was found in |
-| `partition_id` | int64 | which index partition the pair was found in |
-| `dataset_version` | int64 | the dataset version the scan ran against |
+| `distance` | float32 | distance between the pair's vectors, at or below `distance_threshold`. For `l2`, this is the squared distance, not its square root |
+| `segment_id` | Utf8 | which index segment the pair was found in, a UUID |
+| `partition_id` | uint64 | which index partition the pair was found in |
+| `dataset_version` | uint64 | the dataset version the scan ran against |
 
 ### Application-level identifiers {#id-column}
 
 A row ID is internal and not stable across compaction. Pass `id_column`, a
-top-level scalar column such as a primary key, to project its value instead:
-`row_id_a`/`row_id_b` are replaced by `id_a`/`id_b`, typed like `id_column`.
+top-level scalar column such as a primary key, to also project its value:
+`id_a`/`id_b`, typed like `id_column`, are appended alongside
+`row_id_a`/`row_id_b`, which remain in the output.
 
 <CodeGroup>
 ```sql SQL icon="database"

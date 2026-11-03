@@ -41,7 +41,7 @@
     },
     {
       "source": "/enterprise",
-      "destination": "/#architecture"
+      "destination": "/enterprise/index"
     },
     {
       "source": "/enterprise/intelligent-scheduling",
@@ -113,7 +113,7 @@
     },
     {
       "source": "/enterprise/benchmarks",
-      "destination": "/enterprise/expected-performance"
+      "destination": "/search/vector-search#expected-performance"
     },
     {
       "source": "/curation/huggingface",
