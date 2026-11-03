@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::runtime::future_into_py;
 use arrow::{
@@ -99,7 +99,7 @@ impl Job {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
             let result = if let Some(progress) = progress {
-                let observer = move |description| {
+                let observer = move |description: &lancedb::database::JobDescription| {
                     Python::attach(|py| {
                         let snapshot = description.progress_snapshot();
                         let callback_result: PyResult<()> = (|| {
