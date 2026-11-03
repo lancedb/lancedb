@@ -206,6 +206,15 @@ class Reranker(ABC):
                 "vector_results should be a list of pa.Table or LanceVectorQueryBuilder"
             )
 
+        if deduplicate:
+            if not all("_rowid" in result.column_names for result in vector_results):
+                raise ValueError(
+                    "'_rowid' is required for deduplication. "
+                    "Add _rowid to search results with `search().with_row_id(True)`"
+                )
+            if any(result["_rowid"].null_count for result in vector_results):
+                raise ValueError("'_rowid' must not contain nulls for deduplication")
+
         combined = pa.concat_tables(vector_results, **self._concat_tables_args)
 
         reranked = self.rerank_vector(query, combined)
@@ -213,12 +222,6 @@ class Reranker(ABC):
         # TODO: Allow custom deduplicators here.
         # currently, this'll just keep the first instance.
         if deduplicate:
-            if "_rowid" not in combined.column_names:
-                raise ValueError(
-                    "'_rowid' is required for deduplication. \
-                    add _rowid to search results like this: \
-                    `search().with_row_id(True)`"
-                )
             reranked = self._deduplicate(reranked)
 
         return reranked
