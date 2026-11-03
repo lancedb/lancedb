@@ -16,8 +16,8 @@ use query::{FTSQuery, HybridQuery, Query, VectorQuery};
 use session::Session;
 use table::{
     AddColumnsResult, AddResult, AlterColumnsResult, DeleteResult, DropColumnsResult, FtsToken,
-    FunctionErrorFragment, FunctionErrorRecord, FunctionErrors, MemWalWriteSpec, MergeResult,
-    PyBlobFile, RefreshColumnResult, RefreshMaterializedViewResult, Table,
+    FunctionErrorFragment, FunctionErrorRecord, FunctionErrors, MergeResult, PyBlobFile,
+    RTEWriteSpec, RefreshColumnResult, RefreshMaterializedViewResult, Table,
     UpdateFieldMetadataResult, UpdateResult,
 };
 
@@ -65,6 +65,7 @@ pub fn _lancedb(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
         .write_style("LANCEDB_LOG_STYLE");
     env_logger::init_from_env(env);
     m.add_class::<Connection>()?;
+    m.add_class::<connection::GpuClass>()?;
     m.add_class::<catalog::Catalog>()?;
     m.add_class::<catalog::DatabaseNames>()?;
     m.add_class::<listing::NameListing>()?;
@@ -104,7 +105,7 @@ pub fn _lancedb(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<UpdateFieldMetadataResult>()?;
     m.add_class::<AddResult>()?;
     m.add_class::<MergeResult>()?;
-    m.add_class::<MemWalWriteSpec>()?;
+    m.add_class::<RTEWriteSpec>()?;
     m.add_class::<DeleteResult>()?;
     m.add_class::<DropColumnsResult>()?;
     m.add_class::<UpdateResult>()?;
@@ -127,11 +128,16 @@ pub fn _lancedb(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(table::tokenize, m)?)?;
     m.add_function(wrap_pyfunction!(permutation::async_permutation_builder, m)?)?;
     m.add_function(wrap_pyfunction!(util::validate_table_name, m)?)?;
+    m.add_function(wrap_pyfunction!(util::parse_field_path, m)?)?;
     m.add_function(wrap_pyfunction!(query::fts_query_to_json, m)?)?;
     m.add_function(wrap_pyfunction!(expr_col, m)?)?;
     m.add_function(wrap_pyfunction!(expr_lit, m)?)?;
     m.add_function(wrap_pyfunction!(expr_func, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    m.add(
+        "_experimental_functions_enabled",
+        cfg!(feature = "experimental-functions"),
+    )?;
     // Give the shared runtime a coordinated, bounded shutdown at normal
     // process exit -- see `shutdown_runtime` and `runtime::shutdown` for why.
     py.import("atexit")?

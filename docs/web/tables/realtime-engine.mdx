@@ -1,0 +1,42 @@
+---
+title: "Real Time engine (RTE)"
+sidebarTitle: "Real Time Engine"
+description: "Absorb small, frequent writes cheaply and make them queryable within milliseconds."
+icon: "bolt"
+keywords: ["rte", "real time engine", "wal", "memwal", "lsm", "write-ahead log", "streaming writes", "upsert"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+## What is the real time engine? {#what-is-rte}
+
+Every write to a LanceDB table is normally a commit to the underlying Lance
+dataset. That is ideal for bulk loads, but a stream of small upserts becomes a
+stream of small commits, and each write is only visible once its commit lands.
+
+The real time engine (RTE) puts an LSM-style write tier in front of the table.
+It turns many small writes into a few large commits, and makes each write
+**searchable within milliseconds** of being acknowledged. It is enabled per
+table, and nothing about how you query that table changes.
+
+## How it works {#how-it-works}
+
+- **[Writes](/ingestion/realtime-write).** A `merge_insert` or `delete` lands in
+  an in-memory **memtable** and is acknowledged once it is durable in the
+  write-ahead log on object storage.
+- **Flush and compaction.** Memtables freeze into **SSTables**, which background
+  jobs compact into the base table, catching its indexes up as they go. See
+  [Background jobs](/maintenance/background-jobs#wal).
+- **[Reads](/search/realtime-read).** Every query runs against the base table
+  and the fresh tier (memtables and SSTables) in parallel. Fresh rows supersede
+  base rows with the same primary key, and the two are merged into one result.
+- **Indexes stay fresh.** Vector, full-text, BTree, bitmap, and most other
+  scalar indexes are maintained on the memtable, so new rows are searchable
+  through the index as soon as they are written.
+
+## Next steps {#next-steps}
+
+- [Real Time writes](/ingestion/realtime-write) — enable RTE and write to a table
+- [Real Time reads](/search/realtime-read) — query an RTE table and its performance
+- [Background jobs](/maintenance/background-jobs#wal)

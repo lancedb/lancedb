@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! WAL-PK-FUSION: hybrid search's primary-key fallback for MemWAL tables.
+//! WAL-PK-FUSION: hybrid search's primary-key fallback for RTE tables.
 //!
 //! Hybrid search joins its vector and full-text legs on `_rowid`, which a
-//! MemWAL table cannot supply: the fresh tier has no stable row id, so the
+//! RTE table cannot supply: the fresh tier has no stable row id, so the
 //! server rejects `with_row_id` before it plans. When that happens the legs are
 //! joined on a surrogate `_rowid` built from the table's primary key instead.
 //!
-//! This is a stopgap until MemWAL supports `_rowid`, and everything it needs
+//! This is a stopgap until RTE supports `_rowid`, and everything it needs
 //! lives here so it can be removed in one pass:
 //!
 //! 1. Delete this file and its `mod wal_fusion;` line in `query.rs`.
@@ -31,44 +31,44 @@ use lance_core::utils::parse::str_is_truthy;
 use super::{Select, VectorQuery};
 use crate::error::{Error, Result};
 
-/// The part of the MemWAL `with_row_id` refusal that identifies it.
+/// The part of the RTE `with_row_id` refusal that identifies it.
 ///
 /// Both layers raise this same sentence verbatim — sophon's
 /// `LSM_WITH_ROW_ID_UNSUPPORTED` says so in as many words, and the OSS LSM
 /// scanner builds it from the same words — so this substring survives either
 /// path and the wrapping each adds. It is a coupling to a message rather than
 /// a code, because the refusal arrives as a generic 400; if the server ever
-/// rewords it the fallback stops firing and hybrid on a MemWAL table goes back
+/// rewords it the fallback stops firing and hybrid on an RTE table goes back
 /// to erroring visibly, which is loud rather than silently wrong.
 const WAL_ROW_ID_REFUSAL: &str = "does not support with_row_id";
 
 /// Whether `error` is the server declining `_rowid` because the table is
-/// MemWAL-backed, as opposed to any other failure the query might hit.
+/// RTE-backed, as opposed to any other failure the query might hit.
 fn is_wal_row_id_refusal(error: &Error) -> bool {
     error.to_string().contains(WAL_ROW_ID_REFUSAL)
 }
 
-/// Why a hybrid query on a MemWAL table cannot hand back `_rowid`, raised
+/// Why a hybrid query on an RTE table cannot hand back `_rowid`, raised
 /// whether the refusal was anticipated or came back from the server.
 fn wal_row_id_unsupported() -> Error {
     Error::NotSupported {
-        message: "hybrid search on a MemWAL table cannot return _rowid: the fresh tier has no \
+        message: "hybrid search on an RTE table cannot return _rowid: the fresh tier has no \
                   stable row id, and the ids the fusion joins on are synthesized from the \
-                  primary key. Set use_memwal(false) to read the base table only (results will \
-                  exclude un-compacted MemWAL data)"
+                  primary key. Set use_rte(false) to read the base table only (results will \
+                  exclude un-compacted RTE data)"
             .to_string(),
     }
 }
 
 /// Run a hybrid query, joining its legs on the primary key instead of `_rowid`
-/// when the table is MemWAL-backed.
+/// when the table is RTE-backed.
 ///
 /// `run(None)` must join the legs on `_rowid`; `run(Some(fusion))` must build
 /// them with `fusion` instead.
 ///
 /// `_rowid` is asked for first and the primary key used only when the server
 /// refuses, rather than paying a round trip up front to find out. Only a
-/// MemWAL table refuses, so probing would tax every table to learn something
+/// RTE table refuses, so probing would tax every table to learn something
 /// almost none of them need — and the refusal has to be handled regardless,
 /// since a write spec installed elsewhere can arrive between any two queries.
 /// The refusal costs nothing server-side: it is raised before the query is
@@ -80,7 +80,7 @@ where
 {
     // A previous query on this table was already refused, so skip straight to
     // the key.
-    if query.request.base.use_memwal != Some(false) && query.parent.hybrid_pk_fusion_learned() {
+    if query.request.base.use_rte != Some(false) && query.parent.hybrid_pk_fusion_learned() {
         return run(Some(PkFusion::resolve(query).await?)).await;
     }
     match run(None).await {
@@ -130,7 +130,7 @@ impl PkFusionMemory {
     }
 }
 
-/// How the legs of a hybrid query on a MemWAL table are joined: on a surrogate
+/// How the legs of a hybrid query on an RTE table are joined: on a surrogate
 /// `_rowid` derived client-side from the primary key.
 pub(super) struct PkFusion {
     columns: Vec<String>,
@@ -152,7 +152,7 @@ impl PkFusion {
         Ok(Self { columns, injected })
     }
 
-    /// Make a leg return the key columns, in place of the `_rowid` a MemWAL
+    /// Make a leg return the key columns, in place of the `_rowid` an RTE
     /// table would refuse.
     pub(super) fn prepare_leg(&self, select: &mut Select) {
         inject_pk_columns(select, &self.columns);
@@ -266,7 +266,7 @@ fn pk_columns(schema: &arrow_schema::Schema) -> Vec<String> {
 /// Replace each batch's join column with a dense surrogate derived from
 /// `pk_columns`, in place and in the order given.
 ///
-/// The fusion joins its two legs on [`ROW_ID`], which a MemWAL table cannot
+/// The fusion joins its two legs on [`ROW_ID`], which an RTE table cannot
 /// supply — the fresh tier has no stable row id. It only ever compares the
 /// column for equality, though (`merge_results` dedups, the rerankers group and
 /// the score restore looks up), so any injective mapping of the primary key
@@ -280,7 +280,7 @@ fn pk_columns(schema: &arrow_schema::Schema) -> Vec<String> {
 fn stamp_surrogate_row_ids(batches: &mut [RecordBatch], pk_columns: &[String]) -> Result<()> {
     if pk_columns.is_empty() {
         return Err(Error::InvalidInput {
-            message: "hybrid search on a MemWAL table needs an unenforced primary key to \
+            message: "hybrid search on an RTE table needs an unenforced primary key to \
                       deduplicate on, and this table declares none"
                 .to_string(),
         });

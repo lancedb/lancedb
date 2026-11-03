@@ -4,9 +4,10 @@ sidebarTitle: "Functions"
 description: "Where to find each kind of function, and the dialect version they come from."
 icon: function
 keywords: ["functions", "datafusion", "scalar", "aggregate", "window", "fts", "table function"]
+availability:
+  embedded: unavailable
+  enterprise: available
 ---
-
-<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 LanceDB executes SQL with [Apache DataFusion](https://datafusion.apache.org),
 currently **version 54**. The function set is DataFusion's default registration
@@ -14,9 +15,9 @@ plus what Lance adds.
 
 | | |
 | --- | --- |
-| [Scalar functions](/sql/scalar-functions) | per row — math, string, regex, date/time, array, struct, JSON |
-| [Aggregate functions](/sql/dql/aggregation#functions) | per group — `count`, `sum`, statistical, approximate |
-| [Window functions](/sql/dql/window#functions) | per window — ranking, offset, running aggregates |
+| [Scalar functions](/sql/scalar-functions) | per row: math, string, regex, date/time, array, struct, JSON |
+| [Aggregate functions](/sql/dql/aggregation#functions) | per group: `count`, `sum`, statistical, approximate |
+| [Window functions](/sql/dql/window#functions) | per window: ranking, offset, running aggregates |
 | [Table functions](#table-functions) | produce a relation rather than a value |
 
 <Note>
@@ -51,7 +52,7 @@ and multi-match queries use this JSON encoding.
 
 Its schema contains the dataset's columns plus `_score`, so every stored
 column is available in the result. Projections push into the scan.
-Being a relation is also what makes it compose — join it, filter it, aggregate
+Being a relation is also what makes it compose: join it, filter it, aggregate
 over it. This join additionally requires `my_docs.category_id` and a
 `categories` table with `id` and `name` columns:
 
@@ -73,9 +74,32 @@ multi-match query forms.
 ### `_score` {#score}
 
 A pseudo-column produced by `fts()`, carrying relevance for the row. It behaves
-like any other column — order by it, filter on it, project it — and exists only
+like any other column (order by it, filter on it, project it) and exists only
 in a relation that came from `fts()`. See
 [Data types](/sql/data-types#pseudo-columns).
+
+### `dedupe` and `duplicate_pairs` {#dedupe}
+
+Scan a vector column's [index](/indexing/vector-index) partitions for rows
+closer than a distance threshold, without a full pairwise scan or a shuffle:
+
+```sql
+SELECT * FROM duplicate_pairs('frames', 'vec', distance_threshold => 0.02)
+SELECT * FROM dedupe('frames', 'vec', distance_threshold => 0.02)
+```
+
+<Note>
+Earlier releases spelled these `vector_duplicate_pairs` and `vector_dedup`;
+those names are rejected on current deployments.
+</Note>
+
+`duplicate_pairs` returns every close pair it finds, in a fixed schema.
+`dedupe` instead resolves overlapping pairs into duplicate groups and returns
+one representative row **in the table's own schema** per group, so its result
+composes directly into `CREATE TABLE ... AS` or
+`CREATE MATERIALIZED VIEW ... AS`. See [`DEDUPE`](/sql/dql/dedupe) and
+[`DUPLICATE_PAIRS`](/sql/dql/duplicate-pairs) for the full input and output
+schema, resolution grouping, and partition sampling.
 
 ### `generate_series` {#generate-series}
 

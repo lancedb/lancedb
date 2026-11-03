@@ -11,6 +11,7 @@ import pytest
 
 import lancedb
 from lancedb.expr import Expr, col, func, lit
+from lancedb.index import FTS
 
 
 # ── unit tests for Expr construction ─────────────────────────────────────────
@@ -79,6 +80,67 @@ class TestExprConstruction:
         d = Decimal("1.234567890123456789")
         e = lit(d)
         assert isinstance(e, Expr)
+
+    @pytest.mark.parametrize(
+        "value, decimal_type",
+        [
+            ("1E-7", pa.decimal128(12, 7)),
+            ("-1.23E-7", pa.decimal128(12, 9)),
+            ("1E+3", pa.decimal128(12, 0)),
+            ("-1.23E+5", pa.decimal128(12, 0)),
+            ("0E-7", pa.decimal128(12, 7)),
+            ("-0E+3", pa.decimal128(12, 0)),
+            ("1E-38", pa.decimal128(38, 38)),
+            ("1E+37", pa.decimal128(38, 0)),
+            ("1.234567890123456789012345678901234567E+37", pa.decimal128(38, 0)),
+            ("0E+128", pa.decimal128(1, 0)),
+        ],
+    )
+    def test_lit_decimal_exponent_query(self, tmp_path, value, decimal_type):
+        expected = Decimal(value)
+        table = lancedb.connect(tmp_path).create_table(
+            "decimals",
+            pa.table(
+                {
+                    "id": [1, 2],
+                    # Arrow's Python ingestion rejects 0E+128 even though its
+                    # numeric value is representable. Store canonical zero to
+                    # exercise the expression literal independently of ingestion.
+                    "price": pa.array(
+                        [Decimal(0) if expected.is_zero() else expected, None],
+                        type=decimal_type,
+                    ),
+                }
+            ),
+        )
+        predicate = col("price") == lit(expected)
+        result = table.search().where(predicate).to_arrow()
+        assert result["id"].to_pylist() == [1]
+        assert result["price"].to_pylist() == [expected]
+        # Exercise the SQL serializer and parser as well as the typed query path.
+        sql_result = table.search().where(predicate.to_sql()).to_arrow()
+        assert sql_result["id"].to_pylist() == [1]
+        assert sql_result["price"].to_pylist() == [expected]
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "NaN",
+            "sNaN",
+            "Infinity",
+            "-Infinity",
+            "1E-39",
+            "1E+38",
+            "1E+129",
+            "1E+1000000000",
+            "0E+129",
+            "12345678901234567890123456789012345678E+1",
+            "9" * 39,
+        ],
+    )
+    def test_lit_decimal_unrepresentable_raises(self, value):
+        with pytest.raises(ValueError):
+            lit(Decimal(value))
 
 
 class TestExprOperators:
@@ -320,6 +382,68 @@ class TestExprRepr:
         e = col("x")
         with pytest.raises(TypeError):
             {e: 1}
+
+
+class TestExprTruthiness:
+    """``bool(Expr)`` must raise instead of silently keeping one operand."""
+
+    def test_bool_raises(self):
+        with pytest.raises(TypeError, match="truth value of an Expr is ambiguous"):
+            bool(col("x") == 1)
+
+    def test_bool_error_points_to_operators(self):
+        with pytest.raises(TypeError, match=r"'&'.*'\|'.*'~'"):
+            bool(col("x") > 1)
+
+    def test_and_raises(self):
+        with pytest.raises(TypeError, match="ambiguous"):
+            (col("id") > 7) and (col("g") == 0)  # noqa: B015
+
+    def test_or_raises(self):
+        with pytest.raises(TypeError, match="ambiguous"):
+            (col("id") > 7) or (col("g") == 0)  # noqa: B015
+
+    def test_not_raises(self):
+        with pytest.raises(TypeError, match="ambiguous"):
+            not (col("id") > 7)  # noqa: B015
+
+    def test_chained_comparison_raises(self):
+        with pytest.raises(TypeError, match="ambiguous"):
+            lit(2) < col("id") < lit(5)  # noqa: B015
+        with pytest.raises(TypeError, match="ambiguous"):
+            2 < col("id") < 5  # noqa: B015
+
+    def test_if_raises(self):
+        with pytest.raises(TypeError, match="ambiguous"):
+            if col("x"):
+                pass
+
+    def test_membership_in_list_raises(self):
+        # list membership evaluates ``item == expr`` and calls bool() on the
+        # result, which used to be silently (and wrongly) True.
+        with pytest.raises(TypeError, match="ambiguous"):
+            col("x") in [1, 2, 3]  # noqa: B015
+
+    def test_any_all_raise(self):
+        with pytest.raises(TypeError, match="ambiguous"):
+            any([col("x") > 1])
+        with pytest.raises(TypeError, match="ambiguous"):
+            all([col("x") > 1])
+
+    def test_operators_still_combine(self):
+        a, b = col("id") > 7, col("g") == 0
+        assert (a & b).to_sql() == "((id > 7) AND (g = 0))"
+        assert (a | b).to_sql() == "((id > 7) OR (g = 0))"
+        assert (~a).to_sql() == "NOT (id > 7)"
+        assert ((lit(2) < col("id")) & (col("id") < lit(5))).to_sql() == (
+            "((2 < id) AND (id < 5))"
+        )
+
+    def test_identity_and_isinstance_checks_do_not_use_truthiness(self):
+        e = col("x") == 1
+        assert e is not None
+        assert isinstance(e, Expr)
+        assert e is e
 
 
 class TestExprReflexive:
@@ -730,3 +854,121 @@ class TestExprDatetimeTimezoneIntegration:
         sql = lit(ts).to_sql()
         # Must encode 10:00 wall clock, not 10:00+local_offset.
         assert "2024-07-01 10:00:00" in sql
+
+
+# ── where(Expr) must never rely on the truthiness of the filter ──────────────
+
+
+@pytest.fixture
+def search_table(tmp_path):
+    db = lancedb.connect(str(tmp_path))
+    data = pa.table(
+        {
+            "id": list(range(12)),
+            "g": [i % 2 for i in range(12)],
+            "text": ["keep" if i < 9 else "other" for i in range(12)],
+            "vector": pa.FixedSizeListArray.from_arrays(
+                pa.array([float(i) for i in range(12) for _ in range(2)], pa.float32()),
+                2,
+            ),
+        }
+    )
+    table = db.create_table("search", data)
+    table.create_index("text", config=FTS())
+    return table
+
+
+def _ids(rows):
+    return sorted(r["id"] for r in rows)
+
+
+class TestExprWhereBuilders:
+    def test_chained_comparison_is_rejected_before_querying(self, search_table):
+        # The silent bug: this used to return ids 0..4 (lower bound dropped).
+        with pytest.raises(TypeError, match="ambiguous"):
+            search_table.search().where(lit(2) < col("id") < lit(5))
+
+    def test_plain_where_expr(self, search_table):
+        where = (lit(2) < col("id")) & (col("id") < lit(5))
+        rows = search_table.search().where(where).limit(100).to_list()
+        assert _ids(rows) == [3, 4]
+
+    def test_vector_where_expr(self, search_table):
+        where = (col("id") > lit(7)) & (col("g") == lit(0))
+        rows = search_table.search([0.0, 0.0]).where(where).limit(100).to_list()
+        assert _ids(rows) == [8, 10]
+
+    def test_fts_where_expr(self, search_table):
+        where = (col("id") > lit(3)) | (col("g") == lit(1))
+        rows = (
+            search_table.search("keep", query_type="fts")
+            .where(where)
+            .limit(100)
+            .to_list()
+        )
+        # "keep" matches ids 0..8; filter keeps id > 3 or odd ids.
+        assert _ids(rows) == [1, 3, 4, 5, 6, 7, 8]
+
+    def test_hybrid_where_expr(self, search_table):
+        # The hybrid builder used to test ``if self._where:``; that must not
+        # call bool() on an Expr now that it raises.
+        where = (col("id") > lit(3)) & (col("g") == lit(0))
+        rows = (
+            search_table.search(query_type="hybrid")
+            .vector([0.0, 0.0])
+            .text("keep")
+            .where(where)
+            .limit(100)
+            .to_list()
+        )
+        # Hybrid search fuses the vector and FTS results, and the filter applies
+        # to both sides: the vector side alone returns every row passing it.
+        assert _ids(rows) == [4, 6, 8, 10]
+
+    def test_hybrid_where_sql_string_still_works(self, search_table):
+        rows = (
+            search_table.search(query_type="hybrid")
+            .vector([0.0, 0.0])
+            .text("keep")
+            .where("id > 3 AND g = 0")
+            .limit(100)
+            .to_list()
+        )
+        assert _ids(rows) == [4, 6, 8, 10]
+
+    def test_hybrid_empty_where_is_ignored(self, search_table):
+        rows = (
+            search_table.search(query_type="hybrid")
+            .vector([0.0, 0.0])
+            .text("keep")
+            .where("")
+            .limit(100)
+            .to_list()
+        )
+        assert _ids(rows) == list(range(12))
+
+    def test_repeated_where_expr_combines(self, search_table):
+        rows = (
+            search_table.search()
+            .where(col("id") > lit(2))
+            .where(col("id") < lit(5))
+            .limit(100)
+            .to_list()
+        )
+        assert _ids(rows) == [3, 4]
+
+    def test_query_model_with_expr_filter(self, search_table):
+        query = search_table.search().where(col("id") > lit(2)).to_query_object()
+        assert isinstance(query.filter, Expr)
+
+    @pytest.mark.asyncio
+    async def test_async_where_expr(self, tmp_path):
+        db = await lancedb.connect_async(str(tmp_path))
+        table = await db.create_table(
+            "t", pa.table({"id": list(range(12)), "g": [i % 2 for i in range(12)]})
+        )
+        where = (col("id") > lit(7)) & (col("g") == lit(0))
+        rows = await table.query().where(where).to_list()
+        assert _ids(rows) == [8, 10]
+        with pytest.raises(TypeError, match="ambiguous"):
+            table.query().where(lit(2) < col("id") < lit(5))

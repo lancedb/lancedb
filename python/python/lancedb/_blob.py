@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import io
 import operator
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from typing import TYPE_CHECKING, Optional, Union
 
 import pyarrow as pa
@@ -29,6 +29,18 @@ ROW_ID_FIELD_NAME = "_lance_row_id"
 
 FetchBlobsSync = Callable[[str, list[int]], pa.Array | pa.ChunkedArray]
 FetchBlobsAsync = Callable[[str, list[int]], Awaitable[pa.Array | pa.ChunkedArray]]
+
+
+def _normalize_blob_descriptor(value):
+    if isinstance(value, pa.Scalar):
+        value = value.as_py()
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise TypeError(
+            "blob descriptor must be a mapping, an Arrow struct scalar, or None"
+        )
+    return dict(value)
 
 
 class BlobFile(io.RawIOBase):
@@ -268,7 +280,11 @@ async def replace_v2_blob_columns_with_bytes(
     row_ids = _hit_row_ids(tbl, present)
     for output_name, source_name in present.items():
         tbl = _set_blob_column(
-            tbl, output_name, await fetch_blobs(source_name, row_ids)
+            tbl,
+            output_name,
+            await fetch_blobs(source_name, row_ids)
+            if row_ids
+            else pa.array([], type=pa.large_binary()),
         )
     return tbl
 
@@ -283,7 +299,13 @@ def replace_v2_blob_columns_with_bytes_sync(
         return tbl
     row_ids = _hit_row_ids(tbl, present)
     for output_name, source_name in present.items():
-        tbl = _set_blob_column(tbl, output_name, fetch_blobs(source_name, row_ids))
+        tbl = _set_blob_column(
+            tbl,
+            output_name,
+            fetch_blobs(source_name, row_ids)
+            if row_ids
+            else pa.array([], type=pa.large_binary()),
+        )
     return tbl
 
 

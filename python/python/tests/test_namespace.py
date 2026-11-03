@@ -6,16 +6,25 @@
 import tempfile
 import shutil
 import importlib
+import warnings
 import http.server
 import json
-import threading
 from urllib.parse import parse_qs, unquote, urlparse
 import pytest
+import builtins
+import copy
 import pyarrow as pa
 import lancedb
+from lance.namespace import DirectoryNamespace, LanceNamespace
 from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
+from utils import start_server_thread
 from lancedb.listing import AsyncListing, Listing
-from lancedb.namespace import _MAX_QUERY_K, _query_to_namespace_request
+from lancedb.materialized_view import DEFINITION_FORMAT, DEFINITION_META_KEY
+from lancedb.namespace import (
+    _MAX_QUERY_K,
+    LanceNamespaceDBConnection,
+    _query_to_namespace_request,
+)
 from lancedb.query import Query
 from lancedb.table import AsyncTable, LanceTable
 
@@ -23,6 +32,125 @@ from lancedb.table import AsyncTable, LanceTable
 PUSHDOWN_DATA = pa.table(
     {"id": list(range(12)), "text": [f"row-{idx}" for idx in range(12)]}
 )
+
+
+class TestNamespaceCreateTableOptions:
+    @pytest.mark.parametrize("version", ["legacy", "stable"])
+    @pytest.mark.parametrize("empty", [False, True])
+    def test_deprecated_storage_version(self, tmp_path, version, empty):
+        db = lancedb.connect_namespace("dir", {"root": str(tmp_path / "namespace")})
+        data = None if empty else [{"id": 1}]
+        schema = pa.schema([("id", pa.int64())])
+        other_version = "stable" if version == "legacy" else "legacy"
+        options = {"new_table_data_storage_version": other_version}
+        control = lancedb.connect(tmp_path / "control").create_table(
+            "test",
+            data=data,
+            schema=schema,
+            storage_options={"new_table_data_storage_version": version},
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", DeprecationWarning)
+            table = db.create_table(
+                "test",
+                data=data,
+                schema=schema,
+                storage_options=options,
+                data_storage_version=version,
+            )
+
+        assert (
+            table.to_lance().data_storage_version
+            == control.to_lance().data_storage_version
+        )
+        assert table.to_arrow().to_pylist() == ([] if empty else data)
+        assert options == {"new_table_data_storage_version": other_version}
+        assert any("data_storage_version" in str(w.message) for w in caught)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("version", ["legacy", "stable"])
+    @pytest.mark.parametrize("empty", [False, True])
+    async def test_deprecated_storage_version_async(self, tmp_path, version, empty):
+        root = str(tmp_path / "namespace")
+        db = lancedb.connect_namespace_async("dir", {"root": root})
+        data = None if empty else [{"id": 1}]
+        schema = pa.schema([("id", pa.int64())])
+        other_version = "stable" if version == "legacy" else "legacy"
+        options = {"new_table_data_storage_version": other_version}
+        control = lancedb.connect(tmp_path / "control").create_table(
+            "test",
+            data=data,
+            schema=schema,
+            storage_options={"new_table_data_storage_version": version},
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", DeprecationWarning)
+            table = await db.create_table(
+                "test",
+                data=data,
+                schema=schema,
+                storage_options=options,
+                data_storage_version=version,
+            )
+
+        reopened = lancedb.connect_namespace("dir", {"root": root}).open_table("test")
+        assert (
+            reopened.to_lance().data_storage_version
+            == control.to_lance().data_storage_version
+        )
+        assert (await table.to_arrow()).to_pylist() == ([] if empty else data)
+        assert options == {"new_table_data_storage_version": other_version}
+        assert any("data_storage_version" in str(w.message) for w in caught)
+
+    @pytest.mark.parametrize("enabled", [False, True])
+    @pytest.mark.parametrize("empty", [False, True])
+    def test_deprecated_manifest_paths(self, tmp_path, enabled, empty):
+        db = lancedb.connect_namespace("dir", {"root": str(tmp_path)})
+        data = None if empty else [{"id": 1}]
+        options = {"new_table_enable_v2_manifest_paths": str(not enabled).lower()}
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", DeprecationWarning)
+            table = db.create_table(
+                "test",
+                data=data,
+                schema=pa.schema([("id", pa.int64())]),
+                storage_options=options,
+                enable_v2_manifest_paths=enabled,
+            )
+
+        assert table.uses_v2_manifest_paths() == enabled
+        assert table.to_arrow().to_pylist() == ([] if empty else data)
+        assert db.open_table("test").uses_v2_manifest_paths() == enabled
+        assert options == {
+            "new_table_enable_v2_manifest_paths": str(not enabled).lower()
+        }
+        assert any("enable_v2_manifest_paths" in str(w.message) for w in caught)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("enabled", [False, True])
+    @pytest.mark.parametrize("empty", [False, True])
+    async def test_deprecated_manifest_paths_async(self, tmp_path, enabled, empty):
+        db = lancedb.connect_namespace_async("dir", {"root": str(tmp_path)})
+        data = None if empty else [{"id": 1}]
+        options = {"new_table_enable_v2_manifest_paths": str(not enabled).lower()}
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", DeprecationWarning)
+            table = await db.create_table(
+                "test",
+                data=data,
+                schema=pa.schema([("id", pa.int64())]),
+                storage_options=options,
+                enable_v2_manifest_paths=enabled,
+            )
+
+        assert await table.uses_v2_manifest_paths() == enabled
+        assert (await table.to_arrow()).to_pylist() == ([] if empty else data)
+        reopened = await db.open_table("test")
+        assert await reopened.uses_v2_manifest_paths() == enabled
+        assert options == {
+            "new_table_enable_v2_manifest_paths": str(not enabled).lower()
+        }
+        assert any("enable_v2_manifest_paths" in str(w.message) for w in caught)
 
 
 def _ipc_file(table: pa.Table = PUSHDOWN_DATA) -> bytes:
@@ -146,8 +274,7 @@ def paginated_rest_namespace():
             pass
 
     with http.server.HTTPServer(("127.0.0.1", 0), Handler) as server:
-        thread = threading.Thread(target=server.serve_forever)
-        thread.start()
+        thread = start_server_thread(server)
         try:
             yield {"uri": f"http://127.0.0.1:{server.server_port}"}, requests
         finally:
@@ -239,7 +366,17 @@ class TestNamespaceConnection:
     def test_list_materialized_views(self):
         db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
         db.create_table("source", [{"id": 1}])
-        db.create_materialized_view("view", "source", with_no_data=True)
+        # Model a stored view from an enabled build: listing must also work
+        # when local creation is disabled in the current build.
+        schema = pa.schema(
+            [("id", pa.int64())],
+            metadata={
+                DEFINITION_META_KEY: json.dumps(
+                    {"format": DEFINITION_FORMAT, "query": "SELECT id FROM source"}
+                ).encode()
+            },
+        )
+        db.create_table("view", schema=schema)
 
         names = db.list_materialized_views(page_limit=1)
         assert isinstance(names, Listing)
@@ -445,37 +582,43 @@ class TestNamespaceConnection:
         assert table_schema.field("id").type == pa.int64()
         assert table_schema.field("text").type == pa.string()
 
-    def test_rename_table(self):
-        """Test that rename_table renames a table in the namespace.
-
-        The `dir` namespace implementation in lance-namespace-impls does not
-        implement `rename_table` yet (only the `rest` backend does), so it
-        currently falls back to the default trait method which raises
-        NotSupported. This is expected to start passing once the `dir`
-        backend gains rename_table support upstream.
-        """
+    @pytest.mark.parametrize("destination_namespace", ["test_ns", "destination_ns"])
+    def test_rename_table(self, destination_namespace):
+        """Test that renaming a table preserves its data and namespace registration."""
         db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
-
-        # Create a child namespace first
         db.create_namespace(["test_ns"])
+        if destination_namespace != "test_ns":
+            db.create_namespace([destination_namespace])
 
-        # Create a table in child namespace
         schema = pa.schema(
             [
                 pa.field("id", pa.int64()),
                 pa.field("vector", pa.list_(pa.float32(), 2)),
             ]
         )
-        db.create_table("old_name", schema=schema, namespace_path=["test_ns"])
+        data = pa.Table.from_pylist(
+            [{"id": 1, "vector": [1.0, 2.0]}, {"id": 2, "vector": [3.0, 4.0]}],
+            schema=schema,
+        )
+        db.create_table("old_name", data=data, namespace_path=["test_ns"])
 
-        # Rename the table within the same namespace
-        with pytest.raises(NotImplementedError, match="rename_table not implemented"):
-            db.rename_table(
-                "old_name",
-                "new_name",
-                cur_namespace_path=["test_ns"],
-                new_namespace_path=["test_ns"],
-            )
+        db.rename_table(
+            "old_name",
+            "new_name",
+            cur_namespace_path=["test_ns"],
+            new_namespace_path=[destination_namespace],
+        )
+
+        reopened = lancedb.connect_namespace("dir", {"root": self.temp_dir})
+        assert "old_name" not in reopened.table_names(namespace_path=["test_ns"])
+        assert "new_name" in reopened.table_names(
+            namespace_path=[destination_namespace]
+        )
+        with pytest.raises(TableNotFoundError):
+            reopened.open_table("old_name", namespace_path=["test_ns"])
+        table = reopened.open_table("new_name", namespace_path=[destination_namespace])
+        assert table.namespace == [destination_namespace]
+        assert table.to_arrow().equals(data)
 
     def test_drop_all_tables(self):
         """Test dropping all tables through namespace."""
@@ -752,7 +895,16 @@ class TestAsyncNamespaceConnection:
     async def test_list_materialized_views(self):
         db = lancedb.connect_namespace_async("dir", {"root": self.temp_dir})
         await db.create_table("source", [{"id": 1}])
-        await db.create_materialized_view("view", "source", with_no_data=True)
+        # Model a stored view independently of the local creation feature.
+        schema = pa.schema(
+            [("id", pa.int64())],
+            metadata={
+                DEFINITION_META_KEY: json.dumps(
+                    {"format": DEFINITION_FORMAT, "query": "SELECT id FROM source"}
+                ).encode()
+            },
+        )
+        await db.create_table("view", schema=schema)
 
         names = db.list_materialized_views(page_limit=1)
         assert isinstance(names, AsyncListing)
@@ -1065,7 +1217,7 @@ class TestPushdownOperations:
         Rust so reads carry the x-lancedb-min-timestamp read-freshness header."""
         db = lancedb.connect_namespace(
             "rest",
-            {"uri": "http://localhost:12345"},
+            {"uri": "http://127.0.0.1:12345"},
             namespace_client_pushdown_operations=["QueryTable"],
         )
         assert db._route_pushdown_to_rust is True
@@ -1082,7 +1234,7 @@ class TestPushdownOperations:
         for the async path omitting the freshness header)."""
         db = lancedb.connect_namespace_async(
             "rest",
-            {"uri": "http://localhost:12345"},
+            {"uri": "http://127.0.0.1:12345"},
             namespace_client_pushdown_operations=["QueryTable"],
         )
         assert db._route_pushdown_to_rust is True
@@ -1221,3 +1373,56 @@ def test_namespace_request_rejects_search_effort(effort):
         _query_to_namespace_request(
             ["test"], Query(vector=[1.0, 0.0], search_effort=effort)
         )
+
+
+class AttributeAccessNamespace(LanceNamespace):
+    """A Python namespace that reads request fields as attributes.
+
+    Python implementations such as ``lance_namespace_impls.glue.GlueNamespace``
+    read requests like pydantic models (``request.id``), and expect omitted
+    optional fields to be ``None``. This fake records what it read and then
+    delegates to ``DirectoryNamespace`` so the test runs locally.
+    """
+
+    def __init__(self, root: str):
+        self._inner = DirectoryNamespace(root=root)
+        self.seen = {}
+
+    def namespace_id(self) -> str:
+        return f"AttributeAccessNamespace[{self._inner.namespace_id()}]"
+
+    def list_tables(self, request):
+        self.seen["list_tables"] = request
+        _ = request.id
+        _ = request.page_token
+        return self._inner.list_tables(request)
+
+    def describe_table(self, request):
+        self.seen["describe_table"] = request
+        _ = request.id
+        # Optional field omitted by the Rust side; must read as None.
+        assert request.load_detailed_metadata is None
+        return self._inner.describe_table(request)
+
+
+def test_python_namespace_attribute_access(tmp_path):
+    root = str(tmp_path)
+    data = pa.table({"id": [1, 2, 3], "text": ["alpha", "beta", "gamma"]})
+    lancedb.connect_namespace("dir", {"root": root}).create_table("t", data)
+
+    ns = AttributeAccessNamespace(root)
+    db = LanceNamespaceDBConnection(ns)
+
+    assert list(db.list_tables()) == ["t"]
+    assert db.open_table("t").to_arrow().to_pylist() == data.to_pylist()
+
+    # Mapping access and model_dump() keep working.
+    request = ns.seen["describe_table"]
+    assert isinstance(request, builtins._DictWithModelDump)
+    assert request["id"] == request.id == ["t"]
+    assert request.model_dump() == dict(request)
+    assert "load_detailed_metadata" not in request
+
+    # Missing dunder lookups still raise, so copy/hasattr probes work.
+    assert not hasattr(request, "__missing_dunder__")
+    assert copy.deepcopy(request) == request

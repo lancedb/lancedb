@@ -93,7 +93,7 @@ def test_embedding_cohere_usage() -> None:
     cohere = (
         EmbeddingFunctionRegistry.get_instance()
         .get("cohere")
-        .create(name="embed-multilingual-v2.0")
+        .create(name="embed-multilingual-v3.0")
     )
 
     class TextModel(LanceModel):

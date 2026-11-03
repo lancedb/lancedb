@@ -38,6 +38,9 @@ const MAX_SECRET_NAME_CHARS: usize = 128;
 /// The maximum length of a function name.
 const MAX_FUNCTION_NAME_CHARS: usize = 128;
 
+/// The maximum length of a property graph name.
+const MAX_PROPERTY_GRAPH_NAME_CHARS: usize = 128;
+
 /// The maximum length of a database name.
 const MAX_DB_NAME_CHARS: usize = 64;
 
@@ -125,7 +128,7 @@ pub fn validate_table_name(name: &str) -> Result<()> {
     {
         return Err(Error::InvalidTableName {
             name: sanitize(name),
-            reason: "Only alphanumeric characters, dashes, underscores, and\
+            reason: "Only alphanumeric characters, dashes, underscores, and \
                 periods are allowed in table names."
                 .to_string(),
         });
@@ -212,6 +215,18 @@ pub fn validate_view_name(name: &str) -> Result<()> {
 pub fn validate_view_reference(name: &str, namespace_path: &[String]) -> Result<()> {
     validate_namespace(namespace_path)?;
     validate_view_name(name)
+}
+
+/// Validate a property graph name.
+pub fn validate_property_graph_name(name: &str) -> Result<()> {
+    validate_view_or_namespace_or_secret(name, "property graph name", MAX_PROPERTY_GRAPH_NAME_CHARS)
+}
+
+/// Validate a property graph name and every segment of the namespace path
+/// holding it.
+pub fn validate_property_graph_reference(name: &str, namespace_path: &[String]) -> Result<()> {
+    validate_namespace(namespace_path)?;
+    validate_property_graph_name(name)
 }
 
 /// Validate a function name. These do not allow dashes or periods.
@@ -686,7 +701,9 @@ impl Stream for TimeoutStream {
         match &mut self.state {
             TimeoutState::NotStarted { timeout } => {
                 if timeout.is_zero() {
-                    return std::task::Poll::Ready(Some(Err(Self::timeout_error(timeout))));
+                    let err = Self::timeout_error(timeout);
+                    self.state = TimeoutState::Completed;
+                    return std::task::Poll::Ready(Some(Err(err)));
                 }
                 let deadline = Box::pin(tokio::time::sleep(*timeout));
                 self.state = TimeoutState::Started {
@@ -1051,6 +1068,15 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_table_name_invalid_character_message() {
+        let err = validate_table_name("my/table").unwrap_err().to_string();
+        assert!(
+            err.contains("underscores, and periods are allowed"),
+            "unexpected message: {err}"
+        );
+    }
+
+    #[test]
     fn test_validate_namespace_component() {
         // Valid namespace names
         assert!(validate_namespace_component("ns1").is_ok());
@@ -1159,6 +1185,8 @@ mod tests {
                 .to_string()
                 .contains("Query timeout")
         );
+        assert!(timeout_stream.next().await.is_none());
+        assert!(timeout_stream.next().await.is_none());
     }
 
     #[tokio::test]
@@ -1178,6 +1206,8 @@ mod tests {
         let result = timeout_stream.next().await.unwrap();
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Query timeout"));
+        assert!(timeout_stream.next().await.is_none());
+        assert!(timeout_stream.next().await.is_none());
     }
 
     #[tokio::test]

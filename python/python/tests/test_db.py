@@ -86,6 +86,7 @@ def test_sync_debugger_inspection_does_not_use_background_loop(tmp_path, monkeyp
 
     assert members["uri"] == str(tmp_path)
     assert members["read_consistency_interval"] is None
+    assert members["session"] is None
     assert repr(db) == f"LanceDBConnection(uri={str(tmp_path)!r})"
     assert repr(table) == f"LanceTable(name='test', _conn={db!r})"
 
@@ -105,6 +106,8 @@ def test_read_consistency_interval_does_not_use_background_loop(tmp_path, monkey
 
     assert db.read_consistency_interval == consistency_interval
     assert db_from_inner.read_consistency_interval == consistency_interval
+    assert db.session is None
+    assert db_from_inner.session is None
 
 
 def test_ingest_pd(tmp_path):
@@ -1144,6 +1147,24 @@ def test_local_namespace_operations(tmp_path):
     # Drop namespace
     db.drop_namespace(["child"])
     assert db.list_namespaces().namespaces == []
+
+
+@pytest.mark.asyncio
+async def test_local_async_namespace_exists(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    await db.create_namespace(["existing"])
+    await db.create_namespace(["existing", "nested"])
+
+    assert await db.namespace_exists([]) is True
+    assert await db.namespace_exists(["existing"]) is True
+    assert await db.namespace_exists(["existing", "nested"]) is True
+    assert await db.namespace_exists(["missing"]) is False
+    assert await db.namespace_exists(["existing", "missing"]) is False
+    assert await db.namespace_exists(["missing", "nested"]) is False
+
+    await db.drop_namespace(["existing", "nested"])
+    assert await db.namespace_exists(["existing", "nested"]) is False
+    assert await db.namespace_exists(["existing"]) is True
 
 
 def test_local_sync_namespace_uses_rust_without_python_client(tmp_path, monkeypatch):

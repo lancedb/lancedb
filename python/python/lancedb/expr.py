@@ -79,6 +79,13 @@ class Expr:
     >>> from lancedb.expr import col, lit
     >>> filt = (col("age") > lit(18)) & (col("name").lower() == lit("alice"))
     >>> proj = {"double": col("x") * lit(2)}
+
+    Notes
+    -----
+    An ``Expr`` has no Python truth value: ``bool(expr)`` raises ``TypeError``.
+    Combine expressions with ``&``, ``|`` and ``~`` (wrapping each comparison in
+    parentheses) instead of ``and``, ``or`` and ``not``, and write a range as
+    ``(col("x") > 1) & (col("x") < 5)`` rather than ``1 < col("x") < 5``.
     """
 
     # Make Expr unhashable so that == returns an Expr rather than being used
@@ -88,6 +95,19 @@ class Expr:
     def __init__(self, inner: PyExpr, *, column_path: str | None = None) -> None:
         self._inner = inner
         self._column_path = column_path
+
+    def __bool__(self) -> bool:
+        # An Expr describes a predicate that the query engine evaluates per row,
+        # so it has no Python truth value. Without this, ``and`` / ``or`` /
+        # ``not`` and chained comparisons (``1 < col("x") < 5``) would silently
+        # keep a single operand and drop the rest of the filter.
+        raise TypeError(
+            "The truth value of an Expr is ambiguous. Combine expressions with "
+            "'&' (and), '|' (or) and '~' (not), and wrap each comparison in "
+            "parentheses, e.g. (col('x') > 1) & (col('x') < 5). Do not use "
+            "'and', 'or', 'not', 'in' or chained comparisons such as "
+            "1 < col('x') < 5; use Expr.isin() for membership."
+        )
 
     # ── comparisons ──────────────────────────────────────────────────────────
 

@@ -4,9 +4,10 @@ sidebarTitle: "SELECT"
 description: "Projection, filtering, ordering, and composing queries out of other queries."
 icon: table-columns
 keywords: ["select", "where", "order by", "limit", "cte", "union", "distinct"]
+availability:
+  embedded: unavailable
+  enterprise: available
 ---
-
-<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 ```sql
 [WITH cte AS (...)]
@@ -107,8 +108,8 @@ A CTE is scoped to the statement. One you want to keep is a
 
 ## Subqueries {#subqueries}
 
-Subqueries are allowed anywhere an expression or a relation is -- in `FROM`, in
-`WHERE` with `IN` or `EXISTS`, and as a scalar in the select list:
+Subqueries are allowed anywhere an expression or a relation is (in `FROM`, in
+`WHERE` with `IN` or `EXISTS`, and as a scalar in the select list):
 
 ```sql
 SELECT title

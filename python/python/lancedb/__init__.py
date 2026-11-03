@@ -2,20 +2,25 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 
-import importlib.metadata
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
-from typing import Dict, Optional, Union, Any, List, Iterable, TYPE_CHECKING
+from typing import Dict, Optional, Union, Any, List, Iterable, Literal, TYPE_CHECKING
 
-__version__ = importlib.metadata.version("lancedb")
+from packaging.version import Version as _Version
+
+from ._lancedb import __version__ as _native_version
+
+# Match Python package metadata without requiring the lancedb distribution.
+__version__ = str(_Version(_native_version))
 
 from ._lancedb import connect as lancedb_connect
 from ._lancedb import FtsToken
 from ._lancedb import FunctionErrorFragment as FunctionErrorFragment
 from ._lancedb import FunctionErrorRecord as FunctionErrorRecord
 from ._lancedb import FunctionErrors as FunctionErrors
-from ._lancedb import MemWalWriteSpec
+from ._lancedb import GpuClass as GpuClass
+from ._lancedb import RTEWriteSpec
 from ._lancedb import tokenize as _tokenize
 from .common import URI, sanitize_uri
 from urllib.parse import urlparse
@@ -24,6 +29,7 @@ from .remote import ClientConfig
 from .remote.db import RemoteDBConnection
 from .expr import Expr, col, lit, func
 from .schema import blob, vector
+from ._blob_reader import BlobReader as BlobReader
 from .job import AsyncJob, Job
 from .sql import AsyncQuery as AsyncSqlQuery
 from .sql import Query as SqlQuery
@@ -42,13 +48,15 @@ from .functions import (
 )
 from .secrets import EnvVarSecret as EnvVarSecret
 from .secrets import SecretInfo as SecretInfo
+from .storage_integration import StorageIntegrationInfo as StorageIntegrationInfo
 from .materialized_view import (
     AsyncMaterializedView,
     MaterializedView,
     MaterializedViewDefinition,
 )
 from .view import ViewDescription as ViewDescription
-from .table import AsyncTable, Table
+from .graph import PropertyGraph, PropertyGraphDescription
+from .table import AsyncTable, CompactionOptions, Table
 from .types import BaseTokenizerType
 from ._lancedb import Session
 from .namespace import (
@@ -138,18 +146,18 @@ def connect(
         The uri of the database. When ``namespace_client_impl`` is provided you may
         omit ``uri`` and connect through a namespace client instead.
     api_key: str, optional
-        If presented, connect to LanceDB cloud.
+        If presented, connect to LanceDB Enterprise or LanceDB Cloud (legacy).
         Otherwise, connect to a database on file system or cloud storage.
         Can be set via environment variable `LANCEDB_API_KEY`.
         OAuth configuration is currently supported only by ``connect_async``;
-        synchronous LanceDB Cloud connections require an API key.
+        synchronous ``db://`` connections require an API key.
     region: str, default "us-east-1"
-        The region to use for LanceDB Cloud.
+        The region to use for LanceDB Cloud (legacy).
     host_override: str, optional
-        The override url for LanceDB Cloud.
+        The URL of the LanceDB Enterprise deployment to connect to.
     sql_host_override: str, optional
-        The remote SQL service endpoint override. The client connects lazily when SQL
-        is first executed and retains that connection.
+        The LanceDB Enterprise SQL service endpoint override. The client
+        connects lazily when SQL is first executed and retains that connection.
     read_consistency_interval: timedelta, default None
         The interval at which to check for updates to the table from other
         processes. If None, then consistency is not checked. For performance
@@ -165,18 +173,19 @@ def connect(
         often each read pays the cost of checking for updates against object
         storage, raising per-read latency and cost.
     client_config: ClientConfig or dict, optional
-        Configuration options for the LanceDB Cloud HTTP client. If a dict, then
+        Configuration options for the HTTP client used by ``db://`` connections.
+        If a dict, then
         the keys are the attributes of the ClientConfig class. If None, then the
         default configuration is used.
     storage_options: dict, optional
         Additional options for the storage backend. See available options at
         <https://docs.lancedb.com/storage/>
     manifest_enabled : bool, default False
-        When true for local/native connections, use directory namespace
+        When true for LanceDB Embedded connections, use directory namespace
         manifests as the source of truth for table metadata. Existing
         directory-listed root tables are migrated into the manifest on access.
     session: Session, optional
-        (For LanceDB OSS only)
+        (For LanceDB Embedded only)
         A session to use for this connection. Sessions allow you to configure
         cache sizes for index and metadata caches, which can significantly
         impact memory use and performance. They can also be re-used across
@@ -232,7 +241,7 @@ def connect(
     In-memory databases are not persisted. Tables are dropped when the last
     connection or table handle referencing them is closed.
 
-    Connect to LanceDB cloud:
+    Connect to LanceDB Enterprise or LanceDB Cloud (legacy):
 
     >>> db = lancedb.connect("db://my_database", api_key="ldb_...",
     ...                      client_config={"retry_config": {"retries": 5}})
@@ -280,10 +289,27 @@ def connect(
             "uri is required when not connecting through a namespace client"
         )
     if isinstance(uri, str) and uri.startswith("db://"):
+        # Preserve the deprecated remote timeout options, but validate all other
+        # unknown keywords just as the local connection does.
+        unknown_kwargs = {
+            key: value
+            for key, value in kwargs.items()
+            if key not in ("connection_timeout", "read_timeout")
+        }
+        if unknown_kwargs:
+            raise ValueError(f"Unknown keyword arguments: {unknown_kwargs}")
+        if session is not None:
+            raise NotImplementedError(
+                "session is not supported for LanceDB Enterprise connections"
+            )
+        if manifest_enabled:
+            raise NotImplementedError(
+                "manifest_enabled is not supported for LanceDB Enterprise connections"
+            )
         if api_key is None:
             api_key = os.environ.get("LANCEDB_API_KEY")
         if api_key is None:
-            raise ValueError(f"api_key is required to connect to LanceDB cloud: {uri}")
+            raise ValueError(f"api_key is required to connect to {uri}")
         if isinstance(request_thread_pool, int):
             request_thread_pool = ThreadPoolExecutor(request_thread_pool)
         return RemoteDBConnection(
@@ -328,13 +354,31 @@ def tokenize(
     ngram_min_length: int = 3,
     ngram_max_length: int = 3,
     prefix_only: bool = False,
+    analyzer: Optional[Literal["text", "code"]] = None,
+    split_identifiers: Optional[bool] = None,
+    split_on_numerics: Optional[bool] = None,
+    preserve_original: Optional[bool] = None,
+    index_operators: Optional[bool] = None,
 ) -> Iterable[FtsToken]:
     """Tokenize a full-text search query using an explicit tokenizer.
 
     This does not require an FTS index. The tokenizer options match
     :class:`lancedb.index.FTS`. ``custom_stop_words`` accepts a list of strings.
     When ``stem`` or ``remove_stop_words`` is None, the base tokenizer's default
-    applies: False for ``code`` and ``ngram``, True otherwise.
+    applies: False for ``code`` and ``ngram``, True otherwise. ``analyzer`` and the
+    code flags (``split_identifiers``, ``split_on_numerics``, ``preserve_original``
+    and ``index_operators``) behave as they do on :class:`lancedb.index.FTS`.
+
+    Examples
+    --------
+    Inspect the identifier and subwords produced by the code analyzer:
+
+    >>> import lancedb
+    >>> tokens = lancedb.tokenize(
+    ...     "parseHTTPRequest", analyzer="code", split_identifiers=True
+    ... )
+    >>> [token.text for token in tokens]
+    ['parsehttprequest', 'parse', 'http', 'request']
     """
 
     return _tokenize(
@@ -350,6 +394,11 @@ def tokenize(
         ngram_min_length=ngram_min_length,
         ngram_max_length=ngram_max_length,
         prefix_only=prefix_only,
+        analyzer=analyzer,
+        split_identifiers=split_identifiers,
+        split_on_numerics=split_on_numerics,
+        preserve_original=preserve_original,
+        index_operators=index_operators,
     )
 
 
@@ -466,16 +515,16 @@ async def connect_async(
     uri: str or Path
         The uri of the database.
     api_key: str, optional
-        If present, connect to LanceDB cloud.
+        If present, connect to LanceDB Enterprise or LanceDB Cloud (legacy).
         Otherwise, connect to a database on file system or cloud storage.
         Can be set via environment variable `LANCEDB_API_KEY`.
     region: str, default "us-east-1"
-        The region to use for LanceDB Cloud.
+        The region to use for LanceDB Cloud (legacy).
     host_override: str, optional
-        The override url for LanceDB Cloud.
+        The URL of the LanceDB Enterprise deployment to connect to.
     sql_host_override: str, optional
-        The remote SQL service endpoint override. The client connects lazily when SQL
-        is first executed and retains that connection.
+        The LanceDB Enterprise SQL service endpoint override. The client
+        connects lazily when SQL is first executed and retains that connection.
     read_consistency_interval: timedelta, default None
         The interval at which to check for updates to the table from other
         processes. If None, then consistency is not checked. For performance
@@ -491,27 +540,28 @@ async def connect_async(
         often each read pays the cost of checking for updates against object
         storage, raising per-read latency and cost.
     client_config: ClientConfig or dict, optional
-        Configuration options for the LanceDB Cloud HTTP client. If a dict, then
+        Configuration options for the HTTP client used by ``db://`` connections.
+        If a dict, then
         the keys are the attributes of the ClientConfig class. If None, then the
         default configuration is used.
     storage_options: dict, optional
         Additional options for the storage backend. See available options at
         <https://docs.lancedb.com/storage/>
     session: Session, optional
-        (For LanceDB OSS only)
+        (For LanceDB Embedded only)
         A session to use for this connection. Sessions allow you to configure
         cache sizes for index and metadata caches, which can significantly
         impact memory use and performance. They can also be re-used across
         multiple connections to share the same cache state.
     manifest_enabled : bool, default False
-        When true for local/native connections, use directory namespace
+        When true for LanceDB Embedded connections, use directory namespace
         manifests as the source of truth for table metadata. Existing
         directory-listed root tables are migrated into the manifest on access.
     namespace_client_properties : dict, optional
         Additional directory namespace client properties to use with
         ``manifest_enabled=True``.
     oauth_config : OAuthConfig, optional
-        OAuth configuration for LanceDB Cloud/Enterprise. This is supported by
+        OAuth configuration for LanceDB Enterprise. This is supported by
         ``connect_async`` only; synchronous ``connect`` uses API key
         authentication for ``db://`` URIs.
 
@@ -537,7 +587,7 @@ async def connect_async(
     ...     )
     ...     # For tests and temporary data, use an in-memory database
     ...     db = await lancedb.connect_async("memory://")
-    ...     # Connect to LanceDB cloud
+    ...     # Connect to LanceDB Enterprise or LanceDB Cloud (legacy)
     ...     db = await lancedb.connect_async("db://my_database", api_key="ldb_...",
     ...                                      client_config={
     ...                                          "retry_config": {"retries": 5}})
@@ -584,6 +634,8 @@ __all__ = [
     "MaterializedView",
     "MaterializedViewDefinition",
     "ViewDescription",
+    "PropertyGraph",
+    "PropertyGraphDescription",
     "connect",
     "connect_async",
     "tokenize",
@@ -594,6 +646,7 @@ __all__ = [
     "AsyncSqlQuery",
     "AsyncLanceNamespaceDBConnection",
     "AsyncTable",
+    "CompactionOptions",
     "FtsToken",
     "col",
     "Expr",
@@ -610,7 +663,7 @@ __all__ = [
     "SqlQuery",
     "LanceDBConnection",
     "LanceNamespaceDBConnection",
-    "MemWalWriteSpec",
+    "RTEWriteSpec",
     "RemoteDBConnection",
     "Session",
     "Table",

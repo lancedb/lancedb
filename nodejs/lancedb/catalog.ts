@@ -82,12 +82,16 @@ export class Catalog {
     return new LocalConnection(await this.inner.connectDatabase(name));
   }
 
-  /** Drop an empty database. The server rejects nonempty databases. */
+  /**
+   * Drop a database. A nonempty database is an error unless `cascade` is set,
+   * which drops everything in it first; the name stays taken until the server
+   * finishes cleaning up their storage.
+   */
   async dropDatabase(
     name: string,
-    options: { ignoreMissing?: boolean } = {},
+    options: { ignoreMissing?: boolean; cascade?: boolean } = {},
   ): Promise<void> {
-    await this.inner.dropDatabase(name, options.ignoreMissing);
+    await this.inner.dropDatabase(name, options.ignoreMissing, options.cascade);
   }
 
   /**

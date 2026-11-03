@@ -4,8 +4,9 @@
 
 """Schema helpers for Lance blob columns."""
 
+import ctypes
 import importlib
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Iterable, Optional
 
 import pyarrow as pa
 import pyarrow.ipc
@@ -16,6 +17,7 @@ if TYPE_CHECKING:
 _BLOB_EXTENSION_NAME = "lance.blob.v2"
 _BLOB_V1_KEY = "lance-encoding:blob"
 _ARROW_EXT_NAME_KEY = "ARROW:extension:name"
+_MAX_RUST_USIZE = ctypes.c_size_t(-1).value
 _BLOB_V2_STORAGE_TYPE = pa.struct(
     [
         pa.field("data", pa.large_binary(), nullable=True),
@@ -30,8 +32,8 @@ _resolved_blob_type = None
 class _FallbackBlobType(pa.ExtensionType):
     """lance.blob.v2 extension type used when pylance is not installed."""
 
-    def __init__(self) -> None:
-        pa.ExtensionType.__init__(self, _BLOB_V2_STORAGE_TYPE, _BLOB_EXTENSION_NAME)
+    def __init__(self, storage_type: pa.DataType = _BLOB_V2_STORAGE_TYPE) -> None:
+        pa.ExtensionType.__init__(self, storage_type, _BLOB_EXTENSION_NAME)
 
     def __arrow_ext_serialize__(self) -> bytes:
         return b""
@@ -40,7 +42,7 @@ class _FallbackBlobType(pa.ExtensionType):
     def __arrow_ext_deserialize__(
         cls, storage_type: pa.DataType, serialized: bytes
     ) -> "_FallbackBlobType":
-        return cls()
+        return cls(storage_type)
 
     def __reduce__(self):
         return type(self).__arrow_ext_deserialize__, (
@@ -181,6 +183,24 @@ def _resolve_blob_type():
     return _resolved_blob_type
 
 
+def _restore_blob_extensions(schema: pa.Schema) -> pa.Schema:
+    """Restore blob fields read before their extension type was registered."""
+    unrestored = _collect_blob_paths(
+        schema,
+        lambda field: (
+            not isinstance(field.type, pa.ExtensionType)
+            and _metadata_marks_blob_v2(field.metadata or {})
+        ),
+    )
+    if not unrestored:
+        return schema
+
+    _resolve_blob_type()
+    # Arrow's deserializer uses the registered class and preserves nested fields,
+    # storage layouts, nullability, and unrelated metadata. Only the schema is read.
+    return pa.ipc.read_schema(schema.serialize())
+
+
 def blob(
     name: str,
     nullable: bool = True,
@@ -209,32 +229,110 @@ def blob(
         Maximum size in bytes of a single packed blob sidecar file before
         a new one is started. Must be positive.
 
-    The thresholds are forwarded to ``lance.blob_field``, which validates
-    them and stores them as field metadata, so pylance is required whenever
-    any threshold is set. When all thresholds are omitted the behavior is
-    unchanged.
+    Notes
+    -----
+    Thresholds are validated and stored as Arrow field metadata, with the
+    same format as ``lance.blob_field``. They do not require pylance.
+
+    The extension's storage is a struct with nullable fields ``data``
+    (large_binary), ``uri`` (string), ``position`` (uint64), and ``size``
+    (uint64). Each non-null blob must set exactly one of ``data`` and ``uri``:
+
+    - Inline bytes use ``data``, leaving all other fields null. ``b""`` is a
+      valid empty blob; use a null struct for a null blob.
+    - External blobs use ``uri``, leaving ``data`` null. Set both ``position``
+      and ``size`` to select a byte range, or leave both null for the whole
+      object. A range's ``size`` must be greater than zero.
+
+    Use [blob_array][lancedb.schema.blob_array] to build inline blob arrays
+    for Arrow record batches. For external descriptors, build the struct
+    array with ``field.type.storage_type`` and wrap it with
+    ``pa.ExtensionArray.from_storage(field.type, storage)``.
+
+    ``create_table(..., schema=...)`` casts plain binary values into blob
+    columns declared by this field, and ``table.add(...)`` does the same
+    using the table's schema. PyArrow's ``RecordBatch.from_pylist`` does not
+    perform this conversion; construct blob arrays explicitly instead.
     """
-    if (
-        inline_size_threshold is None
-        and dedicated_size_threshold is None
-        and pack_file_size_threshold is None
+    metadata = {}
+    for threshold, value, allow_zero, key in (
+        (
+            "inline_size_threshold",
+            inline_size_threshold,
+            True,
+            "lance-encoding:blob-inline-size-threshold",
+        ),
+        (
+            "dedicated_size_threshold",
+            dedicated_size_threshold,
+            False,
+            "lance-encoding:blob-dedicated-size-threshold",
+        ),
+        (
+            "pack_file_size_threshold",
+            pack_file_size_threshold,
+            False,
+            "lance-encoding:blob-pack-file-size-threshold",
+        ),
     ):
-        blob_type = _resolve_blob_type()
-        return pa.field(name, blob_type(), nullable=nullable)
-    try:
-        lance = importlib.import_module("lance")
-    except ModuleNotFoundError as err:
-        raise ValueError(
-            "Setting blob tier thresholds requires pylance to be installed"
-        ) from err
-    _resolve_blob_type()
-    return lance.blob_field(
-        name,
-        nullable=nullable,
-        inline_size_threshold=inline_size_threshold,
-        dedicated_size_threshold=dedicated_size_threshold,
-        pack_file_size_threshold=pack_file_size_threshold,
-    )
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"{threshold} must be an int, got {type(value).__name__}")
+        if value < 0 or (value == 0 and not allow_zero):
+            bound = "non-negative" if allow_zero else "positive"
+            raise ValueError(f"{threshold} must be {bound}")
+        if value > _MAX_RUST_USIZE:
+            raise OverflowError(f"{threshold} must fit in a Rust usize")
+        metadata[key] = str(value)
+
+    blob_type = _resolve_blob_type()
+    field = pa.field(name, blob_type(), nullable=nullable)
+    return field.with_metadata(metadata) if metadata else field
+
+
+def blob_array(payloads: Iterable[Optional[bytes]]) -> pa.ExtensionArray:
+    """Build a Lance blob v2 extension array from inline bytes.
+
+    Uses the same extension type as [blob][lancedb.schema.blob], with or
+    without pylance installed.
+
+    Parameters
+    ----------
+    payloads:
+        An iterable of ``bytes`` or ``None``. ``None`` creates a null blob;
+        ``b""`` creates a valid empty blob.
+
+    Returns
+    -------
+    pa.ExtensionArray
+        Inline blob values ready to use in Arrow tables or record batches.
+
+    Raises
+    ------
+    TypeError
+        If a payload is neither ``bytes`` nor ``None``.
+
+    Examples
+    --------
+    >>> import pyarrow as pa
+    >>> from lancedb.schema import blob, blob_array
+    >>> schema = pa.schema([blob("video")])
+    >>> videos = blob_array([b"abc", None, b""])
+    >>> batch = pa.RecordBatch.from_arrays([videos], schema=schema)
+    >>> batch.num_rows
+    3
+    """
+    blob_type = _resolve_blob_type()()
+    descriptors = []
+    for payload in payloads:
+        if payload is not None and not isinstance(payload, bytes):
+            raise TypeError(
+                f"payloads must contain bytes or None, got {type(payload).__name__}"
+            )
+        descriptors.append(None if payload is None else {"data": payload})
+    storage = pa.array(descriptors, type=blob_type.storage_type)
+    return pa.ExtensionArray.from_storage(blob_type, storage)
 
 
 def vector(dimension: int, value_type: pa.DataType = pa.float32()) -> pa.DataType:

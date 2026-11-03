@@ -3,10 +3,11 @@ title: "SQL data types"
 sidebarTitle: "Data Types"
 description: "How Lance columns appear to SQL, including the types SQL has no name for."
 icon: shapes
-keywords: ["sql types", "arrow", "cast", "pseudo-columns", "vector", "blob", "json"]
+keywords: ["sql types", "arrow", "cast", "pseudo-columns", "vector", "json"]
+availability:
+  embedded: unavailable
+  enterprise: available
 ---
-
-<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 There is no SQL type layer over Lance storage. The table provider hands
 DataFusion the dataset's Arrow schema directly, so a column is the same object
@@ -61,7 +62,7 @@ describes the full mapping.
 
 ## Types SQL has no name for {#no-name}
 
-Three column kinds you will meet that no SQL type name covers.
+Some column kinds have no SQL type name.
 
 ### Vectors {#vectors}
 
@@ -94,17 +95,6 @@ WHERE json_get_int(data, 'status') = 200
 `json_get`, its typed variants, and `json_extract` are **index-accelerated** by a
 JSON scalar index. See [Functions](/sql/scalar-functions#json).
 
-### Blobs {#blobs}
-
-A blob column is read either as its binary contents or as a **description** — a
-pointer plus metadata, without fetching the bytes. That choice changes the
-column's Arrow type, and therefore the schema your query sees.
-
-<Warning>
-The default reads blob columns as descriptions and other binary columns as
-binary. A query selecting a blob column and expecting bytes gets a struct.
-</Warning>
-
 ### bfloat16 {#bfloat16}
 
 Sixteen-bit floats in the bfloat16 layout, stored as `fixed_size_binary(2)`.
@@ -121,7 +111,7 @@ error naming the missing feature rather than an unknown-function error, and the
 spatial index is gated the same way.
 </Warning>
 
-Geometry can still be stored -- it is binary, and binary columns work -- but
+Geometry can still be stored (it is binary, and binary columns work), but
 nothing interprets it. Filter on a bounding box held in ordinary numeric
 columns if you need spatial predicates today.
 

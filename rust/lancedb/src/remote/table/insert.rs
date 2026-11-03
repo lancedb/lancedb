@@ -589,6 +589,16 @@ impl<S: HttpSend + 'static> DisplayAs for RemoteWriteExec<S> {
 }
 
 impl<S: HttpSend + 'static> ExecutionPlan for RemoteWriteExec<S> {
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(
+            &Arc<dyn datafusion_physical_expr::PhysicalExpr>,
+        ) -> datafusion_common::Result<
+            datafusion_common::tree_node::TreeNodeRecursion,
+        >,
+    ) -> datafusion_common::Result<datafusion_common::tree_node::TreeNodeRecursion> {
+        Ok(datafusion_common::tree_node::TreeNodeRecursion::Continue)
+    }
     fn name(&self) -> &str {
         Self::static_name()
     }
@@ -1149,6 +1159,16 @@ mod tests {
     }
 
     impl ExecutionPlan for ErroringExec {
+        fn apply_expressions(
+            &self,
+            _f: &mut dyn FnMut(
+                &Arc<dyn datafusion_physical_expr::PhysicalExpr>,
+            ) -> datafusion_common::Result<
+                datafusion_common::tree_node::TreeNodeRecursion,
+            >,
+        ) -> datafusion_common::Result<datafusion_common::tree_node::TreeNodeRecursion> {
+            Ok(datafusion_common::tree_node::TreeNodeRecursion::Continue)
+        }
         fn name(&self) -> &str {
             "ErroringExec"
         }
@@ -1497,7 +1517,7 @@ mod tests {
             when_not_matched_by_source_delete: false,
             when_not_matched_by_source_delete_filt: None,
             use_index: true,
-            use_memwal: None,
+            use_rte: None,
         };
 
         let input: Arc<dyn ExecutionPlan> = Arc::new(ErroringExec::new());

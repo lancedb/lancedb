@@ -4,9 +4,10 @@ sidebarTitle: "Window Functions"
 description: "Compute over a set of rows related to the current one, without collapsing them."
 icon: chart-simple
 keywords: ["window", "over", "partition by", "row_number", "rank", "lag", "lead"]
+availability:
+  embedded: unavailable
+  enterprise: available
 ---
-
-<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 A window function computes across a set of rows related to the current one and
 returns a value **per row**. That is the difference from
@@ -89,7 +90,7 @@ WITH ranked AS (
 SELECT * FROM ranked WHERE rn = 1
 ```
 
-The outer query is needed because a window function cannot appear in `WHERE` --
+The outer query is needed because a window function cannot appear in `WHERE`:
 windows are computed after filtering, so the predicate would have nothing to
 read.
 

@@ -9,13 +9,13 @@ import multiprocessing as mp
 import pickle
 import re
 import sys
-import threading
 
 import lancedb
 import pyarrow as pa
 import pytest
 from lancedb.permutation import Permutation, Permutations, permutation_builder
 from lancedb.util import tbl_to_tensor
+from utils import start_server_thread
 
 torch = pytest.importorskip("torch")
 
@@ -74,17 +74,23 @@ def _remote_dataset_handler(request):
         body = json.loads(request.rfile.read(content_len))
         offsets = _offsets_from_filter(body.get("filter"))
         requested_columns = body.get("columns") or ["a"]
+        # A dynamic projection is sent as {output name: source expression}; take
+        # queries use it to alias `_rowoffset` as `__lancedb_take_row_offset`.
         if isinstance(requested_columns, dict):
-            requested_columns = list(requested_columns)
+            projection = requested_columns
+        else:
+            projection = {column: column for column in requested_columns}
 
-        data = {}
-        for column in requested_columns:
-            if column == "a":
-                data[column] = [REMOTE_ROWS[offset] for offset in offsets]
-            elif column == "_rowoffset":
-                data[column] = offsets
-            elif column == "_rowid":
-                data[column] = offsets
+        sources = {
+            "a": [REMOTE_ROWS[offset] for offset in offsets],
+            "_rowoffset": offsets,
+            "_rowid": offsets,
+        }
+        data = {
+            name: sources[source]
+            for name, source in projection.items()
+            if source in sources
+        }
 
         table = pa.table(data)
         request.send_response(200)
@@ -100,16 +106,15 @@ def _remote_dataset_handler(request):
 @contextlib.contextmanager
 def _remote_dataset_table():
     with http.server.ThreadingHTTPServer(
-        ("localhost", 0), _make_mock_http_handler(_remote_dataset_handler)
+        ("127.0.0.1", 0), _make_mock_http_handler(_remote_dataset_handler)
     ) as server:
         port = server.server_address[1]
-        handle = threading.Thread(target=server.serve_forever)
-        handle.start()
+        handle = start_server_thread(server)
         try:
             db = lancedb.connect(
                 "db://dev",
                 api_key="fake",
-                host_override=f"http://localhost:{port}",
+                host_override=f"http://127.0.0.1:{port}",
                 client_config={
                     "retry_config": {"retries": 0},
                     "timeout_config": {"connect_timeout": 2, "read_timeout": 2},
@@ -349,7 +354,7 @@ def _remote_multiworker_dataloader_target(port: int, result_queue):
     db = lancedb.connect(
         "db://dev",
         api_key="fake",
-        host_override=f"http://localhost:{port}",
+        host_override=f"http://127.0.0.1:{port}",
         client_config={
             "retry_config": {"retries": 0},
             "timeout_config": {"connect_timeout": 2, "read_timeout": 2},
@@ -419,11 +424,10 @@ def test_permutation_dataloader_fork_workers(tmp_path):
 )
 def test_remote_permutation_dataloader_fork_workers():
     with http.server.ThreadingHTTPServer(
-        ("localhost", 0), _make_mock_http_handler(_remote_dataset_handler)
+        ("127.0.0.1", 0), _make_mock_http_handler(_remote_dataset_handler)
     ) as server:
         port = server.server_address[1]
-        handle = threading.Thread(target=server.serve_forever)
-        handle.start()
+        handle = start_server_thread(server)
         try:
             ctx = mp.get_context("spawn")
             queue = ctx.Queue()

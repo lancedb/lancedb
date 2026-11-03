@@ -11,6 +11,15 @@ function blob(name, options): Field
 ```
 
 Declares a `lance.blob.v2` column.
+Uses nullable `data`, `uri`, `position`, and `size` fields for inline bytes,
+whole external files, and external byte ranges. Set both `position` and
+positive `size` for a range, or omit both for a whole file.
+
+Existing two-field columns remain writable. Appends and merge inserts fill
+missing range fields with nulls for four-field targets and drop all-null
+range fields for two-field targets. Non-null ranges require a four-field
+target. Overwrite with Arrow input replaces the table's schema; row objects
+are converted using the current table schema.
 
 Query results are descriptors, not payload bytes. Use [Table.fetchBlobs](../classes/Table.md#fetchblobs)
 or [Table.fetchBlobFiles](../classes/Table.md#fetchblobfiles) to read bytes.

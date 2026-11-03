@@ -2,6 +2,8 @@ import argparse
 import re
 import sys
 import json
+import tomllib
+from pathlib import Path
 
 LANCE_GIT_URL = "https://github.com/lance-format/lance.git"
 
@@ -147,6 +149,18 @@ def update_cargo_toml(line_updater):
 
     with open("Cargo.toml", "w") as f:
         f.writelines(new_lines)
+
+    core_manifest = Path("rust/lancedb/Cargo.toml")
+    if core_manifest.exists():
+        lines = core_manifest.read_text().splitlines(keepends=True)
+        for index, line in enumerate(lines):
+            if line.startswith("lance-arrow ="):
+                updated = tomllib.loads(line_updater(line))["lance-arrow"]
+                config = {"version": updated} if isinstance(updated, str) else updated
+                if "path" in config:
+                    config["path"] = "../../" + config["path"]
+                lines[index] = dict_to_toml_line("lance-arrow", config)
+        core_manifest.write_text("".join(lines))
 
 
 def set_stable_version(version: str):

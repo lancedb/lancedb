@@ -91,6 +91,12 @@
       }
     },
     {
+      "arrow_type": "large_binary",
+      "json": {
+        "type": "large_binary"
+      }
+    },
+    {
       "arrow_type": "date32",
       "json": {
         "type": "date32"
@@ -187,6 +193,21 @@
             "nullable": false,
             "type": {
               "type": "large_utf8"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "arrow_type": "large_list<large_binary>",
+      "json": {
+        "type": "large_list",
+        "fields": [
+          {
+            "name": "item",
+            "nullable": false,
+            "type": {
+              "type": "large_binary"
             }
           }
         ]
