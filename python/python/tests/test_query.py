@@ -675,10 +675,10 @@ def test_blob_v2_vector_projection_and_plain_scan_options(tmp_db, monkeypatch):
 
     query = table.search().where("id = 1")
 
-    def fail_to_arrow(*args, **kwargs):
-        raise AssertionError("the native scanner should handle bytes with flatten")
+    def fail_to_lance(*args, **kwargs):
+        raise AssertionError("blob v2 bytes should not open a pylance dataset")
 
-    monkeypatch.setattr(query, "to_arrow", fail_to_arrow)
+    monkeypatch.setattr(table, "to_lance", fail_to_lance)
     assert query.to_pandas(blob_mode="bytes", flatten=True)["blob"].tolist() == [b"one"]
 
     flattened_lazy = table.search().where("id = 1").to_pandas(flatten=True)
@@ -1306,6 +1306,28 @@ async def test_invalid_nprobes_async(table_async: AsyncTable):
             .minimum_nprobes(100)
             .to_list()
         )
+
+
+def test_approx_mode_works_sync(table):
+    for mode in ["fast", "normal", "accurate"]:
+        LanceVectorQueryBuilder(table, [0, 0], "vector").approx_mode(mode).to_list()
+
+
+def test_invalid_approx_mode_sync(table):
+    with pytest.raises(ValueError, match="approx_mode must be one of"):
+        LanceVectorQueryBuilder(table, [0, 0], "vector").approx_mode("turbo").to_list()
+
+
+@pytest.mark.asyncio
+async def test_approx_mode_works_async(table_async: AsyncTable):
+    for mode in ["fast", "normal", "accurate"]:
+        await table_async.vector_search([0, 0]).approx_mode(mode).to_list()
+
+
+@pytest.mark.asyncio
+async def test_invalid_approx_mode_async(table_async: AsyncTable):
+    with pytest.raises(ValueError, match="approx_mode must be one of"):
+        table_async.vector_search([0, 0]).approx_mode("turbo")
 
 
 def test_query_builder_with_prefilter(table):
@@ -1962,6 +1984,9 @@ def test_query_serialization_sync(table: lancedb.table.Table):
     q = table.search([5.0, 6.0]).ef(7).to_query_object()
     check_set_props(q, ef=7, vector_column="vector", vector=[5.0, 6.0])
 
+    q = table.search([5.0, 6.0]).approx_mode("fast").to_query_object()
+    check_set_props(q, approx_mode="fast", vector_column="vector", vector=[5.0, 6.0])
+
     q = table.search([5.0, 6.0]).bypass_vector_index().to_query_object()
     check_set_props(
         q, bypass_vector_index=True, vector_column="vector", vector=[5.0, 6.0]
@@ -1975,6 +2000,56 @@ def test_query_serialization_sync(table: lancedb.table.Table):
 
     q = table.search("foo", query_type="fts").to_query_object()
     check_set_props(q, full_text_query=FullTextSearchQuery(columns=[], query="foo"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query_type", ["plain", "fts", "vector"])
+@pytest.mark.parametrize("fast_search", [False, True])
+@pytest.mark.parametrize("postfilter", [False, True])
+async def test_query_serialization_async_search_options(
+    table_async: AsyncTable, query_type, fast_search, postfilter
+):
+    query = table_async.query().where("id = 1")
+    if query_type == "fts":
+        query = query.nearest_to_text(MatchQuery("dog", "text"))
+    elif query_type == "vector":
+        query = query.nearest_to([1.0, 2.0])
+    if fast_search:
+        query = query.fast_search()
+    if postfilter:
+        query = query.postfilter()
+
+    serialized = query.to_query_object()
+    assert serialized.fast_search is (True if fast_search else None)
+    default_postfilter = False if query_type == "vector" else None
+    assert serialized.postfilter is (True if postfilter else default_postfilter)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fast_search", [False, True])
+async def test_query_serialization_async_fast_search_execution(
+    table_async, fast_search
+):
+    await table_async.create_index("text", config=FTS())
+    await table_async.add(
+        [
+            {
+                "id": 3,
+                "vector": [5.0, 6.0],
+                "str_field": "c",
+                "float_field": 3.0,
+                "text": "unindexed dog",
+            }
+        ]
+    )
+    query = table_async.query().nearest_to_text(MatchQuery("unindexed", "text"))
+    if fast_search:
+        query = query.fast_search()
+
+    expected_ids = [] if fast_search else [3]
+    assert [row["id"] for row in await query.to_list()] == expected_ids
+    restored = table_async._sync_query_to_async(query.to_query_object())
+    assert [row["id"] for row in await restored.to_list()] == expected_ids
 
 
 @pytest.mark.asyncio
@@ -2140,6 +2215,19 @@ async def test_query_serialization_async(table_async: AsyncTable):
         limit=10,
     )
 
+    q = (await table_async.search([5.0, 6.0])).approx_mode("fast").to_query_object()
+    check_set_props(
+        q,
+        approx_mode="fast",
+        vector=sample_vector,
+        postfilter=False,
+        minimum_nprobes=None,
+        maximum_nprobes=None,
+        with_row_id=False,
+        bypass_vector_index=False,
+        limit=10,
+    )
+
     q = (await table_async.search([5.0, 6.0])).bypass_vector_index().to_query_object()
     check_set_props(
         q,
@@ -2176,6 +2264,20 @@ async def test_query_serialization_async(table_async: AsyncTable):
         full_text_query=FullTextSearchQuery(columns=None, query=phrase_query),
         with_row_id=False,
     )
+
+
+@pytest.mark.asyncio
+async def test_hybrid_query_serialization_async(table_async: AsyncTable):
+    q = (
+        table_async.query()
+        .nearest_to([5.0, 6.0])
+        .nearest_to_text(MatchQuery("dog", "text"))
+        .ef(7)
+        .approx_mode("fast")
+        .to_query_object()
+    )
+    assert q.ef == 7
+    assert q.approx_mode == "fast"
 
 
 def test_query_schema(tmp_path):

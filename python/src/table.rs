@@ -14,21 +14,23 @@ use crate::{
     connection::Connection,
     error::PythonErrorExt,
     expr::PyExpr,
-    index::{IndexConfig, extract_index_params},
+    index::{CodeAnalyzerOptions, IndexConfig, extract_index_params},
     query::{Query, TakeQuery},
     table::scannable::PyScannable,
 };
 use arrow::{
-    array::{Array, LargeBinaryArray},
+    array::{Array, LargeBinaryArray, RecordBatchIterator, RecordBatchReader},
     datatypes::{DataType, Schema},
     ffi_stream::ArrowArrayStreamReader,
     pyarrow::{FromPyArrow, PyArrowType, ToPyArrow},
 };
-use lancedb::blob::{BlobFile, BlobRangeRequest};
+use lancedb::blob::{BlobDescriptor, BlobFile, BlobRangeRequest};
+use lancedb::connection::LanceFileVersion;
 use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::table::{
-    AddDataMode, ColumnAlteration, Duration, FieldMetadataUpdate, FtsToken as LanceDbFtsToken,
-    NewColumnTransform, OptimizeAction, OptimizeOptions, Ref, Table as LanceDbTable,
+    AddDataMode, ColumnAlteration, CompactionMode, CompactionOptions, Duration,
+    FieldMetadataUpdate, FtsToken as LanceDbFtsToken, IndexRemapMode, NewColumnTransform,
+    OptimizeAction, OptimizeOptions, Ref, RefreshColumnOptions, Table as LanceDbTable,
 };
 use lancedb::tokenize as lancedb_tokenize;
 use pyo3::{
@@ -39,6 +41,33 @@ use pyo3::{
 };
 
 mod scannable;
+
+fn refresh_column_options(
+    batch_size: Option<i64>,
+    gpu_class: Option<String>,
+    gpu_count: Option<i64>,
+) -> PyResult<RefreshColumnOptions> {
+    let mut options = RefreshColumnOptions::default();
+    options.batch_size = batch_size
+        .map(usize::try_from)
+        .transpose()
+        .map_err(|_| PyValueError::new_err("batch_size must be greater than zero"))?;
+    options.gpu_class = gpu_class;
+    options.gpu_count = gpu_count
+        .map(|count| {
+            u32::try_from(count)
+                .ok()
+                .filter(|count| *count > 0)
+                .ok_or_else(|| {
+                    PyValueError::new_err(
+                        "gpu_count must be a positive integer no greater than u32::MAX",
+                    )
+                })
+        })
+        .transpose()?;
+    options.validate().infer_error()?;
+    Ok(options)
+}
 
 /// Convert `RTEStats` to a Python dict, preserving the per-table-shard list.
 ///
@@ -105,6 +134,136 @@ fn rte_stats_to_py(py: Python<'_>, stats: &lancedb::table::RTEStats) -> PyResult
 enum PredicateArg {
     Expr(PyExpr),
     Sql(String),
+}
+
+fn validate_positive_u32(value: u64, name: &str) -> PyResult<usize> {
+    if !(1..=u32::MAX as u64).contains(&value) {
+        return Err(PyValueError::new_err(format!(
+            "{name} must be between 1 and {}",
+            u32::MAX
+        )));
+    }
+    Ok(value as usize)
+}
+
+fn positive_u32(value: &Bound<'_, PyAny>, name: &str) -> PyResult<usize> {
+    validate_positive_u32(value.extract()?, name)
+}
+
+fn optional_positive_u32(value: &Bound<'_, PyAny>, name: &str) -> PyResult<Option<usize>> {
+    value
+        .extract::<Option<u64>>()?
+        .map(|value| validate_positive_u32(value, name))
+        .transpose()
+}
+
+fn optional_positive_usize(value: &Bound<'_, PyAny>, name: &str) -> PyResult<Option<usize>> {
+    let value: Option<usize> = value.extract()?;
+    if value == Some(0) {
+        return Err(PyValueError::new_err(format!(
+            "{name} must be greater than 0"
+        )));
+    }
+    Ok(value)
+}
+
+fn optional_positive_u64(value: &Bound<'_, PyAny>, name: &str) -> PyResult<Option<u64>> {
+    let value: Option<u64> = value.extract()?;
+    if value == Some(0) {
+        return Err(PyValueError::new_err(format!(
+            "{name} must be greater than 0"
+        )));
+    }
+    Ok(value)
+}
+
+fn u32_list(value: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<u32>> {
+    value
+        .extract::<Vec<i64>>()?
+        .into_iter()
+        .map(|value| {
+            u32::try_from(value).map_err(|_| {
+                PyValueError::new_err(format!(
+                    "{name} must contain values between 0 and {}",
+                    u32::MAX
+                ))
+            })
+        })
+        .collect()
+}
+
+fn optional_i64_bounded_u64(value: &Bound<'_, PyAny>, name: &str) -> PyResult<Option<u64>> {
+    let value: Option<u64> = value.extract()?;
+    if value.is_some_and(|value| value > i64::MAX as u64) {
+        return Err(PyValueError::new_err(format!(
+            "{name} must be at most {}",
+            i64::MAX
+        )));
+    }
+    Ok(value)
+}
+
+fn parse_compaction_options(options: Option<&Bound<'_, PyDict>>) -> PyResult<CompactionOptions> {
+    let mut parsed = CompactionOptions::default();
+    let Some(options) = options else {
+        return Ok(parsed);
+    };
+
+    for (key, value) in options.iter() {
+        let key: String = key.extract()?;
+        match key.as_str() {
+            "target_rows_per_fragment" => {
+                parsed.target_rows_per_fragment = positive_u32(&value, &key)?
+            }
+            "max_rows_per_group" => parsed.max_rows_per_group = positive_u32(&value, &key)?,
+            "max_bytes_per_file" => parsed.max_bytes_per_file = value.extract()?,
+            "materialize_deletions" => parsed.materialize_deletions = value.extract()?,
+            "materialize_deletions_threshold" => {
+                parsed.materialize_deletions_threshold = value.extract()?
+            }
+            "num_threads" => parsed.num_threads = optional_positive_usize(&value, &key)?,
+            "batch_size" => parsed.batch_size = optional_positive_u32(&value, &key)?,
+            "io_buffer_size" => parsed.io_buffer_size = optional_i64_bounded_u64(&value, &key)?,
+            "defer_index_remap" => parsed.defer_index_remap = value.extract()?,
+            "index_remap_mode" => {
+                let mode: String = value.extract()?;
+                parsed.index_remap_mode = IndexRemapMode::try_from(mode.as_str())
+                    .map_err(|err| PyValueError::new_err(err.to_string()))?;
+            }
+            "compaction_mode" => {
+                let mode: Option<String> = value.extract()?;
+                parsed.compaction_mode = mode
+                    .map(|mode| {
+                        CompactionMode::try_from(mode.as_str())
+                            .map_err(|err| PyValueError::new_err(err.to_string()))
+                    })
+                    .transpose()?;
+            }
+            "binary_copy_read_batch_bytes" => {
+                parsed.binary_copy_read_batch_bytes = value.extract()?
+            }
+            "max_source_fragments" => parsed.max_source_fragments = value.extract()?,
+            "max_source_rows" => parsed.max_source_rows = optional_positive_usize(&value, &key)?,
+            "max_source_bytes" => parsed.max_source_bytes = optional_positive_u64(&value, &key)?,
+            "excluded_fragment_ids" => parsed.excluded_fragment_ids = u32_list(&value, &key)?,
+            "max_overlays_per_fragment" => parsed.max_overlays_per_fragment = value.extract()?,
+            "data_storage_version" => {
+                let version: String = value.extract()?;
+                parsed.data_storage_version = Some(
+                    version
+                        .parse::<LanceFileVersion>()
+                        .map_err(|err| PyValueError::new_err(err.to_string()))?,
+                );
+            }
+            _ => {
+                return Err(PyValueError::new_err(format!(
+                    "Invalid compaction option: {key}"
+                )));
+            }
+        }
+    }
+
+    Ok(parsed)
 }
 
 /// Statistics about a compaction operation.
@@ -455,6 +614,7 @@ pub struct FunctionErrorRecord {
     pub job_id: String,
     pub fragment_id: u64,
     pub row_offset: Option<u32>,
+    pub row_address: Option<u64>,
     pub column: String,
     pub function: String,
     pub function_version: String,
@@ -467,12 +627,19 @@ pub struct FunctionErrorRecord {
 #[pymethods]
 impl FunctionErrorRecord {
     pub fn __repr__(&self) -> String {
+        let row_offset = self
+            .row_offset
+            .map_or_else(|| "None".to_string(), |value| value.to_string());
+        let row_address = self
+            .row_address
+            .map_or_else(|| "None".to_string(), |value| value.to_string());
         format!(
-            "FunctionErrorRecord(job_id={:?}, fragment_id={}, row_offset={:?}, column={:?}, \
-             error_type={:?}, error_message={:?})",
+            "FunctionErrorRecord(job_id={:?}, fragment_id={}, row_offset={}, row_address={}, \
+             column={:?}, error_type={:?}, error_message={:?})",
             self.job_id,
             self.fragment_id,
-            self.row_offset,
+            row_offset,
+            row_address,
             self.column,
             self.error_type,
             self.error_message
@@ -486,6 +653,7 @@ impl From<lancedb::function::FunctionErrorRecord> for FunctionErrorRecord {
             job_id: record.job_id,
             fragment_id: record.fragment_id,
             row_offset: record.row_offset,
+            row_address: record.row_address,
             column: record.column,
             function: record.function,
             function_version: record.function_version,
@@ -562,9 +730,9 @@ impl From<lancedb::function::FunctionErrors> for FunctionErrors {
 #[pyclass(get_all, from_py_object)]
 #[derive(Clone, Debug)]
 pub struct RefreshMaterializedViewResult {
-    pub mode: String,
-    pub rows_written: u64,
-    pub source_version: u64,
+    pub mode: Option<String>,
+    pub rows_written: Option<u64>,
+    pub source_version: Option<u64>,
     pub version: u64,
 }
 
@@ -584,18 +752,23 @@ impl RefreshMaterializedViewResult {
     pub fn __repr__(&self) -> String {
         format!(
             "RefreshMaterializedViewResult(mode={}, rows_written={}, source_version={}, version={})",
-            self.mode, self.rows_written, self.source_version, self.version
+            self.mode.as_deref().unwrap_or("None"),
+            self.rows_written
+                .map_or_else(|| "None".into(), |value| value.to_string()),
+            self.source_version
+                .map_or_else(|| "None".into(), |value| value.to_string()),
+            self.version
         )
     }
 }
 
 impl From<lancedb::RefreshMaterializedViewResult> for RefreshMaterializedViewResult {
     fn from(result: lancedb::RefreshMaterializedViewResult) -> Self {
-        let mode = match result.mode {
+        let mode = result.mode.map(|mode| match mode {
             lancedb::RefreshMode::Rebuild => "rebuild",
-        };
+        });
         Self {
-            mode: mode.to_string(),
+            mode: mode.map(str::to_string),
             rows_written: result.rows_written,
             source_version: result.source_version,
             version: result.version,
@@ -857,7 +1030,12 @@ impl From<LanceDbFtsToken> for FtsToken {
     ascii_folding = true,
     ngram_min_length = 3,
     ngram_max_length = 3,
-    prefix_only = false
+    prefix_only = false,
+    analyzer = None,
+    split_identifiers = None,
+    split_on_numerics = None,
+    preserve_original = None,
+    index_operators = None
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn tokenize(
@@ -873,7 +1051,20 @@ pub fn tokenize(
     ngram_min_length: u32,
     ngram_max_length: u32,
     prefix_only: bool,
+    analyzer: Option<String>,
+    split_identifiers: Option<bool>,
+    split_on_numerics: Option<bool>,
+    preserve_original: Option<bool>,
+    index_operators: Option<bool>,
 ) -> PyResult<Vec<FtsToken>> {
+    let code_options = CodeAnalyzerOptions {
+        analyzer,
+        split_identifiers,
+        split_on_numerics,
+        preserve_original,
+        index_operators,
+    };
+    let base_tokenizer = code_options.resolve_base_tokenizer(base_tokenizer)?;
     let mut params = FtsIndexBuilder::default()
         .base_tokenizer(base_tokenizer)
         .language(&language)
@@ -896,6 +1087,7 @@ pub fn tokenize(
     if let Some(remove_stop_words) = remove_stop_words {
         params = params.remove_stop_words(remove_stop_words);
     }
+    let params = code_options.apply(params);
     let tokens = lancedb_tokenize(&query, &params).infer_error()?;
     Ok(tokens.into_iter().map(FtsToken::from).collect())
 }
@@ -1551,14 +1743,33 @@ impl Table {
         })
     }
 
+    #[pyo3(signature = (descriptor))]
+    pub fn open_blob_file<'py>(
+        self_: PyRef<'py, Self>,
+        descriptor: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let descriptor: BlobDescriptor = serde_json::from_str(descriptor)
+            .map_err(|error| PyValueError::new_err(format!("invalid blob descriptor: {error}")))?;
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let file = inner.open_blob_file(&descriptor).await.infer_error()?;
+            Ok(PyBlobFile {
+                inner: Arc::new(file),
+                closed: AtomicBool::new(false),
+            })
+        })
+    }
+
     /// Optimize the on-disk data by compacting and pruning old data, for better performance.
-    #[pyo3(signature = (cleanup_since_ms=None, delete_unverified=None))]
-    pub fn optimize(
-        self_: PyRef<'_, Self>,
+    #[pyo3(signature = (cleanup_since_ms=None, delete_unverified=None, compaction_options=None))]
+    pub fn optimize<'py>(
+        self_: PyRef<'py, Self>,
         cleanup_since_ms: Option<u64>,
         delete_unverified: Option<bool>,
-    ) -> PyResult<Bound<'_, PyAny>> {
+        compaction_options: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self_.inner_ref()?.clone();
+        let compaction_options = parse_compaction_options(compaction_options)?;
         let older_than = if let Some(ms) = cleanup_since_ms {
             if ms > i64::MAX as u64 {
                 return Err(PyValueError::new_err(format!(
@@ -1574,7 +1785,7 @@ impl Table {
         future_into_py(self_.py(), async move {
             let compaction_stats = inner
                 .optimize(OptimizeAction::Compact {
-                    options: lancedb::table::CompactionOptions::default(),
+                    options: compaction_options,
                     remap_options: None,
                 })
                 .await
@@ -1693,6 +1904,45 @@ impl Table {
         })
     }
 
+    pub fn get_table_overrides(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let overrides = inner.get_table_overrides().await.infer_error()?;
+            serde_json::to_string(&overrides).map_err(|err| {
+                PyRuntimeError::new_err(format!("Failed to serialize table overrides: {err}"))
+            })
+        })
+    }
+
+    pub fn update_table_overrides<'a>(
+        self_: PyRef<'a, Self>,
+        overrides_json: String,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let overrides = serde_json::from_str(&overrides_json).map_err(|err| {
+                PyValueError::new_err(format!("Invalid table overrides JSON: {err}"))
+            })?;
+            let overrides = inner
+                .update_table_overrides(overrides)
+                .await
+                .infer_error()?;
+            serde_json::to_string(&overrides).map_err(|err| {
+                PyRuntimeError::new_err(format!("Failed to serialize table overrides: {err}"))
+            })
+        })
+    }
+
+    pub fn reset_table_overrides(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let overrides = inner.reset_table_overrides().await.infer_error()?;
+            serde_json::to_string(&overrides).map_err(|err| {
+                PyRuntimeError::new_err(format!("Failed to serialize table overrides: {err}"))
+            })
+        })
+    }
+
     /// Whether a hybrid query on this table has already been refused `_rowid`.
     /// Learned from a previous refusal, never probed, so this is free.
     ///
@@ -1766,7 +2016,8 @@ impl Table {
             inner
                 .as_native()
                 .ok_or_else(|| lancedb::Error::NotSupported {
-                    message: "uses_v2_manifest_paths is not supported for remote tables.".into(),
+                    message: "uses_v2_manifest_paths is not supported in LanceDB Enterprise."
+                        .into(),
                 })
                 .infer_error()?
                 .uses_v2_manifest_paths()
@@ -1781,7 +2032,8 @@ impl Table {
             inner
                 .as_native()
                 .ok_or_else(|| lancedb::Error::NotSupported {
-                    message: "migrate_manifest_paths_v2 is not supported for remote tables.".into(),
+                    message: "migrate_manifest_paths_v2 is not supported in LanceDB Enterprise."
+                        .into(),
                 })
                 .infer_error()?
                 .migrate_manifest_paths_v2()
@@ -1801,6 +2053,29 @@ impl Table {
             let result = inner
                 .add_columns()
                 .transform(definitions)
+                .execute()
+                .await
+                .infer_error()?;
+            Ok(AddColumnsResult::from(result))
+        })
+    }
+
+    pub fn add_columns_from_reader<'a>(
+        self_: PyRef<'a, Self>,
+        data: Bound<'a, PyAny>,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        let reader = ArrowArrayStreamReader::from_pyarrow_bound(&data)?;
+        let schema = reader.schema();
+        // Lance's surplus-row check treats trailing empty batches as extra data.
+        let reader = RecordBatchIterator::new(
+            reader.filter(|batch| !batch.as_ref().is_ok_and(|batch| batch.num_rows() == 0)),
+            schema,
+        );
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let result = inner
+                .add_columns()
+                .transform(NewColumnTransform::Reader(Box::new(reader)))
                 .execute()
                 .await
                 .infer_error()?;
@@ -1865,21 +2140,40 @@ impl Table {
         })
     }
 
-    pub fn refresh_column(self_: PyRef<'_, Self>, column: String) -> PyResult<Bound<'_, PyAny>> {
+    #[pyo3(signature = (column, *, batch_size=None, gpu_class=None, gpu_count=None))]
+    pub fn refresh_column(
+        self_: PyRef<'_, Self>,
+        column: String,
+        batch_size: Option<i64>,
+        gpu_class: Option<String>,
+        gpu_count: Option<i64>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let options = refresh_column_options(batch_size, gpu_class, gpu_count)?;
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            let result = inner.refresh_column(column).await.infer_error()?;
+            let result = inner
+                .refresh_column_with_options(column, options)
+                .await
+                .infer_error()?;
             Ok(RefreshColumnResult::from(result))
         })
     }
 
+    #[pyo3(signature = (column, *, batch_size=None, gpu_class=None, gpu_count=None))]
     pub fn refresh_column_async(
         self_: PyRef<'_, Self>,
         column: String,
+        batch_size: Option<i64>,
+        gpu_class: Option<String>,
+        gpu_count: Option<i64>,
     ) -> PyResult<Bound<'_, PyAny>> {
+        let options = refresh_column_options(batch_size, gpu_class, gpu_count)?;
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            let job = inner.refresh_column_async(column).await.infer_error()?;
+            let job = inner
+                .refresh_column_async_with_options(column, options)
+                .await
+                .infer_error()?;
             Ok(crate::job::Job::new_typed(job))
         })
     }
@@ -1903,17 +2197,18 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (source_version=None))]
+    #[pyo3(signature = (source_version=None, *, full=false))]
     pub fn refresh_materialized_view(
         self_: PyRef<'_, Self>,
         source_version: Option<u64>,
+        full: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let view = lancedb::MaterializedView::from_table(inner)
                 .await
                 .infer_error()?;
-            let mut builder = view.refresh();
+            let mut builder = view.refresh().full(full);
             if let Some(version) = source_version {
                 builder = builder.source_version(version);
             }
@@ -1922,17 +2217,18 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (source_version=None))]
+    #[pyo3(signature = (source_version=None, *, full=false))]
     pub fn refresh_materialized_view_async(
         self_: PyRef<'_, Self>,
         source_version: Option<u64>,
+        full: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let view = lancedb::MaterializedView::from_table(inner)
                 .await
                 .infer_error()?;
-            let mut builder = view.refresh();
+            let mut builder = view.refresh().full(full);
             if let Some(version) = source_version {
                 builder = builder.source_version(version);
             }

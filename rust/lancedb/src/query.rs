@@ -444,8 +444,8 @@ pub trait QueryBase {
     /// # }
     /// ```
     ///
-    /// Note: Expression filters are not supported for remote/server-side queries.
-    /// Use [`QueryBase::only_if`] with SQL strings for remote tables.
+    /// Note: Expression filters are not supported for LanceDB Enterprise queries.
+    /// Use [`QueryBase::only_if`] with SQL strings in LanceDB Enterprise.
     ///
     /// Calling this multiple times combines the expressions with a logical AND
     /// rather than replacing the previous filter.
@@ -1025,7 +1025,7 @@ impl Query {
     /// By default, there is no embedding model, and the input should be
     /// vector/slice of floats.
     /// NaN and infinite components are rejected with [`Error::InvalidInput`]
-    /// after conversion to Float32, for both local and remote tables.
+    /// after conversion to Float32, in both LanceDB Embedded and LanceDB Enterprise.
     ///
     /// If there is only one vector column (a column whose data type is a
     /// fixed size list of floats) then the column does not need to be specified.
@@ -1269,7 +1269,7 @@ impl VectorQuery {
     /// result.
     ///
     /// NaN and infinite components are rejected with [`Error::InvalidInput`]
-    /// after conversion to Float32, for both local and remote tables.
+    /// after conversion to Float32, in both LanceDB Embedded and LanceDB Enterprise.
     pub fn add_query_vector(mut self, vector: impl IntoQueryVector) -> Result<Self> {
         self.request.add_query_vector(vector)?;
         Ok(self)
@@ -1476,8 +1476,10 @@ impl VectorQuery {
 
     /// Set the speed / accuracy tradeoff for approximate vector search.
     ///
-    /// This setting is currently only used by RQ-quantized indexes, such as
-    /// IVF_RQ. Other index types ignore this setting.
+    /// This setting is currently used by RQ-quantized indexes (such as IVF_RQ)
+    /// and by prefiltered search on HNSW sub-indexes, where
+    /// [`ApproxMode::Fast`] enables the ACORN traversal. Other index types
+    /// ignore this setting.
     pub fn approx_mode(mut self, approx_mode: ApproxMode) -> Self {
         self.request.approx_mode = Some(approx_mode);
         self
@@ -1862,6 +1864,16 @@ impl DisplayAs for TakeRestoreExec {
 }
 
 impl ExecutionPlan for TakeRestoreExec {
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(
+            &Arc<dyn datafusion_physical_expr::PhysicalExpr>,
+        ) -> datafusion_common::Result<
+            datafusion_common::tree_node::TreeNodeRecursion,
+        >,
+    ) -> datafusion_common::Result<datafusion_common::tree_node::TreeNodeRecursion> {
+        Ok(datafusion_common::tree_node::TreeNodeRecursion::Continue)
+    }
     fn name(&self) -> &str {
         "TakeRestoreExec"
     }
@@ -3716,10 +3728,13 @@ mod tests {
         let texts = texts.iter().map(|e| e.unwrap()).collect::<HashSet<_>>();
         assert!(texts.contains("cat")); // should be close by vector search
         assert!(texts.contains("b")); // should be close by fts search
+        // Both rows rank first in one of the two search results.
+        let scores = batch["_relevance_score"].as_primitive::<Float32Type>();
+        assert_eq!(scores.values().as_ref(), &[1.0 / 61.0, 1.0 / 61.0]);
 
         // ensure that this works correctly if there are no matching FTS results
         let fts_query = FullTextSearchQuery::new("z".to_string());
-        table
+        let results = table
             .query()
             .full_text_search(fts_query)
             .limit(2)
@@ -3731,6 +3746,12 @@ mod tests {
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
+        let batch = &results[0];
+        let texts = batch["text"].as_string::<i32>();
+        assert_eq!(texts.value(0), "cat");
+        assert_eq!(texts.value(1), "dog");
+        let scores = batch["_relevance_score"].as_primitive::<Float32Type>();
+        assert_eq!(scores.values().as_ref(), &[1.0 / 61.0, 1.0 / 62.0]);
     }
 
     #[tokio::test]

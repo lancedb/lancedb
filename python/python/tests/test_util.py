@@ -4,11 +4,11 @@
 
 import os
 import pathlib
+import sys
+from datetime import time, timedelta, timezone
 from decimal import Decimal, localcontext
 from typing import Optional
 
-import lance
-from lance.blob import BlobType as LanceBlobType
 from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.embeddings.base import EmbeddingFunctionConfig
 from lancedb.embeddings.registry import EmbeddingFunctionRegistry
@@ -25,7 +25,6 @@ from lancedb.table import (
     sanitize_create_table,
 )
 import pyarrow as pa
-import pandas as pd
 import polars as pl
 import pytest
 import lancedb
@@ -179,7 +178,8 @@ def test_value_to_sql_string(tmp_path):
     )
     for value in values:
         table.update(where=f"search = {value_to_sql(value)}", values={"replace": value})
-        assert table.to_pandas().query("search == @value")["replace"].item() == value
+        rows = table.to_arrow().to_pylist()
+        assert next(row["replace"] for row in rows if row["search"] == value) == value
 
 
 @pytest.mark.parametrize(
@@ -215,6 +215,111 @@ def test_value_to_sql_decimal_non_finite(value):
         ValueError, match="^Non-finite Decimal values cannot be converted to SQL$"
     ):
         value_to_sql(Decimal(value))
+
+
+def test_value_to_sql_time_and_timedelta(tmp_path):
+    assert (
+        value_to_sql(time(9, 30, 0, 250))
+        == "arrow_cast('09:30:00.000250', 'Time64(Microsecond)')"
+    )
+    assert (
+        value_to_sql(timedelta(days=1, microseconds=5))
+        == "arrow_cast(86400000005, 'Duration(Microsecond)')"
+    )
+    assert (
+        value_to_sql(timedelta(seconds=-1))
+        == "arrow_cast(-1000000, 'Duration(Microsecond)')"
+    )
+
+    # Round trip through update and a filter, including columns whose unit is not
+    # microseconds.
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "test",
+        pa.table(
+            {
+                "id": [1, 2],
+                "starts": pa.array([time(1, 2, 3), time(4, 5, 6)], pa.time64("us")),
+                "starts_ns": pa.array([time(1, 2, 3), time(4, 5, 6)], pa.time64("ns")),
+                "duration": pa.array([timedelta(0), timedelta(0)], pa.duration("us")),
+                "duration_s": pa.array([timedelta(0), timedelta(0)], pa.duration("s")),
+            }
+        ),
+    )
+    table.update(
+        where="id = 1",
+        values={
+            "starts": time(9, 30, 0, 250),
+            "starts_ns": time(9, 30, 0, 250),
+            "duration": timedelta(minutes=45, microseconds=5),
+            "duration_s": timedelta(hours=2),
+        },
+    )
+    assert table.to_arrow().sort_by("id").slice(0, 1).to_pylist() == [
+        {
+            "id": 1,
+            "starts": time(9, 30, 0, 250),
+            "starts_ns": time(9, 30, 0, 250),
+            "duration": timedelta(minutes=45, microseconds=5),
+            "duration_s": timedelta(hours=2),
+        }
+    ]
+    for where in (
+        f"starts = {value_to_sql(time(9, 30, 0, 250))}",
+        f"duration = {value_to_sql(timedelta(minutes=45, microseconds=5))}",
+    ):
+        assert table.search().where(where).to_arrow()["id"].to_pylist() == [1]
+
+
+def test_value_to_sql_keeps_nanoseconds(tmp_path):
+    # Arrow scalars and pandas.Timedelta values can hold nanoseconds, which a
+    # Python timedelta or time would round to microseconds.
+    try:
+        import pandas as pd
+    except ImportError:
+        pd = None
+    if pd is not None:
+        assert (
+            value_to_sql(pd.Timedelta(1001, "ns"))
+            == "arrow_cast(1001, 'Duration(Nanosecond)')"
+        )
+    assert value_to_sql(pa.scalar(None, pa.duration("ns"))) == "NULL"
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "test",
+        pa.table(
+            {
+                "id": [1, 2],
+                "duration": pa.array([0, 1001], pa.duration("ns")),
+                "starts": pa.array([0, 34_200_000_000_250], pa.time64("ns")),
+            }
+        ),
+    )
+    source = table.to_arrow().sort_by("id")
+    table.update(
+        where="id = 1",
+        values={"duration": source["duration"][1], "starts": source["starts"][1]},
+    )
+    updated = table.to_arrow().sort_by("id")
+    assert updated["duration"].cast(pa.int64()).to_pylist() == [1001, 1001]
+    assert updated["starts"].cast(pa.int64()).to_pylist() == [
+        34_200_000_000_250,
+        34_200_000_000_250,
+    ]
+
+
+def test_value_to_sql_keeps_duration_units():
+    for unit, sql_unit in [("s", "Second"), ("ms", "Millisecond")]:
+        assert (
+            value_to_sql(pa.scalar(1500, pa.duration(unit)))
+            == f"arrow_cast(1500, 'Duration({sql_unit})')"
+        )
+
+
+def test_value_to_sql_rejects_time_with_timezone():
+    with pytest.raises(ValueError, match="time values with a timezone"):
+        value_to_sql(time(9, 30, tzinfo=timezone.utc))
 
 
 def test_value_to_sql_dict():
@@ -406,7 +511,7 @@ def test_handle_bad_vectors_jagged(on_bad_vectors):
         ).read_all()
 
     if on_bad_vectors == "drop":
-        expected = pa.array([[1.0, 2.0], [4.0, 5.0], [None, 9.0]])
+        expected = pa.array([[1.0, 2.0], [4.0, 5.0]])
     elif on_bad_vectors == "fill":
         expected = pa.array(
             [
@@ -414,12 +519,12 @@ def test_handle_bad_vectors_jagged(on_bad_vectors):
                 [3.0, 42.0],
                 [4.0, 5.0],
                 [6.0, 7.0],
-                [None, 9.0],
+                [42.0, 9.0],
                 [42.0, 42.0],
             ]
         )
     elif on_bad_vectors == "null":
-        expected = pa.array([[1.0, 2.0], None, [4.0, 5.0], None, [None, 9.0], None])
+        expected = pa.array([[1.0, 2.0], None, [4.0, 5.0], None, None, None])
 
     assert output["vector"].combine_chunks() == expected
 
@@ -430,17 +535,17 @@ def test_handle_bad_vectors_jagged(on_bad_vectors):
         (
             pa.list_(pa.float64()),
             [[1.0, float("nan")], [2.0], None, [None, 3.0], [4.0, 5.0, 6.0]],
-            [[1.0, 42.0], [2.0, 42.0], [42.0, 42.0], [None, 3.0], [4.0, 5.0]],
+            [[1.0, 42.0], [2.0, 42.0], [42.0, 42.0], [42.0, 3.0], [4.0, 5.0]],
         ),
         (
             pa.large_list(pa.float64()),
             [[1.0, float("nan")], [2.0], None, [None, 3.0], [4.0, 5.0, 6.0]],
-            [[1.0, 42.0], [2.0, 42.0], [42.0, 42.0], [None, 3.0], [4.0, 5.0]],
+            [[1.0, 42.0], [2.0, 42.0], [42.0, 42.0], [42.0, 3.0], [4.0, 5.0]],
         ),
         (
             pa.list_(pa.float64(), 2),
             [[1.0, float("nan")], None, [None, 3.0]],
-            [[1.0, 42.0], [42.0, 42.0], [None, 3.0]],
+            [[1.0, 42.0], [42.0, 42.0], [42.0, 3.0]],
         ),
     ],
 )
@@ -467,7 +572,7 @@ def test_handle_bad_vectors_nan(on_bad_vectors):
             ).read_all()
         output = exception_output(e)
         assert output == (
-            "ValueError: Vector column 'vector' has NaNs. Set "
+            "ValueError: Vector column 'vector' has NaNs or null values. Set "
             "on_bad_vectors='drop' to remove them, set on_bad_vectors='fill' "
             "and fill_value=<value> to replace them, or set on_bad_vectors='null' "
             "to replace them with null."
@@ -488,6 +593,46 @@ def test_handle_bad_vectors_nan(on_bad_vectors):
         expected = pa.array([None, [3.0, 4.0]])
 
     assert output["vector"].combine_chunks() == expected
+
+
+@pytest.mark.parametrize("value_type", [pa.float16(), pa.float32(), pa.float64()])
+@pytest.mark.parametrize(
+    "list_type", [pa.list_, pa.large_list, lambda t: pa.list_(t, 2)]
+)
+@pytest.mark.parametrize("chunked", [False, True])
+def test_has_nan_values_with_null_elements(value_type, list_type, chunked):
+    arr = pa.array(
+        [[None, None], [1.0, 2.0], [None, 3.0], None, [4.0, float("nan")], [5.0, 6.0]],
+        type=list_type(value_type),
+    ).slice(1, 5)
+    if chunked:
+        arr = pa.chunked_array([arr.slice(0, 2), arr.slice(2)])
+    # Whole null vectors have no components to inspect. Their handling is
+    # separate from missing or NaN components in a valid vector.
+    assert has_nan_values(arr).to_pylist() == [False, True, False, True, False]
+
+
+@pytest.mark.parametrize("on_bad_vectors", ["error", "drop", "fill", "null"])
+def test_sanitize_vectors_with_only_null_elements(on_bad_vectors):
+    data = pa.table({"vector": [[None, None]]})
+    schema = pa.schema({"vector": pa.list_(pa.float32(), 2)})
+
+    def sanitize():
+        return _sanitize_data(
+            data, schema, on_bad_vectors=on_bad_vectors, fill_value=42.0
+        ).read_all()
+
+    if on_bad_vectors == "error":
+        with pytest.raises(ValueError, match="null"):
+            sanitize()
+        return
+
+    expected = {
+        "drop": [],
+        "fill": [{"vector": [42.0, 42.0]}],
+        "null": [{"vector": None}],
+    }
+    assert sanitize().to_pylist() == expected[on_bad_vectors]
 
 
 @pytest.mark.parametrize("dtype", [pa.float16(), pa.float32(), pa.float64()])
@@ -639,15 +784,20 @@ class TestModel(lancedb.pydantic.LanceModel):
         lambda: pa.table({"a": [1], "b": [2]}),
         lambda: pa.table({"a": [1], "b": [2]}).to_reader(),
         lambda: iter(pa.table({"a": [1], "b": [2]}).to_batches()),
-        lambda: lance.write_dataset(
+        lambda: tuple(pa.table({"a": [1], "b": [2]}).to_batches()),
+        lambda: pytest.importorskip("lance").write_dataset(
             pa.table({"a": [1], "b": [2]}),
             "memory://test",
         ),
-        lambda: lance.write_dataset(
-            pa.table({"a": [1], "b": [2]}),
-            "memory://test",
-        ).scanner(),
-        lambda: pd.DataFrame({"a": [1], "b": [2]}),
+        lambda: (
+            pytest.importorskip("lance")
+            .write_dataset(
+                pa.table({"a": [1], "b": [2]}),
+                "memory://test",
+            )
+            .scanner()
+        ),
+        lambda: pytest.importorskip("pandas").DataFrame({"a": [1], "b": [2]}),
         lambda: pl.DataFrame({"a": [1], "b": [2]}),
         lambda: pl.LazyFrame({"a": [1], "b": [2]}),
         lambda: [TestModel(a=1, b=2)],
@@ -658,6 +808,7 @@ class TestModel(lancedb.pydantic.LanceModel):
         "pa.Table",
         "pa.RecordBatchReader",
         "batch_iter",
+        "batch_tuple",
         "lance.LanceDataset",
         "lance.LanceScanner",
         "pd.DataFrame",
@@ -670,6 +821,12 @@ def test_into_pyarrow_table(data):
     expected = pa.table({"a": [1], "b": [2]})
     output = _into_pyarrow_reader(data()).read_all()
     assert output == expected
+
+
+@pytest.mark.parametrize("data", ["score", ""])
+def test_into_pyarrow_reader_rejects_text(data):
+    with pytest.raises(TypeError, match="Unknown data type"):
+        _into_pyarrow_reader(data)
 
 
 def test_infer_target_schema():
@@ -817,10 +974,10 @@ def test_infer_target_schema_with_vector_embedding_names():
 @pytest.mark.parametrize(
     "data",
     [
-        [{"id": 1, "text": "hello"}],
-        pa.RecordBatch.from_pylist([{"id": 1, "text": "hello"}]),
-        pd.DataFrame({"id": [1], "text": ["hello"]}),
-        pl.DataFrame({"id": [1], "text": ["hello"]}),
+        lambda: [{"id": 1, "text": "hello"}],
+        lambda: pa.RecordBatch.from_pylist([{"id": 1, "text": "hello"}]),
+        lambda: pytest.importorskip("pandas").DataFrame({"id": [1], "text": ["hello"]}),
+        lambda: pl.DataFrame({"id": [1], "text": ["hello"]}),
     ],
     ids=["rows", "pa.RecordBatch", "pd.DataFrame", "pl.DataFrame"],
 )
@@ -852,6 +1009,7 @@ def test_sanitize_data(
     schema: Optional[pa.Schema],
     with_embedding: bool,
 ):
+    data = data()
     if with_embedding:
         registry = EmbeddingFunctionRegistry.get_instance()
         registry.register("test")(MockTextEmbeddingFunction)
@@ -876,7 +1034,9 @@ def test_sanitize_data(
         # polars uses large_string, pandas 3.0+ uses large_string, others use string
         if isinstance(data, pl.DataFrame):
             text_type = pa.large_utf8()
-        elif isinstance(data, pd.DataFrame):
+        elif (pd := sys.modules.get("pandas")) is not None and isinstance(
+            data, pd.DataFrame
+        ):
             text_type = pandas_string_type()
         else:
             text_type = pa.string()
@@ -1211,6 +1371,8 @@ def test_fixed_size_list_blob_coercion_keeps_null_rows():
 
 
 def test_cast_to_target_schema_accepts_pylance_blob_v2():
+    lance = pytest.importorskip("lance")
+    LanceBlobType = pytest.importorskip("lance.blob").BlobType
     target_type = lancedb.BlobType()
     source = lance.blob_array([b"hello", None])
     assert type(source.type) is LanceBlobType
@@ -1230,6 +1392,8 @@ def test_cast_to_target_schema_accepts_pylance_blob_v2():
 
 
 def test_cast_to_target_schema_rejects_different_blob_v2_class():
+    lance = pytest.importorskip("lance")
+
     class OtherBlobType(pa.ExtensionType):
         def __init__(self):
             super().__init__(lancedb.BlobType().storage_type, "lance.blob.v2")

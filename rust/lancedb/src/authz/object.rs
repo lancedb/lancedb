@@ -16,6 +16,7 @@ pub const NAMESPACE_TYPE_STRING: &str = "namespace";
 pub const TABLE_TYPE_STRING: &str = "table";
 pub const VIEW_TYPE_STRING: &str = "view";
 pub const SECRET_TYPE_STRING: &str = "secret";
+pub const STORAGE_INTEGRATION_TYPE_STRING: &str = "storage_integration";
 pub const FUNCTION_TYPE_STRING: &str = "function";
 pub const UNKNOWN_TYPE_STRING: &str = "unknown";
 
@@ -102,6 +103,7 @@ pub enum Object {
     Table(TableObject),
     View(ViewObject),
     Secret(SecretObject),
+    StorageIntegration(StorageIntegrationObject),
     Function(FunctionObject),
     Unknown(String),
 }
@@ -116,6 +118,7 @@ impl Object {
             Self::Table(object) => object.validate(),
             Self::View(object) => object.validate(),
             Self::Secret(object) => object.validate(),
+            Self::StorageIntegration(object) => object.validate(),
             Self::Function(object) => object.validate(),
             Self::Unknown(value) if value.is_empty() => Err("object must not be empty".into()),
             Self::Unknown(_) => Ok(()),
@@ -131,6 +134,7 @@ impl Object {
             Self::Table(object) => Some(&object.database),
             Self::View(object) => Some(&object.database),
             Self::Secret(object) => Some(&object.database),
+            Self::StorageIntegration(object) => Some(&object.database),
             Self::Function(object) => Some(&object.database),
             Self::Unknown(_) => None,
         }
@@ -144,6 +148,7 @@ impl Object {
             Self::Table(_) => TABLE_TYPE_STRING,
             Self::View(_) => VIEW_TYPE_STRING,
             Self::Secret(_) => SECRET_TYPE_STRING,
+            Self::StorageIntegration(_) => STORAGE_INTEGRATION_TYPE_STRING,
             Self::Function(_) => FUNCTION_TYPE_STRING,
             Self::Unknown(_) => UNKNOWN_TYPE_STRING,
         }
@@ -170,6 +175,7 @@ impl std::fmt::Display for Object {
             Self::Table(object) => object.fmt(f),
             Self::View(object) => object.fmt(f),
             Self::Secret(object) => object.fmt(f),
+            Self::StorageIntegration(object) => object.fmt(f),
             Self::Function(object) => object.fmt(f),
             Self::Unknown(s) => f.write_str(s),
         }
@@ -215,6 +221,12 @@ impl<'de> Deserialize<'de> for Object {
             let view =
                 ViewObject::deserialize(serde::de::value::StringDeserializer::<D::Error>::new(s))?;
             Ok(Self::View(view))
+        } else if kind == STORAGE_INTEGRATION_TYPE_STRING {
+            let object =
+                StorageIntegrationObject::deserialize(serde::de::value::StringDeserializer::<
+                    D::Error,
+                >::new(s))?;
+            Ok(Self::StorageIntegration(object))
         } else if kind == SECRET_TYPE_STRING {
             let secret = SecretObject::deserialize(
                 serde::de::value::StringDeserializer::<D::Error>::new(s),
@@ -497,6 +509,61 @@ impl<'de> Deserialize<'de> for SecretObject {
             database: database.to_string(),
             namespace: NamespacePath::parse(namespace).map_err(D::Error::custom)?,
             secret: secret.to_string(),
+        };
+        object.validate().map_err(D::Error::custom)?;
+        Ok(object)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct StorageIntegrationObject {
+    pub database: String,
+    pub namespace: NamespacePath,
+    pub storage_integration: String,
+}
+
+impl StorageIntegrationObject {
+    fn validate(&self) -> Result<(), String> {
+        validate_database_name(&self.database).map_err(|error| error.to_string())?;
+        validate_secret_name(&self.storage_integration).map_err(|error| error.to_string())?;
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for StorageIntegrationObject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "storage_integration:{}:{}${}",
+            self.database, self.namespace, self.storage_integration
+        )
+    }
+}
+
+impl Serialize for StorageIntegrationObject {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.validate().map_err(S::Error::custom)?;
+        self.to_string().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for StorageIntegrationObject {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        let invalid = || D::Error::custom(format!("invalid StorageIntegrationObject {s:?}"));
+        let rest = s.strip_prefix("storage_integration:").ok_or_else(invalid)?;
+        let (database, path) = rest.split_once(':').ok_or_else(invalid)?;
+        let (namespace, storage_integration) = path.rsplit_once('$').ok_or_else(invalid)?;
+        let object = Self {
+            database: database.to_string(),
+            namespace: NamespacePath::parse(namespace).map_err(D::Error::custom)?,
+            storage_integration: storage_integration.to_string(),
         };
         object.validate().map_err(D::Error::custom)?;
         Ok(object)

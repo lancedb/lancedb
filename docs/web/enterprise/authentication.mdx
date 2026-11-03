@@ -5,12 +5,8 @@ description: "Authentication modes for LanceDB Enterprise: API keys and OAuth cr
 icon: key
 keywords: ["authentication", "oauth", "api key", "authorization code", "device code", "azure managed identity", "client credentials"]
 availability:
-  oss: unavailable
+  embedded: unavailable
   enterprise: available
-  summary: >-
-    Requests to a deployment carry an API key or an OAuth token, whichever it is
-    configured to accept. Embedded LanceDB has no server to sign in to; see
-    [Architecture](/architecture).
 ---
 
 A deployment authenticates each request over a `db://` connection before
@@ -102,7 +98,7 @@ client acquires tokens:
 | --- | --- | --- | --- | --- |
 | Client Credentials | `OAuthFlowType.CLIENT_CREDENTIALS` | `OAuthFlowType.ClientCredentials` | `OAuthFlow::ClientCredentials` | Service-to-service / machine-to-machine. Requires a client ID and client secret registered with your identity provider. |
 | Authorization Code | `OAuthFlowType.AUTHORIZATION_CODE` | `OAuthFlowType.AuthorizationCode` | `OAuthFlow::AuthorizationCode(AuthorizationCodeOptions::new())` | Interactive user sign-in through a browser and local callback server. Uses S256 PKCE by default. |
-| Device Code | `OAuthFlowType.DEVICE_CODE` | `OAuthFlowType.DeviceCode` | `OAuthFlow::DeviceCode` | CLI or headless sign-in. The client displays a verification URL and user code for the user to enter on another device. |
+| Device Code | `OAuthFlowType.DEVICE_CODE` | `OAuthFlowType.DeviceCode` | `OAuthFlow::DeviceCode(DeviceCodeOptions::new())` | CLI or headless sign-in. The client displays a verification URL and user code for the user to enter on another device. |
 | Azure Managed Identity | `OAuthFlowType.AZURE_MANAGED_IDENTITY` | `OAuthFlowType.AzureManagedIdentity` | `OAuthFlow::AzureManagedIdentity { client_id: None }` | Azure workloads with access to the IMDS endpoint. Tokens are fetched from IMDS, so no client secret is stored on the client. |
 
 ### Configure OAuth {#configure-oauth}
@@ -294,7 +290,7 @@ const db = await lancedb.connect("db://your-database-uri", {
 ```rust Rust icon="rust"
 use lancedb::remote::{AuthorizationCodeOptions, OAuthConfig, OAuthFlow, TokenCacheOptions};
 
-// Use OAuthFlow::DeviceCode for a CLI without a local browser or callback server.
+// Use OAuthFlow::DeviceCode(Default::default()) for a CLI without a local browser or callback server.
 let oauth_config = OAuthConfig {
     issuer_url: "https://your-issuer.example.com".into(),
     client_id: "your-public-client-id".into(),
@@ -321,8 +317,15 @@ let db = lancedb::connect("db://your-database-uri")
 ```
 </CodeGroup>
 
-With `DEVICE_CODE` / `DeviceCode` / `OAuthFlow::DeviceCode`, the same
+With `DEVICE_CODE` / `DeviceCode` / `OAuthFlow::DeviceCode(DeviceCodeOptions::new())`, the same
 configuration and connection calls apply; only the `flow` value changes.
+
+Device Code sends no PKCE parameters by default. For a provider that requires
+S256 PKCE on device grants, Rust callers can select
+`OAuthFlow::DeviceCode(DeviceCodeOptions::new().use_pkce(true))` (import
+`DeviceCodeOptions` from `lancedb::remote`). This option is currently Rust-only.
+Enable it only when the provider supports the extension; a failed PKCE request
+is not retried without PKCE.
 
 ### Reuse an interactive session {#reuse-an-interactive-session}
 
@@ -383,7 +386,8 @@ Credentials and rejected for Azure Managed Identity.
 
 ### Configuration reference {#configuration-reference}
 
-The same configuration is available in all three SDKs. Python and Rust use
+The shared configuration below is available in all three SDKs; device-code PKCE
+is a Rust-only option through `DeviceCodeOptions`. Python and Rust use
 `snake_case` field names; TypeScript uses `camelCase`. In Rust, set optional
 `OAuthConfig` fields to `Some(value)` or `None`. Configure `redirect_uri`,
 `callback_port`, and `use_pkce` through the builder methods on
@@ -423,5 +427,5 @@ control. All three SDKs deliberately omit the secret from their debug/repr outpu
 so accidental log lines do not expose the value.
 </Warning>
 
-Embedded LanceDB has nothing to authenticate to: your process opens the files
+LanceDB Embedded has nothing to authenticate to: your process opens the files
 directly, and the object store's own credentials are the only gate.

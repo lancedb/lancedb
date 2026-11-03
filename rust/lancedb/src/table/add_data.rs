@@ -45,10 +45,12 @@ pub struct AddResult {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub enum NaNVectorBehavior {
-    /// Reject any vectors containing NaN values (the default)
+    /// Reject any vectors containing NaN values or null elements (the default).
+    /// Whole null vectors are allowed.
     #[default]
     Error,
-    /// Allow NaN values to be added, but they will not be indexed for search
+    /// Allow NaN values and null elements to be added, but they will not be indexed
+    /// for search.
     Keep,
 }
 
@@ -104,11 +106,12 @@ impl AddDataBuilder {
         self
     }
 
-    /// Configure how to handle NaN values in vector columns.
+    /// Configure how to handle NaN values and null elements in vector columns.
     ///
-    /// By default, any vectors containing NaN values will be rejected with an
-    /// error, since NaNs cannot be indexed for search. Setting this to `Keep`
-    /// will allow NaN values to be added to the table, but they will not be
+    /// By default, any vectors containing NaN values or null elements will be
+    /// rejected with an error, since these vectors cannot be indexed for search.
+    /// Whole null vectors are allowed. Setting this to `Keep` will allow NaN values
+    /// and null elements to be added to the table, but these vectors will not be
     /// indexed and will not be searchable.
     pub fn on_nan_vectors(mut self, behavior: NaNVectorBehavior) -> Self {
         self.on_nan_vectors = behavior;
@@ -149,7 +152,7 @@ impl AddDataBuilder {
     ///
     /// The row keeps a reference, so the object has to stay readable.
     /// [`crate::table::Table::fetch_blobs`] reads from that location.
-    /// Defaults to `false`. Local tables only.
+    /// Defaults to `false`. LanceDB Embedded only.
     pub fn allow_external_blob_outside_bases(mut self, allow: bool) -> Self {
         self.allow_external_blob_outside_bases = allow;
         self
@@ -953,8 +956,11 @@ mod tests {
         );
     }
 
+    #[rstest::rstest]
+    #[case::nan(Some(f32::NAN))]
+    #[case::null(None)]
     #[tokio::test]
-    async fn test_add_rejects_nan_vectors() {
+    async fn test_add_rejects_nan_or_null_vectors(#[case] bad_value: Option<f32>) {
         let schema = Arc::new(Schema::new(vec![Field::new(
             "embedding",
             DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 4),
@@ -974,7 +980,12 @@ mod tests {
                 FixedSizeListArray::try_new(
                     Arc::new(Field::new("item", DataType::Float32, true)),
                     4,
-                    Arc::new(Float32Array::from(vec![0.1, 0.2, f32::NAN, 0.4])),
+                    Arc::new(Float32Array::from(vec![
+                        Some(0.1),
+                        Some(0.2),
+                        bad_value,
+                        Some(0.4),
+                    ])),
                     None,
                 )
                 .unwrap(),
@@ -984,8 +995,8 @@ mod tests {
         let res = table.add(batch.clone()).execute().await;
         let err = res.unwrap_err();
         assert!(
-            err.to_string().contains("NaN"),
-            "Expected error mentioning NaN values, but got: {err:?}"
+            err.to_string().contains("NaN or null"),
+            "Expected error mentioning NaN or null values, but got: {err:?}"
         );
 
         table

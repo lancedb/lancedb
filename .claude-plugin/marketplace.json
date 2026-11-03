@@ -8,7 +8,7 @@
     {
       "name": "lancedb",
       "source": "./plugins/lancedb",
-      "description": "Write, review, debug, and document LanceDB pipelines in Python and TypeScript that work across local LanceDB OSS tables and remote LanceDB Enterprise/Cloud tables.",
+      "description": "Write, review, debug, and document LanceDB pipelines in Python and TypeScript that work with both LanceDB Embedded and LanceDB Enterprise.",
       "version": "0.1.0",
       "author": {
         "name": "LanceDB"

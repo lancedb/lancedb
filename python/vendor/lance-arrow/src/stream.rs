@@ -8,16 +8,21 @@ use arrow_array::RecordBatch;
 use arrow_schema::{ArrowError, SchemaRef};
 use futures::stream::{self, Stream, StreamExt};
 use std::pin::Pin;
+use std::vec::IntoIter;
 
 use crate::deepcopy::deep_copy_batch_sliced;
 
 /// Rechunks a stream of [`RecordBatch`] so that each output batch has
-/// approximately `target_bytes` of array data.
+/// approximately `max_bytes` of array data.
 ///
 /// Small input batches are accumulated (by concatenation) until at least
 /// `min_bytes` of data has been collected. If the resulting batch exceeds
 /// `max_bytes`, it is sliced into roughly equal pieces of ~`max_bytes`
 /// (assuming uniform row sizes).
+///
+/// Slices share the input's buffers, so their array memory sizes may still
+/// report the full parent allocation. Once split, all slices are delivered
+/// directly, including a final slice smaller than `min_bytes`.
 pub fn rechunk_stream_by_size<S, E>(
     input: S,
     input_schema: SchemaRef,
@@ -74,6 +79,7 @@ where
         RechunkState {
             input: Box::pin(input),
             accumulated: Vec::new(),
+            slices: Vec::new().into_iter(),
             acc_bytes: 0,
             done: false,
             input_schema,
@@ -82,6 +88,12 @@ where
             deep_copy,
         },
         |mut state| async move {
+            // These slices are already sized. Measuring their shared buffers
+            // again would repeatedly split the tail using the parent size.
+            if let Some(batch) = state.slices.next() {
+                return Ok(Some((batch, state)));
+            }
+
             if state.done && state.accumulated.is_empty() {
                 return Ok(None);
             }
@@ -106,17 +118,6 @@ where
                 return Ok(None);
             }
 
-            // Fast path: if the first accumulated batch already meets the
-            // byte threshold, deliver it directly instead of concatenating
-            // everything together (which would just get sliced back apart).
-            if state.accumulated.len() > 1
-                && state.accumulated[0].get_array_memory_size() >= state.min_bytes
-            {
-                let b = state.accumulated.remove(0);
-                state.acc_bytes -= b.get_array_memory_size();
-                return Ok(Some((b, state)));
-            }
-
             let batch = if state.accumulated.len() == 1 {
                 state.accumulated.pop().unwrap()
             } else {
@@ -132,19 +133,9 @@ where
             let mut slices =
                 slice_batch(batch, state.max_bytes, state.deep_copy).map_err(E::from)?;
 
-            if slices.len() == 1 {
-                Ok(Some((slices.pop().unwrap(), state)))
-            } else {
-                let first = slices.remove(0);
-
-                // Stash leftover slices for subsequent iterations.
-                for a in &slices {
-                    state.acc_bytes += a.get_array_memory_size();
-                }
-                state.accumulated = slices;
-
-                Ok(Some((first, state)))
-            }
+            let first = slices.remove(0);
+            state.slices = slices.into_iter();
+            Ok(Some((first, state)))
         },
     )
 }
@@ -206,12 +197,13 @@ fn slice_batch(
     Ok(result)
 }
 
-/// Internal state for [`rechunk_stream`].
+/// Internal state for [`rechunk_stream_by_size`].
 ///
 /// Kept as a named struct so the `try_unfold` closure stays readable.
 struct RechunkState<S> {
     input: Pin<Box<S>>,
     accumulated: Vec<RecordBatch>,
+    slices: IntoIter<RecordBatch>,
     acc_bytes: usize,
     done: bool,
     input_schema: SchemaRef,
@@ -339,9 +331,9 @@ mod tests {
 
     #[test]
     fn test_sliced_leftovers_are_not_recombined() {
-        // Key test for the fast-path optimisation. When a large batch is
-        // sliced, leftover slices should be delivered one-at-a-time without
-        // being concatenated back together.  We verify this by checking that
+        // When a large batch is sliced, leftover slices should be delivered
+        // one at a time without being split again or concatenated back
+        // together. We verify zero-copy behavior by checking that
         // every output buffer pointer falls inside the original batch's
         // allocation (i.e. they are all zero-copy slices, not fresh copies).
         let batch = make_batch(1000);
@@ -354,7 +346,11 @@ mod tests {
         let result = collect_rechunked(vec![batch], bytes / 8, bytes / 4);
 
         assert_eq!(total_rows(&result), 1000);
-        assert!(result.len() >= 4);
+        assert_eq!(
+            result.iter().map(RecordBatch::num_rows).collect::<Vec<_>>(),
+            vec![250, 250, 250, 250],
+            "leftover slices must not be split again using the parent buffer size"
+        );
 
         for (i, b) in result.iter().enumerate() {
             let ptr = b.column(0).to_data().buffers()[0].as_ptr() as usize;
@@ -381,6 +377,7 @@ mod tests {
         // After a large batch is fully drained, subsequent small batches
         // should be accumulated normally.
         let large = make_batch(1000);
+        let large_bytes = large.get_array_memory_size();
         let small_bytes = make_batch(10).get_array_memory_size();
         let batches = vec![
             large,
@@ -390,12 +387,12 @@ mod tests {
             make_batch(10),
             make_batch(10),
         ];
-        let result = collect_rechunked(batches, small_bytes * 3, small_bytes * 100);
+        let result = collect_rechunked(batches, small_bytes * 3, large_bytes / 4);
         assert_eq!(total_rows(&result), 1050);
-        // The large batch should appear (possibly sliced) followed by
-        // concatenated small batches, so we should have fewer output batches
-        // than the 6 inputs.
-        assert!(result.len() < 6);
+        assert_eq!(
+            result.iter().map(RecordBatch::num_rows).collect::<Vec<_>>(),
+            vec![250, 250, 250, 250, 30, 20]
+        );
     }
 
     #[test]
@@ -441,10 +438,9 @@ mod tests {
         let bytes = batch.get_array_memory_size();
         let result = collect_rechunked(vec![batch], 0, bytes / 4);
         assert_eq!(total_rows(&result), 1000);
-        assert!(
-            result.len() >= 4,
-            "expected at least 4 slices, got {}",
-            result.len()
+        assert_eq!(
+            result.iter().map(RecordBatch::num_rows).collect::<Vec<_>>(),
+            vec![250, 250, 250, 250]
         );
     }
 
@@ -473,6 +469,25 @@ mod tests {
 
     fn variable_schema() -> SchemaRef {
         Arc::new(Schema::new(vec![Field::new("s", DataType::Utf8, false)]))
+    }
+
+    #[test]
+    fn test_variable_length_tail_is_not_resliced() {
+        let batch = make_variable_batch(100, 256, usize::MAX, 256);
+        let bytes = batch.get_array_memory_size();
+        let max_bytes = bytes - bytes / 4;
+        let input = stream::iter(vec![Ok::<_, ArrowError>(batch)]);
+        let rechunked = rechunk_stream_by_size(input, variable_schema(), max_bytes, max_bytes);
+        let result: Vec<_> = block_on(rechunked.collect::<Vec<_>>())
+            .into_iter()
+            .map(Result::unwrap)
+            .collect();
+
+        assert_eq!(
+            result.iter().map(RecordBatch::num_rows).collect::<Vec<_>>(),
+            vec![75, 25]
+        );
+        assert_eq!(total_rows(&result), 100);
     }
 
     fn collect_rechunked_variable(

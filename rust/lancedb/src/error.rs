@@ -6,9 +6,96 @@ use std::sync::{Arc, PoisonError};
 
 use arrow_schema::ArrowError;
 use datafusion_common::DataFusionError;
+#[cfg(feature = "remote")]
+use serde::Deserialize;
 use snafu::Snafu;
 
 pub(crate) type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+/// Stable resource details carried by a structured remote HTTP error.
+#[cfg(feature = "remote")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct HttpErrorDetails {
+    /// Machine-readable error code from the server.
+    pub error_code: String,
+    /// The kind of resource named by the error.
+    pub resource_kind: String,
+    /// The leaf name of the resource.
+    pub resource_name: String,
+    /// The parent namespace path of the resource.
+    pub namespace_path: Vec<String>,
+}
+
+#[cfg(feature = "remote")]
+#[derive(Debug)]
+pub(crate) struct HttpErrorSource {
+    message: String,
+    details: Option<HttpErrorDetails>,
+}
+
+#[cfg(feature = "remote")]
+impl HttpErrorSource {
+    pub(crate) fn new(message: String, response_body: Option<&str>) -> Self {
+        let details = response_body.and_then(parse_http_error_details);
+        Self { message, details }
+    }
+}
+
+#[cfg(feature = "remote")]
+impl Display for HttpErrorSource {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+#[cfg(feature = "remote")]
+impl std::error::Error for HttpErrorSource {}
+
+#[cfg(feature = "remote")]
+#[derive(Deserialize)]
+struct HttpResponseBody {
+    error_code: String,
+    resource: HttpResponseResource,
+}
+
+#[cfg(feature = "remote")]
+#[derive(Deserialize)]
+struct HttpResponseResource {
+    kind: String,
+    name: String,
+    namespace_path: Vec<String>,
+}
+
+#[cfg(feature = "remote")]
+fn parse_http_error_details(response_body: &str) -> Option<HttpErrorDetails> {
+    let body: HttpResponseBody = serde_json::from_str(response_body).ok()?;
+    Some(HttpErrorDetails {
+        error_code: body.error_code,
+        resource_kind: body.resource.kind,
+        resource_name: body.resource.name,
+        namespace_path: body.resource.namespace_path,
+    })
+}
+
+// reqwest's Display omits the timeout cause. Add guidance at display time so
+// callers still receive the original typed source and its full error chain.
+#[cfg(feature = "remote")]
+fn http_timeout_hint(source: &(dyn std::error::Error + 'static)) -> &'static str {
+    match source.downcast_ref::<reqwest::Error>() {
+        Some(error) if error.is_timeout() && error.is_connect() => {
+            "; connection timed out. Check client_config.timeout_config.connect_timeout \
+             (LANCE_CLIENT_CONNECT_TIMEOUT) and client_config.timeout_config.timeout \
+             (LANCE_CLIENT_TIMEOUT) if configured"
+        }
+        Some(error) if error.is_timeout() => {
+            "; request timed out. For slow uploads or responses, check \
+             client_config.timeout_config.read_timeout (LANCE_CLIENT_READ_TIMEOUT) \
+             and client_config.timeout_config.timeout (LANCE_CLIENT_TIMEOUT) if configured"
+        }
+        _ => "",
+    }
+}
 
 /// Why a job failed, to whatever precision the backend provides.
 ///
@@ -111,7 +198,10 @@ pub enum Error {
     #[snafu(display("lance error: {source}"))]
     Lance { source: lance::Error },
     #[cfg(feature = "remote")]
-    #[snafu(display("Http error: (request_id={request_id}) {source}"))]
+    #[snafu(display(
+        "Http error: (request_id={request_id}) {source}{}",
+        http_timeout_hint(source.as_ref())
+    ))]
     Http {
         #[snafu(source(from(reqwest::Error, Box::new)))]
         source: Box<dyn std::error::Error + Send + Sync>,
@@ -127,7 +217,8 @@ pub enum Error {
         "Hit retry limit for request_id={request_id} (\
         request_failures={request_failures}/{max_request_failures}, \
         connect_failures={connect_failures}/{max_connect_failures}, \
-        read_failures={read_failures}/{max_read_failures}): {source}"
+        read_failures={read_failures}/{max_read_failures}): {source}{}",
+        http_timeout_hint(source.as_ref())
     ))]
     Retry {
         request_id: String,
@@ -221,6 +312,23 @@ fn has_unsupported_local_filesystem_source(error: &(dyn std::error::Error + 'sta
 }
 
 impl Error {
+    /// Structured resource details reported by a remote HTTP error.
+    ///
+    /// Older servers do not include these fields, in which case this returns
+    /// `None` and callers should treat the error as a generic HTTP failure.
+    #[cfg(feature = "remote")]
+    pub fn http_error_details(&self) -> Option<&HttpErrorDetails> {
+        match self {
+            Self::Http { source, .. } => source
+                .downcast_ref::<HttpErrorSource>()
+                .and_then(|source| source.details.as_ref()),
+            Self::Retry { source, .. } => source
+                .downcast_ref::<Self>()
+                .and_then(Self::http_error_details),
+            _ => None,
+        }
+    }
+
     fn from_box_error(mut source: Box<dyn std::error::Error + Send + Sync>) -> Self {
         source = match source.downcast::<Self>() {
             Ok(e) => match *e {
@@ -313,6 +421,20 @@ impl From<candle_core::Error> for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "remote")]
+    #[test]
+    fn non_timeout_http_error_message_is_unchanged() {
+        let error = Error::Http {
+            source: "server error".into(),
+            request_id: "test".into(),
+            status_code: Some(reqwest::StatusCode::INTERNAL_SERVER_ERROR),
+        };
+        assert_eq!(
+            error.to_string(),
+            "Http error: (request_id=test) server error"
+        );
+    }
 
     #[test]
     fn unsupported_filesystem_operations_have_actionable_error() {

@@ -101,6 +101,38 @@ AnalyzeExec verbose=true, metrics=[]
 
 ***
 
+### approxMode()
+
+```ts
+approxMode(approxMode): VectorQuery
+```
+
+Set the speed / accuracy tradeoff to use for approximate search
+
+This currently affects RQ-quantized indexes, such as IVF_RQ, and
+prefiltered search on HNSW indexes, where "fast" enables the ACORN
+traversal. Other index types ignore this setting.
+
+"fast" favors lower latency and may reduce recall, "normal" (the default)
+uses the index's default balance, and "accurate" favors higher recall and
+may increase latency.
+
+#### Parameters
+
+* **approxMode**: `"fast"` \| `"normal"` \| `"accurate"`
+
+#### Returns
+
+[`VectorQuery`](VectorQuery.md)
+
+#### Example
+
+```ts
+table.vectorSearch([0.1, 0.2]).approxMode("fast").limit(10);
+```
+
+***
+
 ### bypassVectorIndex()
 
 ```ts
@@ -825,29 +857,34 @@ where(predicate): this
 
 A filter statement to be applied to this query.
 
-The filter should be supplied as an SQL query string.  For example:
+The filter may be an SQL query string or an expression built with `col`,
+which preserves case-sensitive column names. For example:
 
 #### Parameters
 
-* **predicate**: `string`
+* **predicate**: `string` \| [`Expr`](Expr.md)
 
 #### Returns
 
 `this`
 
-#### Example
+#### Examples
 
 ```ts
 x > 10
 y > 0 AND y < 100
 x > 5 OR y = 'test'
+```
+
+```ts
+table.query().where(col("firstName").eq("Alice"));
+```
 
 Filtering performance can often be improved by creating a scalar index
 on the filter column(s).
 
 Calling this multiple times combines the filters with a logical AND rather
 than replacing the previous filter.
-```
 
 #### Inherited from
 

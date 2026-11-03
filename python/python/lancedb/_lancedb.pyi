@@ -1,6 +1,17 @@
 from datetime import date, datetime, timedelta
 from decimal import Decimal
-from typing import Dict, List, Optional, Sequence, Tuple, Any, TypedDict, Union, Literal
+from typing import (
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+    Any,
+    TypedDict,
+    Union,
+    Literal,
+)
 from uuid import UUID
 
 import pyarrow as pa
@@ -13,6 +24,7 @@ from .index import (
     Bitmap,
     LabelList,
     Fm,
+    NGram,
     HnswPq,
     HnswSq,
     HnswFlat,
@@ -26,10 +38,18 @@ from lance_namespace import (
 from .remote import ClientConfig
 from .types import BaseTokenizerType
 
+__version__: str
+_experimental_functions_enabled: bool
+
+def _doc_url(campaign: str) -> str: ...
+def _append_doc_url(message: str, campaign: str) -> str: ...
+def _parse_field_path(path: str) -> List[str]: ...
+
 IvfHnswPq: type[HnswPq] = HnswPq
 IvfHnswSq: type[HnswSq] = HnswSq
 IvfHnswFlat: type[HnswFlat] = HnswFlat
 AnalyzePlanDistributedMetrics = Literal["aggregate", "per_worker", "full"]
+__version__: str
 
 class MetricPoint:
     name: str
@@ -63,6 +83,11 @@ def tokenize(
     ngram_min_length: int = 3,
     ngram_max_length: int = 3,
     prefix_only: bool = False,
+    analyzer: Optional[Literal["text", "code"]] = None,
+    split_identifiers: Optional[bool] = None,
+    split_on_numerics: Optional[bool] = None,
+    preserve_original: Optional[bool] = None,
+    index_operators: Optional[bool] = None,
 ) -> List["FtsToken"]: ...
 
 class PyExpr:
@@ -108,6 +133,16 @@ class Session:
     @property
     def approx_num_items(self) -> int: ...
 
+class GpuClass:
+    name: str
+    resource_name: str
+    gpu_model: Optional[str]
+    gpu_memory_bytes: Optional[int]
+    max_gpu_count_per_worker: Optional[int]
+    cpu_millis: Optional[int]
+    memory_bytes: Optional[int]
+    ephemeral_storage_bytes: Optional[int]
+
 class Connection(object):
     uri: str
     async def is_open(self): ...
@@ -134,6 +169,8 @@ class Connection(object):
         self,
         namespace_path: List[str],
     ) -> DescribeNamespaceResponse: ...
+    async def namespace_exists(self, namespace_id: List[str]) -> bool: ...
+    async def table_exists(self, table_id: List[str]) -> bool: ...
     def list_tables(
         self,
         namespace_path: Optional[List[str]] = None,
@@ -147,6 +184,7 @@ class Connection(object):
         limit: Optional[int],
     ) -> list[str]: ...  # Deprecated: Use list_tables instead
     async def open_job(self, job_id: str) -> Job: ...
+    async def list_gpu_classes(self) -> list[GpuClass]: ...
     async def create_function_async(
         self, request_json: str, namespace_path: Optional[List[str]] = None
     ) -> Job: ...
@@ -166,6 +204,22 @@ class Connection(object):
     async def drop_function_async(
         self, name: str, version: str, namespace_path: Optional[List[str]] = None
     ) -> Tuple[bool, Job]: ...
+    async def create_storage_integration(
+        self, name: str, request: str, namespace_path: Optional[List[str]] = None
+    ) -> str: ...
+    async def describe_storage_integration(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> str: ...
+    def list_storage_integrations(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> NameListing: ...
+    async def drop_storage_integration(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> None: ...
     async def create_secret(
         self, name: str, value: str, namespace_path: Optional[List[str]] = None
     ) -> None: ...
@@ -198,6 +252,25 @@ class Connection(object):
         self, name: str, namespace_path: Optional[List[str]] = None
     ) -> Job: ...
     def list_views(
+        self,
+        namespace_path: Optional[List[str]] = None,
+        *,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> NameListing: ...
+    async def create_property_graph(
+        self,
+        name: str,
+        definition_json: str,
+        namespace_path: Optional[List[str]] = None,
+    ) -> str: ...
+    async def describe_property_graph(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> str: ...
+    async def drop_property_graph(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> None: ...
+    def list_property_graphs(
         self,
         namespace_path: Optional[List[str]] = None,
         *,
@@ -320,11 +393,16 @@ class Job:
     @property
     def id(self) -> Optional[str]: ...
     @property
+    def job_type(self) -> Optional[str]: ...
+    @property
     def _state(self) -> Optional[str]: ...
     @property
     def _description(self) -> Optional[JobDescription]: ...
     async def status(self) -> str: ...
-    async def wait(self) -> Optional[str]: ...
+    async def wait(
+        self,
+        progress: Optional[Callable[[dict[str, Any]], None]] = None,
+    ) -> Optional[str]: ...
     async def cancel(self) -> None: ...
     async def refresh(self) -> None: ...
     async def events(
@@ -345,6 +423,10 @@ class JobInfo:
     def state(self) -> str: ...
     @property
     def created_at_millis(self) -> int: ...
+    @property
+    def progress(self) -> Optional[dict[str, Any]]: ...
+    @property
+    def paused(self) -> bool: ...
 
 class SessionStatus:
     @property
@@ -403,6 +485,8 @@ class JobDescription:
     @property
     def result(self) -> Optional[Any]: ...
     @property
+    def progress(self) -> Optional[dict[str, Any]]: ...
+    @property
     def failure(self) -> Optional[JobFailureInfo]: ...
 
 class SqlQuery:
@@ -455,6 +539,7 @@ class Table:
             Bitmap,
             LabelList,
             Fm,
+            NGram,
             FTS,
         ],
         replace: Optional[bool],
@@ -477,6 +562,7 @@ class Table:
             Bitmap,
             LabelList,
             Fm,
+            NGram,
             FTS,
         ],
         replace: Optional[bool],
@@ -502,6 +588,9 @@ class Table:
     ) -> list[FtsToken]: ...
     async def delete(self, filter: Union[str, PyExpr]) -> DeleteResult: ...
     async def add_columns(self, columns: list[tuple[str, str]]) -> AddColumnsResult: ...
+    async def add_columns_from_reader(
+        self, data: pa.RecordBatchReader
+    ) -> AddColumnsResult: ...
     async def add_computed_columns(
         self,
         columns: list[tuple[str, str]],
@@ -515,8 +604,22 @@ class Table:
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[int] = None,
     ) -> AddColumnsResult: ...
-    async def refresh_column(self, column: str) -> RefreshColumnResult: ...
-    async def refresh_column_async(self, column: str) -> Job: ...
+    async def refresh_column(
+        self,
+        column: str,
+        *,
+        batch_size: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
+    ) -> RefreshColumnResult: ...
+    async def refresh_column_async(
+        self,
+        column: str,
+        *,
+        batch_size: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
+    ) -> Job: ...
     async def function_errors(
         self,
         job_id: Optional[str] = None,
@@ -524,10 +627,10 @@ class Table:
         limit: Optional[int] = None,
     ) -> FunctionErrors: ...
     async def refresh_materialized_view(
-        self, source_version: Optional[int] = None
+        self, source_version: Optional[int] = None, *, full: bool = False
     ) -> RefreshMaterializedViewResult: ...
     async def refresh_materialized_view_async(
-        self, source_version: Optional[int] = None
+        self, source_version: Optional[int] = None, *, full: bool = False
     ) -> Job: ...
     async def materialized_view_definition(self) -> str: ...
     async def add_columns_with_schema(self, schema: pa.Schema) -> AddColumnsResult: ...
@@ -542,6 +645,7 @@ class Table:
         *,
         cleanup_since_ms: Optional[int] = None,
         delete_unverified: Optional[bool] = None,
+        compaction_options: Optional[Dict[str, Any]] = None,
     ) -> OptimizeStats: ...
     async def uri(self) -> str: ...
     async def initial_storage_options(self) -> Optional[Dict[str, str]]: ...
@@ -550,6 +654,9 @@ class Table:
     async def enable_rte(self, spec: RTEWriteSpec) -> None: ...
     async def disable_rte(self) -> None: ...
     async def get_rte_spec(self) -> Optional[RTEWriteSpec]: ...
+    async def get_table_overrides(self) -> str: ...
+    async def update_table_overrides(self, overrides_json: str) -> str: ...
+    async def reset_table_overrides(self) -> str: ...
     # WAL-PK-FUSION: delete both.
     def hybrid_pk_fusion_learned(self) -> bool: ...
     def note_hybrid_pk_fusion(self) -> None: ...
@@ -578,6 +685,7 @@ class Table:
     async def fetch_blob_files(
         self, column: str, row_ids: list[int]
     ) -> list[Optional[BlobFile]]: ...
+    async def open_blob_file(self, descriptor: str) -> BlobFile: ...
     def vector_search(self) -> VectorQuery: ...
 
 class Tags:
@@ -740,6 +848,7 @@ class VectorQuery:
     def search_effort(self, search_effort: Optional[float]): ...
     def minimum_nprobes(self, minimum_nprobes: int): ...
     def maximum_nprobes(self, maximum_nprobes: int): ...
+    def approx_mode(self, approx_mode: str): ...
     def bypass_vector_index(self): ...
     def nearest_to_text(self, query: dict) -> HybridQuery: ...
     def order_by(self, ordering: Optional[List[ColumnOrdering]]): ...
@@ -766,6 +875,7 @@ class HybridQuery:
     def search_effort(self, search_effort: Optional[float]): ...
     def minimum_nprobes(self, minimum_nprobes: int): ...
     def maximum_nprobes(self, maximum_nprobes: int): ...
+    def approx_mode(self, approx_mode: str): ...
     def bypass_vector_index(self): ...
     def order_by(self, ordering: Optional[List[ColumnOrdering]]): ...
     def to_vector_query(self) -> VectorQuery: ...
@@ -797,6 +907,7 @@ class PyQueryRequest:
     lower_bound: Optional[float]
     upper_bound: Optional[float]
     ef: Optional[int]
+    approx_mode: Optional[str]
     refine_factor: Optional[int]
     distance_type: Optional[str]
     bypass_vector_index: Optional[bool]
@@ -893,6 +1004,7 @@ class FunctionErrorRecord:
     job_id: str
     fragment_id: int
     row_offset: Optional[int]
+    row_address: Optional[int]
     column: str
     function: str
     function_version: str
@@ -915,9 +1027,9 @@ class FunctionErrors:
 class RefreshMaterializedViewResult:
     @staticmethod
     def from_json(value: str) -> RefreshMaterializedViewResult: ...
-    mode: str
-    rows_written: int
-    source_version: int
+    mode: Optional[str]
+    rows_written: Optional[int]
+    source_version: Optional[int]
     version: int
 
 class AlterColumnsResult:
@@ -983,7 +1095,7 @@ class Catalog:
     ) -> Connection: ...
     async def connect_database(self, name: str) -> Connection: ...
     async def drop_database(
-        self, name: str, *, ignore_missing: bool = False
+        self, name: str, *, ignore_missing: bool = False, cascade: bool = False
     ) -> None: ...
     def list_databases(
         self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
@@ -1069,6 +1181,10 @@ class AuthzObject:
     @staticmethod
     def view(
         database: str, namespace_path: Sequence[str], name: str
+    ) -> AuthzObject: ...
+    @staticmethod
+    def storage_integration(
+        database: str, namespace: Sequence[str], name: str
     ) -> AuthzObject: ...
     @staticmethod
     def secret(

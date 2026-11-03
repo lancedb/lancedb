@@ -4,9 +4,10 @@ sidebarTitle: "Prepared Statements"
 description: "What a deployment does when a Flight SQL client prepares a statement or binds parameter values."
 icon: bolt
 keywords: ["prepared statement", "flight sql", "parameters", "bind"]
+availability:
+  embedded: unavailable
+  enterprise: available
 ---
-
-<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 A Flight SQL client can prepare a statement before it runs it. A deployment
 accepts that, but it keeps no plan between runs and does not accept parameter
@@ -49,6 +50,13 @@ SELECT id, title FROM documents WHERE category = 'news' AND score > 0.5
 Do not put untrusted input, such as a value from a user or a request, directly
 into the statement text. Quoting it does not protect the statement the way
 binding a parameter would.
+
+<Note>
+This limitation is specific to the Flight SQL protocol's `PREPARE`/bind step.
+The Python SDK's `execute_query(sql, parameters=...)` binds parameter values
+through a separate, LanceDB-specific mechanism -- see
+[Parameters in SQL queries](/basics/sql#parameters).
+</Note>
 
 ## When to use prepared statements {#when}
 

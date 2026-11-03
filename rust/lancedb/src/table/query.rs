@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::sync::Arc;
+use std::{
+    collections::{HashSet, VecDeque},
+    sync::Arc,
+};
 
 mod lsm;
 
@@ -17,15 +20,24 @@ use arrow::array::{AsArray, FixedSizeListBuilder, Float32Builder};
 use arrow::datatypes::{Float32Type, UInt8Type};
 use arrow_array::Array;
 use arrow_schema::{DataType, Schema};
-use datafusion_common::{Column, DataFusionError, SchemaError};
-use datafusion_physical_plan::ExecutionPlan;
+use datafusion_common::{Column, DataFusionError, ScalarValue, SchemaError};
+use datafusion_expr::Operator;
+use datafusion_physical_expr::expressions::{BinaryExpr, Column as PhysicalColumn, Literal};
+use datafusion_physical_plan::PhysicalExpr;
 use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::repartition::RepartitionExec;
 use datafusion_physical_plan::union::UnionExec;
+use datafusion_physical_plan::{ExecutionPlan, replace_children_if_necessary};
 use lance::dataset::mem_wal::DatasetMemWalExt;
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::scanner::Scanner;
+use lance::index::DatasetIndexInternalExt;
+use lance::io::exec::{ANNIvfBatchExec, ANNIvfSubIndexExec};
 use lance_datafusion::exec::{analyze_plan as lance_analyze_plan, execute_plan};
+use lance_index::IndexType;
+use lance_index::metrics::NoOpMetricsCollector;
+use lance_index::vector::DIST_COL;
+use lance_linalg::distance::DistanceType as LanceDistanceType;
 use lance_namespace::LanceNamespace;
 use lance_namespace::models::{
     QueryTableRequest as NsQueryTableRequest, QueryTableRequestColumns,
@@ -409,10 +421,30 @@ pub async fn create_plan(
         scanner.order_by(Some(order_by.clone()))?;
     }
 
-    scanner
+    let mut plan = scanner
         .create_plan()
         .await
-        .map_err(|error| enrich_lance_field_not_found(error, schema))
+        .map_err(|error| enrich_lance_field_not_found(error, schema))?;
+    let normalized_l2_indices = normalized_l2_ann_indices(plan.as_ref()).await?;
+    if !normalized_l2_indices.is_empty() {
+        // Rebuild only the affected ANN nodes with internal normalized squared-L2
+        // bounds. Exact branches keep the public cosine bounds from `plan`.
+        let internal_plan = if query.lower_bound.is_some() || query.upper_bound.is_some() {
+            scanner.distance_range(
+                query.lower_bound.map(|bound| bound / COSINE_ANN_SCALE),
+                query.upper_bound.map(|bound| bound / COSINE_ANN_SCALE),
+            );
+            scanner
+                .create_plan()
+                .await
+                .map_err(|error| enrich_lance_field_not_found(error, schema))?
+        } else {
+            plan.clone()
+        };
+        plan = normalize_ann_branches(plan, internal_plan, &normalized_l2_indices)?;
+    }
+
+    Ok(plan)
 }
 
 /// Replace DataFusion's top-level field candidates with qualified leaf paths.
@@ -503,6 +535,242 @@ fn leaf_field_paths(schema: &Schema) -> Vec<String> {
 }
 
 //Helper functions below
+
+const COSINE_ANN_SCALE: f32 = 0.5;
+
+#[derive(Clone, Copy)]
+enum AnnExecRef<'a> {
+    Single(&'a ANNIvfSubIndexExec),
+    Batch(&'a ANNIvfBatchExec),
+}
+
+impl<'a> AnnExecRef<'a> {
+    fn from_plan(plan: &'a dyn ExecutionPlan) -> Option<Self> {
+        if let Some(single) = plan.downcast_ref::<ANNIvfSubIndexExec>() {
+            return Some(Self::Single(single));
+        }
+        plan.downcast_ref::<ANNIvfBatchExec>().map(Self::Batch)
+    }
+
+    fn query(self) -> &'a lance_index::vector::Query {
+        match self {
+            Self::Single(ann) => ann.query(),
+            Self::Batch(ann) => ann.query(),
+        }
+    }
+
+    fn dataset(self) -> &'a Arc<lance::Dataset> {
+        match self {
+            Self::Single(ann) => ann.dataset(),
+            Self::Batch(ann) => ann.dataset(),
+        }
+    }
+
+    fn indices(self) -> &'a [lance_table::format::IndexMetadata] {
+        match self {
+            Self::Single(ann) => ann.indices(),
+            Self::Batch(ann) => ann.indices(),
+        }
+    }
+
+    fn query_count(self) -> Option<usize> {
+        match self {
+            Self::Single(_) => None,
+            Self::Batch(ann) => Some(ann.query_count()),
+        }
+    }
+
+    fn same_kind(self, other: Self) -> bool {
+        matches!(
+            (self, other),
+            (Self::Single(_), Self::Single(_)) | (Self::Batch(_), Self::Batch(_))
+        )
+    }
+}
+
+/// Find ANN index segments whose scores use normalized squared L2 for cosine search.
+///
+/// Cosine PQ/SQ/RQ indices normalize their vectors and use squared L2 internally.  This
+/// preserves ranking, but squared L2 over unit vectors is twice the cosine distance.  Flat
+/// cosine indices calculate cosine directly, so they are not included.
+async fn normalized_l2_ann_indices(plan: &dyn ExecutionPlan) -> Result<HashSet<String>> {
+    let mut ann_plans = Vec::new();
+    find_ann_plans(plan, &mut ann_plans);
+
+    let mut checked = HashSet::new();
+    let mut normalized_l2 = HashSet::new();
+    for ann in ann_plans {
+        if ann.query().metric_type != Some(LanceDistanceType::Cosine) {
+            continue;
+        }
+        for index in ann.indices() {
+            let uuid = index.uuid.to_string();
+            if !checked.insert(uuid.clone()) {
+                continue;
+            }
+            let vector_index = ann
+                .dataset()
+                .open_vector_index(&ann.query().column, &index.uuid, &NoOpMetricsCollector)
+                .await?;
+            if matches!(
+                vector_index.index_type(),
+                IndexType::IvfPq
+                    | IndexType::IvfSq
+                    | IndexType::IvfRq
+                    | IndexType::IvfHnswPq
+                    | IndexType::IvfHnswSq
+            ) {
+                normalized_l2.insert(uuid);
+            }
+        }
+    }
+    Ok(normalized_l2)
+}
+
+/// Normalize affected ANN outputs before their parent plan nodes consume them.
+///
+/// This is used by planners that do not support distance ranges, such as the MemWAL
+/// LSM planner. The standard scanner path rebuilds a second plan when it also needs
+/// to translate range bounds, then calls [`normalize_ann_branches`] directly.
+pub(super) async fn normalize_cosine_ann_branches(
+    plan: Arc<dyn ExecutionPlan>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let normalized_l2_indices = normalized_l2_ann_indices(plan.as_ref()).await?;
+    if normalized_l2_indices.is_empty() {
+        return Ok(plan);
+    }
+    normalize_ann_branches(plan.clone(), plan, &normalized_l2_indices)
+}
+
+fn find_ann_plans<'a>(plan: &'a dyn ExecutionPlan, ann_plans: &mut Vec<AnnExecRef<'a>>) {
+    if let Some(ann) = AnnExecRef::from_plan(plan) {
+        ann_plans.push(ann);
+        return;
+    }
+    for child in plan.children() {
+        find_ann_plans(child.as_ref(), ann_plans);
+    }
+}
+
+fn collect_ann_plans(
+    plan: &Arc<dyn ExecutionPlan>,
+    ann_plans: &mut VecDeque<Arc<dyn ExecutionPlan>>,
+) {
+    if AnnExecRef::from_plan(plan.as_ref()).is_some() {
+        ann_plans.push_back(plan.clone());
+        return;
+    }
+    for child in plan.children() {
+        collect_ann_plans(child, ann_plans);
+    }
+}
+
+/// Replace normalized-L2 ANN nodes with equivalent nodes that use internal bounds, then
+/// convert their output to the public cosine scale before any generic plan node consumes it.
+fn normalize_ann_branches(
+    public_plan: Arc<dyn ExecutionPlan>,
+    internal_plan: Arc<dyn ExecutionPlan>,
+    normalized_l2_indices: &HashSet<String>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let mut internal_ann_plans = VecDeque::new();
+    collect_ann_plans(&internal_plan, &mut internal_ann_plans);
+    let normalized =
+        replace_ann_branches(public_plan, &mut internal_ann_plans, normalized_l2_indices)?;
+    if !internal_ann_plans.is_empty() {
+        return Err(Error::Runtime {
+            message: "internal and public vector plans contained different ANN branches"
+                .to_string(),
+        });
+    }
+    Ok(normalized)
+}
+
+fn replace_ann_branches(
+    public_plan: Arc<dyn ExecutionPlan>,
+    internal_ann_plans: &mut VecDeque<Arc<dyn ExecutionPlan>>,
+    normalized_l2_indices: &HashSet<String>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    if let Some(public_ann) = AnnExecRef::from_plan(public_plan.as_ref()) {
+        let internal_plan = internal_ann_plans
+            .pop_front()
+            .ok_or_else(|| Error::Runtime {
+                message: "internal vector plan was missing an ANN branch".to_string(),
+            })?;
+        let internal_ann =
+            AnnExecRef::from_plan(internal_plan.as_ref()).ok_or_else(|| Error::Runtime {
+                message: "internal vector plan contained a non-ANN branch where an ANN branch was expected"
+                    .to_string(),
+            })?;
+        let same_indices = public_ann
+            .indices()
+            .iter()
+            .map(|index| &index.uuid)
+            .eq(internal_ann.indices().iter().map(|index| &index.uuid));
+        if !public_ann.same_kind(internal_ann)
+            || public_ann.query_count() != internal_ann.query_count()
+            || public_ann.query().column != internal_ann.query().column
+            || public_ann.query().metric_type != internal_ann.query().metric_type
+            || !same_indices
+        {
+            return Err(Error::Runtime {
+                message: "internal and public vector plans had mismatched ANN branches".to_string(),
+            });
+        }
+
+        let normalized_count = public_ann
+            .indices()
+            .iter()
+            .filter(|index| normalized_l2_indices.contains(&index.uuid.to_string()))
+            .count();
+        if normalized_count == 0 {
+            return Ok(public_plan);
+        }
+        if normalized_count != public_ann.indices().len() {
+            return Err(Error::Runtime {
+                message: "one ANN branch mixed public and normalized-L2 distance scales"
+                    .to_string(),
+            });
+        }
+        return scale_distance_column(internal_plan, COSINE_ANN_SCALE);
+    }
+
+    let children = public_plan
+        .children()
+        .into_iter()
+        .cloned()
+        .map(|child| replace_ann_branches(child, internal_ann_plans, normalized_l2_indices))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(replace_children_if_necessary(public_plan, children)?)
+}
+
+fn scale_distance_column(
+    plan: Arc<dyn ExecutionPlan>,
+    scale: f32,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let schema = plan.schema();
+    if schema.column_with_name(DIST_COL).is_none() {
+        return Ok(plan);
+    }
+
+    let expressions: Vec<(Arc<dyn PhysicalExpr>, String)> = schema
+        .fields()
+        .iter()
+        .enumerate()
+        .map(|(index, field)| {
+            let column: Arc<dyn PhysicalExpr> = Arc::new(PhysicalColumn::new(field.name(), index));
+            let expression = if field.name() == DIST_COL {
+                let scale: Arc<dyn PhysicalExpr> =
+                    Arc::new(Literal::new(ScalarValue::Float32(Some(scale))));
+                Arc::new(BinaryExpr::new(column, Operator::Multiply, scale))
+                    as Arc<dyn PhysicalExpr>
+            } else {
+                column
+            };
+            (expression, field.name().clone())
+        })
+        .collect();
+    Ok(Arc::new(ProjectionExec::try_new(expressions, plan)?))
+}
 
 // Take many execution plans and map them into a single plan that adds
 // a query_index column and unions them.
@@ -1621,6 +1889,354 @@ mod tests {
             display.contains("query_index"),
             "plan should add query_index column, got:\n{display}"
         );
+    }
+    #[rstest::rstest]
+    #[case::modern(false)]
+    #[case::legacy(true)]
+    #[tokio::test]
+    async fn test_cosine_pq_distance_uses_public_cosine_scale(#[case] legacy: bool) {
+        use arrow_array::{
+            Float32Array, Int32Array, RecordBatch,
+            types::{Float32Type, Int32Type},
+        };
+        use arrow_schema::{DataType, Field, Schema};
+
+        use crate::connect;
+        use crate::index::{Index, vector::IvfPqIndexBuilder};
+        use lance::index::{
+            DatasetIndexExt,
+            vector::{IndexFileVersion, VectorIndexParams},
+        };
+
+        fn normalized_vector(state: &mut u64, dimension: usize) -> Vec<f32> {
+            let mut vector = (0..dimension)
+                .map(|_| {
+                    *state = state
+                        .wrapping_mul(6_364_136_223_846_793_005)
+                        .wrapping_add(1);
+                    ((*state >> 32) as u32 as f32 / u32::MAX as f32) * 2.0 - 1.0
+                })
+                .collect::<Vec<_>>();
+            let norm = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
+            vector.iter_mut().for_each(|value| *value /= norm);
+            vector
+        }
+
+        fn distances(batches: &[RecordBatch]) -> Vec<f32> {
+            batches
+                .iter()
+                .flat_map(|batch| {
+                    batch[DIST_COL]
+                        .as_primitive::<Float32Type>()
+                        .values()
+                        .to_vec()
+                })
+                .collect()
+        }
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let dimension = 8;
+        let num_rows = 256;
+        let mut state = 42;
+        let values = (0..num_rows)
+            .flat_map(|_| normalized_vector(&mut state, dimension))
+            .collect::<Vec<_>>();
+        let query_vector = normalized_vector(&mut state, dimension);
+        let vectors = Arc::new(fixed_size_list_array(values, dimension as i32));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("vector", vectors.data_type().clone(), false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from_iter_values(0..num_rows)), vectors],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("test_cosine_pq_distance", batch)
+            .execute()
+            .await
+            .unwrap();
+        if legacy {
+            let mut dataset = (*table.dataset().unwrap().get().await.unwrap()).clone();
+            dataset
+                .create_index(
+                    &["vector"],
+                    IndexType::Vector,
+                    None,
+                    VectorIndexParams::ivf_pq(1, 8, 1, LanceDistanceType::Cosine, 10)
+                        .version(IndexFileVersion::Legacy),
+                    true,
+                )
+                .await
+                .unwrap();
+            table.dataset().unwrap().update(dataset);
+        } else {
+            table
+                .create_index(
+                    &["vector"],
+                    Index::IvfPq(
+                        IvfPqIndexBuilder::default()
+                            .distance_type(crate::DistanceType::Cosine)
+                            .num_partitions(1)
+                            .num_sub_vectors(1),
+                    ),
+                )
+                .execute()
+                .await
+                .unwrap();
+        }
+
+        let expected_index_version = if legacy { "Legacy" } else { "V3" };
+        let index_file_version = {
+            let dataset = table.dataset().unwrap().get().await.unwrap();
+            let metadata = dataset
+                .load_indices()
+                .await
+                .unwrap()
+                .first()
+                .unwrap()
+                .clone();
+            let index = dataset
+                .open_vector_index("vector", &metadata.uuid, &NoOpMetricsCollector)
+                .await
+                .unwrap();
+            index.statistics().unwrap()["index_file_version"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(index_file_version, expected_index_version);
+
+        let plan = table
+            .dataset()
+            .unwrap()
+            .get()
+            .await
+            .unwrap()
+            .scan()
+            .nearest("vector", &Float32Array::from(query_vector.clone()), 5)
+            .unwrap()
+            .create_plan()
+            .await
+            .unwrap();
+        let mut ann_plans = Vec::new();
+        find_ann_plans(plan.as_ref(), &mut ann_plans);
+        assert!(!ann_plans.is_empty());
+
+        let approximate = table
+            .vector_search(query_vector.as_slice())
+            .unwrap()
+            .limit(5)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let refined = table
+            .vector_search(query_vector.as_slice())
+            .unwrap()
+            .limit(5)
+            .refine_factor(1)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let approximate_distances = distances(&approximate);
+        let refined_distances = distances(&refined);
+        assert_eq!(approximate_distances.len(), 5);
+        assert_eq!(approximate_distances.len(), refined_distances.len());
+        for (approximate, refined) in approximate_distances.iter().zip(&refined_distances) {
+            assert!(
+                (approximate - refined).abs() < 1e-5,
+                "approximate cosine distance {approximate} did not use the public scale; refined distance was {refined}"
+            );
+        }
+
+        // Distance range bounds are public cosine distances too. Lance applies them to
+        // internal ANN scores, so the planner must translate the bounds before execution.
+        let nearest = approximate_distances[0];
+        let ranged = table
+            .vector_search(query_vector.as_slice())
+            .unwrap()
+            .limit(1)
+            .distance_range(Some(nearest - 1e-5), Some(nearest + 1e-5))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let ranged_distances = distances(&ranged);
+        assert_eq!(ranged_distances.len(), 1);
+        assert!((ranged_distances[0] - nearest).abs() < 1e-5);
+
+        if !legacy {
+            fn batch_distances_by_query(
+                batches: &[RecordBatch],
+                query_count: usize,
+            ) -> Vec<Vec<f32>> {
+                let mut distances = vec![Vec::new(); query_count];
+                for batch in batches {
+                    let query_index_column = batch["query_index"].as_primitive::<Int32Type>();
+                    let distance_column = batch[DIST_COL].as_primitive::<Float32Type>();
+                    for row in 0..batch.num_rows() {
+                        let query_index = query_index_column.value(row) as usize;
+                        distances[query_index].push(distance_column.value(row));
+                    }
+                }
+                distances
+            }
+
+            fn sorted(mut values: Vec<f32>) -> Vec<f32> {
+                values.sort_by(|left, right| left.partial_cmp(right).unwrap());
+                values
+            }
+
+            let batch_query = table
+                .vector_search(query_vector.as_slice())
+                .unwrap()
+                .add_query_vector(query_vector.as_slice())
+                .unwrap()
+                .nprobes(1)
+                .unwrap()
+                .limit(5);
+            let batch_plan = batch_query.explain_plan(false).await.unwrap();
+            assert!(batch_plan.contains("ANNIvfBatch"), "{batch_plan}");
+            let batched = batch_query
+                .execute()
+                .await
+                .unwrap()
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap();
+            let batched_distances = batch_distances_by_query(&batched, 2);
+            let expected_distances = sorted(approximate_distances.clone());
+            for (query_index, actual) in batched_distances.into_iter().enumerate() {
+                assert_eq!(
+                    actual.len(),
+                    expected_distances.len(),
+                    "query {query_index} returned the wrong number of rows"
+                );
+                for (actual, expected) in sorted(actual).into_iter().zip(&expected_distances) {
+                    assert!(
+                        (actual - expected).abs() < 1e-5,
+                        "batch distance {actual} for query {query_index} must use single-query public scale {expected}"
+                    );
+                }
+            }
+
+            let batched_ranged = table
+                .vector_search(query_vector.as_slice())
+                .unwrap()
+                .add_query_vector(query_vector.as_slice())
+                .unwrap()
+                .nprobes(1)
+                .unwrap()
+                .limit(1)
+                .distance_range(None, Some(nearest + 1e-5))
+                .execute()
+                .await
+                .unwrap()
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap();
+            let batched_ranged_distances = batch_distances_by_query(&batched_ranged, 2);
+            for (query_index, query_distances) in batched_ranged_distances.into_iter().enumerate() {
+                assert_eq!(
+                    query_distances.len(),
+                    1,
+                    "public cosine range must return one hit for query {query_index}"
+                );
+                assert!(
+                    (query_distances[0] - nearest).abs() < 1e-5,
+                    "ranged batch distance {} for query {query_index} must match {nearest}",
+                    query_distances[0]
+                );
+            }
+        }
+
+        let refined_ranged = table
+            .vector_search(query_vector.as_slice())
+            .unwrap()
+            .limit(1)
+            .refine_factor(1)
+            .distance_range(None, Some(nearest + 1e-5))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(
+            distances(&refined_ranged).len(),
+            1,
+            "refinement must not apply public cosine bounds to internal ANN scores"
+        );
+
+        let aliased = table
+            .vector_search(query_vector.as_slice())
+            .unwrap()
+            .limit(1)
+            .select(Select::dynamic(&[("aliased_distance", "_distance")]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let batch = &aliased[0];
+        let aliased_distance = batch["aliased_distance"]
+            .as_primitive::<Float32Type>()
+            .value(0);
+        let public_distance = batch[DIST_COL].as_primitive::<Float32Type>().value(0);
+        assert!(
+            (aliased_distance - public_distance).abs() < 1e-5,
+            "distance aliases and auto-projected distances must use the same public scale"
+        );
+
+        // Appended rows take an exact fallback branch. Its public range filter must stay
+        // independent of the translated ANN bounds before both branches are merged.
+        let mut orthogonal = normalized_vector(&mut state, dimension);
+        let projection = orthogonal
+            .iter()
+            .zip(&query_vector)
+            .map(|(left, right)| left * right)
+            .sum::<f32>();
+        for (value, query_value) in orthogonal.iter_mut().zip(&query_vector) {
+            *value -= projection * query_value;
+        }
+        let norm = orthogonal
+            .iter()
+            .map(|value| value * value)
+            .sum::<f32>()
+            .sqrt();
+        orthogonal.iter_mut().for_each(|value| *value /= norm);
+        let appended_vectors = Arc::new(fixed_size_list_array(orthogonal, dimension as i32));
+        let appended = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int32Array::from(vec![num_rows])), appended_vectors],
+        )
+        .unwrap();
+        table.add(appended).execute().await.unwrap();
+
+        let mixed = table
+            .vector_search(query_vector.as_slice())
+            .unwrap()
+            .limit(5)
+            .distance_range(None, Some(nearest + 1e-5))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let mixed_distances = distances(&mixed);
+        assert_eq!(mixed_distances.len(), 1);
+        assert!((mixed_distances[0] - nearest).abs() < 1e-5);
     }
 
     #[tokio::test]

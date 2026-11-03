@@ -180,6 +180,10 @@ abstract createMaterializedView(
 
 Define a materialized view named `name` over the table `source`.
 
+LanceDB Embedded creation and refresh require a source build with the
+`experimental-functions` Cargo feature, disabled in published packages.
+LanceDB Enterprise operations do not require this feature.
+
 The view is populated before creation returns. Set `withNoData` to create
 only its definition and empty backing table. The view is a normal table:
 it can be queried, indexed and searched, and it appears in `tableNames`.
@@ -432,8 +436,8 @@ abstract dropMaterializedView(name, namespacePath?): Promise<void>
 
 Drop the materialized view named `name`.
 
-The view may become unavailable before physical cleanup finishes. Use
-[dropMaterializedViewAsync](Connection.md#dropmaterializedviewasync) to retain and wait for the cleanup job.
+Remote drops wait for the SQL command to remove the catalog binding.
+Physical cleanup continues in the background.
 
 Rejects a table that exists but is not a materialized view.
 
@@ -455,8 +459,9 @@ Rejects a table that exists but is not a materialized view.
 abstract dropMaterializedViewAsync(name, namespacePath?): Promise<Job>
 ```
 
-Start dropping the materialized view named `name` and return its cleanup
-job without waiting for completion.
+Start dropping the materialized view named `name` and return its job.
+Remote jobs have type `query` and use the SQL query ID as `id`. Waiting
+confirms catalog removal; physical cleanup continues in the background.
 
 Rejects a table that exists but is not a materialized view.
 
@@ -553,10 +558,11 @@ on the returned job to know when cleanup has finished.
 abstract dropView(name, namespacePath?): Promise<void>
 ```
 
-Drop the view named `name` and wait for its definition to be deleted.
+Drop the view named `name` and wait for catalog removal.
 
 The tables it reads are untouched: a view holds no rows of its own. Use
-[dropViewAsync](Connection.md#dropviewasync) to retain the cleanup job instead of waiting on it.
+[dropViewAsync](Connection.md#dropviewasync) to retain its SQL query job. Completion confirms
+catalog removal; physical cleanup continues in the background.
 
 #### Parameters
 
@@ -576,11 +582,9 @@ The tables it reads are untouched: a view holds no rows of its own. Use
 abstract dropViewAsync(name, namespacePath?): Promise<Job>
 ```
 
-Start dropping the view named `name` and return the job deleting its
-definition, without waiting for completion.
-
-The name is free before this resolves. When nothing was bound to it, the
-returned job is already finished and has no id.
+Drop a view and return its SQL query job.
+The job has type `query` and its ID is the SQL query UUID. Waiting confirms
+catalog removal; physical cleanup continues in the background.
 
 #### Parameters
 
@@ -822,9 +826,10 @@ abstract renameTable(
 
 Rename a table.
 
-Currently only supported by LanceDB Cloud. Local OSS connections and
-namespace-backed connections (via [connectNamespace](../functions/connectNamespace.md)) reject with
-a "not supported" error.
+Supported in LanceDB Enterprise and by namespace backends that implement
+renaming. Directory namespaces support renaming tables resolved through their
+manifest, including tables within or across child namespaces. LanceDB Embedded
+connections and directory-listing root tables reject with a "not supported" error.
 
 #### Parameters
 

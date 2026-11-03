@@ -4,9 +4,10 @@ sidebarTitle: "Namespace"
 description: "CREATE SCHEMA and DROP SCHEMA: the SQL spelling of namespace DDL."
 icon: folder-tree
 keywords: ["namespace", "schema", "create schema", "drop schema", "sql"]
+availability:
+  embedded: unavailable
+  enterprise: available
 ---
-
-<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 A [namespace](/management/namespace) is addressed in SQL as a `SCHEMA`, the
 standard's name for the same concept.
@@ -46,6 +47,9 @@ default) states that requirement rather than changing it.
 ## What to read next {#next}
 
 <CardGroup cols={2}>
+  <Card title="Database" icon="database" href="/sql/ddl/database">
+    Attaching the database a namespace lives in.
+  </Card>
   <Card title="Namespace" icon="folder-tree" href="/management/namespace">
     The SDK equivalent, and how a namespace fits the catalog hierarchy.
   </Card>

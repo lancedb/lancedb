@@ -5,7 +5,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use arrow_array::RecordBatch;
 use async_trait::async_trait;
@@ -13,9 +13,16 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use tokio::sync::watch;
 use tokio::task::{AbortHandle, JoinHandle};
+use uuid::Uuid;
 
 use crate::database::JobDescription;
+use crate::docs::DocLink;
 use crate::error::{Error, JobFailure, Result};
+
+/// Observer called with each description fetched by a job's existing wait
+/// poller. Keeping this callback on the poller avoids a second lifecycle or
+/// retry loop just to render progress.
+pub type JobProgressCallback = Arc<Mutex<dyn FnMut(&JobDescription) + Send>>;
 
 /// Which of a job's events [`Job::events`] returns.
 ///
@@ -48,19 +55,30 @@ impl JobEventsRequest {
 
 fn job_detail_not_supported<T>(what: &str) -> Result<T> {
     Err(Error::NotSupported {
-        message: format!("{what} is only available for server-side jobs"),
+        message: DocLink::Jobs.append_to(format!("{what} is only available for server-side jobs")),
     })
 }
 
 /// Backend-specific tracking for an asynchronous operation.
 #[async_trait]
 pub(crate) trait JobHandle: Send + Sync {
-    /// Server-assigned id, when the backend has one.
+    /// Backend-specific id, when the operation has one.
     fn id(&self) -> Option<&str> {
+        None
+    }
+    fn job_type(&self) -> Option<&str> {
         None
     }
     async fn status(&self) -> Result<String>;
     async fn wait(&self) -> Result<TerminalResult>;
+    /// Wait while observing descriptions from the same backend poller.
+    /// Backends without a server-side record keep the default behavior.
+    async fn wait_with_progress(
+        &self,
+        _progress: Option<JobProgressCallback>,
+    ) -> Result<TerminalResult> {
+        self.wait().await
+    }
     async fn cancel(&self) -> Result<()>;
     /// The job's full server-side record. Backends that run the operation in
     /// this process have none and keep the default.
@@ -88,6 +106,7 @@ impl TerminalResult {
         }
     }
 
+    #[cfg(feature = "remote")]
     pub(crate) fn remote(value: Option<Value>, request_id: String) -> Self {
         Self {
             value,
@@ -167,14 +186,15 @@ struct JobCache {
 /// the endpoint's successful terminal result; unit-result operations use the
 /// default `Job<()>`.
 ///
-/// The detail accessors ([`Job::state`], [`Job::job_type`], ...) read what the
+/// Registry detail accessors ([`Job::state`], [`Job::job_type`], ...) read what the
 /// handle last observed. Submitting an operation returns only a job id, so
 /// populating them eagerly would cost an extra round trip on every call:
 ///
 /// - [`Job::refresh`] and [`Job::status`] fetch the whole record.
 /// - [`Job::wait`] records the terminal state it establishes, but not the rest
 ///   of the record; call [`Job::refresh`] for that.
-/// - Everything is `None` until one of those runs.
+/// - Registry details are `None` until one of those runs. Query-backed handles
+///   report [`Job::job_type`] as `"query"` immediately.
 pub struct Job<T = ()>
 where
     T: Clone + Send + Sync + 'static,
@@ -237,6 +257,7 @@ impl Job<()> {
 
     /// A handle whose record the caller has already fetched, so the detail
     /// accessors answer without a second round trip.
+    #[cfg(feature = "remote")]
     pub(crate) fn opened(handle: Box<dyn JobHandle>, description: JobDescription) -> Self {
         let job = Self::new(handle);
         {
@@ -273,13 +294,18 @@ where
         Self::new_typed(Box::new(SpawnedJob::new(task)))
     }
 
-    pub(crate) fn spawned_with_cancellation<F, Fut>(task: JoinHandle<Result<T>>, cancel: F) -> Self
+    pub(crate) fn from_query_task<F, Fut>(
+        query_id: Uuid,
+        task: JoinHandle<Result<T>>,
+        cancel: F,
+    ) -> Self
     where
         F: Fn() -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<()>> + Send + 'static,
     {
         let cancellation: Cancellation = Arc::new(move || Box::pin(cancel()));
         Self::new_typed(Box::new(SpawnedJob::new_with_cancellation(
+            query_id,
             task,
             cancellation,
         )))
@@ -290,12 +316,10 @@ impl<T> Job<T>
 where
     T: Clone + Send + Sync + 'static,
 {
-    /// Identifies the operation on the server that is running it.
-    ///
-    /// Returned for correlating with server logs or the jobs API. Operations
-    /// that run in this process have no server id and return `None`. The
-    /// value is opaque: parsing it or storing it to resume the job later is
-    /// not supported.
+    /// The operation's opaque identity, interpreted according to [`Job::job_type`].
+    /// Registry handles expose a registry job ID; query handles expose the
+    /// connection-scoped SQL query UUID as a string. Local handles return None.
+    /// A query ID cannot be used with registry APIs or to resume after restart.
     pub fn id(&self) -> Option<&str> {
         match &self.inner {
             JobInner::Handle { handle, .. } => handle.id(),
@@ -356,6 +380,15 @@ where
         self.refresh_state().await
     }
 
+    /// The current structured progress snapshot, or `None` for an in-process
+    /// operation. This refreshes the server-side record once, matching
+    /// [`Job::status`]; older servers return lifecycle and queue fields without
+    /// job-type-specific counters.
+    pub async fn progress(&self) -> Result<Option<Value>> {
+        self.refresh_state().await?;
+        Ok(self.with_description(JobDescription::progress_snapshot))
+    }
+
     /// The last lifecycle state this handle observed, without contacting the
     /// backend. `None` until the handle has.
     pub fn state(&self) -> Option<String> {
@@ -369,8 +402,14 @@ where
         self.cache_read().description.clone()
     }
 
-    /// The job's type, as the server names it. `None` for an in-process job.
+    /// The job's type: `"query"` for SQL-backed handles, otherwise the cached
+    /// server-reported kind of work. `None` for an in-process job.
     pub fn job_type(&self) -> Option<String> {
+        if let JobInner::Handle { handle, .. } = &self.inner
+            && let Some(job_type) = handle.job_type()
+        {
+            return Some(job_type.to_string());
+        }
         self.with_description(|description| description.job_type.clone())
     }
 
@@ -431,9 +470,25 @@ where
     /// Returns [`crate::Error::JobFailed`] if the operation failed and
     /// [`crate::Error::JobCancelled`] if it was cancelled.
     pub async fn wait(&self) -> Result<T> {
+        self.wait_with_progress_opt(None).await
+    }
+
+    /// Wait for the operation while observing progress from the backend's
+    /// existing wait poller. The callback is called once for each description
+    /// the poller fetches, including the terminal observation when the server
+    /// supplies one. It does not create another lifecycle or retry loop.
+    pub async fn wait_with_progress<F>(&self, progress: F) -> Result<T>
+    where
+        F: FnMut(&JobDescription) + Send + 'static,
+    {
+        self.wait_with_progress_opt(Some(Arc::new(Mutex::new(progress))))
+            .await
+    }
+
+    async fn wait_with_progress_opt(&self, progress: Option<JobProgressCallback>) -> Result<T> {
         match &self.inner {
             JobInner::Handle { handle, decode } => {
-                let settled = handle.wait().await;
+                let settled = handle.wait_with_progress(progress).await;
                 // Waiting already established a terminal state; record it so
                 // the detail accessors do not need another round trip for it.
                 if let Some(state) = terminal_state(&settled) {
@@ -536,6 +591,7 @@ struct SpawnedJob {
     outcome: watch::Receiver<Option<Outcome>>,
     abort: AbortHandle,
     cancellation: Option<Cancellation>,
+    id: Option<String>,
 }
 
 type CancellationFuture = Pin<Box<dyn Future<Output = Result<()>> + Send>>;
@@ -549,11 +605,17 @@ impl SpawnedJob {
         Self::new_inner(task, None)
     }
 
-    fn new_with_cancellation<T>(task: JoinHandle<Result<T>>, cancellation: Cancellation) -> Self
+    fn new_with_cancellation<T>(
+        query_id: Uuid,
+        task: JoinHandle<Result<T>>,
+        cancellation: Cancellation,
+    ) -> Self
     where
         T: Serialize + Send + 'static,
     {
-        Self::new_inner(task, Some(cancellation))
+        let mut handle = Self::new_inner(task, Some(cancellation));
+        handle.id = Some(query_id.to_string());
+        handle
     }
 
     fn new_inner<T>(task: JoinHandle<Result<T>>, cancellation: Option<Cancellation>) -> Self
@@ -582,12 +644,21 @@ impl SpawnedJob {
             outcome,
             abort,
             cancellation,
+            id: None,
         }
     }
 }
 
 #[async_trait]
 impl JobHandle for SpawnedJob {
+    fn id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+
+    fn job_type(&self) -> Option<&str> {
+        self.id.as_ref().map(|_| "query")
+    }
+
     async fn status(&self) -> Result<String> {
         let label = match &*self.outcome.borrow() {
             None => "running",
@@ -648,9 +719,29 @@ mod tests {
     async fn mapped_spawned_job_reuses_outcome() {
         let job = Job::spawned(tokio::spawn(async { Ok(41_u64) })).map(|value| value + 1);
 
+        assert_eq!(job.job_type(), None);
+        assert_eq!(job.id(), None);
         assert_eq!(job.wait().await.unwrap(), 42);
         assert_eq!(job.wait().await.unwrap(), 42);
         assert_eq!(job.status().await.unwrap(), "finished");
+    }
+
+    #[tokio::test]
+    async fn mapped_query_job_preserves_identity_and_type() {
+        let query_id = Uuid::new_v4();
+        let job = Job::from_query_task(query_id, tokio::spawn(async { Ok(41_u64) }), || async {
+            Ok(())
+        })
+        .map(|value| value + 1);
+        assert_eq!(job.job_type().as_deref(), Some("query"));
+        assert_eq!(job.id(), Some(query_id.to_string().as_str()));
+        assert_eq!(job.wait().await.unwrap(), 42);
+        assert_eq!(job.wait().await.unwrap(), 42);
+        assert_eq!(job.job_type().as_deref(), Some("query"));
+        assert_eq!(job.id(), Some(query_id.to_string().as_str()));
+        let completed = Job::new_done();
+        assert_eq!(completed.job_type(), None);
+        assert_eq!(completed.id(), None);
     }
 
     #[tokio::test]

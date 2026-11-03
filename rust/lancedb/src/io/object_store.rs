@@ -15,9 +15,6 @@ use object_store::{
 
 use async_trait::async_trait;
 
-#[cfg(test)]
-pub mod io_tracking;
-
 #[derive(Debug)]
 struct MirroringObjectStore {
     primary: Arc<dyn ObjectStore>,
@@ -348,11 +345,6 @@ mod test {
         ));
     }
 
-    // This test is ignored because lance 3.0 introduced LocalWriter optimization
-    // that bypasses the object store wrapper for local writes. The mirroring feature
-    // still works for remote/cloud storage, but can't be tested with local storage.
-    // See lance commit c878af433 "perf: create local writer for efficient local writes"
-    #[ignore]
     #[tokio::test]
     async fn test_e2e() {
         let dir1 = tempfile::tempdir().unwrap().keep().canonicalize().unwrap();
@@ -363,7 +355,13 @@ mod test {
             secondary: Arc::new(secondary_store),
         });
 
-        let db = connect(dir1.to_str().unwrap()).execute().await.unwrap();
+        // Lance writes `file://` tables through LocalWriter, which skips object store
+        // wrappers. `file-object-store://` writes the same local files through the
+        // wrapped store.
+        let db = connect(&format!("file-object-store://{}", dir1.display()))
+            .execute()
+            .await
+            .unwrap();
 
         let mut param = WriteParams::default();
         let store_params = ObjectStoreParams {
@@ -416,7 +414,7 @@ mod test {
                 || path_str.contains("_transactions")
         };
 
-        let primary_files: Vec<_> = WalkDir::new(&primary_location)
+        let mut primary_files: Vec<_> = WalkDir::new(&primary_location)
             .into_iter()
             .filter_entry(|e| !should_skip(e.path()))
             .filter_map(|e| e.ok())
@@ -427,8 +425,9 @@ mod test {
                     .to_path_buf()
             })
             .collect();
+        primary_files.sort();
 
-        let secondary_files: Vec<_> = WalkDir::new(&secondary_location)
+        let mut secondary_files: Vec<_> = WalkDir::new(&secondary_location)
             .into_iter()
             .filter_entry(|e| !should_skip(e.path()))
             .filter_map(|e| e.ok())
@@ -439,6 +438,7 @@ mod test {
                     .to_path_buf()
             })
             .collect();
+        secondary_files.sort();
 
         assert_eq!(primary_files, secondary_files, "File lists should match");
     }

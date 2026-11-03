@@ -21,8 +21,31 @@ class BlobReader(io.RawIOBase):
     ``read_range`` does not change the sequential cursor. Readers are scoped
     to the invocation and must not be retained for a later call.
 
+    A packaged Function's source imports the worker's ``lance_blob.BlobReader``
+    in place of this class.
+
     For local calls, construct a reader from a range-reading callable and the
     blob's size. The callable accepts an offset and length and returns bytes.
+    This is also the interface for a reader backed by another engine.
+
+    Examples
+    --------
+    ```python
+    payload = b"hello world"
+
+    def read_range(offset, length):
+        return payload[offset : offset + length]
+
+    with BlobReader(read_range, len(payload)) as reader:
+        assert reader.read_range(6, 5) == b"world"
+        assert reader.tell() == 0
+        assert reader.read(5) == b"hello"
+        assert reader.tell() == 5
+    ```
+
+    ``read_range`` does not change the sequential cursor. Use ``size()`` for
+    the declared payload size and close the reader when done; a local reader
+    owns no server state.
     """
 
     def __init__(self, read_range: Callable[[int, int], bytes], size: int):

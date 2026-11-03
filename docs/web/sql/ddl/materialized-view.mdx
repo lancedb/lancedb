@@ -4,9 +4,10 @@ sidebarTitle: "Materialized View"
 description: "CREATE MATERIALIZED VIEW and SHOW MATERIALIZED VIEWS; refreshing is a REFRESH statement."
 icon: table
 keywords: ["materialized view", "create materialized view", "show materialized views", "sql"]
+availability:
+  embedded: unavailable
+  enterprise: available
 ---
-
-<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 A materialized view stores a query's result as rows, kept current by a refresh.
 It is the counterpart to a [view](/sql/ddl/view), which stores only the query.
@@ -28,6 +29,29 @@ Once created, a materialized view can be queried like a table. Use the
 statements below to list, refresh and drop it. For SDK methods, see
 [Materialized views](/management/materialized-view#create).
 
+{/*
+Draft for automatic materialized-view refresh. Enable this section, and
+"ALTER MATERIALIZED VIEW" below, when the server feature is released.
+
+Set scheduling options at creation, continuing the join and chained
+Functions from [Functions](/management/function#chain):
+
+```sql
+CREATE MATERIALIZED VIEW frames_captioned AS
+SELECT f.frame_id, extract_frame(v.video, f.ts) AS jpeg,
+       caption(extract_frame(v.video, f.ts)) AS caption
+FROM videos v JOIN frames f ON v.id = f.video_id
+WHERE f.selected = true
+WITH (auto_refresh_enabled = false, auto_refresh_interval_seconds = 5)
+```
+
+`auto_refresh_enabled` and `auto_refresh_interval_seconds` work the same way
+here as for a [computed column](/sql/ddl/table#automatic-refresh-options):
+the interval is a minimum pacing after the last successful refresh, and
+automatic execution needs the same server-side switch enabled. Omitting
+`WITH` leaves automatic refresh at the server's default.
+*/}
+
 ## SHOW MATERIALIZED VIEWS {#show}
 
 ```sql
@@ -45,8 +69,36 @@ on a `db://` connection.
 REFRESH MATERIALIZED VIEW chunks
 ```
 
-See [REFRESH](/sql/dml/refresh#refresh-materialized-view) for the full syntax,
+See [REFRESH MATERIALIZED VIEW](/sql/dml/refresh-materialized-view) for the full syntax,
 and compatibility notes for older server versions.
+
+{/*
+Draft for automatic materialized-view refresh. Enable this section when the
+server feature is released; see the note on "CREATE MATERIALIZED VIEW" above.
+
+## ALTER MATERIALIZED VIEW {#alter}
+
+```sql
+ALTER MATERIALIZED VIEW frames_captioned SET auto_refresh_enabled = true;
+ALTER MATERIALIZED VIEW frames_captioned SET auto_refresh_interval_seconds = 300;
+ALTER MATERIALIZED VIEW frames_captioned SET auto_refresh_enabled = false;
+```
+
+The whole view toggles together; there is no per-output granularity the way
+a multi-output Function column has one setting per output. SET takes effect
+immediately and does not itself run a refresh:
+
+- **Disabling** prevents new automatic refreshes. An inflight one may still
+  finish, and `REFRESH MATERIALIZED VIEW` keeps working manually.
+- **Re-enabling catches up the entire backlog in one pass**, the same as a
+  computed column's [automatic refresh](/sql/ddl/table#automatic-refresh-options):
+  the next scheduler tick picks up every source change accumulated since the
+  view was disabled, immediately, with no further write needed to trigger it.
+
+A materialized view's *initial* population, at `CREATE` or when the server
+runs it, happens regardless of `auto_refresh_enabled`; only refreshes after
+that are gated by the setting.
+*/}
 
 ## Dropping one {#drop}
 
@@ -55,9 +107,8 @@ A materialized view **is** a table, so it is dropped with
 stored rows, unlike dropping a [view](/sql/ddl/view#drop).
 
 <Note>
-**Enterprise job type:** `mat_view_refresh` for a refresh, or `sql` on a
-deployment that rebuilds views through SQL. Dropping one runs the same job as
-dropping any table, `drop_table` or `drop_object`.
+**Enterprise job type for a refresh:** `sql`. Dropping, by contrast, runs the
+same job as dropping any table, `drop_table` or `drop_object`.
 </Note>
 
 ## What to read next {#next}
@@ -66,7 +117,7 @@ dropping any table, `drop_table` or `drop_object`.
   <Card title="Materialized View" icon="table" href="/management/materialized-view">
     Creating one from the SDK.
   </Card>
-  <Card title="Refresh a materialized view" icon="arrows-rotate" href="/feature-engineering/materialized-views">
-    How a refresh works, locally and in LanceDB Enterprise.
+  <Card title="Refresh a materialized view" icon="arrows-rotate" href="/feature-engineering/refresh-materialized-view">
+    How a refresh works, in LanceDB Enterprise.
   </Card>
 </CardGroup>

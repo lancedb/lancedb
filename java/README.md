@@ -2,9 +2,9 @@
 
 ## Configuration and Initialization
 
-### LanceDB Cloud
+### LanceDB Cloud (legacy)
 
-For LanceDB Cloud, use the simplified builder API:
+For LanceDB Cloud, the legacy hosted service, use the simplified builder API:
 
 ```java
 import com.lancedb.LanceDbNamespaceClientBuilder;
@@ -19,7 +19,7 @@ LanceNamespace namespaceClient = LanceDbNamespaceClientBuilder.newBuilder()
 
 ### LanceDB Enterprise
 
-For Enterprise deployments, use your custom endpoint:
+For LanceDB Enterprise deployments, use your custom endpoint:
 
 ```java
 LanceNamespace namespaceClient = LanceDbNamespaceClientBuilder.newBuilder()

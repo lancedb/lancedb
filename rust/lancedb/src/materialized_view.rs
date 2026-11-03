@@ -9,6 +9,11 @@
 //! query this version cannot maintain reads back as unrefreshable, not as a
 //! plain table. Queries, indexes and search work on the view unchanged;
 //! writes to its rows or stored columns are refused.
+//!
+//! Local creation and refresh require the `experimental-functions` Cargo
+//! feature. Opening, reading, listing and dropping existing views, remote
+//! client operations, and shared server commit primitives remain available
+//! without it.
 
 mod grouped;
 pub use grouped::IVF_PARTITION;
@@ -166,7 +171,7 @@ pub(crate) fn physical_unnest(
             return Err(Error::NotSupported {
                 message: format!(
                     "'{name}' in FROM position is a Function; views over Function rows are \
-                     supported only on LanceDB Cloud and Enterprise"
+                     supported only in LanceDB Enterprise"
                 ),
             });
         }
@@ -1245,6 +1250,7 @@ impl PreparedDeclaration {
         namespace_path: &[String],
         name: &str,
     ) -> Result<MaterializedView> {
+        crate::require_experimental_functions()?;
         ensure_no_source_cycle(&self.database, namespace_path, name, &self.definition).await?;
         let empty: Vec<std::result::Result<arrow_array::RecordBatch, arrow_schema::ArrowError>> =
             vec![];
@@ -1458,7 +1464,7 @@ async fn prepare_with(
 ) -> Result<PreparedDeclaration> {
     let Some(caller_native) = source.as_native() else {
         return Err(Error::NotSupported {
-            message: "materialized views are supported only on local databases".into(),
+            message: "this operation is only supported on LanceDB Embedded".into(),
         });
     };
     let source_namespace = source.namespace().to_vec();
@@ -1486,7 +1492,7 @@ async fn prepare_with(
     let resolved = Table::new(resolved, database.clone());
     let Some(native) = resolved.as_native() else {
         return Err(Error::NotSupported {
-            message: "materialized views are supported only on local databases".into(),
+            message: "this operation is only supported on LanceDB Embedded".into(),
         });
     };
     let caller_uri = caller_native.dataset.get().await?.uri().to_string();
@@ -1659,15 +1665,15 @@ impl CreateMaterializedViewBuilder {
         self
     }
 
-    /// Enable or disable automatic refresh on Cloud and Enterprise.
+    /// Enable or disable automatic refresh in LanceDB Enterprise.
     /// When omitted, the server determines whether automatic refresh is enabled.
-    /// Embedded databases do not support automatic refresh.
+    /// LanceDB Embedded does not support automatic refresh.
     pub fn auto_refresh_enabled(mut self, enabled: bool) -> Self {
         self.auto_refresh_enabled = Some(enabled);
         self
     }
 
-    /// Set a positive, finite refresh interval in seconds on Cloud and Enterprise.
+    /// Set a positive, finite refresh interval in seconds in LanceDB Enterprise.
     /// When omitted, the server determines when to refresh.
     ///
     /// ```no_run
@@ -1716,7 +1722,8 @@ impl CreateMaterializedViewBuilder {
     }
 
     /// Submit creation and initial population, returning a [`Job`] that
-    /// settles when the view is ready.
+    /// settles when the view is ready. Remote creation submits SQL; the handle's
+    /// [`Job::job_type`] is `"query"` and its ID identifies that query.
     pub async fn execute_async(self) -> Result<Job> {
         if self.connection.uri().starts_with("db://") {
             return self
@@ -1732,6 +1739,7 @@ impl CreateMaterializedViewBuilder {
                 })
                 .await;
         }
+        crate::require_experimental_functions()?;
         Ok(Job::spawned(tokio::spawn(async move {
             self.execute_native().await.map(|_| ())
         })))
@@ -1755,9 +1763,10 @@ impl CreateMaterializedViewBuilder {
     }
 
     async fn execute_native(self) -> Result<MaterializedView> {
+        crate::require_experimental_functions()?;
         if self.auto_refresh_enabled == Some(true) || self.auto_refresh_interval_seconds.is_some() {
             return Err(Error::NotSupported {
-                message: "automatic materialized-view refresh requires Cloud or Enterprise"
+                message: "automatic materialized-view refresh requires LanceDB Enterprise"
                     .to_string(),
             });
         }
@@ -1816,7 +1825,7 @@ impl MaterializedView {
 
     /// The query parsed into the local refresh grammar.
     ///
-    /// Sophon may store SQL broader than the local grammar; use
+    /// LanceDB Enterprise may store SQL broader than the local grammar; use
     /// [`Self::definition_sql`] when the original SQL is sufficient.
     pub fn definition(&self) -> Result<&MaterializedViewDefinition> {
         self.parsed_definition
@@ -1835,14 +1844,17 @@ impl MaterializedView {
 
     /// Recompute the view from its source.
     ///
-    /// Every refresh rebuilds the view from the selected source version.
+    /// Local refreshes rebuild the view from the selected source version.
+    /// Remote refreshes let the server select a mode unless
+    /// [`RefreshMaterializedViewBuilder::full`] requests a rebuild. Their
+    /// result leaves unavailable refresh metrics as `None`.
     ///
     /// ```no_run
     /// # #![recursion_limit = "256"]
     /// # use lancedb::materialized_view::MaterializedView;
     /// # async fn refresh(view: &MaterializedView) -> Result<(), Box<dyn std::error::Error>> {
     /// let result = view.refresh().execute().await?;
-    /// println!("{:?}: {} rows", result.mode, result.rows_written);
+    /// println!("{:?}: {:?} rows", result.mode, result.rows_written);
     /// # Ok(())
     /// # }
     /// ```
@@ -1850,6 +1862,7 @@ impl MaterializedView {
         RefreshMaterializedViewBuilder {
             view: self.clone(),
             source_version: None,
+            full: false,
         }
     }
 }
@@ -1858,9 +1871,26 @@ impl MaterializedView {
 pub struct RefreshMaterializedViewBuilder {
     view: MaterializedView,
     source_version: Option<u64>,
+    full: bool,
 }
 
 impl RefreshMaterializedViewBuilder {
+    /// Force a complete rebuild instead of letting the server choose
+    /// the refresh mode. Defaults to `false`. LanceDB Embedded views always rebuild.
+    ///
+    /// ```no_run
+    /// # #![recursion_limit = "256"]
+    /// # use lancedb::materialized_view::MaterializedView;
+    /// # async fn refresh(view: &MaterializedView) -> lancedb::Result<()> {
+    /// view.refresh().full(true).execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn full(mut self, full: bool) -> Self {
+        self.full = full;
+        self
+    }
+
     /// Refresh a local view to this source table version instead of the latest.
     /// Remote SQL refreshes do not support source-version pinning.
     pub fn source_version(mut self, version: u64) -> Self {
@@ -1875,9 +1905,10 @@ impl RefreshMaterializedViewBuilder {
                 .view
                 .table
                 .base_table()
-                .refresh_materialized_view_async(self.source_version)
+                .refresh_materialized_view_async(self.source_version, self.full)
                 .await;
         }
+        crate::require_experimental_functions()?;
         Ok(Job::spawned(tokio::spawn(async move {
             refresh::execute_refresh(&self.view.table, self.source_version).await
         })))
@@ -1956,8 +1987,8 @@ impl Connection {
     /// Drop a materialized view.
     ///
     /// The view may become unavailable before its physical data is removed.
-    /// Use [`Connection::drop_materialized_view_async`] to retain the cleanup
-    /// job and wait for it explicitly.
+    /// Remote drops wait for the SQL command to remove the catalog binding;
+    /// physical cleanup proceeds in the background.
     pub async fn drop_materialized_view(
         &self,
         name: impl AsRef<str>,
@@ -1968,8 +1999,9 @@ impl Connection {
             return self
                 .database()
                 .drop_materialized_view_async(name, namespace_path)
-                .await
-                .map(|_| ());
+                .await?
+                .wait()
+                .await;
         }
         let table = self
             .open_table(name)
@@ -1980,12 +2012,12 @@ impl Connection {
         self.drop_table(name, namespace_path).await
     }
 
-    /// Start dropping a materialized view and return its cleanup job.
+    /// Start dropping a materialized view and return its job.
     ///
     /// This validates that the named resource is a materialized view rather
-    /// than an ordinary table. Call [`Job::wait`] before assuming physical
-    /// cleanup has finished. When the backend performs cleanup inline, the
-    /// returned job is already finished and has no job ID.
+    /// than an ordinary table. In LanceDB Enterprise the job has type `query`
+    /// and its ID identifies the SQL query. Waiting completes once the catalog
+    /// binding is removed; physical cleanup continues in the background.
     ///
     /// ```no_run
     /// # use lancedb::Connection;
@@ -2019,10 +2051,52 @@ impl Connection {
 
 #[cfg(test)]
 mod tests {
-    use arrow_array::{RecordBatch, record_batch};
+    use arrow_array::{FixedSizeListArray, Float32Array, Int32Array, RecordBatch, record_batch};
+    use futures::TryStreamExt;
+    use lance_arrow::FixedSizeListArrayExt;
 
     use super::*;
     use crate::connect;
+    use crate::index::vector::IvfFlatIndexBuilder;
+    use crate::index::{Index, IndexType};
+    use crate::query::{ExecutableQuery, QueryBase};
+
+    /// A source of `rows` 4-d vectors. Hand-rolled rather than `record_batch!`
+    /// because the macro has no fixed-size-list form.
+    async fn db_with_vectors(rows: i32) -> (Connection, Table) {
+        const DIM: i32 = 4;
+        let vectors = FixedSizeListArray::try_new_from_values(
+            Float32Array::from((0..rows * DIM).map(|v| v as f32).collect::<Vec<_>>()),
+            DIM,
+        )
+        .unwrap();
+        let schema = Arc::new(ArrowSchema::new(vec![
+            ArrowField::new("id", DataType::Int32, true),
+            ArrowField::new(
+                "vec",
+                DataType::FixedSizeList(
+                    Arc::new(ArrowField::new("item", DataType::Float32, true)),
+                    DIM,
+                ),
+                true,
+            ),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..rows)),
+                Arc::new(vectors),
+            ],
+        )
+        .unwrap();
+        let conn = connect("memory://").execute().await.unwrap();
+        let table = conn
+            .create_table("src", vec![batch])
+            .execute()
+            .await
+            .unwrap();
+        (conn, table)
+    }
 
     #[test]
     fn remote_source_namespace_uses_one_sql_schema_position() {
@@ -2060,6 +2134,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn refresh_always_rebuilds_without_source_row_ids() {
         let conn = connect("memory://").execute().await.unwrap();
         let source = conn
@@ -2088,19 +2166,23 @@ mod tests {
             .execute()
             .await
             .unwrap();
-        let refreshed = view.refresh().execute().await.unwrap();
-        assert_eq!(refreshed.mode, RefreshMode::Rebuild);
-        assert_eq!(refreshed.rows_written, 3);
+        let refreshed = view.refresh().full(true).execute().await.unwrap();
+        assert_eq!(refreshed.mode, Some(RefreshMode::Rebuild));
+        assert_eq!(refreshed.rows_written, Some(3));
+        assert_eq!(
+            refreshed.source_version,
+            Some(source.version().await.unwrap())
+        );
         assert_eq!(view.table().count_rows(None).await.unwrap(), 3);
 
         let unchanged = view.refresh().execute().await.unwrap();
-        assert_eq!(unchanged.mode, RefreshMode::Rebuild);
-        assert_eq!(unchanged.rows_written, 3);
+        assert_eq!(unchanged.mode, Some(RefreshMode::Rebuild));
+        assert_eq!(unchanged.rows_written, Some(3));
 
         source.delete("true").await.unwrap();
         let emptied = view.refresh().execute().await.unwrap();
-        assert_eq!(emptied.mode, RefreshMode::Rebuild);
-        assert_eq!(emptied.rows_written, 0);
+        assert_eq!(emptied.mode, Some(RefreshMode::Rebuild));
+        assert_eq!(emptied.rows_written, Some(0));
         assert_eq!(view.table().count_rows(None).await.unwrap(), 0);
     }
 
@@ -2123,6 +2205,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn a_view_cannot_lead_back_to_itself() {
         let conn = connect("memory://").execute().await.unwrap();
         let rows = || record_batch!(("x", Int32, [1, 2])).unwrap();
@@ -2158,6 +2244,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn direct_writes_to_a_view_are_refused() {
         use arrow_schema::Schema;
         use datafusion::prelude::SessionContext;
@@ -2252,10 +2342,13 @@ mod tests {
 
         // Refresh, chained, is the writer.
         source.add(row()).execute().await.unwrap();
-        assert_eq!(view.refresh().execute().await.unwrap().rows_written, 3);
+        assert_eq!(
+            view.refresh().execute().await.unwrap().rows_written,
+            Some(3)
+        );
         assert_eq!(
             downstream.refresh().execute().await.unwrap().rows_written,
-            3
+            Some(3)
         );
         assert_eq!(
             downstream
@@ -2290,10 +2383,17 @@ mod tests {
             .await
             .unwrap();
         source.drop_columns(&["y"]).await.unwrap();
-        assert_eq!(view.refresh().execute().await.unwrap().rows_written, 3);
+        assert_eq!(
+            view.refresh().execute().await.unwrap().rows_written,
+            Some(3)
+        );
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn indexes_and_optimize_still_apply_to_a_view() {
         use crate::index::Index;
         use crate::table::{CompactionOptions, OptimizeAction};
@@ -2329,7 +2429,10 @@ mod tests {
             .execute()
             .await
             .unwrap();
-        assert_eq!(view.refresh().execute().await.unwrap().rows_written, 4);
+        assert_eq!(
+            view.refresh().execute().await.unwrap().rows_written,
+            Some(4)
+        );
         view.table().optimize(OptimizeAction::All).await.unwrap();
         assert_eq!(
             view.table().count_rows(Some("x > 2".into())).await.unwrap(),
@@ -2337,7 +2440,107 @@ mod tests {
         );
     }
 
+    /// The fragment-swap rebuild replaces every fragment the vector index was
+    /// trained over. Its definition must survive, and search must still answer
+    /// over the replacement rows before maintenance indexes them again.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
+    async fn test_rebuild_retains_vector_index() {
+        let (conn, source) = db_with_vectors(256).await;
+        let view = conn
+            .create_materialized_view("vecs", "src")
+            .select([("id", "id"), ("vec", "vec")])
+            .execute()
+            .await
+            .unwrap();
+        view.table()
+            .create_index(
+                &["vec"],
+                Index::IvfFlat(
+                    IvfFlatIndexBuilder::default()
+                        .num_partitions(1)
+                        .sample_rate(1)
+                        .max_iterations(1),
+                ),
+            )
+            .execute()
+            .await
+            .unwrap();
+
+        let indices = view.table().list_indices().await.unwrap();
+        assert_eq!(indices.len(), 1);
+        let index_name = indices[0].name.clone();
+        assert_eq!(indices[0].index_type, IndexType::IvfFlat);
+        assert_eq!(indices[0].columns, vec!["vec".to_string()]);
+        let stats = view
+            .table()
+            .index_stats(&index_name)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stats.num_unindexed_rows, 0);
+
+        source
+            .update()
+            .column("id", "id + 1000")
+            .execute()
+            .await
+            .unwrap();
+        let result = view.refresh().execute().await.unwrap();
+        assert_eq!(result.mode, Some(RefreshMode::Rebuild));
+        assert_eq!(result.rows_written, Some(256));
+
+        let indices = view.table().list_indices().await.unwrap();
+        assert_eq!(indices.len(), 1, "the rebuild dropped the vector index");
+        assert_eq!(indices[0].name, index_name);
+        assert_eq!(indices[0].index_type, IndexType::IvfFlat);
+        assert_eq!(indices[0].columns, vec!["vec".to_string()]);
+
+        // The definition survives, but the retained index covers none of the
+        // replacement rows until it is rebuilt.
+        let stats = view
+            .table()
+            .index_stats(&index_name)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stats.num_unindexed_rows, 256);
+
+        let batches = view
+            .table()
+            .query()
+            .nearest_to(vec![0.0f32; 4])
+            .unwrap()
+            .limit(5)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let mut ids = Vec::new();
+        for batch in &batches {
+            ids.extend(
+                batch["id"]
+                    .as_any()
+                    .downcast_ref::<Int32Array>()
+                    .unwrap()
+                    .values()
+                    .iter()
+                    .copied(),
+            );
+        }
+        assert_eq!(ids, vec![1000, 1001, 1002, 1003, 1004]);
+    }
+
+    #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn computed_columns_of_a_view_are_still_filled_and_dropped() {
         use crate::table::computed_columns::{
             COMPUTED_COLUMN_META_KEY, EXPRESSION_META_KEY, INPUTS_META_KEY, KIND_META_KEY, SQL_KIND,

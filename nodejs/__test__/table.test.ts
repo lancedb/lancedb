@@ -47,6 +47,7 @@ import {
   register,
 } from "../lancedb/embedding";
 import { Index } from "../lancedb/indices";
+import { experimentalFunctionsEnabled } from "../lancedb/native";
 import {
   BooleanQuery,
   Occur,
@@ -1625,6 +1626,23 @@ describe("When creating an index", () => {
     // test ef
     rst = await tbl.query().limit(2).nearestTo(queryVec).ef(100).toArrow();
     expect(rst.numRows).toBe(2);
+
+    // test approxMode
+    for (const mode of ["fast", "normal", "accurate"] as const) {
+      rst = await tbl
+        .query()
+        .limit(2)
+        .nearestTo(queryVec)
+        .approxMode(mode)
+        .toArrow();
+      expect(rst.numRows).toBe(2);
+    }
+    expect(() =>
+      tbl
+        .query()
+        .nearestTo(queryVec)
+        .approxMode("turbo" as "fast"),
+    ).toThrow("approx_mode must be one of");
   });
 
   it("should be able to query unindexed data", async () => {
@@ -1704,6 +1722,39 @@ describe("When creating an index", () => {
         numBits: 1,
       }),
     });
+  });
+
+  it.each([
+    ["IvfPq", Index.ivfPq({ targetPartitionSize: 100 })],
+    ["IvfFlat", Index.ivfFlat({ targetPartitionSize: 100 })],
+    ["IvfRq", Index.ivfRq({ targetPartitionSize: 100 })],
+    ["IvfHnswPq", Index.hnswPq({ targetPartitionSize: 100 })],
+    ["IvfHnswSq", Index.hnswSq({ targetPartitionSize: 100 })],
+  ])("should create %s with targetPartitionSize", async (indexType, config) => {
+    await tbl.createIndex("vec", { config });
+
+    const indices = await tbl.listIndices();
+    expect(indices).toHaveLength(1);
+    expect(indices[0].indexType).toBe(indexType);
+    expect(
+      (indices[0].indexDetails as Record<string, unknown>)[
+        "target_partition_size"
+      ],
+    ).toBe(100);
+  });
+
+  it("should prefer numPartitions over targetPartitionSize", async () => {
+    await tbl.createIndex("vec", {
+      config: Index.ivfFlat({ numPartitions: 2, targetPartitionSize: 100 }),
+    });
+
+    // Lance records the target size the partition count implies: 300 rows / 2.
+    const indices = await tbl.listIndices();
+    expect(
+      (indices[0].indexDetails as Record<string, unknown>)[
+        "target_partition_size"
+      ],
+    ).toBe(150);
   });
 
   it("should allow me to replace (or not) an existing index", async () => {
@@ -4525,14 +4576,14 @@ describe.each(arrowVersions)(
       ];
       const table = await db.createTable("prewarm_data_test", data);
 
-      // prewarmData is only supported on remote tables. We verify the call
+      // prewarmData is only supported in LanceDB Enterprise. We verify the call
       // is wired through napi and surfaces the expected error for both
       // arg shapes (undefined and string[]).
       await expect(table.prewarmData()).rejects.toThrow(
-        "prewarm_data is currently only supported on remote tables",
+        "prewarm_data is currently only supported in LanceDB Enterprise",
       );
       await expect(table.prewarmData(["text"])).rejects.toThrow(
-        "prewarm_data is currently only supported on remote tables",
+        "prewarm_data is currently only supported in LanceDB Enterprise",
       );
     });
 
@@ -4937,6 +4988,44 @@ describe("column name options", () => {
   test("can filter on columns with different names", async () => {
     const results = await table.query().where("`camelCase` = 1").toArray();
     expect(results[0].camelCase).toBe(1);
+  });
+
+  test("can filter on an unquoted camelCase column", async () => {
+    const results = await table.query().where("camelCase = 1").toArray();
+    expect(results[0].camelCase).toBe(1);
+  });
+
+  test("can update and delete by camelCase column", async () => {
+    await table.update({ where: "camelCase = 1", values: { camelCase: 2 } });
+    expect(await table.query().where("camelCase = 2").toArray()).toHaveLength(
+      1,
+    );
+    await table.delete("camelCase = 2");
+    expect(await table.countRows()).toBe(0);
+  });
+
+  test("can mergeInsert on a camelCase join key", async () => {
+    await table
+      .mergeInsert("camelCase")
+      .whenMatchedUpdateAll()
+      .whenNotMatchedInsertAll()
+      .execute([
+        { camelCase: 1, vector: [0.3, 0.4] },
+        { camelCase: 5, vector: [0.5, 0.6] },
+      ]);
+    expect(await table.countRows()).toBe(2);
+    const inserted = await table.query().where("camelCase = 5").toArray();
+    expect(inserted).toHaveLength(1);
+  });
+
+  test("can reference a camelCase column in addColumns sql", async () => {
+    await table.addColumns([{ name: "doubled", valueSql: "camelCase * 2" }]);
+    const results = await table.query().select(["doubled"]).toArray();
+    expect(results[0].doubled).toBe(2);
+  });
+
+  test("can createIndex on a camelCase column", async () => {
+    await table.createIndex("camelCase");
   });
 
   test("can make multiple vector queries in one go", async () => {
@@ -5477,13 +5566,14 @@ describe("LSM convergence and stats", () => {
 });
 
 describe("computed columns", () => {
+  const experimentalTest = experimentalFunctionsEnabled() ? it : it.skip;
   let tmpDir: tmp.DirResult;
   beforeEach(() => {
     tmpDir = tmp.dirSync({ unsafeCleanup: true });
   });
   afterEach(() => tmpDir.removeCallback());
 
-  it("declares a column and fills it on refresh", async () => {
+  experimentalTest("declares a column and fills it on refresh", async () => {
     const db = await connect(tmpDir.name);
     const table = await db.createTable("computed", [{ x: 1 }, { x: 2 }]);
 
@@ -5504,11 +5594,11 @@ describe("computed columns", () => {
     const db = await connect(tmpDir.name);
     const table = await db.createTable("errors_local", [{ x: 1 }]);
     await expect(table.functionErrors()).rejects.toThrow(
-      "LanceDB Cloud and Enterprise",
+      "recorded only in LanceDB Enterprise",
     );
   });
 
-  it("returns a job handle from refreshColumnAsync", async () => {
+  experimentalTest("returns a job handle from refreshColumnAsync", async () => {
     const db = await connect(tmpDir.name);
     const table = await db.createTable("computed_job", [{ x: 1 }, { x: 2 }]);
 
@@ -5530,7 +5620,7 @@ describe("computed columns", () => {
     );
   });
 
-  it("fills rows added since the last refresh", async () => {
+  experimentalTest("fills rows added since the last refresh", async () => {
     const db = await connect(tmpDir.name);
     const table = await db.createTable("computed_append", [{ x: 1 }]);
 

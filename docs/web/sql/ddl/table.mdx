@@ -4,9 +4,10 @@ sidebarTitle: "Table"
 description: "CREATE, DESCRIBE, ALTER, CLONE and DROP TABLE."
 icon: table
 keywords: ["create table", "alter table", "drop table", "describe", "clone", "ddl"]
+availability:
+  embedded: unavailable
+  enterprise: available
 ---
-
-<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 ## CREATE TABLE {#create}
 
@@ -16,6 +17,7 @@ CREATE TABLE recent AS SELECT * FROM documents WHERE created_at > now() - INTERV
 ```
 
 Column types are Arrow types under SQL names. See [Data types](/sql/data-types).
+
 A table inside a [namespace](/sql/ddl/namespace) is written as a dotted path:
 `prod.events.clicks`.
 
@@ -49,7 +51,7 @@ ALTER TABLE t ADD COLUMN doubled AS value * 2
 `AS <expression>` declares a [computed column](/feature-engineering/add-computed-column).
 The column is committed empty and the expression is stored, not evaluated:
 declaring one on a billion-row table costs what declaring one on an empty table
-costs. [`REFRESH COLUMN`](/sql/dml/refresh) fills it.
+costs. [`REFRESH COLUMN`](/sql/dml/refresh-column) fills it.
 
 {/*
 Draft for automatic computed-column refresh. Enable this section when the
@@ -73,19 +75,35 @@ and is minimum pacing after a successful refresh of that output; unchanged
 inputs do not force work. A new column is immediately eligible for its first
 refresh. The server's separate automatic-refresh switch must also be enabled.
 
-These options also work beside a Function binding's `version` and `branch`:
+These options also work beside a Function binding's `version` and `branch`,
+continuing the [`caption` Function](/management/function#chain) from Functions:
 
 ```sql
-ALTER TABLE t ADD COLUMN (label, score) AS classify(text)
+ALTER TABLE frames ADD COLUMN caption AS caption(extract_frame(video, ts))
 WITH (version = 'fv_1', auto_refresh_enabled = true,
       auto_refresh_interval_seconds = 300);
-ALTER TABLE t ALTER COLUMN score SET auto_refresh_enabled = false;
+ALTER TABLE frames ALTER COLUMN caption SET auto_refresh_enabled = false;
 ```
 
 Declaration settings initialize every output in the group; later SET commands
-change one output. Disabling automatic refresh prevents new submissions while
-allowing inflight jobs to finish and explicit REFRESH COLUMN to run. Column
-SUSPEND/RESUME syntax is not supported.
+change one output. SET takes effect immediately and does not itself read or
+write any row:
+
+- **Disabling** prevents new automatic submissions. Inflight jobs may still
+  finish, explicit `REFRESH COLUMN` keeps working, and rows written while
+  disabled commit with no computed value -- they do not queue anywhere
+  separate.
+- **Re-enabling catches up the entire backlog in one pass.** The next
+  scheduler tick processes every row left unfilled since the column was
+  disabled, immediately, with no further write required to trigger it: a
+  column disabled for an hour and re-enabled fills everything that
+  accumulated during that hour, not just rows written after the moment it
+  is re-enabled.
+
+Column SUSPEND/RESUME syntax is not supported; `SET auto_refresh_enabled` is
+the only toggle. The current setting is in the column's own field metadata,
+`computed_column.auto_refresh_enabled`, readable from `DESCRIBE` or the
+SDK's `table.schema` without submitting a job to ask.
 */}
 
 {/*
@@ -147,7 +165,7 @@ ALTER TABLE t SET RTE WITH (maintained_indexes = '')
 ALTER TABLE t UNSET RTE
 ```
 
-The [realtime engine](/tables/realtime-engine) puts a write-ahead log in front
+The [real time engine](/tables/realtime-engine) puts a write-ahead log in front
 of the table, making small frequent writes cheap by batching them out of the
 commit path. `sharding` and `buckets` spread the log so concurrent writers do
 not contend on one place; `bucket` sharding names its `column`, which must be
@@ -164,7 +182,7 @@ folded back into the table.
 rows a sample would draw from are not all in the fragments yet.
 </Warning>
 
-**Errors and limits**
+### Errors and limits {#errors-and-limits}
 
 | | |
 | --- | --- |
