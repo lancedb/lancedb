@@ -2051,10 +2051,52 @@ impl Connection {
 
 #[cfg(test)]
 mod tests {
-    use arrow_array::{RecordBatch, record_batch};
+    use arrow_array::{FixedSizeListArray, Float32Array, Int32Array, RecordBatch, record_batch};
+    use futures::TryStreamExt;
+    use lance_arrow::FixedSizeListArrayExt;
 
     use super::*;
     use crate::connect;
+    use crate::index::vector::IvfFlatIndexBuilder;
+    use crate::index::{Index, IndexType};
+    use crate::query::{ExecutableQuery, QueryBase};
+
+    /// A source of `rows` 4-d vectors. Hand-rolled rather than `record_batch!`
+    /// because the macro has no fixed-size-list form.
+    async fn db_with_vectors(rows: i32) -> (Connection, Table) {
+        const DIM: i32 = 4;
+        let vectors = FixedSizeListArray::try_new_from_values(
+            Float32Array::from((0..rows * DIM).map(|v| v as f32).collect::<Vec<_>>()),
+            DIM,
+        )
+        .unwrap();
+        let schema = Arc::new(ArrowSchema::new(vec![
+            ArrowField::new("id", DataType::Int32, true),
+            ArrowField::new(
+                "vec",
+                DataType::FixedSizeList(
+                    Arc::new(ArrowField::new("item", DataType::Float32, true)),
+                    DIM,
+                ),
+                true,
+            ),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..rows)),
+                Arc::new(vectors),
+            ],
+        )
+        .unwrap();
+        let conn = connect("memory://").execute().await.unwrap();
+        let table = conn
+            .create_table("src", vec![batch])
+            .execute()
+            .await
+            .unwrap();
+        (conn, table)
+    }
 
     #[test]
     fn remote_source_namespace_uses_one_sql_schema_position() {
@@ -2396,6 +2438,102 @@ mod tests {
             view.table().count_rows(Some("x > 2".into())).await.unwrap(),
             2
         );
+    }
+
+    /// The fragment-swap rebuild replaces every fragment the vector index was
+    /// trained over. Its definition must survive, and search must still answer
+    /// over the replacement rows before maintenance indexes them again.
+    #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
+    async fn test_rebuild_retains_vector_index() {
+        let (conn, source) = db_with_vectors(256).await;
+        let view = conn
+            .create_materialized_view("vecs", "src")
+            .select([("id", "id"), ("vec", "vec")])
+            .execute()
+            .await
+            .unwrap();
+        view.table()
+            .create_index(
+                &["vec"],
+                Index::IvfFlat(
+                    IvfFlatIndexBuilder::default()
+                        .num_partitions(1)
+                        .sample_rate(1)
+                        .max_iterations(1),
+                ),
+            )
+            .execute()
+            .await
+            .unwrap();
+
+        let indices = view.table().list_indices().await.unwrap();
+        assert_eq!(indices.len(), 1);
+        let index_name = indices[0].name.clone();
+        assert_eq!(indices[0].index_type, IndexType::IvfFlat);
+        assert_eq!(indices[0].columns, vec!["vec".to_string()]);
+        let stats = view
+            .table()
+            .index_stats(&index_name)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stats.num_unindexed_rows, 0);
+
+        source
+            .update()
+            .column("id", "id + 1000")
+            .execute()
+            .await
+            .unwrap();
+        let result = view.refresh().execute().await.unwrap();
+        assert_eq!(result.mode, Some(RefreshMode::Rebuild));
+        assert_eq!(result.rows_written, Some(256));
+
+        let indices = view.table().list_indices().await.unwrap();
+        assert_eq!(indices.len(), 1, "the rebuild dropped the vector index");
+        assert_eq!(indices[0].name, index_name);
+        assert_eq!(indices[0].index_type, IndexType::IvfFlat);
+        assert_eq!(indices[0].columns, vec!["vec".to_string()]);
+
+        // The definition survives, but the retained index covers none of the
+        // replacement rows until it is rebuilt.
+        let stats = view
+            .table()
+            .index_stats(&index_name)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stats.num_unindexed_rows, 256);
+
+        let batches = view
+            .table()
+            .query()
+            .nearest_to(vec![0.0f32; 4])
+            .unwrap()
+            .limit(5)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let mut ids = Vec::new();
+        for batch in &batches {
+            ids.extend(
+                batch["id"]
+                    .as_any()
+                    .downcast_ref::<Int32Array>()
+                    .unwrap()
+                    .values()
+                    .iter()
+                    .copied(),
+            );
+        }
+        assert_eq!(ids, vec![1000, 1001, 1002, 1003, 1004]);
     }
 
     #[tokio::test]
