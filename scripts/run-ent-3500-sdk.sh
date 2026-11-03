@@ -19,7 +19,11 @@ if [[ $actual_sha != "$expected_sha" ]]; then
 fi
 
 mkdir -p "$out"
-trap 'status=$?; printf "%s\n" "$status" > "$out/run.exit.tmp"; mv "$out/run.exit.tmp" "$out/run.exit"; exit "$status"' EXIT
+suite_completed=0
+trap 'status=$?; if [[ $status -eq 0 && $suite_completed -ne 1 ]]; then status=1; fi; printf "%s\n" "$status" > "$out/run.exit.tmp"; mv "$out/run.exit.tmp" "$out/run.exit"; exit "$status"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 export TMPDIR=/var/tmp
 export RUSTFLAGS=""
 export RUSTUP_TOOLCHAIN=1.97.1
@@ -38,8 +42,12 @@ run() {
   mbx +1.97.1 cargo --version
   set +e
   "$@" 2>&1 | tee "$log"
-  status=${PIPESTATUS[0]}
+  pipeline_status=("${PIPESTATUS[@]}")
   set -e
+  status=${pipeline_status[0]}
+  if [[ $status -eq 0 && ${pipeline_status[1]} -ne 0 ]]; then
+    status=${pipeline_status[1]}
+  fi
   printf '%s\n' "$status" > "$exit_file.tmp"
   mv "$exit_file.tmp" "$exit_file"
   if [[ $status -ne 0 ]]; then
@@ -92,3 +100,4 @@ case "$suite" in
 esac
 
 printf 'completed=%s\nverified_head=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$actual_sha"
+suite_completed=1
