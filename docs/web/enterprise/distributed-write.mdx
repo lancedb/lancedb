@@ -39,13 +39,6 @@ distribute this way -- it runs as a single write, on whichever node or
 process executes it. Only a CTAS import fans the write itself out across
 machines.
 
-## Embedded write {#embedded-write}
-
-LanceDB Embedded writes every table, including one created by a local
-`CREATE TABLE ... AS SELECT`, inside your application process, on a
-single machine. There is no fleet of plan executors to distribute writes
-across.
-
 ## Write interfaces {#write-interfaces}
 
 - [Import Datasets](/ingestion/import) for the CTAS syntax this

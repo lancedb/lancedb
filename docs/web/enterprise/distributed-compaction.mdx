@@ -14,12 +14,6 @@ Enterprise. Unlike an index build, a compaction plan needs no bin-packing:
 Lance's own planner already produces disjoint tasks, so workers claim and
 commit them directly through the job registry. See [Architecture](/index#architecture).
 
-## Embedded compaction {#embedded-compaction}
-
-LanceDB Embedded compacts a table inside your application process, using
-that process's CPU and memory, on whatever schedule your code chooses. There
-is no fleet of workers to claim tasks from it.
-
 ## Compaction interfaces {#compaction-interfaces}
 
 - [Compaction](/maintenance/compaction) for triggering and configuring a compaction.

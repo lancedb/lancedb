@@ -16,13 +16,6 @@ into memory. This lets a plan executor serve an index larger than its
 available memory without re-reading and re-deserializing it from object
 storage on every eviction. See [Architecture](/index#architecture).
 
-## Embedded indexing cache {#embedded}
-
-LanceDB Embedded deserializes and caches index structures inside your
-application process, using whatever memory your process has. There is no
-disk tier beneath it, and no fleet of plan executors to distribute the
-cache across.
-
 ## Index cache interfaces {#interfaces}
 
 - [Background jobs](/maintenance/background-jobs#cache) for the

@@ -15,13 +15,6 @@ Enterprise. Each unit runs the bound Function, including GPU-backed and
 containerized Functions, and workers commit finished columns together
 through the job registry. See [Architecture](/index#architecture).
 
-## Embedded column refresh {#embedded-refresh}
-
-LanceDB Embedded has no computed columns or materialized views to refresh --
-both are Enterprise-only features (see [Compare features](/index#compare)).
-There is no fleet of workers to distribute refresh work across, because
-there is no refresh to distribute.
-
 ## Refresh interfaces {#refresh-interfaces}
 
 - [Computed columns](/feature-engineering/add-computed-column) and [refresh a computed column](/feature-engineering/refresh-column).

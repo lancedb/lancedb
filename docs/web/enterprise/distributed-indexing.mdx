@@ -15,12 +15,6 @@ registry and commit the finished index together. A vector index build first
 trains a shared IVF/PQ model from sampled data, then workers build storage
 from that model in parallel. See [Architecture](/index#architecture).
 
-## Embedded indexing {#embedded-indexing}
-
-LanceDB Embedded builds an index inside your application process, using that
-process's CPU and memory. There is no plan to bin-pack across machines and no
-fleet of workers to claim tasks from it.
-
 ## Indexing interfaces {#indexing-interfaces}
 
 The shared indexing guides describe how to build and maintain each index
