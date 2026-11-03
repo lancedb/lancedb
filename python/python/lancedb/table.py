@@ -2897,6 +2897,15 @@ class Table(ABC):
         """
         Optimize the on-disk data and indices for better performance.
 
+        .. note::
+
+            On a LanceDB Enterprise (remote) table, only compaction is
+            currently supported; this call submits it as a durable job, then
+            raises ``NotImplementedError`` when it goes on to request
+            pruning. That error does not mean compaction failed -- it has
+            already been submitted -- so retrying resubmits another
+            compaction job rather than recovering from one.
+
         Modeled after ``VACUUM`` in PostgreSQL.
 
         Optimization covers three operations:
@@ -8070,6 +8079,15 @@ class AsyncTable:
     ) -> OptimizeStats:
         """
         Optimize the on-disk data and indices for better performance.
+
+        .. note::
+
+            On a LanceDB Enterprise (remote) table, only compaction is
+            currently supported; this call submits it as a durable job, then
+            raises ``NotImplementedError`` when it goes on to request
+            pruning. That error does not mean compaction failed -- it has
+            already been submitted -- so retrying resubmits another
+            compaction job rather than recovering from one.
 
         Modeled after ``VACUUM`` in PostgreSQL.
 
