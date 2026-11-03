@@ -98,8 +98,6 @@ jobs:
       # Need up-to-date compilers for kernels
       CC: clang-18
       CXX: clang++-18
-      # Preserve the repository CPU flags and use setup-mold's system linker.
-      RUSTFLAGS: "-C target-cpu=haswell -C target-feature=+avx2,+fma,+f16c -C linker-features=-lld"
     steps:
       - uses: actions/checkout@v6
         with:
@@ -182,6 +180,8 @@ jobs:
       # Need up-to-date compilers for kernels
       CC: clang-18
       CXX: clang++-18
+      # Preserve the repository CPU flags and use setup-mold's system linker.
+      RUSTFLAGS: "-C target-cpu=haswell -C target-feature=+avx2,+fma,+f16c -C linker-features=-lld"
     steps:
       - uses: actions/checkout@v6
         with:
