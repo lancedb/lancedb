@@ -26,7 +26,8 @@ trap 'exit 143' TERM
 trap 'exit 129' HUP
 export TMPDIR=/var/tmp
 export RUSTFLAGS=""
-export RUSTUP_TOOLCHAIN=1.97.1
+toolchain=1.97.0
+export RUSTUP_TOOLCHAIN=$toolchain
 
 run() {
   local name=$1
@@ -38,8 +39,8 @@ run() {
   printf 'sha=%s\ncommand=' "$actual_sha"
   printf '%q ' "$@"
   printf '\n'
-  mbx +1.97.1 rustc --version
-  mbx +1.97.1 cargo --version
+  rustup run "$toolchain" rustc --version
+  rustup run "$toolchain" cargo --version
   set +e
   "$@" 2>&1 | tee "$log"
   pipeline_status=("${PIPESTATUS[@]}")
@@ -58,40 +59,38 @@ run() {
 
 case "$suite" in
   rust)
-    run rust-list mbx +1.97.1 test -p lancedb --features remote \
+    run rust-list mbx +$toolchain test -p lancedb --features remote \
       wait_progress_observes_the_existing_poll_loop -- --list
     grep -Fq 'wait_progress_observes_the_existing_poll_loop' "$out/rust-list.log"
-    run rust-test mbx +1.97.1 test -p lancedb --features remote \
+    run rust-test mbx +$toolchain test -p lancedb --features remote \
       wait_progress_observes_the_existing_poll_loop -- --nocapture
     grep -Eq 'test result: ok\. [1-9][0-9]* passed' "$out/rust-test.log"
     ;;
   python)
     cd python
-    run python-collect uv run --frozen --python 3.12 --extra tests --extra dev \
-      pytest --collect-only -q tests/test_job.py -k 'progress or wait_progress'
-    grep -Fq 'test_wait_progress_true_updates_and_closes_only_the_owned_bar' \
-      "$out/python-collect.log"
     run python-build uv run --frozen --python 3.12 --extra tests --extra dev \
       maturin develop --extras tests,dev
     run python-provenance uv run --frozen --python 3.12 --extra tests --extra dev \
       python -c \
       "import lancedb; print(lancedb.__file__); assert lancedb.__file__.startswith('$repo/python/')"
+    run python-collect uv run --frozen --python 3.12 --extra tests --extra dev \
+      pytest --collect-only -q python/tests/test_job.py -k 'progress or wait_progress'
+    grep -Fq 'test_wait_progress_true_updates_and_closes_only_the_owned_bar' \
+      "$out/python-collect.log"
     run python-job-tests uv run --frozen --python 3.12 --extra tests --extra dev \
-      pytest -q tests/test_job.py -k 'progress or wait_progress'
+      pytest -q python/tests/test_job.py -k 'progress or wait_progress'
     grep -Eq '[1-9][0-9]* passed' "$out/python-job-tests.log"
     run python-remote-test uv run --frozen --python 3.12 --extra tests --extra dev \
-      pytest -q tests/test_remote_db.py::test_remote_connection_jobs_surface
+      pytest -q python/tests/test_remote_db.py::test_remote_connection_jobs_surface
     grep -Eq '[1-9][0-9]* passed' "$out/python-remote-test.log"
     ;;
   lint)
-    run clippy mbx +1.97.1 clippy -p lancedb --features remote --no-deps --tests \
+    run clippy mbx +$toolchain clippy -p lancedb --features remote --no-deps --tests \
       --benches --locked -- -D warnings --no-deps
-    run rust-fmt rustup run 1.97.1 cargo fmt --all -- --check
+    run rust-fmt rustup run "$toolchain" cargo fmt --all -- --check
     cd python
-    run ruff-format uv run --frozen --python 3.12 --extra tests --extra dev \
-      ruff format --check .
-    run ruff-check uv run --frozen --python 3.12 --extra tests --extra dev \
-      ruff check .
+    run ruff-format uvx --from ruff==0.9.9 ruff format --check .
+    run ruff-check uvx --from ruff==0.9.9 ruff check .
     ;;
   *)
     echo "unsupported suite: $suite" >&2
