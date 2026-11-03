@@ -1720,6 +1720,43 @@ describe("remote connection jobs surface", () => {
     );
   });
 
+  it("keeps a thrown progress observer from escaping wait", async () => {
+    const descriptions = [
+      '{"job_id":"job-throw","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":4,"rows_computed":2}}',
+      '{"job_id":"job-throw","job_type":"refresh_column","job_state":"DONE","creation_ms":1000,"result":{}}',
+    ];
+
+    await withMockDatabase(
+      (req, res) => {
+        if (req.url === "/v1/jobs/describe") {
+          const description = descriptions.shift();
+          if (description === undefined) {
+            res.writeHead(500).end("unexpected describe");
+            return;
+          }
+          res
+            .writeHead(200, { "Content-Type": "application/json" })
+            .end(description);
+          return;
+        }
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const job = await db.openJob("job-throw");
+        const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+        try {
+          await expect(
+            job.wait(() => {
+              throw new Error("observer failed");
+            }),
+          ).resolves.toBeUndefined();
+        } finally {
+          warn.mockRestore();
+        }
+      },
+    );
+  });
+
   it("leaves numDeletedRows absent when the server omits it", async () => {
     // A server that predates num_deleted_rows says nothing about deleted rows
     const statsReply =
