@@ -140,9 +140,10 @@ impl FreshnessState {
 ///
 /// The digest identifies the unified freshness state established before
 /// publication, and the selected-row bitmaps bound which rows finalization
-/// may change. The digest is not a per-row lease: overlapping publications
-/// are settled by their data-commit witnesses, while disjoint accepted
-/// repairs compose.
+/// may change. One accepted wave can finalize disjoint fragments together;
+/// later serialized waves preserve clean rows from earlier accepted waves.
+/// A newer dirty intent changes the current digest and fences stale non-noop
+/// finalization. There is no per-row lease.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RowStateToken {
     pub basis: String,
@@ -1555,10 +1556,11 @@ fn apply_row_repair(
 /// Clear rows whose publication was accepted and keep every skipped row dirty.
 ///
 /// The token names the accepted input basis and the exact rows it may change.
-/// Finalization applies only that row-scoped delta to the latest state, so
-/// disjoint accepted repairs compose. Replaying the same accepted transition
-/// is idempotent. Overlapping publications are settled by their data-commit
-/// witnesses; this API deliberately does not invent a second per-row lease.
+/// One accepted wave can finalize disjoint fragments together, and later
+/// serialized waves preserve clean rows from earlier accepted waves. A newer
+/// dirty intent fences a stale non-noop finalization; exact replay of the
+/// accepted transition is idempotent. This API deliberately does not invent a
+/// second per-row lease.
 ///
 /// `verified_version` is the latest version whose publication survival the
 /// caller verified. With `Some`, finalization commits field metadata
