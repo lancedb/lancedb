@@ -2445,8 +2445,8 @@ mod tests {
     /// over the replacement rows before maintenance indexes them again.
     #[tokio::test]
     #[cfg_attr(
-        not(feature = "experimental-features"),
-        ignore = "requires experimental-features"
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
     )]
     async fn test_rebuild_retains_vector_index() {
         let (conn, source) = db_with_vectors(256).await;
