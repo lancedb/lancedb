@@ -80,6 +80,10 @@
       "destination": "/curation/inspect-datasets"
     },
     {
+      "source": "/curation/sunk-integration",
+      "destination": "/curation/slurm-integration"
+    },
+    {
       "source": "/search/optimize-queries",
       "destination": "/basics/sql#query-plans"
     },
@@ -379,12 +383,14 @@
               "curation/statistical-sampling",
               "curation/selective-sampling",
               "curation/join",
+              "curation/distributed-shuffle",
               "curation/windowing",
               "curation/clustering",
               "curation/dedupe",
+              "feature-engineering/view",
               "curation/vend-secret",
               "curation/gpu-function-execution",
-              "curation/sunk-integration"
+              "curation/slurm-integration"
             ]
           },
           {

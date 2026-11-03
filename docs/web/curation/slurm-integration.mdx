@@ -1,7 +1,7 @@
 ---
-title: "SUNK Integration"
-sidebarTitle: "SUNK Integration"
-description: "Run LanceDB Enterprise worker pods on a CoreWeave SUNK (Slurm on Kubernetes) cluster, accounted by Slurm."
+title: "Slurm Integration"
+sidebarTitle: "Slurm Integration"
+description: "Run LanceDB Enterprise worker pods on a Slurm-on-Kubernetes cluster, accounted by Slurm."
 icon: "server"
 availability:
   embedded: unavailable
@@ -10,11 +10,12 @@ availability:
 
 LanceDB Enterprise's job workers -- indexing, compaction, cache prewarm,
 and GPU Function execution alike -- all launch as ordinary Kubernetes
-pods through one shared scheduling configuration. On a Neocloud running
-CoreWeave's SUNK (Slurm on Kubernetes), pointing that configuration at
-SUNK's pod scheduler puts every worker pod LanceDB launches under Slurm's
-scheduling and accounting, instead of plain Kubernetes bin-packing. See
-[Architecture](/index#architecture).
+pods through one shared scheduling configuration. Today, that
+configuration supports CoreWeave's SUNK (Slurm on Kubernetes); the rest
+of this page describes SUNK specifically. On a Neocloud running SUNK,
+pointing that configuration at SUNK's pod scheduler puts every worker pod
+LanceDB launches under Slurm's scheduling and accounting, instead of
+plain Kubernetes bin-packing. See [Architecture](/index#architecture).
 
 ## What SUNK changes {#what-changes}
 

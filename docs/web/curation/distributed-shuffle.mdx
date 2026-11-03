@@ -1,0 +1,63 @@
+---
+title: "Distributed Shuffle"
+sidebarTitle: "Distributed Shuffle"
+description: "How a SQL query's intermediate results move between plan executors for a join, aggregate or sort."
+icon: shuffle
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+A distributed SQL query plans as a sequence of **stages**, each with its
+own set of partitions, connected by an **exchange**: a streaming gRPC
+service that carries one stage's output to the next stage's plan
+executors. [Distributed SQL](/enterprise/distributed-sql) covers how a
+query gets placed on the fleet in the first place; this page covers what
+happens between placement and the final result, for a query whose plan
+needs data repartitioned across machines -- a hash join or a grouped
+aggregate, for example, where rows with the same key must land on the
+same worker regardless of which plan executor originally read them.
+
+```mermaid
+flowchart LR
+    subgraph Stage1["Stage: scan"]
+    direction TB
+    PE1["Plan executor<br/>reads its partition"]
+    PE2["Plan executor<br/>reads its partition"]
+    end
+
+    EX["Exchange<br/>streaming gRPC,<br/>repartitions by join/group key,<br/>backpressure via a byte budget"]
+
+    subgraph Stage2["Stage: join / aggregate"]
+    direction TB
+    PE3["Plan executor<br/>probes its share of keys"]
+    PE4["Plan executor<br/>probes its share of keys"]
+    end
+
+    PE1 --> EX
+    PE2 --> EX
+    EX --> PE3
+    EX --> PE4
+```
+
+## Pipelined, not batched {#pipelined}
+
+The exchange moves data as a gRPC stream of row batches, not a file a
+later stage waits for: a consuming plan executor pulls batches as they
+become available, and a slow consumer throttles its producer through a
+byte budget on unread messages rather than letting memory grow without
+bound. A partition that stops being read -- for example the probe side of
+a hash join whose build side turned out empty -- is drained rather than
+left to stall the budget for every other partition sharing the same
+connection.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Distributed SQL" icon="diagram-project" href="/enterprise/distributed-sql">
+    How a query gets placed on the query-serving fleet or a job worker.
+  </Card>
+  <Card title="Query plans" icon="map" href="/basics/sql#query-plans">
+    Inspect a specific query's plan and its actual execution metrics.
+  </Card>
+</CardGroup>
