@@ -21,7 +21,7 @@ class GteEmbeddings(TextEmbeddingFunction):
     An embedding function that uses GTE-LARGE MLX format(for Apple silicon devices only)
     as well as the standard cpu/gpu version from: https://huggingface.co/thenlper/gte-large.
 
-    For Apple users, you will need the mlx package insalled, which can be done with:
+    For Apple users, you will need the mlx package installed, which can be done with:
         pip install mlx
 
     Parameters

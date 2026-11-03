@@ -10,7 +10,10 @@
     "resolveJsonModule": true,
     "emitDecoratorMetadata": true,
     "experimentalDecorators": true,
-    "moduleResolution": "Node"
+    "moduleResolution": "Node",
+    // flatbuffers 25 (via apache-arrow 21) ships declarations that need
+    // TypeScript 5.7+ generic typed arrays; skip checking third-party .d.ts.
+    "skipLibCheck": true
   },
   "exclude": ["./dist/*", "./examples/*"],
   "typedocOptions": {

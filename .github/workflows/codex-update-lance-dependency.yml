@@ -4,14 +4,14 @@ on:
   workflow_call:
     inputs:
       tag:
-        description: "Tag name from Lance. If omitted, the skill will use the latest Lance release that needs an update."
+        description: "Tag name from Lance (e.g. `v7.2.0-beta.1`). If omitted, the newest release is resolved automatically — stable releases are preferred over pre-releases — and the run is skipped if it is not newer than the version currently pinned in Cargo.toml."
         required: false
         default: ""
         type: string
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag name from Lance. Leave empty to use the latest Lance release that needs an update."
+        description: "Tag name from Lance (e.g. `v7.2.0-beta.1`). Leave empty to resolve the newest release automatically — stable releases are preferred over pre-releases — and skip the run if it is not newer than the version currently pinned in Cargo.toml."
         required: false
         default: ""
         type: string

@@ -7,13 +7,12 @@ from typing import List, Union
 
 import numpy as np
 import pyarrow as pa
+from pydantic import ConfigDict
 
 from ..util import attempt_import_or_raise
 from .base import EmbeddingFunction
 from .registry import register
 from .utils import AUDIO, IMAGES, TEXT
-
-from lancedb.pydantic import PYDANTIC_VERSION
 
 
 @register("imagebind")
@@ -31,13 +30,7 @@ class ImageBindEmbeddings(EmbeddingFunction):
     device: str = "cpu"
     normalize: bool = False
 
-    if PYDANTIC_VERSION.major < 2:  # Pydantic 1.x compat
-
-        class Config:
-            keep_untouched = (cached_property,)
-    else:
-        model_config = dict()
-        model_config["ignored_types"] = (cached_property,)
+    model_config = ConfigDict(ignored_types=(cached_property,))
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

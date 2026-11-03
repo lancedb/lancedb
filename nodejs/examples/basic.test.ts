@@ -170,7 +170,7 @@ test("basic table examples", async () => {
     // --8<-- [end:create_index]
 
     // --8<-- [start:delete_rows]
-    await tbl.delete('item = "fizz"');
+    await tbl.delete("item = 'fizz'");
     // --8<-- [end:delete_rows]
 
     // --8<-- [start:drop_table]

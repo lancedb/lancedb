@@ -3,6 +3,7 @@
 
 //! Namespace-based database implementation that delegates table management to lance-namespace
 
+use lance_datafusion::utils::StreamingWriteSource;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
@@ -23,13 +24,10 @@ use lance_namespace_impls::ConnectBuilder;
 use lance_table::io::commit::CommitHandler;
 use lance_table::io::commit::external_manifest::ExternalManifestCommitHandler;
 
-use crate::blob::{ensure_blob_storage_version, has_blob_columns};
+use crate::blob::ensure_blob_storage_version;
 use crate::connection::NamespaceClientPushdownOperation;
 use crate::database::ReadConsistency;
-use crate::database::listing::{
-    NewTableConfig, OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS, OPT_NEW_TABLE_STORAGE_VERSION,
-    OPT_NEW_TABLE_V2_MANIFEST_PATHS,
-};
+use crate::database::listing::{NewTableConfig, take_request_creation_overrides};
 use crate::database::read_freshness::{
     FreshnessBaselines, ReadFreshnessContextProvider, TableFreshness,
 };
@@ -197,71 +195,29 @@ impl LanceNamespaceDatabase {
         TableFreshness::new(self.freshness_baselines.clone(), key)
     }
 
-    fn extract_storage_overrides(
-        &self,
-        request: &DbCreateTableRequest,
-    ) -> Result<(
-        Option<lance_encoding::version::LanceFileVersion>,
-        Option<bool>,
-        Option<bool>,
-    )> {
-        let storage_options = request
-            .write_options
-            .lance_write_params
-            .as_ref()
-            .and_then(|p| p.store_params.as_ref())
-            .and_then(|sp| sp.storage_options());
-
-        let storage_version_override = storage_options
-            .and_then(|opts| opts.get(OPT_NEW_TABLE_STORAGE_VERSION))
-            .map(|s| s.parse::<lance_encoding::version::LanceFileVersion>())
-            .transpose()?;
-
-        let v2_manifest_override = storage_options
-            .and_then(|opts| opts.get(OPT_NEW_TABLE_V2_MANIFEST_PATHS))
-            .map(|s| s.parse::<bool>())
-            .transpose()
-            .map_err(|_| Error::InvalidInput {
-                message: "enable_v2_manifest_paths must be a boolean".to_string(),
-            })?;
-
-        let stable_row_ids_override = storage_options
-            .and_then(|opts| opts.get(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS))
-            .map(|s| s.parse::<bool>())
-            .transpose()
-            .map_err(|_| Error::InvalidInput {
-                message: "enable_stable_row_ids must be a boolean".to_string(),
-            })?;
-
-        Ok((
-            storage_version_override,
-            v2_manifest_override,
-            stable_row_ids_override,
-        ))
-    }
-
     fn apply_new_table_config(
         &self,
         params: &mut lance::dataset::WriteParams,
         request: &DbCreateTableRequest,
     ) -> Result<()> {
-        let (storage_version_override, v2_manifest_override, stable_row_ids_override) =
-            self.extract_storage_overrides(request)?;
+        let overrides = take_request_creation_overrides(params)?;
 
-        params.data_storage_version = storage_version_override
+        params.data_storage_version = overrides
+            .data_storage_version
             .or(params.data_storage_version)
             .or(self.new_table_config.data_storage_version);
 
-        if let Some(enable_v2_manifest_paths) =
-            v2_manifest_override.or(self.new_table_config.enable_v2_manifest_paths)
+        if let Some(enable_v2_manifest_paths) = overrides
+            .enable_v2_manifest_paths
+            .or(self.new_table_config.enable_v2_manifest_paths)
         {
             params.enable_v2_manifest_paths = enable_v2_manifest_paths;
         }
 
         let data_schema = request.data.schema();
-        if let Some(enable_stable_row_ids) = stable_row_ids_override
+        if let Some(enable_stable_row_ids) = overrides
+            .enable_stable_row_ids
             .or(self.new_table_config.enable_stable_row_ids)
-            .or(has_blob_columns(data_schema.as_ref()).then_some(true))
         {
             params.enable_stable_row_ids = enable_stable_row_ids;
         }
@@ -295,11 +251,11 @@ impl Database for LanceNamespaceDatabase {
     }
 
     async fn read_consistency(&self) -> Result<ReadConsistency> {
-        if let Some(read_consistency_inverval) = self.read_consistency_interval {
-            if read_consistency_inverval.is_zero() {
+        if let Some(interval) = self.read_consistency_interval {
+            if interval.is_zero() {
                 Ok(ReadConsistency::Strong)
             } else {
-                Ok(ReadConsistency::Eventual(read_consistency_inverval))
+                Ok(ReadConsistency::Eventual(interval))
             }
         } else {
             Ok(ReadConsistency::Manual)
@@ -332,16 +288,44 @@ impl Database for LanceNamespaceDatabase {
     }
 
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
-        let ns_request = ListTablesRequest {
-            id: Some(request.namespace_path),
-            page_token: request.start_after,
-            limit: request.limit.map(|l| l as i32),
-            ..Default::default()
-        };
+        if request.limit == Some(0) {
+            return Ok(Vec::new());
+        }
 
-        let response = self.namespace.list_tables(ns_request).await?;
+        // Namespace tokens are opaque, and pages need not arrive in name order.
+        // Collect the listing before applying the name cursor and overall limit.
+        let mut names = Vec::new();
+        let mut page_token = None;
+        let mut seen_tokens = HashSet::new();
+        loop {
+            let response = self
+                .namespace
+                .list_tables(ListTablesRequest {
+                    id: Some(request.namespace_path.clone()),
+                    page_token,
+                    ..Default::default()
+                })
+                .await?;
+            names.extend(response.tables);
+            let Some(token) = response.page_token.filter(|token| !token.is_empty()) else {
+                break;
+            };
+            if !seen_tokens.insert(token.clone()) {
+                return Err(Error::Runtime {
+                    message: "Namespace table listing response repeated a page_token".into(),
+                });
+            }
+            page_token = Some(token);
+        }
 
-        Ok(response.tables)
+        names.sort();
+        if let Some(ref start_after) = request.start_after {
+            names.retain(|name| name > start_after);
+        }
+        if let Some(limit) = request.limit {
+            names.truncate(limit as usize);
+        }
+        Ok(names)
     }
 
     async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
@@ -349,6 +333,10 @@ impl Database for LanceNamespaceDatabase {
     }
 
     async fn create_table(&self, request: DbCreateTableRequest) -> Result<Arc<dyn BaseTable>> {
+        // Refuse a bad declaration before the namespace records a table.
+        crate::table::computed_columns::ensure_declarations_are_planned(
+            &request.data.arrow_schema(),
+        )?;
         let mut table_id = request.namespace_path.clone();
         table_id.push(request.name.clone());
         let mut existing_table = None;
@@ -583,9 +571,7 @@ impl Database for LanceNamespaceDatabase {
         self.namespace
             .drop_table(drop_request)
             .await
-            .map_err(|e| Error::Runtime {
-                message: format!("Failed to drop table: {}", e),
-            })?;
+            .map_err(|e| map_namespace_lance_error(e, name))?;
 
         Ok(())
     }
@@ -631,6 +617,135 @@ mod tests {
     use futures::TryStreamExt;
     use tempfile::tempdir;
 
+    #[derive(Debug)]
+    struct ScriptedNamespace {
+        pages: Vec<ListTablesResponse>,
+        requests: Mutex<Vec<ListTablesRequest>>,
+    }
+
+    #[async_trait]
+    impl LanceNamespace for ScriptedNamespace {
+        fn namespace_id(&self) -> String {
+            "scripted".into()
+        }
+
+        async fn list_tables(
+            &self,
+            request: ListTablesRequest,
+        ) -> lance_core::Result<ListTablesResponse> {
+            let mut requests = self.requests.lock().unwrap();
+            let page = self.pages[requests.len()].clone();
+            requests.push(request);
+            Ok(page)
+        }
+    }
+
+    fn namespace_with_pages(
+        pages: Vec<ListTablesResponse>,
+    ) -> (LanceNamespaceDatabase, Arc<ScriptedNamespace>) {
+        let namespace = Arc::new(ScriptedNamespace {
+            pages,
+            requests: Mutex::new(Vec::new()),
+        });
+        let db = LanceNamespaceDatabase::from_namespace_client(
+            namespace.clone(),
+            "scripted".into(),
+            HashMap::new(),
+            HashMap::new(),
+            None,
+            None,
+            HashSet::new(),
+        );
+        (db, namespace)
+    }
+
+    fn listing_page(names: &[&str], token: Option<&str>) -> ListTablesResponse {
+        ListTablesResponse {
+            tables: names.iter().map(|name| (*name).into()).collect(),
+            page_token: token.map(String::from),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn test_table_names_collects_namespace_pages() {
+        for namespace_path in [vec![], vec!["child".into()]] {
+            for (start_after, limit, expected) in [
+                (None, None, vec!["a", "b", "c", "d"]),
+                (Some("a".into()), Some(2), vec!["b", "c"]),
+            ] {
+                let (db, namespace) = namespace_with_pages(vec![
+                    listing_page(&["d", "b"], Some("opaque-1")),
+                    listing_page(&[], Some("opaque-2")),
+                    listing_page(&["c", "a"], None),
+                ]);
+                let names = db
+                    .table_names(TableNamesRequest {
+                        namespace_path: namespace_path.clone(),
+                        start_after,
+                        limit,
+                    })
+                    .await
+                    .unwrap();
+                assert_eq!(names, expected);
+
+                let requests = namespace.requests.lock().unwrap();
+                assert_eq!(requests.len(), 3);
+                for request in requests.iter() {
+                    assert_eq!(request.id.as_ref(), Some(&namespace_path));
+                    assert_eq!(request.limit, None);
+                }
+                assert_eq!(requests[0].page_token, None);
+                assert_eq!(requests[1].page_token.as_deref(), Some("opaque-1"));
+                assert_eq!(requests[2].page_token.as_deref(), Some("opaque-2"));
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn test_table_names_zero_limit_skips_namespace_request() {
+        let (db, namespace) = namespace_with_pages(vec![]);
+        assert!(
+            db.table_names(TableNamesRequest {
+                limit: Some(0),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .is_empty()
+        );
+        assert!(namespace.requests.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn test_table_names_stops_on_empty_namespace_token() {
+        let (db, namespace) = namespace_with_pages(vec![listing_page(&["a"], Some(""))]);
+        assert_eq!(
+            db.table_names(TableNamesRequest::default()).await.unwrap(),
+            vec!["a"]
+        );
+        assert_eq!(namespace.requests.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn test_table_names_rejects_namespace_token_cycle() {
+        let (db, namespace) = namespace_with_pages(vec![
+            listing_page(&["a"], Some("one")),
+            listing_page(&["b"], Some("two")),
+            listing_page(&["c"], Some("one")),
+        ]);
+        let error = db
+            .table_names(TableNamesRequest::default())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("repeated a page_token"));
+        assert_eq!(namespace.requests.lock().unwrap().len(), 3);
+    }
+
     /// Helper function to create test data
     fn create_test_data() -> RecordBatch {
         let schema = Arc::new(Schema::new(vec![
@@ -642,6 +757,146 @@ mod tests {
         let name_array = StringArray::from(vec!["Alice", "Bob", "Charlie", "David", "Eve"]);
 
         RecordBatch::try_new(schema, vec![Arc::new(id_array), Arc::new(name_array)]).unwrap()
+    }
+
+    /// The shared parse-and-sanitize boundary is wired into this path: the
+    /// request-level creation key must act as an override (the strip itself
+    /// is covered by the listing tests).
+    #[tokio::test]
+    async fn request_level_creation_keys_are_taken_as_overrides() {
+        use crate::database::listing::OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS;
+
+        let tmp_dir = tempdir().unwrap();
+        let mut properties = HashMap::new();
+        properties.insert(
+            "root".to_string(),
+            tmp_dir.path().to_str().unwrap().to_string(),
+        );
+        let db = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .unwrap();
+
+        let store_params = ObjectStoreParams {
+            storage_options_accessor: Some(Arc::new(StorageOptionsAccessor::with_static_options(
+                HashMap::from([(
+                    OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+                    "true".to_string(),
+                )]),
+            ))),
+            ..Default::default()
+        };
+        let table = db
+            .create_table("t", create_test_data())
+            .write_options(crate::table::WriteOptions {
+                lance_write_params: Some(lance::dataset::WriteParams {
+                    store_params: Some(store_params),
+                    ..Default::default()
+                }),
+            })
+            .execute()
+            .await
+            .unwrap();
+        let native = table.as_native().unwrap();
+        assert!(
+            native
+                .dataset
+                .get()
+                .await
+                .unwrap()
+                .manifest
+                .uses_stable_row_ids(),
+            "the creation key must be honored as an override"
+        );
+
+        let table = db.open_table("t").execute().await.unwrap();
+        let rows: usize = table
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap()
+            .iter()
+            .map(|b| b.num_rows())
+            .sum();
+        assert_eq!(rows, 5);
+    }
+
+    /// Sanitation on this path: apply must strip the creation keys from the
+    /// store options while genuine options and the provider survive.
+    #[tokio::test]
+    async fn apply_new_table_config_sanitizes_request_store_options() {
+        use crate::database::listing::OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS;
+        use lance_io::object_store::StorageOptionsProvider;
+
+        #[derive(Debug)]
+        struct EmptyProvider;
+
+        #[async_trait::async_trait]
+        impl StorageOptionsProvider for EmptyProvider {
+            async fn fetch_storage_options(
+                &self,
+            ) -> lance_core::Result<Option<HashMap<String, String>>> {
+                Ok(Some(HashMap::new()))
+            }
+
+            fn provider_id(&self) -> String {
+                "empty-test-provider".into()
+            }
+        }
+
+        let tmp_dir = tempdir().unwrap();
+        let mut properties = HashMap::new();
+        properties.insert(
+            "root".to_string(),
+            tmp_dir.path().to_str().unwrap().to_string(),
+        );
+        let db = LanceNamespaceDatabase::connect_with_new_table_config(
+            "dir",
+            properties,
+            HashMap::new(),
+            None,
+            None,
+            HashSet::new(),
+            NewTableConfig::default(),
+        )
+        .await
+        .unwrap();
+
+        let request = DbCreateTableRequest::new("t".to_string(), Box::new(create_test_data()));
+        let mut params = lance::dataset::WriteParams {
+            store_params: Some(ObjectStoreParams {
+                storage_options_accessor: Some(Arc::new(
+                    StorageOptionsAccessor::with_initial_and_provider(
+                        HashMap::from([
+                            ("region".to_string(), "us-west-2".to_string()),
+                            (
+                                OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+                                "true".to_string(),
+                            ),
+                        ]),
+                        Arc::new(EmptyProvider),
+                    ),
+                )),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        db.apply_new_table_config(&mut params, &request).unwrap();
+
+        assert!(params.enable_stable_row_ids);
+        let store_params = params.store_params.unwrap();
+        let options = store_params.storage_options().cloned().unwrap();
+        assert!(!options.contains_key(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS));
+        assert_eq!(options.get("region").map(String::as_str), Some("us-west-2"));
+        assert!(
+            store_params
+                .storage_options_accessor
+                .unwrap()
+                .has_provider()
+        );
     }
 
     #[tokio::test]
@@ -1398,6 +1653,15 @@ mod tests {
             .await
             .expect("Failed to list tables");
         assert!(!table_names_after.contains(&"drop_test".to_string()));
+
+        let error = conn
+            .drop_table("drop_test", &["test_ns".into()])
+            .await
+            .expect_err("dropping a missing table should fail");
+        assert!(
+            matches!(error, Error::TableNotFound { ref name, .. } if name == "drop_test"),
+            "expected TableNotFound, got: {error:?}"
+        );
 
         // Verify: Cannot open dropped table
         let open_result = conn.open_table("drop_test").execute().await;

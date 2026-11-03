@@ -25,9 +25,12 @@
 ### Type Aliases
 
 - [CreateReturnType](type-aliases/CreateReturnType.md)
+- [EmbeddingMetadataEntry](type-aliases/EmbeddingMetadataEntry.md)
+- [ResolvedEmbeddingFunctionConfig](type-aliases/ResolvedEmbeddingFunctionConfig.md)
 
 ### Functions
 
 - [LanceSchema](functions/LanceSchema.md)
 - [getRegistry](functions/getRegistry.md)
+- [parseEmbeddingMetadata](functions/parseEmbeddingMetadata.md)
 - [register](functions/register.md)

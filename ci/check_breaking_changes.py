@@ -2,6 +2,7 @@
 Check whether there are any breaking changes in the PRs between the base and head commits.
 If there are, assert that we have incremented the minor version.
 """
+
 import argparse
 import os
 from packaging.version import parse
@@ -27,7 +28,7 @@ if __name__ == "__main__":
     else:
         print("No breaking changes found.")
         exit(0)
-    
+
     last_stable_version = parse(args.last_stable_version)
     current_version = parse(args.current_version)
     if current_version.minor <= last_stable_version.minor:

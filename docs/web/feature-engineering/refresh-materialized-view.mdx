@@ -1,0 +1,88 @@
+---
+title: "Refresh a materialized view"
+sidebarTitle: "Refresh Materialized View"
+description: "Bring a materialized view up to date after its source data changes."
+icon: arrows-rotate
+keywords: ["materialized view", "refresh", "auto_refresh_enabled", "auto_refresh_interval_seconds"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+Refresh a [materialized view](/feature-engineering/materialized-views) to
+bring its stored rows up to date after the source table changes.
+
+<Note>
+In SQL this is [`REFRESH MATERIALIZED VIEW`](/sql/dml/refresh-materialized-view).
+</Note>
+
+## Refresh a view {#refresh}
+
+```python
+view.refresh()
+```
+
+Every refresh rebuilds the view completely from its source query -- there is
+no incremental refresh. Calling it again with no source changes still
+rebuilds and commits a new table version.
+
+The result reports what the refresh did:
+
+```python
+result = view.refresh()
+result.rows_written  # rows in the rebuilt view
+result.source_version  # the source table version the view now reflects
+result.version  # the view's own new table version
+```
+
+Pass `source_version=N` to refresh against a particular source version
+instead of the latest:
+
+```python
+view.refresh(source_version=12)
+```
+
+Use `view.table.count_rows()` for the view's row count at any time; it
+always matches `rows_written` from the most recent refresh.
+
+## Automatic refresh {#auto-refresh}
+
+Set scheduling options when [creating the view](/feature-engineering/materialized-views#auto-refresh):
+
+```python
+view = db.create_materialized_view(
+    "frames_captioned",
+    source="frames",
+    select=["frame_id", "video_id", "ts", "caption"],
+    where="selected = true",
+    auto_refresh_enabled=True,
+    auto_refresh_interval_seconds=300,
+)
+```
+
+`auto_refresh_interval_seconds` is a positive minimum delay after the last
+successful refresh before the next automatic one is eligible; omit it to let
+the server decide. The whole view toggles together -- there is no
+per-column granularity the way a computed column has one setting per output.
+
+The view's *initial* population, at creation or when the server first runs
+it, happens regardless of these settings; only refreshes after that are
+gated. Manual `view.refresh()` keeps working whether or not automatic
+refresh is enabled.
+
+## When a refresh fails {#failures}
+
+A refresh replaces the view's stored rows in one commit, so a failure leaves
+the view as it was after its last successful refresh. Fix the cause and
+refresh again.
+
+## Related guides {#next}
+
+<CardGroup cols={2}>
+  <Card title="Create a materialized view" icon="table" href="/feature-engineering/materialized-views">
+    Define the query a view stores.
+  </Card>
+  <Card title="Refresh a computed column" icon="arrows-rotate" href="/feature-engineering/refresh-column">
+    The same idea, for a single derived column.
+  </Card>
+</CardGroup>

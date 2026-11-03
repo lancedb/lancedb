@@ -7,8 +7,7 @@ from functools import cached_property
 from typing import List, Union
 
 import numpy as np
-
-from lancedb.pydantic import PYDANTIC_VERSION
+from pydantic import ConfigDict
 
 from ..util import attempt_import_or_raise
 from .base import TextEmbeddingFunction
@@ -67,13 +66,7 @@ class BedRockText(TextEmbeddingFunction):
     source_input_type: str = "search_document"
     query_input_type: str = "search_query"
 
-    if PYDANTIC_VERSION.major < 2:  # Pydantic 1.x compat
-
-        class Config:
-            keep_untouched = (cached_property,)
-    else:
-        model_config = dict()
-        model_config["ignored_types"] = (cached_property,)
+    model_config = ConfigDict(ignored_types=(cached_property,))
 
     def ndims(self):
         # return len(self._generate_embedding("test"))

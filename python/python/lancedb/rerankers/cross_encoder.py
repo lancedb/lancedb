@@ -31,6 +31,12 @@ class CrossEncoderReranker(Reranker):
     trust_remote_code : bool, default True
         If True, will trust the remote code to be safe. If False, will not trust
         the remote code and will not run it
+    batch_size : int, default 32
+        The number of query-passage pairs scored per forward pass.
+    **kwargs
+        Additional keyword arguments passed to
+        ``sentence_transformers.CrossEncoder``, for example ``max_length`` or
+        ``model_kwargs={"torch_dtype": "bfloat16"}``.
     """
 
     def __init__(
@@ -40,6 +46,8 @@ class CrossEncoderReranker(Reranker):
         device: Union[str, None] = None,
         return_score="relevance",
         trust_remote_code: bool = True,
+        batch_size: int = 32,
+        **kwargs,
     ):
         super().__init__(return_score)
         torch = attempt_import_or_raise("torch")
@@ -47,6 +55,8 @@ class CrossEncoderReranker(Reranker):
         self.column = column
         self.device = device
         self.trust_remote_code = trust_remote_code
+        self.batch_size = batch_size
+        self.kwargs = kwargs
         if self.device is None:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -61,6 +71,7 @@ class CrossEncoderReranker(Reranker):
             self.model_name,
             device=self.device,
             trust_remote_code=self.trust_remote_code,
+            **self.kwargs,
         )
 
         return cross_encoder
@@ -71,7 +82,7 @@ class CrossEncoderReranker(Reranker):
             return result_set
         passages = result_set[self.column].to_pylist()
         cross_inp = [[query, passage] for passage in passages]
-        cross_scores = self.model.predict(cross_inp)
+        cross_scores = self.model.predict(cross_inp, batch_size=self.batch_size)
         result_set = result_set.append_column(
             "_relevance_score", pa.array(cross_scores, type=pa.float32())
         )

@@ -1,10 +1,13 @@
 # LanceDB Documentation
 
-LanceDB docs are available at [docs.lancedb.com](https://docs.lancedb.com).
+For website guides in `docs/web`, start with
+[Documentation in CONTRIBUTING.md](../CONTRIBUTING.md#documentation). That
+covers editing pages, generated examples, previews, availability and drafts.
 
-The SDK docs are built and deployed automatically by [Github Actions](../.github/workflows/docs.yml)
-whenever a commit is pushed to the `main` branch. So it is possible for the docs to show
-unreleased features.
+This page covers the SDK reference in `docs/src`, built with MkDocs. Its
+[GitHub Actions workflow](../.github/workflows/docs.yml) builds and deploys on
+pushes to `main`, so it can include unreleased APIs. That is separate from the
+release editions of the Mintlify website.
 
 ## Building the docs
 
@@ -15,18 +18,21 @@ unreleased features.
 
 ### Preview the docs
 
+Run these commands from the LanceDB repository root. The subshell changes into
+`docs` to load `mkdocs.yml`, while leaving your shell in the repository root.
+
 ```shell
-cd docs
-mkdocs serve
+(cd docs && PYTHONPATH=. mkdocs serve)
 ```
 
 If you want to just generate the HTML files:
 
 ```shell
-PYTHONPATH=. mkdocs build -f docs/mkdocs.yml
+(cd docs && PYTHONPATH=. mkdocs build)
 ```
 
-If successful, you should see a `docs/site` directory that you can verify locally.
+If successful, you should see a `docs/site` directory in the repository root that
+you can verify locally.
 
 ## Adding examples
 
@@ -47,22 +53,24 @@ pytest -vv python/tests/docs
 
 ### Checking typescript examples
 
-The `@lancedb/lancedb` package must be built before running the tests:
+The examples depend on `@lancedb/lancedb` at `file:../dist`, so the package must be
+built before running the tests. This uses pnpm; see the
+[Typescript contributing guide](../nodejs/CONTRIBUTING.md) for the toolchain setup.
 
 ```shell
 pushd nodejs
-npm ci
-npm run build
+pnpm install
+pnpm build
 popd
 ```
 
-Then you can run the examples by going to the `nodejs/examples` directory and
-running the tests like a normal npm package:
+Then you can run the examples by going to the `nodejs/examples` directory, which is a
+separate pnpm package with its own lockfile:
 
 ```shell
 pushd nodejs/examples
-npm ci
-npm test
+pnpm install
+pnpm test
 popd
 ```
 
@@ -84,6 +92,7 @@ The new files should be checked into the repository.
 
 ```shell
 pushd nodejs
-npm run docs
+# `pnpm docs` would invoke pnpm's built-in `docs` command, not the script.
+pnpm run docs
 popd
 ```

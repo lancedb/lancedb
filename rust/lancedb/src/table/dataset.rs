@@ -19,7 +19,7 @@ use crate::{Error, error::Result, utils::background_cache::BackgroundCache};
 pub struct DatasetConsistencyWrapper {
     state: Arc<Mutex<DatasetState>>,
     consistency: ConsistencyMode,
-    /// The single MemWAL `ShardWriter` for this dataset, co-located so it is
+    /// The single RTE `ShardWriter` for this dataset, co-located so it is
     /// cached for the session and shares the dataset's lifecycle. A dataset
     /// writes to one shard at a time. Shared by `Arc` across clones.
     shard_writer: Arc<ShardWriterCache>,
@@ -32,6 +32,10 @@ struct DatasetState {
     /// `Some(version)` = pinned to a specific version (time travel),
     /// `None` = tracking latest.
     pinned_version: Option<u64>,
+    /// Whether the pin is an internal query snapshot rather than user-visible
+    /// time travel. Query snapshots remain read-only but preserve RTE read
+    /// semantics.
+    query_snapshot: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -48,7 +52,7 @@ enum ConsistencyMode {
     /// refresh_window = min(3s, TTL/4)
     ///
     /// | t < TTL - refresh_window | t < TTL                           | t >= TTL            |
-    /// |  Return value            | Background refresh & return value |  syncronous refresh |
+    /// |  Return value            | Background refresh & return value |  synchronous refresh |
     Eventual(BackgroundCache<Arc<Dataset>, Error>),
 }
 
@@ -70,6 +74,7 @@ impl DatasetConsistencyWrapper {
             state: Arc::new(Mutex::new(DatasetState {
                 dataset,
                 pinned_version: None,
+                query_snapshot: false,
             })),
             consistency,
             shard_writer: Arc::new(ShardWriterCache::default()),
@@ -93,7 +98,37 @@ impl DatasetConsistencyWrapper {
         wrapper
     }
 
-    /// The MemWAL `ShardWriter` cache co-located with this dataset.
+    /// Create an independent read-only wrapper pinned to the current dataset
+    /// while retaining this wrapper's live RTE read context.
+    pub async fn new_query_snapshot(&self) -> Result<Self> {
+        // Apply the configured consistency policy before taking the snapshot.
+        // The returned dataset is intentionally discarded: a checkout may race
+        // after this await, so the dataset and its pin provenance must instead
+        // be cloned together from one authoritative state sample below.
+        self.get().await?;
+
+        let (dataset, query_snapshot) = {
+            let state = self.state.lock()?;
+            // Preserve user time travel so the RTE safety guard still sees
+            // it. Latest and already-internal snapshots remain internal pins.
+            (
+                state.dataset.clone(),
+                state.query_snapshot || state.pinned_version.is_none(),
+            )
+        };
+        let version = dataset.version().version;
+        Ok(Self {
+            state: Arc::new(Mutex::new(DatasetState {
+                dataset,
+                pinned_version: Some(version),
+                query_snapshot,
+            })),
+            consistency: ConsistencyMode::Lazy,
+            shard_writer: self.shard_writer.clone(),
+        })
+    }
+
+    /// The RTE `ShardWriter` cache co-located with this dataset.
     pub(crate) fn shard_writer(&self) -> &Arc<ShardWriterCache> {
         &self.shard_writer
     }
@@ -169,6 +204,7 @@ impl DatasetConsistencyWrapper {
         let mut state = self.state.lock()?;
         state.dataset = Arc::new(new_dataset);
         state.pinned_version = None;
+        state.query_snapshot = false;
         drop(state);
         if let ConsistencyMode::Eventual(bg_cache) = &self.consistency {
             bg_cache.invalidate();
@@ -202,10 +238,10 @@ impl DatasetConsistencyWrapper {
 
     /// Returns the version, if in time travel mode, or None otherwise.
     pub fn time_travel_version(&self) -> Option<u64> {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .pinned_version
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        (!state.query_snapshot)
+            .then_some(state.pinned_version)
+            .flatten()
     }
 
     /// Convert into a wrapper in latest version mode.
@@ -225,6 +261,7 @@ impl DatasetConsistencyWrapper {
         if state.pinned_version.is_some() {
             state.dataset = Arc::new(new_dataset);
             state.pinned_version = None;
+            state.query_snapshot = false;
         }
         drop(state);
         if let ConsistencyMode::Eventual(bg_cache) = &self.consistency {
@@ -260,6 +297,7 @@ impl DatasetConsistencyWrapper {
         let mut state = self.state.lock()?;
         state.dataset = Arc::new(new_dataset);
         state.pinned_version = Some(version_value);
+        state.query_snapshot = false;
         Ok(())
     }
 
@@ -335,10 +373,10 @@ mod tests {
 
     use super::*;
 
-    use crate::{
-        connect, io::object_store::io_tracking::IoStatsHolder, table::WriteOptions,
-        utils::background_cache::clock,
-    };
+    use lance_io::assert_io_eq;
+    use lance_io::utils::tracking_store::IOTracker;
+
+    use crate::{connect, table::WriteOptions, utils::background_cache::clock};
 
     async fn create_test_dataset(uri: &str) -> Dataset {
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
@@ -462,6 +500,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_query_snapshot_samples_dataset_and_pin_together() {
+        let dir = tempfile::tempdir().unwrap();
+        let uri = dir.path().to_str().unwrap();
+        let ds = create_test_dataset(uri).await;
+
+        let wrapper = DatasetConsistencyWrapper::new_latest(ds, None);
+        wrapper.as_time_travel(1u64).await.unwrap();
+        let stale_time_travel_dataset = wrapper.get().await.unwrap();
+
+        append_to_dataset(uri).await;
+        wrapper.as_latest().await.unwrap();
+
+        let snapshot = wrapper.new_query_snapshot().await.unwrap();
+        let snapshot_dataset = snapshot.get().await.unwrap();
+        assert_eq!(snapshot_dataset.version().version, 2);
+        assert_ne!(
+            snapshot_dataset.version().version,
+            stale_time_travel_dataset.version().version
+        );
+        assert_eq!(snapshot.time_travel_version(), None);
+    }
+
+    #[tokio::test]
     async fn test_as_latest_from_time_travel() {
         let dir = tempfile::tempdir().unwrap();
         let uri = dir.path().to_str().unwrap();
@@ -565,7 +626,7 @@ mod tests {
             .execute()
             .await
             .expect("Failed to connect to database");
-        let io_stats = IoStatsHolder::default();
+        let io_stats = IOTracker::default();
 
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
 
@@ -590,7 +651,7 @@ mod tests {
         // latest version.
         table.schema().await.unwrap();
         let stats = io_stats.incremental_stats();
-        assert_eq!(stats.read_iops, 1);
+        assert_io_eq!(stats, read_iops, 1);
     }
 
     /// Regression test: a write that races with as_time_travel() must not panic.
@@ -628,7 +689,7 @@ mod tests {
             .execute()
             .await
             .unwrap();
-        let io_stats = IoStatsHolder::default();
+        let io_stats = IOTracker::default();
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
         let table = db
             .create_empty_table("test", schema)
@@ -651,12 +712,12 @@ mod tests {
         // Step 1: within interval — no list
         table.schema().await.unwrap();
         let s = io_stats.incremental_stats();
-        assert_eq!(s.read_iops, 0, "step 1, elapsed={:?}", start.elapsed());
+        assert_io_eq!(s, read_iops, 0, "step 1, elapsed={:?}", start.elapsed());
 
         // Step 2: still within interval — no list
         table.schema().await.unwrap();
         let s = io_stats.incremental_stats();
-        assert_eq!(s.read_iops, 0, "step 2, elapsed={:?}", start.elapsed());
+        assert_io_eq!(s, read_iops, 0, "step 2, elapsed={:?}", start.elapsed());
 
         // Step 3: sleep past the 1s boundary
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -664,14 +725,14 @@ mod tests {
         // Step 4: interval expired — exactly 1 list, timer resets
         table.schema().await.unwrap();
         let s = io_stats.incremental_stats();
-        assert_eq!(s.read_iops, 1, "step 4, elapsed={:?}", start.elapsed());
+        assert_io_eq!(s, read_iops, 1, "step 4, elapsed={:?}", start.elapsed());
 
         // Step 5: 10 more calls — timer just reset, no lists (THIS is the regression test).
         for _ in 0..10 {
             table.schema().await.unwrap();
         }
         let s = io_stats.incremental_stats();
-        assert_eq!(s.read_iops, 0, "step 5, elapsed={:?}", start.elapsed());
+        assert_io_eq!(s, read_iops, 0, "step 5, elapsed={:?}", start.elapsed());
     }
 
     /// Helper: poison the mutex inside a DatasetConsistencyWrapper.
