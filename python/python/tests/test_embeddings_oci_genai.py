@@ -325,7 +325,6 @@ def test_oci_genai_pickle_after_client_created(fake_oci):
 
 
 def test_oci_genai_table_round_trip(fake_oci):
-    pytest.importorskip("pandas")
     func = _create(region="us-ashburn-1", auth_profile="MYPROFILE")
 
     class Docs(LanceModel):
@@ -335,11 +334,11 @@ def test_oci_genai_table_round_trip(fake_oci):
     db = lancedb.connect("memory://")
     tbl = db.create_table("docs", schema=Docs, mode="overwrite")
     tbl.add([{"text": "hello"}, {"text": "goodbye world"}])
-    assert len(tbl.to_pandas()["vector"][0]) == DIMS
+    assert len(tbl.to_arrow()["vector"][0].as_py()) == DIMS
 
     # the fake embeds len(text), so an equally long query lands on that row
-    hits = tbl.search("goodbye world").limit(1).to_pandas()
-    assert hits["text"][0] == "goodbye world"
+    hits = tbl.search("goodbye world").limit(1).to_arrow()
+    assert hits["text"][0].as_py() == "goodbye world"
     assert _embed_requests(fake_oci)[-1].input_type == "SEARCH_QUERY"
 
     parsed = tbl.embedding_functions["vector"].function
