@@ -13,7 +13,6 @@ use std::collections::HashSet;
 use std::sync::{LazyLock, Mutex, OnceLock};
 
 use lance::Dataset;
-use lance::index::DatasetIndexExt;
 use roaring::RoaringBitmap;
 
 /// Base URL for the LanceDB documentation site.
@@ -151,39 +150,46 @@ impl DocLink {
     }
 
     /// The documentation page path (starting with `/`).
+    ///
+    /// Every path here must return HTTP 200 on the currently published
+    /// `https://docs.lancedb.com` edition and also resolve (directly or via a
+    /// redirect entry in `docs/web/docs.json`) in the upcoming `docs/web`
+    /// edition.
     pub const fn path(self) -> &'static str {
         match self {
-            Self::Compaction => "/maintenance/compaction",
+            Self::Compaction => "/performance",
             Self::Reindexing => "/indexing/reindexing",
-            Self::Sql => "/basics/sql",
-            Self::Jobs => "/basics/jobs",
-            Self::Functions | Self::GpuClasses | Self::Secrets => "/curation/create-function",
-            Self::FunctionErrors => "/feature-engineering/refresh-column",
-            Self::Views => "/management/view",
-            Self::MaterializedViews => "/management/materialized-view",
+            Self::Sql => "/search/sql",
             Self::BranchDiff | Self::BranchCherryPick => "/tables/branching",
-            Self::PrewarmData => "/maintenance/background-jobs",
-            Self::Authorization => "/governance/authorization",
+            Self::Jobs
+            | Self::Functions
+            | Self::GpuClasses
+            | Self::Secrets
+            | Self::FunctionErrors
+            | Self::Views
+            | Self::MaterializedViews
+            | Self::PrewarmData
+            | Self::Authorization => "/enterprise",
         }
     }
 
     /// Optional `#anchor` fragment on the target documentation page.
     pub const fn anchor(self) -> Option<&'static str> {
         match self {
-            Self::Compaction => Some("when"),
+            Self::Compaction => Some("compaction-and-cleanup"),
             Self::Reindexing => Some("incremental-reindexing"),
-            Self::Sql => Some("sql-is-remote"),
-            Self::Jobs => Some("managing"),
-            Self::Functions => Some("scalar"),
-            Self::GpuClasses => Some("gpu"),
-            Self::Secrets => Some("remote"),
-            Self::FunctionErrors => Some("failures"),
-            Self::Views => None,
-            Self::MaterializedViews => Some("create"),
             Self::BranchDiff => Some("diff-a-branch"),
             Self::BranchCherryPick => Some("merge-a-branch"),
-            Self::PrewarmData => Some("cache"),
-            Self::Authorization => Some("privileges"),
+            Self::Sql
+            | Self::Jobs
+            | Self::Functions
+            | Self::GpuClasses
+            | Self::Secrets
+            | Self::FunctionErrors
+            | Self::Views
+            | Self::MaterializedViews
+            | Self::PrewarmData
+            | Self::Authorization => None,
         }
     }
 
@@ -253,6 +259,9 @@ fn mark_warned(set: &Mutex<HashSet<String>>, table_key: &str) -> bool {
 /// Check already-loaded dataset metadata when a table is opened and emit
 /// rate-limited maintenance warnings (at most once per table per process).
 pub(crate) async fn check_table_maintenance_warnings(dataset: &Dataset, table_key: &str) {
+    if !log::log_enabled!(log::Level::Warn) {
+        return;
+    }
     if let Some(msg) = check_small_fragments_warning(dataset, table_key) {
         log::warn!("{msg}");
     }
@@ -289,6 +298,19 @@ pub(crate) fn check_small_fragments_warning(dataset: &Dataset, table_key: &str) 
     }
 }
 
+fn segment_supports_optimize_without_io(segment: &lance_table::format::IndexMetadata) -> bool {
+    let Some(raw_details) = segment.index_details.as_ref() else {
+        return false;
+    };
+    let details = lance::index::scalar::IndexDetails(raw_details.clone());
+    if details.is_vector() {
+        return true;
+    }
+    details
+        .get_plugin()
+        .is_ok_and(|plugin| plugin.supports_optimization())
+}
+
 pub(crate) async fn check_unindexed_rows_warning(
     dataset: &Dataset,
     table_key: &str,
@@ -307,23 +329,48 @@ pub(crate) async fn check_unindexed_rows_warning(
         return None;
     }
 
-    let indices = dataset.load_indices().await.ok()?;
-    let mut covered_by_index: std::collections::BTreeMap<&str, RoaringBitmap> =
+    let store = dataset.object_store(None).await.ok()?;
+    let raw_indices = lance_table::io::manifest::read_manifest_indexes(
+        store.as_ref(),
+        dataset.manifest_location(),
+        dataset.manifest(),
+    )
+    .await
+    .ok()?;
+    if raw_indices
+        .iter()
+        .any(|idx| idx.name == lance_index::frag_reuse::FRAG_REUSE_INDEX_NAME)
+    {
+        // Remapping fragment coverage after fragment reuse requires opening the
+        // fragment-reuse index artifact under `_indices/`. Skip rather than
+        // read index files during `open_table()`.
+        return None;
+    }
+
+    let mut covered_by_index: std::collections::BTreeMap<&str, Option<RoaringBitmap>> =
         std::collections::BTreeMap::new();
-    for index in indices.iter() {
+    for index in &raw_indices {
         if lance_index::is_system_index(index) {
             continue;
         }
-        let Some(bitmap) = index.fragment_bitmap.as_ref() else {
+        let Some(bitmap) = index
+            .fragment_bitmap
+            .as_ref()
+            .filter(|_| segment_supports_optimize_without_io(index))
+        else {
+            covered_by_index.insert(index.name.as_str(), None);
             continue;
         };
-        covered_by_index
-            .entry(index.name.as_str())
-            .and_modify(|acc| *acc |= bitmap)
-            .or_insert_with(|| bitmap.clone());
+        match covered_by_index.get_mut(index.name.as_str()) {
+            Some(Some(acc)) => *acc |= bitmap,
+            Some(None) => {}
+            None => {
+                covered_by_index.insert(index.name.as_str(), Some(bitmap.clone()));
+            }
+        }
     }
 
-    for covered in covered_by_index.values() {
+    for covered in covered_by_index.values().flatten() {
         let unindexed_rows: u64 = dataset
             .manifest()
             .fragments
@@ -351,17 +398,21 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
-    use arrow_array::{Int32Array, RecordBatch};
+    use arrow_array::{FixedSizeListArray, Float32Array, Int32Array, RecordBatch};
     use arrow_schema::{DataType, Field, Schema};
     use lance::dataset::WriteDestination;
+    use lance::dataset::builder::DatasetBuilder;
     use lance::dataset::transaction::Operation;
     use lance_table::format::Fragment;
+    use lance_table::io::commit::write_manifest_file_to_path;
+    use lance_table::io::manifest::read_manifest_indexes;
     use tempfile::tempdir;
 
     use crate::connect;
     use crate::database::ExecuteQueryRequest;
     use crate::function::FunctionErrorsRequest;
     use crate::index::Index;
+    use crate::index::vector::IvfFlatIndexBuilder;
 
     use super::*;
 
@@ -419,6 +470,20 @@ mod tests {
         let docs_web = manifest_dir.join("../../docs/web");
         let docs_json = std::fs::read_to_string(docs_web.join("docs.json"))
             .expect("docs/web/docs.json must exist");
+        let parsed_docs_json: serde_json::Value =
+            serde_json::from_str(&docs_json).expect("docs/web/docs.json must be valid JSON");
+        let redirect_map: std::collections::HashMap<String, String> = parsed_docs_json
+            .get("redirects")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| {
+                Some((
+                    entry.get("source")?.as_str()?.to_string(),
+                    entry.get("destination")?.as_str()?.to_string(),
+                ))
+            })
+            .collect();
         let mintignore = std::fs::read_to_string(docs_web.join(".mintignore")).unwrap_or_default();
         let ignored: HashSet<&str> = mintignore
             .lines()
@@ -427,6 +492,25 @@ mod tests {
             .collect();
 
         for &link in DocLink::ALL {
+            if let Some(destination) = redirect_map.get(link.path()) {
+                let dest_page = destination
+                    .split_once('#')
+                    .map_or(destination.as_str(), |(p, _)| p)
+                    .trim_start_matches('/');
+                let dest_mdx = if dest_page.is_empty() || dest_page == "index" {
+                    docs_web.join("index.mdx")
+                } else if docs_web.join(format!("{dest_page}.mdx")).is_file() {
+                    docs_web.join(format!("{dest_page}.mdx"))
+                } else {
+                    docs_web.join(format!("{dest_page}/index.mdx"))
+                };
+                assert!(
+                    dest_mdx.is_file(),
+                    "DocLink::{link:?} redirect destination '{destination}' does not resolve under docs/web"
+                );
+                continue;
+            }
+
             let rel_page = link.path().trim_start_matches('/');
             let direct_mdx = format!("{rel_page}.mdx");
             let index_mdx = format!("{rel_page}/index.mdx");
@@ -590,6 +674,137 @@ mod tests {
                 .is_some(),
             "a different table must still emit its own warning once"
         );
+    }
+
+    #[tokio::test]
+    async fn test_unindexed_rows_warning_never_reads_index_or_data_files() {
+        let tmp_dir = tempdir().unwrap();
+        let conn = connect(tmp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+
+        let dim = 4_i32;
+        let num_rows = 32_usize;
+        let values =
+            Float32Array::from_iter_values((0..(num_rows * dim as usize)).map(|v| v as f32));
+        let vec_field = Arc::new(Field::new("item", DataType::Float32, true));
+        let vec_col = FixedSizeListArray::try_new(vec_field, dim, Arc::new(values), None).unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new(
+                "vec",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), dim),
+                false,
+            ),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..num_rows as i32)),
+                Arc::new(vec_col),
+            ],
+        )
+        .unwrap();
+
+        let table = conn
+            .create_table("vec_no_io_tbl", batch)
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(
+                &["vec"],
+                Index::IvfFlat(IvfFlatIndexBuilder::default().num_partitions(1)),
+            )
+            .execute()
+            .await
+            .unwrap();
+
+        let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
+        let mut unindexed_frag = dataset.manifest().fragments[0].clone();
+        unindexed_frag.id = 99;
+        unindexed_frag.physical_rows = Some(UNINDEXED_ROWS_WARN_THRESHOLD as usize);
+        let read_version = dataset.version().version;
+        let updated = Dataset::commit(
+            WriteDestination::Dataset(dataset),
+            Operation::Append {
+                fragments: vec![unindexed_frag],
+            },
+            Some(read_version),
+            None,
+            None,
+            Arc::new(Default::default()),
+            false,
+        )
+        .await
+        .unwrap();
+
+        let table_uri = tmp_dir
+            .path()
+            .join("vec_no_io_tbl.lance")
+            .to_string_lossy()
+            .to_string();
+
+        // 1. Modern vector index: warns using only manifest metadata, with zero
+        // `_indices/` or `data/` file reads.
+        let reopened = DatasetBuilder::from_uri(&table_uri).load().await.unwrap();
+        let store = reopened.object_store(None).await.unwrap();
+        let _ = store.io_tracker().incremental_stats();
+        let warning = check_unindexed_rows_warning(&reopened, "test://vec_modern_no_io").await;
+        assert!(
+            warning.is_some(),
+            "modern vector index with 1M unindexed rows should trigger warning"
+        );
+        let stats = store.io_tracker().incremental_stats();
+        for req in &stats.requests {
+            let path = req.path.as_ref();
+            assert!(
+                !path.contains("_indices/") && !path.contains("/data/"),
+                "unexpected index or data I/O during warning check: {path}"
+            );
+        }
+
+        // 2. Legacy vector index without `index_details`: skipped cleanly without
+        // opening `_indices/<uuid>/index.idx` to infer details.
+        let mut indices = read_manifest_indexes(
+            store.as_ref(),
+            updated.manifest_location(),
+            updated.manifest(),
+        )
+        .await
+        .unwrap();
+        for idx in &mut indices {
+            idx.index_details = None;
+        }
+        let mut legacy_manifest = (*updated.manifest()).clone();
+        write_manifest_file_to_path(
+            store.as_ref(),
+            &mut legacy_manifest,
+            Some(indices),
+            &reopened.manifest_location().path,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let reopened_legacy = DatasetBuilder::from_uri(&table_uri).load().await.unwrap();
+        let legacy_store = reopened_legacy.object_store(None).await.unwrap();
+        let _ = legacy_store.io_tracker().incremental_stats();
+        let legacy_warning =
+            check_unindexed_rows_warning(&reopened_legacy, "test://vec_legacy_no_io").await;
+        assert!(
+            legacy_warning.is_none(),
+            "legacy index missing index_details must be skipped without disk inference"
+        );
+        let legacy_stats = legacy_store.io_tracker().incremental_stats();
+        for req in &legacy_stats.requests {
+            let path = req.path.as_ref();
+            assert!(
+                !path.contains("_indices/") && !path.contains("/data/"),
+                "unexpected index or data I/O for legacy index: {path}"
+            );
+        }
     }
 
     #[tokio::test]

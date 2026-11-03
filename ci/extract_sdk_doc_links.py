@@ -17,11 +17,14 @@ DEFAULT_DOCS_RS = REPO_ROOT / "rust" / "lancedb" / "src" / "docs.rs"
 
 def _parse_match_arm_map(match_arms: str) -> dict[str, str | None]:
     mapping: dict[str, str | None] = {}
-    for raw_line in match_arms.splitlines():
-        line = raw_line.strip().rstrip(",")
-        if not line or line.startswith("//") or "=>" not in line:
+    uncommented = "\n".join(
+        line for line in match_arms.splitlines() if not line.strip().startswith("//")
+    )
+    for raw_arm in uncommented.split(","):
+        arm = " ".join(raw_arm.split())
+        if not arm or "=>" not in arm:
             continue
-        lhs, rhs = [part.strip() for part in line.split("=>", 1)]
+        lhs, rhs = [part.strip() for part in arm.split("=>", 1)]
         variants = [
             part.strip().removeprefix("Self::")
             for part in lhs.split("|")

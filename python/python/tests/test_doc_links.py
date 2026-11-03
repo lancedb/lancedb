@@ -8,23 +8,12 @@ from lancedb.job import AsyncJob, Job
 import pytest
 
 
-class _StubDBConnection(DBConnection):
-    def table_names(self, page_token=None, limit=10):
-        return []
-
-    def create_table(self, name, data=None, **kwargs):
-        raise NotImplementedError
-
-    def open_table(self, name, **kwargs):
-        raise NotImplementedError
-
-
 def test_python_sdk_utm_content_and_doc_links(tmp_path):
     compaction_url = _doc_url("compaction")
     expected_content = f"utm_content=python-{_core_version}"
     assert (
         compaction_url
-        == f"https://docs.lancedb.com/maintenance/compaction?utm_source=lancedb_sdk&utm_medium=warning&utm_campaign=compaction&{expected_content}#when"
+        == f"https://docs.lancedb.com/performance?utm_source=lancedb_sdk&utm_medium=warning&utm_campaign=compaction&{expected_content}#compaction-and-cleanup"
     )
 
     db = lancedb.connect(tmp_path)
@@ -48,10 +37,13 @@ def test_python_sdk_utm_content_and_doc_links(tmp_path):
         db.create_view("v", "SELECT 1")
     assert _doc_url("views") in str(view_exc.value)
 
-    stub = _StubDBConnection()
     with pytest.raises(NotImplementedError) as mv_exc:
-        stub.open_materialized_view("mv")
+        DBConnection.open_materialized_view(db, "mv")
     assert _doc_url("materialized_views") in str(mv_exc.value)
+
+    with pytest.raises(NotImplementedError) as create_mv_exc:
+        DBConnection.create_materialized_view(db, "mv", "SELECT 1")
+    assert _doc_url("materialized_views") in str(create_mv_exc.value)
 
     local_job = Job(AsyncJob(None))
     with pytest.raises(NotImplementedError) as events_exc:
