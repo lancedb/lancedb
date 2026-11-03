@@ -92,6 +92,57 @@ def test_scalar_udf_matches_shared_registration_golden_and_remains_callable():
     }
 
 
+def test_udf_execution_controls_match_shared_registration_golden():
+    controlled = udf(
+        pip=["numpy>=2"],
+        env={"MODE": "test"},
+        python_version="3.12",
+        batch_size=2,
+        row_timeout_seconds=0.75,
+    )(normalize_score.__wrapped__)
+    assert (
+        controlled.registration_request.to_canonical_json()
+        == (FIXTURES / "remote_function_controlled_registration_request.canonical.json")
+        .read_text()
+        .strip()
+    )
+
+
+def test_udf_execution_controls_apply_to_vectorized_functions():
+    @udf(
+        input_schema=pa.schema([pa.field("value", pa.int64(), nullable=False)]),
+        output_schema=pa.int64(),
+        batch_size=3,
+        row_timeout_seconds=1.25,
+    )
+    def identity(value: pa.Array) -> pa.Array:
+        return value
+
+    request = json.loads(identity.registration_request.to_canonical_json())
+    assert request["batch_size"] == 3
+    assert request["row_timeout_seconds"] == 1.25
+
+
+@pytest.mark.parametrize(
+    ("options", "field"),
+    [
+        ({"batch_size": 0}, "batch_size"),
+        ({"batch_size": 2**32}, "batch_size"),
+        ({"batch_size": True}, "batch_size"),
+        ({"row_timeout_seconds": 0}, "row_timeout_seconds"),
+        ({"row_timeout_seconds": -0.25}, "row_timeout_seconds"),
+        ({"row_timeout_seconds": float("inf")}, "row_timeout_seconds"),
+        ({"row_timeout_seconds": True}, "row_timeout_seconds"),
+    ],
+)
+def test_udf_execution_controls_require_their_positive_ranges(options, field):
+    def identity(value: int) -> int:
+        return value
+
+    with pytest.raises(ValueError, match=field):
+        udf(**options)(identity)
+
+
 @pytest.mark.parametrize(
     "name", ["examples.image_info", "image-info", "image_info.", "image_info-"]
 )

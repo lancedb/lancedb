@@ -86,6 +86,27 @@ def _validate_gpu_class_name(value: Any) -> str:
     return value
 
 
+def _validate_batch_size(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("batch_size must be an integer")
+    if not 1 <= value <= 2**32 - 1:
+        raise ValueError("batch_size must be between 1 and 4294967295")
+    return value
+
+
+def _validate_row_timeout(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("row_timeout_seconds must be a number")
+    value = float(value)
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError("row_timeout_seconds must be positive and finite")
+    return value
+
+
 class _FrozenDict(dict):
     def _immutable(self, *args, **kwargs):
         raise TypeError("remote canonical values are immutable")
@@ -547,7 +568,19 @@ class FunctionRegistrationRequest(_RemoteValue):
     artifact: FunctionArtifactRequest
     signature: FunctionSignature
     runtime: PythonRuntimeSpec
+    batch_size: Optional[int] = None
+    row_timeout_seconds: Optional[float] = None
     secret_bindings: tuple[SecretBinding, ...] = ()
+
+    @field_validator("batch_size", mode="before")
+    @classmethod
+    def _validate_batch_size(cls, value):
+        return _validate_batch_size(value)
+
+    @field_validator("row_timeout_seconds", mode="before")
+    @classmethod
+    def _validate_row_timeout(cls, value):
+        return _validate_row_timeout(value)
 
 
 class FunctionVersionRef(_OpenRemoteValue):
@@ -1983,6 +2016,8 @@ class UdfDefinition:
         pip: tuple[str, ...],
         env: Mapping[str, str],
         python_version: Optional[str],
+        batch_size: Optional[int] = None,
+        row_timeout_seconds: Optional[float] = None,
         gpu: bool = False,
         gpu_class: Optional[str] = None,
         conda: tuple[str, ...] = (),
@@ -2105,6 +2140,8 @@ class UdfDefinition:
             ),
             signature=signature,
             runtime=runtime,
+            batch_size=batch_size,
+            row_timeout_seconds=row_timeout_seconds,
         )
         # A class's own __dict__ holds its methods; copying it would shadow
         # this wrapper's attributes.
@@ -2199,6 +2236,8 @@ def udf(
     pip: tuple[str, ...] | list[str] = (),
     env: Optional[Mapping[str, str]] = None,
     python_version: Optional[str] = None,
+    batch_size: Optional[int] = None,
+    row_timeout_seconds: Optional[float] = None,
     gpu: bool = False,
     gpu_class: Optional[str] = None,
     conda: tuple[str, ...] | list[str] = (),
@@ -2218,6 +2257,8 @@ def udf(
     pip: tuple[str, ...] | list[str] = (),
     env: Optional[Mapping[str, str]] = None,
     python_version: Optional[str] = None,
+    batch_size: Optional[int] = None,
+    row_timeout_seconds: Optional[float] = None,
     gpu: bool = False,
     gpu_class: Optional[str] = None,
     conda: tuple[str, ...] | list[str] = (),
@@ -2339,6 +2380,15 @@ def udf(
         values that differ between bindings.
     python_version : str, optional
         Remote Python major/minor version. Defaults to the client version.
+    batch_size : int, optional
+        Maximum number of input rows supplied in one execution batch. Must be
+        between 1 and 4294967295. Remote execution may use smaller batches.
+        When omitted, the service chooses the batch size adaptively.
+    row_timeout_seconds : float, optional
+        Positive, finite deadline in seconds for each Python call: one row for
+        scalar Functions and one batch for vectorized Functions. This does not
+        govern class initialization. When omitted, the service applies its
+        default per-call budget.
     gpu : bool, default False
         Whether every remote execution requires a GPU. The execution platform
         selects one compatible GPU for each worker. The requirement is part of
@@ -2457,6 +2507,8 @@ def udf(
             pip=tuple(pip),
             env={} if env is None else env,
             python_version=python_version,
+            batch_size=batch_size,
+            row_timeout_seconds=row_timeout_seconds,
             gpu=gpu,
             gpu_class=gpu_class,
             conda=tuple(conda),
