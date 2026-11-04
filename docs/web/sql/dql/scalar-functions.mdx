@@ -133,7 +133,14 @@ reference page:
 | [`contains_tokens`](/sql/dql/contains-tokens) | index-accelerated keyword predicate, usable in `WHERE` |
 | [`ivf_partition`](/sql/dql/ivf-partition) | assign each row to its trained IVF index partition |
 | [`blob_descriptor`](/sql/dql/blob-descriptor) | a BlobV2 column's payload location, without reading it |
+
+{/*
+Draft until JSON columns reach early access.
 | [JSON accessors](/sql/dql/json-functions) | `json_get` and its typed variants, `json_extract`, and more |
+*/}
+
+{/*
+Draft: geospatial queries and indexes are unsupported in LanceDB Enterprise.
 
 ### Geospatial {#geo}
 
@@ -143,6 +150,7 @@ Lance defines `st_*` functions on GeoArrow, but they sit behind a build feature
 feature rather than an unknown-function error, and the spatial index is gated
 the same way.
 </Warning>
+*/}
 
 ## Additional scalar functions {#escape-hatch}
 

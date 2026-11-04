@@ -161,7 +161,11 @@ In LanceDB Enterprise, tables are also created and dropped in SQL with [`CREATE 
 | **Columns** | including vectors, blobs, and [computed](/feature-engineering/add-computed-column) columns |
 | **Versions** | every write commits one, so reads can [travel back](/management/table#versioning) |
 | **Indexes** | vector, full-text and scalar, built over its columns |
+
+{/*
+Draft until branching reaches early access.
 | **Branches** | isolated lines of change you can [merge or discard](/tables/branching) |
+*/}
 
 ## Create a table {#create}
 
@@ -326,7 +330,7 @@ as it is to the format.
 | String and binary | `utf8`, `large_utf8`, `binary`, `large_binary`, `fixed_size_binary(n)` |
 | Date and time | `date32`, `date64`, `time32`, `time64`, `timestamp`, `duration` |
 | Nested | `struct`, `list`, `large_list`, `fixed_size_list`, `map` |
-| Lance extensions | vectors, [JSON](/sql/data-types#json), [blobs](#multimodal), bfloat16 |
+| Lance extensions | vectors, JSON, [blobs](#multimodal), bfloat16 |
 
 A vector column is a `fixed_size_list<float32, dim>`, an ordinary Arrow type,
 which is why it is selectable and joinable but why arithmetic over it is list
@@ -345,9 +349,7 @@ file, up to 64 KiB by default, and larger values are stored outside it.
 
 ### Blob columns {#multimodal-blob-v2}
 
-<Warning>
-Blob V2 is in early access.
-</Warning>
+<Badge color="purple">Early access</Badge>
 
 A `blob` column keeps metadata separate from the payload bytes, so queries can
 filter rows without loading the blobs.
@@ -1490,6 +1492,9 @@ Deleting a tag only removes the label, not the version it points to. After
 deletion, the underlying table version becomes eligible for cleanup again.
 </Note>
 
+{/*
+Draft until branching reaches early access.
+
 ### Branches {#versioning-branches}
 
 Beyond linear history, LanceDB also supports **branches**: isolated, writable
@@ -1499,6 +1504,7 @@ writable history, making it ideal for experiments, backfills, and migrations
 that you want to keep separate from production reads on `main`.
 
 Branches are covered in their own guide: see [Branches](/tables/branching).
+*/}
 
 ### Delete Data From the Table {#versioning-delete-data-from-the-table}
 

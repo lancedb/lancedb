@@ -84,6 +84,9 @@ calculations. SQL vector search depends on the Enterprise server version and que
 plan; see [SQL](/basics/sql#no-vector-sql).
 </Warning>
 
+{/*
+Draft until JSON columns reach early access.
+
 ### JSON {#json}
 
 Stored as JSONB in `large_binary` with the `lance.json` extension name. It reads
@@ -98,12 +101,16 @@ WHERE json_get_int(data, 'status') = 200
 
 `json_get`, its typed variants, and `json_extract` are **index-accelerated** by a
 JSON scalar index. See [JSON functions](/sql/dql/json-functions).
+*/}
 
 ### bfloat16 {#bfloat16}
 
 Sixteen-bit floats in the bfloat16 layout, stored as `fixed_size_binary(2)`.
 Useful as a vector element type when halving the memory matters more than the
 precision does.
+
+{/*
+Draft: geospatial queries and indexes are unsupported in LanceDB Enterprise.
 
 ## Geospatial {#geospatial}
 
@@ -118,6 +125,7 @@ spatial index is gated the same way.
 Geometry can still be stored (it is binary, and binary columns work), but
 nothing interprets it. Filter on a bounding box held in ordinary numeric
 columns if you need spatial predicates today.
+*/}
 
 ## Pseudo-columns {#pseudo-columns}
 
