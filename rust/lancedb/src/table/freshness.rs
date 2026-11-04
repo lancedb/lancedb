@@ -2006,6 +2006,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn repeated_row_repair_intent_fences_old_completion() {
+        let dir = tempfile::tempdir().unwrap();
+        let uri = dir.path().to_str().unwrap();
+        let mut dataset = table(uri).await;
+        stamp_all(&mut dataset).await;
+        let definition = definition_version(EXPRESSION);
+        let ids = inputs(&dataset);
+        let repairs = BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([1])))]);
+        let selected = BTreeMap::from([(0, RoaringBitmap::from_iter([1]))]);
+        let first = begin_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            "accepted-input-basis",
+            &repairs,
+        )
+        .await
+        .unwrap();
+        finish_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            &first,
+            &selected,
+            &BTreeMap::new(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let second = begin_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            "accepted-input-basis",
+            &repairs,
+        )
+        .await
+        .unwrap();
+        let verified = dataset.version().version;
+        finish_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            &second,
+            &BTreeMap::new(),
+            &selected,
+            Some(verified),
+        )
+        .await
+        .unwrap();
+
+        let expected = StoredRowStates::Present(RowStateMap::from([(
+            0,
+            DirtyRows::Rows(RoaringBitmap::from_iter([1])),
+        )]));
+        let mut reopened = Dataset::open(uri).await.unwrap();
+        assert_eq!(stored_row_states(&reopened, COLUMN).await, expected);
+        let verified = reopened.version().version;
+        let error = finish_row_repair(
+            &mut reopened,
+            COLUMN,
+            &definition,
+            &ids,
+            &first,
+            &selected,
+            &BTreeMap::new(),
+            Some(verified),
+        )
+        .await
+        .expect_err("an old completion must not clear a newer skipped repair of the same rows");
+        assert!(
+            error.to_string().contains("dirty intent changed"),
+            "{error}"
+        );
+        assert_eq!(reopened.version().version, verified);
+        let reopened = Dataset::open(uri).await.unwrap();
+        assert_eq!(stored_row_states(&reopened, COLUMN).await, expected);
+    }
+
+    #[tokio::test]
     async fn recovery_rejects_a_restore_after_publication_verification() {
         let dir = tempfile::tempdir().unwrap();
         let mut dataset = table(dir.path().to_str().unwrap()).await;
