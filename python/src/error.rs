@@ -8,7 +8,7 @@ use pyo3::{
     types::{PyAnyMethods, PyNone},
 };
 
-use lancedb::error::{Error as LanceError, HttpErrorDetails};
+use lancedb::error::{Error as LanceError, HttpErrorDetails, RemoteErrorMetadata};
 
 pub trait PythonErrorExt<T> {
     /// Convert to a python error based on the Lance error type
@@ -34,24 +34,59 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
                 | LanceError::DatabaseAlreadyExists { .. }
                 | LanceError::TableAlreadyExists { .. } => self.value_error(),
                 LanceError::TableNotFound { source, .. } => {
-                    let Some(LanceError::Http {
-                        request_id,
-                        status_code,
-                        ..
-                    }) = source.downcast_ref::<LanceError>()
+                    let Some(
+                        request_error @ LanceError::Http {
+                            request_id,
+                            status_code,
+                            source: http_source,
+                        },
+                    ) = source.downcast_ref::<LanceError>()
                     else {
                         return self.value_error();
                     };
                     Python::attach(|py| {
-                        let cls = py
-                            .import(intern!(py, "lancedb.remote.errors"))?
-                            .getattr(intern!(py, "TableNotFoundError"))?;
                         let status_code = status_code.map(|s| s.as_u16());
-                        let py_err = cls.call1((err.to_string(), request_id, status_code))?;
+                        let metadata = request_error.remote_error_metadata();
+                        let details = request_error.http_error_details();
+                        let py_err = if details.is_some()
+                            || metadata.is_some_and(|metadata| metadata.error_code.is_some())
+                        {
+                            new_py_http_error(
+                                py,
+                                http_source.to_string(),
+                                request_id,
+                                status_code,
+                                details,
+                                metadata,
+                                false,
+                            )?
+                        } else {
+                            let cls = py
+                                .import(intern!(py, "lancedb.remote.errors"))?
+                                .getattr(intern!(py, "TableNotFoundError"))?;
+                            let error = cls.call1((err.to_string(), request_id, status_code))?;
+                            error.setattr(
+                                "job_id",
+                                metadata.and_then(|value| value.job_id.as_deref()),
+                            )?;
+                            error.setattr(
+                                "job_request_id",
+                                metadata.and_then(|value| value.job_request_id.as_deref()),
+                            )?;
+                            error
+                        };
                         let cause =
                             http_from_rust_error(py, source.as_ref(), request_id, status_code)?;
                         py_err.setattr(intern!(py, "__cause__"), cause)?;
                         Err(PyErr::from_value(py_err))
+                    })
+                }
+                LanceError::ColumnNotFound { .. } | LanceError::FieldNotFound { .. } => {
+                    Python::attach(|py| {
+                        let cls = py
+                            .import(intern!(py, "lancedb.exceptions"))?
+                            .getattr(intern!(py, "ColumnNotFoundError"))?;
+                        Err(PyErr::from_value(cls.call1((err.to_string(),))?))
                     })
                 }
                 LanceError::CreateDir { .. } => self.os_error(),
@@ -64,13 +99,21 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
                     source,
                     status_code,
                 } => Python::attach(|py| {
-                    let message = err.to_string();
+                    let message = if err
+                        .remote_error_metadata()
+                        .is_some_and(|metadata| metadata.error_code.is_some())
+                    {
+                        source.to_string()
+                    } else {
+                        err.to_string()
+                    };
                     let err = new_py_http_error(
                         py,
                         message,
                         request_id,
                         status_code.map(|s| s.as_u16()),
                         err.http_error_details(),
+                        err.remote_error_metadata(),
                         is_transport_error(source.as_ref()),
                     )?;
 
@@ -125,15 +168,46 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
                     err.setattr(intern!(py, "__cause__"), cause_err)?;
                     Err(PyErr::from_value(err))
                 }),
+                LanceError::Sql {
+                    message,
+                    request_id,
+                    grpc_code,
+                    metadata,
+                } => Python::attach(|py| {
+                    Err(PyErr::from_value(new_py_sql_error(
+                        py, message, request_id, *grpc_code, metadata,
+                    )?))
+                }),
                 LanceError::JobFailed { job_id, failure } => Python::attach(|py| {
                     let cls = py
                         .import(intern!(py, "lancedb.exceptions"))?
                         .getattr(intern!(py, "JobFailedError"))?;
-                    Err(PyErr::from_value(cls.call1((
+                    let sql_source = match failure.source.as_deref() {
+                        Some(LanceError::Sql {
+                            message,
+                            request_id,
+                            grpc_code,
+                            metadata,
+                        }) => Some((
+                            new_py_sql_error(py, message, request_id, *grpc_code, metadata)?,
+                            request_id.as_str(),
+                            metadata.job_request_id.as_deref(),
+                        )),
+                        _ => None,
+                    };
+                    let error = cls.call1((
                         err.to_string(),
                         job_id.clone(),
                         failure.sql_job_id.clone(),
-                    ))?))
+                        sql_source.as_ref().map(|(_, request_id, _)| *request_id),
+                        sql_source
+                            .as_ref()
+                            .and_then(|(_, _, request_id)| *request_id),
+                    ))?;
+                    if let Some((cause, _, _)) = sql_source {
+                        error.setattr(intern!(py, "__cause__"), cause)?;
+                    }
+                    Err(PyErr::from_value(error))
                 }),
                 LanceError::JobCancelled { .. } => Python::attach(|py| {
                     let cls = py
@@ -181,6 +255,8 @@ fn http_from_rust_error(
         request_id,
         status_code,
         details,
+        err.downcast_ref::<LanceError>()
+            .and_then(LanceError::remote_error_metadata),
         is_transport_error(err),
     )?;
 
@@ -201,9 +277,12 @@ fn new_py_http_error<'py>(
     request_id: &str,
     status_code: Option<u16>,
     details: Option<&HttpErrorDetails>,
+    metadata: Option<&RemoteErrorMetadata>,
     is_transport_error: bool,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let error_code = details.map(|details| details.error_code.as_str());
+    let error_code = metadata
+        .and_then(|metadata| metadata.error_code.as_deref())
+        .or_else(|| details.map(|details| details.error_code.as_str()));
     let resource_kind = details.map(|details| details.resource_kind.as_str());
     let resource_name = details.map(|details| details.resource_name.as_str());
     let namespace_path = details.map(|details| details.namespace_path.clone());
@@ -219,6 +298,27 @@ fn new_py_http_error<'py>(
             resource_name,
             namespace_path,
             is_transport_error,
+            metadata.and_then(|metadata| metadata.job_id.as_deref()),
+            metadata.and_then(|metadata| metadata.job_request_id.as_deref()),
+        ))
+}
+
+fn new_py_sql_error<'py>(
+    py: Python<'py>,
+    message: &str,
+    request_id: &str,
+    grpc_code: i32,
+    metadata: &RemoteErrorMetadata,
+) -> PyResult<Bound<'py, PyAny>> {
+    py.import("lancedb.remote.errors")?
+        .getattr("SqlError")?
+        .call1((
+            message,
+            request_id,
+            grpc_code,
+            metadata.error_code.as_deref(),
+            metadata.job_id.as_deref(),
+            metadata.job_request_id.as_deref(),
         ))
 }
 

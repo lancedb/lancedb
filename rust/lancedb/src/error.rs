@@ -27,18 +27,68 @@ pub struct HttpErrorDetails {
     pub namespace_path: Vec<String>,
 }
 
+/// Correlation and classification metadata reported by a remote server.
+///
+/// Fields are absent when the server did not supply them. Diagnostic text is
+/// never used to infer an error code or a job identity.
+#[cfg(feature = "remote")]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RemoteErrorMetadata {
+    /// Machine-readable input error code, when available.
+    pub error_code: Option<String>,
+    /// SQL job that failed, when the request ran in an isolated job.
+    pub job_id: Option<String>,
+    /// Request executed by the isolated SQL worker.
+    pub job_request_id: Option<String>,
+}
+
+#[cfg(feature = "remote")]
+impl RemoteErrorMetadata {
+    pub(crate) fn from_headers(headers: &reqwest::header::HeaderMap) -> Self {
+        let header = |name| {
+            headers
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned)
+        };
+        Self {
+            error_code: header("x-lancedb-error-code"),
+            job_id: header("x-lancedb-sql-job-id"),
+            job_request_id: header("x-job-request-id"),
+        }
+    }
+}
+
 #[cfg(feature = "remote")]
 #[derive(Debug)]
 pub(crate) struct HttpErrorSource {
     message: String,
     details: Option<HttpErrorDetails>,
+    metadata: RemoteErrorMetadata,
 }
 
 #[cfg(feature = "remote")]
 impl HttpErrorSource {
-    pub(crate) fn new(message: String, response_body: Option<&str>) -> Self {
+    pub(crate) fn new(
+        message: String,
+        response_body: Option<&str>,
+        metadata: RemoteErrorMetadata,
+    ) -> Self {
         let details = response_body.and_then(parse_http_error_details);
-        Self { message, details }
+        let message = if metadata.error_code.is_some() {
+            response_body
+                .and_then(|body| serde_json::from_str::<serde_json::Value>(body).ok())
+                .and_then(|body| body.get("error")?.as_str().map(str::to_owned))
+                .unwrap_or(message)
+        } else {
+            message
+        };
+        Self {
+            message,
+            details,
+            metadata,
+        }
     }
 }
 
@@ -114,7 +164,8 @@ pub struct JobFailure {
     /// Isolated SQL job that raised this failure, when the server supplies
     /// one across the Flight SQL boundary.
     pub sql_job_id: Option<String>,
-    /// The error the job failed with, when it ran in this process.
+    /// The underlying error from a job run in this process or a structured
+    /// remote Flight SQL failure.
     pub source: Option<Arc<Error>>,
 }
 
@@ -163,6 +214,13 @@ pub enum Error {
     EmbeddingFunctionNotFound { name: String, reason: String },
     #[snafu(display("Column '{name}' was not found"))]
     ColumnNotFound { name: String },
+    /// A missing query field with schema-qualified candidate paths.
+    #[snafu(display("{message}"))]
+    FieldNotFound {
+        name: String,
+        message: String,
+        source: BoxError,
+    },
     #[snafu(display("Column '{name}' already exists"))]
     ColumnAlreadyExists { name: String },
     #[snafu(display("Column '{name}' is not a computed column"))]
@@ -181,6 +239,15 @@ pub enum Error {
     },
     #[snafu(display("Schema Error: {message}"))]
     Schema { message: String },
+    /// A SQL response retaining its gRPC status and server metadata.
+    #[cfg(feature = "remote")]
+    #[snafu(display("{message} (request_id={request_id})"))]
+    Sql {
+        message: String,
+        request_id: String,
+        grpc_code: i32,
+        metadata: Box<RemoteErrorMetadata>,
+    },
     #[snafu(display("Runtime error: {message}"))]
     Runtime { message: String },
     #[snafu(display("Timeout error: {message}"))]
@@ -285,9 +352,27 @@ impl From<lance::Error> for Error {
         match source {
             lance::Error::Wrapped { error, .. } => Self::from_box_error(error),
             lance::Error::External { source } => Self::from_box_error(source),
-            lance::Error::InvalidInput { source, .. } => Self::InvalidInput {
-                message: source.to_string(),
-            },
+            lance::Error::InvalidInput {
+                source, location, ..
+            } => {
+                if let Some(DataFusionError::SchemaError(error, _)) = source
+                    .downcast_ref::<DataFusionError>()
+                    .map(|error| error.find_root())
+                    && let datafusion_common::SchemaError::FieldNotFound { field, .. } =
+                        error.as_ref()
+                {
+                    // Preserve the known field identity before this boundary
+                    // turns other input diagnostics into plain messages.
+                    log::info!("Query input rejected at {location}: {source}");
+                    Self::ColumnNotFound {
+                        name: field.name.clone(),
+                    }
+                } else {
+                    Self::InvalidInput {
+                        message: source.to_string(),
+                    }
+                }
+            }
             _ => Self::Lance { source },
         }
     }
@@ -328,6 +413,38 @@ impl Error {
             Self::Retry { source, .. } => source
                 .downcast_ref::<Self>()
                 .and_then(Self::http_error_details),
+            _ => None,
+        }
+    }
+
+    /// Classification and correlation metadata supplied by a remote server.
+    ///
+    /// Unlike parsing [`Self::to_string`], this preserves absence and does not
+    /// mistake a user-provided identifier for an error classification.
+    ///
+    /// ```
+    /// # #[cfg(feature = "remote")]
+    /// fn reported_job(error: &lancedb::Error) -> Option<&str> {
+    ///     error.remote_error_metadata()?.job_id.as_deref()
+    /// }
+    /// ```
+    #[cfg(feature = "remote")]
+    pub fn remote_error_metadata(&self) -> Option<&RemoteErrorMetadata> {
+        match self {
+            Self::Http { source, .. } => source
+                .downcast_ref::<HttpErrorSource>()
+                .map(|source| &source.metadata),
+            Self::Retry { source, .. } => source
+                .downcast_ref::<Self>()
+                .and_then(Self::remote_error_metadata),
+            Self::TableNotFound { source, .. } => source
+                .downcast_ref::<Self>()
+                .and_then(Self::remote_error_metadata),
+            Self::JobFailed { failure, .. } => failure
+                .source
+                .as_deref()
+                .and_then(Self::remote_error_metadata),
+            Self::Sql { metadata, .. } => Some(metadata),
             _ => None,
         }
     }
@@ -424,6 +541,23 @@ impl From<candle_core::Error> for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_filter_column_retains_its_type_across_lance_conversion() {
+        let field_error = DataFusionError::SchemaError(
+            Box::new(datafusion_common::SchemaError::FieldNotFound {
+                field: Box::new(datafusion_common::Column::from_name("missing")),
+                valid_fields: vec![datafusion_common::Column::from_name("id")],
+            }),
+            Box::new(None),
+        );
+        let source =
+            lance::Error::invalid_input_source(Box::new(field_error.context("binding filter")));
+        assert!(matches!(Error::from(source), Error::ColumnNotFound { name } if name == "missing"));
+
+        let source = lance::Error::invalid_input("No field named missing");
+        assert!(matches!(Error::from(source), Error::InvalidInput { .. }));
+    }
 
     #[cfg(feature = "remote")]
     #[test]

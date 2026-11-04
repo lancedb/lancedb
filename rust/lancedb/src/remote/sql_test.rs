@@ -3459,3 +3459,65 @@ async fn view_listing_uses_bounded_sql_and_scoped_cursors() {
         shutdown.send(()).unwrap();
     }
 }
+
+#[test]
+fn sql_status_keeps_input_category_and_request_ids() {
+    for (code, category) in [
+        (tonic::Code::InvalidArgument, "column_not_found"),
+        (tonic::Code::InvalidArgument, "schema_mismatch"),
+        (tonic::Code::NotFound, "table_not_found"),
+        (tonic::Code::NotFound, "reference_not_found"),
+        (tonic::Code::Internal, "column_not_found"),
+    ] {
+        let mut status = tonic::Status::new(code, "original diagnostic");
+        status
+            .metadata_mut()
+            .insert("x-lancedb-error-code", category.parse().unwrap());
+        status
+            .metadata_mut()
+            .insert("x-job-request-id", "worker-request".parse().unwrap());
+        for job_id in [None, Some("sql-job-1")] {
+            if let Some(job_id) = job_id {
+                status
+                    .metadata_mut()
+                    .insert("x-lancedb-sql-job-id", job_id.parse().unwrap());
+            }
+            let error = super::sql_status_error("current-request", &status);
+            assert_eq!(
+                error.remote_error_metadata().unwrap().job_id.as_deref(),
+                job_id
+            );
+            let source = match &error {
+                Error::JobFailed {
+                    job_id: actual_job_id,
+                    failure,
+                } => {
+                    assert_eq!(actual_job_id.as_deref(), job_id);
+                    assert_eq!(failure.sql_job_id.as_deref(), job_id);
+                    failure.source.as_deref().unwrap()
+                }
+                error => {
+                    assert!(job_id.is_none());
+                    error
+                }
+            };
+            let Error::Sql {
+                message,
+                request_id,
+                grpc_code,
+                metadata,
+            } = source
+            else {
+                panic!("SQL status must remain structured: {source}");
+            };
+            assert_eq!(message, "original diagnostic");
+            assert_eq!(request_id, "current-request");
+            assert_eq!(*grpc_code, code as i32);
+            assert_eq!(metadata.error_code.as_deref(), Some(category));
+            assert_eq!(metadata.job_id.as_deref(), job_id);
+            assert_eq!(metadata.job_request_id.as_deref(), Some("worker-request"));
+        }
+    }
+    let error = super::sql_status_error("request", &tonic::Status::not_found("column_not_found"));
+    assert!(error.remote_error_metadata().unwrap().error_code.is_none());
+}

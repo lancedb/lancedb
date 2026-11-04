@@ -281,3 +281,63 @@ def test_parameters_reach_the_server_as_the_values_that_were_sent():
     received = echoed.column("vector").combine_chunks().flatten().to_numpy()
     assert received.view(np.uint32).tolist() == vector.view(np.uint32).tolist()
     assert echoed.column("k").to_pylist() == [10]
+
+
+@pytest.mark.parametrize("job_id", [None, "sql-job-1"])
+def test_sql_input_error_metadata_crosses_native_boundary(job_id):
+    flight = pytest.importorskip("pyarrow.flight")
+    from lancedb.exceptions import JobFailedError, ColumnNotFoundError
+    from lancedb.remote.errors import SqlColumnNotFoundError
+
+    request_ids = []
+
+    class Metadata(flight.ServerMiddleware):
+        def sending_headers(self):
+            headers = {
+                "x-lancedb-error-code": "column_not_found",
+                "x-job-request-id": "worker-request",
+            }
+            if job_id is not None:
+                headers["x-lancedb-sql-job-id"] = job_id
+            return headers
+
+    class Factory(flight.ServerMiddlewareFactory):
+        def start_call(self, info, headers):
+            request_ids.append(headers["x-request-id"][0])
+            return Metadata()
+
+    class RejectingServer(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0", middleware={"metadata": Factory()})
+
+        def do_get(self, context, ticket):
+            context.add_trailer("x-lancedb-error-code", "column_not_found")
+            context.add_trailer("x-job-request-id", "worker-request")
+            if job_id is not None:
+                context.add_trailer("x-lancedb-sql-job-id", job_id)
+            raise pa.ArrowInvalid("No column 'missing' in table events")
+
+    with RejectingServer() as server:
+        db = lancedb.connect(
+            "db://analytics",
+            api_key="test-key",
+            host_override="http://localhost:10024",
+            sql_host_override=f"grpc://127.0.0.1:{server.port}",
+        )
+        expected = JobFailedError if job_id is not None else SqlColumnNotFoundError
+        with pytest.raises(expected) as exc_info:
+            db.execute_query("SELECT missing FROM events").read_all()
+    error = exc_info.value
+    if job_id is not None:
+        assert error.job_id == job_id
+        assert error.request_id == request_ids[-1]
+        assert error.job_request_id == "worker-request"
+        error = error.__cause__
+    assert isinstance(error, SqlColumnNotFoundError)
+    assert isinstance(error, ColumnNotFoundError)
+    assert error.request_id == request_ids[-1]
+    assert error.job_id == job_id
+    assert error.job_request_id == "worker-request"
+    assert error.grpc_code == 3
+    assert str(error).startswith("No column 'missing' in table events")
+    assert not str(error).startswith("SQL error")
