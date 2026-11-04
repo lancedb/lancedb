@@ -30,7 +30,15 @@ different tables can share a group, use entirely different groups, or
 overlap partially, and each picks its own RF independently within every
 group it uses:
 
+<div className="hidden dark:block">
+
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
+  "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
+  "clusterBkg": "#211d1a", "clusterBorder": "#4c443f",
+  "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+}}}%%
 flowchart TB
     subgraph G0["Replica group 0"]
         direction LR
@@ -53,7 +61,50 @@ flowchart TB
     TA["Table A<br/>groups 0, 1 · RF 2 in group 0, RF 1 in group 1"] -.-> G0
     TA -.-> G1
     TB["Table B<br/>group 2 only · RF 3"] -.-> G2
+    classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
+    classDef accent fill:#2a1810,stroke:#ff734a,stroke-width:1.5px,color:#f4ebe8
+    class TA,TB accent
 ```
+
+</div>
+
+<div className="block dark:hidden">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
+  "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
+  "clusterBkg": "#f4ebe8", "clusterBorder": "#ad9e95",
+  "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+}}}%%
+flowchart TB
+    subgraph G0["Replica group 0"]
+        direction LR
+        G0A["Plan executor"]
+        G0B["Plan executor"]
+    end
+
+    subgraph G1["Replica group 1"]
+        direction LR
+        G1A["Plan executor"]
+    end
+
+    subgraph G2["Replica group 2"]
+        direction LR
+        G2A["Plan executor"]
+        G2B["Plan executor"]
+        G2C["Plan executor"]
+    end
+
+    TA["Table A<br/>groups 0, 1 · RF 2 in group 0, RF 1 in group 1"] -.-> G0
+    TA -.-> G1
+    TB["Table B<br/>group 2 only · RF 3"] -.-> G2
+    classDef default fill:#ffffff,stroke:#ad9e95,stroke-width:1px,color:#221d19
+    classDef accent fill:#fff1ec,stroke:#e8582d,stroke-width:1.5px,color:#221d19
+    class TA,TB accent
+```
+
+</div>
 
 Table A is assigned to groups 0 and 1, at RF 2 and RF 1 respectively --
 three plan executors total hold a copy of Table A. Table B never touches
@@ -81,7 +132,15 @@ no healthy plan executor. Keeping one query's reads co-located protects the
 locality of whichever group's cache is already warm for it, rather than
 letting each table's read drift to a different group.
 
+<div className="hidden dark:block">
+
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
+  "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
+  "clusterBkg": "#211d1a", "clusterBorder": "#4c443f",
+  "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+}}}%%
 flowchart LR
     Q["Query node<br/>routes to the lead group"]
 
@@ -101,7 +160,47 @@ flowchart LR
     Q --> A1
     Q -. "only if group 0 has no healthy PE" .-> B0
     Q -. "only if group 0 has no healthy PE" .-> B1
+    classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
+    classDef accent fill:#2a1810,stroke:#ff734a,stroke-width:1.5px,color:#f4ebe8
+    class Q accent
 ```
+
+</div>
+
+<div className="block dark:hidden">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
+  "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
+  "clusterBkg": "#f4ebe8", "clusterBorder": "#ad9e95",
+  "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+}}}%%
+flowchart LR
+    Q["Query node<br/>routes to the lead group"]
+
+    subgraph G0["Replica group 0 (lead)"]
+        direction LR
+        A0["Plan executor<br/>copy 1"]
+        A1["Plan executor<br/>copy 2"]
+    end
+
+    subgraph G1["Replica group 1 (fallback)"]
+        direction LR
+        B0["Plan executor<br/>copy 1"]
+        B1["Plan executor<br/>copy 2"]
+    end
+
+    Q --> A0
+    Q --> A1
+    Q -. "only if group 0 has no healthy PE" .-> B0
+    Q -. "only if group 0 has no healthy PE" .-> B1
+    classDef default fill:#ffffff,stroke:#ad9e95,stroke-width:1px,color:#221d19
+    classDef accent fill:#fff1ec,stroke:#e8582d,stroke-width:1.5px,color:#221d19
+    class Q accent
+```
+
+</div>
 
 This table is assigned to two replica groups, each at replication factor
 2: four plan executors in total, each holding a full copy of the table's

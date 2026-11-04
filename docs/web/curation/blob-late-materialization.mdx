@@ -19,7 +19,15 @@ the join has already settled which rows survive.
 
 ## The two plan shapes {#plan-shapes}
 
+<div className="hidden dark:block">
+
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
+  "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
+  "clusterBkg": "#211d1a", "clusterBorder": "#4c443f", "edgeLabelBackground": "#171513",
+  "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+}}}%%
 flowchart TB
     subgraph Naive["Naive: wide column read before filtering"]
     direction TB
@@ -32,7 +40,40 @@ flowchart TB
     D1["Scan only the join key<br/>(+ early columns)"] --> D2["Join on the key"]
     D2 --> D3["RemoteTake:<br/>fetch the wide column,<br/>once per surviving row"]
     end
+    classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
+    classDef accent fill:#2a1810,stroke:#ff734a,stroke-width:1.5px,color:#f4ebe8
+    class D3 accent
 ```
+
+</div>
+
+<div className="block dark:hidden">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
+  "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
+  "clusterBkg": "#f4ebe8", "clusterBorder": "#ad9e95", "edgeLabelBackground": "#ffffff",
+  "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+}}}%%
+flowchart TB
+    subgraph Naive["Naive: wide column read before filtering"]
+    direction TB
+    N1["Scan wide column<br/>for every row"] --> N2["Join"]
+    N2 --> N3["Rows that didn't match<br/>are discarded --<br/>their wide read was wasted"]
+    end
+
+    subgraph Deferred["Late materialization: wide column read after filtering"]
+    direction TB
+    D1["Scan only the join key<br/>(+ early columns)"] --> D2["Join on the key"]
+    D2 --> D3["RemoteTake:<br/>fetch the wide column,<br/>once per surviving row"]
+    end
+    classDef default fill:#ffffff,stroke:#ad9e95,stroke-width:1px,color:#221d19
+    classDef accent fill:#fff1ec,stroke:#e8582d,stroke-width:1.5px,color:#221d19
+    class D3 accent
+```
+
+</div>
 
 In the naive plan, the wide column is read once per **candidate** row --
 every row either side of the join could possibly produce -- before the

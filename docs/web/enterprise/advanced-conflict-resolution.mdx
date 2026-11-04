@@ -65,7 +65,14 @@ Once a table is tagged, Lance refuses a compaction that does not set
 Enterprise-tagged table has to keep deferring the remap, or be compacted
 by a writer that can remap the tagged history eagerly.
 
+<div className="hidden dark:block">
+
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
+  "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
+  "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+}}}%%
 flowchart TD
     Commit["Compaction commit<br/>(defer_index_remap only)"] --> Tagged{"Table already<br/>tagged with an FRI?"}
     Tagged -->|no| First{"Stable row IDs, or does<br/>any index cover the<br/>rewritten fragments?"}
@@ -76,7 +83,37 @@ flowchart TD
     Classify -->|yes| Append["Must append a tagged<br/>transition before the<br/>commit is admitted"]
     V0 --> FRI[("Fragment reuse index")]
     Append --> FRI
+    classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
+    classDef accent fill:#2a1810,stroke:#ff734a,stroke-width:1.5px,color:#f4ebe8
+    class FRI accent
 ```
+
+</div>
+
+<div className="block dark:hidden">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
+  "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
+  "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+}}}%%
+flowchart TD
+    Commit["Compaction commit<br/>(defer_index_remap only)"] --> Tagged{"Table already<br/>tagged with an FRI?"}
+    Tagged -->|no| First{"Stable row IDs, or does<br/>any index cover the<br/>rewritten fragments?"}
+    First -->|no| Admit["Admitted as<br/>ordinary business --<br/>nothing appended"]
+    First -->|yes| V0["Records a legacy v0 entry --<br/>table stays untagged"]
+    Tagged -->|yes| Classify{"Does any index<br/>cover the rewritten<br/>fragments?"}
+    Classify -->|no| Admit
+    Classify -->|yes| Append["Must append a tagged<br/>transition before the<br/>commit is admitted"]
+    V0 --> FRI[("Fragment reuse index")]
+    Append --> FRI
+    classDef default fill:#ffffff,stroke:#ad9e95,stroke-width:1px,color:#221d19
+    classDef accent fill:#fff1ec,stroke:#e8582d,stroke-width:1.5px,color:#221d19
+    class FRI accent
+```
+
+</div>
 
 ## Enterprise defers and batches the catch-up {#catch-up}
 
@@ -102,14 +139,47 @@ rather than one blocking on the other: a handful of compactions can land
 before their indexes are physically remapped, and the catch-up job amortizes
 that remap across all of them in one job instead of one per compaction.
 
+<div className="hidden dark:block">
+
 ```mermaid
-flowchart LR
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
+  "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
+  "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+}}}%%
+flowchart TD
     C1["Compaction job"] -->|appends transition| FRI["Fragment reuse index<br/>(ledger of transitions)"]
     C2["Compaction job"] -->|appends transition| FRI
     C3["Compaction job"] -->|appends transition| FRI
-    FRI -->|5 transitions or 1 day old| R["Remap catch-up job"]
-    R -->|applies accumulated transitions| IDX["Affected indexes,<br/>physically remapped"]
+    FRI -->|5 transitions or<br/>1 day old| R["Remap catch-up job"]
+    R -->|applies accumulated<br/>transitions| IDX["Affected indexes,<br/>physically remapped"]
+    classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
+    classDef accent fill:#2a1810,stroke:#ff734a,stroke-width:1.5px,color:#f4ebe8
+    class FRI,R accent
 ```
+
+</div>
+
+<div className="block dark:hidden">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
+  "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
+  "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+}}}%%
+flowchart TD
+    C1["Compaction job"] -->|appends transition| FRI["Fragment reuse index<br/>(ledger of transitions)"]
+    C2["Compaction job"] -->|appends transition| FRI
+    C3["Compaction job"] -->|appends transition| FRI
+    FRI -->|5 transitions or<br/>1 day old| R["Remap catch-up job"]
+    R -->|applies accumulated<br/>transitions| IDX["Affected indexes,<br/>physically remapped"]
+    classDef default fill:#ffffff,stroke:#ad9e95,stroke-width:1px,color:#221d19
+    classDef accent fill:#fff1ec,stroke:#e8582d,stroke-width:1.5px,color:#221d19
+    class FRI,R accent
+```
+
+</div>
 
 ## What to read next {#next}
 

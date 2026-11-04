@@ -76,13 +76,41 @@ instead. Either way, each pass:
    `memwal_catchup_ivfpq`, and so on) -- over the rows step 5 just added,
    and records how far that index has caught up.
 
+<div className="hidden dark:block">
+
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
+  "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
+  "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+}}}%%
 flowchart LR
     A["Shard crosses a trigger<br/>(count, bytes, or generation age)"] --> B["Per-pod trigger loop<br/>or backpressure relief pass"]
     B --> C["Compactor pool<br/>dedup by PK, merge_insert into base"]
     C --> D["Manifest drops<br/>the folded SSTables"]
     D --> E["memwal_catchup_&lt;type&gt;<br/>extends each base index"]
+    classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
 ```
+
+</div>
+
+<div className="block dark:hidden">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
+  "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
+  "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+}}}%%
+flowchart LR
+    A["Shard crosses a trigger<br/>(count, bytes, or generation age)"] --> B["Per-pod trigger loop<br/>or backpressure relief pass"]
+    B --> C["Compactor pool<br/>dedup by PK, merge_insert into base"]
+    C --> D["Manifest drops<br/>the folded SSTables"]
+    D --> E["memwal_catchup_&lt;type&gt;<br/>extends each base index"]
+    classDef default fill:#ffffff,stroke:#ad9e95,stroke-width:1px,color:#221d19
+```
+
+</div>
 
 Only one compaction pass runs against a given shard at a time. A second,
 concurrent pass against the same shard would corrupt it: a stale pass can
@@ -95,14 +123,47 @@ on the same collision, and node drain waits for the shard's current pass
 instead of skipping it, since a skipped table is exactly what drain exists
 to flush.
 
+<div className="hidden dark:block">
+
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
+  "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
+  "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+}}}%%
 flowchart TD
     Shard["Shard's per-shard latch"] --> Held{"Already held by<br/>an in-progress pass?"}
     Held -->|no| Grant["Grant the latch,<br/>run the pass"]
     Held -->|yes, periodic trigger| Skip["Skip this tick --<br/>retried next tick"]
     Held -->|yes, manual POST /v1/compact| Refuse["Refused outright,<br/>never queued"]
     Held -->|yes, node drain| Wait["Wait for the current<br/>pass to finish, don't skip"]
+    classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
+    classDef accent fill:#2a1810,stroke:#ff734a,stroke-width:1.5px,color:#f4ebe8
+    class Shard accent
 ```
+
+</div>
+
+<div className="block dark:hidden">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
+  "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
+  "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+}}}%%
+flowchart TD
+    Shard["Shard's per-shard latch"] --> Held{"Already held by<br/>an in-progress pass?"}
+    Held -->|no| Grant["Grant the latch,<br/>run the pass"]
+    Held -->|yes, periodic trigger| Skip["Skip this tick --<br/>retried next tick"]
+    Held -->|yes, manual POST /v1/compact| Refuse["Refused outright,<br/>never queued"]
+    Held -->|yes, node drain| Wait["Wait for the current<br/>pass to finish, don't skip"]
+    classDef default fill:#ffffff,stroke:#ad9e95,stroke-width:1px,color:#221d19
+    classDef accent fill:#fff1ec,stroke:#e8582d,stroke-width:1.5px,color:#221d19
+    class Shard accent
+```
+
+</div>
 
 ## Reading while compaction runs {#reads}
 
