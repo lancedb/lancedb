@@ -1,0 +1,173 @@
+---
+title: "Embedded vs Enterprise"
+sidebarTitle: "Embedded vs Enterprise"
+description: "A feature-by-feature comparison between LanceDB Embedded and LanceDB Enterprise."
+icon: "scale-balanced"
+keywords: ["embedded vs enterprise", "comparison", "oss vs enterprise"]
+---
+
+LanceDB Embedded runs in your application's process; your data can live on local disk or in object storage.
+[LanceDB Enterprise](/enterprise/index) distributes query execution, indexing, maintenance and refresh work across
+a cluster of many machines, outside your application. Both are built on the same [Lance](/basics/lance) columnar
+file format, so moving data from one edition to the other does not require a data conversion step. See
+[Architecture](/index#architecture) for how each one's components fit together.
+
+## How they differ {#how-they-differ}
+
+| Dimension | LanceDB Embedded | LanceDB Enterprise | What the difference means |
+|:----------|:------------|:-------------------|:-------------------------|
+| **Mode** | Single process | Distributed fleet | LanceDB Embedded runs on one host, so scale is limited to what it can provide. Enterprise spreads work across nodes, adds capacity by adding nodes, and keeps serving even if one node fails. |
+| **Query serving** | Uses the resources of your application process | Adds independently scaled query compute | Size the Enterprise cluster for your workload and latency target. See the expected-performance sections on [vector search](/search/vector-search#expected-performance) and [full-text search](/search/full-text-search#expected-performance) for representative measurements. |
+| **Cache** | In-process index and metadata caches | Adds a distributed NVMe data cache | LanceDB Embedded caches indexes and metadata in your application's memory. Enterprise also keeps hot table data near compute on NVMe and avoids repeated S3 calls -- see the [Data Page Cache](/enterprise/data-page-cache). |
+| **Indexing & compaction** | Manual | Platform-managed workflows | LanceDB Embedded requires application-managed maintenance; Enterprise schedules it in the background. See [Indexing in LanceDB](/indexing/). |
+| **Data format** | Lance | Lance | Both use the same open table format. Plan catalog registration, access and transfer when moving existing data. |
+| **Deployment** | Embedded in your code | BYOC or Managed | Enterprise adds deployment operations and support for shared workloads. |
+| **SQL analytics** | Not available | Arrow Flight SQL | Enterprise runs joins, grouping, sampling and [curation](/curation) over SQL. See [SQL reference](/sql). |
+| **Native vector dedup** | Not available | `dedupe()` / `duplicate_pairs()` | Index-partition deduplication as a SQL table function, with no full pairwise scan. See [DEDUPE](/sql/dql/dedupe). |
+| **Materialized views** | Not available | Server-side, distributed compute | Enterprise derives and refreshes a table from a query as a background job. See [Materialized views](/feature-engineering/materialized-views). |
+
+## Compare features {#compare}
+
+| Area | Feature | Embedded | Enterprise |
+| --- | --- | :-: | :-: |
+| **Data Ingestion** | [Insert data](/ingestion/insert) | ✅ | ✅ |
+|  | [Merge](/ingestion/merge-insert) | ✅ | ✅ |
+|  | [RTE Write](/ingestion/realtime-write) | ✅ | ✅ |
+|  | [Distributed RTE Write](/enterprise/distributed-real-time-write) | ❌ | ✅ |
+|  | [Attach Database](/ingestion/migrate-from-embedded) | ❌ | ✅ |
+|  | [Import Datasets](/ingestion/import) | ❌ | ✅ |
+|  | [Distributed Write](/enterprise/distributed-write) | ❌ | ✅ |
+| **Semantic Search** | [Vector search](/search/vector-search) | ✅ | ✅ |
+|  | [Full-text search](/search/full-text-search) | ✅ | ✅ |
+|  | [Hybrid search](/search/hybrid-search) | ✅ | ✅ |
+|  | [Filtering](/search/filtering) | ✅ | ✅ |
+|  | [Reranking](/reranking) | ✅ | ✅ |
+|  | [Distributed search](/enterprise/distributed-search) | ❌ | ✅ |
+|  | [RTE Read](/search/realtime-read) | ✅ | ✅ |
+|  | [Distributed RTE Read](/enterprise/distributed-real-time-read) | ❌ | ✅ |
+|  | [Cache Prewarm](/enterprise/cache-prewarm) | ❌ | ✅ |
+| **Data Curation** | [Inspect Datasets](/curation/inspect-datasets) | ❌ | ✅ |
+|  | [Statistical Sampling](/curation/statistical-sampling) | ❌ | ✅ |
+|  | [Selective Sampling](/curation/selective-sampling) | ✅ | ✅ |
+|  | [Aggregation and profiling](/curation/aggregate) | ❌ | ✅ |
+|  | [Joins](/curation/join) | ❌ | ✅ |
+|  | [Blob Late Materialization](/curation/blob-late-materialization) | ❌ | ✅ |
+|  | [Ranking and deduplication](/curation/windowing) | ❌ | ✅ |
+|  | [Near-duplicate detection](/curation/dedupe) | ❌ | ✅ |
+|  | [Chunking](/curation/chunking) | ❌ | ✅ |
+|  | [Changes since a version](/curation/changes) | ❌ | ✅ |
+|  | [GPU Function Execution](/curation/gpu-function-execution) | ❌ | ✅ |
+|  | [Slurm Scheduling](/curation/slurm-scheduling) | ❌ | ✅ |
+| **Feature Engineering** | [Computed columns](/feature-engineering/add-computed-column) | ❌ | ✅ |
+|  | [Incremental Refresh](/enterprise/incremental-refresh) | ❌ | ✅ |
+|  | [Auto Refresh](/enterprise/auto-refresh) | ❌ | ✅ |
+|  | [Checkpointing](/enterprise/checkpointing) | ❌ | ✅ |
+|  | [Adaptive Execution](/enterprise/adaptive-execution) | ❌ | ✅ |
+|  | [GPU Refresh Execution](/enterprise/gpu-refresh-execution) | ❌ | ✅ |
+|  | [Slurm Scheduling](/enterprise/slurm-refresh-scheduling) | ❌ | ✅ |
+|  | [Refresh Materialized View](/feature-engineering/refresh-materialized-view) | ❌ | ✅ |
+|  | [Embedding registry](/embedding) | ✅ | ✅ |
+| **Training** | [PyTorch data loader](/training/data-loading) | ✅ | ✅ |
+|  | [Training Cache](/training/training-cache) | ❌ | ✅ |
+|  | [Permutations](/training/permutation) | ✅ | ✅ |
+|  | [Distributed training](/training/distributed-training) | ✅ | ✅ |
+|  | [Observability](/training/observability) | ✅ | ✅ |
+|  | [Checkpointing](/training/checkpointing) | ✅ | ✅ |
+|  | [Resuming](/training/resuming) | ✅ | ✅ |
+| **Management** | [Catalog](/management/catalog) | ❌ | ✅ |
+|  | [Database](/management/database) | ✅ | ✅ |
+|  | [Namespace](/management/namespace) | ✅ | ✅ |
+|  | [Table](/management/table) | ✅ | ✅ |
+|  | [Branches](/tables/branching) | ✅ | ✅ |
+|  | [View](/management/view) | ❌ | ✅ |
+|  | [Materialized view](/management/materialized-view) | ❌ | ✅ |
+|  | [Secret](/management/secret) | ❌ | ✅ |
+|  | [Function](/management/function) | ❌ | ✅ |
+|  | [Storage integration](/management/storage-integration) | ❌ | ✅ |
+| **Maintenance** | [Intelligent Auto-Maintenance](/enterprise/intelligent-auto-maintenance) | ❌ | ✅ |
+|  | [Vector Indexing](/indexing/vector-index) | ✅ | ✅ |
+|  | [FTS Indexing](/indexing/fts-index) | ✅ | ✅ |
+|  | [Scalar Indexing](/indexing/scalar-index) | ✅ | ✅ |
+|  | [Incremental Indexing](/indexing/incremental-indexing) | ✅ | ✅ |
+|  | [Distributed Indexing](/enterprise/distributed-indexing) | ❌ | ✅ |
+|  | [GPU Indexing](/indexing/gpu-indexing) | ✅ | ✅ |
+|  | [Compaction](/maintenance/compaction) | ✅ | ✅ |
+|  | [RTE Compaction](/enterprise/realtime-engine-compaction) | ❌ | ✅ |
+|  | [Garbage Collection](/maintenance/cleanup) | ✅ | ✅ |
+|  | [Distributed compaction](/enterprise/distributed-compaction) | ❌ | ✅ |
+|  | [Advanced Conflict Resolution](/enterprise/advanced-conflict-resolution) | ❌ | ✅ |
+| **Security** | [Authentication](/enterprise/authentication) | ❌ | ✅ |
+|  | [Authorization](/governance/authorization) | ❌ | ✅ |
+|  | [Audit Log](/governance/audit-log) | ❌ | ✅ |
+| **Deployment** | [Horizontal Scaling](/enterprise/horizontal-scaling) | ❌ | ✅ |
+|  | [OpenTelemetry](/deployment/opentelemetry) | ✅ | ✅ |
+|  | [Kubernetes](/enterprise/deployment/kubernetes) | ❌ | ✅ |
+
+## Usage differences between Enterprise and Embedded {#usage-differences-between-enterprise-and-oss}
+
+The [quickstart](/quickstart) guide shows both LanceDB Embedded connections and Enterprise `db://...`
+connections. Once connected to LanceDB, the table API is largely the same: create a table, search,
+filter, evolve the schema, and store multimodal records. However, there are some semantic differences
+worth understanding when your code is talking to LanceDB Enterprise.
+
+### 1\. Connection model {#1-connection-model}
+
+In LanceDB Enterprise, your app connects via a `db://...` URI and sends requests to the cluster API.
+The cluster executes table operations on your behalf. Your code is coupled to a **managed service endpoint**,
+whereas LanceDB Embedded is directly coupled to local or object-storage paths.
+
+### 2\. Returned table type {#2-returned-table-type}
+
+Connecting to an Enterprise table via `open_table(...)` returns a `RemoteTable`, unlike LanceDB Embedded,
+which returns a `LanceTable`. `RemoteTable` is a catalog-backed table accessed through a server/cluster,
+and does not support all the same methods as `LanceTable` (see below).
+
+### 3\. Materialization APIs {#3-materialization-apis}
+
+For Python users working with LanceDB Enterprise, `RemoteTable` does not support table-level
+materialization methods like `table.to_arrow()` or `table.to_pandas()`. This protects users from
+accidentally materializing tables that are too large to fit in memory.
+
+Instead, materialize results through query/search builders, for example
+`table.search(...).limit(...).to_pandas()` for a vector or full-text search, or
+`table.search().where(...).limit(...).to_arrow()` for a filtered scan. For quick previews, use
+`table.head()`.
+
+### 4\. Maintenance lifecycle {#4-maintenance-lifecycle}
+
+In LanceDB Embedded, you run maintenance yourself: `optimize()` compacts data files, adds new rows to
+existing indexes, and removes old table versions. In Enterprise, the cluster runs this work -- along with
+async write and reindexing workflows -- as background jobs, and the SDK's maintenance calls do not trigger
+it. On an Enterprise table, the synchronous Python `optimize()`, `compact_files()`, and
+`cleanup_old_versions()` only emit a warning, and the asynchronous Python, TypeScript, and Rust clients
+reject `optimize()` as not supported.
+
+That means maintenance is managed by platform behavior and cluster configuration, not by explicit
+per-table maintenance calls in your application code.
+
+### 5\. Guardrails and limits {#5-guardrails-and-limits}
+
+Enterprise can enforce platform-level guardrails, such as index/table limits and safety checks around
+operations like `merge_insert` when too many rows are unindexed. LanceDB Embedded mostly exposes
+storage/format-level behavior, and you tune many lifecycle tasks yourself.
+
+This means an operation in LanceDB Enterprise can fail due to service-level policy, not just because
+of local table shape or schema mismatch.
+
+<Info>
+As a rule of thumb, all you need to remember is this: treat `db://...` as a network service boundary,
+use query builders to fetch results, and otherwise interact with your tables as you would in LanceDB
+Embedded.
+</Info>
+
+## Which one should I use? {#which-one-should-i-use}
+
+[It's very simple to get started with LanceDB Embedded](/quickstart/): Get started with `pip install lancedb` and begin ingesting
+your data and vectors into LanceDB. LanceDB Embedded (open source) makes sense when your dataset fits on one machine, traffic is still
+modest, and your team is comfortable handling maintenance tasks such as compaction or reindexing itself.
+
+Move to LanceDB Enterprise when retrieval becomes shared infrastructure for your business: your data or traffic has
+outgrown a single machine, you need private deployment options, or you want platform support for monitoring, security,
+and large-scale feature workflows.
+
+If these sound like your use cases, [reach out to us](https://www.lancedb.com/contact) and we can help you scope your workload and arrange an Enterprise proof of concept.

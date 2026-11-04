@@ -63,137 +63,23 @@ through the same table model, whether a workflow uses one table or several relat
 
 LanceDB ships as two offerings on the same [Lance](/basics/lance) format and table model, which stores table data,
 versions, and indexes in open, columnar files. What changes between them is how storage and compute are organized
-around that format. Start locally with Embedded, then move to Enterprise when your team needs distributed scale,
+around that format: start locally with Embedded, then move to Enterprise when your team needs distributed scale,
 managed infrastructure, private deployment, or higher-throughput curation, feature engineering, search and
 retrieval, and training workflows.
 
-<Columns cols={2}>
-  <Frame caption="LanceDB Embedded: the LanceDB SDK and the Lance format run in your application, reading and writing tables on local disk or in object storage.">
-    <img src="/static/assets/images/overview/lancedb-embedded.png" alt="LanceDB Embedded architecture" />
-  </Frame>
-  <Frame caption="LanceDB Enterprise: the LanceDB SDK connects to the Enterprise service, where a query fleet, executor and cache fleets, the realtime engine, and a jobs fleet run on top of the Lance format and object storage.">
-    <img src="/static/assets/images/overview/lancedb-distributed.png" alt="LanceDB Enterprise architecture" />
-  </Frame>
-</Columns>
+<CardGroup cols={2}>
+  <Card title="LanceDB Embedded" icon="cube" href="/basics/lancedb-embedded">
+    An open-source, embedded retrieval library that runs inside your application process, with no separate
+    database server to deploy.
+  </Card>
+  <Card title="LanceDB Enterprise" icon="server" href="/enterprise/index">
+    A distributed multimodal lakehouse service for production workloads that need managed infrastructure and
+    higher-throughput workflows.
+  </Card>
+</CardGroup>
 
-### 1\. LanceDB Embedded {#1-lancedb-oss}
-
-**LanceDB Embedded** is an open-source, embedded retrieval library, with client SDKs in Python, TypeScript and
-Rust -- the application itself plans queries, builds indexes, and runs background work, with no separate database
-server to deploy. It reads and writes tables on local disk or in object storage from inside your application
-process. This fits local retrieval applications, notebooks, development, and single-node data pipelines, where
-your application controls its own compute resources and [table maintenance](/maintenance/compaction).
-
-### 2\. LanceDB Enterprise {#2-lancedb-enterprise}
-
-**LanceDB Enterprise** is an exabyte-scale, distributed **multimodal lakehouse** service built on the
-same table abstraction as Embedded, for search, curation, feature engineering, and high-throughput training data
-access. Applications connect through a LanceDB SDK while the service plans and runs work across a fleet: query
-serving, read execution and caching, indexing, and background maintenance scale as separate components, with
-durable table data and index artifacts kept in object storage, independently of the machines serving requests.
-Caches accelerate reads; they are never the durable source of truth. With multiple serving replicas, Enterprise
-routes traffic to surviving nodes when one fails; losing a cache node temporarily raises latency while its
-replacement warms, rather than causing an outage. See [Distributed search](/enterprise/distributed-search),
-[distributed indexing](/enterprise/distributed-indexing), and the other architecture guides linked from the
-comparison table below for how work divides across machines.
-
-Teams choose Enterprise to:
-
-- **Get new capabilities first** -- SQL, Functions, materialized views, and most other features documented
-  throughout these docs land in Enterprise first, often well before they reach Embedded, if they ever do.
-- **Performance** -- cache frequently read table data near compute with the [Data Page Cache](/enterprise/data-page-cache),
-  and let [adaptive execution](/enterprise/adaptive-execution) size refresh and curation workers to the job instead
-  of guessing once.
-- **Scale** -- add query-serving capacity by spreading a table across more [replica groups](/enterprise/horizontal-scaling)
-  as traffic grows, instead of upgrading one machine.
-- **Fault tolerance** -- [replication](/enterprise/horizontal-scaling) keeps a table serving when a node fails, so
-  you lose latency to a warm-up, not an outage.
-- **Multicloud deployment** -- bring LanceDB into your own cloud account, in the region your
-  [GPU capacity](/curation/gpu-function-execution) already lives, instead of moving data to it.
-- **Simplify operations** -- [Intelligent Auto-Maintenance](/enterprise/intelligent-auto-maintenance) runs
-  compaction, cleanup, and indexing in the background, with [OpenTelemetry](/deployment/opentelemetry) metrics and
-  traces instead of guesswork.
-
-[Reach out to us](https://www.lancedb.com/contact) to set up LanceDB Enterprise in your organization. Sharing a
-format does not mean an Enterprise deployment automatically opens an existing Embedded database -- plan how to
-move or connect your data.
-
-### Compare features {#compare}
-
-| Area | Feature | Embedded | Enterprise |
-| --- | --- | :-: | :-: |
-| **Data Ingestion** | [Insert data](/ingestion/insert) | ✅ | ✅ |
-|  | [Merge](/ingestion/merge-insert) | ✅ | ✅ |
-|  | [RTE Write](/ingestion/realtime-write) | ✅ | ✅ |
-|  | [Distributed RTE Write](/enterprise/distributed-real-time-write) | ❌ | ✅ |
-|  | [Attach Database](/ingestion/migrate-from-embedded) | ❌ | ✅ |
-|  | [Import Datasets](/ingestion/import) | ❌ | ✅ |
-|  | [Distributed Write](/enterprise/distributed-write) | ❌ | ✅ |
-| **Semantic Search** | [Vector search](/search/vector-search) | ✅ | ✅ |
-|  | [Full-text search](/search/full-text-search) | ✅ | ✅ |
-|  | [Hybrid search](/search/hybrid-search) | ✅ | ✅ |
-|  | [Filtering](/search/filtering) | ✅ | ✅ |
-|  | [Reranking](/reranking) | ✅ | ✅ |
-|  | [Distributed search](/enterprise/distributed-search) | ❌ | ✅ |
-|  | [RTE Read](/search/realtime-read) | ✅ | ✅ |
-|  | [Distributed RTE Read](/enterprise/distributed-real-time-read) | ❌ | ✅ |
-|  | [Cache Prewarm](/enterprise/cache-prewarm) | ❌ | ✅ |
-| **Data Curation** | [Inspect Datasets](/curation/inspect-datasets) | ❌ | ✅ |
-|  | [Statistical Sampling](/curation/statistical-sampling) | ❌ | ✅ |
-|  | [Selective Sampling](/curation/selective-sampling) | ✅ | ✅ |
-|  | [Aggregation and profiling](/curation/aggregate) | ❌ | ✅ |
-|  | [Joins](/curation/join) | ❌ | ✅ |
-|  | [Blob Late Materialization](/curation/blob-late-materialization) | ❌ | ✅ |
-|  | [Ranking and deduplication](/curation/windowing) | ❌ | ✅ |
-|  | [Near-duplicate detection](/curation/dedupe) | ❌ | ✅ |
-|  | [Chunking](/curation/chunking) | ❌ | ✅ |
-|  | [Changes since a version](/curation/changes) | ❌ | ✅ |
-|  | [GPU Function Execution](/curation/gpu-function-execution) | ❌ | ✅ |
-|  | [Slurm Scheduling](/curation/slurm-scheduling) | ❌ | ✅ |
-| **Feature Engineering** | [Computed columns](/feature-engineering/add-computed-column) | ❌ | ✅ |
-|  | [Incremental Refresh](/enterprise/incremental-refresh) | ❌ | ✅ |
-|  | [Auto Refresh](/enterprise/auto-refresh) | ❌ | ✅ |
-|  | [Checkpointing](/enterprise/checkpointing) | ❌ | ✅ |
-|  | [Adaptive Execution](/enterprise/adaptive-execution) | ❌ | ✅ |
-|  | [GPU Refresh Execution](/enterprise/gpu-refresh-execution) | ❌ | ✅ |
-|  | [Slurm Scheduling](/enterprise/slurm-refresh-scheduling) | ❌ | ✅ |
-|  | [Refresh Materialized View](/feature-engineering/refresh-materialized-view) | ❌ | ✅ |
-|  | [Embedding registry](/embedding) | ✅ | ✅ |
-| **Training** | [PyTorch data loader](/training/data-loading) | ✅ | ✅ |
-|  | [Training Cache](/training/training-cache) | ❌ | ✅ |
-|  | [Permutations](/training/permutation) | ✅ | ✅ |
-|  | [Distributed training](/training/distributed-training) | ✅ | ✅ |
-|  | [Observability](/training/observability) | ✅ | ✅ |
-|  | [Checkpointing](/training/checkpointing) | ✅ | ✅ |
-|  | [Resuming](/training/resuming) | ✅ | ✅ |
-| **Management** | [Catalog](/management/catalog) | ❌ | ✅ |
-|  | [Database](/management/database) | ✅ | ✅ |
-|  | [Namespace](/management/namespace) | ✅ | ✅ |
-|  | [Table](/management/table) | ✅ | ✅ |
-|  | [Branches](/tables/branching) | ✅ | ✅ |
-|  | [View](/management/view) | ❌ | ✅ |
-|  | [Materialized view](/management/materialized-view) | ❌ | ✅ |
-|  | [Secret](/management/secret) | ❌ | ✅ |
-|  | [Function](/management/function) | ❌ | ✅ |
-|  | [Storage integration](/management/storage-integration) | ❌ | ✅ |
-| **Maintenance** | [Intelligent Auto-Maintenance](/enterprise/intelligent-auto-maintenance) | ❌ | ✅ |
-|  | [Vector Indexing](/indexing/vector-index) | ✅ | ✅ |
-|  | [FTS Indexing](/indexing/fts-index) | ✅ | ✅ |
-|  | [Scalar Indexing](/indexing/scalar-index) | ✅ | ✅ |
-|  | [Incremental Indexing](/indexing/incremental-indexing) | ✅ | ✅ |
-|  | [Distributed Indexing](/enterprise/distributed-indexing) | ❌ | ✅ |
-|  | [GPU Indexing](/indexing/gpu-indexing) | ✅ | ✅ |
-|  | [Compaction](/maintenance/compaction) | ✅ | ✅ |
-|  | [RTE Compaction](/enterprise/realtime-engine-compaction) | ❌ | ✅ |
-|  | [Garbage Collection](/maintenance/cleanup) | ✅ | ✅ |
-|  | [Distributed compaction](/enterprise/distributed-compaction) | ❌ | ✅ |
-|  | [Advanced Conflict Resolution](/enterprise/advanced-conflict-resolution) | ❌ | ✅ |
-| **Security** | [Authentication](/enterprise/authentication) | ❌ | ✅ |
-|  | [Authorization](/governance/authorization) | ❌ | ✅ |
-|  | [Audit Log](/governance/audit-log) | ❌ | ✅ |
-| **Deployment** | [Horizontal Scaling](/enterprise/horizontal-scaling) | ❌ | ✅ |
-|  | [OpenTelemetry](/deployment/opentelemetry) | ✅ | ✅ |
-|  | [Kubernetes](/enterprise/deployment/kubernetes) | ❌ | ✅ |
+See [Embedded vs Enterprise](/basics/embedded-vs-enterprise) for a feature-by-feature comparison, including
+architecture, latency, throughput, and day-to-day usage differences.
 
 ## Projects using LanceDB {#projects-using-lancedb}
 
