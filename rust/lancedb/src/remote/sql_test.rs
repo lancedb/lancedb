@@ -1065,6 +1065,96 @@ async fn remote_create_returns_the_registry_job_from_the_early_status_row() {
 }
 
 #[tokio::test]
+async fn remote_create_registry_handle_reopens_describes_and_cancels() {
+    let service = TestSqlService {
+        adaptive: true,
+        defer: true,
+        materialized_view_job_handle_supported: true,
+        ..Default::default()
+    };
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("operation", DataType::Utf8, false),
+        Field::new("name", DataType::Utf8, false),
+        Field::new("job_id", DataType::Utf8, false),
+        Field::new("status", DataType::Utf8, false),
+    ]));
+    service.result_overrides.lock().unwrap().insert(
+        "CREATE MATERIALIZED VIEW \"adults\" AS SELECT * FROM people".into(),
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec!["CREATE MATERIALIZED VIEW"])),
+                Arc::new(StringArray::from(vec!["adults"])),
+                Arc::new(StringArray::from(vec!["job-1"])),
+                Arc::new(StringArray::from(vec!["submitted"])),
+            ],
+        )
+        .unwrap(),
+    );
+    let (sql_client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let describes = Arc::new(AtomicUsize::new(0));
+    let seen_describes = describes.clone();
+    let describe_ids = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen_describe_ids = describe_ids.clone();
+    let cancel_ids = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen_cancel_ids = cancel_ids.clone();
+    let db = RemoteDatabase::new_mock(move |request| {
+        let body = request
+            .body()
+            .and_then(|body| body.as_bytes())
+            .and_then(|body| serde_json::from_slice::<serde_json::Value>(body).ok())
+            .unwrap_or_default();
+        let job_id = body["job_id"].as_str().unwrap_or_default().to_string();
+        match request.url().path() {
+            "/v1/jobs/describe" => {
+                assert_eq!(job_id, "job-1");
+                seen_describe_ids.lock().unwrap().push(job_id.clone());
+                seen_describes.fetch_add(1, Ordering::SeqCst);
+                http::Response::builder()
+                    .status(200)
+                    .body(format!(
+                        r#"{{"job_id":"{job_id}","job_type":"sql","job_state":"IN_PROGRESS","creation_ms":1}}"#
+                    ))
+                    .unwrap()
+            }
+            "/v1/jobs/cancel" => {
+                assert_eq!(job_id, "job-1");
+                seen_cancel_ids.lock().unwrap().push(job_id);
+                http::Response::builder().status(200).body(String::new()).unwrap()
+            }
+            path => panic!("unexpected request: {path}"),
+        }
+    })
+    .with_sql_client(sql_client);
+
+    let job = db
+        .create_materialized_view_async(CreateMaterializedViewRequest {
+            name: "adults".into(),
+            namespace_path: vec!["team".into(), "reports".into()],
+            query: "SELECT * FROM people".into(),
+            with_no_data: false,
+            auto_refresh_enabled: None,
+            auto_refresh_interval_seconds: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(job.id(), Some("job-1"));
+
+    job.refresh().await.unwrap();
+    assert_eq!(job.job_type().as_deref(), Some("sql"));
+    assert_eq!(job.state().as_deref(), Some("running"));
+
+    let reopened = db.open_job("job-1").await.unwrap();
+    assert_eq!(reopened.id(), Some("job-1"));
+    assert_eq!(reopened.job_type().as_deref(), Some("sql"));
+    reopened.cancel().await.unwrap();
+
+    assert_eq!(*describe_ids.lock().unwrap(), vec!["job-1", "job-1"]);
+    assert_eq!(*cancel_ids.lock().unwrap(), vec!["job-1"]);
+    shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
 async fn query_backed_jobs_propagate_submission_and_execution_failures() {
     let (client, shutdown) = start_sql_service(
         TestSqlService {
