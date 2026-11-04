@@ -3321,7 +3321,7 @@ class Table(ABC):
             if row_ids:
                 row_id_list = ", ".join(str(row_id) for row_id in row_ids)
                 database.execute_query(
-                    f"REFRESH COLUMN embedding ON {table.name()} "
+                    f"REFRESH COLUMN embedding ON {table.name} "
                     f"WHERE _rowid IN ({row_id_list})"
                 )
 
@@ -3340,7 +3340,7 @@ class Table(ABC):
             if addresses:
                 address_list = ", ".join(str(address) for address in addresses)
                 database.execute_query(
-                    f"REFRESH COLUMN embedding ON {table.name()} "
+                    f"REFRESH COLUMN embedding ON {table.name} "
                     f"WHERE _rowaddr IN ({address_list})"
                 )
 
@@ -7828,7 +7828,7 @@ class AsyncTable:
             if row_ids:
                 row_id_list = ", ".join(str(row_id) for row_id in row_ids)
                 await database.execute_query(
-                    f"REFRESH COLUMN embedding ON {table.name()} "
+                    f"REFRESH COLUMN embedding ON {table.name} "
                     f"WHERE _rowid IN ({row_id_list})"
                 )
 
@@ -7847,7 +7847,7 @@ class AsyncTable:
             if addresses:
                 address_list = ", ".join(str(address) for address in addresses)
                 await database.execute_query(
-                    f"REFRESH COLUMN embedding ON {table.name()} "
+                    f"REFRESH COLUMN embedding ON {table.name} "
                     f"WHERE _rowaddr IN ({address_list})"
                 )
 
