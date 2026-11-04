@@ -2278,6 +2278,266 @@ async fn remote_drop_materialized_view_uses_a_query_job() {
 }
 
 #[tokio::test]
+async fn remote_optimize_submits_a_compaction_job_over_sql() {
+    let service = TestSqlService {
+        adaptive: true,
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let headers = service.headers.clone();
+    let (sql_client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let client = client_with_handler(|request| -> http::Response<String> {
+        panic!("unexpected REST request: {}", request.url().path());
+    });
+    let table = RemoteTable::new_with_sql_client(
+        client,
+        "analytics".into(),
+        "events".into(),
+        vec!["team".into(), "reports".into()],
+        "team$reports$events".into(),
+        Default::default(),
+        Some(sql_client),
+    );
+
+    let stats = table
+        .optimize(crate::table::optimize::OptimizeAction::Compact {
+            options: crate::table::optimize::CompactionOptions::default(),
+            remap_options: None,
+        })
+        .await
+        .unwrap();
+
+    // The SQL job adapter does not expose compaction metrics, so
+    // `compaction` is a zeroed placeholder, not real numbers -- but it must
+    // be `Some`: callers (including the Python/Node bindings) unwrap it
+    // unconditionally on success.
+    assert_eq!(
+        stats.compaction,
+        Some(lance::dataset::optimize::CompactionMetrics::default())
+    );
+    assert!(stats.prune.is_none());
+    assert_eq!(
+        *statements.lock().unwrap(),
+        ["OPTIMIZE TABLE \"events\" REWRITE DATA"]
+    );
+    assert!(
+        headers
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|header| header.namespace_path == "team$reports")
+    );
+    shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
+async fn remote_optimize_on_a_branch_submits_a_with_clause_over_sql() {
+    let service = TestSqlService {
+        adaptive: true,
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let (sql_client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let client = client_with_handler(|request| -> http::Response<String> {
+        panic!("unexpected REST request: {}", request.url().path());
+    });
+    let table = RemoteTable::new_with_sql_client(
+        client,
+        "analytics".into(),
+        "events".into(),
+        vec!["team".into(), "reports".into()],
+        "team$reports$events".into(),
+        Default::default(),
+        Some(sql_client),
+    )
+    .with_branch(Some("o'brien".to_string()));
+
+    table
+        .optimize(crate::table::optimize::OptimizeAction::Compact {
+            options: crate::table::optimize::CompactionOptions::default(),
+            remap_options: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        *statements.lock().unwrap(),
+        ["OPTIMIZE TABLE \"events\" REWRITE DATA WITH (branch = 'o''brien')"]
+    );
+    shutdown.send(()).unwrap();
+}
+
+/// Regression test for the language bindings' `optimize()` convenience
+/// method, which used to submit a compaction job and then fail on the next
+/// action because `Prune` and `Index` are not supported remotely -- so a
+/// retry on that failure resubmitted another compaction job. `optimize_full`
+/// is what both the Python and Node bindings now call instead of
+/// orchestrating `Compact`, `Prune`, and `Index` themselves; on a remote
+/// table it must submit only the compaction job and return zeroed prune
+/// stats rather than attempting `Prune` and `Index` at all.
+#[tokio::test]
+async fn remote_optimize_full_skips_prune_and_index() {
+    let service = TestSqlService {
+        adaptive: true,
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let (sql_client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let client = client_with_handler(|request| -> http::Response<String> {
+        panic!("unexpected REST request: {}", request.url().path());
+    });
+    let remote_table = RemoteTable::new_with_sql_client(
+        client,
+        "analytics".into(),
+        "events".into(),
+        vec!["team".into(), "reports".into()],
+        "team$reports$events".into(),
+        Default::default(),
+        Some(sql_client),
+    );
+    let database = Arc::new(RemoteDatabase::new_mock(
+        |request: reqwest::Request| -> http::Response<String> {
+            panic!("unexpected REST request: {}", request.url().path());
+        },
+    ));
+    let table = crate::Table::new(Arc::new(remote_table), database);
+
+    let stats = table
+        .optimize_full(
+            crate::table::optimize::CompactionOptions::default(),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Compaction was submitted (and its placeholder stats are present)...
+    assert_eq!(
+        stats.compaction,
+        Some(lance::dataset::optimize::CompactionMetrics::default())
+    );
+    // ...but Prune and Index were skipped rather than attempted and failed,
+    // so the call succeeds with zeroed prune stats instead of returning an
+    // error after the job has already been submitted.
+    assert_eq!(
+        stats.prune,
+        Some(lance::dataset::cleanup::RemovalStats::default())
+    );
+    assert_eq!(
+        *statements.lock().unwrap(),
+        ["OPTIMIZE TABLE \"events\" REWRITE DATA"]
+    );
+    shutdown.send(()).unwrap();
+}
+
+/// `delete_unverified: Some(false)` is what every real Python call sends
+/// (the public `optimize()` default is `False`, not `None`), so it must be
+/// treated the same as "not asking to prune" -- not rejected -- or a plain
+/// `table.optimize()` from Python would never succeed on a remote table.
+#[tokio::test]
+async fn remote_optimize_full_treats_delete_unverified_false_as_default() {
+    let service = TestSqlService {
+        adaptive: true,
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let (sql_client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let client = client_with_handler(|request| -> http::Response<String> {
+        panic!("unexpected REST request: {}", request.url().path());
+    });
+    let remote_table = RemoteTable::new_with_sql_client(
+        client,
+        "analytics".into(),
+        "events".into(),
+        vec!["team".into(), "reports".into()],
+        "team$reports$events".into(),
+        Default::default(),
+        Some(sql_client),
+    );
+    let database = Arc::new(RemoteDatabase::new_mock(
+        |request: reqwest::Request| -> http::Response<String> {
+            panic!("unexpected REST request: {}", request.url().path());
+        },
+    ));
+    let table = crate::Table::new(Arc::new(remote_table), database);
+
+    let stats = table
+        .optimize_full(
+            crate::table::optimize::CompactionOptions::default(),
+            None,
+            None,
+            Some(false),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        stats.prune,
+        Some(lance::dataset::cleanup::RemovalStats::default())
+    );
+    assert_eq!(statements.lock().unwrap().len(), 1);
+    shutdown.send(()).unwrap();
+}
+
+/// Regression test: a caller who explicitly asks a remote table's
+/// `optimize()` to prune (an older-than cutoff, an absolute timestamp, or
+/// `delete_unverified=True`) used to get a success result reporting zero
+/// bytes removed, even though no pruning was attempted at all -- silently
+/// dropping their storage-reclaim request. It must instead reject before
+/// anything is submitted, the same way a non-default `CompactionOptions` is.
+#[tokio::test]
+async fn remote_optimize_full_rejects_explicit_pruning_options() {
+    async fn assert_rejected_before_submission(
+        older_than: Option<chrono::Duration>,
+        before_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+        delete_unverified: Option<bool>,
+    ) {
+        let service = TestSqlService {
+            adaptive: true,
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let (sql_client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let client = client_with_handler(|request| -> http::Response<String> {
+            panic!("unexpected REST request: {}", request.url().path());
+        });
+        let remote_table = RemoteTable::new_with_sql_client(
+            client,
+            "analytics".into(),
+            "events".into(),
+            vec!["team".into(), "reports".into()],
+            "team$reports$events".into(),
+            Default::default(),
+            Some(sql_client),
+        );
+        let database = Arc::new(RemoteDatabase::new_mock(
+            |request: reqwest::Request| -> http::Response<String> {
+                panic!("unexpected REST request: {}", request.url().path());
+            },
+        ));
+        let table = crate::Table::new(Arc::new(remote_table), database);
+
+        let error = table
+            .optimize_full(
+                crate::table::optimize::CompactionOptions::default(),
+                older_than,
+                before_timestamp,
+                delete_unverified,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::NotSupported { .. }), "{error:?}");
+        assert!(statements.lock().unwrap().is_empty());
+        shutdown.send(()).unwrap();
+    }
+
+    assert_rejected_before_submission(Some(chrono::Duration::days(1)), None, None).await;
+    assert_rejected_before_submission(None, Some(chrono::Utc::now()), None).await;
+    assert_rejected_before_submission(None, None, Some(true)).await;
+}
+
+#[tokio::test]
 async fn remote_mv_listing_uses_scoped_sql_keyset_pagination() {
     for defer in [false, true] {
         let result = RecordBatch::try_from_iter(vec![(

@@ -9,7 +9,7 @@ use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
 use lancedb::table::{
     AddDataMode, ColumnAlteration as LanceColumnAlteration,
     FieldMetadataUpdate as LanceFieldMetadataUpdate, FtsToken as LanceDbFtsToken,
-    NewColumnTransform, OptimizeAction, OptimizeOptions, Ref, Table as LanceDbTable,
+    NewColumnTransform, Ref, Table as LanceDbTable,
 };
 use napi::Env;
 use napi::bindgen_prelude::*;
@@ -735,37 +735,17 @@ impl Table {
             })
             .transpose()?;
 
-        let compaction_stats = inner
-            .optimize(OptimizeAction::Compact {
-                options: lancedb::table::CompactionOptions::default(),
-                remap_options: None,
-            })
-            .await
-            .default_error()?
-            .compaction
-            .unwrap();
-        let prune_stats = if let Some(before_timestamp) = before_timestamp {
-            inner
-                .optimize_prune_before(before_timestamp, delete_unverified, None)
-                .await
-        } else {
-            inner
-                .optimize(OptimizeAction::Prune {
-                    older_than: None,
-                    delete_unverified,
-                    error_if_tagged_old_versions: None,
-                })
-                .await
-        }
-        .default_error()?
-        .prune
-        .unwrap();
-        inner
-            .optimize(lancedb::table::OptimizeAction::Index(
-                OptimizeOptions::default(),
-            ))
+        let stats = inner
+            .optimize_full(
+                lancedb::table::CompactionOptions::default(),
+                None,
+                before_timestamp,
+                delete_unverified,
+            )
             .await
             .default_error()?;
+        let compaction_stats = stats.compaction.unwrap();
+        let prune_stats = stats.prune.unwrap();
         Ok(OptimizeStats {
             compaction: CompactionStats {
                 files_added: compaction_stats.files_added as i64,

@@ -1083,12 +1083,21 @@ class RemoteTable(Table):
         retrain: bool = False,
         compaction_options: Optional[CompactionOptions] = None,
     ):
-        """optimize() is not supported in LanceDB Enterprise."""
+        """Compact the table's data files via a durable, asynchronous
+        Enterprise job. Pruning old versions and index optimization are not
+        yet supported remotely, so this call skips them and returns
+        successfully with zeroed pruning statistics once the compaction job
+        has been submitted; it does not wait for that job to finish. Passing
+        a non-default ``compaction_options`` raises ``NotImplementedError``
+        before anything is submitted, since there is no way yet to forward
+        those settings to the server.
+        """
         return LOOP.run(
             self._table.optimize(
                 cleanup_older_than=cleanup_older_than,
                 delete_unverified=delete_unverified,
                 retrain=retrain,
+                compaction_options=compaction_options,
             )
         )
 

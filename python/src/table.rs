@@ -29,8 +29,8 @@ use lancedb::connection::LanceFileVersion;
 use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::table::{
     AddDataMode, ColumnAlteration, CompactionMode, CompactionOptions, Duration,
-    FieldMetadataUpdate, FtsToken as LanceDbFtsToken, IndexRemapMode, NewColumnTransform,
-    OptimizeAction, OptimizeOptions, Ref, RefreshColumnOptions, Table as LanceDbTable,
+    FieldMetadataUpdate, FtsToken as LanceDbFtsToken, IndexRemapMode, NewColumnTransform, Ref,
+    RefreshColumnOptions, Table as LanceDbTable,
 };
 use lancedb::tokenize as lancedb_tokenize;
 use pyo3::{
@@ -1783,31 +1783,12 @@ impl Table {
             None
         };
         future_into_py(self_.py(), async move {
-            let compaction_stats = inner
-                .optimize(OptimizeAction::Compact {
-                    options: compaction_options,
-                    remap_options: None,
-                })
-                .await
-                .infer_error()?
-                .compaction
-                .unwrap();
-            let prune_stats = inner
-                .optimize(OptimizeAction::Prune {
-                    older_than,
-                    delete_unverified,
-                    error_if_tagged_old_versions: None,
-                })
-                .await
-                .infer_error()?
-                .prune
-                .unwrap();
-            inner
-                .optimize(lancedb::table::OptimizeAction::Index(
-                    OptimizeOptions::default(),
-                ))
+            let stats = inner
+                .optimize_full(compaction_options, older_than, None, delete_unverified)
                 .await
                 .infer_error()?;
+            let compaction_stats = stats.compaction.unwrap();
+            let prune_stats = stats.prune.unwrap();
             Ok(OptimizeStats {
                 compaction: CompactionStats {
                     files_added: compaction_stats.files_added as u64,

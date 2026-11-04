@@ -2935,6 +2935,17 @@ class Table(ABC):
         """
         Optimize the on-disk data and indices for better performance.
 
+        .. note::
+
+            On a LanceDB Enterprise (remote) table, only compaction is
+            currently supported. Pruning old versions and index optimization
+            are silently skipped there instead of being attempted, so this
+            call returns successfully, with zeroed pruning statistics, once
+            the compaction job has been submitted; it does not wait for that
+            job to finish. A non-default ``compaction_options`` raises
+            ``NotImplementedError`` before anything is submitted, since
+            there is no way yet to forward those settings to the server.
+
         Modeled after ``VACUUM`` in PostgreSQL.
 
         Optimization covers three operations:
@@ -8194,6 +8205,17 @@ class AsyncTable:
     ) -> OptimizeStats:
         """
         Optimize the on-disk data and indices for better performance.
+
+        .. note::
+
+            On a LanceDB Enterprise (remote) table, only compaction is
+            currently supported. Pruning old versions and index optimization
+            are silently skipped there instead of being attempted, so this
+            call returns successfully, with zeroed pruning statistics, once
+            the compaction job has been submitted; it does not wait for that
+            job to finish. A non-default ``compaction_options`` raises
+            ``NotImplementedError`` before anything is submitted, since
+            there is no way yet to forward those settings to the server.
 
         Modeled after ``VACUUM`` in PostgreSQL.
 

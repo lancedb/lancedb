@@ -943,6 +943,12 @@ Modeled after ``VACUUM`` in PostgreSQL.
  you have added or modified 100,000 or more records or run more than 20 data
  modification operations.
 
+On a LanceDB Enterprise (remote) table, only compaction is currently
+supported. Pruning old versions and index optimization are silently
+skipped there instead of being attempted, so this call resolves
+successfully, with zeroed pruning statistics, once the compaction job
+has been submitted; it does not wait for that job to finish.
+
 #### Parameters
 
 * **options?**: `Partial`&lt;[`OptimizeOptions`](../interfaces/OptimizeOptions.md)&gt;
