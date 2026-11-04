@@ -41,6 +41,7 @@ from .functions import (
     FunctionBinding as FunctionBinding,
     FunctionRegistrationRequest as FunctionRegistrationRequest,
     FunctionVersion as FunctionVersion,
+    HuggingFaceModel as HuggingFaceModel,
     PythonRuntimeSpec as PythonRuntimeSpec,
     RefreshColumnResult as RefreshColumnResult,
     UdfDefinition as UdfDefinition,
