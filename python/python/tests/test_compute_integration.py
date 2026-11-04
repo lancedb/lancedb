@@ -81,7 +81,10 @@ def test_sync_compute_lifecycle_uses_sql_and_secret_references(text_type):
             "https://api.example.com:6443",
             "jobs",
             kubernetes_bearer_token_secret=SecretReference(
-                "token", database="shared", namespace_path=("credentials",)
+                "token", database="shared", namespace_path=("team", "prod")
+            ),
+            kubernetes_ca_cert_secret=SecretReference(
+                "ca", namespace_path=("security", "certs")
             ),
             kubernetes_service_account="worker",
         )
@@ -95,9 +98,9 @@ def test_sync_compute_lifecycle_uses_sql_and_secret_references(text_type):
         db.drop_compute_integration("batch")
         assert b'CREATE COMPUTE INTEGRATION "batch"' in calls[0]
         assert (
-            b'KUBERNETES_BEARER_TOKEN_SECRET = "shared"."credentials"."token"'
-            in calls[0]
+            b'KUBERNETES_BEARER_TOKEN_SECRET = "shared"."team$prod"."token"' in calls[0]
         )
+        assert b'KUBERNETES_CA_CERT_SECRET = "security$certs"."ca"' in calls[0]
         assert b"KUBERNETES_SERVICE_ACCOUNT = 'worker'" in calls[0]
         assert b'DROP COMPUTE INTEGRATION "batch"' in calls[-1]
 

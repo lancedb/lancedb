@@ -43,7 +43,7 @@ pub(super) fn secret_name(reference: &SecretReference) -> Result<String> {
     if reference.namespace_path.is_empty() {
         parts.push(identifier("public"));
     } else {
-        parts.extend(reference.namespace_path.iter().map(|name| identifier(name)));
+        parts.push(identifier(&reference.namespace_path.join("$")));
     }
     parts.push(identifier(&reference.name));
     Ok(parts.join("."))
@@ -282,6 +282,28 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+
+    #[test]
+    fn nested_secret_names_use_one_schema_identifier() {
+        for database in [None, Some("shared")] {
+            let reference = SecretReference {
+                database: database.map(String::from),
+                namespace_path: vec!["team".into(), "prod".into()],
+                name: "token".into(),
+            };
+            let expected = match database {
+                None => "\"team$prod\".\"token\"",
+                Some(_) => "\"shared\".\"team$prod\".\"token\"",
+            };
+            assert_eq!(secret_name(&reference).unwrap(), expected);
+            let request = CreateStorageIntegrationRequest::gcp("gs://bucket/raw/", reference);
+            assert!(
+                create_sql("raw", &[], &request)
+                    .unwrap()
+                    .ends_with(expected)
+            );
+        }
+    }
 
     #[test]
     fn sql_quotes_values_and_keeps_secret_root_namespace_explicit() {

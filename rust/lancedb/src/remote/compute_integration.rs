@@ -148,6 +148,23 @@ mod tests {
     }
 
     #[test]
+    fn renders_nested_bearer_and_ca_secret_names() {
+        let request = CreateComputeIntegrationRequest::kubernetes(
+            "https://api.example.com",
+            "jobs",
+            SecretReference::new("token").with_namespace(vec!["team".into(), "prod".into()]),
+        )
+        .with_kubernetes_ca_cert_secret(
+            SecretReference::new("ca")
+                .with_database("shared")
+                .with_namespace(vec!["security".into(), "certs".into()]),
+        );
+        let sql = create_sql("batch", &[], &request).unwrap();
+        assert!(sql.contains("KUBERNETES_BEARER_TOKEN_SECRET = \"team$prod\".\"token\""));
+        assert!(sql.contains("KUBERNETES_CA_CERT_SECRET = \"shared\".\"security$certs\".\"ca\""));
+    }
+
+    #[test]
     fn decodes_flat_sql_result_with_structured_secret_references() {
         let info: Value = serde_json::from_str(include_str!(
             "../../tests/fixtures/compute_integration.json"
