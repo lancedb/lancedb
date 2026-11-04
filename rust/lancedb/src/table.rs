@@ -1938,9 +1938,15 @@ impl Table {
     /// optimize indices.
     ///
     /// This is an internal entry point for language bindings. On a remote
-    /// table (LanceDB Enterprise) only [`OptimizeAction::Compact`] is
-    /// supported: `Prune` and `Index` are skipped here rather than attempted
-    /// and failed, since by this point the compaction job has already been
+    /// table (LanceDB Enterprise) only [`OptimizeAction::Compact`] with its
+    /// defaults is supported. A caller asking for anything pruning-related
+    /// (`older_than`, `before_timestamp`, or `delete_unverified: Some(true)`)
+    /// gets `NotSupported` before anything is submitted, the same way a
+    /// non-default `CompactionOptions` is already rejected -- rather than a
+    /// success that silently reports zero bytes pruned when nothing was
+    /// pruned at all. A plain call with none of those set only compacts:
+    /// `Prune` and `Index` are skipped here rather than attempted and
+    /// failed, since by this point the compaction job has already been
     /// durably submitted and a caller retrying on that failure would
     /// resubmit it. The returned prune stats are zeroed in that case. See
     /// [`OptimizeAction::Compact`] for what the submission does and does not
@@ -1953,6 +1959,20 @@ impl Table {
         before_timestamp: Option<chrono::DateTime<chrono::Utc>>,
         delete_unverified: Option<bool>,
     ) -> Result<OptimizeStats> {
+        let is_remote = self.as_native().is_none();
+        if is_remote
+            && (older_than.is_some()
+                || before_timestamp.is_some()
+                || delete_unverified == Some(true))
+        {
+            return Err(Error::NotSupported {
+                message: "pruning (older_than, before_timestamp, or \
+                          delete_unverified) is not supported in LanceDB \
+                          Enterprise; omit those options to run compaction \
+                          only."
+                    .into(),
+            });
+        }
         let compaction = self
             .optimize(OptimizeAction::Compact {
                 options: compaction_options,
@@ -1960,7 +1980,7 @@ impl Table {
             })
             .await?
             .compaction;
-        if self.as_native().is_none() {
+        if is_remote {
             return Ok(OptimizeStats {
                 compaction,
                 prune: Some(RemovalStats::default()),

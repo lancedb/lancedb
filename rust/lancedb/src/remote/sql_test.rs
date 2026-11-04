@@ -2224,6 +2224,112 @@ async fn remote_optimize_full_skips_prune_and_index() {
     shutdown.send(()).unwrap();
 }
 
+/// `delete_unverified: Some(false)` is what every real Python call sends
+/// (the public `optimize()` default is `False`, not `None`), so it must be
+/// treated the same as "not asking to prune" -- not rejected -- or a plain
+/// `table.optimize()` from Python would never succeed on a remote table.
+#[tokio::test]
+async fn remote_optimize_full_treats_delete_unverified_false_as_default() {
+    let service = TestSqlService {
+        adaptive: true,
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let (sql_client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let client = client_with_handler(|request| -> http::Response<String> {
+        panic!("unexpected REST request: {}", request.url().path());
+    });
+    let remote_table = RemoteTable::new_with_sql_client(
+        client,
+        "analytics".into(),
+        "events".into(),
+        vec!["team".into(), "reports".into()],
+        "team$reports$events".into(),
+        Default::default(),
+        Some(sql_client),
+    );
+    let database = Arc::new(RemoteDatabase::new_mock(
+        |request: reqwest::Request| -> http::Response<String> {
+            panic!("unexpected REST request: {}", request.url().path());
+        },
+    ));
+    let table = crate::Table::new(Arc::new(remote_table), database);
+
+    let stats = table
+        .optimize_full(
+            crate::table::optimize::CompactionOptions::default(),
+            None,
+            None,
+            Some(false),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        stats.prune,
+        Some(lance::dataset::cleanup::RemovalStats::default())
+    );
+    assert_eq!(statements.lock().unwrap().len(), 1);
+    shutdown.send(()).unwrap();
+}
+
+/// Regression test: a caller who explicitly asks a remote table's
+/// `optimize()` to prune (an older-than cutoff, an absolute timestamp, or
+/// `delete_unverified=True`) used to get a success result reporting zero
+/// bytes removed, even though no pruning was attempted at all -- silently
+/// dropping their storage-reclaim request. It must instead reject before
+/// anything is submitted, the same way a non-default `CompactionOptions` is.
+#[tokio::test]
+async fn remote_optimize_full_rejects_explicit_pruning_options() {
+    async fn assert_rejected_before_submission(
+        older_than: Option<chrono::Duration>,
+        before_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+        delete_unverified: Option<bool>,
+    ) {
+        let service = TestSqlService {
+            adaptive: true,
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let (sql_client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let client = client_with_handler(|request| -> http::Response<String> {
+            panic!("unexpected REST request: {}", request.url().path());
+        });
+        let remote_table = RemoteTable::new_with_sql_client(
+            client,
+            "analytics".into(),
+            "events".into(),
+            vec!["team".into(), "reports".into()],
+            "team$reports$events".into(),
+            Default::default(),
+            Some(sql_client),
+        );
+        let database = Arc::new(RemoteDatabase::new_mock(
+            |request: reqwest::Request| -> http::Response<String> {
+                panic!("unexpected REST request: {}", request.url().path());
+            },
+        ));
+        let table = crate::Table::new(Arc::new(remote_table), database);
+
+        let error = table
+            .optimize_full(
+                crate::table::optimize::CompactionOptions::default(),
+                older_than,
+                before_timestamp,
+                delete_unverified,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::NotSupported { .. }), "{error:?}");
+        assert!(statements.lock().unwrap().is_empty());
+        shutdown.send(()).unwrap();
+    }
+
+    assert_rejected_before_submission(Some(chrono::Duration::days(1)), None, None).await;
+    assert_rejected_before_submission(None, Some(chrono::Utc::now()), None).await;
+    assert_rejected_before_submission(None, None, Some(true)).await;
+}
+
 #[tokio::test]
 async fn remote_mv_listing_uses_scoped_sql_keyset_pagination() {
     for defer in [false, true] {

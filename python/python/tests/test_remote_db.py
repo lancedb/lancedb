@@ -5509,3 +5509,34 @@ def test_remote_optimize_rejects_non_default_compaction_options_before_submittin
             table.optimize(compaction_options=options)
 
     assert server.tickets == []
+
+
+def test_remote_optimize_rejects_explicit_pruning_before_submitting():
+    """Regression test: a remote table's `optimize()` used to silently drop
+    an explicit pruning request (`cleanup_older_than`), returning success
+    with zero bytes removed even though nothing was pruned. It should now
+    raise before any SQL statement is submitted, the same way a non-default
+    `compaction_options` does."""
+    from datetime import timedelta
+
+    flight = pytest.importorskip("pyarrow.flight")
+
+    class UnreachableServer(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.tickets = []
+
+        def do_get(self, context, ticket):
+            self.tickets.append(ticket.ticket)
+            return flight.RecordBatchStream(
+                pa.table({"ok": pa.array([], type=pa.bool_())})
+            )
+
+    server = UnreachableServer()
+    with _mock_remote_table_with_sql(server) as table:
+        with pytest.raises(NotImplementedError, match="pruning"):
+            table.optimize(cleanup_older_than=timedelta(days=1))
+        with pytest.raises(NotImplementedError, match="pruning"):
+            table.optimize(delete_unverified=True)
+
+    assert server.tickets == []
