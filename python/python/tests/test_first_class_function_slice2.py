@@ -26,6 +26,7 @@ import pytest
 import lancedb
 from lancedb import BlobReader
 from lancedb.functions import (
+    HuggingFaceModel,
     PythonRuntimeSpec,
     SecretBinding,
     SecretReference,
@@ -90,6 +91,38 @@ def test_scalar_udf_matches_shared_registration_golden_and_remains_callable():
         "kind": "scalar_to_arrow_batch",
         "version": 1,
     }
+
+
+def test_udf_declares_pinned_hugging_face_models():
+    model = HuggingFaceModel(
+        repo="sentence-transformers/all-MiniLM-L6-v2",
+        revision="1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+    )
+
+    @udf(pip=["sentence-transformers==3.3.1"], models=[model])
+    def embed_text(value: str) -> list[float]:
+        return [1.0]
+
+    request = json.loads(embed_text.registration_request.to_canonical_json())
+    assert request["models"] == [
+        {
+            "repo": "sentence-transformers/all-MiniLM-L6-v2",
+            "revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+        }
+    ]
+    undeclared = json.loads(normalize_score.registration_request.to_canonical_json())
+    assert "models" not in undeclared
+
+    with pytest.raises(ValueError, match="once"):
+        udf(name="duplicate_model", models=[model, model])(lambda value: value)
+    with pytest.raises(ValueError, match="40-character"):
+        HuggingFaceModel(repo="owner/model", revision="main")
+    with pytest.raises(ValueError, match="reserve"):
+        udf(
+            name="reserved_model_env",
+            models=[model],
+            env={"HF_HOME": "/tmp/model"},
+        )(lambda value: value)
 
 
 def test_udf_execution_controls_match_shared_registration_golden():

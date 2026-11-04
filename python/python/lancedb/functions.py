@@ -318,6 +318,44 @@ class PythonEnvironmentSpec(_RemoteValue):
     system_packages: tuple[str, ...] = ()
 
 
+_HUGGING_FACE_MODEL_REPO = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$"
+)
+_HUGGING_FACE_REVISION = re.compile(r"^[0-9a-f]{40}$")
+
+
+class HuggingFaceModel(_RemoteValue):
+    """One immutable Hugging Face model snapshot required by a Function.
+
+    ``revision`` is a full 40-character lowercase commit SHA, not a branch or
+    tag. A Function may declare each repository once; separate versions of the
+    same repository use separate Function versions.
+    """
+
+    repo: str = Field(
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$"
+    )
+    revision: str
+
+    @field_validator("repo")
+    @classmethod
+    def _validate_repo(cls, value: str) -> str:
+        if not _HUGGING_FACE_MODEL_REPO.fullmatch(value) or any(
+            part in {".", ".."} for part in value.split("/")
+        ):
+            raise ValueError("model repo must be a Hugging Face owner/name")
+        return value
+
+    @field_validator("revision", mode="before")
+    @classmethod
+    def _validate_revision(cls, value: Any) -> str:
+        if not isinstance(value, str) or not _HUGGING_FACE_REVISION.fullmatch(value):
+            raise ValueError(
+                "model revision must be a full 40-character lowercase commit SHA"
+            )
+        return value
+
+
 class PythonRuntimeSpec(_RemoteValue):
     """Remote runtime definition with environment values.
 
@@ -392,6 +430,7 @@ class FunctionImage(_RemoteValue):
     manifest_digest: str
     descriptor: Mapping[str, Any]
     source: bool
+    models: tuple[HuggingFaceModel, ...] = ()
 
 
 def _validate_object_version(value: str) -> str:
@@ -571,6 +610,7 @@ class FunctionRegistrationRequest(_RemoteValue):
     batch_size: Optional[int] = None
     row_timeout_seconds: Optional[float] = None
     secret_bindings: tuple[SecretBinding, ...] = ()
+    models: tuple[HuggingFaceModel, ...] = ()
 
     @field_validator("batch_size", mode="before")
     @classmethod
@@ -2025,6 +2065,7 @@ class UdfDefinition:
         apt: tuple[str, ...] = (),
         image: Optional[str] = None,
         code: tuple[types.ModuleType, ...] = (),
+        models: tuple[HuggingFaceModel, ...] = (),
     ):
         is_class = inspect.isclass(function)
         if not is_class and (
@@ -2054,6 +2095,15 @@ class UdfDefinition:
             raise ValueError(
                 f"Function image {image!r} must be host/repository@sha256:<digest>"
             )
+        if any(not isinstance(model, HuggingFaceModel) for model in models):
+            raise TypeError("models must contain HuggingFaceModel values")
+        repos = [model.repo for model in models]
+        duplicates = sorted({repo for repo in repos if repos.count(repo) > 1})
+        if duplicates:
+            raise ValueError(
+                "a Function declares each Hugging Face repository once; "
+                f"duplicated: {duplicates!r}"
+            )
         if conda:
             environment_spec = PythonEnvironmentSpec(
                 kind="conda",
@@ -2075,6 +2125,16 @@ class UdfDefinition:
             for key, value in environment.items()
         ):
             raise TypeError("Function env keys and values must be strings")
+        reserved = sorted(
+            set(environment).intersection(
+                {"HF_HOME", "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"}
+            )
+        )
+        if models and reserved:
+            raise ValueError(
+                "model Functions reserve environment variables "
+                f"{reserved!r}; the worker sets them for the private snapshot"
+            )
         if is_class:
             if "<" in function.__qualname__ or "." in function.__qualname__:
                 raise ValueError(
@@ -2142,6 +2202,7 @@ class UdfDefinition:
             runtime=runtime,
             batch_size=batch_size,
             row_timeout_seconds=row_timeout_seconds,
+            models=models,
         )
         # A class's own __dict__ holds its methods; copying it would shadow
         # this wrapper's attributes.
@@ -2245,6 +2306,7 @@ def udf(
     apt: tuple[str, ...] | list[str] = (),
     image: Optional[str] = None,
     code: Sequence[types.ModuleType] = (),
+    models: Sequence[HuggingFaceModel] = (),
 ) -> Callable[[Callable[..., Any]], UdfDefinition]: ...
 
 
@@ -2266,6 +2328,7 @@ def udf(
     apt: tuple[str, ...] | list[str] = (),
     image: Optional[str] = None,
     code: Sequence[types.ModuleType] = (),
+    models: Sequence[HuggingFaceModel] = (),
 ):
     """Prepare a Python function or class for remote Function registration.
 
@@ -2407,6 +2470,13 @@ def udf(
         package from ``code=`` so the copied Python package cannot shadow the
         installed distribution. ``@udf`` warns when it skips files from a
         package in ``code=``.
+    models : sequence of HuggingFaceModel, optional
+        Immutable Hugging Face repository snapshots prepared in the worker
+        node cache before user code starts. A Function may declare a
+        repository once. Different revisions of one repository use different
+        Function versions. Model Functions run offline with a private
+        ``HF_HOME``; bind ``HF_TOKEN`` through Secrets when the repository
+        requires authentication.
 
     Returns
     -------
@@ -2516,6 +2586,7 @@ def udf(
             apt=tuple(apt),
             image=image,
             code=tuple(code),
+            models=tuple(models),
         )
 
     if function is None:
@@ -2539,6 +2610,7 @@ __all__ = [
     "FunctionImage",
     "FunctionVersion",
     "FunctionVersionRef",
+    "HuggingFaceModel",
     "InputBinding",
     "OutputMapping",
     "PythonEnvironmentSpec",
