@@ -82,6 +82,7 @@ from ..util import infer_vector_column_name
 if TYPE_CHECKING:
     import lance
     import polars as pl
+    from .._lancedb import OptimizeStats
 
 
 def _deprecated_keyword(old_name: str, new_name: str):
@@ -1082,13 +1083,14 @@ class RemoteTable(Table):
         delete_unverified: bool = False,
         retrain: bool = False,
         compaction_options: Optional[CompactionOptions] = None,
-    ):
+    ) -> OptimizeStats:
         """optimize() is not supported in LanceDB Enterprise."""
         return LOOP.run(
             self._table.optimize(
                 cleanup_older_than=cleanup_older_than,
                 delete_unverified=delete_unverified,
                 retrain=retrain,
+                compaction_options=compaction_options,
             )
         )
 

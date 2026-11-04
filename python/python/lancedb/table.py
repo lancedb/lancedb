@@ -2931,7 +2931,7 @@ class Table(ABC):
         delete_unverified: bool = False,
         retrain: bool = False,
         compaction_options: Optional[CompactionOptions] = None,
-    ):
+    ) -> OptimizeStats:
         """
         Optimize the on-disk data and indices for better performance.
 
@@ -5185,7 +5185,7 @@ class LanceTable(Table):
         delete_unverified: bool = False,
         retrain: bool = False,
         compaction_options: Optional[CompactionOptions] = None,
-    ):
+    ) -> OptimizeStats:
         """
         Optimize the on-disk data and indices for better performance.
 
@@ -5238,7 +5238,7 @@ class LanceTable(Table):
         you have added or modified 100,000 or more records or run more than 20 data
         modification operations.
         """
-        LOOP.run(
+        return LOOP.run(
             self._table._do_optimize(
                 _optimize_cleanup_since_ms(cleanup_older_than, retrain),
                 delete_unverified,

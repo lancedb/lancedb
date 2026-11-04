@@ -189,11 +189,49 @@ def test_remote_optimize_options():
     handle.optimize = AsyncMock(side_effect=NotImplementedError("remote optimize"))
     table = RemoteTable(handle, "test_db")
     age = timedelta(days=1)
+    compaction_options = MagicMock()
     with pytest.raises(NotImplementedError, match="remote optimize"):
-        table.optimize(cleanup_older_than=age, delete_unverified=True, retrain=True)
+        table.optimize(
+            cleanup_older_than=age,
+            delete_unverified=True,
+            retrain=True,
+            compaction_options=compaction_options,
+        )
     handle.optimize.assert_awaited_once_with(
-        cleanup_older_than=age, delete_unverified=True, retrain=True
+        cleanup_older_than=age,
+        delete_unverified=True,
+        retrain=True,
+        compaction_options=compaction_options,
     )
+
+
+def test_sync_table_optimize_returns_stats():
+    # Test LanceTable returns result from _do_optimize
+    handle = MagicMock()
+    expected_stats = MagicMock()
+    handle._do_optimize = AsyncMock(return_value=expected_stats)
+    lance_table = LanceTable.__new__(LanceTable)
+    lance_table._table = handle
+
+    stats = lance_table.optimize()
+    handle._do_optimize.assert_awaited_once()
+    assert stats is expected_stats
+
+    # Test RemoteTable returns result from optimize and forwards compaction_options
+    remote_handle = MagicMock()
+    remote_stats = MagicMock()
+    remote_handle.optimize = AsyncMock(return_value=remote_stats)
+    remote_table = RemoteTable(remote_handle, "test_db")
+    opts = MagicMock()
+
+    stats = remote_table.optimize(compaction_options=opts)
+    remote_handle.optimize.assert_awaited_once_with(
+        cleanup_older_than=None,
+        delete_unverified=False,
+        retrain=False,
+        compaction_options=opts,
+    )
+    assert stats is remote_stats
 
 
 @pytest.mark.parametrize(
