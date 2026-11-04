@@ -1046,6 +1046,7 @@ class RemoteDBConnection(DBConnection):
         )
         return dropped, Job(job)
 
+    @override
     def create_compute_integration(
         self,
         name: str,
@@ -1072,6 +1073,7 @@ class RemoteDBConnection(DBConnection):
             )
         )
 
+    @override
     def describe_compute_integration(
         self, name: str, *, namespace_path: Optional[List[str]] = None
     ) -> ComputeIntegrationInfo:
