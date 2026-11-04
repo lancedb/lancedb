@@ -1100,6 +1100,14 @@ async fn carried_forward(
                 produced,
                 fields,
             }) => {
+                // Fragment signatures do not describe the row-level exceptions
+                // carried by a skipped or failed refresh. If any source has
+                // such an exception, leave every product unrecorded so the
+                // next refresh recomputes it instead of declaring those rows
+                // current.
+                if sources.iter().any(|id| known_dirty.contains(id)) {
+                    continue;
+                }
                 // Reuse the compaction rule: only sources whose input
                 // signature was already proven fresh may transfer freshness to
                 // the produced fragments. An update that touches any input
