@@ -12,6 +12,7 @@ use super::sql::SqlClient;
 use super::{ARROW_FILE_CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE, extract_job_id};
 use crate::blob::BlobFile;
 use crate::data::scannable::{PeekedScannable, Scannable, estimate_write_partitions};
+use crate::error::{HttpErrorSource, RemoteErrorMetadata};
 use crate::expr::expr_to_sql_string;
 use crate::index::Index;
 use crate::index::IndexStatistics;
@@ -1082,9 +1083,10 @@ impl<S: HttpSend> RemoteTable<S> {
     ) -> Result<reqwest::Response> {
         let status = response.status();
         if status == StatusCode::NOT_FOUND {
+            let metadata = RemoteErrorMetadata::from_headers(response.headers());
             let body = response.text().await.ok().unwrap_or_default();
             let request_error = Error::Http {
-                source: body.into(),
+                source: Box::new(HttpErrorSource::new(body.clone(), Some(&body), metadata)),
                 request_id: request_id.into(),
                 status_code: Some(status),
             };

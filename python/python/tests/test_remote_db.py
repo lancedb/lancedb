@@ -5626,3 +5626,46 @@ def test_local_connections_refuse_property_graphs(tmp_path):
         list(db.list_property_graphs())
     with pytest.raises(NotImplementedError, match=refused):
         db.drop_property_graph("social")
+
+
+@pytest.mark.parametrize(
+    "status,category,type_name",
+    [
+        (400, "column_not_found", "ColumnNotFoundError"),
+        (400, "schema_mismatch", "SchemaMismatchError"),
+        (404, "table_not_found", "TableNotFoundError"),
+        (404, "reference_not_found", "ReferenceNotFoundError"),
+    ],
+)
+@pytest.mark.parametrize("operation", ["describe_namespace", "open_table"])
+def test_remote_input_error_metadata_crosses_native_boundary(
+    status, category, type_name, operation
+):
+    from lancedb.remote import errors
+
+    request_ids = []
+
+    def handler(request):
+        request_ids.append(request.headers["x-request-id"])
+        request.send_response(status)
+        request.send_header("Content-Type", "application/json")
+        request.send_header("x-lancedb-error-code", category)
+        request.send_header("x-lancedb-sql-job-id", "sql-job-1")
+        request.send_header("x-job-request-id", "worker-request")
+        request.end_headers()
+        request.wfile.write(json.dumps({"error": "original diagnostic"}).encode())
+
+    with mock_lancedb_connection(handler) as db:
+        with pytest.raises(getattr(errors, type_name)) as exc_info:
+            if operation == "open_table":
+                db.open_table("analytics")
+            else:
+                db.describe_namespace(["analytics"])
+    error = exc_info.value
+    assert isinstance(error, HttpError)
+    assert error.request_id == request_ids[-1]
+    assert error.status_code == status
+    assert error.error_code == category
+    assert error.job_id == "sql-job-1"
+    assert error.job_request_id == "worker-request"
+    assert str(error) == "original diagnostic"

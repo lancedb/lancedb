@@ -10,7 +10,7 @@ use reqwest::{
 use std::{collections::HashMap, future::Future, str::FromStr, sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
 
-use crate::error::{Error, HttpErrorSource, Result};
+use crate::error::{Error, HttpErrorSource, RemoteErrorMetadata, Result};
 use crate::remote::db::RemoteOptions;
 use crate::remote::retry::{ResolvedRetryConfig, RetryCounter};
 use crate::utils::validate_database_name;
@@ -1037,13 +1037,15 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         if status.is_success() {
             Ok(response)
         } else {
+            let metadata = RemoteErrorMetadata::from_headers(response.headers());
             let response_text = response.text().await.ok();
             let source = match response_text {
                 Some(response_text) => HttpErrorSource::new(
                     format!("{}: {}", status, response_text),
                     Some(&response_text),
+                    metadata,
                 ),
-                None => HttpErrorSource::new(status.to_string(), None),
+                None => HttpErrorSource::new(status.to_string(), None, metadata),
             };
             Err(Error::Http {
                 source: Box::new(source),

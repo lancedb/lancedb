@@ -1643,25 +1643,39 @@ pub(super) fn sql_flight_error(request_id: &str, error: &FlightError) -> Error {
 }
 
 pub(super) fn sql_status_error(request_id: &str, status: &tonic::Status) -> Error {
-    let sql_job_id = status
-        .metadata()
-        .get(SQL_JOB_ID_METADATA_KEY)
-        .and_then(|value| value.to_str().ok())
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
+    let header = |name| {
+        status
+            .metadata()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    };
+    let metadata = crate::error::RemoteErrorMetadata {
+        error_code: header("x-lancedb-error-code"),
+        job_id: header(SQL_JOB_ID_METADATA_KEY),
+        job_request_id: header("x-job-request-id"),
+    };
+    let sql_job_id = metadata.job_id.clone();
+    let error = Error::Sql {
+        message: status.message().into(),
+        request_id: request_id.into(),
+        grpc_code: status.code() as i32,
+        metadata: Box::new(metadata),
+    };
     if let Some(sql_job_id) = sql_job_id {
         return Error::JobFailed {
             job_id: Some(sql_job_id.clone()),
             failure: JobFailure {
                 phase: None,
-                message: Some(status.message().to_string()),
+                message: Some(status.message().into()),
                 retryable: None,
                 sql_job_id: Some(sql_job_id),
-                source: None,
+                source: Some(Arc::new(error)),
             },
         };
     }
-    sql_error(request_id, status)
+    error
 }
 
 #[cfg(test)]
