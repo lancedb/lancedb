@@ -62,7 +62,12 @@ jobs:
         run: |
           pip install bump-my-version PyGithub packaging
           bash ci/bump_version.sh ${{ inputs.type }} ${{ inputs.bump-minor }}
+          release_tag=$(git describe --tags --exact-match HEAD)
           bash ci/update_lockfiles.sh --amend
+          # Keep the unpublished tag on the commit that includes the synced lockfile.
+          if [ "$(git rev-parse "${release_tag}^{}")" != "$(git rev-parse HEAD)" ]; then
+            git tag --force --annotate "$release_tag" --message "$(git log -1 --format=%s)" HEAD
+          fi
       - name: Push new version tag
         if: ${{ !inputs.dry_run }}
         uses: ad-m/github-push-action@881a6320fdb16eb5318c5054f31c218aec2b324c # v1.3.0
