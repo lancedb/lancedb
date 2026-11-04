@@ -2396,6 +2396,7 @@ class LanceDBConnection(DBConnection):
         )
         return dropped, Job(job)
 
+    @override
     def create_compute_integration(
         self,
         name: str,
@@ -2422,6 +2423,7 @@ class LanceDBConnection(DBConnection):
             )
         )
 
+    @override
     def describe_compute_integration(
         self, name: str, *, namespace_path: Optional[List[str]] = None
     ) -> ComputeIntegrationInfo:
@@ -2429,6 +2431,7 @@ class LanceDBConnection(DBConnection):
             self._conn.describe_compute_integration(name, namespace_path=namespace_path)
         )
 
+    @override
     def list_compute_integrations(
         self,
         *,
@@ -2444,6 +2447,7 @@ class LanceDBConnection(DBConnection):
             )
         )
 
+    @override
     def drop_compute_integration(
         self, name: str, *, namespace_path: Optional[List[str]] = None
     ) -> None:
