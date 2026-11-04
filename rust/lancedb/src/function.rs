@@ -661,7 +661,7 @@ pub struct FunctionArtifactContent {
 
 /// Internal execution adapter selected for a Python callable artifact.
 ///
-/// This is part of the executor request envelope, not the user-facing UDF
+/// This is part of the executor request envelope, not the user-facing Function
 /// authoring mode. For version 1, the executor selects vectorized execution
 /// when every callable parameter is annotated as `pyarrow.Array`; it passes one
 /// Arrow array per declared input and requires an Arrow array matching the

@@ -382,7 +382,7 @@ code that used the former LanceDB Enterprise-only argument order.
 
 ## Functions and Jobs
 
-A decorated `udf` definition is also a local callable. Call a decorated function
+A `@function` definition is also a local callable. Call a decorated function
 directly with row inputs, or call a decorated class with its initialization fields
 and then call the returned instance; call `close()` if the class defines it. This
 path uses the current Python environment and does not create a registered
@@ -391,15 +391,15 @@ the remote Arrow adapter. A registered `FunctionVersion` call instead binds
 `col(...)` inputs and returns a remote `FunctionApplication`.
 
 ```python
-from lancedb import udf
+from lancedb import function
 
 
-@udf
+@function
 def normalize(text: str) -> str:
     return text.strip().lower()
 
 
-@udf
+@function
 class Scale:
     def __init__(self, factor: float):
         self.factor = factor
@@ -455,9 +455,9 @@ with BlobReader(read_range, len(payload)) as reader:
 
 ::: lancedb.functions.PythonEnvironmentSpec
 
-::: lancedb.functions.udf
+::: lancedb.functions.function
 
-::: lancedb.functions.UdfDefinition
+::: lancedb.functions.FunctionDefinition
 
 ::: lancedb.secrets.EnvVarSecret
 

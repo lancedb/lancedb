@@ -40,9 +40,9 @@ register it from Python, or the same function from SQL with
 <CodeGroup>
 ```python Python icon="python"
 import pyarrow as pa
-from lancedb.functions import udf
+from lancedb.functions import function
 
-@udf(
+@function(
     output_schema=pa.list_(
         pa.struct([
             pa.field("chunk_index", pa.int64(), nullable=False),
@@ -113,7 +113,7 @@ A chunker that samples one timestamp per second needs no blob access at all
 
 <CodeGroup>
 ```python Python icon="python"
-@udf(
+@function(
     output_schema=pa.list_(
         pa.struct([
             pa.field("frame_index", pa.int64(), nullable=False),
@@ -138,7 +138,7 @@ rather than loading the whole clip -- and returns one JPEG per call:
 from datetime import timedelta
 from lancedb import BlobReader
 
-@udf(
+@function(
     name="extract_frame",
     gpu=True,
     pip=["av==13.1.0", "pillow==11.0.0"],

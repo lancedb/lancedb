@@ -35,6 +35,7 @@ from typing import (
     Callable,
     Literal,
     Optional,
+    TYPE_CHECKING,
     Union,
     get_args,
     get_origin,
@@ -333,7 +334,7 @@ class HuggingFaceModel(_RemoteValue):
     snapshot before initialization, so the model can load without a revision
     argument or a Hugging Face Hub request::
 
-        @udf(
+        @function(
             pip=["sentence-transformers==3.3.1"],
             models=[HuggingFaceModel(
                 repo="sentence-transformers/all-MiniLM-L6-v2",
@@ -476,8 +477,8 @@ class FunctionVersion(_RemoteValue):
 
     ``source_digest`` identifies the registered source artifact, independently
     of the built ``image``. Compare it with
-    ``udf_def.registration_request.artifact.digest`` to check whether a local
-    [UdfDefinition][lancedb.functions.UdfDefinition] has the same source.
+    ``definition.registration_request.artifact.digest`` to check whether a local
+    [FunctionDefinition][lancedb.functions.FunctionDefinition] has the same source.
     It is ``None`` when the server does not provide a source digest.
 
     ``gpu_class`` is the operator-defined GPU pool fixed into this Function
@@ -616,7 +617,7 @@ def _initialization_value(name: str, value: Any) -> Any:
 
 
 class FunctionRegistrationRequest(_RemoteValue):
-    """Stable remote registration envelope produced by :func:`udf`.
+    """Stable remote registration envelope produced by :func:`function`.
 
     Credential values deliberately have no field here. The only secret-shaped
     thing a client sends is ``secret_bindings``: the name of a Secret the
@@ -1352,11 +1353,15 @@ def _infer_signature(
     return FunctionSignature(inputs=tuple(inputs), output=output)
 
 
-def _is_udf_decorator(node: ast.expr) -> bool:
+# Both spellings strip from packaged source; `udf` is the deprecated alias.
+_DECORATOR_NAMES = frozenset({"function", "udf"})
+
+
+def _is_function_decorator(node: ast.expr) -> bool:
     if isinstance(node, ast.Call):
         node = node.func
-    return (isinstance(node, ast.Name) and node.id == "udf") or (
-        isinstance(node, ast.Attribute) and node.attr == "udf"
+    return (isinstance(node, ast.Name) and node.id in _DECORATOR_NAMES) or (
+        isinstance(node, ast.Attribute) and node.attr in _DECORATOR_NAMES
     )
 
 
@@ -1421,7 +1426,7 @@ def _module_references(module_source: str) -> set[str]:
             visit(child, found)
 
     found: set[str] = set()
-    module = symtable.symtable(module_source, "<udf>", "exec")
+    module = symtable.symtable(module_source, "<function>", "exec")
     for symbol in module.get_symbols():
         if (
             symbol.is_referenced()
@@ -1494,7 +1499,7 @@ def _definition_node(
         )
     except (OSError, TypeError) as error:
         raise ValueError(
-            f"@udf requires inspectable Python source for {target.__qualname__!r}"
+            f"@function requires inspectable Python source for {target.__qualname__!r}"
         ) from error
     module = ast.parse(source)
     is_class = inspect.isclass(target)
@@ -1509,15 +1514,16 @@ def _definition_node(
     ]
     if len(definitions) != 1 or isinstance(definitions[0], ast.AsyncFunctionDef):
         raise ValueError(
-            "@udf source must contain exactly one "
+            "@function source must contain exactly one "
             + ("class" if is_class else "synchronous function")
         )
     definition = definitions[0]
     if entry:
         if any(
-            not _is_udf_decorator(decorator) for decorator in definition.decorator_list
+            not _is_function_decorator(decorator)
+            for decorator in definition.decorator_list
         ):
-            raise ValueError("@udf cannot package additional Python decorators")
+            raise ValueError("@function cannot package additional Python decorators")
         definition.decorator_list = []
     return definition
 
@@ -1528,7 +1534,7 @@ def _definition_namespace(target: Any) -> Mapping[str, Any]:
         module = sys.modules.get(target.__module__)
         if module is None:
             raise ValueError(
-                f"@udf cannot resolve the module of {target.__qualname__!r}"
+                f"@function cannot resolve the module of {target.__qualname__!r}"
             )
         namespace = vars(module)
         environment = namespace.get("__builtins__", builtins)
@@ -1543,7 +1549,7 @@ def _definition_namespace(target: Any) -> Mapping[str, Any]:
     # The artifact runs under the standard builtins; only the exact mapping is
     # provably equivalent (a subclass or copy can change lookups and hooks).
     if environment is not vars(builtins):
-        raise ValueError("@udf cannot package a non-standard builtins environment")
+        raise ValueError("@function cannot package a non-standard builtins environment")
     return namespace
 
 
@@ -1557,7 +1563,7 @@ def _is_self_reference(target: Any, namespace: Mapping[str, Any], name: str) -> 
         return True
     # The decorator's own result is the one wrapper known to behave like
     # `target`; any other binding may differ from the packaged definition.
-    return type(bound) is UdfDefinition and bound._function is target
+    return type(bound) is FunctionDefinition and bound._function is target
 
 
 def _packaged_by_source(value: Any) -> bool:
@@ -1570,7 +1576,7 @@ def _packaged_by_source(value: Any) -> bool:
     qualname = value.__qualname__
     if "<" in qualname or "." in qualname:
         raise ValueError(
-            f"@udf cannot package {qualname!r}: only module-level functions and "
+            f"@function cannot package {qualname!r}: only module-level functions and "
             "classes travel with a Function, not lambdas, closures, or nested "
             "definitions"
         )
@@ -1666,7 +1672,7 @@ class _SourcePackager:
         definition = _definition_node(target, entry=entry)
         if not inspect.isclass(target) and inspect.getclosurevars(target).nonlocals:
             raise ValueError(
-                "@udf cannot package functions that capture closure values"
+                "@function cannot package functions that capture closure values"
             )
         namespace = _definition_namespace(target)
         reader_name = (
@@ -1679,7 +1685,7 @@ class _SourcePackager:
         dynamic = _namespace_acquisition(definition, references)
         if dynamic:
             raise ValueError(
-                f"@udf cannot package dynamic namespace access: {dynamic!r}"
+                f"@function cannot package dynamic namespace access: {dynamic!r}"
             )
         self._warn_unshipped_direct_imports(definition)
         self._packaged.add(id(target))
@@ -1691,9 +1697,9 @@ class _SourcePackager:
             if name == target.__name__:
                 if not _is_self_reference(target, namespace, name):
                     raise ValueError(
-                        f"@udf cannot package {name!r}: the module binds that name "
-                        "to another value, which the artifact's own definition "
-                        "would shadow"
+                        f"@function cannot package {name!r}: the module binds that "
+                        "name to another value, which the artifact's own "
+                        "definition would shadow"
                     )
                 continue
             if name in namespace:
@@ -1702,7 +1708,7 @@ class _SourcePackager:
                 unresolved.append(name)
         if unresolved:
             raise ValueError(
-                f"@udf source contains unresolved global names: {unresolved!r}"
+                f"@function source contains unresolved global names: {unresolved!r}"
             )
         return source
 
@@ -1748,7 +1754,7 @@ class _SourcePackager:
         claimed = self._names.setdefault(name, meaning)
         if claimed != meaning:
             raise ValueError(
-                f"@udf cannot package {name!r}: packaged definitions bind that "
+                f"@function cannot package {name!r}: packaged definitions bind that "
                 "name to different values"
             )
 
@@ -1756,8 +1762,8 @@ class _SourcePackager:
         if _packaged_by_source(value):
             if value.__name__ != name:
                 raise ValueError(
-                    f"@udf packages {value.__qualname__!r} by source, so it must be "
-                    f"referenced by its own name, not {name!r}"
+                    f"@function packages {value.__qualname__!r} by source, so it "
+                    f"must be referenced by its own name, not {name!r}"
                 )
             if id(value) not in self._packaged:
                 self._definitions.append(self._definition(value, entry=False))
@@ -1776,7 +1782,8 @@ class _SourcePackager:
         if isinstance(value, types.ModuleType):
             if value.__name__.split(".")[0] in _NAMESPACE_MODULES:
                 raise ValueError(
-                    f"@udf cannot package dynamic namespace access: {value.__name__!r}"
+                    "@function cannot package dynamic namespace access: "
+                    f"{value.__name__!r}"
                 )
             try:
                 imported = importlib.import_module(value.__name__)
@@ -1831,7 +1838,7 @@ class _SourcePackager:
             return
         self._warned_imports.add(top)
         warnings.warn(
-            f"@udf source imports {module_name!r} from {locations[0]}, a local "
+            f"@function source imports {module_name!r} from {locations[0]}, a local "
             "module the Function's environment may not be able to import; ship "
             f"it with code=[{top}] or declare the package that provides it in "
             "pip/conda",
@@ -2047,10 +2054,10 @@ def _class_call(cls: type) -> Callable[..., Any]:
     return call
 
 
-class UdfDefinition:
+class FunctionDefinition:
     """A Python callable prepared for remote Function registration.
 
-    Instances are created with :func:`udf`. Calling an instance is ordinary
+    Instances are created with :func:`function`. Calling an instance is ordinary
     local Python: a decorated function is called directly, while a decorated
     class is constructed using its initialization fields and the returned
     instance is called with each input. Reuse the instance and call its
@@ -2091,7 +2098,9 @@ class UdfDefinition:
         if not is_class and (
             not inspect.isfunction(function) or inspect.iscoroutinefunction(function)
         ):
-            raise TypeError("@udf requires a synchronous Python function or a class")
+            raise TypeError(
+                "@function requires a synchronous Python function or a class"
+            )
         function_name = name or function.__name__
         if not _FUNCTION_NAME.fullmatch(function_name):
             raise ValueError(f"invalid Function name: {function_name!r}")
@@ -2158,7 +2167,7 @@ class UdfDefinition:
         if is_class:
             if "<" in function.__qualname__ or "." in function.__qualname__:
                 raise ValueError(
-                    "@udf classes must be defined at module level; nested classes "
+                    "@function classes must be defined at module level; nested classes "
                     "would capture their enclosing scope"
                 )
             signature = _infer_signature(
@@ -2304,12 +2313,12 @@ class UdfDefinition:
 
 
 @overload
-def udf(function: Callable[..., Any]) -> UdfDefinition: ...
+def function(target: Callable[..., Any]) -> FunctionDefinition: ...
 
 
 @overload
-def udf(
-    function: None = None,
+def function(
+    target: None = None,
     *,
     name: Optional[str] = None,
     input_schema: Optional[pa.Schema] = None,
@@ -2327,11 +2336,11 @@ def udf(
     image: Optional[str] = None,
     code: Sequence[types.ModuleType] = (),
     models: Sequence[HuggingFaceModel] = (),
-) -> Callable[[Callable[..., Any]], UdfDefinition]: ...
+) -> Callable[[Callable[..., Any]], FunctionDefinition]: ...
 
 
-def udf(
-    function: Optional[Callable[..., Any]] = None,
+def function(
+    target: Optional[Callable[..., Any]] = None,
     *,
     name: Optional[str] = None,
     input_schema: Optional[pa.Schema] = None,
@@ -2488,7 +2497,7 @@ def udf(
         files are not copied. To use a package that includes required data
         resources, install it with ``pip=`` or ``conda=`` and remove that
         package from ``code=`` so the copied Python package cannot shadow the
-        installed distribution. ``@udf`` warns when it skips files from a
+        installed distribution. ``@function`` warns when it skips files from a
         package in ``code=``.
     models : sequence of HuggingFaceModel, optional
         Immutable Hugging Face repository snapshots prepared in the worker
@@ -2500,7 +2509,7 @@ def udf(
 
     Returns
     -------
-    UdfDefinition
+    FunctionDefinition
         A callable definition accepted by
         :meth:`lancedb.db.DBConnection.create_function`,
         :meth:`lancedb.db.AsyncConnection.create_function_async` and
@@ -2508,14 +2517,14 @@ def udf(
 
     Examples
     --------
-    >>> from lancedb import udf
-    >>> @udf(pip=["numpy==2.2.0"])
+    >>> from lancedb import function
+    >>> @function(pip=["numpy==2.2.0"])
     ... def score(value: float) -> float:
     ...     return value * 2
     >>> score(1.5)
     3.0
     >>> import pyarrow as pa
-    >>> @udf(
+    >>> @function(
     ...     input_schema=pa.schema([pa.field("value", pa.int64(), nullable=False)]),
     ...     output_schema=pa.int64(),
     ... )
@@ -2523,14 +2532,14 @@ def udf(
     ...     return value
     >>> batch_identity(pa.array([1, 2, 3])).to_pylist()
     [1, 2, 3]
-    >>> @udf(pip=["cupy-cuda12x"], gpu=True, gpu_class="a10g")
+    >>> @function(pip=["cupy-cuda12x"], gpu=True, gpu_class="a10g")
     ... def gpu_score(value: int) -> int:
     ...     return value * 2
     >>> gpu_score.registration_request.runtime.gpu
     True
     >>> gpu_score.registration_request.runtime.gpu_class
     'a10g'
-    >>> @udf
+    >>> @function
     ... class scale:
     ...     def __init__(self, factor: float, offset: float = 0.0):
     ...         self.factor, self.offset = factor, offset
@@ -2547,7 +2556,7 @@ def udf(
     >>> [field.name for field in scale.registration_request.signature.initialization]
     ['factor', 'offset']
     >>> import lancedb
-    >>> @udf(
+    >>> @function(
     ...     input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
     ...     output_schema=lancedb.blob("copy", nullable=False),
     ... )
@@ -2588,8 +2597,8 @@ def udf(
     ``blob_mode="bytes"`` cannot fetch payloads inside lists.
     """
 
-    def decorate(target: Any) -> UdfDefinition:
-        return UdfDefinition(
+    def decorate(target: Any) -> FunctionDefinition:
+        return FunctionDefinition(
             target,
             name=name,
             input_schema=input_schema,
@@ -2609,9 +2618,9 @@ def udf(
             models=tuple(models),
         )
 
-    if function is None:
+    if target is None:
         return decorate
-    return decorate(function)
+    return decorate(target)
 
 
 __all__ = [
@@ -2637,6 +2646,31 @@ __all__ = [
     "PythonAdapterSpec",
     "PythonRuntimeSpec",
     "RefreshColumnResult",
-    "UdfDefinition",
-    "udf",
+    "FunctionDefinition",
 ]
+
+
+def udf(*args: Any, **kwargs: Any) -> Any:
+    """Deprecated alias of :func:`function`."""
+    warnings.warn(
+        "lancedb.udf is deprecated; use lancedb.function",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return function(*args, **kwargs)
+
+
+UDF_DEFINITION_DEPRECATION = (
+    "lancedb.UdfDefinition is deprecated; use lancedb.FunctionDefinition"
+)
+
+
+def __getattr__(name: str) -> Any:
+    if name == "UdfDefinition":
+        warnings.warn(UDF_DEFINITION_DEPRECATION, DeprecationWarning, stacklevel=2)
+        return FunctionDefinition
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+if TYPE_CHECKING:
+    UdfDefinition = FunctionDefinition

@@ -14,7 +14,7 @@ creates both under names unique to its run, never replaces an existing object,
 and drops only what it created.
 
 The other tests run locally and check the client side of the same code: what
-`@udf` sends for registration, how a registered version binds a column, where a
+`@function` sends for registration, how a registered version binds a column, where a
 local connection stops, and when the Enterprise test connects. They do not run
 a Function remotely.
 """
@@ -32,10 +32,10 @@ from lancedb import col
 from lancedb.functions import FunctionApplication, FunctionVersion
 
 # --8<-- [start:function_define]
-from lancedb import udf
+from lancedb import function
 
 
-@udf
+@function
 def double(value: float) -> float:
     return value * 2
 
@@ -52,7 +52,7 @@ def describe(value: float):
 
 
 # --8<-- [start:function_class_define]
-@udf(pip=["sentence-transformers"])
+@function(pip=["sentence-transformers"])
 class embed:
     def __init__(self, model: str = "all-MiniLM-L6-v2"):
         # Runs on the worker, once per instance: only the worker needs the package.
@@ -146,7 +146,7 @@ def test_function_output_nullability():
         pa.field("half", pa.float64(), nullable=False),
         pa.field("note", pa.string(), nullable=True),
     ]
-    struct = udf(input_schema=inputs, output_schema=pa.schema(fields))(describe)
+    struct = function(input_schema=inputs, output_schema=pa.schema(fields))(describe)
     output = struct.registration_request.signature.output
     assert output.kind == "named_struct"
     assert [(field.name, field.nullable) for field in output.fields] == [
@@ -160,7 +160,7 @@ def test_function_output_nullability():
         pa.field("result", pa.struct(fields), nullable=True),
     ):
         with pytest.raises(ValueError, match="non-nullable"):
-            udf(input_schema=inputs, output_schema=nullable)(describe)
+            function(input_schema=inputs, output_schema=nullable)(describe)
 
 
 def test_function_registration_is_remote(tmp_path):
@@ -242,8 +242,8 @@ def test_function_enterprise(monkeypatch):
     # this run creates both under names only it uses, and drops only those.
     run = uuid.uuid4().hex[:12]
     table_name = f"function_demo_{run}"
-    double = udf(name=f"double_{run}")(WALKTHROUGH_DOUBLE.__wrapped__)
-    embed = udf(name=f"embed_{run}", pip=["sentence-transformers"])(
+    double = function(name=f"double_{run}")(WALKTHROUGH_DOUBLE.__wrapped__)
+    embed = function(name=f"embed_{run}", pip=["sentence-transformers"])(
         WALKTHROUGH_EMBED.__wrapped__
     )
     create_table = db.create_table

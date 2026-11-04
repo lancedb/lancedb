@@ -20,7 +20,7 @@ import pyarrow as pa
 import pytest
 
 from lancedb import col
-from lancedb.functions import FunctionVersion, udf
+from lancedb.functions import FunctionDefinition, FunctionVersion, function
 
 FIXTURES = (
     Path(__file__).parents[3]
@@ -63,7 +63,7 @@ def helper_package(tmp_path, monkeypatch):
     return write
 
 
-@udf
+@function
 class scale:
     def __init__(
         self,
@@ -114,11 +114,11 @@ def test_class_function_declares_inputs_output_and_initialization():
     assert scale.registration_request.artifact.entrypoint == "scale"
     source = artifact(scale).decode()
     assert source.startswith("from __future__ import annotations\n")
-    assert "class scale:" in source and "@udf" not in source
+    assert "class scale:" in source and "@function" not in source
 
 
 def test_function_without_initialization_keeps_its_wire_form():
-    @udf
+    @function
     def double(value: int) -> int:
         return value * 2
 
@@ -147,11 +147,11 @@ def test_batch_annotations_require_explicit_schemas(annotation, kind, helper_pac
         """
     module = helper_package("fx_batch_annotations", {"__init__.py": source})
     with pytest.raises(TypeError, match="input_schema and output_schema"):
-        udf(module.identity)
+        function(module.identity)
 
 
 def test_array_batch_annotations_accept_explicit_schemas():
-    @udf(
+    @function(
         input_schema=pa.schema([pa.field("value", pa.int64(), nullable=False)]),
         output_schema=pa.int64(),
     )
@@ -168,7 +168,7 @@ def test_array_batch_annotations_accept_explicit_schemas():
     assert identity(values).equals(values)
 
 
-@pytest.mark.parametrize("class_udf", [False, True])
+@pytest.mark.parametrize("class_function", [False, True])
 @pytest.mark.parametrize("postponed", [False, True])
 @pytest.mark.parametrize(
     ("annotation", "nullable"),
@@ -185,13 +185,13 @@ def test_array_batch_annotations_accept_explicit_schemas():
     ],
 )
 def test_blob_reader_annotations_resolve_in_the_artifact(
-    helper_package, monkeypatch, class_udf, postponed, annotation, nullable
+    helper_package, monkeypatch, class_function, postponed, annotation, nullable
 ):
     definition = (
         f"class read_blob:\n"
         f"    def __call__(self, video: {annotation}) -> int:\n"
         f"        return 0\n"
-        if class_udf
+        if class_function
         else f"def read_blob(video: {annotation}) -> int:\n    return 0\n"
     )
     module = helper_package(
@@ -202,9 +202,9 @@ def test_blob_reader_annotations_resolve_in_the_artifact(
                 + "import lancedb\n"
                 "from typing import Optional\n"
                 "from lancedb import BlobReader, BlobReader as Reader\n"
-                "from lancedb.functions import udf\n"
+                "from lancedb.functions import function\n"
                 "MaybeReader = Optional[Reader]\n\n"
-                f"@udf\n{definition}"
+                f"@function\n{definition}"
             )
         },
     )
@@ -221,7 +221,7 @@ def test_blob_reader_annotations_resolve_in_the_artifact(
     namespace = {}
     exec(compile(artifact(module.read_blob), "user_function.py", "exec"), namespace)
     packaged = namespace["read_blob"]
-    if class_udf:
+    if class_function:
         packaged = packaged.__call__
     assert get_type_hints(packaged) == {
         "video": Optional[worker.BlobReader] if nullable else worker.BlobReader,
@@ -237,11 +237,11 @@ def test_blob_reader_annotation_does_not_shadow_body_globals(
         {
             "__init__.py": """
                 from lancedb import BlobReader
-                from lancedb.functions import udf
+                from lancedb.functions import function
 
                 _lance_blob_reader = 7
 
-                @udf
+                @function
                 def read_blob(video: BlobReader) -> int:
                     return _lance_blob_reader
             """
@@ -280,14 +280,14 @@ def test_class_function_rejects_unsupported_initialization(init, message):
         namespace,
     )
     with pytest.raises((TypeError, ValueError), match=message):
-        udf(namespace["bad"])
+        function(namespace["bad"])
 
 
 def test_class_function_requires_call_and_a_plain_close():
     with pytest.raises(TypeError, match="synchronous __call__"):
-        udf(NoCall)
+        function(NoCall)
     with pytest.raises(TypeError, match="close must be a method taking no"):
-        udf(BadClose)
+        function(BadClose)
 
 
 def test_nested_class_and_closure_are_rejected_with_the_reason():
@@ -299,13 +299,13 @@ def test_nested_class_and_closure_are_rejected_with_the_reason():
         return nested
 
     with pytest.raises(ValueError, match="defined at module level"):
-        udf(build())
+        function(build())
 
     factor = 3
 
     with pytest.raises(ValueError, match="capture closure values"):
 
-        @udf
+        @function
         def closes_over(value: int) -> int:
             return value * factor
 
@@ -372,10 +372,10 @@ def test_code_packages_ship_as_a_bundle_and_version_with_their_source(
             """
             import fx_helpers
             from fx_helpers.rate import TokenBucket
-            from lancedb import udf
+            from lancedb import function
 
 
-            @udf(code=[fx_helpers])
+            @function(code=[fx_helpers])
             class limited:
                 def __init__(self, tpm: int):
                     self.limiter = TokenBucket(tpm)
@@ -445,7 +445,7 @@ def test_code_package_cache_artifacts_do_not_warn(helper_package):
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
 
-        @udf(code=[cache])
+        @function(code=[cache])
         def cache_only(value: int) -> int:
             return value
 
@@ -468,7 +468,7 @@ def test_code_package_nonidentifier_resource_dir_warns_at_boundary(helper_packag
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
 
-        @udf(code=[resources])
+        @function(code=[resources])
         def resource_boundary(value: int) -> int:
             return value
 
@@ -495,7 +495,7 @@ def test_code_rejects_submodules_duplicates_and_non_modules(helper_package):
     ]:
         with pytest.raises((TypeError, ValueError), match=message):
 
-            @udf(code=code)
+            @function(code=code)
             def f(value: int) -> int:
                 return value
 
@@ -514,10 +514,10 @@ def test_local_module_outside_code_warns_at_registration(tmp_path, helper_packag
             textwrap.dedent(
                 f"""
                 from fx_local import normalize
-                from lancedb import udf
+                from lancedb import function
 
 
-                @udf({options})
+                @function({options})
                 def {name}(value: int) -> int:
                     return normalize(value)
                 """
@@ -551,10 +551,10 @@ def test_local_module_imported_in_function_body_warns_at_registration(
         (tmp_path / f"{name}.py").write_text(
             textwrap.dedent(
                 f"""
-                from lancedb import udf
+                from lancedb import function
 
 
-                @udf({options})
+                @function({options})
                 def {name}(value: int) -> int:
                     import fx_body_local
 
@@ -610,20 +610,20 @@ import pyarrow as pa
 
 import fx_mmlb
 from fx_mmlb.embedding import OpenAIEmbedder
-from lancedb import udf
+from lancedb import function
 
 TEXT = pa.schema([pa.field("text", pa.string())])
 EMBEDDING = pa.list_(pa.field("item", pa.float64(), nullable=False))
 
 
-@udf(code=[fx_mmlb], input_schema=TEXT, output_schema=EMBEDDING)
+@function(code=[fx_mmlb], input_schema=TEXT, output_schema=EMBEDDING)
 class openai_embedding_batch(OpenAIEmbedder):
     def __call__(self, text: pa.Array) -> pa.Array:
         item = pa.field("item", pa.float64(), nullable=False)
         return pa.array(self.embed(text.to_pylist()), pa.list_(item))
 
 
-@udf(code=[fx_mmlb])
+@function(code=[fx_mmlb])
 class openai_embedding(OpenAIEmbedder):
     def __call__(self, text: str) -> list[float]:
         return self.embed([text])[0]
@@ -695,7 +695,7 @@ def test_main_definitions_travel_by_source(tmp_path):
             import math
             from dataclasses import dataclass
 
-            from lancedb import udf
+            from lancedb import function
 
             SCALE = 2
 
@@ -714,7 +714,7 @@ def test_main_definitions_travel_by_source(tmp_path):
                     return helper(value) * self.settings.factor
 
 
-            @udf
+            @function
             class scaled(Base):
                 def __init__(self, factor: int):
                     self.settings = Settings(factor)
@@ -750,11 +750,11 @@ def test_main_lambdas_are_rejected(tmp_path):
     script.write_text(
         textwrap.dedent(
             """
-            from lancedb import udf
+            from lancedb import function
 
             double = lambda value: value * 2
 
-            @udf
+            @function
             def uses_lambda(value: int) -> int:
                 return double(value)
             """
@@ -765,3 +765,33 @@ def test_main_lambdas_are_rejected(tmp_path):
     )
     assert result.returncode != 0
     assert "not lambdas, closures, or nested definitions" in result.stderr
+
+
+def test_udf_alias_warns_and_packages_like_function(helper_package):
+    def source(decorator: str) -> str:
+        return f"""
+            import lancedb
+            from lancedb import function, udf
+
+            @{decorator}
+            def double(value: int) -> int:
+                return value * 2
+        """
+
+    current = helper_package("fx_alias_current", {"__init__.py": source("function")})
+    expected = current.double.registration_request.artifact.digest
+    for name, decorator in (("fx_alias_bare", "udf"), ("fx_alias_attr", "lancedb.udf")):
+        with pytest.warns(DeprecationWarning, match="lancedb.udf is deprecated"):
+            module = helper_package(name, {"__init__.py": source(decorator)})
+        assert isinstance(module.double, FunctionDefinition)
+        assert "udf" not in artifact(module.double).decode()
+        assert module.double.registration_request.artifact.digest == expected
+
+
+def test_udf_definition_alias_warns():
+    with pytest.warns(DeprecationWarning, match="UdfDefinition is deprecated"):
+        from lancedb import UdfDefinition
+    assert UdfDefinition is FunctionDefinition
+    with pytest.warns(DeprecationWarning, match="UdfDefinition is deprecated"):
+        from lancedb.functions import UdfDefinition as module_alias
+    assert module_alias is FunctionDefinition

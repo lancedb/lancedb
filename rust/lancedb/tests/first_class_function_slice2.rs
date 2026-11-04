@@ -109,7 +109,7 @@ fn execution_controls_are_validated_before_canonical_serialization() {
     assert!(error.to_string().contains("batch_size"), "{error}");
 }
 
-/// The same shared golden as the Python suite builds from `@udf(secrets=...)`
+/// The same shared golden as the Python suite builds from `@function(secrets=...)`
 /// plus `bind_secrets`, so both clients agree byte for byte on a bound request.
 #[test]
 fn secret_bound_registration_request_matches_shared_canonical_golden() {

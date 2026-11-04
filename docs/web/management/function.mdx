@@ -46,7 +46,7 @@ The steps below take a column of numbers to a filled column of their doubles.
 
 ## Define a function {#define}
 
-`@udf` packages a scalar Python callable. Input and output types are inferred
+`@function` packages a scalar Python callable. Input and output types are inferred
 from annotations, so `double` takes one non-nullable `float64` parameter,
 `value`, and returns a non-nullable `float64`:
 
@@ -201,7 +201,7 @@ the table a second one first:
 ```python Python icon="python"
 table.add_columns({"count": "value + 1"})
 
-@udf
+@function
 def ratio(numerator: float, denominator: float) -> float:
     return numerator / denominator
 
@@ -219,7 +219,7 @@ mapping, so both columns come from one atomic binding:
 ```python Python icon="python"
 import pyarrow as pa
 
-@udf(
+@function(
     input_schema=pa.schema([pa.field("value", pa.float64(), nullable=False)]),
     output_schema=pa.schema([
         pa.field("half", pa.float64(), nullable=False),
@@ -277,7 +277,7 @@ and `__call__` handles each row or batch.
 {FunctionClassDefine}
 </CodeBlock>
 
-Registering the class does not construct it. `@udf` reads the signature of
+Registering the class does not construct it. `@function` reads the signature of
 `__init__` and packages the source, so the client never loads the model. On
 the cluster, each instance of the function calls `__init__` once. It then calls
 `__call__` for every row or batch it processes, and `close()`, if defined, once
@@ -344,7 +344,7 @@ dependencies are part of its definition:
 
 <CodeGroup>
 ```python Python icon="python"
-@udf(gpu=True)
+@function(gpu=True)
 def extract_frame(video: BlobReader, ts: float) -> bytes:
     ...  # runs only on a GPU-capable worker
 ```
@@ -386,7 +386,7 @@ in the function's source or its `env` map in plain text. A Secret is a
 database-scoped named credential; `db.create_secret` stores the value once,
 and an `EnvVarSecret` binds it to the environment variable the function
 reads. Binding is a registration-time decision, passed to
-`create_function_async`, not to `@udf`. No API returns a Secret's value,
+`create_function_async`, not to `@function`. No API returns a Secret's value,
 and it never appears in the function's registration: the function reads the
 environment variable the way it always did, and the binding is what puts a
 value there. A mistyped Secret name is caught at registration; a mistyped
@@ -399,7 +399,7 @@ full worked example.
 ## Failure handling {#failures}
 
 A function that raises fails the job. There is no per-row retry or skip policy
-in the function definition: `@udf` takes no error-handling parameter, so a
+in the function definition: `@function` takes no error-handling parameter, so a
 function that calls a flaky external service should handle that itself, inside
 the function body.
 
@@ -434,7 +434,7 @@ its model-loading code factored into a sibling module instead of inlined:
 ```python Python icon="python"
 import caption_worker  # a sibling module with the model-loading logic
 
-@udf(gpu=True, code=[caption_worker])
+@function(gpu=True, code=[caption_worker])
 def caption(jpeg: bytes) -> str:
     return caption_worker.run(jpeg)
 ```
@@ -443,7 +443,7 @@ def caption(jpeg: bytes) -> str:
 Each module in `code` is captured and shipped the same way the function
 itself is: as source, snapshotted at registration. Only `.py` source files are
 included; package data such as JSON, YAML, prompt, or tokenizer files is not
-copied. `@udf` warns before registration when it skips such files from a
+copied. `@function` warns before registration when it skips such files from a
 package in `code`, naming the affected paths. To use a package that includes
 the required resources, install it with `pip=` or `conda=` and remove that
 package from `code`; otherwise the Python-only copied package shadows the
