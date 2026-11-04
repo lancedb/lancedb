@@ -164,7 +164,8 @@ pub struct JobFailure {
     /// Isolated SQL job that raised this failure, when the server supplies
     /// one across the Flight SQL boundary.
     pub sql_job_id: Option<String>,
-    /// The error the job failed with, when it ran in this process.
+    /// The underlying error from a job run in this process or a structured
+    /// remote Flight SQL failure.
     pub source: Option<Arc<Error>>,
 }
 
