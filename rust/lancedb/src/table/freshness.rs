@@ -2671,6 +2671,19 @@ mod tests {
 
     /// Rewrite `value` of the row with `id` in place: a partial merge-insert
     /// attaches a new column file to the row's fragment, keeping its id.
+    async fn update_rows(dataset: &mut Dataset, filter: &str, column: &str, expression: &str) {
+        let result = lance::dataset::UpdateBuilder::new(Arc::new(dataset.clone()))
+            .set(column, expression)
+            .unwrap()
+            .update_where(filter)
+            .unwrap()
+            .execute()
+            .await
+            .unwrap();
+        *dataset = result.new_dataset.as_ref().clone();
+        dataset.checkout_latest().await.unwrap();
+    }
+
     async fn rewrite_value(dataset: &mut Dataset, id: i32) {
         let batch =
             arrow_array::record_batch!(("id", Int32, [id]), ("value", Int32, [1000])).unwrap();
@@ -3079,6 +3092,67 @@ mod tests {
         rewrite_value(&mut dataset, 60).await;
         let stale = plan(&dataset).await;
         assert_eq!(stale.dirty, HashSet::from([1]), "{stale:?}");
+    }
+
+    /// RewriteRows physically replaces the fragment, but an update of a
+    /// column outside the binding's inputs does not stale its output.
+    #[tokio::test]
+    async fn a_rewrite_rows_update_of_an_unrelated_column_carries_freshness() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dataset = table(dir.path().to_str().unwrap()).await;
+        dataset
+            .add_columns(
+                NewColumnTransform::SqlExpressions(vec![("extra".into(), "id * 3".into())]),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        stamp_all(&mut dataset).await;
+
+        update_rows(&mut dataset, "id = 60", "extra", "extra + 1").await;
+
+        let stale = plan(&dataset).await;
+        assert!(stale.dirty.is_empty(), "{stale:?}");
+        assert_eq!(stale.inherited.len(), 1, "{stale:?}");
+    }
+
+    /// RewriteRows of a bound input cannot carry the output: its physical
+    /// input signature changed and the produced fragment must be recomputed.
+    #[tokio::test]
+    async fn a_rewrite_rows_update_of_an_input_stays_dirty() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dataset = table(dir.path().to_str().unwrap()).await;
+        stamp_all(&mut dataset).await;
+
+        update_rows(&mut dataset, "id = 60", "value", "value + 1").await;
+
+        let stale = plan(&dataset).await;
+        assert_eq!(stale.dirty.len(), 1, "{stale:?}");
+        assert!(stale.inherited.is_empty(), "{stale:?}");
+    }
+
+    /// A second rewrite cannot launder a source that was already stale before
+    /// the first one: only proven-fresh source signatures may carry.
+    #[tokio::test]
+    async fn an_unrelated_update_does_not_clean_a_stale_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dataset = table(dir.path().to_str().unwrap()).await;
+        dataset
+            .add_columns(
+                NewColumnTransform::SqlExpressions(vec![("extra".into(), "id * 3".into())]),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        stamp_all(&mut dataset).await;
+        update_rows(&mut dataset, "id = 60", "value", "value + 1").await;
+        update_rows(&mut dataset, "id = 60", "extra", "extra + 1").await;
+
+        let stale = plan(&dataset).await;
+        assert_eq!(stale.dirty.len(), 1, "{stale:?}");
+        assert!(stale.inherited.is_empty(), "{stale:?}");
     }
 
     /// A deleted row is never computed and the rows that stay keep their
