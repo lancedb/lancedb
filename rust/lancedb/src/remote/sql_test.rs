@@ -2505,7 +2505,7 @@ async fn function_creation_and_description_use_sql_query_handles() {
     const REQUEST: &str = include_str!(
         "../../tests/fixtures/first_class_functions/v1/remote_function_registration_request.json"
     );
-    for defer in [false, true] {
+    for (defer, with_models) in [(false, false), (false, true), (true, false), (true, true)] {
         let mut request_json: serde_json::Value = serde_json::from_str(REQUEST).unwrap();
         request_json["batch_size"] = serde_json::json!(2);
         request_json["row_timeout_seconds"] = serde_json::json!(0.75);
@@ -2514,6 +2514,16 @@ async fn function_creation_and_description_use_sql_query_handles() {
             "variable": "HF_TOKEN",
             "secret_ref": {"name": "hf-prod"},
         }]);
+        let mut version_json: serde_json::Value = serde_json::from_str(VERSION).unwrap();
+        if with_models {
+            let models = serde_json::json!([{
+                "repo": "sentence-transformers/all-MiniLM-L6-v2",
+                "revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+            }]);
+            request_json["models"] = models.clone();
+            version_json["image"]["models"] = models;
+        }
+        let expected_models = version_json["image"].get("models");
         let mut expected_request = request_json.clone();
         expected_request.as_object_mut().unwrap().remove("name");
         let request =
@@ -2521,7 +2531,7 @@ async fn function_creation_and_description_use_sql_query_handles() {
                 .unwrap();
         let result = RecordBatch::try_from_iter(vec![(
             "definition",
-            Arc::new(StringArray::from(vec![VERSION])) as ArrayRef,
+            Arc::new(StringArray::from(vec![version_json.to_string()])) as ArrayRef,
         )])
         .unwrap();
         let service = TestSqlService {
@@ -2542,27 +2552,46 @@ async fn function_creation_and_description_use_sql_query_handles() {
             .unwrap();
         assert_eq!(job.job_type().as_deref(), Some("query"));
         let id = Uuid::parse_str(job.id().unwrap()).unwrap();
-        assert_eq!(job.wait().await.unwrap().name(), "embed");
-        assert_eq!(job.wait().await.unwrap().version(), "1");
+        let created = job.wait().await.unwrap();
+        assert_eq!(created.name(), "embed");
+        assert_eq!(created.version(), "1");
+        // Assert the actual SQL body, after the same native JSON decode used
+        // by the Python binding, rather than only the Python declaration.
+        {
+            let seen = statements.lock().unwrap();
+            let encoded = seen[0]
+                .strip_prefix(r#"CREATE FUNCTION "normalize_score" FROM '"#)
+                .unwrap()
+                .strip_suffix('\'')
+                .unwrap();
+            let sent: serde_json::Value =
+                serde_json::from_str(&encoded.replace("''", "'")).unwrap();
+            assert_eq!(sent, expected_request);
+        }
+        let created_json: serde_json::Value =
+            serde_json::from_str(&created.to_canonical_json().unwrap()).unwrap();
+        assert_eq!(created_json["image"].get("models"), expected_models);
         assert_eq!(
             client.describe(id).await.unwrap().status,
             QueryStatus::Finished
         );
-        assert_eq!(
-            db.get_function("embed", "1", &["team".into()])
-                .await
-                .unwrap()
-                .name(),
-            "embed"
-        );
-        let seen = statements.lock().unwrap();
-        let encoded = seen[0]
-            .strip_prefix("CREATE FUNCTION \"normalize_score\" FROM '")
-            .unwrap()
-            .strip_suffix('\'')
+        let described = db
+            .get_function("embed", "1", &["team".into()])
+            .await
             .unwrap();
-        let sent: serde_json::Value = serde_json::from_str(&encoded.replace("''", "'")).unwrap();
-        assert_eq!(sent, expected_request);
+        assert_eq!(described.name(), "embed");
+        let described_json: serde_json::Value =
+            serde_json::from_str(&described.to_canonical_json().unwrap()).unwrap();
+        assert_eq!(described_json["image"].get("models"), expected_models);
+        let listed = db
+            .list_functions(&["team".into()], Default::default())
+            .await
+            .unwrap();
+        assert_eq!(listed.items.len(), 1);
+        let listed_json: serde_json::Value =
+            serde_json::from_str(&listed.items[0].to_canonical_json().unwrap()).unwrap();
+        assert_eq!(listed_json["image"].get("models"), expected_models);
+        let seen = statements.lock().unwrap();
         assert_eq!(seen[1], "DESCRIBE FUNCTION \"embed\" WITH (version = '1')");
         shutdown.send(()).unwrap();
     }
