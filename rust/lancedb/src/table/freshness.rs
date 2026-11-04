@@ -24,7 +24,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Cursor, Read};
 use std::ops::Range;
 
-use arrow_array::{Array, UInt64Array};
+use arrow::row::{RowConverter, SortField};
+use arrow_array::{Array, ArrayRef, UInt64Array};
 use futures::TryStreamExt;
 use lance::Dataset;
 use lance::dataset::refs::Ref;
@@ -1047,6 +1048,109 @@ async fn holds_values_in(
     Ok(false)
 }
 
+fn input_projection(dataset: &Dataset, inputs: &InputFields) -> Result<LanceSchema> {
+    let mut ids = inputs.values().flatten().copied().collect::<Vec<i32>>();
+    ids.sort_unstable();
+    ids.dedup();
+    Ok(dataset.schema().project_by_ids(&ids, true))
+}
+
+/// The canonical input values held by one fragment, keyed by physical offset.
+async fn fragment_input_rows(
+    dataset: &Dataset,
+    fragment_id: u32,
+    projection: &LanceSchema,
+) -> Result<Vec<(u32, Vec<u8>)>> {
+    let Some(fragment) = dataset.get_fragment(fragment_id as usize) else {
+        return Ok(Vec::new());
+    };
+    let converter = RowConverter::new(
+        projection
+            .fields
+            .iter()
+            .map(|field| SortField::new(field.data_type().clone()))
+            .collect(),
+    )?;
+    let width = projection.fields.len();
+    let mut scanner = dataset.scan();
+    scanner
+        .with_fragments(vec![fragment.metadata().clone()])
+        .with_row_address()
+        .project_with_schema(projection)?;
+    let mut batches = scanner.try_into_stream().await?;
+    let mut rows = Vec::new();
+    while let Some(batch) = batches.try_next().await? {
+        let arrays: Vec<ArrayRef> = batch.columns()[..width].to_vec();
+        let converted = converter.convert_columns(&arrays)?;
+        let addresses = batch
+            .column_by_name(ROW_ADDR)
+            .and_then(|column| column.as_any().downcast_ref::<UInt64Array>())
+            .ok_or_else(|| invalid("row addresses missing from a freshness scan".to_string()))?;
+        for (row, address) in converted.iter().zip(addresses.iter()) {
+            let address = address
+                .ok_or_else(|| invalid("null row address in a freshness scan".to_string()))?;
+            rows.push(((address & 0xFFFF_FFFF) as u32, row.as_ref().to_vec()));
+        }
+    }
+    Ok(rows)
+}
+
+/// Input values of source rows that an update must keep dirty in its products.
+async fn dirty_input_keys(
+    dataset: &Dataset,
+    dirty: &RowStateMap,
+    sources: &[u32],
+    inputs: &InputFields,
+) -> Result<HashSet<Vec<u8>>> {
+    let projection = input_projection(dataset, inputs)?;
+    let mut keys = HashSet::new();
+    for source in sources {
+        let Some(rows) = dirty.get(source) else {
+            continue;
+        };
+        let values = fragment_input_rows(dataset, *source, &projection).await?;
+        let live = RoaringBitmap::from_iter(values.iter().map(|(offset, _)| *offset));
+        let dirty_rows = rows.live_dirty_rows(&live);
+        keys.extend(
+            values
+                .into_iter()
+                .filter(|(offset, _)| dirty_rows.contains(*offset))
+                .map(|(_, key)| key),
+        );
+    }
+    Ok(keys)
+}
+
+/// Follow dirty source rows through RewriteRows by their unchanged input values.
+/// RewriteRows rewrites the whole fragment, but only the selected rows change.
+async fn update_product_row_state(
+    before: &Dataset,
+    after: &Dataset,
+    dirty: &RowStateMap,
+    sources: &[u32],
+    produced: &[u32],
+    inputs: &InputFields,
+) -> Result<RowStateMap> {
+    let keys = dirty_input_keys(before, dirty, sources, inputs).await?;
+    if keys.is_empty() {
+        return Ok(RowStateMap::new());
+    }
+    let projection = input_projection(after, inputs)?;
+    let mut state = RowStateMap::new();
+    for product in produced {
+        let rows = fragment_input_rows(after, *product, &projection)
+            .await?
+            .into_iter()
+            .filter(|(_, key)| keys.contains(key))
+            .map(|(offset, _)| offset)
+            .collect::<RoaringBitmap>();
+        if !rows.is_empty() {
+            state.insert(*product, DirtyRows::Rows(rows));
+        }
+    }
+    Ok(state)
+}
+
 /// Compaction copies inputs verbatim, so a fragment it produced from
 /// recorded fragments whose inputs had not moved is as fresh as they were,
 /// and a fragment an append created since the stamp, untouched after and
@@ -1059,6 +1163,7 @@ async fn holds_values_in(
 struct CarriedForward {
     inherited: SignatureMap,
     dirty_products: HashSet<u32>,
+    row_state: RowStateMap,
 }
 
 async fn carried_forward(
@@ -1080,7 +1185,8 @@ async fn carried_forward(
     let mut fresh = stored.clone();
     let mut inherited = SignatureMap::new();
     let mut dirty_products = HashSet::new();
-    let mut known_dirty: HashSet<u32> = row_state.keys().copied().collect();
+    let mut known_dirty = row_state.clone();
+    let mut carried_row_state = RowStateMap::new();
     let mut appends = Vec::new();
     let mut manifests = Manifests {
         dataset,
@@ -1100,14 +1206,6 @@ async fn carried_forward(
                 produced,
                 fields,
             }) => {
-                // Fragment signatures do not describe the row-level exceptions
-                // carried by a skipped or failed refresh. If any source has
-                // such an exception, leave every product unrecorded so the
-                // next refresh recomputes it instead of declaring those rows
-                // current.
-                if sources.iter().any(|id| known_dirty.contains(id)) {
-                    continue;
-                }
                 // Reuse the compaction rule: only sources whose input
                 // signature was already proven fresh may transfer freshness to
                 // the produced fragments. An update that touches any input
@@ -1119,33 +1217,61 @@ async fn carried_forward(
                         .any(|id| u32::try_from(*id).ok() == Some(*field))
                 });
                 if touches_input {
+                    for id in &produced {
+                        known_dirty.insert(*id, DirtyRows::AllExcept(RoaringBitmap::new()));
+                    }
                     continue;
                 }
                 let before = manifests.at(version - 1).await?;
                 let mut all_fresh = !sources.is_empty();
-                for id in sources {
-                    let current = signature_of(before, id, inputs)?;
-                    let recorded = fresh.get(&id).or_else(|| inherited.get(&id));
+                for id in &sources {
+                    let current = signature_of(before, *id, inputs)?;
+                    let recorded = fresh.get(id).or_else(|| inherited.get(id));
                     if current.as_ref() != recorded {
                         all_fresh = false;
                         break;
                     }
                 }
                 if !all_fresh {
+                    for id in &produced {
+                        known_dirty.insert(*id, DirtyRows::AllExcept(RoaringBitmap::new()));
+                    }
                     continue;
                 }
+                let product_row_state = if sources.iter().any(|id| known_dirty.contains_key(id)) {
+                    let before = manifests.at(version - 1).await?.clone();
+                    let after = manifests.at(version).await?;
+                    update_product_row_state(
+                        &before,
+                        after,
+                        &known_dirty,
+                        &sources,
+                        &produced,
+                        inputs,
+                    )
+                    .await?
+                } else {
+                    RowStateMap::new()
+                };
                 let after = manifests.at(version).await?;
-                for id in produced {
-                    if let Some(signature) = signature_of(after, id, inputs)? {
-                        fresh.insert(id, signature.clone());
-                        inherited.insert(id, signature);
+                for id in &produced {
+                    if let Some(signature) = signature_of(after, *id, inputs)? {
+                        fresh.insert(*id, signature.clone());
+                        inherited.insert(*id, signature);
+                        if let Some(rows) = product_row_state.get(id) {
+                            known_dirty.insert(*id, rows.clone());
+                            carried_row_state.insert(*id, rows.clone());
+                        } else {
+                            known_dirty.remove(id);
+                            carried_row_state.remove(id);
+                        }
                     }
                 }
                 continue;
             }
         };
         for (consumed, produced) in compactions {
-            let source_dirty = consumed.iter().any(|id| known_dirty.contains(id));
+            let source_dirty = consumed.iter().any(|id| known_dirty.contains_key(id));
             // Each source's signature and live rows just before the
             // compaction; live rows place its contribution in the product.
             let mut sources = Vec::with_capacity(consumed.len());
@@ -1213,7 +1339,7 @@ async fn carried_forward(
                     if source_dirty {
                         inherited.remove(id);
                         dirty_products.insert(*id);
-                        known_dirty.insert(*id);
+                        known_dirty.insert(*id, DirtyRows::AllExcept(RoaringBitmap::new()));
                     } else {
                         known_dirty.remove(id);
                     }
@@ -1224,6 +1350,7 @@ async fn carried_forward(
     Ok(CarriedForward {
         inherited,
         dirty_products,
+        row_state: carried_row_state,
     })
 }
 
@@ -1273,8 +1400,12 @@ pub async fn staleness_against(
     } else {
         CarriedForward::default()
     };
-    let mut inherited = carried.inherited;
-    let mut dirty = carried.dirty_products;
+    let CarriedForward {
+        mut inherited,
+        dirty_products,
+        row_state: mut carried_row_state,
+    } = carried;
+    let mut dirty = dirty_products;
     let mut row_dirty = RowStateMap::new();
     let mut live = HashSet::new();
     let bases = Bases::of(dataset)?;
@@ -1284,11 +1415,12 @@ pub async fn staleness_against(
         let current = fragment_input_signature(&bases, fragment.metadata(), inputs)?;
         if stored.get(&id).or_else(|| inherited.get(&id)) != Some(&current) {
             dirty.insert(id);
-        } else if let Some(rows) = row_state.get(&id) {
+        } else if let Some(rows) = carried_row_state.get(&id).or_else(|| row_state.get(&id)) {
             row_dirty.insert(id, rows.clone());
         }
     }
     inherited.retain(|id, _| live.contains(id) && !dirty.contains(id));
+    carried_row_state.retain(|id, _| live.contains(id) && !dirty.contains(id));
     row_dirty.retain(|id, _| live.contains(id) && !dirty.contains(id));
     Ok(StalenessPlan {
         recompute_all: false,
@@ -2653,6 +2785,79 @@ mod tests {
         let plan = plan(&dataset).await;
         assert!(plan.dirty.contains(&product), "{plan:?}");
         assert!(!plan.row_dirty.contains_key(&product), "{plan:?}");
+    }
+
+    #[tokio::test]
+    async fn a_rewrite_rows_update_keeps_unrelated_clean_rows_clean() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dataset = table(dir.path().to_str().unwrap()).await;
+        stamp_all(&mut dataset).await;
+        let definition = definition_version(EXPRESSION);
+        let ids = inputs(&dataset);
+        let repairs = BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([1])))]);
+        let token = begin_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            "accepted-job-generation-a",
+            &repairs,
+        )
+        .await
+        .unwrap();
+        finish_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            &token,
+            &BTreeMap::new(),
+            &BTreeMap::from([(0, RoaringBitmap::from_iter([1]))]),
+            None,
+        )
+        .await
+        .unwrap();
+
+        // Rewrite an unrelated row in the same fragment. RewriteRows produces
+        // several physical fragments, but only the skipped input row's output
+        // remains dirty.
+        let updated = lance::dataset::UpdateBuilder::new(Arc::new(dataset.clone()))
+            .update_where("id = 2")
+            .unwrap()
+            .set("id", "1002")
+            .unwrap()
+            .build()
+            .unwrap()
+            .execute()
+            .await
+            .unwrap();
+        dataset = updated.new_dataset.as_ref().clone();
+
+        let stale = plan(&dataset).await;
+        assert!(stale.dirty.is_empty(), "{stale:?}");
+        let mut dirty = Vec::new();
+        for (fragment_id, rows) in &stale.row_dirty {
+            let DirtyRows::Rows(rows) = rows else {
+                panic!("a rewrite should name the dirty rows: {stale:?}");
+            };
+            dirty.extend(rows.iter().map(|offset| (*fragment_id, offset)));
+        }
+        assert_eq!(dirty.len(), 1, "{stale:?}");
+
+        let mut scan = dataset.scan();
+        scan.filter("id = 1")
+            .unwrap()
+            .with_row_address()
+            .project(&["id"])
+            .unwrap();
+        let mut batches = scan.try_into_stream().await.unwrap();
+        let batch = batches.try_next().await.unwrap().unwrap();
+        let address = batch
+            .column_by_name(ROW_ADDR)
+            .and_then(|column| column.as_any().downcast_ref::<UInt64Array>())
+            .unwrap()
+            .value(0);
+        assert_eq!(dirty[0], ((address >> 32) as u32, address as u32));
     }
 
     /// Strip the refresh's own keys: a column from before signatures existed.
