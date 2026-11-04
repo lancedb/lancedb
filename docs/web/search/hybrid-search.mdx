@@ -67,7 +67,6 @@ Run the steps for your chosen language in order, choosing one connection option.
 
 <CodeGroup>
 ```python Python icon="python"
-import lancedb
 from lancedb.index import FTS
 from lancedb.rerankers import RRFReranker
 from lancedb.embeddings import get_registry
@@ -378,7 +377,7 @@ await table.query()
 ```
 </CodeGroup>
 
-In Python, use [`explain_plan`](/search/explain#analyzing-non-vector-queries) on a hybrid query to see whether the filter pushed into the scan or ran as a separate `FilterExec` step.
+In Python, use [`explain_plan`](/basics/sql#analyzing-non-vector-queries) on a hybrid query to see whether the filter pushed into the scan or ran as a separate `FilterExec` step.
 
 ## Choose and evaluate a reranker {#more-on-reranking}
 

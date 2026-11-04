@@ -1,27 +1,23 @@
 ---
-title: "Sampling"
-sidebarTitle: "Sampling"
-description: "Choose a sample for exploration or evaluation and preserve the selected records when reproducibility matters."
+title: "Statistical Sampling"
+sidebarTitle: "Statistical Sampling"
+description: "Draw a random subset of a table with SQL TABLESAMPLE, by rows or by fragments."
 icon: dice
-keywords: ["sampling", "tablesample", "subset", "eval set", "reproducible", "shuffle"]
+keywords: ["sampling", "tablesample", "bernoulli", "system", "repeatable", "random", "eval set"]
 availability:
-  embedded: available
+  embedded: unavailable
   enterprise: available
 ---
 
-import { PySampleDataset } from '/snippets/curation_sampling.mdx';
-
-Sampling selects records from a larger table. Use it to explore unfamiliar
-data, run a smaller experiment, or prepare an evaluation dataset. Enterprise
-SQL provides `TABLESAMPLE` for selecting a percentage or number of rows.
-
-Sampling works in LanceDB Embedded and LanceDB Enterprise through the
-[Python SDK](#training). SQL sampling, the sections marked Enterprise below, needs
-LanceDB Enterprise.
+Statistical sampling draws a random subset of a table's rows using SQL's
+`TABLESAMPLE` clause, attached directly to a table in `FROM`. Use it to
+explore unfamiliar data, run a smaller experiment, or estimate aggregate
+statistics without reading every row. For a random subset through the
+Python SDK instead -- in Embedded or Enterprise -- see
+[Permutation](/training/permutation). To select specific, known rows
+rather than a random fraction, see [Selective Sampling](/curation/selective-sampling).
 
 ## Example data {#example-data}
-
-<Badge color="red">Enterprise</Badge>
 
 Connect with an [Enterprise SQL client](/basics/sql). The examples use a small
 document table and a separate label table. Expand the setup below to create them.
@@ -35,7 +31,8 @@ a record; `doc_id` identifies the document it describes.
 Run each statement separately in a scratch database or namespace. Create these
 tables once for the whole section, using fresh names if they already exist.
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 CREATE TABLE curation_documents (
     row_id BIGINT, doc_id BIGINT, version BIGINT,
     source VARCHAR, caption VARCHAR, score DOUBLE
@@ -52,6 +49,7 @@ CREATE TABLE curation_labels (doc_id BIGINT, label VARCHAR);
 INSERT INTO curation_labels VALUES
     (10, 'cat'), (20, 'dog'), (30, 'cat');
 ```
+</CodeGroup>
 
 `score` is a sample quality score, not a search result score. Document 10 has
 two versions. Document 30 has two records at the same version. Document 40
@@ -61,14 +59,14 @@ has no label. These cases let you check the effect of each operation.
 
 ## Basic sampling {#quick}
 
-<Badge color="red">Enterprise</Badge>
-
 A percentage selects a fraction of the source; `ROWS` requests a row count:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT row_id, doc_id FROM curation_documents TABLESAMPLE (50);
 SELECT row_id, doc_id FROM curation_documents TABLESAMPLE (3 ROWS);
 ```
+</CodeGroup>
 
 A percentage sample does not guarantee an exact number of rows. Use a count
 when the desired sample size is the main constraint, and inspect the result
@@ -80,8 +78,6 @@ change a production table's write configuration just to try an example.
 
 ## Sampling methods {#methods}
 
-<Badge color="red">Enterprise</Badge>
-
 Choose a method according to how records should be selected:
 
 | Method | Selection | When to use it |
@@ -89,13 +85,15 @@ Choose a method according to how records should be selected:
 | `BERNOULLI` (default) | Select individual rows | When records should be sampled independently of their storage fragments |
 | `SYSTEM` | Select whole Lance fragments | When reducing reads matters and grouping by fragment is acceptable |
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT row_id, doc_id
 FROM curation_documents TABLESAMPLE BERNOULLI (50);
 
 SELECT row_id, doc_id
 FROM curation_documents TABLESAMPLE SYSTEM (50);
 ```
+</CodeGroup>
 
 If write order groups records by label, date or source, a fragment sample can
 reflect that grouping. On a tiny table stored in one fragment, it may include
@@ -104,23 +102,25 @@ represent rare groups; check that the resulting sample covers the groups you nee
 
 ## Repeatable samples {#fixed}
 
-<Badge color="red">Enterprise</Badge>
-
 A seed requests a repeatable draw:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT row_id, doc_id
 FROM curation_documents TABLESAMPLE (50) REPEATABLE (42);
 ```
+</CodeGroup>
 
 Keep the source data and sampling configuration fixed when comparing draws.
 For a lasting evaluation set, save the selected records rather than relying
 on a seed to preserve membership as the source changes:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 CREATE TABLE curation_eval AS
 SELECT * FROM curation_documents TABLESAMPLE (50) REPEATABLE (42);
 ```
+</CodeGroup>
 
 Create this output once with a fresh name and keep it unchanged. Record the
 source version and selection policy. Sampling records independently can place
@@ -130,8 +130,6 @@ training or evaluation.
 
 ## Sampling with joins {#joins}
 
-<Badge color="red">Enterprise</Badge>
-
 Sampling both input tables independently changes which pairs can match.
 For a one-to-one match, independent 10% row samples retain a given pair with
 about 1% probability, not 10%.
@@ -139,43 +137,50 @@ about 1% probability, not 10%.
 To sample documents while retaining their available labels, sample only the
 document table:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT curation_documents.row_id, curation_documents.doc_id, l.label
 FROM curation_documents TABLESAMPLE (50)
 JOIN curation_labels AS l ON l.doc_id = curation_documents.doc_id;
 ```
+</CodeGroup>
 
 This samples source records, not distinct documents. If you need to sample the
 result of a join or deduplication, first save that result as a table suitable
 for sampling. `TABLESAMPLE` cannot be applied directly to a subquery result.
 
-## Sample without SQL {#training}
+## Apply a Function to a sample {#functions}
 
-The Python SDK provides a permutation builder for selecting and ordering rows
-in LanceDB Embedded and LanceDB Enterprise. A split selects a subset; a shuffle changes the order
-in which records are read. `Permutation.identity(table)` retains stored order.
+Sample first, then call a [Function](/curation/create-function) only on
+the rows you drew -- useful for trying an expensive Function on a subset
+before running it over the whole table. Register `caption_quality` first:
 
-<Accordion title="Complete Python example: read a random subset">
+<CodeGroup>
+```python Python icon="python"
+from lancedb import udf
 
-Install the Python SDK with `pip install lancedb`, save the program as
-`sample_dataset.py`, and run `python sample_dataset.py`. It creates a temporary
-local database with ten rows and reads a random split containing three rows.
-The temporary database is removed when the program finishes.
+@udf
+def caption_quality(caption: str) -> float:
+    ...  # score the caption, e.g. with a lightweight heuristic or model
 
-<CodeBlock filename="sample_dataset.py" language="python" icon="python">
-{PySampleDataset}
-</CodeBlock>
+db.create_function_async(caption_quality).wait()
+```
 
-The program prints three distinct IDs. It uses a fixed seed, but does not
-promise the same IDs across SDK versions or changes to the source dataset.
+```sql SQL icon="database"
+SELECT row_id, caption, caption_quality(caption) AS quality
+FROM curation_documents TABLESAMPLE (50)
+WHERE caption IS NOT NULL;
+```
+</CodeGroup>
 
-</Accordion>
-
-For shuffled training reads, worker configuration and data loaders, see
-[PyTorch Data Loader](/training/data-loading).
+The Function runs only on the sampled rows, not the whole table -- a quick
+way to check a Function's output, cost or latency before committing to a
+full [column refresh](/feature-engineering/refresh-column).
 
 ## Related guides {#reference}
 
 Count the sampled rows and [inspect their distribution](/curation/aggregate)
 before using them. Preserve the selected data when the exact membership matters.
-See [SQL sampling](/sql/dql/sampling) for syntax and restrictions.
+See [SQL sampling](/sql/dql/sampling) for the complete syntax and restrictions,
+and [Permutation](/training/permutation) for a random subset through the
+Python SDK.

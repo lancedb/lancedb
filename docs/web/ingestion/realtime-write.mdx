@@ -1,11 +1,11 @@
 ---
 title: "Real Time writes"
-sidebarTitle: "Real Time Write"
+sidebarTitle: "RTE Write"
 description: "Enable the real time engine on a table and absorb small, frequent writes cheaply, each one committed in milliseconds."
 icon: "bolt"
 keywords: ["rte", "real time engine", "wal", "memwal", "lsm", "write-ahead log", "streaming writes", "upsert"]
 availability:
-  embedded: unavailable
+  embedded: available
   enterprise: available
 ---
 
@@ -14,9 +14,20 @@ front of a table, turning many small writes into a few large commits. This
 page covers enabling it and writing to a table; for querying an RTE table, see
 [Real Time reads](/search/realtime-read).
 
+`table.enable_rte(spec)` is the same call on both connections, but what it
+does underneath differs:
+
+- **Embedded** runs Lance's MemWAL `ShardWriter` directly in your process --
+  the WAL buffer, memtables and SSTables all live wherever your table does, and
+  there is no separate serving layer to scale or configure.
+- **Enterprise** forwards the call to the server, which runs it on a
+  dedicated, horizontally scalable WAL-node tier instead of your table's
+  query-serving fleet. See [Distributed Real Time Write](/enterprise/distributed-real-time-write)
+  for how that tier shards a table's writes and the throughput limits that come with it.
+
 ## Getting started {#getting-started}
 
-### 1. Create a table with a primary key {#primary-key}
+### 1\. Create a table with a primary key {#primary-key}
 
 RTE deduplicates writes by primary key. Create the table with a non-nullable
 key column, then declare it with `set_unenforced_primary_key`. The key is a
@@ -32,12 +43,12 @@ like [LeRobotDataset](/integrations/lerobotdataset)'s `frames` table —
 ```python Python icon="python"
 from datetime import timedelta
 
-import lancedb
 import numpy as np
 import pyarrow as pa
 from lancedb import RTEWriteSpec
 from lancedb.index import FTS, BTree, IvfPq
 
+# Embedded: db = lancedb.connect("./my_db")
 db = lancedb.connect("db://my_db", api_key="...", host_override="https://...")
 
 dim = 768
@@ -50,6 +61,46 @@ schema = pa.schema([
 frames = db.create_table("frames", schema=schema)
 frames.set_unenforced_primary_key("frame_id")
 ```
+
+```typescript TypeScript icon="square-js"
+import * as arrow from "apache-arrow";
+
+const dim = 768;
+const schema = new arrow.Schema([
+  new arrow.Field("frame_id", new arrow.Int64(), false),
+  new arrow.Field("video_id", new arrow.Utf8(), false),
+  new arrow.Field(
+    "embedding",
+    new arrow.FixedSizeList(dim, new arrow.Field("item", new arrow.Float32(), true)),
+    true,
+  ),
+  new arrow.Field("caption", new arrow.Utf8(), true),
+]);
+
+const frames = await db.createEmptyTable("frames", schema);
+await frames.setUnenforcedPrimaryKey("frame_id");
+```
+
+```rust
+use std::sync::Arc;
+
+use arrow_schema::{DataType, Field, Schema};
+
+let dim = 768;
+let schema = Arc::new(Schema::new(vec![
+    Field::new("frame_id", DataType::Int64, false),
+    Field::new("video_id", DataType::Utf8, false),
+    Field::new(
+        "embedding",
+        DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), dim),
+        true,
+    ),
+    Field::new("caption", DataType::Utf8, true),
+]));
+
+let frames = db.create_empty_table("frames", schema).execute().await?;
+frames.set_unenforced_primary_key(["frame_id"]).await?;
+```
 </CodeGroup>
 
 Or in SQL:
@@ -60,7 +111,7 @@ ALTER TABLE frames SET UNENFORCED PRIMARY KEY (frame_id)
 ```
 </CodeGroup>
 
-### 2. Create indexes {#indexes}
+### 2\. Create indexes {#indexes}
 
 By default, RTE maintains every supported index on the table, including
 indexes created after it is enabled. A scalar index on the primary key is
@@ -75,11 +126,21 @@ frames.wait_for_index(["embedding_idx", "caption_idx", "frame_id_idx"], timeout=
 ```
 </CodeGroup>
 
-### 3. Enable RTE {#enable}
+### 3\. Enable RTE {#enable}
 
 <CodeGroup>
 ```python Python icon="python"
 frames.enable_rte(RTEWriteSpec.unsharded())
+```
+
+```typescript TypeScript icon="square-js"
+await frames.enableRTE({ specType: "unsharded" });
+```
+
+```rust
+use lancedb::table::RTEWriteSpec;
+
+frames.enable_rte(RTEWriteSpec::unsharded()).await?;
 ```
 </CodeGroup>
 
@@ -91,7 +152,7 @@ ALTER TABLE frames SET RTE
 ```
 </CodeGroup>
 
-### 4. Write {#write}
+### 4\. Write {#write}
 
 <Warning>
 On an RTE table, an upsert through `merge_insert` is the only way to write
@@ -161,36 +222,23 @@ frames.disable_rte()
 ```
 </CodeGroup>
 
-## Write performance {#write-performance}
+## Write throughput {#write-throughput}
 
 RTE acknowledges a write as soon as it is durable in the write-ahead log, so
-ingest is no longer limited by how fast the table can commit.
+ingest is no longer limited by how fast the table can commit. On Embedded,
+durability means your local disk or object store, so throughput is bounded by
+your own machine's resources.
 
-**Compared with writing directly to the table.** On tables ranging from
-hundreds of thousands to tens of millions of rows, RTE delivered 4–12× the
-write throughput and 24–52× lower p99 write latency, depending on the mix of
-inserts, updates, and deletes.
-
-**Scaling with shards.** An RTE table can be split into
-[shards](/sql/ddl/table#properties) that write independently, and a single
-table's ingest grows with its shard count. In our testing on AWS, with every
-index on the table (vector, full-text, and BTree) kept current, a single table
-reached these peak rates:
-
-| Shards | Peak ingest |
-| --: | --: |
-| 1 | 90 MB/s |
-| 2 | 170 MB/s |
-| 4 | 340 MB/s |
-| 8 | 625 MB/s |
-| 16 | 690 MB/s |
-| 32 | 885 MB/s |
-
-Adding shards scales a table's ingest nearly linearly.
+An Enterprise table can be split into shards that write independently, with
+each shard's durable-append throughput bounded by its WAL node's own
+capacity -- measured, not an enforced cap. See
+[Distributed Real Time Write](/enterprise/distributed-real-time-write#throughput)
+for the numbers.
 
 ## Next steps {#next-steps}
 
 - [Real Time reads](/search/realtime-read) — query an RTE table
-- [How the real time engine works](/tables/realtime-engine#how-it-works)
+- [Distributed Real Time Write](/enterprise/distributed-real-time-write) — how Enterprise shards and scales this
+- [How the real time engine works](/tables/realtime-engine#memwal-format)
 - [Merge insert](/ingestion/merge-insert)
 - [`ALTER TABLE ... SET RTE`](/sql/ddl/table#properties)

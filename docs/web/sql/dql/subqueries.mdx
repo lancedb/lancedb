@@ -13,39 +13,47 @@ A subquery is allowed anywhere an expression or a relation is.
 
 ## As a relation {#derived}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT * FROM (
     SELECT category, count(*) AS n FROM documents GROUP BY category
 ) AS counts
 WHERE n > 100
 ```
+</CodeGroup>
 
 A derived table needs an alias. Its result cannot be
 [sampled](/sql/dql/sampling); sample the table inside it instead:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT * FROM (SELECT * FROM documents TABLESAMPLE (10)) d
 ```
+</CodeGroup>
 
 ## As a scalar {#scalar}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT title, (SELECT count(*) FROM revisions r WHERE r.doc_id = d.id) AS revisions
 FROM documents AS d
 ```
+</CodeGroup>
 
 A scalar subquery returns one column and at most one row. No rows produces
 `NULL`; more than one row is an error.
 
 ## IN and EXISTS {#in-exists}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT title FROM documents
 WHERE category_id IN (SELECT id FROM categories WHERE active)
 
 SELECT title FROM documents AS d
 WHERE EXISTS (SELECT 1 FROM revisions r WHERE r.doc_id = d.id)
 ```
+</CodeGroup>
 
 Use `EXISTS` to test whether a matching row exists and `IN` to test membership
 in a set of values. The optimizer may rewrite either into a join; inspect
@@ -72,7 +80,9 @@ rewriting it as an explicit [join](/sql/dql/join) is the fix.
 A [CTE](/sql/dql/select#ctes) is a named subquery, and is usually more readable when
 the same subquery appears twice or when nesting gets deep.
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 WITH active AS (SELECT id FROM categories WHERE active)
 SELECT title FROM documents WHERE category_id IN (SELECT id FROM active)
 ```
+</CodeGroup>

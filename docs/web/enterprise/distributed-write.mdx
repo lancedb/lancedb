@@ -1,0 +1,49 @@
+---
+title: "Distributed write"
+sidebarTitle: "Distributed write"
+description: "How LanceDB Enterprise distributes a CTAS import's writes across plan executors."
+icon: upload
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+Distributed write applies specifically to importing data with `CREATE
+TABLE ... AS SELECT`: the query node that planned the statement partitions
+the source -- Parquet files from a HuggingFace dataset, or row-group
+ranges of an existing Lance dataset in object storage -- across plan
+executors, each of which writes its own uncommitted Lance data files and
+reports back. The query node collects those results and commits them
+together as the new table's first version; no separate coordinator
+service is involved. See [Architecture](/index#architecture).
+
+```mermaid
+flowchart LR
+    S["Source<br/>HuggingFace Parquet, or an<br/>existing Lance dataset in<br/>S3 / GCS / Azure"]
+    Q["Query node<br/>plans the CTAS,<br/>commits the result"]
+    PE1["Plan executor<br/>writes uncommitted files"]
+    PE2["Plan executor<br/>writes uncommitted files"]
+    PE3["Plan executor<br/>writes uncommitted files"]
+
+    S --> Q
+    Q --> PE1
+    Q --> PE2
+    Q --> PE3
+    PE1 --> Q
+    PE2 --> Q
+    PE3 --> Q
+```
+
+An ordinary `INSERT` or `merge_insert`, from SQL or the SDK, does not
+distribute this way -- it runs as a single write, on whichever node or
+process executes it. Only a CTAS import fans the write itself out across
+machines.
+
+## Write interfaces {#write-interfaces}
+
+- [Import Datasets](/ingestion/import) for the CTAS syntax this
+  distributes.
+- [Insert data](/ingestion/insert) and [Merge](/ingestion/merge-insert)
+  for the ordinary, non-distributed write paths.
+- [Storage Integration](/sql/ddl/storage-integration) for configuring
+  the source a CTAS import reads from.

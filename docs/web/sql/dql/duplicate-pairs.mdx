@@ -16,17 +16,27 @@ row per source row -- use it to inspect what would be collapsed before
 committing to [`dedupe`](/sql/dql/dedupe), which resolves these same pairs
 into groups.
 
-```sql
-SELECT * FROM duplicate_pairs(<table>, <vector_column>,
-  distance_threshold => <float>
-  [, id_column => <column>]
-  [, selection => 'all' | 'first' | 'random', count => <int>, seed => <int>]
+<CodeGroup>
+```sql SQL icon="database"
+SELECT * FROM duplicate_pairs(
+    <table>,
+    <vector_column>,
+    distance_threshold => <float>
+    [, id_column => <column>]
+    [, selection => 'all' | 'first' | 'random', count => <int>, seed => <int>]
 )
 ```
+</CodeGroup>
 
-```sql
-SELECT * FROM duplicate_pairs('frames', 'vec', distance_threshold => 0.02)
+<CodeGroup>
+```sql SQL icon="database"
+SELECT * FROM duplicate_pairs(
+    'frames',
+    'vec',
+    distance_threshold => 0.02
+)
 ```
+</CodeGroup>
 
 <Note>
 Earlier releases spelled this `vector_duplicate_pairs`; that name is rejected
@@ -57,33 +67,49 @@ table:
 | --- | --- | --- |
 | `row_id_a` | uint64 | internal row ID of the first row in the pair, the same identifier as the [`_rowid`](/sql/data-types#pseudo-columns) pseudo-column |
 | `row_id_b` | uint64 | internal row ID of the second row in the pair |
-| `distance` | float32 | distance between the pair's vectors, at or below `distance_threshold` |
-| `segment_id` | int64 | which index segment the pair was found in |
-| `partition_id` | int64 | which index partition the pair was found in |
-| `dataset_version` | int64 | the dataset version the scan ran against |
+| `distance` | float32 | distance between the pair's vectors, at or below `distance_threshold`. For `l2`, this is the squared distance, not its square root |
+| `segment_id` | Utf8 | which index segment the pair was found in, a UUID |
+| `partition_id` | uint64 | which index partition the pair was found in |
+| `dataset_version` | uint64 | the dataset version the scan ran against |
 
 ### Application-level identifiers {#id-column}
 
 A row ID is internal and not stable across compaction. Pass `id_column`, a
-top-level scalar column such as a primary key, to project its value instead:
-`row_id_a`/`row_id_b` are replaced by `id_a`/`id_b`, typed like `id_column`.
+top-level scalar column such as a primary key, to also project its value:
+`id_a`/`id_b`, typed like `id_column`, are appended alongside
+`row_id_a`/`row_id_b`, which remain in the output.
 
-```sql
-SELECT * FROM duplicate_pairs('frames', 'vec', distance_threshold => 0.02, id_column => 'frame_id')
+<CodeGroup>
+```sql SQL icon="database"
+SELECT * FROM duplicate_pairs(
+    'frames',
+    'vec',
+    distance_threshold => 0.02,
+    id_column => 'frame_id'
+)
 ```
+</CodeGroup>
 
 ## Sampling partitions {#sampling}
 
 `selection` scopes the scan to a sample of partitions instead of all of them,
 the same `all` (default) / `first` / `random` choice as
-[`ivf_partition`](/sql/scalar-functions#ivf-partition). Use it to estimate a
+[`ivf_partition`](/sql/dql/ivf-partition). Use it to estimate a
 distance threshold or duplicate rate on a large table before scanning it in
 full:
 
-```sql
-SELECT * FROM duplicate_pairs('frames', 'vec',
-  distance_threshold => 0.02, selection => 'random', count => 100, seed => 42)
+<CodeGroup>
+```sql SQL icon="database"
+SELECT * FROM duplicate_pairs(
+    'frames',
+    'vec',
+    distance_threshold => 0.02,
+    selection => 'random',
+    count => 100,
+    seed => 42
+)
 ```
+</CodeGroup>
 
 ## What to read next {#next}
 

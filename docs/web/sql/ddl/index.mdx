@@ -11,10 +11,12 @@ availability:
 
 ## CREATE INDEX {#create}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 CREATE INDEX ON documents USING btree (title)
 CREATE INDEX text_search ON documents USING fts (text)
 ```
+</CodeGroup>
 
 `USING` is required: it names the algorithm. The scalar algorithms are `btree`,
 `bitmap` and `label_list`; `fts` builds a full-text index; and the vector
@@ -33,14 +35,16 @@ multi-column index, use the SDK's [`create_index`](/indexing).
 `reindex_btree` or `reindex_ivf_pq`; the name says which algorithm is building,
 not a different feature. An SDK build that must not replace an existing index
 runs as `create_` followed by the algorithm instead. See
-[Build & Repair](/indexing/reindexing).
+[Incremental Indexing](/indexing/incremental-indexing).
 </Note>
 
 ## DROP INDEX {#drop}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 DROP INDEX documents.title_idx
 ```
+</CodeGroup>
 
 Takes the qualified `table.index` name. Find it with the SDK's
 [`list_indices`](/indexing) if you created the index without
@@ -54,7 +58,7 @@ naming it yourself. A deployment builds the index in the background after
   <Card title="Indexing" icon="bolt" href="/indexing">
     Choosing an index type from the SDK.
   </Card>
-  <Card title="Build & Repair" icon="refresh" href="/indexing/reindexing">
+  <Card title="Incremental Indexing" icon="refresh" href="/indexing/incremental-indexing">
     Keeping an index current as data arrives.
   </Card>
 </CardGroup>

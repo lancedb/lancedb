@@ -1,0 +1,76 @@
+---
+title: "GPU Function Execution"
+sidebarTitle: "GPU Function Execution"
+description: "How a GPU Function's worker gets scheduled onto a GPU-capable node, and what happens when none is free."
+icon: microchip
+keywords: ["gpu", "gpu class", "scheduling", "function", "udf", "kubernetes", "node selector"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+[Registering a GPU Function](/curation/create-function#gpu) sets `gpu=True`
+and an optional `gpu_class`; this page covers what happens after that, when
+a job actually needs a worker. An operator configures one or more named
+**GPU classes** for the deployment -- each one a Kubernetes node selector,
+toleration set, and resource name (such as `nvidia.com/gpu`) pointing at a
+specific pool of GPU nodes, plus a hardware description (GPU model, GPU
+memory, how many GPUs one worker may request). A Function with no
+`gpu_class` uses the deployment's `default` class.
+
+## Placement {#placement}
+
+When a job needs to run a GPU Function, the agent resolves its `gpu_class`
+(or `default`) to that class's node selector, tolerations, and resource
+name, and requests a worker pod shaped accordingly -- this is a separate
+placement path from the ordinary CPU worker ladder used by non-GPU
+Functions and other background jobs (see
+the [Job Framework](/basics/jobs) for that general job
+machinery). The resulting pod can only schedule onto a node matching the
+class's selector and tolerations, so a class is really naming a pool of
+nodes, not just a resource count.
+
+## Waiting for capacity {#capacity}
+
+A GPU class describes the deployment's hardware, not live availability --
+listing classes never tells you whether a GPU is free right now. If no
+node in the class has room, the worker pod stays pending rather than
+failing the job outright or falling back to a CPU worker: the job reports
+that it is waiting on that GPU class's capacity, and starts running as soon
+as a matching node has room. A job stuck waiting indefinitely usually means
+the class's node pool needs more capacity, not that anything is
+misconfigured.
+
+{/*
+Draft for the list_gpu_classes release. Keep this section unpublished
+until that API ships -- v0.41.0 (the latest release) does not have it,
+and there is no SQL equivalent; discovery is a REST call
+(`GET /v1/gpu/classes`), not a SQL statement.
+
+## Inspecting GPU classes {#inspecting}
+
+<CodeGroup>
+```python Python icon="python"
+for gpu in db.list_gpu_classes():
+    print(gpu.name, gpu.gpu_model, gpu.gpu_memory_bytes, gpu.max_gpu_count_per_worker)
+```
+</CodeGroup>
+
+Returns the operator-configured classes: name, resource name, GPU model
+and memory, and the largest per-worker GPU count the class permits.
+Listing requires the System Usage privilege.
+*/}
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Create a Function" icon="code" href="/curation/create-function#gpu">
+    Register a GPU Function and pin it to a specific class.
+  </Card>
+  <Card title="Job Framework" icon="list-check" href="/basics/jobs">
+    The job types a deployment runs on its own schedule.
+  </Card>
+  <Card title="GPU Refresh Execution" icon="microchip" href="/enterprise/gpu-refresh-execution">
+    The same placement path, for a computed column or MV refresh instead of a direct call.
+  </Card>
+</CardGroup>

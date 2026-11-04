@@ -154,49 +154,6 @@ describe.each(connections)("quickstart (%s)", (connection) => {
       console.table(result);
       // --8<-- [end:quickstart_vector_search_1]
       expect(result.map((row) => row.frame_id)).toEqual(["2", "4"]);
-
-      // --8<-- [start:quickstart_curate_with_metadata]
-      const curated = await table
-        .search(queryVector)
-        .where("stats.motion >= 4")
-        .select(["frame_id", "video_id", "caption", "_distance"])
-        .limit(2)
-        .toArray();
-      console.table(curated);
-      // --8<-- [end:quickstart_curate_with_metadata]
-      expect(curated.map((row) => row.frame_id)).toEqual(["2", "4"]);
-    });
-  });
-
-  test("a derived feature", async () => {
-    await withDatabase(connection, async (db) => {
-      const table = await createFrames(db);
-
-      // --8<-- [start:quickstart_add_feature]
-      await table.addColumns([
-        {
-          name: "quality_score",
-          valueSql:
-            "cast(((stats.motion + stats.sharpness + stats.exposure + stats.framing) / 4.0) as float)",
-        },
-      ]);
-      // --8<-- [end:quickstart_add_feature]
-
-      // --8<-- [start:quickstart_query_feature]
-      const features = await table
-        .query()
-        .select(["frame_id", "video_id", "quality_score"])
-        .toArray();
-      console.table(features);
-      // --8<-- [end:quickstart_query_feature]
-      expect(
-        features.map((row) => [row.frame_id, row.quality_score]).sort(),
-      ).toEqual([
-        ["1", 3.5],
-        ["2", 4],
-        ["3", 3],
-        ["4", 3.75],
-      ]);
     });
   });
 

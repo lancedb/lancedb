@@ -34,7 +34,9 @@ language: Python uses `namespace_path`, Rust uses builder methods like `.namespa
 TypeScript uses `namespacePath` arguments.
 
 <Note>
-In LanceDB Enterprise SQL, a namespaced table is addressed as a [dotted path](/sql/dql/select#namespaces).
+In LanceDB Enterprise SQL, a namespaced table is addressed by its
+[schema](/basics/catalog#schema) -- the namespace path joined by `$`, not
+by `.` -- [before the table name](/sql/dql/select#namespaces).
 </Note>
 
 ## Namespace hierarchy {#namespace-hierarchy}
@@ -75,12 +77,10 @@ The hierarchy is logical, not a tree of folders: a directory namespace records i
 
 As a user of LanceDB Embedded, you might never notice namespaces at first, because a plain connection
 uses only the root namespace, which is implicit. Connecting to this namespace is as simple as
-connecting to the catalog root:
+connecting to the namespace root:
 
 <CodeGroup>
 ```python Python icon="python"
-import lancedb
-
 # Connect to the directory namespace root
 db = lancedb.connect("./local_lancedb")
 ```
@@ -106,9 +106,7 @@ You can also explicitly connect to a namespace using `lancedb.connect_namespace(
 
 <CodeGroup>
 ```python Python icon="python"
-import lancedb
-
-# Local namespace-backed catalog root (DirectoryNamespace)
+# Local DirectoryNamespace root
 # See https://lance.org/format/namespace/dir/catalog-spec/
 db = lancedb.connect_namespace("dir", {"root": "./local_lancedb"})
 
@@ -123,7 +121,7 @@ print(f"Created table: {table.name}")
 ```typescript TypeScript icon="square-js"
 import * as lancedb from "@lancedb/lancedb";
 
-// Local namespace-backed catalog root (DirectoryNamespace)
+// Local DirectoryNamespace root
 // See https://lance.org/format/namespace/dir/catalog-spec/
 const db = await lancedb.connectNamespace("dir", { root: "./local_lancedb" });
 
@@ -141,7 +139,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use arrow_schema::{DataType, Field, Schema};
 
-// Local namespace-backed catalog root (DirectoryNamespace)
+// Local DirectoryNamespace root
 // See https://lance.org/format/namespace/dir/catalog-spec/
 let mut properties = HashMap::new();
 properties.insert("root".to_string(), "./local_lancedb".to_string());
@@ -185,9 +183,7 @@ application code, load credentials from environment variables or a secrets manag
 
 <CodeGroup>
 ```python Python icon="python"
-import lancedb
-
-# Remote namespace-backed catalog root (RestNamespace)
+# Remote RestNamespace root
 # See https://lance.org/format/namespace/rest/catalog-spec/
 db = lancedb.connect_namespace(
     "rest",
@@ -203,7 +199,7 @@ db = lancedb.connect_namespace(
 ```typescript TypeScript icon="square-js"
 import * as lancedb from "@lancedb/lancedb";
 
-// Remote namespace-backed catalog root (RestNamespace)
+// Remote RestNamespace root
 // See https://lance.org/format/namespace/rest/catalog-spec/
 const db = await lancedb.connectNamespace("rest", {
   uri: "https://<your_catalog>.internal.<your_org>.com",
@@ -218,7 +214,7 @@ const db = await lancedb.connectNamespace("rest", {
 ```rust Rust icon="rust"
 use std::collections::HashMap;
 
-// Remote namespace-backed catalog root (RestNamespace)
+// Remote RestNamespace root
 // See https://lance.org/format/namespace/rest/catalog-spec/
 let mut properties = HashMap::new();
 properties.insert(
@@ -239,7 +235,7 @@ let db = lancedb::connect_namespace("rest", properties)
     .await?;
 ```
 </CodeGroup>
-[LanceDB Enterprise](/enterprise) operates a REST namespace server on top of the Lance format, so any REST client that can speak the REST namespace API
+[LanceDB Enterprise](/index#architecture) operates a REST namespace server on top of the Lance format, so any REST client that can speak the REST namespace API
 contract can be used to interact with it. It does not serve the contract's `exists` routes,
 so existence checks made through a direct REST namespace client fail against it.
 Python remote connections created with `lancedb.connect("db://...")` or
@@ -379,3 +375,19 @@ With `forward_header_prefixes = ["X-forward"]`, any incoming header starting wit
 For the LanceDB REST API itself, requests use `x-api-key` for API-key authentication. If your endpoint
 serves more than one database, LanceDB can also use headers such as `x-lancedb-database` or
 `x-lancedb-database-prefix` to route the request to the right database context.
+
+## Privileges {#privileges}
+
+A namespace's `USAGE`, and the `CREATE_TABLE`, `CREATE_VIEW`,
+`CREATE_MATERIALIZED_VIEW`, `CREATE_NAMESPACE`, `CREATE_SECRET`,
+`CREATE_STORAGE_INTEGRATION` and `CREATE_FUNCTION` privileges for what it
+can hold, are granted through the REST ACL API or SQL `GRANT`/`REVOKE`:
+
+<CodeGroup>
+```sql SQL icon="database"
+GRANT CREATE NAMESPACE, CREATE TABLE, CREATE VIEW ON SCHEMA platform TO ROLE writers
+```
+</CodeGroup>
+
+See [Privileges](/governance/privileges#sql) for the full statement syntax
+and every target it reaches.

@@ -9,11 +9,13 @@ availability:
   enterprise: available
 ---
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 UPDATE documents SET title = upper(title) WHERE category = 'film'
 ```
+</CodeGroup>
 
-Assignments take any expression the [dialect](/sql/functions) supports,
+Assignments take any expression the [dialect](/sql/dql/functions) supports,
 including references to other columns of the same row. Without a `WHERE`
 clause every row is updated.
 

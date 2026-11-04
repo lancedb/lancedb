@@ -1,0 +1,58 @@
+---
+title: "Vector distance functions"
+sidebarTitle: "Vector Distance"
+description: "cosine_distance, distance, exact_distance and inner_product: per-row vector distance, and the ORDER BY rewrite into vector search."
+icon: ruler
+keywords: ["distance", "cosine_distance", "exact_distance", "inner_product", "vector search", "sql", "scalar function"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+```text
+cosine_distance  distance  exact_distance  inner_product
+```
+
+<Warning>
+Distance functions can evaluate arrays per row. Some deployment versions also
+recognize `ORDER BY distance(vector, query_vector) LIMIT k` over a table scan
+and plan it as vector search, with indexed or flat search as appropriate.
+Where available, `exact_distance` evaluates distance without that rewrite.
+Confirm the functions supported by your deployment and inspect SQL
+[`EXPLAIN`](/sql/dql/explain); the function name alone does not guarantee an
+index-backed plan. See [SQL vector search](/basics/sql#no-vector-sql).
+</Warning>
+
+A third, optional argument is a comma-separated options string, and only
+`distance` and `exact_distance` accept one; `cosine_distance` and
+`inner_product` are plain two-argument functions. `metric` selects `l2`
+(default, alias `euclidean`), `cosine`, or `dot`. `nprobes` and `use_index`
+only affect `distance`, since it's the only one of the two that the
+index-search rewrite applies to in the first place -- `exact_distance` is
+never rewritten into an index search, so passing it `use_index`/`nprobes`
+does nothing; use a plain `distance` call with `use_index=false` to force a
+flat scan instead:
+
+<CodeGroup>
+```sql SQL icon="database"
+SELECT id FROM documents
+ORDER BY distance(embedding, ARRAY[0.1, 0.2, 0.3], 'metric=cosine,nprobes=20')
+LIMIT 10
+
+-- Force a flat scan, bypassing the index:
+SELECT id FROM documents
+ORDER BY distance(embedding, ARRAY[0.1, 0.2, 0.3], 'use_index=false')
+LIMIT 10
+```
+</CodeGroup>
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="SQL vector search" icon="magnifying-glass" href="/basics/sql#no-vector-sql">
+    Server-version requirements and the supported `ORDER BY` query forms.
+  </Card>
+  <Card title="EXPLAIN" icon="diagram-project" href="/sql/dql/explain">
+    Confirm whether a query planned as an index-backed vector search.
+  </Card>
+</CardGroup>

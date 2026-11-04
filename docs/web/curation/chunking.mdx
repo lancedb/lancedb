@@ -25,7 +25,11 @@ Functions, and scalar versus batch calling, if you have not registered one
 before.
 
 A function that splits text into fixed-size passages turns a `documents`
-table into one row per passage:
+table into one row per passage. Registration details, environment and
+dependency declarations, and how a version stays immutable once rows are
+filled from it, are the same for a chunker as for any other Function --
+register it from Python, or the same function from SQL with
+[`CREATE FUNCTION`](/sql/ddl/function#create):
 
 **Source: `documents`**
 
@@ -55,19 +59,19 @@ def split_into_passages(text: str) -> list[dict]:
 
 version = db.create_function_async(split_into_passages).wait()
 ```
-</CodeGroup>
 
-Registration details, environment and dependency declarations, and how a
-version stays immutable once rows are filled from it, are the same for a
-chunker as for any other Function. The same function can be registered from
-SQL with `CREATE FUNCTION`:
-
-<CodeGroup>
-```sql SQL
+```sql SQL icon="database"
 CREATE FUNCTION split_into_passages(text utf8)
 RETURNS list<struct<chunk_index: int64, chunk_text: utf8>>
 LANGUAGE python
-AS 'def split_into_passages(text): size = 200; return [{"chunk_index": i, "chunk_text": text[i:i+size]} for i in range(0, len(text), size)]'
+AS '
+def split_into_passages(text):
+    size = 200
+    return [
+        {"chunk_index": i, "chunk_text": text[i:i+size]}
+        for i in range(0, len(text), size)
+    ]
+'
 ```
 </CodeGroup>
 
@@ -79,12 +83,9 @@ with every other column repeated. Reference the function's output fields
 through the alias:
 
 <CodeGroup>
-```python Python icon="python"
-reader = db.execute_query("""
-    SELECT doc_id, title, p.chunk_index, p.chunk_text
-    FROM documents, split_into_passages(text) AS p
-""")
-print(reader.read_all().to_pylist())
+```sql SQL icon="database"
+SELECT doc_id, title, p.chunk_index, p.chunk_text
+FROM documents, split_into_passages(text) AS p
 ```
 </CodeGroup>
 
@@ -134,7 +135,6 @@ rather than loading the whole clip -- and returns one JPEG per call:
 
 <CodeGroup>
 ```python Python icon="python"
-import lancedb
 from datetime import timedelta
 from lancedb import BlobReader
 
@@ -159,11 +159,9 @@ Compose both in one query: explode `videos` into one row per sampled
 timestamp, then call `extract_frame` on each row to produce its image:
 
 <CodeGroup>
-```python Python icon="python"
-reader = db.execute_query("""
-    SELECT video_id, f.frame_index, f.ts, extract_frame(video, f.ts) AS jpeg
-    FROM videos, sample_frame_timestamps(duration_seconds) AS f
-""")
+```sql SQL icon="database"
+SELECT video_id, f.frame_index, f.ts, extract_frame(video, f.ts) AS jpeg
+FROM videos, sample_frame_timestamps(duration_seconds) AS f
 ```
 </CodeGroup>
 
@@ -179,7 +177,7 @@ to keep a real table that stays current as the source changes, instead of
 recomputing the explosion on every query:
 
 <CodeGroup>
-```sql SQL
+```sql SQL icon="database"
 CREATE MATERIALIZED VIEW chunks AS
 SELECT doc_id, title, p.chunk_index, p.chunk_text
 FROM documents, split_into_passages(text) AS p
@@ -204,7 +202,7 @@ curation in a second step over the chunked table.
 ## Chunk, then curate {#next}
 
 A freshly chunked table is a normal table: [dedupe](/curation/dedupe) it to
-collapse near-identical chunks, [sample](/curation/sampling) it for a quick
+collapse near-identical chunks, [sample](/curation/statistical-sampling) it for a quick
 look, or [profile it](/curation/aggregate) to check how many chunks each
 source row produced. Continue with
 [choosing a curation task](/curation#questions).

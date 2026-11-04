@@ -1,0 +1,67 @@
+---
+title: "Catalog"
+sidebarTitle: "Catalog"
+description: "The unnamed root of an Enterprise deployment: initial access, the superuser bootstrap, and where privileges apply."
+icon: sitemap
+keywords: ["catalog", "superuser", "bootstrap", "privileges", "initial access", "root"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+The catalog is the unnamed root of one Enterprise deployment, identified by
+its endpoint rather than a name -- see
+[Catalog Hierarchy](/basics/catalog#hierarchy) for how it relates to the
+databases, namespaces and tables beneath it, and
+[Connecting to Catalog](/basics/catalog#connecting-to-catalog) for
+`connect_catalog(endpoint)` itself. This page covers what it takes to reach
+a brand new deployment for the first time.
+
+## Initial access {#initial-access}
+
+A newly deployed catalog has no databases and no grants: nobody yet holds
+`CREATE_DATABASE` or any other system-level privilege, so there is nothing
+for an ordinary principal to do with a catalog connection. Database
+administration starts from a **superuser**.
+
+## Superuser {#superuser}
+
+A superuser is an identity your deployment operator configures outside the
+normal grant system, not a role anyone can be granted. It bypasses
+privilege checks entirely, on every object, rather than holding specific
+privileges -- the same way `OWNERSHIP` on an object grants full authority
+over that one object, a superuser has it over the whole deployment.
+
+This is what makes a brand new deployment usable. Creating a database or
+namespace can fall back to a system or parent-namespace privilege when the
+object has no owner yet -- see
+[Creating an object you don't own yet](/governance/privileges#creation) --
+but a system-level privilege itself has no such fallback, so a superuser
+signs in first and grants `CREATE_DATABASE`, `OPERATE`, or other system
+privileges to real principals and roles. Day-to-day administration then
+runs through those grants, the same as any other object; reach for the
+superuser identity to recover access or bootstrap a new deployment, not as
+a standing way to work.
+
+## Privileges {#privileges}
+
+The catalog connection itself is gated by privileges on the `system`
+object: `CREATE_DATABASE` to create one, `OPERATE` to manage jobs, caches,
+server configuration and role membership, and `USAGE` to list jobs and look
+up other identities. See [Privileges](/governance/privileges) for the full
+table and how a grant is addressed, and
+[Principals](/governance/principals) for who a grant can name.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Catalog Hierarchy" icon="sitemap" href="/basics/catalog#hierarchy">
+    How the catalog relates to databases, namespaces and tables.
+  </Card>
+  <Card title="Privileges" icon="key" href="/governance/privileges">
+    Every privilege, and the grant and revoke syntax that covers each one.
+  </Card>
+  <Card title="Database" icon="database" href="/management/database">
+    Create and manage a database once you can reach the catalog.
+  </Card>
+</CardGroup>

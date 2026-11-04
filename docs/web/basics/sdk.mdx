@@ -3,15 +3,15 @@ title: "SDKs"
 sidebarTitle: "SDKs"
 description: "Choose a LanceDB SDK and find the API reference for your language."
 icon: code-compare
-keywords: ["python", "typescript", "rust", "java", "sdk", "rest", "api reference"]
+keywords: ["python", "typescript", "rust", "java", "sdk", "api reference"]
 ---
 
 Use a LanceDB SDK to create tables, add data, build indexes and run searches
 from your application. Python, TypeScript and Rust work with both LanceDB
 Embedded and LanceDB Enterprise. LanceDB Embedded runs in your application's
-process; your data can live on local disk or in object storage. In LanceDB
-Enterprise, query execution, indexing and maintenance run on the service,
-outside your application.
+process; your data can live on local disk or in object storage. LanceDB
+Enterprise distributes query execution, indexing, maintenance and refresh
+work across the service, outside your application.
 
 The [quickstart](/quickstart) includes installation instructions and complete
 examples in all three languages. For connection settings, see
@@ -36,16 +36,13 @@ provide a SQL execution method.
 
 ## Lance Namespace SDKs {#lance-namespace-sdks}
 
-LanceDB Enterprise's catalog and table operations follow
-[Lance Namespace](https://lance.org/format/namespace), an open specification
-for describing access to tables in a multimodal lakehouse, including its REST
-Namespace Spec. LanceDB Enterprise exposes this as an HTTP API for catalog and
-table operations -- the [REST API reference](/api-reference/rest) describes
-its endpoints and request formats. Use it when integrating a language or tool
-without a LanceDB SDK; for SQL queries, connect through
-[Flight SQL](/basics/sql) instead. Any client that implements a Lance
-Namespace REST client can integrate with LanceDB this way, not only the
-official SDKs above.
+LanceDB Enterprise's catalog and table operations follow the
+[Lance Namespace Client SDK Specification](https://lance.org/format/namespace),
+an open specification for describing access to tables in a multimodal
+lakehouse. Any client that implements it can integrate with LanceDB this
+way, not only the official SDKs above -- useful for a language or tool
+without a LanceDB SDK. For SQL queries, connect through
+[Flight SQL](/basics/sql) instead.
 
 | Language | Package | Used by |
 | --- | --- | --- |
@@ -55,13 +52,13 @@ official SDKs above.
 
 LanceDB's Java client builds on this Lance Namespace Java core: table creation,
 listing and most other catalog operations go through the generated
-`LanceNamespace` interface talking to Enterprise's REST Namespace endpoint.
+`LanceNamespace` interface talking to Enterprise's Namespace endpoint.
 The [real time engine](/tables/realtime-engine) is the one area with its own,
 LanceDB-specific Java client on top, since RTE's LSM write path is not part of
-the Lance Namespace specification.
+the Lance Namespace Client SDK Specification.
 
 See [lance.org/format/namespace](https://lance.org/format/namespace) for the
-full spec and its other catalog implementations (Directory, Apache Polaris,
+full specification and its other catalog implementations (Directory, Apache Polaris,
 Unity Catalog, Apache Hive Metastore, Apache Iceberg REST Catalog, and more).
 
 ## Community SDKs {#community-sdks}

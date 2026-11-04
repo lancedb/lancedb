@@ -79,23 +79,19 @@ it current.
 enables them; the SDK methods send the view's SQL query to the deployment. See
 [Views](/management/view).
 
-{/*
-Draft for the Functions release.
-
 ### Functions {#functions}
 
 | | Python | TypeScript | SQL |
 | --- | --- | --- | --- |
 | create | `create_function`, `create_function_async` | -- | `CREATE FUNCTION` |
-| get | `get_function` | -- | -- |
+| get | `get_function` | -- | `DESCRIBE FUNCTION` |
 | list | `list_functions` | -- | `SHOW FUNCTIONS` |
-| drop | `drop_function` | -- | -- |
+| drop | `drop_function` | -- | `DROP FUNCTION` |
 
 <Badge color="red">Enterprise</Badge> A function runs on the server, and only on
 a deployment that enables functions, so there is no local form. The TypeScript
 SDK has no function methods; use Python or SQL.
 See [Functions](/management/function).
-*/}
 
 ### Jobs {#jobs}
 
@@ -106,7 +102,7 @@ See [Functions](/management/function).
 | cancel | `cancel_job` | `cancelJob` | -- |
 | errors | `job.events` | `job.events` | `SHOW ERRORS` |
 
-See [Jobs](/basics/jobs).
+See [Job Framework](/basics/jobs).
 
 ### Indexes {#indexes}
 
@@ -142,11 +138,12 @@ const tbl = await db.openTable("clicks", ["prod", "events"]);
 ```
 
 ```sql SQL
-SELECT * FROM prod.events.clicks
+SELECT * FROM `prod$events`.clicks
 ```
 </CodeGroup>
 
-In SQL the path is written as dotted identifiers instead.
+In SQL the path is written as a `$`-joined schema instead; see
+[Namespace](/basics/catalog#schema) for why it isn't dotted.
 
 ## Delete catalog objects {#dropping}
 

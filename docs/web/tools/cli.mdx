@@ -1,6 +1,6 @@
 ---
 title: "LanceDB CLI"
-sidebarTitle: "Command line"
+sidebarTitle: "CLI"
 description: "Connect to LanceDB, run SQL, and manage connection profiles with the lancedb command-line client."
 icon: terminal
 keywords: ["cli", "command line", "sql", "profiles", "authentication"]
@@ -64,18 +64,22 @@ sessions. Each archive also contains the license and Rust third-party notices.
 With Rust and Git installed, build the CLI from the LanceDB repository. Check
 out a release tag to build that version:
 
-```sh
+<CodeGroup>
+```bash Bash icon="terminal"
 git clone https://github.com/lancedb/lancedb.git
 cd lancedb
 git checkout vX.Y.Z # Replace with the desired release tag
 cargo install --locked --path rust/lancedb/cli
 ```
+</CodeGroup>
 
 Check the available options:
 
-```sh
+<CodeGroup>
+```bash Bash icon="terminal"
 lancedb --help
 ```
+</CodeGroup>
 
 ## Connect to a deployment
 
@@ -83,12 +87,14 @@ Get the Flight SQL endpoint, HTTP API endpoint, database name, and credentials
 from your deployment administrator. Create a named profile to save the
 connection settings:
 
-```sh
+<CodeGroup>
+```bash Bash icon="terminal"
 lancedb profile create production \
   --sql-server-url grpcs://sql.example.com:10025 \
   --http-server-url https://query.example.com \
   --database analytics
 ```
+</CodeGroup>
 
 The SQL endpoint executes statements. The HTTP endpoint supports shell commands
 that inspect table and index metadata. Replace both example URLs with the
@@ -96,20 +102,24 @@ endpoints for your deployment; they may use different hosts or ports.
 
 For API-key authentication, set the credential in your environment:
 
-```sh
+<CodeGroup>
+```bash Bash icon="terminal"
 export LANCEDB_API_KEY="YOUR_API_KEY"
 lancedb --profile production
 ```
+</CodeGroup>
 
 Use `grpcs://` or `https://` for a TLS-protected SQL connection. A bare
 `host:port` or a `grpc://` address selects a plaintext connection.
 
 ### Set the default profile
 
-```sh
+<CodeGroup>
+```bash Bash icon="terminal"
 lancedb profile set production
 lancedb
 ```
+</CodeGroup>
 
 <Note>
 Running `lancedb` opens the SQL shell when the default profile has a Flight SQL
@@ -120,9 +130,11 @@ guidance. Command and file execution also require a configured endpoint.
 To connect to an existing server on localhost, explicitly select the built-in
 local profile:
 
-```sh
+<CodeGroup>
+```bash Bash icon="terminal"
 lancedb --profile local
 ```
+</CodeGroup>
 
 This profile uses Flight SQL on port `10025` and HTTP on port `10024`.
 
@@ -130,23 +142,29 @@ This profile uses Flight SQL on port `10025` and HTTP on port `10024`.
 
 Execute a statement and exit:
 
-```sh
+<CodeGroup>
+```bash Bash icon="terminal"
 lancedb --profile production --command 'SELECT 1' --format json
 ```
+</CodeGroup>
 
 To execute a file, separate its statements with semicolons. For example, save
 the following as `queries.sql`:
 
-```sql
+<CodeGroup>
+```sql queries.sql icon="database"
 SELECT COUNT(*) FROM documents;
 SELECT id, text FROM documents LIMIT 10;
 ```
+</CodeGroup>
 
 Run the file with:
 
-```sh
+<CodeGroup>
+```bash Bash icon="terminal"
 lancedb --profile production --file queries.sql
 ```
+</CodeGroup>
 
 Quoted strings and comments in SQL files are preserved when statements are
 split. `--command` and `--file` are mutually exclusive.
@@ -162,9 +180,11 @@ For query results, `--format` accepts the following values:
 | `json` | A JSON array of rows |
 | `ndjson` | One JSON row per line |
 
-```sh
+<CodeGroup>
+```bash Bash icon="terminal"
 lancedb --profile production --command 'SELECT id FROM documents' --format csv
 ```
+</CodeGroup>
 
 ## Use the SQL shell
 
@@ -188,11 +208,13 @@ Large interactive results use a pager. Set `NO_PAGER=1` to disable paging.
 
 ### Inspect jobs with SQL
 
-```sh
+<CodeGroup>
+```bash Bash icon="terminal"
 lancedb --profile production --command 'SHOW JOBS'
 lancedb --profile production --command "SHOW ERRORS ON documents FOR JOB 'JOB_ID'"
 lancedb --profile production --command "CANCEL JOB 'JOB_ID'"
 ```
+</CodeGroup>
 
 See the [job SQL reference](/sql/ddl/job) for syntax and deployment requirements,
 and the [SQL reference](/sql) for other supported statements.
@@ -202,12 +224,14 @@ and the [SQL reference](/sql) for other supported statements.
 Profiles are stored in `~/.lancedb/config.toml`. The CLI reuses existing
 Enterprise profiles and cached OAuth sessions.
 
-```sh
+<CodeGroup>
+```bash Bash icon="terminal"
 lancedb profile list
 lancedb profile show production
 lancedb profile edit production --database staging
 lancedb profile delete production
 ```
+</CodeGroup>
 
 Use `lancedb profile create NAME` without connection flags for interactive
 setup. For a single SQL invocation, flags such as `--database` and
@@ -235,12 +259,14 @@ Choose one authentication method per profile. An OAuth profile cannot also
 contain `api_key` or `oidc_access_token_file`. Environment credentials override
 the profile, so clear API-key overrides before connecting with OAuth:
 
-```sh
+<CodeGroup>
+```bash Bash icon="terminal"
 unset LANCEDB_API_KEY
 lancedb auth login --profile production
 lancedb auth status --profile production
 lancedb --profile production
 ```
+</CodeGroup>
 
 `auth login` follows the profile's OAuth flow. Browser and device-code sessions
 cache refresh tokens for later commands. Use `lancedb auth logout --profile
@@ -253,16 +279,20 @@ available authentication methods.
 
 To trust a private certificate authority, pass its PEM certificate:
 
-```sh
+<CodeGroup>
+```bash Bash icon="terminal"
 lancedb --profile production --ca-cert /path/to/ca.pem
 ```
+</CodeGroup>
 
 If the server requires mutual TLS, supply both a client certificate and its
 PKCS#8 private key. Save these settings in the profile with:
 
-```sh
+<CodeGroup>
+```bash Bash icon="terminal"
 lancedb profile edit production \
   --ca-cert /path/to/ca.pem \
   --client-cert /path/to/client.pem \
   --client-key /path/to/client-key.pem
 ```
+</CodeGroup>

@@ -4,6 +4,9 @@ sidebarTitle: "Function"
 description: "Register a Python function once and apply it as a column, for work SQL cannot express."
 icon: code
 keywords: ["udf", "functions", "create_function", "embedding", "feature engineering"]
+availability:
+  embedded: unavailable
+  enterprise: available
 ---
 
 import {
@@ -15,6 +18,7 @@ import {
     PyFunctionRefresh as FunctionRefresh,
     PyFunctionInspect as FunctionInspect,
     PyFunctionClassDefine as FunctionClassDefine,
+    PyFunctionClassRegister as FunctionClassRegister,
     PyFunctionClassApply as FunctionClassApply,
 } from '/snippets/function.mdx';
 import { PyConnectEnterprisePlaceholders as FunctionConnect } from '/snippets/connection.mdx';
@@ -35,8 +39,8 @@ In SQL, a function is registered with [`CREATE FUNCTION`](/sql/ddl/function#crea
 </Note>
 
 Functions are the way to fill columns with Python in LanceDB Enterprise. If you
-already use [Geneva](/geneva), it remains available; see
-[Geneva and Functions](/geneva#functions) for how its concepts map onto these.
+already use [Geneva](/geneva), it remains available; see the Geneva docs for
+how its concepts map onto these.
 
 The steps below take a column of numbers to a filled column of their doubles.
 
@@ -64,24 +68,6 @@ computed-column row as unfilled. A named-struct output may declare nullable
 fields: whether a row has a result at all is the struct's own validity, which
 Enterprise keeps in a separate internal column when it expands the result into
 sibling columns, so a null field is a value rather than a missing row.
-
-Registration can also cap each execution batch and set its row deadline:
-
-<CodeGroup>
-```python Python icon="python"
-@udf(batch_size=32, row_timeout_seconds=90)
-def encode(value: float) -> float:
-    return value
-```
-</CodeGroup>
-
-`batch_size` is the maximum number of input rows in a batch; execution may use
-fewer. `row_timeout_seconds` bounds each Python call: one row for scalar
-Functions and one batch for vectorized Functions. It does not include a Function
-instance's `__init__`. Both values are fixed into the registered version and
-apply to direct calls, computed columns, and materialized-view refreshes. When
-omitted, the service chooses batches adaptively and applies its default per-call
-budget.
 
 ## Connect and create a table {#table}
 
@@ -126,6 +112,51 @@ waits for publication. The SDK returns the SQL query handle. Query handles
 have no registry history and cannot be reopened with `open_job()`.
 </Note>
 
+## List and describe {#list-describe}
+
+`list_functions` pages through every published version in a namespace,
+ordered by name then version; `get_function` opens one exact version by
+name and `version`. Both take `namespace_path`, defaulting to the root
+namespace, the same as `create_function`.
+
+<CodeGroup>
+```python Python icon="python"
+for version in db.list_functions():
+    print(version.name, version.version, version.created_at_millis)
+
+version = db.get_function("double", version="1")
+```
+
+```rust
+use futures::TryStreamExt;
+
+# async fn list_and_get(connection: &lancedb::Connection) -> Result<(), Box<dyn std::error::Error>> {
+let mut versions = connection.list_functions(&[], Default::default());
+while let Some(version) = versions.try_next().await? {
+    println!("{} {} {}", version.name(), version.version(), version.created_at_millis());
+}
+
+let version = connection.get_function("double", "1", &[]).await?;
+# Ok(())
+# }
+```
+</CodeGroup>
+
+<CodeGroup>
+```sql SQL icon="database"
+SHOW FUNCTIONS
+SHOW FUNCTIONS IN "analytics" WITH (name = 'double', limit = 100)
+
+DESCRIBE FUNCTION double WITH (version = '1')
+```
+</CodeGroup>
+
+`list_functions` returns a lazy iterator: `page_limit` bounds each request,
+not the total, and `page_token` resumes from a saved token. Child namespaces
+are not included; list each namespace separately. A version's
+`created_at_millis`, `metadata`, `disabled` flag, and `secret_bindings` are
+all readable this way without applying or calling the function.
+
 ## Try it in SQL {#try-sql}
 
 A registered function is callable in SQL by its name, the same as any other
@@ -163,10 +194,13 @@ binding, with aliases from `rename(columns=...)`.
 ### Bind more than one input, or fill more than one column {#multi}
 
 Parameters bind by name, so a function that takes several arguments binds
-several columns in one call:
+several columns in one call. `ratio` divides two existing columns, so give
+the table a second one first:
 
 <CodeGroup>
 ```python Python icon="python"
+table.add_columns({"count": "value + 1"})
+
 @udf
 def ratio(numerator: float, denominator: float) -> float:
     return numerator / denominator
@@ -186,6 +220,7 @@ mapping, so both columns come from one atomic binding:
 import pyarrow as pa
 
 @udf(
+    input_schema=pa.schema([pa.field("value", pa.float64(), nullable=False)]),
     output_schema=pa.schema([
         pa.field("half", pa.float64(), nullable=False),
         pa.field("double", pa.float64(), nullable=False),
@@ -201,6 +236,12 @@ application = version(value=col("value")).rename(
 table.add_columns(application)
 ```
 </CodeGroup>
+
+<Note>
+`input_schema` and `output_schema` must be given together on v0.41.0. A
+version after it accepts either alone, inferring the other from the
+annotations.
+</Note>
 
 A single refresh fills `value_half` and `value_double` together: there is no
 state where one is filled and the other is still empty.
@@ -247,6 +288,12 @@ State belongs to one instance. An instance reuses it across every batch it
 serves, but instances do not share it, so each one holds its own copy of the
 model. Plan memory, or a GPU, for one copy per instance.
 
+Register it the same way as a plain function:
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionClassRegister}
+</CodeBlock>
+
 The annotated parameters of `__init__` are the function's initialization
 fields. Their values come from each binding rather than from the function, so
 one registered version can run with different settings on different columns:
@@ -265,188 +312,22 @@ credentials out of them: pass `secrets=[EnvVarSecret(...)]` to
 Calling the decorated class in your own process constructs it, the same as an
 undecorated class, so local tests can create an instance and call it directly.
 
-## Read and produce blobs {#blobs}
+## Blob v2 columns {#blobs}
 
-A Function can bind a [Blob v2 column](/management/table#managed-blobs) and
-return another blob. In row mode, a top-level blob parameter arrives as Python
-`bytes`, or `None` for a nullable input, after the worker has read the
-payload. Return bytes and let the destination table store the Managed
-payload and descriptor.
+A Function can bind a [Blob v2 column](/management/table#managed-blobs) as
+input and return another. In row mode, a top-level blob parameter arrives as
+Python `bytes`, or `None` for a nullable input, after the worker has read
+the payload; annotate it `BlobReader` instead for seekable, incremental
+reads that avoid materializing the whole payload first. Return bytes and let
+the destination table store the Managed payload and descriptor --
+`output_schema=lancedb.blob(...)` is what makes the result Blob v2 rather
+than plain Arrow `binary`; a bare annotation persists as ordinary binary
+instead, skipping the Managed storage path and `fetch_blobs`.
 
-The rest of this section extracts a frame from a stored video and captions
-it, continuing as one example across chaining, persisting and incremental
-reads below. `videos` holds raw clips in a `video` Blob v2 column; `frames`
-names one timestamp per clip to extract, with a `selected` flag to skip some:
-
-<CodeGroup>
-```python Python icon="python"
-import lancedb
-import pyarrow as pa
-
-videos = db.create_table("videos", schema=pa.schema([
-    pa.field("id", pa.utf8(), nullable=False),
-    lancedb.blob("video", nullable=False),
-]))
-frames = db.create_table("frames", [
-    {"frame_id": 1, "video_id": "clip-1", "ts": 0.5, "selected": True},
-    {"frame_id": 2, "video_id": "clip-1", "ts": 1.5, "selected": True},
-])
-```
-</CodeGroup>
-
-### Produce a blob {#produce-blobs}
-
-Declare blob inputs and outputs explicitly. `extract_frame` reads one frame
-out of a video at a timestamp and returns it as a JPEG, without loading the
-whole clip first -- see [Read a blob incrementally](#incremental) below for
-how the `video: BlobReader` parameter does that:
-
-<CodeGroup>
-```python Python icon="python"
-from datetime import timedelta
-
-from lancedb import BlobReader, col
-from lancedb.functions import udf
-
-@udf(
-    name="extract_frame",
-    gpu=True,
-    pip=["av==13.1.0", "pillow==11.0.0"],
-    input_schema=pa.schema([
-        lancedb.blob("video"),
-        pa.field("ts", pa.float64(), nullable=False),
-    ]),
-    output_schema=lancedb.blob("jpeg", nullable=False),
-)
-def extract_frame(video: BlobReader, ts: float) -> bytes:
-    ...  # decode the frame at ts, encode as JPEG, return its bytes
-
-version = db.create_function_async(extract_frame).wait(timeout=timedelta(minutes=15))
-```
-</CodeGroup>
-
-An empty byte string is a filled result. A scalar output cannot be nullable,
-because a physical NULL marks an unfilled computed row. To return a nullable
-blob as a value, use a named-struct output schema with a nullable blob field;
-the struct itself records whether the result has been filled. Read a nested
-blob with `table.fetch_blobs("payload.image", hits)`.
-
-A list or large-list output may also contain Blob v2 elements; inputs and
-fixed-size lists do not support this layout. List-nested values are queryable
-as descriptors, but `fetch_blobs` and `blob_mode="bytes"` cannot fetch their
-payloads.
-
-<Warning>
-`output_schema=lancedb.blob(...)` is what makes a persisted result Blob v2
-rather than plain Arrow `binary`. Returning `bytes` from a function whose
-output type is inferred from a bare annotation, with no explicit
-`lancedb.blob(...)` output schema, persists as ordinary `binary`: the column
-still holds the right bytes, but it skips the Managed storage path, descriptor
-reads, and `fetch_blobs`. Declare it explicitly on every function whose output
-should be a blob, not just the first one in a chain.
-</Warning>
-
-### Chain a Function on its output {#chain}
-
-A second Function can bind a blob another Function produced. Register
-`caption` the same way, consuming a blob instead of producing one:
-
-<CodeGroup>
-```python Python icon="python"
-@udf(gpu=True, pip=["transformers==4.47.0"])
-def caption(jpeg: bytes) -> str:
-    ...  # run a vision-language model over the JPEG, return one sentence
-
-caption_version = db.create_function_async(caption).wait(timeout=timedelta(minutes=15))
-```
-</CodeGroup>
-
-Compose both in one SQL statement over a join, instead of applying each as
-its own column. The join supplies `video` and `ts` from two different
-tables, and `caption` reads `extract_frame`'s result as it is computed,
-before anything is written:
-
-<CodeGroup>
-```sql SQL
-SELECT f.frame_id, extract_frame(v.video, f.ts) AS jpeg,
-       caption(extract_frame(v.video, f.ts)) AS caption
-FROM videos v JOIN frames f ON v.id = f.video_id
-WHERE f.selected = true
-```
-</CodeGroup>
-
-[`EXPLAIN`](/sql/dql/explain) on a query like this shows `RemoteTake`: the
-blob is read once, where the worker runs, and never pulled into the query
-node first.
-
-### Persist it as a column, or a materialized view {#persist}
-
-Apply the same chained expression with `add_columns` to persist it as an
-ordinary table column:
-
-<CodeGroup>
-```python Python icon="python"
-table.add_columns({"jpeg": extract_frame(video=col("video"), ts=col("ts"))})
-result = table.refresh_column_async("jpeg").wait(timeout=timedelta(minutes=15))
-assert result.rows_failed == 0
-
-hits = table.search().select(["frame_id", "jpeg"]).with_row_id(True).to_arrow()
-values = table.fetch_blobs("jpeg", hits).to_pylist()
-```
-</CodeGroup>
-
-Or wrap the join and both Functions in a
-[materialized view](/sql/ddl/materialized-view) instead, so the extracted
-frame and its caption stay current as new videos and frames arrive. See
-[Automatic refresh](/feature-engineering/refresh-column#automatic) for
-keeping either one fresh without calling refresh yourself.
-
-On deployments that support computed-column inputs, another Function can
-bind to `col("jpeg")` directly, the same as the SQL join above does through
-its own expression. Refresh the producer first, then the consumer. Once
-outputs are current, a later refresh fills appended rows. A filtered
-refresh preserves payload references for unselected Managed outputs. An
-unfiltered refresh can recompute a whole fragment when it cannot establish
-that the fragment's outputs are current.
-
-Function output blobs follow the same compaction and cleanup lifecycle as
-ingested Managed blobs. Retained versions continue to own their payloads;
-cleanup reclaims an object only after its retained references are gone.
-
-### Read a blob incrementally {#incremental}
-
-Annotate a row Function parameter with `BlobReader` to read a Blob v2 input
-incrementally, the way `extract_frame` above does, instead of materializing
-the whole payload first. The signature selects the access mode without
-another registration option. A minimal example, reading only the first MP4
-box type without loading the rest of the video:
-
-<CodeGroup>
-```python Python icon="python"
-from lancedb import BlobReader, udf
-
-
-@udf
-def first_box_type(video: BlobReader) -> bytes:
-    video.seek(4)
-    return video.read(4)
-```
-</CodeGroup>
-
-The worker passes a seekable reader backed by the stored blob --
-`video.seekable()` is `True`. `read(size)` reads from the current cursor;
-`read_range(offset, length)` reads a byte range without moving it, the same
-bytes a `seek(offset)` followed by `read(length)` would read. `size()`
-returns the payload size without reading it. Each row call receives its own
-reader, which closes when the call returns or raises. Do not retain it for
-another invocation.
-
-Use `video: bytes` when the Function needs the complete payload. Bytes inputs
-materialize before invocation and remain subject to eager input limits.
-Reader inputs keep the unread payload out of the input batch, but calling
-`video.read()` without a size loads all remaining bytes in Python. Reader
-inputs are supported in row mode. Return values remain ordinary values such
-as `bytes`; this feature does not add streamed outputs.
+See [Read and produce blobs](/curation/create-function#blobs) for a full
+example: extracting a frame from a stored video, chaining a second Function
+onto its output, persisting both as columns or a materialized view, and
+reading a blob input incrementally.
 
 ## Declare the environment {#environment}
 
@@ -505,38 +386,15 @@ in the function's source or its `env` map in plain text. A Secret is a
 database-scoped named credential; `db.create_secret` stores the value once,
 and an `EnvVarSecret` binds it to the environment variable the function
 reads. Binding is a registration-time decision, passed to
-`create_function_async`, not to `@udf`:
+`create_function_async`, not to `@udf`. No API returns a Secret's value,
+and it never appears in the function's registration: the function reads the
+environment variable the way it always did, and the binding is what puts a
+value there. A mistyped Secret name is caught at registration; a mistyped
+environment variable name surfaces only on the first rows, since nothing
+records which variables a function reads.
 
-<CodeGroup>
-```python Python icon="python"
-import os
-
-from lancedb import EnvVarSecret
-
-db.create_secret("openai-prod", os.environ["OPENAI_API_KEY"])
-
-@udf
-def embed(text: str) -> list[float]:
-    import os
-
-    from openai import OpenAI
-
-    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-    response = client.embeddings.create(input=text, model="text-embedding-3-small")
-    return response.data[0].embedding
-
-version = db.create_function_async(
-    embed,
-    secrets=[EnvVarSecret(secret_name="openai-prod", env_variable="OPENAI_API_KEY")],
-).wait()
-```
-</CodeGroup>
-
-No API returns a Secret's value, and it never appears in the function's
-registration: `embed` reads `OPENAI_API_KEY` the way it always did, and the
-binding is what puts a value there. A mistyped Secret name is caught at
-registration; a mistyped environment variable name surfaces only on the
-first rows, since nothing records which variables a function reads.
+See [Vend a Secret to a Function](/curation/vend-secret#specify) for the
+full worked example.
 
 ## Failure handling {#failures}
 
@@ -569,8 +427,8 @@ the surrounding scope.
 Pass `code=[module, ...]` to ship additional helper modules into the same
 image, for logic the function imports but that does not belong inlined into
 it -- a model-loading helper shared by several Functions, for example.
-Continuing `caption` from [above](#chain), with its model-loading code
-factored into a sibling module instead of inlined:
+Continuing the [`caption` Function](/curation/create-function#chain), with
+its model-loading code factored into a sibling module instead of inlined:
 
 <CodeGroup>
 ```python Python icon="python"
@@ -593,12 +451,29 @@ installed distribution.
 
 ## Drop it {#drop}
 
+<CodeGroup>
+```python Python icon="python"
+db.drop_function("double", version="1")
+```
+
+```rust
+# async fn drop_it(connection: &lancedb::Connection) -> Result<(), Box<dyn std::error::Error>> {
+let dropped = connection.drop_function("double", "1", &[]).await?;
+# Ok(())
+# }
+```
+
+```sql SQL icon="database"
+DROP FUNCTION double WITH (version = '1')
+```
+</CodeGroup>
+
 `db.drop_function(name, version=...)` removes only that published revision from
 lookup and listing, preserving other revisions and their grants. It returns
 `False` for a repeated drop or a name that is already gone. A revision never
 published under an existing name is an error. The last visible revision's drop
 releases the name and schedules object cleanup, which can finish after the call
-returns as a [background job](/maintenance/background-jobs).
+returns as a [background job](/basics/jobs#teardown).
 `drop_function_async` returns `(dropped, job)`, where `job` is a query-backed
 handle. Waiting confirms the revision's catalog removal; physical cleanup can
 continue afterward.
@@ -610,6 +485,9 @@ enabled.
 ## What to read next {#next}
 
 <CardGroup cols={2}>
+  <Card title="Create a Function" icon="code" href="/curation/create-function">
+    Scalar, batch, stateful, GPU and remote-service examples for common curation tasks.
+  </Card>
   <Card title="Computed columns" icon="table-columns" href="/feature-engineering/refresh-column">
     Refresh semantics, and the SQL alternative.
   </Card>

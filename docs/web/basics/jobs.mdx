@@ -1,6 +1,6 @@
 ---
-title: "Jobs"
-sidebarTitle: "Job"
+title: "Job Framework"
+sidebarTitle: "Job Framework"
 description: "Track background work from submission to completion."
 icon: hourglass-half
 keywords: ["job", "background", "progress", "events", "cancel"]
@@ -23,13 +23,15 @@ so check its status before
 waiting or requesting cancellation. See the operation's API reference for when
 the method returns.
 
-```python
+<CodeGroup>
+```python Python icon="python"
 job = tbl.create_index_async("vector", replace=True)
 
 print(job.id)
 print(job.job_type)
 print(job.status())
 ```
+</CodeGroup>
 
 ## Submit and wait for a job {#waiting}
 
@@ -50,7 +52,8 @@ If the timeout expires while disconnected, the wait raises `ConnectionError`
 with the job ID and instructions to resume waiting. A timeout while connected
 raises `TimeoutError`. The job may still be running; timing out does not cancel it.
 
-```python
+<CodeGroup>
+```python Python icon="python"
 from datetime import timedelta
 from lancedb.exceptions import JobFailedError, JobCancelledError
 
@@ -68,6 +71,7 @@ except ConnectionError as exc:
 except TimeoutError:
     print(f"still running: {job.status()}")
 ```
+</CodeGroup>
 
 After connectivity returns, reopen an Enterprise registry job by its saved ID
 and continue waiting on the existing operation:
@@ -95,7 +99,8 @@ cannot be reopened with `db.open_job()`; see [SQL-backed job handles](#sql-backe
 Reopening a job retrieves the existing operation; it does not restart failed
 work. Treat the ID as an opaque identifier and pass it unchanged to the jobs API.
 
-```python
+<CodeGroup>
+```python Python icon="python"
 job = db.open_job(job_id)  # raises JobNotFoundError if unknown
 job.refresh()              # pull the latest status from the server
 print(job.status())
@@ -105,13 +110,16 @@ print(events.to_pylist())
 
 job.cancel()
 ```
+</CodeGroup>
 
 List jobs on a connection, paging through the results:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 for info in db.list_jobs(page_limit=50):
     print(info.job_id, info.job_type, info.state)
 ```
+</CodeGroup>
 
 Event responses have [row limits](/basics/limits#jobs). An explicit limit can
 request more than the default, but it does not guarantee a complete event
@@ -207,8 +215,8 @@ positive progress rate from two compatible samples.
 ## Embedded and Enterprise execution {#in-process}
 
 The following table describes LanceDB Embedded operations and registry jobs on
-LanceDB Enterprise.
-SQL-backed job handles follow the query lifecycle described below.
+LanceDB Enterprise. SQL-backed job handles follow the query lifecycle
+described below.
 
 | | Embedded | Enterprise registry job |
 | --- | --- | --- |
@@ -259,10 +267,21 @@ capabilities and can be unsupported.
 The server decides whether SQL executes on its serving fleet or starts SQL job
 workers. That placement does not change the handle's query-backed identity.
 
+### Object teardown {#teardown}
+
+The "physical cleanup continues in the background" behavior above, for a
+dropped table, view, materialized view, Secret or Function, is a job type of
+its own: `drop_object` deletes the dropped object's content, then clears it
+from the database's cleanup backlog. You trigger it indirectly, by dropping
+one of those objects or a [namespace](/management/namespace) -- it runs as
+this job rather than inline with the call. Whether a dropped table runs as
+`drop_object` or as [`drop_table`](/management/table#drop), which fences the
+table's directory with its own marker instead, depends on how the deployment
+stores its catalog.
+
 ## Learn more {#next}
 
-- [Build and repair indexes](/indexing/reindexing): submit index work.
+- [Incremental Indexing](/indexing/incremental-indexing): submit index work.
 - [Refresh a computed column](/feature-engineering/refresh-column): populate derived values.
-- [Background jobs](/maintenance/background-jobs): understand Enterprise maintenance.
 - [SQL job commands](/sql/ddl/job): list jobs and inspect errors.
 - [SDKs](/basics/sdk): find the job API for your client.

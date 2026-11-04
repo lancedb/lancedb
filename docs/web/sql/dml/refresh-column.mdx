@@ -13,16 +13,20 @@ A LanceDB extension with no DataFusion equivalent. It is what makes
 [feature engineering](/feature-engineering) reachable from SQL: a column
 declared by [DDL](/sql/ddl/table#computed-column) starts empty, and a refresh fills it.
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 REFRESH COLUMN <column> ON [TABLE] <table>
   [WHERE <predicate>]
   [WITH (<option> = <value> [, ...])]
 ```
+</CodeGroup>
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 REFRESH COLUMN doubled ON my_table
 REFRESH COLUMN embedding ON documents WHERE created_at > '2026-01-01'
 ```
+</CodeGroup>
 
 A refresh gives values to rows that lack them, recomputes rows whose inputs
 changed, and **leaves other filled rows alone**. That makes it idempotent, cheap
@@ -37,35 +41,43 @@ committing to the whole table.
 | Option | Meaning |
 | --- | --- |
 | `num_workers` | how many workers to use |
-| `cpu_millis` | CPU budget per worker |
-| `memory_bytes` | memory budget per worker |
-| `gpu_count` | GPUs per worker |
-| `batch_size` | rows a worker takes at a time |
-| `error_policy` | `'skip'` continues past failing rows instead of failing the job |
+| `cpu_millis` | aggregate CPU ceiling across the refresh's workers, not a per-worker size |
+| `memory_bytes` | aggregate memory ceiling across the refresh's workers |
+| `gpu_count` | aggregate GPU budget across the refresh's workers. Function columns only |
+| `gpu_class` | GPU class name for the refresh's workers. Function columns only |
+| `batch_size` | rows passed to each Function call. Function columns only |
+| `max_executor_processes_per_worker` | cap on executor processes per worker. Function columns only |
+| `row_timeout_seconds` | deadline for one Function call. Function columns only |
+| `error_policy` | `'skip'` continues past failing rows instead of failing the job. Function columns only |
+| `max_failed_fraction` | fail the job once more than this share of rows has failed. Function columns only |
+| `max_failed_rows` | fail the job once more than this many rows has failed. Function columns only |
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 REFRESH COLUMN embedding ON documents
   WITH (cpu_millis = 8000, memory_bytes = 17179869184, gpu_count = 2)
 ```
+</CodeGroup>
 
-`num_workers` sets a count; the budget options size each worker. They are
-alternatives rather than a pair.
-
-{/*
-Draft for the Functions release.
+`num_workers` sets a count; the budget options size the refresh's workers in
+aggregate, not each one individually. They are alternatives rather than a
+pair.
 
 <Note>
-`error_policy` and `num_workers` are refused for a column filled by a registered
-[function](/management/function) with its own resource budget -- use the CPU,
-memory and GPU options there.
+`num_workers` is refused for a column filled by a registered
+[function](/management/function), which sizes its own workers from the CPU,
+memory and GPU options instead. `error_policy` (and the Function-only options
+above it in the table) is the reverse: it's refused for a plain SQL-expression
+column, which has no per-row failures to skip -- it's accepted only for a
+Function column.
 </Note>
-*/}
 
 ## Watching a refresh {#watching}
 
 A refresh submits work that outlives the call. Track it with
 [`SHOW JOBS`](/sql/ddl/job#show), and diagnose failures with
-[`SHOW ERRORS`](/sql/ddl/job#errors).
+[`SHOW ERRORS`](/sql/ddl/job#errors). For per-split progress, worker fleet
+detail, and a `DESCRIBE JOB` example, see [Watching a refresh](/sql/dml/refresh#watching).
 
 ## See also {#see-also}
 

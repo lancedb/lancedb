@@ -1,0 +1,64 @@
+---
+title: "Data Page Cache"
+sidebarTitle: "Data Page Cache"
+description: "How LanceDB Enterprise caches table data pages to avoid re-reading object storage."
+icon: "database"
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+The data page cache holds fixed-size pages of raw table data read from
+object storage, keyed by their location, so a later read of the same range
+is served from memory or local disk instead of round-tripping to the
+backing store. Plan executors and query nodes each keep their own cache for
+the pages they serve. A background prewarm job can populate a cache ahead
+of a request that needs it, rather than filling it lazily on first read.
+See [Architecture](/index#architecture).
+
+```mermaid
+flowchart LR
+    R["Read request<br/>for a data page"] --> M{"In memory?"}
+    M -->|hit| Return["Served from memory"]
+    M -->|miss| D{"In local disk cache?"}
+    D -->|hit| Promote["Loaded into memory,<br/>served"]
+    D -->|miss| O[("Object storage")]
+    O --> Fill["Fills memory and disk,<br/>served"]
+```
+
+A table's local disk cache shares one budget with the
+[tiered index cache](/enterprise/tiered-index-cache#disk-budget)'s disk
+tier where both are enabled on the same executor -- raising one's share of
+that budget lowers the other's.
+
+## Prewarming on demand {#prewarm}
+
+[Cache Prewarm](/enterprise/cache-prewarm)'s `startup_prewarm_idx` only
+warms the [tiered index cache](/enterprise/tiered-index-cache), not this
+one. The data page cache has its own, separate on-demand prewarm, run by a
+deployment operator rather than called from application code, optionally
+scoped to specific columns:
+
+<CodeGroup>
+```bash CLI icon="terminal"
+lancedb admin cache prewarm data --table embedding_table --column embedding
+```
+</CodeGroup>
+
+The command returns once the request is accepted, not once prewarming
+finishes; it is idempotent and safe to run concurrently from multiple
+clients. Prewarming has a large upfront cost, so it pays off for workloads
+that repeatedly query the same columns -- large columns such as embeddings
+or binary data may not be practical to prewarm this way.
+
+<Warning>
+The OSS SDK's `table.prewarm_data()` targets LanceDB Cloud, a different
+product; calling it against an Enterprise deployment 404s. Use the admin
+command above instead.
+</Warning>
+
+## Cache interfaces {#interfaces}
+
+- [Tiered Index Cache](/enterprise/tiered-index-cache) for the related
+  cache that holds deserialized index structures instead of raw data pages.
+- [Query plans](/basics/sql#query-plans) for inspecting what a query actually read.

@@ -1,18 +1,20 @@
 ---
 title: "Real Time reads"
-sidebarTitle: "Real Time Read"
+sidebarTitle: "RTE Read"
 description: "Query a table with the real time engine enabled and get writes back within milliseconds of being written, merged transparently with the base table."
 icon: "magnifying-glass"
 keywords: ["rte", "real time engine", "real time search", "real time query", "fresh reads", "memwal", "upsert"]
 availability:
-  embedded: unavailable
+  embedded: available
   enterprise: available
 ---
 
 A table with the [real time engine](/tables/realtime-engine) enabled queries
 the same way as any other table — nothing about `search`, filtering, or SQL
-changes. This page covers what you get back and how it performs; for enabling
-RTE and writing to a table, see [Real Time writes](/ingestion/realtime-write).
+changes. This page covers what you get back; for enabling RTE and writing to
+a table, see [Real Time writes](/ingestion/realtime-write). For how Enterprise
+combines these results across machines, see
+[Distributed Real Time Read](/enterprise/distributed-real-time-read).
 
 ## Query a real time table {#query}
 
@@ -33,32 +35,39 @@ frames.search("gripper closing on a cup", fts_columns="caption").limit(10).to_li
 ```
 </CodeGroup>
 
-Vector, full-text, BTree, bitmap, and most other scalar indexes are maintained
-on the memtable, so new rows are searchable through the index as soon as
-they're written — not just after the next compaction.
+By default every index on the table is RTE-maintained, re-read as the table
+changes, so a new index is picked up automatically; pin a smaller set with
+`RTEWriteSpec.with_maintained_indexes`. For full-text and scalar (BTree,
+bitmap) indexes, a maintained index covers every tier -- base table,
+SSTables, and the active memtable -- so a query rejects outright rather than
+silently skipping un-compacted rows if a resident memtable predates the
+index. Vector (ANN) search is maintained on the base table and SSTables the
+same way, and the active memtable builds its own in-memory HNSW graph as
+rows land, so writes stay vector-searchable within milliseconds too,
+without waiting on a freeze into an SSTable. That graph search steps aside
+for a full scan of the memtable only when it can't honor the query through
+a graph -- a prefilter, a primary-key override, a distance lower bound, or
+before the memtable has any index yet on a cold start.
 
-## Read performance {#read-performance}
+## Embedded: one process, one dataset {#embedded}
 
-Reads on an RTE table stay close to those on a fully compacted table, even
-with the fresh tier at its fullest before compaction.
+LanceDB Embedded runs this same LSM scanner directly against the local Lance
+dataset, in-process -- the identical merge-by-primary-key logic, the same
+maintained-index rules for vector, full-text, and scalar search, just with no
+network hop to a separate serving tier. There is no WAL node to route to and
+nothing to combine across machines: a query against an RTE-enabled Embedded
+table already reads the fresh tier together with the base table in one call.
+See [Distributed Real Time Read](/enterprise/distributed-real-time-read) for
+what Enterprise adds on top when that fresh tier is served by a separate
+machine from the one answering the rest of the query.
 
-The table below compares a 5M-row table with a 128-dimension IVF-PQ index plus
-BTree and FTS indexes, with and without RTE. The RTE table holds one
-unflushed memtable and three SSTables, each from a 100k-row write wave, half of
-which are updates to existing rows. Latencies are p50 in milliseconds.
+Not every query shape runs through the LSM scanner -- a query that asks for
+`with_row_id`, time travel, multiple query vectors, hybrid search, or a
+handful of other combinations is rejected with a clear error asking you to
+set `use_rte(False)` and read the base table only, rather than silently
+returning a result that omits un-compacted rows.
 
-| Query | Without RTE | With RTE |
-| --- | --: | --: |
-| Primary-key lookup | 62 | 63 |
-| Vector search | 68 | 71 |
-| Vector search with prefilter | 90 | 91 |
-| Full-text term | 63 | 64 |
-| Full-text phrase | 68 | 82 |
-| Hybrid search (RRF) | 68 | 83 |
-| SQL point lookup | 189 | 187 |
-
-Most queries are within a few milliseconds of the base table. Hybrid and phrase
-queries add roughly 15 ms to merge the two tiers.
+## Limitations {#limitations}
 
 <Note>
 Support for all table operations on RTE tables is coming soon. Time travel,
@@ -69,6 +78,7 @@ available.
 ## Next steps {#next-steps}
 
 - [Real Time writes](/ingestion/realtime-write) — enable RTE and write to a table
-- [How the real time engine works](/tables/realtime-engine#how-it-works)
+- [Distributed Real Time Read](/enterprise/distributed-real-time-read) — combining results across machines in Enterprise
+- [How the real time engine works](/tables/realtime-engine#memwal-format)
 - [Hybrid search](/search/hybrid-search)
 - [Vector search](/search/vector-search)

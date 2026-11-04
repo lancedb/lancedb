@@ -1,0 +1,39 @@
+---
+title: "Distributed indexing"
+sidebarTitle: "Distributed indexing"
+description: "How LanceDB Enterprise distributes an index build across a fleet of job workers."
+icon: "layer-group"
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+Distributed indexing bin-packs a vector, full-text, or scalar index build into
+a plan of claimable tasks, then fans the plan out across job workers in
+LanceDB Enterprise. Workers claim tasks independently through the job
+registry and commit the finished index together. A vector index build first
+trains a shared IVF/PQ model from sampled data, then workers build storage
+from that model in parallel. See [Architecture](/index#architecture).
+
+```mermaid
+flowchart LR
+    S["Sample data"] --> T["Train shared IVF/PQ model<br/>(vector index only)"]
+    T --> P["Bin-pack build plan<br/>into claimable tasks"]
+    P --> R[("Job registry")]
+    R --> W1["Worker<br/>claims a task"]
+    R --> W2["Worker<br/>claims a task"]
+    R --> W3["Worker<br/>claims a task"]
+    W1 --> C["Commit the<br/>finished index"]
+    W2 --> C
+    W3 --> C
+```
+
+## Indexing interfaces {#indexing-interfaces}
+
+The shared indexing guides describe how to build and maintain each index
+type:
+
+- [Vector indexes](/indexing/vector-index) and [vector search](/search/vector-search).
+- [Full-text indexes](/indexing/fts-index) and [full-text search](/search/full-text-search).
+- [Scalar indexes](/indexing/scalar-index) and [filtering](/search/filtering).
+- [Incremental Indexing](/indexing/incremental-indexing) for triggering and tracking a build.
