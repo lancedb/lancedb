@@ -41,7 +41,7 @@
     },
     {
       "source": "/enterprise",
-      "destination": "/enterprise/index"
+      "destination": "/#architecture"
     },
     {
       "source": "/enterprise/intelligent-scheduling",
@@ -89,7 +89,7 @@
     },
     {
       "source": "/enterprise/deployment",
-      "destination": "/enterprise/index#deployment-and-governance"
+      "destination": "/#architecture"
     },
     {
       "source": "/feature-engineering/data-evolution",
