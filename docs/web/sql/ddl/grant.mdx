@@ -1,7 +1,7 @@
 ---
 title: "Grant"
 sidebarTitle: "Grant"
-description: "GRANT and REVOKE: privileges on every catalog object, from a database down to a Secret."
+description: "GRANT and REVOKE: privileges on every catalog object, from a database down to a Function."
 icon: user-lock
 keywords: ["grant", "revoke", "privileges", "authorization", "sql", "ownership"]
 availability:
@@ -15,7 +15,7 @@ GRANT <privilege>[, <privilege>...] ON <target> TO <grantee>[, <grantee>...]
 REVOKE <privilege>[, <privilege>...] ON <target> FROM <grantee>[, <grantee>...]
 
 <target> ::= SYSTEM | DATABASE <name> | SCHEMA <namespace> | NAMESPACE <name> [IN <schema>] | TABLE <name> | VIEW <name>
-          | MATERIALIZED VIEW <name> | SECRET <name> | STORAGE INTEGRATION <name>
+          | MATERIALIZED VIEW <name> | SECRET <name> | STORAGE INTEGRATION <name> | FUNCTION <name>
 <grantee> ::= [ROLE] <role> | [USER] { <name> | ID '<id>' } | [GROUP] { <name> | ID '<id>' }
 ```
 </CodeGroup>
@@ -25,11 +25,12 @@ REVOKE <privilege>[, <privilege>...] ON <target> FROM <grantee>[, <grantee>...]
 GRANT OPERATE, USAGE ON SYSTEM TO ROLE ops
 GRANT USAGE, CREATE SCHEMA ON DATABASE analytics TO ROLE readers
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE events TO ROLE etl
-GRANT CREATE SECRET ON SCHEMA platform TO ROLE platform_admins
+GRANT CREATE SECRET, CREATE FUNCTION ON SCHEMA platform TO ROLE platform_admins
 GRANT USAGE, UPDATE ON SECRET platform.`openai-prod` TO ROLE etl, rotation_service
 GRANT USAGE ON SECRET platform.`openai-prod` TO USER alice, GROUP ID 'g1'
+GRANT USAGE ON FUNCTION platform.embed TO ROLE research
 GRANT OWNERSHIP ON SECRET platform.`openai-prod` TO ROLE platform_admins
-REVOKE USAGE ON SECRET platform.`openai-prod` FROM ROLE etl, rotation_service
+REVOKE USAGE ON FUNCTION platform.embed FROM ROLE research
 ```
 </CodeGroup>
 
@@ -39,11 +40,12 @@ REVOKE USAGE ON SECRET platform.`openai-prod` FROM ROLE etl, rotation_service
 | --- | --- |
 | `SYSTEM` | `OPERATE`, `CREATE DATABASE`, `USAGE` -- no `OWNERSHIP`; the system itself has no owner |
 | `DATABASE` | `OWNERSHIP`, `USAGE`, `CREATE SCHEMA` (or `CREATE NAMESPACE`) |
-| `SCHEMA` (a namespace) | `OWNERSHIP`, `USAGE`, `CREATE NAMESPACE`, `CREATE TABLE`, `CREATE MATERIALIZED VIEW`, `CREATE VIEW`, `CREATE SECRET`, `CREATE STORAGE INTEGRATION` |
+| `SCHEMA` (a namespace) | `OWNERSHIP`, `USAGE`, `CREATE NAMESPACE`, `CREATE TABLE`, `CREATE MATERIALIZED VIEW`, `CREATE VIEW`, `CREATE SECRET`, `CREATE STORAGE INTEGRATION`, `CREATE FUNCTION` |
 | `TABLE`, `MATERIALIZED VIEW` | `OWNERSHIP`, `SELECT`, `INSERT`, `UPDATE`, `DELETE` |
 | `VIEW` | `OWNERSHIP`, `SELECT` |
 | `SECRET` | `OWNERSHIP`, `USAGE` (bind it to a Function), `UPDATE` (rotate it) |
 | `STORAGE INTEGRATION` | `OWNERSHIP`, `USAGE` |
+| `FUNCTION` | `OWNERSHIP`, `USAGE` (call it in a query, bind it to a column, or refresh a column it computes) |
 
 <Warning>
 `OWNERSHIP` cannot be revoked, only granted to someone else, which transfers
@@ -66,7 +68,7 @@ such as `TO ROLE "DataEng"`.
 
 ## Naming the target {#targets}
 
-A `SECRET` target can be qualified with its namespace and
+A `SECRET` or `FUNCTION` target can be qualified with its namespace and
 database, the same as anywhere else: `SECRET analytics.api_key`,
 `SECRET db1.analytics.api_key`. `SCHEMA` and `NAMESPACE` both target a
 namespace but aren't interchangeable: `SCHEMA <namespace>` takes the

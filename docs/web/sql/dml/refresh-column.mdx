@@ -65,7 +65,7 @@ pair.
 
 <Note>
 `num_workers` is refused for a column filled by a registered
-function, which sizes its own workers from the CPU,
+[function](/management/function), which sizes its own workers from the CPU,
 memory and GPU options instead. `error_policy` (and the Function-only options
 above it in the table) is the reverse: it's refused for a plain SQL-expression
 column, which has no per-row failures to skip -- it's accepted only for a
