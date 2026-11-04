@@ -2160,6 +2160,70 @@ async fn remote_optimize_on_a_branch_submits_a_with_clause_over_sql() {
     shutdown.send(()).unwrap();
 }
 
+/// Regression test for the language bindings' `optimize()` convenience
+/// method, which used to submit a compaction job and then fail on the next
+/// action because `Prune` and `Index` are not supported remotely -- so a
+/// retry on that failure resubmitted another compaction job. `optimize_full`
+/// is what both the Python and Node bindings now call instead of
+/// orchestrating `Compact`, `Prune`, and `Index` themselves; on a remote
+/// table it must submit only the compaction job and return zeroed prune
+/// stats rather than attempting `Prune` and `Index` at all.
+#[tokio::test]
+async fn remote_optimize_full_skips_prune_and_index() {
+    let service = TestSqlService {
+        adaptive: true,
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let (sql_client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let client = client_with_handler(|request| -> http::Response<String> {
+        panic!("unexpected REST request: {}", request.url().path());
+    });
+    let remote_table = RemoteTable::new_with_sql_client(
+        client,
+        "analytics".into(),
+        "events".into(),
+        vec!["team".into(), "reports".into()],
+        "team$reports$events".into(),
+        Default::default(),
+        Some(sql_client),
+    );
+    let database = Arc::new(RemoteDatabase::new_mock(
+        |request: reqwest::Request| -> http::Response<String> {
+            panic!("unexpected REST request: {}", request.url().path());
+        },
+    ));
+    let table = crate::Table::new(Arc::new(remote_table), database);
+
+    let stats = table
+        .optimize_full(
+            crate::table::optimize::CompactionOptions::default(),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Compaction was submitted (and its placeholder stats are present)...
+    assert_eq!(
+        stats.compaction,
+        Some(lance::dataset::optimize::CompactionMetrics::default())
+    );
+    // ...but Prune and Index were skipped rather than attempted and failed,
+    // so the call succeeds with zeroed prune stats instead of returning an
+    // error after the job has already been submitted.
+    assert_eq!(
+        stats.prune,
+        Some(lance::dataset::cleanup::RemovalStats::default())
+    );
+    assert_eq!(
+        *statements.lock().unwrap(),
+        ["OPTIMIZE TABLE \"events\" REWRITE DATA"]
+    );
+    shutdown.send(()).unwrap();
+}
+
 #[tokio::test]
 async fn remote_mv_listing_uses_scoped_sql_keyset_pagination() {
     for defer in [false, true] {

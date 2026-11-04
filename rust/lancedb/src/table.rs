@@ -19,6 +19,7 @@ pub use lance::dataset::ReadParams;
 pub use lance::dataset::Version;
 use lance::dataset::WriteMode;
 use lance::dataset::builder::DatasetBuilder;
+use lance::dataset::cleanup::RemovalStats;
 pub use lance::dataset::mem_wal::MemIndexRegistry;
 /// The traits a memtable index plugin implements; see [`MemIndexRegistry`].
 pub use lance::dataset::mem_wal::index as mem_index;
@@ -1930,6 +1931,57 @@ impl Table {
             compaction: None,
             prune: Some(prune),
         })
+    }
+
+    /// Run the maintenance cycle used by language bindings' `optimize()`
+    /// convenience method: compact, then -- on a local table -- prune and
+    /// optimize indices.
+    ///
+    /// This is an internal entry point for language bindings. On a remote
+    /// table (LanceDB Enterprise) only [`OptimizeAction::Compact`] is
+    /// supported: `Prune` and `Index` are skipped here rather than attempted
+    /// and failed, since by this point the compaction job has already been
+    /// durably submitted and a caller retrying on that failure would
+    /// resubmit it. The returned prune stats are zeroed in that case. See
+    /// [`OptimizeAction::Compact`] for what the submission does and does not
+    /// wait for.
+    #[doc(hidden)]
+    pub async fn optimize_full(
+        &self,
+        compaction_options: CompactionOptions,
+        older_than: Option<chrono::Duration>,
+        before_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+        delete_unverified: Option<bool>,
+    ) -> Result<OptimizeStats> {
+        let compaction = self
+            .optimize(OptimizeAction::Compact {
+                options: compaction_options,
+                remap_options: None,
+            })
+            .await?
+            .compaction;
+        if self.as_native().is_none() {
+            return Ok(OptimizeStats {
+                compaction,
+                prune: Some(RemovalStats::default()),
+            });
+        }
+        let prune = if let Some(before_timestamp) = before_timestamp {
+            self.optimize_prune_before(before_timestamp, delete_unverified, None)
+                .await?
+                .prune
+        } else {
+            self.optimize(OptimizeAction::Prune {
+                older_than,
+                delete_unverified,
+                error_if_tagged_old_versions: None,
+            })
+            .await?
+            .prune
+        };
+        self.optimize(OptimizeAction::Index(OptimizeOptions::default()))
+            .await?;
+        Ok(OptimizeStats { compaction, prune })
     }
 
     /// Add new columns to the table, providing values to fill in.

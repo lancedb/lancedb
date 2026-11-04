@@ -1081,21 +1081,19 @@ class RemoteTable(Table):
     ):
         """Compact the table's data files via a durable, asynchronous
         Enterprise job. Pruning old versions and index optimization are not
-        yet supported remotely: this call submits the compaction job, then
-        raises ``NotImplementedError`` when it goes on to request pruning.
-
-        That error does not mean compaction failed -- it has already been
-        submitted and is running -- so retrying this call submits another
-        compaction job rather than recovering from one. There is currently
-        no way to call optimize() from Python and get a clean success on a
-        remote table; the Rust SDK can call the compaction action directly
-        and get one.
+        yet supported remotely, so this call skips them and returns
+        successfully with zeroed pruning statistics once the compaction job
+        has been submitted; it does not wait for that job to finish. Passing
+        a non-default ``compaction_options`` raises ``NotImplementedError``
+        before anything is submitted, since there is no way yet to forward
+        those settings to the server.
         """
         return LOOP.run(
             self._table.optimize(
                 cleanup_older_than=cleanup_older_than,
                 delete_unverified=delete_unverified,
                 retrain=retrain,
+                compaction_options=compaction_options,
             )
         )
 

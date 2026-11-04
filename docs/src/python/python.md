@@ -350,12 +350,12 @@ index statistics, and search. For example, `table.delete(where="id = 1")`,
 and full-text index creation accept `wait_timeout`. LanceDB Enterprise maintenance methods
 accept the LanceDB Embedded options: cleanup and compaction warn that they are no-ops.
 `optimize` submits a durable compaction job and returns once that submission is
-accepted, not once compaction itself finishes; it then raises
-`NotImplementedError` once it goes on to request pruning, which -- like index
-optimization -- is not yet supported remotely. That error does not mean
-compaction failed: it has already been submitted, so retrying resubmits
-another job rather than recovering from one. Removed Tantivy options
-produce the same explanatory errors on both backends.
+accepted, not once compaction itself finishes. Pruning and index optimization
+are not yet supported remotely, so it silently skips them and returns with
+zeroed pruning statistics rather than attempting and failing. A non-default
+`compaction_options` raises `NotImplementedError` before anything is
+submitted, since there is no way yet to forward those settings to the server.
+Removed Tantivy options produce the same explanatory errors on both backends.
 
 The old LanceDB Enterprise keyword names `predicate` for `delete`, `index_name` for
 `drop_index`, `index_uuid` for `index_stats`, and `column` for `create_fts_index`

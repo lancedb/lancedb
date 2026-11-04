@@ -2900,11 +2900,13 @@ class Table(ABC):
         .. note::
 
             On a LanceDB Enterprise (remote) table, only compaction is
-            currently supported; this call submits it as a durable job, then
-            raises ``NotImplementedError`` when it goes on to request
-            pruning. That error does not mean compaction failed -- it has
-            already been submitted -- so retrying resubmits another
-            compaction job rather than recovering from one.
+            currently supported. Pruning old versions and index optimization
+            are silently skipped there instead of being attempted, so this
+            call returns successfully, with zeroed pruning statistics, once
+            the compaction job has been submitted; it does not wait for that
+            job to finish. A non-default ``compaction_options`` raises
+            ``NotImplementedError`` before anything is submitted, since
+            there is no way yet to forward those settings to the server.
 
         Modeled after ``VACUUM`` in PostgreSQL.
 
@@ -8083,11 +8085,13 @@ class AsyncTable:
         .. note::
 
             On a LanceDB Enterprise (remote) table, only compaction is
-            currently supported; this call submits it as a durable job, then
-            raises ``NotImplementedError`` when it goes on to request
-            pruning. That error does not mean compaction failed -- it has
-            already been submitted -- so retrying resubmits another
-            compaction job rather than recovering from one.
+            currently supported. Pruning old versions and index optimization
+            are silently skipped there instead of being attempted, so this
+            call returns successfully, with zeroed pruning statistics, once
+            the compaction job has been submitted; it does not wait for that
+            job to finish. A non-default ``compaction_options`` raises
+            ``NotImplementedError`` before anything is submitted, since
+            there is no way yet to forward those settings to the server.
 
         Modeled after ``VACUUM`` in PostgreSQL.
 

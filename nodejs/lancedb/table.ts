@@ -998,11 +998,10 @@ export abstract class Table {
    *  modification operations.
    *
    * On a LanceDB Enterprise (remote) table, only compaction is currently
-   * supported; this call submits it as a durable job, then throws once it
-   * goes on to request pruning, which is not yet supported remotely. That
-   * error does not mean compaction failed -- it has already been submitted
-   * -- so retrying resubmits another compaction job rather than recovering
-   * from one.
+   * supported. Pruning old versions and index optimization are silently
+   * skipped there instead of being attempted, so this call resolves
+   * successfully, with zeroed pruning statistics, once the compaction job
+   * has been submitted; it does not wait for that job to finish.
    */
   abstract optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats>;
   /** List all indices that have been created with {@link Table.createIndex} */
