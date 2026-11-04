@@ -111,6 +111,9 @@ pub struct JobFailure {
     pub message: Option<String>,
     /// Whether a retry could clear the failure, when known.
     pub retryable: Option<bool>,
+    /// Isolated SQL job that raised this failure, when the server supplies
+    /// one across the Flight SQL boundary.
+    pub sql_job_id: Option<String>,
     /// The error the job failed with, when it ran in this process.
     pub source: Option<Arc<Error>>,
 }

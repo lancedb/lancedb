@@ -739,11 +739,14 @@ class DBConnection(EnforceOverrides):
         """Submit materialized-view creation and return its job.
 
         The job may already be complete in LanceDB Embedded. In LanceDB
-        Enterprise, creation
-        submits CREATE MATERIALIZED VIEW through the SQL server. Its job has
-        ``job_type == "query"`` and ``id`` identifies the connection-scoped
-        query. Registry event history is unavailable.
+        Distributed, creation submits CREATE MATERIALIZED VIEW through the SQL
+        server and the returned ``id`` is the registry job ID. That ID can be
+        reopened with :meth:`open_job`, and the handle supports registry
+        progress, events, cancellation, and ``wait`` while the job runs.
         Wait for the job before opening or querying the view.
+
+        Servers without early registry-handle support return a connection-scoped
+        query job instead. Its ID cannot be reopened with :meth:`open_job`.
         """
         raise NotImplementedError(
             _append_doc_url(

@@ -332,6 +332,82 @@ impl<S: HttpSend> crate::job::JobHandle for FreshnessJob<S> {
     }
 }
 
+/// A registry-backed materialized-view refresh. Registry completion is only
+/// the first half of `wait`; the submitting handle still has to observe the
+/// committed table version before reporting the typed refresh result.
+struct MaterializedViewRefreshJob<S: HttpSend> {
+    inner: RemoteJob<S>,
+    client: RestfulLanceDbClient<S>,
+    db_name: String,
+    name: String,
+    namespace: Vec<String>,
+    identifier: String,
+    server_version: ServerVersion,
+    sql_client: Option<SqlClient>,
+    freshness: Arc<Mutex<FreshnessState>>,
+    freshness_request: FreshnessHeaders,
+}
+
+#[async_trait]
+impl<S: HttpSend> crate::job::JobHandle for MaterializedViewRefreshJob<S> {
+    fn id(&self) -> Option<&str> {
+        crate::job::JobHandle::id(&self.inner)
+    }
+
+    async fn status(&self) -> Result<String> {
+        crate::job::JobHandle::status(&self.inner).await
+    }
+
+    async fn describe(&self) -> Result<crate::database::JobDescription> {
+        crate::job::JobHandle::describe(&self.inner).await
+    }
+
+    async fn events(
+        &self,
+        request: crate::job::JobEventsRequest,
+    ) -> Result<Vec<arrow_array::RecordBatch>> {
+        crate::job::JobHandle::events(&self.inner, request).await
+    }
+
+    async fn wait(&self) -> Result<crate::job::TerminalResult> {
+        crate::job::JobHandle::wait_with_progress(self, None).await
+    }
+
+    async fn wait_with_progress(
+        &self,
+        progress: Option<crate::job::JobProgressCallback>,
+    ) -> Result<crate::job::TerminalResult> {
+        let result = crate::job::JobHandle::wait_with_progress(&self.inner, progress).await?;
+        let table = RemoteTable::new_with_sql_client(
+            self.client.clone(),
+            self.db_name.clone(),
+            self.name.clone(),
+            self.namespace.clone(),
+            self.identifier.clone(),
+            self.server_version.clone(),
+            self.sql_client.clone(),
+        );
+        table.checkout_latest().await?;
+        let version = table.version().await?;
+        self.freshness_request
+            .observe_version(&self.freshness, version);
+        let refresh = RefreshMaterializedViewResult {
+            mode: None,
+            rows_written: None,
+            source_version: None,
+            version,
+        };
+        let value = serde_json::to_value(refresh).map_err(|error| Error::Runtime {
+            message: format!("failed to encode materialized-view refresh result: {error}"),
+        })?;
+        Ok(result.with_value(value))
+    }
+
+    async fn cancel(&self) -> Result<()> {
+        crate::job::JobHandle::cancel(&self.inner).await
+    }
+}
+
 fn compute_min_timestamp(
     state: &FreshnessState,
     interval: Option<Duration>,
@@ -2320,30 +2396,49 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let freshness = self.freshness.clone();
         let freshness_request = self.snapshot_freshness_headers();
         let job_sql_client = sql_client.clone();
-        sql_client
-            .submit_as_job(statement, namespace.clone(), move || async move {
-                let table = Self::new_with_sql_client(
-                    client,
-                    db_name,
-                    name,
-                    namespace,
-                    identifier,
-                    server_version,
-                    Some(job_sql_client),
-                );
-                table.checkout_latest().await?;
-                let version = table.version().await?;
-                freshness_request.observe_version(&freshness, version);
-                Ok(RefreshMaterializedViewResult {
-                    // The SQL job adapter does not expose refresh metrics. Table
-                    // metadata cannot tell us what this refresh actually did.
-                    mode: None,
-                    rows_written: None,
-                    source_version: None,
-                    version,
-                })
-            })
-            .await
+        let submission = sql_client
+            .submit_materialized_view_job(statement, self.namespace.clone())
+            .await?;
+        match submission {
+            crate::remote::sql::materialized_view::MaterializedViewJobSubmission::Registry {
+                job_id,
+            } => Ok(Job::new_typed(Box::new(MaterializedViewRefreshJob {
+                inner: RemoteJob::new(self.client.clone(), job_id),
+                client: self.client.clone(),
+                db_name: self.db_name.clone(),
+                name: self.name.clone(),
+                namespace: self.namespace.clone(),
+                identifier: self.identifier.clone(),
+                server_version: self.server_version.clone(),
+                sql_client: self.sql_client.clone(),
+                freshness: self.freshness.clone(),
+                freshness_request: self.snapshot_freshness_headers(),
+            }))),
+            crate::remote::sql::materialized_view::MaterializedViewJobSubmission::Query(query) => {
+                Ok(sql_client.query_job(query, move || async move {
+                    let table = Self::new_with_sql_client(
+                        client,
+                        db_name,
+                        name,
+                        namespace,
+                        identifier,
+                        server_version,
+                        Some(job_sql_client),
+                    );
+                    table.checkout_latest().await?;
+                    let version = table.version().await?;
+                    freshness_request.observe_version(&freshness, version);
+                    Ok(RefreshMaterializedViewResult {
+                        // The SQL job adapter does not expose refresh metrics. Table
+                        // metadata cannot tell us what this refresh actually did.
+                        mode: None,
+                        rows_written: None,
+                        source_version: None,
+                        version,
+                    })
+                }))
+            }
+        }
     }
     async fn query_snapshot(&self) -> Result<Arc<dyn BaseTable>> {
         let description = self.describe().await?;
@@ -4243,6 +4338,7 @@ mod tests {
 
     use super::*;
 
+    use crate::remote::client::test_utils::client_with_handler;
     use crate::remote::client::{ClientConfig, RetryConfig};
     use crate::table::{AddDataMode, FieldMetadataUpdate, FtsToken};
 
@@ -10565,6 +10661,81 @@ mod tests {
                 if message.contains("refresh_column_async")),
             "{err:?}"
         );
+    }
+
+    #[rstest]
+    #[case(false)]
+    #[case(true)]
+    #[tokio::test]
+    async fn materialized_view_registry_job_waits_then_reports_the_committed_version(
+        #[case] with_progress: bool,
+    ) {
+        let polls = AtomicUsize::new(0);
+        let client = client_with_handler(move |request| -> http::Response<String> {
+            match request.url().path() {
+                "/v1/jobs/describe" => http::Response::builder()
+                    .status(200)
+                    .body(
+                        json!({
+                            "job_id": "job-1",
+                            "job_type": "sql",
+                            "job_state": if polls.fetch_add(1, Ordering::SeqCst) == 0 {
+                                "IN_PROGRESS"
+                            } else {
+                                "DONE"
+                            },
+                            "creation_ms": 1,
+                        })
+                        .to_string(),
+                    )
+                    .unwrap(),
+                "/v1/table/ns$view/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version":42,"schema":{"fields":[]}}"#.to_string())
+                    .unwrap(),
+                path => panic!("unexpected request: {path}"),
+            }
+        });
+        let freshness = Arc::new(Mutex::new(FreshnessState::default()));
+        let job = Job::new_typed(Box::new(MaterializedViewRefreshJob {
+            inner: RemoteJob::new(client.clone(), "job-1".to_string()),
+            client,
+            db_name: "analytics".to_string(),
+            name: "view".to_string(),
+            namespace: vec!["ns".to_string()],
+            identifier: "ns$view".to_string(),
+            server_version: Default::default(),
+            sql_client: None,
+            freshness: freshness.clone(),
+            freshness_request: FreshnessHeaders::default(),
+        }));
+
+        assert_eq!(job.id(), Some("job-1"));
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let observed = observations.clone();
+        let result: RefreshMaterializedViewResult = if with_progress {
+            job.wait_with_progress(move |description| {
+                observed
+                    .lock()
+                    .unwrap()
+                    .push(description.progress_snapshot());
+            })
+            .await
+            .unwrap()
+        } else {
+            job.wait().await.unwrap()
+        };
+        if with_progress {
+            let observations = observations.lock().unwrap();
+            assert_eq!(observations.len(), 2);
+            assert_eq!(observations[0]["state"], "running");
+            assert_eq!(observations[1]["state"], "finished");
+        }
+        assert_eq!(result.version, 42);
+        assert_eq!(result.mode, None);
+        assert_eq!(result.rows_written, None);
+        assert_eq!(result.source_version, None);
+        assert_eq!(freshness.lock().unwrap().min_read_version, Some(42));
     }
 
     #[rstest]
