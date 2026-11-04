@@ -526,9 +526,39 @@ pub(crate) fn ensure_not_bound_by<S: AsRef<str>>(
     if protected.is_empty() {
         return Ok(());
     }
+    // Diagnostic seam for the isolated ENT-3515 freshness experiment. This
+    // permits only input roots; outputs and assignment columns stay protected.
+    let experimental_inputs =
+        if std::env::var("ENT3515_EXPERIMENT_ALLOW_FUNCTION_INPUTS").as_deref() == Ok("1") {
+            Some(input_roots(bindings)?)
+        } else {
+            None
+        };
+    let mut non_inputs = BTreeSet::new();
+    if experimental_inputs.is_some() {
+        for binding in bindings {
+            non_inputs.extend(
+                binding
+                    .outputs()
+                    .iter()
+                    .map(|output| output.output_name.clone()),
+            );
+            non_inputs.extend(
+                binding
+                    .assignment()
+                    .map(|assignment| assignment.output_name.clone()),
+            );
+        }
+    }
     for path in touched {
         let column = field_root(path.as_ref())?;
         if protected.contains(&column) {
+            if experimental_inputs
+                .as_ref()
+                .is_some_and(|inputs| inputs.contains(&column) && !non_inputs.contains(&column))
+            {
+                continue;
+            }
             return Err(Error::InvalidInput {
                 message: format!(
                     "{operation} of '{column}' is not supported: a Function binding reads or \
@@ -560,6 +590,16 @@ fn protected_roots(bindings: &[FunctionBinding]) -> Result<BTreeSet<String>> {
         );
     }
     Ok(protected)
+}
+
+fn input_roots(bindings: &[FunctionBinding]) -> Result<BTreeSet<String>> {
+    let mut inputs = BTreeSet::new();
+    for binding in bindings {
+        for input in binding.inputs() {
+            inputs.insert(field_root(&input.field_path)?);
+        }
+    }
+    Ok(inputs)
 }
 
 /// What a drop must do besides removing columns, so that the Function
