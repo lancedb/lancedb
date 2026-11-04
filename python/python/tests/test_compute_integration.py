@@ -141,4 +141,4 @@ def test_compute_authorization_object_and_privilege():
         str(Object.compute_integration(database="default", name="batch"))
         == "compute_integration:default:public$batch"
     )
-    assert str(Privilege.CREATE_COMPUTE_INTEGRATION) == "CREATE_COMPUTE_INTEGRATION"
+    assert Privilege.CREATE_COMPUTE_INTEGRATION.value == "CREATE_COMPUTE_INTEGRATION"
