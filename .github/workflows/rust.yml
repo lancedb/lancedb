@@ -14,6 +14,8 @@ on:
       - docs/web-tests/blob-v2/rs/**
       - nodejs/Cargo.toml
       - python/Cargo.toml
+      - ci/build_no_lock.py
+      - ci/tests/test_build_no_lock.py
       - .github/actions/setup-protoc/**
       - .github/workflows/rust.yml
 
@@ -135,7 +137,7 @@ jobs:
           command: check advisories bans licenses sources
 
   build-no-lock:
-    # All-feature test and bench links need the same disk budget as the Linux tests.
+    # Keep the existing Linux runner; its available disk varies by image.
     runs-on: ubuntu-2404-4x-x64
     timeout-minutes: 30
     env:
@@ -163,10 +165,13 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y protobuf-compiler libssl-dev
+      - name: Test build output cleanup
+        run: python3 -m unittest discover -s ci/tests -p test_build_no_lock.py -v
       - name: Build all
         run: |
           df -h .
-          cargo build --profile ci --benches --all-features --tests
+          # Every target is linked, but this job never executes the test binaries.
+          python3 ci/build_no_lock.py
       - name: Report build disk usage
         if: always()
         run: |
