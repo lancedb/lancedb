@@ -94,7 +94,7 @@ pub(crate) async fn execute_update(
     // 1. Snapshot the current dataset
     let dataset = table.dataset.get().await?;
     crate::materialized_view::ensure_not_a_view(&table.name, &dataset.schema().metadata, "update")?;
-    super::computed_columns::ensure_not_function_bound(
+    super::computed_columns::ensure_not_function_output(
         &arrow_schema::Schema::from(dataset.schema()),
         "update",
         update.columns.iter().map(|(name, _)| name.as_str()),

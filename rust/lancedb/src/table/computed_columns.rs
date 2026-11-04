@@ -514,6 +514,20 @@ pub(crate) fn ensure_not_function_bound<S: AsRef<str>>(
     ensure_not_bound_by(&function_bindings(schema)?, operation, touched)
 }
 
+/// Refuse `operation` only when a path names a Function output or assignment
+/// column. Input columns remain mutable so an update can make their dependent
+/// outputs stale; schema evolution and merge continue to use the stricter
+/// [`ensure_not_function_bound`].
+pub(crate) fn ensure_not_function_output<S: AsRef<str>>(
+    schema: &ArrowSchema,
+    operation: &str,
+    touched: impl IntoIterator<Item = S>,
+) -> Result<()> {
+    ensure_supported_function_metadata(schema)?;
+    let protected = output_roots(&function_bindings(schema)?);
+    refuse_protected_roots(operation, touched, &protected)
+}
+
 /// [`ensure_not_function_bound`] against an explicit set of bindings, for a
 /// caller that is retiring some of the schema's own in the same operation and
 /// must be checked against what survives it.
@@ -523,6 +537,14 @@ pub(crate) fn ensure_not_bound_by<S: AsRef<str>>(
     touched: impl IntoIterator<Item = S>,
 ) -> Result<()> {
     let protected = protected_roots(bindings)?;
+    refuse_protected_roots(operation, touched, &protected)
+}
+
+fn refuse_protected_roots<S: AsRef<str>>(
+    operation: &str,
+    touched: impl IntoIterator<Item = S>,
+    protected: &BTreeSet<String>,
+) -> Result<()> {
     if protected.is_empty() {
         return Ok(());
     }
@@ -560,6 +582,25 @@ fn protected_roots(bindings: &[FunctionBinding]) -> Result<BTreeSet<String>> {
         );
     }
     Ok(protected)
+}
+
+/// Columns a Function binding writes. Inputs are intentionally absent.
+fn output_roots(bindings: &[FunctionBinding]) -> BTreeSet<String> {
+    let mut protected = BTreeSet::new();
+    for binding in bindings {
+        protected.extend(
+            binding
+                .outputs()
+                .iter()
+                .map(|output| output.output_name.clone()),
+        );
+        protected.extend(
+            binding
+                .assignment()
+                .map(|assignment| assignment.output_name.clone()),
+        );
+    }
+    protected
 }
 
 /// What a drop must do besides removing columns, so that the Function
@@ -3872,6 +3913,28 @@ mod tests {
             matches!(&err, Error::InvalidInput { message } if message.contains("invalid column path")),
             "{err:?}"
         );
+
+        // Updates may change Function inputs, which makes dependent outputs
+        // stale. They must still not overwrite what the binding produces.
+        ensure_not_function_output(
+            &schema,
+            "update",
+            ["spare", "title", "body.nested", "`title`"],
+        )
+        .unwrap();
+        for path in [
+            "search_text",
+            "search_token_count",
+            "__function_assignment_fb_01K3TEXT",
+            "`search_text`",
+        ] {
+            let err = ensure_not_function_output(&schema, "update", [path]).unwrap_err();
+            assert!(
+                matches!(&err, Error::InvalidInput { message }
+                    if message.contains("a Function binding reads or writes it")),
+                "{path}: {err:?}"
+            );
+        }
     }
 
     #[test]
