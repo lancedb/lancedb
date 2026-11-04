@@ -8,7 +8,7 @@ import base64
 from functools import cached_property
 from urllib.parse import urlparse
 from pathlib import Path
-from typing import TYPE_CHECKING, List, Union, Optional, Any, Dict
+from typing import TYPE_CHECKING, ClassVar, List, Union, Optional, Any, Dict
 
 import numpy as np
 import pyarrow as pa
@@ -53,9 +53,30 @@ class JinaEmbeddings(EmbeddingFunction):
     name: str = "jina-clip-v1"
     api_key: Optional[str] = None
 
+    # Default output dimensions of the Jina embedding models, from the model
+    # configs / model pages: https://huggingface.co/jinaai and
+    # https://jina.ai/models/
+    _MODEL_DIMS: ClassVar[Dict[str, int]] = {
+        "jina-clip-v1": 768,
+        "jina-clip-v2": 1024,
+        "jina-embeddings-v2-small-en": 512,
+        "jina-embeddings-v2-base-en": 768,
+        "jina-embeddings-v2-base-code": 768,
+        "jina-embeddings-v2-base-de": 768,
+        "jina-embeddings-v2-base-zh": 768,
+        "jina-embeddings-v2-base-es": 768,
+        "jina-embeddings-v3": 1024,
+        "jina-embeddings-v4": 2048,
+    }
+
     def ndims(self):
-        # TODO: fix hardcoding
-        return 768
+        try:
+            return self._MODEL_DIMS[self.name]
+        except KeyError:
+            raise ValueError(
+                f"Unknown Jina model {self.name!r}: cannot determine the embedding "
+                f"dimension. Supported models: {sorted(self._MODEL_DIMS)}"
+            ) from None
 
     @staticmethod
     def sensitive_keys() -> List[str]:
