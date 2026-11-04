@@ -1224,3 +1224,39 @@ name; omitting it allows matching reads of any revision. Prefixes must be concre
 paths without wildcards or traversal. This integration does not make Hugging Face
 a writable database location for `ATTACH DATABASE`. Dataset SQL sources select a
 matching integration automatically, with no integration argument in the query.
+
+
+## Compute integrations
+
+Compute integration management is available on database connections through the
+same SQL transport as storage integrations. It stores remote Kubernetes
+configuration without submitting jobs or verifying backend access.
+
+::: lancedb.compute_integration.ComputeIntegrationInfo
+
+```python
+from lancedb.storage_integration import SecretReference
+
+info = db.create_compute_integration(
+    "batch",
+    "https://api.example.com:6443",
+    "lancedb-jobs",
+    kubernetes_bearer_token_secret=SecretReference(
+        "k8s_token", namespace_path=("credentials",)
+    ),
+    kubernetes_service_account="lancedb-worker",
+)
+info = db.describe_compute_integration("batch")
+names = list(db.list_compute_integrations())
+db.drop_compute_integration("batch")
+```
+
+AsyncConnection exposes the corresponding async create, describe, and drop
+methods and an asynchronous listing. Secret strings name database-root Secrets;
+use SecretReference for other namespaces or databases. The returned information
+contains references, never Secret values, and reports access_verified as false.
+
+Use Object.compute_integration(database="default", name="batch") to address its
+authorization object and Privilege.CREATE_COMPUTE_INTEGRATION to grant creation
+on the containing namespace. See the SQL Compute Integration reference for
+endpoint, namespace, TLS, service-account, and permission requirements.

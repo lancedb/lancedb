@@ -819,6 +819,62 @@ impl Connection {
             .await
     }
 
+    /// Register remote Kubernetes compute using Secret references.
+    ///
+    /// This stores configuration without contacting the compute backend.
+    pub async fn create_compute_integration(
+        &self,
+        name: impl AsRef<str>,
+        request: crate::compute_integration::CreateComputeIntegrationRequest,
+        namespace_path: &[String],
+    ) -> Result<crate::compute_integration::ComputeIntegrationInfo> {
+        validate_secret_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .create_compute_integration(name.as_ref(), request, namespace_path)
+            .await
+    }
+    /// Describe a compute integration, returning secret references without credential values.
+    pub async fn describe_compute_integration(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<crate::compute_integration::ComputeIntegrationInfo> {
+        validate_secret_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .describe_compute_integration(name.as_ref(), namespace_path)
+            .await
+    }
+    /// Lazily list compute integrations in a namespace of this database.
+    pub fn list_compute_integrations(
+        &self,
+        namespace_path: &[String],
+        options: ListingOptions,
+    ) -> Listing<String> {
+        let database = self.database().clone();
+        let namespace_path = namespace_path.to_vec();
+        Listing::new(options, move |options| {
+            let database = database.clone();
+            let namespace_path = namespace_path.clone();
+            async move {
+                validate_namespace(&namespace_path)?;
+                database
+                    .list_compute_integrations(&namespace_path, options)
+                    .await
+            }
+        })
+    }
+    /// Drop a registered compute integration with ownership permission.
+    pub async fn drop_compute_integration(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<()> {
+        validate_secret_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .drop_compute_integration(name.as_ref(), namespace_path)
+            .await
+    }
+
     /// Create a named Secret in this database.
     ///
     /// Fails if the name is taken, so a create can never silently become a

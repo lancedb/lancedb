@@ -68,6 +68,7 @@ from .graph import (
 )
 from .job import AsyncJob, Job, _typed_job
 from .storage_integration import SecretReference, StorageIntegrationInfo
+from .compute_integration import ComputeIntegrationInfo
 from .sql import AsyncQuery as AsyncSqlQuery
 from .sql import Query as SqlQuery
 from .sql import QueryDescription, QueryParameters, to_parameter_batch
@@ -385,6 +386,40 @@ class DBConnection(EnforceOverrides):
         Iterable of str
         """
         pass
+
+    def create_compute_integration(
+        self,
+        name: str,
+        job_submission_endpoint: str,
+        kubernetes_namespace: str,
+        *,
+        kubernetes_bearer_token_secret: Union[str, SecretReference],
+        kubernetes_ca_cert_secret: Optional[Union[str, SecretReference]] = None,
+        kubernetes_service_account: Optional[str] = None,
+        kubernetes_image_pull_secret: Optional[str] = None,
+        namespace_path: Optional[List[str]] = None,
+    ) -> ComputeIntegrationInfo:
+        """Register Kubernetes configuration without contacting the backend."""
+        raise NotImplementedError
+
+    def describe_compute_integration(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> ComputeIntegrationInfo:
+        raise NotImplementedError
+
+    def list_compute_integrations(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> Listing[str]:
+        raise NotImplementedError
+
+    def drop_compute_integration(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        raise NotImplementedError
 
     def create_storage_integration(
         self,
@@ -2361,6 +2396,61 @@ class LanceDBConnection(DBConnection):
         )
         return dropped, Job(job)
 
+    def create_compute_integration(
+        self,
+        name: str,
+        job_submission_endpoint: str,
+        kubernetes_namespace: str,
+        *,
+        kubernetes_bearer_token_secret: Union[str, SecretReference],
+        kubernetes_ca_cert_secret: Optional[Union[str, SecretReference]] = None,
+        kubernetes_service_account: Optional[str] = None,
+        kubernetes_image_pull_secret: Optional[str] = None,
+        namespace_path: Optional[List[str]] = None,
+    ) -> ComputeIntegrationInfo:
+        """Register remote Kubernetes compute with references to credential Secrets."""
+        return LOOP.run(
+            self._conn.create_compute_integration(
+                name,
+                job_submission_endpoint,
+                kubernetes_namespace,
+                kubernetes_bearer_token_secret=kubernetes_bearer_token_secret,
+                kubernetes_ca_cert_secret=kubernetes_ca_cert_secret,
+                kubernetes_service_account=kubernetes_service_account,
+                kubernetes_image_pull_secret=kubernetes_image_pull_secret,
+                namespace_path=namespace_path,
+            )
+        )
+
+    def describe_compute_integration(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> ComputeIntegrationInfo:
+        return LOOP.run(
+            self._conn.describe_compute_integration(name, namespace_path=namespace_path)
+        )
+
+    def list_compute_integrations(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> Listing[str]:
+        return Listing(
+            self._conn.list_compute_integrations(
+                namespace_path=namespace_path,
+                page_token=page_token,
+                page_limit=page_limit,
+            )
+        )
+
+    def drop_compute_integration(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(
+            self._conn.drop_compute_integration(name, namespace_path=namespace_path)
+        )
+
     @override
     def create_storage_integration(
         self,
@@ -3670,6 +3760,93 @@ class AsyncConnection(object):
             name, version, namespace_path
         )
         return dropped, AsyncJob(job)
+
+    async def create_compute_integration(
+        self,
+        name: str,
+        job_submission_endpoint: str,
+        kubernetes_namespace: str,
+        *,
+        kubernetes_bearer_token_secret: Union[str, SecretReference],
+        kubernetes_ca_cert_secret: Optional[Union[str, SecretReference]] = None,
+        kubernetes_service_account: Optional[str] = None,
+        kubernetes_image_pull_secret: Optional[str] = None,
+        namespace_path: Optional[List[str]] = None,
+    ) -> ComputeIntegrationInfo:
+        """Register a Kubernetes API base URL, namespace, and credential Secrets.
+
+        The endpoint must use HTTPS. The bearer-token Secret stores a Kubernetes
+        API token; the optional CA Secret stores PEM CA certificates. String
+        references select the database root; use SecretReference for qualification.
+        Registration validates configuration and referenced Secret existence,
+        without contacting Kubernetes or launching jobs.
+        """
+
+        def reference(value):
+            if value is None:
+                return None
+            if isinstance(value, str):
+                value = SecretReference(value)
+            if not isinstance(value, SecretReference):
+                raise TypeError(
+                    "Credential secrets must be names or SecretReference objects"
+                )
+            return asdict(value)
+
+        if kubernetes_bearer_token_secret is None:
+            raise ValueError("kubernetes_bearer_token_secret is required")
+        request = {
+            "compute_provider": "KUBERNETES",
+            "job_submission_endpoint": job_submission_endpoint,
+            "kubernetes_namespace": kubernetes_namespace,
+            "kubernetes_bearer_token_secret": reference(kubernetes_bearer_token_secret),
+            "kubernetes_ca_cert_secret": reference(kubernetes_ca_cert_secret),
+            "kubernetes_service_account": kubernetes_service_account,
+            "kubernetes_image_pull_secret": kubernetes_image_pull_secret,
+        }
+        info = await self._inner.create_compute_integration(
+            validate_secret_name(name),
+            json.dumps(request),
+            list(validate_namespace_path(namespace_path)),
+        )
+        return ComputeIntegrationInfo(**json.loads(info))
+
+    async def describe_compute_integration(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> ComputeIntegrationInfo:
+        """Return configuration and Secret references without credential values."""
+        return ComputeIntegrationInfo(
+            **json.loads(
+                await self._inner.describe_compute_integration(
+                    validate_secret_name(name),
+                    list(validate_namespace_path(namespace_path)),
+                )
+            )
+        )
+
+    def list_compute_integrations(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> AsyncListing[str]:
+        """Lazily list one namespace of this database's compute integrations."""
+        return AsyncListing(
+            self._inner.list_compute_integrations(
+                namespace_path=list(validate_namespace_path(namespace_path)),
+                page_token=page_token,
+                page_limit=page_limit,
+            )
+        )
+
+    async def drop_compute_integration(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Drop a compute integration with ownership permission."""
+        await self._inner.drop_compute_integration(
+            validate_secret_name(name), list(validate_namespace_path(namespace_path))
+        )
 
     async def create_storage_integration(
         self,

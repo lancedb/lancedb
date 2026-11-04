@@ -46,6 +46,7 @@ from ..sql import QueryDescription, QueryParameters
 from ..materialized_view import MaterializedView, MaterializedViewSource, SelectArg
 from ..secrets import EnvVarSecret, SecretInfo
 from ..storage_integration import SecretReference, StorageIntegrationInfo
+from ..compute_integration import ComputeIntegrationInfo
 from ..view import ViewDescription
 
 if TYPE_CHECKING:
@@ -1045,6 +1046,64 @@ class RemoteDBConnection(DBConnection):
         )
         return dropped, Job(job)
 
+    def create_compute_integration(
+        self,
+        name: str,
+        job_submission_endpoint: str,
+        kubernetes_namespace: str,
+        *,
+        kubernetes_bearer_token_secret: Union[str, SecretReference],
+        kubernetes_ca_cert_secret: Optional[Union[str, SecretReference]] = None,
+        kubernetes_service_account: Optional[str] = None,
+        kubernetes_image_pull_secret: Optional[str] = None,
+        namespace_path: Optional[List[str]] = None,
+    ) -> ComputeIntegrationInfo:
+        """Register remote Kubernetes compute with references to credential Secrets."""
+        return LOOP.run(
+            self._conn.create_compute_integration(
+                name,
+                job_submission_endpoint,
+                kubernetes_namespace,
+                kubernetes_bearer_token_secret=kubernetes_bearer_token_secret,
+                kubernetes_ca_cert_secret=kubernetes_ca_cert_secret,
+                kubernetes_service_account=kubernetes_service_account,
+                kubernetes_image_pull_secret=kubernetes_image_pull_secret,
+                namespace_path=namespace_path,
+            )
+        )
+
+    def describe_compute_integration(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> ComputeIntegrationInfo:
+        return LOOP.run(
+            self._conn.describe_compute_integration(name, namespace_path=namespace_path)
+        )
+
+    @override
+    def list_compute_integrations(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> Listing[str]:
+        return Listing(
+            self._conn.list_compute_integrations(
+                namespace_path=namespace_path,
+                page_token=page_token,
+                page_limit=page_limit,
+            )
+        )
+
+    @override
+    def drop_compute_integration(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(
+            self._conn.drop_compute_integration(name, namespace_path=namespace_path)
+        )
+
+    @override
     @override
     def create_storage_integration(
         self,

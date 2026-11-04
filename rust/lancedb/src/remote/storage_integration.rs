@@ -22,7 +22,7 @@ pub(super) fn identifier(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
-fn literal(value: &str) -> String {
+pub(super) fn literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
@@ -32,7 +32,7 @@ pub(super) fn object_name(name: &str, namespace: &[String]) -> Result<String> {
     Ok(identifier(name))
 }
 
-fn secret_name(reference: &SecretReference) -> Result<String> {
+pub(super) fn secret_name(reference: &SecretReference) -> Result<String> {
     validate_secret_name(&reference.name)?;
     validate_namespace(&reference.namespace_path)?;
     let mut parts = Vec::new();

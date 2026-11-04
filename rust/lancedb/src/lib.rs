@@ -191,6 +191,7 @@ pub mod arrow;
 pub mod authz;
 pub mod blob;
 pub mod catalog;
+pub mod compute_integration;
 pub mod connection;
 pub mod data;
 pub mod database;

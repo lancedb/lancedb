@@ -9,6 +9,7 @@
 mod authz;
 pub mod catalog;
 pub(crate) mod client;
+mod compute_integration;
 pub(crate) mod db;
 pub(crate) mod job;
 pub mod oauth;

@@ -7,7 +7,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
 /// A LanceDB privilege, serialized by name (for example, `SELECT`).
 /// Numeric aliases use `PRIVILEGE` followed by decimal digits. Numbers 0 through
-/// 14 map to the known privileges in declaration order. Unassigned numbers are
+/// 15 map to the known privileges in declaration order. Unassigned numbers are
 /// preserved verbatim; their meaning and validity are determined by the server.
 ///
 /// ```
@@ -83,6 +83,7 @@ pub enum Privilege {
 
     /// On a namespace: can register a storage integration.
     CreateStorageIntegration,
+    CreateComputeIntegration,
 
     /// A future privilege name, preserved verbatim.
     #[strum(to_string = "{0}")]
@@ -100,7 +101,7 @@ impl fmt::Display for UnknownPrivilege {
 }
 
 impl Privilege {
-    pub const KNOWN: [Self; 15] = [
+    pub const KNOWN: [Self; 16] = [
         Self::Ownership,
         Self::Usage,
         Self::Select,
@@ -116,6 +117,7 @@ impl Privilege {
         Self::CreateFunction,
         Self::Operate,
         Self::CreateStorageIntegration,
+        Self::CreateComputeIntegration,
     ];
 
     pub fn valid_for_system(&self) -> bool {
@@ -143,6 +145,7 @@ impl Privilege {
                 | Self::CreateView
                 | Self::CreateSecret
                 | Self::CreateStorageIntegration
+                | Self::CreateComputeIntegration
                 | Self::CreateFunction
                 | Self::Unknown(_)
         )
@@ -180,6 +183,10 @@ impl Privilege {
         matches!(self, Self::Ownership | Self::Usage | Self::Unknown(_))
     }
 
+    pub fn valid_for_compute_integration(&self) -> bool {
+        matches!(self, Self::Ownership | Self::Usage | Self::Unknown(_))
+    }
+
     /// Whether this privilege can mutate database contents or schema.
     /// Unknown privileges are conservatively treated as writes.
     pub fn is_write(&self) -> bool {
@@ -214,6 +221,7 @@ impl FromStr for Privilege {
                 Ok(12) => Self::CreateFunction,
                 Ok(13) => Self::Operate,
                 Ok(14) => Self::CreateStorageIntegration,
+                Ok(15) => Self::CreateComputeIntegration,
                 _ => Self::Unknown(UnknownPrivilege(name.to_owned())),
             });
         }
@@ -254,6 +262,7 @@ impl TryFrom<&Privilege> for u8 {
             Privilege::CreateFunction => 12,
             Privilege::Operate => 13,
             Privilege::CreateStorageIntegration => 14,
+            Privilege::CreateComputeIntegration => 15,
             Privilege::Unknown(unknown) => unknown.0["PRIVILEGE".len()..].parse()?,
         })
     }
@@ -360,6 +369,7 @@ mod tests {
             (12, Privilege::CreateFunction),
             (13, Privilege::Operate),
             (14, Privilege::CreateStorageIntegration),
+            (15, Privilege::CreateComputeIntegration),
         ] {
             assert_eq!(u8::try_from(&privilege).unwrap(), number);
             assert_eq!(u8::try_from(privilege.clone()).unwrap(), number);
@@ -387,7 +397,7 @@ mod tests {
 
     #[test]
     fn unknown_privileges_convert_to_u8() {
-        for number in 15..=u8::MAX {
+        for number in 16..=u8::MAX {
             for name in [
                 format!("PRIVILEGE{number}"),
                 format!("PRIVILEGE{number:03}"),
@@ -422,7 +432,7 @@ mod tests {
     #[test]
     fn future_privilege_names_round_trip() {
         for name in [
-            "PRIVILEGE15",
+            "PRIVILEGE16",
             "PRIVILEGE20",
             "PRIVILEGE64",
             "PRIVILEGE256",
@@ -465,7 +475,7 @@ mod tests {
 
     #[test]
     fn unknown_privileges_are_valid_for_all_objects_and_treated_as_writes() {
-        for name in ["PRIVILEGE15", "PRIVILEGE20", "PRIVILEGE64", "PRIVILEGE256"] {
+        for name in ["PRIVILEGE16", "PRIVILEGE20", "PRIVILEGE64", "PRIVILEGE256"] {
             let privilege: Privilege = name.parse().unwrap();
             assert!(privilege.valid_for_system());
             assert!(privilege.valid_for_database());
@@ -499,6 +509,7 @@ mod tests {
                         | Privilege::CreateSecret
                         | Privilege::CreateFunction
                         | Privilege::CreateStorageIntegration
+                        | Privilege::CreateComputeIntegration
                 ),
                 "unexpected write classification for {privilege}"
             );

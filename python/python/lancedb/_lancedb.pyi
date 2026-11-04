@@ -220,6 +220,22 @@ class Connection(object):
     async def drop_storage_integration(
         self, name: str, namespace_path: Optional[List[str]] = None
     ) -> None: ...
+    async def create_compute_integration(
+        self, name: str, request: str, namespace_path: Optional[List[str]] = None
+    ) -> str: ...
+    async def describe_compute_integration(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> str: ...
+    def list_compute_integrations(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> NameListing: ...
+    async def drop_compute_integration(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> None: ...
     async def create_secret(
         self, name: str, value: str, namespace_path: Optional[List[str]] = None
     ) -> None: ...
@@ -1186,6 +1202,10 @@ class AuthzObject:
     ) -> AuthzObject: ...
     @staticmethod
     def storage_integration(
+        database: str, namespace: Sequence[str], name: str
+    ) -> AuthzObject: ...
+    @staticmethod
+    def compute_integration(
         database: str, namespace: Sequence[str], name: str
     ) -> AuthzObject: ...
     @staticmethod

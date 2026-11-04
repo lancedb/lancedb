@@ -1,0 +1,14 @@
+{
+  "name": "batch",
+  "database": "default",
+  "namespace_path": ["compute"],
+  "compute_provider": "KUBERNETES",
+  "job_submission_endpoint": "https://api.example.com:6443",
+  "kubernetes_namespace": "jobs",
+  "kubernetes_bearer_token_secret": {"database": "default", "namespace_path": [], "name": "token"},
+  "kubernetes_ca_cert_secret": null,
+  "kubernetes_service_account": "worker",
+  "kubernetes_image_pull_secret": null,
+  "created_at_millis": 1,
+  "access_verified": false
+}

@@ -41,8 +41,8 @@ pub mod subject;
 
 pub use api::*;
 pub use object::{
-    DatabaseObject, FunctionObject, NamespaceObject, NamespacePath, Object, SecretObject,
-    StorageIntegrationObject, TableObject, ViewObject,
+    ComputeIntegrationObject, DatabaseObject, FunctionObject, NamespaceObject, NamespacePath,
+    Object, SecretObject, StorageIntegrationObject, TableObject, ViewObject,
 };
 pub use privilege::*;
 pub use subject::{Subject, SubjectKind};

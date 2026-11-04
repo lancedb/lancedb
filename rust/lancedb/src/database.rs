@@ -615,6 +615,40 @@ pub trait Database:
         secret_catalog_not_supported()
     }
 
+    /// Create a database-owned compute integration in a namespace.
+    async fn create_compute_integration(
+        &self,
+        _name: &str,
+        _request: crate::compute_integration::CreateComputeIntegrationRequest,
+        _namespace_path: &[String],
+    ) -> Result<crate::compute_integration::ComputeIntegrationInfo> {
+        secret_catalog_not_supported()
+    }
+    /// Describe a database-owned compute integration.
+    async fn describe_compute_integration(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<crate::compute_integration::ComputeIntegrationInfo> {
+        secret_catalog_not_supported()
+    }
+    /// List one namespace of compute integrations.
+    async fn list_compute_integrations(
+        &self,
+        _namespace_path: &[String],
+        _options: ListingOptions,
+    ) -> Result<ListingPage<String>> {
+        secret_catalog_not_supported()
+    }
+    /// Drop a database-owned compute integration.
+    async fn drop_compute_integration(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<()> {
+        secret_catalog_not_supported()
+    }
+
     /// Create a named Secret in this database. Fails if the name is taken, so
     /// a create can never silently become a rotation.
     async fn create_secret(

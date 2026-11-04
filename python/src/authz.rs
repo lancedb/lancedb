@@ -276,6 +276,19 @@ impl AuthzObject {
     }
 
     #[staticmethod]
+    fn compute_integration(
+        database: &str,
+        namespace: &Bound<'_, PyAny>,
+        name: &str,
+    ) -> PyResult<Self> {
+        Self::validated(Object::ComputeIntegration(ComputeIntegrationObject {
+            database: database.into(),
+            namespace: namespace_path(namespace)?,
+            compute_integration: name.into(),
+        }))
+    }
+
+    #[staticmethod]
     fn function(database: &str, namespace: &Bound<'_, PyAny>, name: &str) -> PyResult<Self> {
         Self::validated(Object::Function(FunctionObject {
             database: database.into(),

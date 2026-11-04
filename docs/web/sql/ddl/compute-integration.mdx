@@ -1,0 +1,81 @@
+---
+title: "Compute Integration"
+sidebarTitle: "Compute Integration"
+description: "Register a Kubernetes API endpoint, namespace, and credential Secret references."
+icon: server
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+A compute integration is a database-owned, namespace-scoped configuration for
+remote compute. Kubernetes is the first supported provider. Creating an
+integration stores configuration and checks referenced Secret existence. It
+does not contact Kubernetes, verify backend permissions, or submit jobs.
+
+## CREATE COMPUTE INTEGRATION
+
+```sql
+CREATE COMPUTE INTEGRATION batch
+    COMPUTE_PROVIDER = 'KUBERNETES'
+    JOB_SUBMISSION_ENDPOINT = 'https://api.example.com:6443'
+    KUBERNETES_NAMESPACE = 'lancedb-jobs'
+    KUBERNETES_BEARER_TOKEN_SECRET = credentials.k8s_token
+    KUBERNETES_CA_CERT_SECRET = credentials.k8s_ca
+    KUBERNETES_SERVICE_ACCOUNT = 'lancedb-worker'
+    KUBERNETES_IMAGE_PULL_SECRET = 'registry-credentials';
+```
+
+| Option | Required | Meaning |
+| --- | --- | --- |
+| `COMPUTE_PROVIDER` | Yes | `KUBERNETES` |
+| `JOB_SUBMISSION_ENDPOINT` | Yes | HTTPS Kubernetes API base URL, including any API proxy prefix; exclude the namespaced Jobs resource path |
+| `KUBERNETES_NAMESPACE` | Yes | Existing Kubernetes namespace for submitted workloads |
+| `KUBERNETES_BEARER_TOKEN_SECRET` | Yes | Database Secret containing a Kubernetes API bearer token |
+| `KUBERNETES_CA_CERT_SECRET` | No | Database Secret containing PEM CA certificates for a private CA |
+| `KUBERNETES_SERVICE_ACCOUNT` | No | Existing service account for workload pods in the target namespace; omission uses the namespace default |
+| `KUBERNETES_IMAGE_PULL_SECRET` | No | Kubernetes Secret already installed in the target namespace for image pulls |
+
+The submission identity and the workload service account are separate. The
+bearer token authenticates Kubernetes API requests; the service account is the
+identity of the resulting workload. Configure the target namespace and its
+permissions before using the integration. There is no option to disable TLS
+verification. URLs cannot contain user credentials, query parameters, or fragments.
+
+Credential options take Secret identifiers, not plaintext values or quoted
+names. Create them through [Secret](/sql/ddl/secret) management first. Names
+follow [storage integration](/sql/ddl/storage-integration) qualification rules:
+`name`, `namespace.name`, or `database.namespace.name`. Nested namespaces use
+`$` in the middle component. Unqualified SQL Secret references resolve in the
+session's database and namespace, including when the integration name is qualified.
+
+## Inspect and drop
+
+```sql
+DESCRIBE COMPUTE INTEGRATION batch;
+SHOW COMPUTE INTEGRATIONS;
+SHOW COMPUTE INTEGRATIONS IN SCHEMA analytics;
+DROP COMPUTE INTEGRATION batch;
+DROP COMPUTE INTEGRATION IF EXISTS batch;
+```
+
+`DESCRIBE` returns the registered configuration, qualified Secret references,
+creation time, and `access_verified = false`. It never returns credential values.
+Registration does not prove that the endpoint, namespace, account, or image-pull
+Secret exists. Dropping a compute integration leaves its referenced Secrets intact.
+
+## Permissions
+
+Creation requires `CREATE COMPUTE INTEGRATION` on the containing namespace and
+`USAGE` on each referenced Secret and its containing database and namespace.
+The creator receives ownership of the integration. Inspection requires `USAGE`;
+dropping requires ownership. Listing requires database and namespace `USAGE`.
+
+```sql
+GRANT CREATE COMPUTE INTEGRATION ON SCHEMA analytics TO ROLE compute_admin;
+GRANT USAGE ON COMPUTE INTEGRATION analytics.batch TO ROLE analyst;
+```
+
+Integrations have their own name keyspace: a table, storage integration, and
+compute integration can share a leaf name. Registration APIs are the foundation
+for cluster placement; they do not create a cluster or change SQL job routing.

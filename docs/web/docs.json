@@ -548,6 +548,7 @@
                   "sql/ddl/secret",
                   "sql/ddl/function",
                   "sql/ddl/storage-integration",
+                  "sql/ddl/compute-integration",
                   "sql/ddl/index",
                   "sql/ddl/job",
                   "sql/ddl/grant"

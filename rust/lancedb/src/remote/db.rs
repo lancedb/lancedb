@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use crate::compute_integration::{ComputeIntegrationInfo, CreateComputeIntegrationRequest};
 use crate::storage_integration::{CreateStorageIntegrationRequest, StorageIntegrationInfo};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -44,6 +45,7 @@ use super::client::{
     ClientConfig, HeaderProvider, HttpSend, ID_DELIMITER, RequestResultExt, RestfulLanceDbClient,
     Sender,
 };
+use super::compute_integration as compute_sql;
 use super::sql::SqlClient;
 use super::sql::materialized_view::quote_identifier;
 use super::storage_integration as integration_sql;
@@ -972,6 +974,83 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let result = self
             .execute_query_async(ExecuteQueryRequest {
                 query: format!("DROP STORAGE INTEGRATION {name}"),
+                default_namespace_path: namespace_path.to_vec(),
+                parameters: None,
+            })
+            .await?;
+        result.reader().await?.try_collect::<Vec<_>>().await?;
+        Ok(())
+    }
+
+    async fn create_compute_integration(
+        &self,
+        name: &str,
+        request: CreateComputeIntegrationRequest,
+        namespace_path: &[String],
+    ) -> Result<ComputeIntegrationInfo> {
+        let sql = compute_sql::create_sql(name, namespace_path, &request)?;
+        let result = self
+            .execute_query_async(ExecuteQueryRequest {
+                query: sql,
+                default_namespace_path: namespace_path.to_vec(),
+                parameters: None,
+            })
+            .await?;
+        compute_sql::decode_info(&result.reader().await?.try_collect::<Vec<_>>().await?)
+    }
+
+    async fn describe_compute_integration(
+        &self,
+        name: &str,
+        namespace_path: &[String],
+    ) -> Result<ComputeIntegrationInfo> {
+        let name = compute_sql::object_name(name, namespace_path)?;
+        let result = self
+            .execute_query_async(ExecuteQueryRequest {
+                query: format!("DESCRIBE COMPUTE INTEGRATION {name}"),
+                default_namespace_path: namespace_path.to_vec(),
+                parameters: None,
+            })
+            .await?;
+        compute_sql::decode_info(&result.reader().await?.try_collect::<Vec<_>>().await?)
+    }
+
+    async fn list_compute_integrations(
+        &self,
+        namespace_path: &[String],
+        options: ListingOptions,
+    ) -> Result<ListingPage<String>> {
+        validate_namespace(namespace_path)?;
+        let result = self
+            .execute_query_async(ExecuteQueryRequest {
+                query: "SHOW COMPUTE INTEGRATIONS".into(),
+                default_namespace_path: namespace_path.to_vec(),
+                parameters: None,
+            })
+            .await?;
+        let mut names =
+            compute_sql::decode_names(&result.reader().await?.try_collect::<Vec<_>>().await?)?;
+        if let Some(token) = options.page_token {
+            names.retain(|name| name > &token);
+        }
+        let mut page_token = None;
+        if let Some(limit) = options.page_limit
+            && names.len() > limit as usize
+        {
+            names.truncate(limit as usize);
+            page_token = names.last().cloned();
+        }
+        Ok(ListingPage {
+            items: names,
+            page_token,
+        })
+    }
+
+    async fn drop_compute_integration(&self, name: &str, namespace_path: &[String]) -> Result<()> {
+        let name = compute_sql::object_name(name, namespace_path)?;
+        let result = self
+            .execute_query_async(ExecuteQueryRequest {
+                query: format!("DROP COMPUTE INTEGRATION {name}"),
                 default_namespace_path: namespace_path.to_vec(),
                 parameters: None,
             })
