@@ -135,7 +135,8 @@ jobs:
           command: check advisories bans licenses sources
 
   build-no-lock:
-    runs-on: ubuntu-24.04
+    # All-feature test and bench links need the same disk budget as the Linux tests.
+    runs-on: ubuntu-2404-4x-x64
     timeout-minutes: 30
     env:
       # Need up-to-date compilers for kernels
@@ -164,7 +165,17 @@ jobs:
           sudo apt install -y protobuf-compiler libssl-dev
       - name: Build all
         run: |
+          df -h .
           cargo build --profile ci --benches --all-features --tests
+      - name: Report build disk usage
+        if: always()
+        run: |
+          df -h .
+          for build_path in target "$HOME/.cargo/registry" "$HOME/.cargo/git"; do
+            if [ -d "$build_path" ]; then
+              du -h -d 2 "$build_path"
+            fi
+          done
 
   linux:
     timeout-minutes: 60
