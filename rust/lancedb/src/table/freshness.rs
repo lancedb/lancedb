@@ -24,7 +24,7 @@ use arrow_array::{Array, UInt64Array};
 use futures::TryStreamExt;
 use lance::Dataset;
 use lance::dataset::refs::Ref;
-use lance::dataset::transaction::Operation;
+use lance::dataset::transaction::{Operation, UpdateMode};
 use lance_core::ROW_ADDR;
 use lance_core::datatypes::{Field as LanceField, Schema as LanceSchema};
 use lance_io::object_store::{ObjectStore, uri_to_url};
@@ -540,13 +540,17 @@ impl StalenessPlan {
 enum Step {
     Append,
     Compaction(Vec<(Vec<u32>, Vec<u32>)>),
+    Update {
+        sources: Vec<u32>,
+        produced: Vec<u32>,
+        fields: Vec<u32>,
+    },
 }
 
-/// The step committed at `version`. A compaction's transaction records a
-/// new fragment before its id is assigned, so produced ids come from the
-/// version's manifest, matched by data file. Every other operation is
-/// skipped: a row-moving update rewrites the rows it moves, so it does not
-/// carry their inputs unchanged.
+/// The step committed at `version`. A compaction or rewrite-rows update
+/// records new fragments before their ids are assigned, so produced ids come
+/// from the version's manifest, matched by data file. Other operations are
+/// skipped.
 async fn step_at(dataset: &Dataset, version: u64) -> Result<Option<Step>> {
     let transaction = match dataset.read_transaction_by_version(version).await {
         Ok(Some(transaction)) => transaction,
@@ -558,6 +562,55 @@ async fn step_at(dataset: &Dataset, version: u64) -> Result<Option<Step>> {
     let groups = match &transaction.operation {
         Operation::Append { .. } => return Ok(Some(Step::Append)),
         Operation::Rewrite { groups, .. } => groups,
+        Operation::Update {
+            removed_fragment_ids,
+            updated_fragments,
+            new_fragments,
+            fields_for_preserving_frag_bitmap,
+            update_mode,
+            ..
+        } if matches!(update_mode, Some(UpdateMode::RewriteRows)) => {
+            let at = dataset.checkout_version(version).await?;
+            let bases = Bases::of(&at)?;
+            let identity = |file: &DataFile| -> Result<(String, String)> {
+                Ok((bases.location(file.base_id)?.to_string(), file.path.clone()))
+            };
+            let mut by_file = BTreeMap::new();
+            for fragment in at.get_fragments() {
+                for file in &fragment.metadata().files {
+                    by_file.insert(identity(file)?, fragment.id() as u32);
+                }
+            }
+            let mut sources = removed_fragment_ids
+                .iter()
+                .map(|id| *id as u32)
+                .collect::<Vec<_>>();
+            sources.extend(updated_fragments.iter().map(|fragment| fragment.id as u32));
+            sources.sort_unstable();
+            sources.dedup();
+            let mut produced = Vec::new();
+            for fragment in new_fragments {
+                let mut found = None;
+                for file in &fragment.files {
+                    if let Some(id) = by_file.get(&identity(file)?) {
+                        found = Some(*id);
+                        break;
+                    }
+                }
+                produced.push(found.ok_or_else(|| {
+                    invalid(format!(
+                        "a fragment added in version {version} is not in that version's manifest"
+                    ))
+                })?);
+            }
+            produced.sort_unstable();
+            produced.dedup();
+            return Ok(Some(Step::Update {
+                sources,
+                produced,
+                fields: fields_for_preserving_frag_bitmap.clone(),
+            }));
+        }
         _ => return Ok(None),
     };
     let at = dataset.checkout_version(version).await?;
@@ -714,13 +767,54 @@ async fn carried_forward(
         loaded: BTreeMap::new(),
     };
     for version in (recorded_at + 1)..=to {
-        let compactions = match step_at(dataset, version).await? {
+        let step = step_at(dataset, version).await?;
+        let compactions = match step {
             None => continue,
             Some(Step::Append) => {
                 appends.push(version);
                 continue;
             }
             Some(Step::Compaction(compactions)) => compactions,
+            Some(Step::Update {
+                sources,
+                produced,
+                fields,
+            }) => {
+                // Reuse the compaction rule: only sources whose input
+                // signature was already proven fresh may transfer freshness to
+                // the produced fragments. An update that touches any input
+                // field of this output column proves nothing.
+                let touches_input = fields.iter().any(|field| {
+                    inputs
+                        .values()
+                        .flatten()
+                        .any(|id| u32::try_from(*id).ok() == Some(*field))
+                });
+                if touches_input {
+                    continue;
+                }
+                let before = manifests.at(version - 1).await?;
+                let mut all_fresh = !sources.is_empty();
+                for id in sources {
+                    let current = signature_of(before, id, inputs)?;
+                    let recorded = fresh.get(&id).or_else(|| inherited.get(&id));
+                    if current.as_ref() != recorded {
+                        all_fresh = false;
+                        break;
+                    }
+                }
+                if !all_fresh {
+                    continue;
+                }
+                let after = manifests.at(version).await?;
+                for id in produced {
+                    if let Some(signature) = signature_of(after, id, inputs)? {
+                        fresh.insert(id, signature.clone());
+                        inherited.insert(id, signature);
+                    }
+                }
+                continue;
+            }
         };
         for (consumed, produced) in compactions {
             // Each source's signature and live rows just before the
