@@ -2669,13 +2669,14 @@ mod tests {
         ));
     }
 
-    /// Rewrite `value` of the row with `id` in place: a partial merge-insert
-    /// attaches a new column file to the row's fragment, keeping its id.
+    /// Rewrite rows through the public update path used by Function inputs.
     async fn update_rows(dataset: &mut Dataset, filter: &str, column: &str, expression: &str) {
         let result = lance::dataset::UpdateBuilder::new(Arc::new(dataset.clone()))
             .set(column, expression)
             .unwrap()
             .update_where(filter)
+            .unwrap()
+            .build()
             .unwrap()
             .execute()
             .await
