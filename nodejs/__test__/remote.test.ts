@@ -1623,11 +1623,59 @@ describe("remote connection jobs surface", () => {
 
   it("observes structured progress through the existing wait poller", async () => {
     const now = Date.now();
+    const unknownFleet = {
+      desired: 2,
+      launched: 1,
+      // biome-ignore lint/style/useNamingConvention: server wire format
+      pending_workers: 1,
+      ready: 0,
+      // biome-ignore lint/style/useNamingConvention: server wire format
+      requested_gpus: 1,
+      // biome-ignore lint/style/useNamingConvention: server wire format
+      ready_gpus: 0,
+      // biome-ignore lint/style/useNamingConvention: server wire format
+      resource_classes: ["a10g"],
+      // biome-ignore lint/style/useNamingConvention: server wire format
+      first_launched_at_millis: now - 4000,
+    };
+    const knownFleet = {
+      ...unknownFleet,
+      // biome-ignore lint/style/useNamingConvention: server wire format
+      warm_reused: true,
+      // biome-ignore lint/style/useNamingConvention: server wire format
+      wait_reason: "Job queued, waiting for GPU capacity in class 'a10g'",
+    };
+    const progress = (
+      rowsComputed: number,
+      rowsRemaining: number,
+      sampleOffset: number,
+      workerFleet: typeof knownFleet | typeof unknownFleet,
+    ) =>
+      JSON.stringify({
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        rows_planned: 100,
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        rows_computed: rowsComputed,
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        rows_skipped: 0,
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        rows_remaining: rowsRemaining,
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        fragments_planned: 4,
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        execution_epoch: 7,
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        sample_at_millis: now - sampleOffset,
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        worker_fleet: workerFleet,
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        queue_reason: "Waiting for Function worker capacity",
+      });
     const descriptions = [
-      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":100,"rows_computed":20,"rows_skipped":0,"rows_remaining":80,"fragments_planned":4,"execution_epoch":7,"sample_at_millis":${now - 3000}}}`,
-      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":100,"rows_computed":20,"rows_skipped":0,"rows_remaining":80,"fragments_planned":4,"execution_epoch":7,"sample_at_millis":${now - 2000}}}`,
-      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":100,"rows_computed":40,"rows_skipped":0,"rows_remaining":60,"fragments_planned":4,"execution_epoch":7,"sample_at_millis":${now - 1000}}}`,
-      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"DONE","creation_ms":1000,"result":{},"progress":{"rows_planned":100,"rows_computed":60,"rows_skipped":0,"rows_remaining":0,"fragments_planned":4,"execution_epoch":7,"sample_at_millis":${now}}}`,
+      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"queue_reason":"Waiting for Function worker capacity","progress":${progress(20, 80, 3000, unknownFleet)}}`,
+      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"queue_reason":"Waiting for Function worker capacity","progress":${progress(20, 80, 2000, knownFleet)}}`,
+      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"queue_reason":"Waiting for Function worker capacity","progress":${progress(40, 60, 1000, unknownFleet)}}`,
+      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"DONE","creation_ms":1000,"result":{},"progress":${progress(60, 0, 0, unknownFleet)}}`,
     ];
     let describeCount = 0;
 
@@ -1657,6 +1705,14 @@ describe("remote connection jobs surface", () => {
           // biome-ignore lint/style/useNamingConvention: server wire format
           rows_remaining: 80,
         });
+        expect(first?.worker_fleet).toMatchObject(knownFleet);
+        expect(
+          (first?.worker_fleet as Record<string, unknown> | null | undefined)
+            ?.warm_reused,
+        ).toBe(true);
+        expect(first?.queue_reason).toBe(
+          "Waiting for Function worker capacity",
+        );
         expect(first).not.toHaveProperty("estimated_remaining_time_millis");
 
         const observed: JobProgress[] = [];
@@ -1670,6 +1726,11 @@ describe("remote connection jobs surface", () => {
           // biome-ignore lint/style/useNamingConvention: server wire format
           estimated_remaining_time_millis: 3000,
         });
+        expect(observed[0].worker_fleet).toEqual(unknownFleet);
+        expect(observed[0].worker_fleet).not.toHaveProperty("warm_reused");
+        expect(observed[0].queue_reason).toBe(
+          "Waiting for Function worker capacity",
+        );
         expect(observed[1]).toMatchObject({
           state: "finished",
           // biome-ignore lint/style/useNamingConvention: server wire format
