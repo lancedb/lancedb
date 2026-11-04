@@ -26,7 +26,15 @@ single owning **WAL node**, a stateful pod separate from the query nodes and
 plan executors that serve ordinary queries. WAL node pods share nothing but
 the underlying object storage; no pod talks to another one directly.
 
+<div className="hidden dark:block">
+
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
+  "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
+  "clusterBkg": "#211d1a", "clusterBorder": "#4c443f", "edgeLabelBackground": "#171513",
+  "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+}}}%%
 flowchart LR
     Q["Query node<br/>hashes (db, table) to one WAL node"]
 
@@ -44,7 +52,41 @@ flowchart LR
 
     Q -- "writes + reads for 'frames'" --> W0
     Q -- "writes + reads for 'events'" --> W1
+    classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
 ```
+
+</div>
+
+<div className="block dark:hidden">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
+  "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
+  "clusterBkg": "#f4ebe8", "clusterBorder": "#ad9e95", "edgeLabelBackground": "#ffffff",
+  "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+}}}%%
+flowchart LR
+    Q["Query node<br/>hashes (db, table) to one WAL node"]
+
+    subgraph W0["WAL node A — owns table 'frames'"]
+        direction TB
+        S0["Shard 0<br/>ShardWriter"]
+        S1["Shard 1<br/>ShardWriter"]
+        S2["Shard 2<br/>ShardWriter"]
+    end
+
+    subgraph W1["WAL node B — owns table 'events'"]
+        direction TB
+        S3["Shard 0<br/>ShardWriter"]
+    end
+
+    Q -- "writes + reads for 'frames'" --> W0
+    Q -- "writes + reads for 'events'" --> W1
+    classDef default fill:#ffffff,stroke:#ad9e95,stroke-width:1px,color:#221d19
+```
+
+</div>
 
 ## Shards scale one table, replicas scale the cluster {#shards-vs-replicas}
 

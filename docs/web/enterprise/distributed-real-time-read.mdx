@@ -17,7 +17,15 @@ usually served by different machines -- plan executors for the base table,
 a [WAL node](/tables/realtime-engine#wal-nodes) for the table's shards --
 so a query has to combine their results across the network instead.
 
+<div className="hidden dark:block">
+
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
+  "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
+  "clusterBkg": "#211d1a", "clusterBorder": "#4c443f", "edgeLabelBackground": "#171513",
+  "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+}}}%%
 flowchart LR
     Q["Query node<br/>plans the query"]
 
@@ -41,7 +49,51 @@ flowchart LR
     W1 --> U
     W2 --> U
     U --> R["Merged result"]
+    classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
+    classDef accent fill:#2a1810,stroke:#ff734a,stroke-width:1.5px,color:#f4ebe8
+    class U accent
 ```
+
+</div>
+
+<div className="block dark:hidden">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
+  "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
+  "clusterBkg": "#f4ebe8", "clusterBorder": "#ad9e95", "edgeLabelBackground": "#ffffff",
+  "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+}}}%%
+flowchart LR
+    Q["Query node<br/>plans the query"]
+
+    subgraph PE["Plan executors"]
+    direction TB
+    B1["Base-table arm<br/>index-covered scan or ANN search"]
+    end
+
+    subgraph WN["WAL node (owns this table's shards)"]
+    direction TB
+    W1["SSTable arm<br/>index-covered"]
+    W2["Active memtable arm<br/>vector: in-memory HNSW*<br/>FTS/scalar: indexed"]
+    end
+
+    U["Union exec<br/>PK-keyed last-write-wins dedup,<br/>top-K cut on distance"]
+
+    Q --> B1
+    Q --> W1
+    Q --> W2
+    B1 --> U
+    W1 --> U
+    W2 --> U
+    U --> R["Merged result"]
+    classDef default fill:#ffffff,stroke:#ad9e95,stroke-width:1px,color:#221d19
+    classDef accent fill:#fff1ec,stroke:#e8582d,stroke-width:1.5px,color:#221d19
+    class U accent
+```
+
+</div>
 
 ## An extra exec node, not a parallel system {#union-exec}
 

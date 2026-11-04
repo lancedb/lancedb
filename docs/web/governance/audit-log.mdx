@@ -14,7 +14,14 @@ privilege that was checked, and the object it was checked against -- can
 be recorded as a durable audit log entry. On a failed check, the first
 failure is logged; on success, the final successful check is logged.
 
+<div className="hidden dark:block">
+
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
+  "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
+  "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+}}}%%
 flowchart LR
     R["Request arrives"] --> C["Authorization check"]
     C -->|denied| L1["Log the first failed check"]
@@ -22,7 +29,34 @@ flowchart LR
     L1 --> T[("__audit_log table<br/>system database")]
     L2 --> T
     T --> Q["SELECT ... FROM system.public.__audit_log"]
+    classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
+    classDef accent fill:#2a1810,stroke:#ff734a,stroke-width:1.5px,color:#f4ebe8
+    class T accent
 ```
+
+</div>
+
+<div className="block dark:hidden">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
+  "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
+  "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+}}}%%
+flowchart LR
+    R["Request arrives"] --> C["Authorization check"]
+    C -->|denied| L1["Log the first failed check"]
+    C -->|granted| L2["Log the final successful check"]
+    L1 --> T[("__audit_log table<br/>system database")]
+    L2 --> T
+    T --> Q["SELECT ... FROM system.public.__audit_log"]
+    classDef default fill:#ffffff,stroke:#ad9e95,stroke-width:1px,color:#221d19
+    classDef accent fill:#fff1ec,stroke:#e8582d,stroke-width:1.5px,color:#221d19
+    class T accent
+```
+
+</div>
 
 A deployment chooses how audit records are kept: discarded, written
 alongside ordinary application logs, or stored durably as rows in a Lance

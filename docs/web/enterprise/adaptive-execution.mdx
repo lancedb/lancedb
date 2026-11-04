@@ -38,7 +38,14 @@ memory, out-of-memory events, and for a GPU Function, compute and memory
 utilization per GPU -- and that measurement decides whether the *next*
 invocation runs with more resources, fewer, or the same:
 
+<div className="hidden dark:block">
+
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
+  "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
+  "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+}}}%%
 flowchart LR
     I["Invocation runs<br/>wall time, CPU, memory, GPU measured"] --> D{"Saturated?"}
     D -->|"OOM, or memory/CPU/GPU<br/>over target utilization"| P["Promote:<br/>next size up"]
@@ -48,7 +55,32 @@ flowchart LR
     Dm --> N
     S --> N
     N --> I
+    classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
 ```
+
+</div>
+
+<div className="block dark:hidden">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
+  "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
+  "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+}}}%%
+flowchart LR
+    I["Invocation runs<br/>wall time, CPU, memory, GPU measured"] --> D{"Saturated?"}
+    D -->|"OOM, or memory/CPU/GPU<br/>over target utilization"| P["Promote:<br/>next size up"]
+    D -->|"fast task, low CPU,<br/>known memory"| Dm["Demote:<br/>one size down,<br/>never past a floor"]
+    D -->|neither| S["Stay:<br/>same class"]
+    P --> N["Next invocation"]
+    Dm --> N
+    S --> N
+    N --> I
+    classDef default fill:#ffffff,stroke:#ad9e95,stroke-width:1px,color:#221d19
+```
+
+</div>
 
 **Promotion** happens on an out-of-memory event, memory utilization above
 70% of the class's limit, or CPU pegged at 85%+ for a sample long enough

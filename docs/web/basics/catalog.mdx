@@ -47,7 +47,14 @@ For example, a search application can keep production and staging data in
 separate namespaces within the same database, with `prod` further split into
 a nested `search` namespace:
 
+<div className="hidden dark:block">
+
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
+  "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
+  "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+}}}%%
 flowchart TD
     catalog["root catalog"] --> database["ai_data · database"]
     database --> prod["prod · namespace"]
@@ -57,7 +64,32 @@ flowchart TD
     search --> search_view["recent_documents · view"]
     search --> search_fn["embed · function"]
     staging --> staging_docs["documents · table"]
+    classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
 ```
+
+</div>
+
+<div className="block dark:hidden">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
+  "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
+  "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+}}}%%
+flowchart TD
+    catalog["root catalog"] --> database["ai_data · database"]
+    database --> prod["prod · namespace"]
+    database --> staging["staging · namespace"]
+    prod --> search["search · namespace"]
+    search --> search_docs["documents · table"]
+    search --> search_view["recent_documents · view"]
+    search --> search_fn["embed · function"]
+    staging --> staging_docs["documents · table"]
+    classDef default fill:#ffffff,stroke:#ad9e95,stroke-width:1px,color:#221d19
+```
+
+</div>
 
 | Object | What it represents |
 | --- | --- |
