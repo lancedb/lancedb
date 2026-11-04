@@ -945,6 +945,13 @@ pub struct FunctionErrorRecord {
     /// detail was capped and only the fragment summary remains.
     #[serde(default)]
     pub row_offset: Option<u32>,
+    /// Stable row identity at the table version the refresh read.
+    ///
+    /// Present only when that version used stable row IDs. It remains valid
+    /// across later compaction and rewrite, unlike `row_address`. `None` on
+    /// legacy tables and on records written before the server reported it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row_id: Option<u64>,
     /// Portable physical row address, `(fragment_id << 32) | row_offset`.
     ///
     /// `None` when the record covers a fragment rather than one row, or when

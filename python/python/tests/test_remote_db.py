@@ -1866,6 +1866,7 @@ def test_remote_function_errors_lists_the_rows_a_refresh_skipped():
                 "job_id": "j-7",
                 "fragment_id": 3,
                 "row_offset": 9,
+                "row_id": 42,
                 "row_address": 12884901897,
                 "column": "embedding",
                 "function": "embed",
@@ -1917,6 +1918,7 @@ def test_remote_function_errors_lists_the_rows_a_refresh_skipped():
     assert errors.truncated is True
     assert [r.error_message for r in errors.records] == ["bad input 'x'"]
     assert errors.records[0].row_offset == 9
+    assert errors.records[0].row_id == 42
     assert errors.records[0].row_address == 12884901897
     assert errors.records[0].function_version == "2"
     assert repr(errors.records[0]) == (
