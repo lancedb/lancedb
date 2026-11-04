@@ -1006,6 +1006,7 @@ class FunctionErrorRecord:
     job_id: str
     fragment_id: int
     row_offset: Optional[int]
+    row_id: Optional[int]
     row_address: Optional[int]
     column: str
     function: str
