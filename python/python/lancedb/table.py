@@ -132,6 +132,7 @@ def _requires_local_namespace_execution(query: Query) -> bool:
     # The namespace QueryTable request does not support these query options.
     return (
         query.take_offsets is not None
+        or query.take_row_ids is not None
         or query.search_effort is not None
         or query.approx_mode is not None
     )
@@ -2556,9 +2557,8 @@ class Table(ABC):
         Row ids are not stable and are relative to the current version of the table.
         They can change due to compaction and updates.
 
-        No guarantees are made regarding the order in which results are returned.  If
-        you desire an output order that matches the order of the given ids, you will
-        need to add the row id column to the output and align it yourself.
+        Results follow the requested row-id order. Repeated IDs produce repeated
+        rows; missing or deleted IDs are omitted. This also applies to remote tables.
 
         Unlike offsets, row ids are not 0-indexed and no assumptions should be made
         about the possible range of row ids.  In order to use this method you must
@@ -7223,10 +7223,24 @@ class AsyncTable:
         | AsyncQuery
         | AsyncTakeQuery
     ):
-        if query.take_offsets is not None:
-            take_query = self.take_offsets(query.take_offsets)
-            if query.columns:
-                take_query = take_query.select(query.columns)
+        if query.take_offsets is not None or query.take_row_ids is not None:
+            if query.take_offsets is not None and query.take_row_ids is not None:
+                raise ValueError("Only one of take_offsets and take_row_ids may be set")
+            take_query = (
+                self.take_row_ids(query.take_row_ids)
+                if query.take_row_ids is not None
+                else self.take_offsets(query.take_offsets)
+            )
+            if query.columns is not None:
+                columns = query.columns
+                # Native requests serialize dynamic projections as (name, SQL) pairs.
+                if (
+                    isinstance(columns, list)
+                    and columns
+                    and isinstance(columns[0], tuple)
+                ):
+                    columns = dict(columns)
+                take_query = take_query.select(columns)
             if query.use_rte is not None:
                 take_query = take_query.use_rte(query.use_rte)
             if query.with_row_id:
@@ -8063,6 +8077,9 @@ class AsyncTable:
     ) -> AsyncTakeQuery:
         """
         Take a list of row ids from the table.
+
+        Results follow the requested row-id order. Repeated IDs produce repeated
+        rows; missing or deleted IDs are omitted. This also applies to remote tables.
 
         Row ids are not stable and are relative to the current version of the table.
         They can change due to compaction and updates.

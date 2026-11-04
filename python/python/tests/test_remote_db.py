@@ -3223,8 +3223,41 @@ def test_remote_take_row_ids_with_row_id():
     assert bodies[-1]["with_row_id"] is True
 
     with query_test_table(handler) as table:
-        table.take_row_ids([0, 1]).to_arrow()
-    assert "with_row_id" not in bodies[-1]
+        result = table.take_row_ids([0, 1]).to_arrow()
+        assert result.column_names == ["id"]
+    assert bodies[-1]["with_row_id"] is True
+
+
+@pytest.mark.parametrize("with_row_id", [False, True])
+@pytest.mark.parametrize("selection", [None, [], ["id"], ["_rowid", "id"]])
+def test_remote_take_row_ids_order_and_roundtrip(with_row_id, selection):
+    def handler(body):
+        assert body["with_row_id"] is True
+        assert "_rowid IN" in body["filter"]
+        assert "take_row_ids" not in body
+        assert "_rowid" not in body.get("columns", [])
+        data = pa.table(
+            {
+                "id": pa.chunked_array([[1, 5], [17]]),
+                "_rowid": pa.chunked_array([[1, 5], [17]], type=pa.uint64()),
+            }
+        )
+        return data.select(body.get("columns", ["id"]) + ["_rowid"])
+
+    with query_test_table(handler) as table:
+        take = table.take_row_ids([17, 5, 2**64 - 1, 17, 1], with_row_id=with_row_id)
+        if selection is not None:
+            take = take.select(selection)
+        result = take.to_batches(max_batch_length=1).read_all()
+        assert result.num_rows == 4
+        expected_columns = ["id"] if selection is None else list(selection)
+        if with_row_id:
+            expected_columns = [name for name in expected_columns if name != "_rowid"]
+            expected_columns.append("_rowid")
+        assert result.column_names == expected_columns
+        for column in expected_columns:
+            assert result[column].to_pylist() == [17, 5, 17, 1]
+        assert table._execute_query(take.to_query_object()).read_all() == result
 
 
 def test_query_sync_minimal():

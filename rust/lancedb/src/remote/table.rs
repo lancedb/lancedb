@@ -2912,10 +2912,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         options: QueryExecutionOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         if let AnyQuery::Query(request) = query
-            && let Some(offsets) = &request.take_offsets
+            && request.has_take()
         {
-            return crate::query::create_take_offsets_plan(self, request, offsets, options, false)
-                .await;
+            return crate::query::create_take_plan(self, request, options, false).await;
         }
 
         let streams = self.execute_query(query, &options).await?;
@@ -2937,16 +2936,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         options: QueryExecutionOptions,
     ) -> Result<DatasetRecordBatchStream> {
         if let AnyQuery::Query(request) = query
-            && let Some(offsets) = &request.take_offsets
+            && request.has_take()
         {
-            let plan = crate::query::create_take_offsets_plan(
-                self,
-                request,
-                offsets,
-                options.clone(),
-                false,
-            )
-            .await?;
+            let plan =
+                crate::query::create_take_plan(self, request, options.clone(), false).await?;
             let inner = execute_plan(plan, Default::default())?;
             let inner = MaxBatchLengthStream::new_boxed(inner, options.max_batch_length as usize);
             let inner = if let Some(timeout) = options.timeout {
@@ -3007,9 +3000,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
     async fn explain_plan(&self, query: &AnyQuery, verbose: bool) -> Result<String> {
         if let AnyQuery::Query(request) = query
-            && let Some(offsets) = &request.take_offsets
+            && request.has_take()
         {
-            return crate::query::explain_take_offsets_plan(self, request, offsets, verbose).await;
+            return crate::query::explain_take_plan(self, request, verbose, false).await;
         }
 
         let base_request = self
@@ -3065,10 +3058,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         options: QueryExecutionOptions,
     ) -> Result<String> {
         let prepared_query = if let AnyQuery::Query(request) = query
-            && request.take_offsets.is_some()
+            && request.has_take()
         {
             Some(AnyQuery::Query(
-                crate::query::prepare_take_offsets_request(self, request).await?,
+                crate::query::prepare_take_request(self, request).await?,
             ))
         } else {
             None
@@ -7566,8 +7559,11 @@ mod tests {
         assert_eq!(result, "analyzed plan");
     }
 
+    #[rstest::rstest]
+    #[case::offsets(false)]
+    #[case::row_ids(true)]
     #[tokio::test]
-    async fn test_take_offsets_explain_plan_does_not_execute_query() {
+    async fn test_take_explain_plan_does_not_execute_query(#[case] by_row_id: bool) {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
             assert_eq!(request.url().path(), "/v1/table/my_table/explain_plan/");
@@ -7578,8 +7574,12 @@ mod tests {
                 .unwrap()
         });
 
-        let explained = table
-            .take_offsets(vec![0, 1, 0, 2])
+        let take = if by_row_id {
+            table.take_row_ids(vec![0, 1, 0, 2])
+        } else {
+            table.take_offsets(vec![0, 1, 0, 2])
+        };
+        let explained = take
             .select(crate::query::Select::columns(&["id"]))
             .limit(3)
             .explain_plan(false)
@@ -7588,7 +7588,7 @@ mod tests {
 
         assert!(explained.contains("GlobalLimitExec"));
         assert!(explained.contains("TakeRestoreExec"));
-        assert!(!explained.contains("CoalescePartitionsExec"));
+        assert_eq!(explained.contains("CoalescePartitionsExec"), by_row_id);
         assert!(explained.contains("RemoteLookupExec"));
     }
 
@@ -7641,8 +7641,11 @@ mod tests {
         );
     }
 
+    #[rstest::rstest]
+    #[case::offsets(false)]
+    #[case::row_ids(true)]
     #[tokio::test]
-    async fn test_take_offsets_analyze_plan_delegates_to_remote() {
+    async fn test_take_analyze_plan_delegates_to_remote(#[case] by_row_id: bool) {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
             assert_eq!(request.url().path(), "/v1/table/my_table/analyze_plan/");
@@ -7660,8 +7663,12 @@ mod tests {
                 .unwrap()
         });
 
-        let analyzed = table
-            .take_offsets(vec![0, 1, 0, 2])
+        let take = if by_row_id {
+            table.take_row_ids(vec![0, 1, 0, 2])
+        } else {
+            table.take_offsets(vec![0, 1, 0, 2])
+        };
+        let analyzed = take
             .select(crate::query::Select::columns(&["id"]))
             .limit(3)
             .analyze_plan_with_options(QueryExecutionOptions {
@@ -7672,6 +7679,84 @@ mod tests {
             .unwrap();
 
         assert_eq!(analyzed, "Remote analyzed plan: worker metrics");
+    }
+
+    #[rstest::rstest]
+    #[tokio::test]
+    async fn test_take_row_ids_restores_remote_order(
+        #[values(false, true)] with_row_id: bool,
+        #[values(false, true)] converted: bool,
+    ) {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/query/");
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(body["columns"], json!(["id"]));
+            assert_eq!(body["with_row_id"], true);
+            assert_eq!(body["k"], json!(isize::MAX as usize));
+            assert!(body.get("offset").is_none());
+            assert!(body["filter"].as_str().unwrap().contains("_rowid IN"));
+            assert!(body.get("take_row_ids").is_none());
+
+            // The server can return the physical rows in any order and batches.
+            let data = arrow_array::record_batch!(
+                ("id", Int32, [1, 5, 17]),
+                ("_rowid", UInt64, [1, 5, 17])
+            )
+            .unwrap();
+            let mut response = Vec::new();
+            {
+                let mut writer =
+                    arrow_ipc::writer::FileWriter::try_new(&mut response, &data.schema()).unwrap();
+                writer.write(&data.slice(0, 2)).unwrap();
+                writer.write(&data.slice(2, 1)).unwrap();
+                writer.finish().unwrap();
+            }
+            http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                .body(response)
+                .unwrap()
+        });
+        let mut take = table
+            .take_row_ids(vec![17, 5, u64::MAX, 17, 1])
+            .select(crate::query::Select::columns(&["id"]))
+            .offset(1)
+            .limit(3);
+        if with_row_id {
+            take = take.with_row_id();
+        }
+        let options = QueryExecutionOptions {
+            max_batch_length: 1,
+            ..Default::default()
+        };
+        let batches = if converted {
+            table
+                .base_table()
+                .query(&AnyQuery::Query(take.into_request()), options)
+                .await
+                .unwrap()
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap()
+        } else {
+            take.execute_with_options(options)
+                .await
+                .unwrap()
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap()
+        };
+        assert!(batches.iter().all(|batch| batch.num_rows() <= 1));
+        let actual = arrow::compute::concat_batches(&batches[0].schema(), &batches).unwrap();
+        assert_eq!(
+            actual["id"]
+                .as_primitive::<arrow_array::types::Int32Type>()
+                .values()
+                .as_ref(),
+            &[5, 17, 1]
+        );
+        assert_eq!(actual.column_by_name("_rowid").is_some(), with_row_id);
     }
 
     #[tokio::test]
