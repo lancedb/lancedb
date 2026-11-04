@@ -370,7 +370,14 @@ impl<S: HttpSend> crate::job::JobHandle for MaterializedViewRefreshJob<S> {
     }
 
     async fn wait(&self) -> Result<crate::job::TerminalResult> {
-        let result = crate::job::JobHandle::wait(&self.inner).await?;
+        crate::job::JobHandle::wait_with_progress(self, None).await
+    }
+
+    async fn wait_with_progress(
+        &self,
+        progress: Option<crate::job::JobProgressCallback>,
+    ) -> Result<crate::job::TerminalResult> {
+        let result = crate::job::JobHandle::wait_with_progress(&self.inner, progress).await?;
         let table = RemoteTable::new_with_sql_client(
             self.client.clone(),
             self.db_name.clone(),
@@ -10656,15 +10663,30 @@ mod tests {
         );
     }
 
+    #[rstest]
+    #[case(false)]
+    #[case(true)]
     #[tokio::test]
-    async fn materialized_view_registry_job_waits_then_reports_the_committed_version() {
-        let client = client_with_handler(|request| -> http::Response<String> {
+    async fn materialized_view_registry_job_waits_then_reports_the_committed_version(
+        #[case] with_progress: bool,
+    ) {
+        let polls = AtomicUsize::new(0);
+        let client = client_with_handler(move |request| -> http::Response<String> {
             match request.url().path() {
                 "/v1/jobs/describe" => http::Response::builder()
                     .status(200)
                     .body(
-                        r#"{"job_id":"job-1","job_type":"sql","job_state":"DONE","creation_ms":1}"#
-                            .to_string(),
+                        json!({
+                            "job_id": "job-1",
+                            "job_type": "sql",
+                            "job_state": if polls.fetch_add(1, Ordering::SeqCst) == 0 {
+                                "IN_PROGRESS"
+                            } else {
+                                "DONE"
+                            },
+                            "creation_ms": 1,
+                        })
+                        .to_string(),
                     )
                     .unwrap(),
                 "/v1/table/ns$view/describe/" => http::Response::builder()
@@ -10689,7 +10711,26 @@ mod tests {
         }));
 
         assert_eq!(job.id(), Some("job-1"));
-        let result: RefreshMaterializedViewResult = job.wait().await.unwrap();
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let observed = observations.clone();
+        let result: RefreshMaterializedViewResult = if with_progress {
+            job.wait_with_progress(move |description| {
+                observed
+                    .lock()
+                    .unwrap()
+                    .push(description.progress_snapshot());
+            })
+            .await
+            .unwrap()
+        } else {
+            job.wait().await.unwrap()
+        };
+        if with_progress {
+            let observations = observations.lock().unwrap();
+            assert_eq!(observations.len(), 2);
+            assert_eq!(observations[0]["state"], "running");
+            assert_eq!(observations[1]["state"], "finished");
+        }
         assert_eq!(result.version, 42);
         assert_eq!(result.mode, None);
         assert_eq!(result.rows_written, None);
