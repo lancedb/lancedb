@@ -1422,7 +1422,26 @@ def test_table_to_pandas_not_supported():
 
 
 def test_table_add_in_threadpool():
+    received = []
+
     def handler(request):
+        # Consume uploads before responding: closing with unread bytes can reset
+        # the connection while the client is still reading the response.
+        if request.headers.get("Transfer-Encoding") == "chunked":
+            body = bytearray()
+            while size := int(request.rfile.readline().split(b";")[0], 16):
+                body.extend(request.rfile.read(size))
+                assert request.rfile.read(2) == b"\r\n"
+            assert request.rfile.read(2) == b"\r\n"
+        else:
+            body = request.rfile.read(int(request.headers.get("Content-Length", 0)))
+        if request.path in (
+            "/v1/table/test/create/?mode=create",
+            "/v1/table/test/insert/",
+        ):
+            received.append(
+                (request.path, pa.ipc.open_stream(body).read_all().to_pylist())
+            )
         if request.path == "/v1/table/test/insert/":
             request.send_response(200)
             request.end_headers()
@@ -1460,6 +1479,9 @@ def test_table_add_in_threadpool():
 
             for future in futures:
                 future.result()
+
+    assert [rows for path, rows in received if "/create/" in path] == [[{"id": 1}]]
+    assert [rows for path, rows in received if "/insert/" in path] == [[{"id": 1}]] * 10
 
 
 def test_table_create_indices():
