@@ -497,12 +497,36 @@ impl Serialize for PythonRuntimeSpec {
     }
 }
 
+/// An immutable Hugging Face model snapshot required by a Function.
+///
+/// The service prepares this snapshot before user code runs. `revision` is a
+/// full 40-character lowercase commit SHA, not a branch or tag.
+///
+/// ```
+/// use lancedb::function::HuggingFaceModel;
+///
+/// let model = HuggingFaceModel {
+///     repo: "sentence-transformers/all-MiniLM-L6-v2".into(),
+///     revision: "1110a243fdf4706b3f48f1d95db1a4f5529b4d41".into(),
+/// };
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HuggingFaceModel {
+    /// Hugging Face repository in `owner/name` form.
+    pub repo: String,
+    /// Exact repository commit containing the model snapshot.
+    pub revision: String,
+}
+
 /// A complete OCI Function image. Its digest is independent of catalog names.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionImage {
     pub manifest_digest: String,
     pub descriptor: Value,
     pub source: bool,
+    /// Immutable snapshots declared by this Function version.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<HuggingFaceModel>,
 }
 
 fn deserialize_object_version<'de, D: Deserializer<'de>>(
@@ -729,6 +753,9 @@ pub struct FunctionRegistrationRequest {
     /// declared against this version, not here.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secret_bindings: Vec<SecretBinding>,
+    /// Model snapshots prepared by the service before user code runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<HuggingFaceModel>,
 }
 
 impl FunctionRegistrationRequest {

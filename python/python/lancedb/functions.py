@@ -329,7 +329,27 @@ class HuggingFaceModel(_RemoteValue):
 
     ``revision`` is a full 40-character lowercase commit SHA, not a branch or
     tag. A Function may declare each repository once; separate versions of the
-    same repository use separate Function versions.
+    same repository use separate Function versions. The service prepares the
+    snapshot before initialization, so the model can load without a revision
+    argument or a Hugging Face Hub request::
+
+        @udf(
+            pip=["sentence-transformers==3.3.1"],
+            models=[HuggingFaceModel(
+                repo="sentence-transformers/all-MiniLM-L6-v2",
+                revision="1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+            )],
+        )
+        class Embed:
+            def __init__(self):
+                from sentence_transformers import SentenceTransformer
+
+                self.model = SentenceTransformer(
+                    "sentence-transformers/all-MiniLM-L6-v2", device="cpu"
+                )
+
+            def __call__(self, text: str) -> list[float]:
+                return self.model.encode(text).tolist()
     """
 
     repo: str = Field(
