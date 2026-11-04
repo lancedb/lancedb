@@ -192,7 +192,10 @@ def test_remote_optimize_options():
     with pytest.raises(NotImplementedError, match="remote optimize"):
         table.optimize(cleanup_older_than=age, delete_unverified=True, retrain=True)
     handle.optimize.assert_awaited_once_with(
-        cleanup_older_than=age, delete_unverified=True, retrain=True
+        cleanup_older_than=age,
+        delete_unverified=True,
+        retrain=True,
+        compaction_options=None,
     )
 
 
