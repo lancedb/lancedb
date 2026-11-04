@@ -582,18 +582,7 @@ impl<'de> Deserialize<'de> for StorageIntegrationObject {
     }
 }
 
-/// A function resource, encoded as `function:DATABASE:NAMESPACE$FUNCTION`.
-///
-/// ```
-/// use lancedb::authz::{FunctionObject, NamespacePath, Object};
-///
-/// let object = Object::Function(FunctionObject {
-///     database: "analytics".into(),
-///     namespace: NamespacePath::from_component("public"),
-///     function: "example".into(),
-/// });
-/// assert_eq!(object.to_string(), "function:analytics:public$example");
-/// ```
+/// A compute integration, encoded as compute_integration:DATABASE:NAMESPACE$NAME.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ComputeIntegrationObject {
     pub database: String,

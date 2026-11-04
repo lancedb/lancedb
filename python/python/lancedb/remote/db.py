@@ -1104,7 +1104,6 @@ class RemoteDBConnection(DBConnection):
         )
 
     @override
-    @override
     def create_storage_integration(
         self,
         name: str,

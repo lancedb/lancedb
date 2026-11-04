@@ -83,6 +83,7 @@ pub enum Privilege {
 
     /// On a namespace: can register a storage integration.
     CreateStorageIntegration,
+    /// On a namespace: can register a compute integration.
     CreateComputeIntegration,
 
     /// A future privilege name, preserved verbatim.
