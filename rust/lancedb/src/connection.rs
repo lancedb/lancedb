@@ -822,6 +822,27 @@ impl Connection {
     /// Register remote Kubernetes compute using Secret references.
     ///
     /// This stores configuration without contacting the compute backend.
+    /// Credential Secrets must already exist in the remote database.
+    ///
+    /// ```no_run
+    /// # async fn example(db: &lancedb::Connection) -> lancedb::Result<()> {
+    /// use futures::TryStreamExt;
+    /// use lancedb::compute_integration::CreateComputeIntegrationRequest;
+    /// use lancedb::storage_integration::SecretReference;
+    ///
+    /// let request = CreateComputeIntegrationRequest::kubernetes(
+    ///     "https://api.example.com:6443",
+    ///     "lancedb-jobs",
+    ///     SecretReference::new("k8s_token"),
+    /// );
+    /// let info = db.create_compute_integration("batch", request, &[]).await?;
+    /// println!("{}", info.name);
+    /// let names: Vec<String> = db.list_compute_integrations(&[], Default::default())
+    ///     .try_collect().await?;
+    /// println!("{names:?}");
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn create_compute_integration(
         &self,
         name: impl AsRef<str>,
