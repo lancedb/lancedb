@@ -68,6 +68,7 @@ struct CapturedHeaders {
     request_id: String,
     api_key: String,
     database_prefix: String,
+    materialized_view_job_handle: Option<String>,
 }
 
 /// Every exchange's statement and the parameter row it arrived with.
@@ -93,6 +94,7 @@ struct TestSqlService {
     gate_refresh_release: Arc<Notify>,
     exchanges: ReceivedExchanges,
     result_overrides: Arc<std::sync::Mutex<HashMap<String, RecordBatch>>>,
+    materialized_view_job_handle_supported: bool,
     /// How many exchange responses have been dropped, finished or not.
     exchange_drops: Arc<AtomicUsize>,
     result: RecordBatch,
@@ -128,6 +130,9 @@ impl TestSqlService {
                 .get("x-lancedb-database-prefix")
                 .map(|value| value.to_str().unwrap().to_string())
                 .unwrap_or_default(),
+            materialized_view_job_handle: metadata
+                .get("x-lancedb-mv-job-handle")
+                .map(|value| value.to_str().unwrap().to_string()),
         });
     }
 
@@ -154,15 +159,19 @@ impl TestSqlService {
         if !self.adaptive {
             return Response::new(rows);
         }
-        let poll_info =
-            self.defer.then(|| PollInfo {
-                info: Some(FlightInfo::new().with_endpoint(
-                    FlightEndpoint::new().with_ticket(Ticket::new(query.to_string())),
-                )),
+        let poll_info = self.defer.then(|| {
+            let mut info = FlightInfo::new()
+                .with_endpoint(FlightEndpoint::new().with_ticket(Ticket::new(query.to_string())));
+            if self.materialized_view_job_handle_supported {
+                info.app_metadata = b"early-v1".to_vec().into();
+            }
+            PollInfo {
+                info: Some(info),
                 flight_descriptor: Some(FlightDescriptor::new_cmd(format!("poll:1:{query}"))),
                 progress: Some(0.25),
                 expiration_time: None,
-            });
+            }
+        });
         let first = FlightData {
             app_metadata: if self.invalid_decision {
                 b"invalid protobuf".to_vec().into()
@@ -243,6 +252,7 @@ impl Default for TestSqlService {
             gate_refresh_release: Arc::new(Notify::new()),
             exchanges: Arc::new(std::sync::Mutex::new(Vec::new())),
             result_overrides: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            materialized_view_job_handle_supported: false,
             exchange_drops: Arc::new(AtomicUsize::new(0)),
             result,
             large_result,
@@ -333,6 +343,13 @@ impl FlightService for TestSqlService {
                     && self.transient_poll_failures.fetch_add(1, Ordering::SeqCst) == 0))
         {
             return Err(Status::unavailable("transient polling failure"));
+        }
+        if query == "SELECT function failure" && stage == 1 {
+            let mut status = Status::failed_precondition("Function 'frames' raised ValueError");
+            status
+                .metadata_mut()
+                .insert("x-lancedb-sql-job-id", "job-1".parse().unwrap());
+            return Err(status);
         }
         let complete = if query == "SELECT no info" {
             stage >= 2
@@ -978,6 +995,166 @@ async fn remote_create_uses_sql_and_preserves_options_and_namespace() {
 }
 
 #[tokio::test]
+async fn remote_create_returns_the_registry_job_from_the_early_status_row() {
+    let service = TestSqlService {
+        adaptive: true,
+        defer: true,
+        materialized_view_job_handle_supported: true,
+        ..Default::default()
+    };
+    let headers = service.headers.clone();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("operation", DataType::Utf8, false),
+        Field::new("name", DataType::Utf8, false),
+        Field::new("job_id", DataType::Utf8, false),
+        Field::new("status", DataType::Utf8, false),
+    ]));
+    service.result_overrides.lock().unwrap().insert(
+        "CREATE MATERIALIZED VIEW \"adults\" AS SELECT * FROM people".into(),
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec!["CREATE MATERIALIZED VIEW"])),
+                Arc::new(StringArray::from(vec!["adults"])),
+                Arc::new(StringArray::from(vec!["job-1"])),
+                Arc::new(StringArray::from(vec!["submitted"])),
+            ],
+        )
+        .unwrap(),
+    );
+    let (sql_client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let db = RemoteDatabase::new_mock(|request| -> http::Response<String> {
+        assert_eq!(request.url().path(), "/v1/jobs/describe");
+        http::Response::builder()
+            .status(200)
+            .body(
+                r#"{"job_id":"job-1","job_type":"sql","job_state":"DONE","creation_ms":1}"#
+                    .to_string(),
+            )
+            .unwrap()
+    })
+    .with_sql_client(sql_client);
+
+    let job = db
+        .create_materialized_view_async(CreateMaterializedViewRequest {
+            name: "adults".into(),
+            namespace_path: vec!["team".into(), "reports".into()],
+            query: "SELECT * FROM people".into(),
+            with_no_data: false,
+            auto_refresh_enabled: None,
+            auto_refresh_interval_seconds: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(job.id(), Some("job-1"));
+    job.refresh().await.unwrap();
+    assert_eq!(job.job_type().as_deref(), Some("sql"));
+    job.wait().await.unwrap();
+    let headers = headers.lock().unwrap();
+    assert!(headers.iter().any(|header| {
+        header.materialized_view_job_handle.as_deref() == Some("early")
+            && header.namespace_path == "team$reports"
+    }));
+    assert!(
+        headers
+            .iter()
+            .all(|header| header.namespace_path == "team$reports")
+    );
+    shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
+async fn remote_create_registry_handle_reopens_describes_and_cancels() {
+    let service = TestSqlService {
+        adaptive: true,
+        defer: true,
+        materialized_view_job_handle_supported: true,
+        ..Default::default()
+    };
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("operation", DataType::Utf8, false),
+        Field::new("name", DataType::Utf8, false),
+        Field::new("job_id", DataType::Utf8, false),
+        Field::new("status", DataType::Utf8, false),
+    ]));
+    service.result_overrides.lock().unwrap().insert(
+        "CREATE MATERIALIZED VIEW \"adults\" AS SELECT * FROM people".into(),
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec!["CREATE MATERIALIZED VIEW"])),
+                Arc::new(StringArray::from(vec!["adults"])),
+                Arc::new(StringArray::from(vec!["job-1"])),
+                Arc::new(StringArray::from(vec!["submitted"])),
+            ],
+        )
+        .unwrap(),
+    );
+    let (sql_client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let describes = Arc::new(AtomicUsize::new(0));
+    let seen_describes = describes.clone();
+    let describe_ids = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen_describe_ids = describe_ids.clone();
+    let cancel_ids = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen_cancel_ids = cancel_ids.clone();
+    let db = RemoteDatabase::new_mock(move |request| {
+        let body = request
+            .body()
+            .and_then(|body| body.as_bytes())
+            .and_then(|body| serde_json::from_slice::<serde_json::Value>(body).ok())
+            .unwrap_or_default();
+        let job_id = body["job_id"].as_str().unwrap_or_default().to_string();
+        match request.url().path() {
+            "/v1/jobs/describe" => {
+                assert_eq!(job_id, "job-1");
+                seen_describe_ids.lock().unwrap().push(job_id.clone());
+                seen_describes.fetch_add(1, Ordering::SeqCst);
+                http::Response::builder()
+                    .status(200)
+                    .body(format!(
+                        r#"{{"job_id":"{job_id}","job_type":"sql","job_state":"IN_PROGRESS","creation_ms":1}}"#
+                    ))
+                    .unwrap()
+            }
+            "/v1/jobs/cancel" => {
+                assert_eq!(job_id, "job-1");
+                seen_cancel_ids.lock().unwrap().push(job_id);
+                http::Response::builder().status(200).body(String::new()).unwrap()
+            }
+            path => panic!("unexpected request: {path}"),
+        }
+    })
+    .with_sql_client(sql_client);
+
+    let job = db
+        .create_materialized_view_async(CreateMaterializedViewRequest {
+            name: "adults".into(),
+            namespace_path: vec!["team".into(), "reports".into()],
+            query: "SELECT * FROM people".into(),
+            with_no_data: false,
+            auto_refresh_enabled: None,
+            auto_refresh_interval_seconds: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(job.id(), Some("job-1"));
+
+    job.refresh().await.unwrap();
+    assert_eq!(job.job_type().as_deref(), Some("sql"));
+    assert_eq!(job.state().as_deref(), Some("running"));
+
+    let reopened = db.open_job("job-1").await.unwrap();
+    assert_eq!(reopened.id(), Some("job-1"));
+    assert_eq!(reopened.job_type().as_deref(), Some("sql"));
+    reopened.cancel().await.unwrap();
+
+    assert_eq!(*describe_ids.lock().unwrap(), vec!["job-1", "job-1"]);
+    assert_eq!(*cancel_ids.lock().unwrap(), vec!["job-1"]);
+    shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
 async fn query_backed_jobs_propagate_submission_and_execution_failures() {
     let (client, shutdown) = start_sql_service(
         TestSqlService {
@@ -1005,6 +1182,34 @@ async fn query_backed_jobs_propagate_submission_and_execution_failures() {
     assert!(matches!(job.wait().await, Err(Error::JobFailed { .. })));
     assert_eq!(job.status().await.unwrap(), "failed");
     assert!(!finished.load(Ordering::SeqCst));
+    shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
+async fn function_failure_preserves_the_isolated_sql_job_id() {
+    let (client, shutdown) = start_sql_service(
+        TestSqlService {
+            adaptive: true,
+            defer: true,
+            ..Default::default()
+        },
+        ClientConfig::default(),
+    )
+    .await;
+    let job = client
+        .submit_as_job("SELECT function failure".into(), vec![], || async {
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let Err(Error::JobFailed { job_id, failure }) = job.wait().await else {
+        panic!("a typed Function failure must stay a JobFailed error");
+    };
+    assert_eq!(job_id.as_deref(), Some("job-1"));
+    assert_eq!(failure.sql_job_id.as_deref(), Some("job-1"));
+    assert_eq!(failure.phase, None);
+    assert_eq!(failure.retryable, None);
     shutdown.send(()).unwrap();
 }
 
@@ -1216,6 +1421,8 @@ async fn cancelling_remote_refresh_cancels_sql_query() {
         .refresh_materialized_view_async(None, false)
         .await
         .unwrap();
+    assert_eq!(job.job_type().as_deref(), Some("query"));
+    assert!(job.id().is_some());
     tokio::time::timeout(Duration::from_secs(10), async {
         while do_get_count.load(Ordering::SeqCst) == 0 {
             tokio::task::yield_now().await;

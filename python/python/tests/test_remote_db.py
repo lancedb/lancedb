@@ -2268,8 +2268,10 @@ def test_remote_job_wait_raises_on_failure():
     with mock_lancedb_connection(handler) as db:
         table = db.create_table("test", [{"id": 1}])
         job = table.create_index_async("id", config=BTree())
-        with pytest.raises(JobFailedError, match="job-2"):
+        with pytest.raises(JobFailedError, match="job-2") as exc_info:
             job.wait()
+        assert exc_info.value.job_id == "job-2"
+        assert exc_info.value.sql_job_id is None
 
 
 @pytest.mark.parametrize("server_version", ["0.2.0", "0.6.0"])
@@ -5123,7 +5125,10 @@ def test_remote_connection_jobs_surface():
                         waiting_for_job_id="job-maintenance",
                         paused_at_millis=1200,
                         failure=dict(
-                            phase="execute", message="worker died", retryable=True
+                            phase="execute",
+                            message="worker died",
+                            retryable=True,
+                            sql_job_id="sql-job-1",
                         ),
                     )
                 ).encode()
@@ -5211,13 +5216,17 @@ def test_remote_connection_jobs_surface():
         assert progress["waiting_for_job_id"] == "job-maintenance"
         assert progress["paused_at_millis"] == 1200
         assert job.failure.message == "worker died"
+        assert job.failure.sql_job_id == "sql-job-1"
         assert repr(job.failure) == (
-            'JobFailureInfo(phase="execute", message="worker died", retryable=True)'
+            'JobFailureInfo(phase="execute", message="worker died", retryable=True, '
+            'sql_job_id="sql-job-1")'
         )
         assert job.status() == "failed"
         observed = []
-        with pytest.raises(JobFailedError, match="worker died"):
+        with pytest.raises(JobFailedError, match="worker died") as exc_info:
             job.wait(timeout=timedelta(seconds=5), progress=observed.append)
+        assert exc_info.value.job_id == "job-1"
+        assert exc_info.value.sql_job_id == "sql-job-1"
         assert observed[0]["state"] == "failed"
         assert observed[0]["rows_computed"] == 4
         assert finished.progress()["paused"] is False

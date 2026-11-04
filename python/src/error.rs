@@ -125,11 +125,15 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
                     err.setattr(intern!(py, "__cause__"), cause_err)?;
                     Err(PyErr::from_value(err))
                 }),
-                LanceError::JobFailed { .. } => Python::attach(|py| {
+                LanceError::JobFailed { job_id, failure } => Python::attach(|py| {
                     let cls = py
                         .import(intern!(py, "lancedb.exceptions"))?
                         .getattr(intern!(py, "JobFailedError"))?;
-                    Err(PyErr::from_value(cls.call1((err.to_string(),))?))
+                    Err(PyErr::from_value(cls.call1((
+                        err.to_string(),
+                        job_id.clone(),
+                        failure.sql_job_id.clone(),
+                    ))?))
                 }),
                 LanceError::JobCancelled { .. } => Python::attach(|py| {
                     let cls = py

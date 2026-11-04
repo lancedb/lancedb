@@ -118,6 +118,11 @@ impl TerminalResult {
         self.value.as_ref()
     }
 
+    pub(crate) fn with_value(mut self, value: Value) -> Self {
+        self.value = Some(value);
+        self
+    }
+
     fn decode<T: DeserializeOwned>(self) -> Result<T> {
         let value = self.value.ok_or_else(|| match &self.request_id {
             Some(request_id) => remote_job_error(
@@ -575,10 +580,13 @@ impl Outcome {
     fn into_result(self) -> Result<TerminalResult> {
         match self {
             Self::Succeeded(result) => Ok(result),
-            Self::Failed(source) => Err(Error::JobFailed {
-                job_id: None,
-                failure: JobFailure::from_source(source),
-            }),
+            Self::Failed(source) => {
+                let (job_id, failure) = match source.as_ref() {
+                    Error::JobFailed { job_id, failure } => (job_id.clone(), failure.clone()),
+                    _ => (None, JobFailure::from_source(source)),
+                };
+                Err(Error::JobFailed { job_id, failure })
+            }
             Self::Cancelled => Err(Error::JobCancelled { job_id: None }),
         }
     }
