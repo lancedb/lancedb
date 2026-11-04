@@ -37,6 +37,7 @@ use object_store::path::Path;
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 use crate::table::computed_columns::{
     DEFINITION_VERSION_META_KEY, RECORDED_AT_VERSION_META_KEY, SOURCE_SIGNATURE_META_KEY,
@@ -105,6 +106,8 @@ struct FreshnessState {
     signatures: SignatureMap,
     row_state: RowStateMap,
     basis: String,
+    // A fresh identity for each begin, even when the basis and dirty rows repeat.
+    intent_id: Uuid,
 }
 
 impl FreshnessState {
@@ -142,8 +145,9 @@ impl FreshnessState {
 /// publication, and the selected-row bitmaps bound which rows finalization
 /// may change. One accepted wave can finalize disjoint fragments together;
 /// later serialized waves preserve clean rows from earlier accepted waves.
-/// A newer dirty intent changes the current digest and fences stale non-noop
-/// finalization. There is no per-row lease.
+/// Each begin persists a fresh intent identity in the sidecar, so repeating
+/// the same basis and rows still fences stale non-noop finalization. There is
+/// no per-row lease.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RowStateToken {
     pub basis: String,
@@ -440,7 +444,7 @@ fn encode_legacy_sidecar(map: &SignatureMap) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// `CSIG`, format byte, basis, entry count, then for each fragment its id,
+/// `CSIG`, format byte, 16-byte intent UUID, basis, entry count, then for each fragment its id,
 /// 8-byte signature, dirty-row mode and serialized bitmap. All integers are
 /// little-endian. Format 1 remains readable as clean row state.
 fn encode_sidecar(state: &FreshnessState) -> Result<Vec<u8>> {
@@ -452,6 +456,7 @@ fn encode_sidecar(state: &FreshnessState) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(SIDECAR_MAGIC);
     bytes.push(SIDECAR_FORMAT);
+    bytes.extend_from_slice(state.intent_id.as_bytes());
     bytes.extend_from_slice(&basis_len.to_le_bytes());
     bytes.extend_from_slice(state.basis.as_bytes());
     bytes.extend_from_slice(&fragment_count.to_le_bytes());
@@ -522,6 +527,8 @@ fn decode_sidecar(bytes: &[u8]) -> Result<FreshnessState> {
     if &magic != SIDECAR_MAGIC || format[0] != SIDECAR_FORMAT {
         return Err(malformed());
     }
+    let mut intent_id = [0u8; 16];
+    cursor.read_exact(&mut intent_id).map_err(|_| malformed())?;
     let mut basis_len = [0u8; 2];
     cursor.read_exact(&mut basis_len).map_err(|_| malformed())?;
     let mut basis = vec![0u8; u16::from_le_bytes(basis_len) as usize];
@@ -532,6 +539,7 @@ fn decode_sidecar(bytes: &[u8]) -> Result<FreshnessState> {
     let count = u32::from_le_bytes(count) as usize;
     let mut state = FreshnessState {
         basis,
+        intent_id: Uuid::from_bytes(intent_id),
         ..Default::default()
     };
     for _ in 0..count {
@@ -1388,6 +1396,58 @@ pub struct RowRepair {
 /// input basis and selected rows. This function checks the accepted
 /// signatures against the latest manifest and does not retry a concurrent
 /// metadata conflict with stale state.
+///
+/// `basis` identifies the request's accepted input snapshot. It may be reused
+/// when retrying the same inputs: each successful begin records a new intent
+/// identity independently of that basis.
+///
+/// Publication and verification belong to the caller. In this example,
+/// `publish_values` writes the selected computed values and retains a receipt;
+/// `verify_survival` checks that receipt against the latest snapshot, including
+/// any intervening Restore. These two helpers are application-defined.
+///
+/// ```
+/// use std::collections::BTreeMap;
+/// use lance::Dataset;
+/// use lancedb::Result;
+/// use lancedb::table::freshness::{
+///     begin_row_repair, finish_row_repair, InputFields, RowRepair, RowStateToken,
+/// };
+/// use roaring::RoaringBitmap;
+/// # struct Publication {
+/// #     filled: BTreeMap<u32, RoaringBitmap>,
+/// #     skipped: BTreeMap<u32, RoaringBitmap>,
+/// # }
+/// # async fn publish_values(_: &mut Dataset, _: &RowStateToken) -> Result<Publication> {
+/// #     unimplemented!()
+/// # }
+/// # async fn verify_survival(_: &Dataset, _: &Publication) -> Result<()> {
+/// #     unimplemented!()
+/// # }
+/// async fn repair(
+///     dataset: &mut Dataset,
+///     inputs: &InputFields,
+///     selected: &BTreeMap<u32, RowRepair>,
+/// ) -> Result<u64> {
+///     let token = begin_row_repair(
+///         dataset, "embedding", "definition-v1", inputs,
+///         "accepted-input-snapshot", selected,
+///     ).await?;
+///     let publication = publish_values(dataset, &token).await?;
+///     dataset.checkout_latest().await?;
+///     verify_survival(dataset, &publication).await?;
+///     let verified_version = dataset.version().version;
+///     finish_row_repair(
+///         dataset, "embedding", "definition-v1", inputs, &token,
+///         &publication.filled, &publication.skipped, Some(verified_version),
+///     ).await
+/// }
+/// ```
+///
+/// `verified_version` is the snapshot just checked for publication survival,
+/// not the version returned by begin or the original publication. Passing it
+/// to [`finish_row_repair`] prevents a later version change from silently
+/// rebasing the clean-row update. `None` omits that version fence.
 pub async fn begin_row_repair(
     dataset: &mut Dataset,
     column: &str,
@@ -1487,6 +1547,7 @@ pub async fn begin_row_repair(
         .row_state
         .retain(|fragment_id, _| live.contains(fragment_id));
     freshness.basis = basis.clone();
+    freshness.intent_id = Uuid::new_v4();
 
     let write =
         write_freshness_state(dataset, column, definition_version, freshness, true, None).await?;
@@ -1773,6 +1834,7 @@ mod tests {
                 (7, "0000000000000007".to_string()),
             ]),
             basis: "job-generation".to_string(),
+            intent_id: Uuid::from_u128(7),
             row_state: RowStateMap::from([
                 (3, DirtyRows::Rows(RoaringBitmap::from_iter([1, 4, 9]))),
                 (7, DirtyRows::AllExcept(RoaringBitmap::from_iter([0, 2]))),
@@ -2003,6 +2065,91 @@ mod tests {
             "{error}"
         );
         assert_eq!(stored_row_states(&dataset, COLUMN).await, before);
+    }
+
+    #[tokio::test]
+    async fn repeated_row_repair_intent_fences_old_completion() {
+        let dir = tempfile::tempdir().unwrap();
+        let uri = dir.path().to_str().unwrap();
+        let mut dataset = table(uri).await;
+        stamp_all(&mut dataset).await;
+        let definition = definition_version(EXPRESSION);
+        let ids = inputs(&dataset);
+        let repairs = BTreeMap::from([(0, repair(&dataset, 0, RoaringBitmap::from_iter([1])))]);
+        let selected = BTreeMap::from([(0, RoaringBitmap::from_iter([1]))]);
+        let first = begin_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            "accepted-input-basis",
+            &repairs,
+        )
+        .await
+        .unwrap();
+        finish_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            &first,
+            &selected,
+            &BTreeMap::new(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let second = begin_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            "accepted-input-basis",
+            &repairs,
+        )
+        .await
+        .unwrap();
+        let verified = dataset.version().version;
+        finish_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            &second,
+            &BTreeMap::new(),
+            &selected,
+            Some(verified),
+        )
+        .await
+        .unwrap();
+
+        let expected = StoredRowStates::Present(RowStateMap::from([(
+            0,
+            DirtyRows::Rows(RoaringBitmap::from_iter([1])),
+        )]));
+        let mut reopened = Dataset::open(uri).await.unwrap();
+        assert_eq!(stored_row_states(&reopened, COLUMN).await, expected);
+        let verified = reopened.version().version;
+        let error = finish_row_repair(
+            &mut reopened,
+            COLUMN,
+            &definition,
+            &ids,
+            &first,
+            &selected,
+            &BTreeMap::new(),
+            Some(verified),
+        )
+        .await
+        .expect_err("an old completion must not clear a newer skipped repair of the same rows");
+        assert!(
+            error.to_string().contains("dirty intent changed"),
+            "{error}"
+        );
+        assert_eq!(reopened.version().version, verified);
+        let reopened = Dataset::open(uri).await.unwrap();
+        assert_eq!(stored_row_states(&reopened, COLUMN).await, expected);
     }
 
     #[tokio::test]
