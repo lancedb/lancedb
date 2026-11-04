@@ -23,15 +23,15 @@ mbx +1.97.1 fmt --all -- --check > "$evidence/fmt.log" 2>&1
 result=$?
 printf '%s\n' "$result" > "$evidence/fmt.exit"
 if [[ "$result" != 0 ]]; then printf '%s\n' "$result" > "$evidence/overall.exit"; exit "$result"; fi
-mbx +1.97.1 test --locked -p lancedb --lib table::freshness::tests -- --nocapture > "$evidence/freshness.log" 2>&1
+mbx +1.97.1 test --locked --features remote -p lancedb --lib table::freshness::tests -- --nocapture > "$evidence/freshness.log" 2>&1
 result=$?
 printf '%s\n' "$result" > "$evidence/freshness.exit"
 if [[ "$result" != 0 ]]; then printf '%s\n' "$result" > "$evidence/overall.exit"; exit "$result"; fi
-mbx +1.97.1 clippy --locked -p lancedb --tests -- -D warnings > "$evidence/clippy.log" 2>&1
+mbx +1.97.1 clippy --locked --features remote -p lancedb --tests -- -D warnings > "$evidence/clippy.log" 2>&1
 result=$?
 printf '%s\n' "$result" > "$evidence/clippy.exit"
 if [[ "$result" != 0 ]]; then printf '%s\n' "$result" > "$evidence/overall.exit"; exit "$result"; fi
-mbx +1.97.1 test --locked -p lancedb --doc table::freshness::begin_row_repair > "$evidence/docs.log" 2>&1
+mbx +1.97.1 test --locked --features remote -p lancedb --doc table::freshness::begin_row_repair > "$evidence/docs.log" 2>&1
 result=$?
 printf '%s\n' "$result" > "$evidence/docs.exit"
 printf '%s\n' "$result" > "$evidence/overall.exit"
