@@ -24,6 +24,11 @@ from lancedb.embeddings import get_registry  # noqa: E402
 from lancedb import __version__  # noqa: E402
 
 
+# Truncated (<3072) outputs are L2-normalized, so a constant 768-dim vector
+# becomes 1/sqrt(768) in every component regardless of its original value.
+UNIT_768 = 1 / np.sqrt(768)
+
+
 class TestGeminiText:
     """Tests for GeminiText model registration, configuration, and execution."""
 
@@ -95,8 +100,8 @@ class TestGeminiText:
                 assert len(embeddings) == 2
                 assert isinstance(embeddings[0], np.ndarray)
                 assert embeddings[0].shape == (768,)
-                assert np.allclose(embeddings[0], 0.1)
-                assert np.allclose(embeddings[1], 0.2)
+                assert np.allclose(embeddings[0], UNIT_768)
+                assert np.allclose(embeddings[1], UNIT_768)
 
     def test_generate_embeddings_retrieval_document(self):
         """Test that retrieval_document task type prepends the document title part."""
@@ -128,7 +133,7 @@ class TestGeminiText:
                 )
 
                 assert len(embeddings) == 1
-                assert np.allclose(embeddings[0], 0.3)
+                assert np.allclose(embeddings[0], UNIT_768)
 
     def test_custom_dimension(self):
         """Test that custom dimension (dim) can be configured and passed to config."""
