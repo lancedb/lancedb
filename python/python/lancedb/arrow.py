@@ -95,6 +95,15 @@ def peek_reader(
     return batch, pa.RecordBatchReader.from_batches(batch.schema, all_batches())
 
 
+def table_from_dicts(data: List[dict]) -> pa.Table:
+    # pa.Table.from_pylist(data) takes the column names from the first row only,
+    # silently dropping fields that first appear in a later row.
+    names = list(dict.fromkeys(key for row in data for key in row))
+    return pa.Table.from_pydict(
+        {name: [row.get(name) for row in data] for name in names}
+    )
+
+
 @singledispatch
 def to_arrow(data) -> pa.Table:
     """Convert a single data object to a pa.Table."""
@@ -121,4 +130,4 @@ def _arrow_from_list(data: list) -> pa.Table:
         dicts = [model_to_dict(d) for d in data]
         return pa.Table.from_pylist(dicts, schema=schema)
 
-    return pa.Table.from_pylist(data)
+    return table_from_dicts(data)
