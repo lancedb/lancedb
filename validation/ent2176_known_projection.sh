@@ -4,6 +4,7 @@ set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 EVIDENCE=/home/ec2-user/.cache/sophon-task-tmp/ent2176/known-projection
 PYTHON_ENV=/home/ec2-user/Code/wt/ent-2073-sdk/python/.venv
+RUFF=$PYTHON_ENV/bin/ruff
 EXTENSION_SOURCE=/home/ec2-user/Code/wt/ent-2073-sdk/python/python/lancedb/_lancedb.abi3.so
 EXTENSION_TARGET="$ROOT/python/python/lancedb/_lancedb.abi3.so"
 
@@ -24,7 +25,7 @@ PYTHONPATH="$ROOT/python" "$PYTHON_ENV/bin/python" -c \
 PYTHON_PATH_STATUS=$?
 printf '%s\n' "$PYTHON_PATH_STATUS" >"$EVIDENCE/runtime-paths.exit"
 
-overall=0
+overall=$PYTHON_PATH_STATUS
 run_logged() {
   name=$1
   workdir=$2
@@ -43,9 +44,9 @@ run_logged rust-slice1 "$ROOT/rust" mbx +1.97.1 test --locked -p lancedb \
   --features remote --test first_class_function_slice1
 run_logged rust-clippy "$ROOT/rust" mbx +1.97.1 clippy --locked -p lancedb \
   --features remote --test first_class_function_slice1 -- -D warnings
-run_logged ruff-format "$ROOT" ruff format --check \
+run_logged ruff-format "$ROOT" "$RUFF" format --check \
   "python/python/lancedb/functions.py" python/python/tests/test_first_class_function_slice1.py
-run_logged ruff-check "$ROOT" ruff check \
+run_logged ruff-check "$ROOT" "$RUFF" check \
   "python/python/lancedb/functions.py" python/python/tests/test_first_class_function_slice1.py
 run_logged python-slice1 "$ROOT" env PYTHONPATH="$ROOT/python" \
   "$PYTHON_ENV/bin/pytest" -q python/python/tests/test_first_class_function_slice1.py
