@@ -416,12 +416,13 @@ mod tests {
         };
         let error = LanceError::JobFailed {
             job_id: Some("outer-job".into()),
-            failure: JobFailure {
+            failure: Box::new(JobFailure {
                 message: Some("Function 'missing' was not found".into()),
+                traceback: None,
                 sql_job_id: Some("outer-job".into()),
                 source: Some(Arc::new(source)),
                 ..Default::default()
-            },
+            }),
         };
 
         let py_err = Python::attach(|_| {

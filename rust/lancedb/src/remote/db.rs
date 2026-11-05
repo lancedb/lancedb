@@ -1960,11 +1960,11 @@ mod tests {
     fn catalog_helpers_unwrap_only_a_named_resource_job_failure() {
         let job_failed = |source: Error| Error::JobFailed {
             job_id: Some("job-1".into()),
-            failure: JobFailure {
+            failure: Box::new(JobFailure {
                 sql_job_id: Some("job-1".into()),
                 source: Some(Arc::new(source)),
                 ..Default::default()
-            },
+            }),
         };
 
         for (kind, name) in [
