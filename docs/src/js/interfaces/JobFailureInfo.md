@@ -39,3 +39,5 @@ optional retryable: boolean;
 ```ts
 optional traceback: string;
 ```
+
+User-code traceback, possibly truncated by the server.
