@@ -169,7 +169,7 @@ impl DocLink {
             | Self::Views
             | Self::MaterializedViews
             | Self::PrewarmData
-            | Self::Authorization => "/enterprise",
+            | Self::Authorization => "/basics/embedded-vs-enterprise",
         }
     }
 
