@@ -49,6 +49,7 @@ flowchart LR
     subgraph W1["RTE node B"]
         direction TB
         S2["Shard 0 — table 'metrics'"]
+        S3["Shard 1 — table 'metrics'"]
     end
 
     Q -- "'frames'" --> W0
@@ -80,6 +81,7 @@ flowchart LR
     subgraph W1["RTE node B"]
         direction TB
         S2["Shard 0 — table 'metrics'"]
+        S3["Shard 1 — table 'metrics'"]
     end
 
     Q -- "'frames'" --> W0
@@ -123,7 +125,7 @@ throughput than this provides.
 ## What to read next {#next}
 
 <CardGroup cols={2}>
-  <Card title="RTE writes" icon="bolt" href="/ingestion/realtime-write">
+  <Card title="RTE Write (Upsert)" icon="bolt" href="/ingestion/realtime-write">
     Enable RTE and write to a table; the same call on Embedded or Enterprise.
   </Card>
   <Card title="How the real time engine works" icon="database" href="/tables/realtime-engine">
