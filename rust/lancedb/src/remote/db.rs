@@ -62,10 +62,7 @@ fn direct_catalog_resource_error(error: Error) -> Error {
         request_id,
         grpc_code,
         metadata,
-    }) = failure
-        .source
-        .as_deref()
-        .and_then(|source| source.downcast_ref::<Error>())
+    }) = failure.source.as_deref()
     else {
         return error;
     };
@@ -79,7 +76,7 @@ fn direct_catalog_resource_error(error: Error) -> Error {
     Error::Sql {
         message: message.clone(),
         request_id: request_id.clone(),
-        grpc_code: *grpc_code,
+        grpc_code,
         metadata: metadata.clone(),
     }
 }
