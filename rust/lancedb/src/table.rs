@@ -891,6 +891,12 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         options: RefreshColumnOptions,
     ) -> Result<RefreshColumnResult> {
         options.validate()?;
+        if options.retry_policy.is_some() || options.error_policy.is_some() {
+            return Err(Error::NotSupported {
+                message: "Function retry and error policies require an Enterprise Function refresh"
+                    .into(),
+            });
+        }
         self.refresh_column(column).await
     }
     /// Fill a computed column's unfilled rows and recompute those whose
@@ -910,6 +916,12 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         options: RefreshColumnOptions,
     ) -> Result<Job<crate::function::RefreshColumnResult>> {
         options.validate()?;
+        if options.retry_policy.is_some() || options.error_policy.is_some() {
+            return Err(Error::NotSupported {
+                message: "Function retry and error policies require an Enterprise Function refresh"
+                    .into(),
+            });
+        }
         self.refresh_column_async(column).await
     }
     /// The per-row errors Function refreshes recorded on this table; see

@@ -465,6 +465,8 @@ with BlobReader(read_range, len(payload)) as reader:
 
 ::: lancedb.functions.FunctionRegistrationRequest
 
+::: lancedb.functions.FunctionRetryPolicy
+
 ::: lancedb.functions.FunctionArtifactRequest
 
 ::: lancedb.functions.FunctionArtifactContent

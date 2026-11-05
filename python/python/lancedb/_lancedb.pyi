@@ -617,6 +617,8 @@ class Table:
         batch_size: Optional[int] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
+        retry_policy: Optional[str] = None,
+        error_policy: Optional[str] = None,
     ) -> RefreshColumnResult: ...
     async def refresh_column_async(
         self,
@@ -625,6 +627,8 @@ class Table:
         batch_size: Optional[int] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
+        retry_policy: Optional[str] = None,
+        error_policy: Optional[str] = None,
     ) -> Job: ...
     async def function_errors(
         self,
@@ -1008,6 +1012,7 @@ class RefreshColumnResult:
     version: int
 
 class FunctionErrorRecord:
+    attempts: Optional[int]
     job_id: str
     fragment_id: int
     row_offset: Optional[int]
@@ -1206,3 +1211,5 @@ class AuthzObject:
     ) -> AuthzObject: ...
     def __str__(self) -> str: ...
     def __repr__(self) -> str: ...
+
+def validate_function_retry_policy(json: str) -> None: ...

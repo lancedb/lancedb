@@ -82,6 +82,7 @@ from .index import (
 )
 from .expr import Expr
 from .functions import (
+    FunctionRetryPolicy,
     FunctionApplication,
     RefreshColumnResult as RefreshColumnJobResult,
 )
@@ -3166,6 +3167,8 @@ class Table(ABC):
         batch_size: Optional[int] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
+        retry_policy: Optional[FunctionRetryPolicy] = None,
+        error_policy: Optional[Literal["fail", "skip"]] = None,
     ) -> "RefreshColumnResult":
         """
         Fill the rows of a computed column that hold no value yet.
@@ -3199,6 +3202,13 @@ class Table(ABC):
             Positive aggregate GPU budget for Function workers. None leaves
             the server's configured budget unchanged. LanceDB Enterprise
             only.
+        retry_policy: FunctionRetryPolicy, optional
+            Override retries of failed user-code calls. Only use when repeating
+            partial work is safe. Set max_attempts=1 to disable retries.
+            Enterprise Functions only; local refreshes reject this option.
+        error_policy: {"fail", "skip"}, optional
+            Action after failure or retry exhaustion. Skip records the error
+            and attempt count, subject to the server's failure limits.
 
         Returns
         -------
@@ -3215,6 +3225,8 @@ class Table(ABC):
         batch_size: Optional[int] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
+        retry_policy: Optional[FunctionRetryPolicy] = None,
+        error_policy: Optional[Literal["fail", "skip"]] = None,
     ) -> Job[RefreshColumnJobResult]:
         """
         Like :meth:`refresh_column`, but returns a handle to the refresh job
@@ -3247,6 +3259,13 @@ class Table(ABC):
             Positive aggregate GPU budget for Function workers. None leaves
             the server's configured budget unchanged. LanceDB Enterprise
             only.
+        retry_policy: FunctionRetryPolicy, optional
+            Override retries of failed user-code calls. Only use when repeating
+            partial work is safe. Set max_attempts=1 to disable retries.
+            Enterprise Functions only; local refreshes reject this option.
+        error_policy: {"fail", "skip"}, optional
+            Action after failure or retry exhaustion. Skip records the error
+            and attempt count, subject to the server's failure limits.
 
         Returns
         -------
@@ -5358,6 +5377,8 @@ class LanceTable(Table):
         batch_size: Optional[int] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
+        retry_policy: Optional[FunctionRetryPolicy] = None,
+        error_policy: Optional[Literal["fail", "skip"]] = None,
     ) -> "RefreshColumnResult":
         """Fill a computed column's unfilled rows and recompute those whose
         inputs changed. See
@@ -5368,6 +5389,8 @@ class LanceTable(Table):
                 batch_size=batch_size,
                 gpu_class=gpu_class,
                 gpu_count=gpu_count,
+                retry_policy=retry_policy,
+                error_policy=error_policy,
             )
         )
 
@@ -5378,6 +5401,8 @@ class LanceTable(Table):
         batch_size: Optional[int] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
+        retry_policy: Optional[FunctionRetryPolicy] = None,
+        error_policy: Optional[Literal["fail", "skip"]] = None,
     ) -> Job[RefreshColumnJobResult]:
         """Fill a computed column's unfilled rows and recompute those whose
         inputs changed, returning a handle to the refresh job. See
@@ -5390,6 +5415,8 @@ class LanceTable(Table):
                     batch_size=batch_size,
                     gpu_class=gpu_class,
                     gpu_count=gpu_count,
+                    retry_policy=retry_policy,
+                    error_policy=error_policy,
                 )
             )
         )
@@ -7745,6 +7772,8 @@ class AsyncTable:
         batch_size: Optional[int] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
+        retry_policy: Optional[FunctionRetryPolicy] = None,
+        error_policy: Optional[Literal["fail", "skip"]] = None,
     ) -> RefreshColumnResult:
         """
         Fill the rows of a computed column that hold no value yet.
@@ -7778,6 +7807,13 @@ class AsyncTable:
             Positive aggregate GPU budget for Function workers. None leaves
             the server's configured budget unchanged. LanceDB Enterprise
             only.
+        retry_policy: FunctionRetryPolicy, optional
+            Override retries of failed user-code calls. Only use when repeating
+            partial work is safe. Set max_attempts=1 to disable retries.
+            Enterprise Functions only; local refreshes reject this option.
+        error_policy: {"fail", "skip"}, optional
+            Action after failure or retry exhaustion. Skip records the error
+            and attempt count, subject to the server's failure limits.
 
         Returns
         -------
@@ -7789,6 +7825,10 @@ class AsyncTable:
             batch_size=batch_size,
             gpu_class=gpu_class,
             gpu_count=gpu_count,
+            retry_policy=None
+            if retry_policy is None
+            else FunctionRetryPolicy.model_validate(retry_policy).model_dump_json(),
+            error_policy=error_policy,
         )
 
     async def function_errors(
@@ -7887,6 +7927,8 @@ class AsyncTable:
         batch_size: Optional[int] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
+        retry_policy: Optional[FunctionRetryPolicy] = None,
+        error_policy: Optional[Literal["fail", "skip"]] = None,
     ) -> AsyncJob[RefreshColumnJobResult]:
         """
         Like :meth:`refresh_column`, but returns a handle to the refresh job
@@ -7919,6 +7961,13 @@ class AsyncTable:
             Positive aggregate GPU budget for Function workers. None leaves
             the server's configured budget unchanged. LanceDB Enterprise
             only.
+        retry_policy: FunctionRetryPolicy, optional
+            Override retries of failed user-code calls. Only use when repeating
+            partial work is safe. Set max_attempts=1 to disable retries.
+            Enterprise Functions only; local refreshes reject this option.
+        error_policy: {"fail", "skip"}, optional
+            Action after failure or retry exhaustion. Skip records the error
+            and attempt count, subject to the server's failure limits.
 
         Returns
         -------
@@ -7947,6 +7996,10 @@ class AsyncTable:
                 batch_size=batch_size,
                 gpu_class=gpu_class,
                 gpu_count=gpu_count,
+                retry_policy=None
+                if retry_policy is None
+                else FunctionRetryPolicy.model_validate(retry_policy).model_dump_json(),
+                error_policy=error_policy,
             ),
             RefreshColumnJobResult.from_json,
         )

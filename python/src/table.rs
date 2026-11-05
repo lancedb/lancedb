@@ -46,8 +46,22 @@ fn refresh_column_options(
     batch_size: Option<i64>,
     gpu_class: Option<String>,
     gpu_count: Option<i64>,
+    retry_policy: Option<String>,
+    error_policy: Option<String>,
 ) -> PyResult<RefreshColumnOptions> {
     let mut options = RefreshColumnOptions::default();
+    options.retry_policy = retry_policy
+        .map(|json| {
+            serde_json::from_str(&json)
+                .map_err(|error| PyValueError::new_err(format!("invalid retry_policy: {error}")))
+        })
+        .transpose()?;
+    options.error_policy = error_policy
+        .map(|value| {
+            serde_json::from_value(serde_json::Value::String(value))
+                .map_err(|error| PyValueError::new_err(format!("invalid error_policy: {error}")))
+        })
+        .transpose()?;
     options.batch_size = batch_size
         .map(usize::try_from)
         .transpose()
@@ -611,6 +625,7 @@ impl From<lancedb::table::RefreshColumnResult> for RefreshColumnResult {
 #[pyclass(module = "lancedb._lancedb", get_all, from_py_object)]
 #[derive(Clone, Debug)]
 pub struct FunctionErrorRecord {
+    pub attempts: Option<u32>,
     pub job_id: String,
     pub fragment_id: u64,
     pub row_offset: Option<u32>,
@@ -653,6 +668,7 @@ impl FunctionErrorRecord {
 impl From<lancedb::function::FunctionErrorRecord> for FunctionErrorRecord {
     fn from(record: lancedb::function::FunctionErrorRecord) -> Self {
         Self {
+            attempts: record.attempts,
             job_id: record.job_id,
             fragment_id: record.fragment_id,
             row_offset: record.row_offset,
@@ -2126,15 +2142,18 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, *, batch_size=None, gpu_class=None, gpu_count=None))]
+    #[pyo3(signature = (column, *, batch_size=None, gpu_class=None, gpu_count=None, retry_policy=None, error_policy=None))]
     pub fn refresh_column(
         self_: PyRef<'_, Self>,
         column: String,
         batch_size: Option<i64>,
         gpu_class: Option<String>,
         gpu_count: Option<i64>,
+        retry_policy: Option<String>,
+        error_policy: Option<String>,
     ) -> PyResult<Bound<'_, PyAny>> {
-        let options = refresh_column_options(batch_size, gpu_class, gpu_count)?;
+        let options =
+            refresh_column_options(batch_size, gpu_class, gpu_count, retry_policy, error_policy)?;
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let result = inner
@@ -2145,15 +2164,18 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, *, batch_size=None, gpu_class=None, gpu_count=None))]
+    #[pyo3(signature = (column, *, batch_size=None, gpu_class=None, gpu_count=None, retry_policy=None, error_policy=None))]
     pub fn refresh_column_async(
         self_: PyRef<'_, Self>,
         column: String,
         batch_size: Option<i64>,
         gpu_class: Option<String>,
         gpu_count: Option<i64>,
+        retry_policy: Option<String>,
+        error_policy: Option<String>,
     ) -> PyResult<Bound<'_, PyAny>> {
-        let options = refresh_column_options(batch_size, gpu_class, gpu_count)?;
+        let options =
+            refresh_column_options(batch_size, gpu_class, gpu_count, retry_policy, error_policy)?;
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let job = inner

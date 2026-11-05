@@ -3977,6 +3977,12 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         if let Some(gpu_count) = options.gpu_count {
             body["gpu_count"] = serde_json::json!(gpu_count);
         }
+        if let Some(policy) = options.retry_policy {
+            body["retry_policy"] = serde_json::json!(policy);
+        }
+        if let Some(policy) = options.error_policy {
+            body["error_policy"] = serde_json::json!(policy);
+        }
         self.apply_branch_body(&mut body);
         let request = self
             .client
@@ -10981,6 +10987,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_refresh_column_async_retry_policy() {
+        use crate::function::{FunctionErrorPolicy, FunctionRetryPolicy};
+        use crate::table::RefreshColumnOptions;
+        let policy = FunctionRetryPolicy::transient();
+        let expected_policy = serde_json::to_value(&policy).unwrap();
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/backfill_column");
+            assert_eq!(
+                request_body_json(&request),
+                serde_json::json!({
+                    "column":"quality", "retry_policy": expected_policy, "error_policy":"skip",
+                })
+            );
+            http::Response::builder()
+                .status(202)
+                .body(r#"{"job_id":"j-retry"}"#.to_string())
+                .unwrap()
+        });
+        let options = RefreshColumnOptions::default()
+            .retry_policy(policy)
+            .error_policy(FunctionErrorPolicy::Skip);
+        assert_eq!(
+            table
+                .refresh_column_async_with_options("quality", options)
+                .await
+                .unwrap()
+                .id(),
+            Some("j-retry")
+        );
+    }
+
+    #[tokio::test]
     async fn test_refresh_column_rejects_invalid_gpu_options_before_request() {
         use crate::table::RefreshColumnOptions;
 
@@ -11120,7 +11158,7 @@ mod tests {
                         "column": "embedding", "function": "embed", "function_version": "2",
                         "table_version": 11, "error_type": "ValueError",
                         "error_message": "bad input 'x'", "traceback": "Traceback (most recent call last):\nValueError: bad input 'x'",
-                        "created_at_millis": 1700000000000}],
+                        "created_at_millis": 1700000000000, "attempts": 3}],
                         "fragments": [{"job_id": "j-7", "fragment_id": 4, "rows_skipped": 500,
                         "rows_recorded": 100}],
                         "truncated": true}"#,
@@ -11140,6 +11178,7 @@ mod tests {
         assert_eq!(
             errors.records,
             [FunctionErrorRecord {
+                attempts: Some(3),
                 job_id: "j-7".into(),
                 fragment_id: 3,
                 row_offset: Some(9),

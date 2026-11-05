@@ -1825,6 +1825,11 @@ def test_remote_create_index_async_returns_job():
         {"batch_size": 1},
         {"batch_size": 8},
         {"gpu_class": "a10g", "gpu_count": 2},
+        {
+            "retry_policy": {"transient": True, "max_attempts": 3},
+            "error_policy": "skip",
+        },
+        {"retry_policy": {"max_attempts": 1}, "error_policy": "fail"},
     ],
 )
 async def test_remote_refresh_async_returns_typed_terminal_result(
@@ -1849,6 +1854,12 @@ async def test_remote_refresh_async_returns_typed_terminal_result(
                 expected["gpu_class"] = refresh_kwargs["gpu_class"]
             if refresh_kwargs.get("gpu_count") is not None:
                 expected["gpu_count"] = refresh_kwargs["gpu_count"]
+            if refresh_kwargs.get("retry_policy") is not None:
+                expected["retry_policy"] = lancedb.FunctionRetryPolicy.model_validate(
+                    refresh_kwargs["retry_policy"]
+                ).model_dump(mode="json")
+            if refresh_kwargs.get("error_policy") is not None:
+                expected["error_policy"] = refresh_kwargs["error_policy"]
             assert json.loads(body) == expected
             request.send_response(202)
             request.send_header("Content-Type", "application/json")
@@ -2010,10 +2021,12 @@ def test_remote_refresh_async_forwards_progress_from_submitted_handle():
         ({"gpu_class": "a_b"}, "gpu_class"),
         ({"gpu_count": 0}, "gpu_count"),
         ({"gpu_count": -1}, "gpu_count"),
+        ({"retry_policy": {"transient": True, "max_attempts": 0}}, "retry_policy"),
+        ({"error_policy": "retry"}, "error_policy"),
     ],
 )
 @pytest.mark.asyncio
-async def test_remote_refresh_rejects_invalid_gpu_options_before_request(
+async def test_remote_refresh_rejects_invalid_options_before_request(
     refresh_kwargs, message
 ):
     backfill_requests = []
@@ -2062,7 +2075,8 @@ async def test_remote_refresh_rejects_invalid_gpu_options_before_request(
     assert backfill_requests == []
 
 
-def test_remote_function_errors_lists_the_rows_a_refresh_skipped():
+@pytest.mark.parametrize("attempts", [None, 3])
+def test_remote_function_errors_lists_the_rows_a_refresh_skipped(attempts):
     listing = {
         "records": [
             {
@@ -2077,6 +2091,7 @@ def test_remote_function_errors_lists_the_rows_a_refresh_skipped():
                 "table_version": 11,
                 "error_type": "ValueError",
                 "error_message": "bad input 'x'",
+                "attempts": attempts,
                 "traceback": (
                     "Traceback (most recent call last):\nValueError: bad input 'x'"
                 ),
@@ -2127,6 +2142,7 @@ def test_remote_function_errors_lists_the_rows_a_refresh_skipped():
     assert errors.records[0].row_id == 42
     assert errors.records[0].row_address == 12884901897
     assert errors.records[0].function_version == "2"
+    assert errors.records[0].attempts == attempts
     assert errors.records[0].traceback == (
         "Traceback (most recent call last):\nValueError: bad input 'x'"
     )
