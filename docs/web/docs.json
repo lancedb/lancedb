@@ -41,7 +41,7 @@
     },
     {
       "source": "/enterprise",
-      "destination": "/#architecture"
+      "destination": "/basics/embedded-vs-enterprise"
     },
     {
       "source": "/enterprise/intelligent-scheduling",
@@ -89,7 +89,7 @@
     },
     {
       "source": "/enterprise/deployment",
-      "destination": "/#architecture"
+      "destination": "/basics/embedded-vs-enterprise"
     },
     {
       "source": "/feature-engineering/data-evolution",
@@ -370,9 +370,16 @@
         "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting Started",
+            "group": "Introduction",
             "pages": [
               "index",
+              "basics/lancedb-embedded",
+              "basics/embedded-vs-enterprise"
+            ]
+          },
+          {
+            "group": "Getting Started",
+            "pages": [
               "quickstart",
               "basics/sdk",
               "basics/sql",

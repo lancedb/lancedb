@@ -26,7 +26,7 @@ the join has already settled which rows survive.
   "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
   "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
   "clusterBkg": "#211d1a", "clusterBorder": "#4c443f", "edgeLabelBackground": "#171513",
-  "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+  "fontFamily": "Inter, sans-serif", "fontSize": "18px"
 }}}%%
 flowchart TB
     subgraph Naive["Naive: wide column read before filtering"]
@@ -41,7 +41,7 @@ flowchart TB
     D2 --> D3["RemoteTake:<br/>fetch the wide column,<br/>once per surviving row"]
     end
     classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
-    classDef accent fill:#2a1810,stroke:#ff734a,stroke-width:1.5px,color:#f4ebe8
+    classDef accent fill:#2a1810,stroke:#e8582d,stroke-width:1.5px,color:#f4ebe8
     class D3 accent
 ```
 
@@ -54,7 +54,7 @@ flowchart TB
   "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
   "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
   "clusterBkg": "#f4ebe8", "clusterBorder": "#ad9e95", "edgeLabelBackground": "#ffffff",
-  "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+  "fontFamily": "Inter, sans-serif", "fontSize": "18px"
 }}}%%
 flowchart TB
     subgraph Naive["Naive: wide column read before filtering"]
