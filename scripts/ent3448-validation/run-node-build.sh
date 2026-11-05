@@ -14,6 +14,9 @@ trap 'result=$?; printf "%s\n" "$result" > "$evidence_dir/suite.exit"' EXIT
 
 export PATH="/home/ec2-user/.local/node/node-v24.11.1-linux-x64/bin:$PATH"
 export RUSTUP_TOOLCHAIN=1.97.1
+export CARGO_BUILD_JOBS=4
+export TMPDIR=/home/ec2-user/.cache/sophon-task-tmp/ent3448/node
+mkdir -p "$TMPDIR"
 node --version > "$evidence_dir/node.version"
 pnpm --version > "$evidence_dir/pnpm.version"
 
