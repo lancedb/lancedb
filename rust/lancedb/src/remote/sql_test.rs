@@ -3539,8 +3539,13 @@ fn sql_status_reports_structured_resource_identity() {
         .insert("x-lancedb-sql-job-id", "sql-job-1".parse().unwrap());
 
     let error = super::sql_status_error("current-request", &status);
-    let metadata = format!("{:?}", error.remote_error_metadata().unwrap());
-    assert!(metadata.contains("function"), "{metadata}");
-    assert!(metadata.contains("missing"), "{metadata}");
-    assert!(metadata.contains("ns"), "{metadata}");
+    let resource = error
+        .remote_error_metadata()
+        .unwrap()
+        .resource
+        .as_ref()
+        .unwrap();
+    assert_eq!(resource.kind, "function");
+    assert_eq!(resource.name, "missing");
+    assert_eq!(resource.namespace_path, ["ns"]);
 }

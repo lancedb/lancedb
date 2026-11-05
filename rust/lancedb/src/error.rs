@@ -27,6 +27,35 @@ pub struct HttpErrorDetails {
     pub namespace_path: Vec<String>,
 }
 
+/// Stable resource identity reported with a remote Flight SQL failure.
+#[cfg(feature = "remote")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RemoteResourceIdentity {
+    /// The kind of resource named by the error.
+    pub kind: String,
+    /// The leaf name of the resource.
+    pub name: String,
+    /// The parent namespace path of the resource.
+    pub namespace_path: Vec<String>,
+}
+
+#[cfg(feature = "remote")]
+impl RemoteResourceIdentity {
+    /// Construct a resource identity as reported by a remote service.
+    pub fn new(
+        kind: impl Into<String>,
+        name: impl Into<String>,
+        namespace_path: Vec<String>,
+    ) -> Self {
+        Self {
+            kind: kind.into(),
+            name: name.into(),
+            namespace_path,
+        }
+    }
+}
+
 /// Correlation and classification metadata reported by a remote server.
 ///
 /// Fields are absent when the server did not supply them. Diagnostic text is
@@ -41,6 +70,8 @@ pub struct RemoteErrorMetadata {
     pub job_id: Option<String>,
     /// Request executed by the isolated SQL worker.
     pub job_request_id: Option<String>,
+    /// Structured resource identity supplied by the server, when available.
+    pub resource: Option<RemoteResourceIdentity>,
 }
 
 #[cfg(feature = "remote")]
@@ -56,8 +87,35 @@ impl RemoteErrorMetadata {
             error_code: header("x-lancedb-error-code"),
             job_id: header("x-lancedb-sql-job-id"),
             job_request_id: header("x-job-request-id"),
+            resource: header("x-lancedb-resource")
+                .as_deref()
+                .and_then(parse_flight_resource_identity),
         }
     }
+}
+
+#[cfg(feature = "remote")]
+#[derive(Deserialize)]
+struct FlightResourceIdentity {
+    kind: String,
+    name: String,
+    namespace_path: Vec<String>,
+}
+
+/// Decode the ASCII-safe structured resource metadata used by Flight SQL.
+#[cfg(feature = "remote")]
+pub(crate) fn parse_flight_resource_identity(value: &str) -> Option<RemoteResourceIdentity> {
+    use base64::Engine as _;
+
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(value)
+        .ok()?;
+    let identity = serde_json::from_slice::<FlightResourceIdentity>(&bytes).ok()?;
+    Some(RemoteResourceIdentity {
+        kind: identity.kind,
+        name: identity.name,
+        namespace_path: identity.namespace_path,
+    })
 }
 
 #[cfg(feature = "remote")]

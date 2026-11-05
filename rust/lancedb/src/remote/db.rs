@@ -52,6 +52,38 @@ use super::util::parse_server_version;
 use super::{ARROW_STREAM_CONTENT_TYPE, extract_job_id};
 use futures::TryStreamExt;
 
+#[cfg(feature = "remote")]
+fn direct_catalog_resource_error(error: Error) -> Error {
+    let Error::JobFailed { failure, .. } = &error else {
+        return error;
+    };
+    let Some(Error::Sql {
+        message,
+        request_id,
+        grpc_code,
+        metadata,
+    }) = failure
+        .source
+        .as_deref()
+        .and_then(|source| source.downcast_ref::<Error>())
+    else {
+        return error;
+    };
+    let named_catalog_resource = metadata
+        .resource
+        .as_ref()
+        .is_some_and(|resource| matches!(resource.kind.as_str(), "function" | "namespace"));
+    if !named_catalog_resource {
+        return error;
+    }
+    Error::Sql {
+        message: message.clone(),
+        request_id: request_id.clone(),
+        grpc_code: *grpc_code,
+        metadata: metadata.clone(),
+    }
+}
+
 // Request structure for the remote clone table API
 #[derive(serde::Serialize)]
 struct RemoteCloneTableRequest {
@@ -861,6 +893,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         self.sql_client()?
             .describe_function(name, version, namespace_path)
             .await
+            .map_err(direct_catalog_resource_error)
     }
 
     async fn list_functions(
@@ -1910,6 +1943,7 @@ mod tests {
 
     use crate::connection::ConnectBuilder;
     use crate::database::Database;
+    use crate::error::{JobFailure, RemoteErrorMetadata, RemoteResourceIdentity};
     use crate::graph::{EdgeTable, Endpoint, NodeTable, PropertyGraphDefinition};
     use crate::materialized_view::CreateMaterializedViewRequest;
     use crate::{
@@ -1918,6 +1952,47 @@ mod tests {
         job::JobEventsRequest,
         remote::{ARROW_STREAM_CONTENT_TYPE, ClientConfig, HeaderProvider, JSON_CONTENT_TYPE},
     };
+
+    #[test]
+    fn catalog_lookup_unwraps_only_a_named_resource_job_failure() {
+        let resource = RemoteResourceIdentity::new("function", "missing", vec!["ns".into()]);
+        let sql = Error::Sql {
+            message: "Function 'missing' was not found".into(),
+            request_id: "worker-request".into(),
+            grpc_code: 3,
+            metadata: Box::new(RemoteErrorMetadata {
+                error_code: Some("not_found".into()),
+                job_id: Some("job-1".into()),
+                resource: Some(resource.clone()),
+                ..Default::default()
+            }),
+        };
+        let job_failed = |source: Error| Error::JobFailed {
+            job_id: Some("job-1".into()),
+            failure: JobFailure {
+                sql_job_id: Some("job-1".into()),
+                source: Some(Arc::new(source)),
+                ..Default::default()
+            },
+        };
+
+        let Error::Sql { metadata, .. } = super::direct_catalog_resource_error(job_failed(sql))
+        else {
+            panic!("catalog lookup must surface the typed resource failure");
+        };
+        assert_eq!(metadata.resource, Some(resource));
+
+        let generic = Error::Sql {
+            message: "query failed".into(),
+            request_id: "worker-request".into(),
+            grpc_code: 3,
+            metadata: Box::new(RemoteErrorMetadata::default()),
+        };
+        assert!(matches!(
+            super::direct_catalog_resource_error(job_failed(generic)),
+            Error::JobFailed { .. }
+        ));
+    }
 
     #[tokio::test]
     async fn test_catalog_namespace_identifier_validates_all_namespace_components() {
