@@ -86,6 +86,22 @@ impl Job {
         self.inner.job_type()
     }
 
+    /// Non-fatal observations returned when the server accepted the job.
+    #[getter]
+    pub fn warnings(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
+        self.inner
+            .warnings()
+            .iter()
+            .map(|warning| {
+                let raw = serde_json::to_string(warning)
+                    .map_err(|error| PyValueError::new_err(error.to_string()))?;
+                parse_json_payload(py, Some(&raw))?
+                    .map(Bound::unbind)
+                    .ok_or_else(|| PyValueError::new_err("missing warning"))
+            })
+            .collect()
+    }
+
     pub fn status(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(

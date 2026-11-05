@@ -217,6 +217,15 @@ class AsyncJob(Generic[T]):
         """
         return self._inner.id if self._inner is not None else None
 
+    @property
+    def warnings(self) -> list[dict[str, Any]]:
+        """Non-fatal observations returned when the operation was submitted.
+
+        Warnings are point-in-time server observations. They are not job
+        lifecycle events, reservations, or estimates of when work will start.
+        """
+        return list(self._inner.warnings) if self._inner is not None else []
+
     async def status(self) -> str:
         """The operation's current lifecycle state: "running", "finished",
         "failed", or "cancelled".
@@ -515,6 +524,14 @@ class Job(Generic[T]):
         See :attr:`AsyncJob.id`.
         """
         return self._inner.id if self._inner is not None else None
+
+    @property
+    def warnings(self) -> list[dict[str, Any]]:
+        """Non-fatal observations returned when the operation was submitted.
+
+        See :attr:`AsyncJob.warnings`.
+        """
+        return self._inner.warnings if self._inner is not None else []
 
     def status(self) -> str:
         """The operation's current lifecycle state: "running", "finished",

@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use arrow_array::RecordBatch;
 use async_trait::async_trait;
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use tokio::sync::watch;
 use tokio::task::{AbortHandle, JoinHandle};
@@ -23,6 +23,22 @@ use crate::error::{Error, JobFailure, Result};
 /// poller. Keeping this callback on the poller avoids a second lifecycle or
 /// retry loop just to render progress.
 pub type JobProgressCallback = Arc<Mutex<dyn FnMut(&JobDescription) + Send>>;
+
+/// A non-fatal observation made while submitting or inspecting a job.
+///
+/// Warnings describe the state seen by the submitting server. They are not
+/// lifecycle events, reservations, or promises about future execution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobWarning {
+    pub code: String,
+    pub message: String,
+    #[serde(default = "empty_warning_details", flatten)]
+    pub details: Value,
+}
+
+fn empty_warning_details() -> Value {
+    Value::Object(serde_json::Map::new())
+}
 
 /// Which of a job's events [`Job::events`] returns.
 ///
@@ -68,6 +84,11 @@ pub(crate) trait JobHandle: Send + Sync {
     }
     fn job_type(&self) -> Option<&str> {
         None
+    }
+    /// Warnings observed when the handle was created. Backends that do not
+    /// carry submit-time observations keep the empty default.
+    fn warnings(&self) -> &[JobWarning] {
+        &[]
     }
     async fn status(&self) -> Result<String>;
     async fn wait(&self) -> Result<TerminalResult>;
@@ -329,6 +350,15 @@ where
         match &self.inner {
             JobInner::Handle { handle, .. } => handle.id(),
             JobInner::Completed(_) => None,
+        }
+    }
+
+    /// Non-fatal observations returned when the operation was submitted.
+    /// Later refreshes do not replace these point-in-time warnings.
+    pub fn warnings(&self) -> &[JobWarning] {
+        match &self.inner {
+            JobInner::Handle { handle, .. } => handle.warnings(),
+            JobInner::Completed(_) => &[],
         }
     }
 

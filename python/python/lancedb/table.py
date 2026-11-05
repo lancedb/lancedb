@@ -3227,7 +3227,10 @@ class Table(ABC):
         the column is filled until :meth:`Job.wait` returns. Invalid input --
         an unknown column, or one that is not computed -- raises here rather
         than failing the job. For local tables, the job runs in-process; for
-        remote tables, it is the server's backfill job.
+        remote tables, it is the server's backfill job. A server may attach a
+        point-in-time warning to the returned job's :attr:`Job.warnings`, for
+        example when it observed no idle warm GPU workers at submission. That
+        observation is not a reservation or start-time estimate.
 
         Parameters
         ----------
@@ -7841,7 +7844,10 @@ class AsyncTable:
         the column is filled until :meth:`AsyncJob.wait` resolves. Invalid
         input -- an unknown column, or one that is not computed -- raises here
         rather than failing the job. For local tables, the job runs in-process;
-        for remote tables, it is the server's backfill job.
+        for remote tables, it is the server's backfill job. A server may attach
+        a point-in-time warning to the returned job's :attr:`AsyncJob.warnings`,
+        for example when it observed no idle warm GPU workers at submission.
+        That observation is not a reservation or start-time estimate.
 
         Parameters
         ----------

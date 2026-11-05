@@ -260,6 +260,7 @@ struct FreshnessJob<S: HttpSend> {
     version: Arc<RwLock<Option<u64>>>,
     tracked_result: TrackedJobResult,
     freshness_request: FreshnessHeaders,
+    warnings: Vec<crate::job::JobWarning>,
 }
 
 #[derive(Clone, Copy)]
@@ -272,6 +273,10 @@ enum TrackedJobResult {
 impl<S: HttpSend> crate::job::JobHandle for FreshnessJob<S> {
     fn id(&self) -> Option<&str> {
         crate::job::JobHandle::id(&self.inner)
+    }
+
+    fn warnings(&self) -> &[crate::job::JobWarning] {
+        &self.warnings
     }
 
     async fn status(&self) -> Result<String> {
@@ -812,6 +817,7 @@ impl<S: HttpSend> RemoteTable<S> {
             version: self.version.clone(),
             tracked_result: TrackedJobResult::None,
             freshness_request: self.snapshot_freshness_headers(),
+            warnings: Vec::new(),
         }))
     }
 
@@ -3999,8 +4005,18 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let body = response.text().await.err_to_http(request_id.clone())?;
 
         #[derive(serde::Deserialize)]
+        struct WarmCapacityWarning {
+            code: String,
+            message: String,
+            gpu_class: String,
+            observed_at_millis: i64,
+            source: String,
+        }
+
+        #[derive(serde::Deserialize)]
         struct BackfillResponse {
             job_id: String,
+            warm_capacity_warning: Option<WarmCapacityWarning>,
         }
         let response: BackfillResponse = serde_json::from_str(&body).map_err(|e| Error::Http {
             source: format!("Failed to parse backfill_column response: {}", e).into(),
@@ -4008,12 +4024,27 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             status_code: None,
         })?;
 
+        let warnings = response
+            .warm_capacity_warning
+            .map(|warning| crate::job::JobWarning {
+                code: warning.code,
+                message: warning.message,
+                details: serde_json::json!({
+                    "gpu_class": warning.gpu_class,
+                    "observed_at_millis": warning.observed_at_millis,
+                    "source": warning.source,
+                }),
+            })
+            .into_iter()
+            .collect();
+
         Ok(Job::new_typed(Box::new(FreshnessJob {
             inner: RemoteJob::new(self.client.clone(), response.job_id),
             freshness: self.freshness.clone(),
             version: self.version.clone(),
             tracked_result: TrackedJobResult::RefreshColumn,
             freshness_request: self.snapshot_freshness_headers(),
+            warnings,
         })))
     }
 
@@ -10727,12 +10758,18 @@ mod tests {
             assert_eq!(value, serde_json::json!({"column": "doubled"}));
             http::Response::builder()
                 .status(202)
-                .body(r#"{"job_id": "j-42"}"#)
+                .body(
+                    r#"{"job_id":"j-42","warm_capacity_warning":{"code":"no_idle_warm_gpu_workers","message":"No idle warm GPU workers were observed for class 'a10g' at submission.","gpu_class":"a10g","observed_at_millis":42,"source":"owner_agent"}}"#,
+                )
                 .unwrap()
         });
 
         let job = table.refresh_column_async("doubled").await.unwrap();
         assert_eq!(job.id(), Some("j-42"));
+        assert_eq!(job.warnings().len(), 1);
+        assert_eq!(job.warnings()[0].code, "no_idle_warm_gpu_workers");
+        assert_eq!(job.warnings()[0].details["gpu_class"], "a10g");
+        assert_eq!(job.warnings()[0].details["observed_at_millis"], 42);
 
         let err = table.refresh_column("doubled").await.unwrap_err();
         assert!(

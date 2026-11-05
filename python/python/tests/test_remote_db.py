@@ -1815,6 +1815,15 @@ async def test_remote_refresh_async_returns_typed_terminal_result(
         "source_version": 7,
         "published_version": 8,
     }
+    warm_capacity_warning = {
+        "code": "no_idle_warm_gpu_workers",
+        "message": (
+            "No idle warm GPU workers were observed for class 'a10g' at submission."
+        ),
+        "gpu_class": "a10g",
+        "observed_at_millis": 42,
+        "source": "owner_agent",
+    }
 
     def handler(request):
         content_len = int(request.headers.get("Content-Length", 0))
@@ -1831,7 +1840,10 @@ async def test_remote_refresh_async_returns_typed_terminal_result(
             request.send_response(202)
             request.send_header("Content-Type", "application/json")
             request.end_headers()
-            request.wfile.write(b'{"job_id": "refresh-1"}')
+            response = {"job_id": "refresh-1"}
+            if refresh_kwargs.get("gpu_class") is not None:
+                response["warm_capacity_warning"] = warm_capacity_warning
+            request.wfile.write(json.dumps(response).encode())
         elif request.path == "/v1/jobs/describe":
             assert json.loads(body)["job_id"] == "refresh-1"
             request.send_response(200)
@@ -1881,12 +1893,22 @@ async def test_remote_refresh_async_returns_typed_terminal_result(
             table = await db.create_table("test", [{"id": 1}])
             job = await table.refresh_column_async("derived", **refresh_kwargs)
             assert job.id == "refresh-1"
+            assert job.warnings == (
+                [warm_capacity_warning]
+                if refresh_kwargs.get("gpu_class") is not None
+                else []
+            )
             result = await job.wait(timeout=timedelta(seconds=30))
     else:
         with mock_lancedb_connection(handler) as db:
             table = db.create_table("test", [{"id": 1}])
             job = table.refresh_column_async("derived", **refresh_kwargs)
             assert job.id == "refresh-1"
+            assert job.warnings == (
+                [warm_capacity_warning]
+                if refresh_kwargs.get("gpu_class") is not None
+                else []
+            )
             result = job.wait(timeout=timedelta(seconds=30))
 
     assert isinstance(result, lancedb.RefreshColumnResult)
