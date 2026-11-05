@@ -3974,6 +3974,7 @@ impl BaseTable for NativeTable {
         params: MergeInsertBuilder,
         new_data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<MergeResult> {
+        self.dataset.ensure_mutable()?;
         let source_schema = arrow_array::RecordBatchReader::schema(&new_data);
         self.ensure_not_a_view("merge insert into").await?;
         computed_columns::ensure_not_written(
@@ -5139,6 +5140,22 @@ mod tests {
 
         // a pinned version is a detached head: writes are rejected
         assert!(pinned.add(sample_rows(vec![9])).execute().await.is_err());
+        let exp_head = head.version().await.unwrap();
+        for pinned_table in [&pinned, &pinned_direct] {
+            let mut merge = pinned_table.merge_insert(&["i"]);
+            merge
+                .when_matched_update_all(None)
+                .when_not_matched_insert_all();
+            let err = merge.execute(sample_rows(vec![300])).await.unwrap_err();
+            assert!(matches!(err, Error::InvalidInput { message }
+                if message == "table cannot be modified when a specific version is checked out"));
+            assert_eq!(pinned_table.version().await.unwrap(), exp_v2);
+            assert_eq!(pinned_table.count_rows(None).await.unwrap(), 2);
+        }
+        assert_eq!(head.version().await.unwrap(), exp_head);
+        assert_eq!(head.count_rows(None).await.unwrap(), 3);
+        assert_eq!(table.version().await.unwrap(), main_v2);
+        assert_eq!(table.count_rows(None).await.unwrap(), 4);
 
         // version-only (no branch) time-travels main itself: its fork-point
         // version holds only main's first row, and the shared version number
@@ -5470,8 +5487,35 @@ mod tests {
             .unwrap();
         let version = table.version().await.unwrap();
         table.add(some_sample_data()).execute().await.unwrap();
+        let latest_version = table.version().await.unwrap();
+        let opened = conn
+            .open_table("my_table")
+            .version(version)
+            .execute()
+            .await
+            .unwrap();
         table.checkout(version).await.unwrap();
-        assert!(table.add(some_sample_data()).execute().await.is_err())
+        assert!(table.add(some_sample_data()).execute().await.is_err());
+        for pinned_table in [&table, &opened] {
+            let mut merge = pinned_table.merge_insert(&["i"]);
+            merge
+                .when_matched_update_all(None)
+                .when_not_matched_insert_all();
+            let err = merge.execute(sample_rows(vec![300])).await.unwrap_err();
+            assert!(matches!(err, Error::InvalidInput { message }
+                if message == "table cannot be modified when a specific version is checked out"));
+            assert_eq!(pinned_table.version().await.unwrap(), version);
+            assert_eq!(pinned_table.count_rows(None).await.unwrap(), 1);
+        }
+
+        table.checkout_latest().await.unwrap();
+        assert_eq!(table.version().await.unwrap(), latest_version);
+        assert_eq!(table.count_rows(None).await.unwrap(), 2);
+        let mut merge = table.merge_insert(&["i"]);
+        merge.when_not_matched_insert_all();
+        let result = merge.execute(sample_rows(vec![300])).await.unwrap();
+        assert_eq!(result.num_inserted_rows, 1);
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
     }
 
     #[tokio::test]
