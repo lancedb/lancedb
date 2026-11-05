@@ -3521,3 +3521,26 @@ fn sql_status_keeps_input_category_and_request_ids() {
     let error = super::sql_status_error("request", &tonic::Status::not_found("column_not_found"));
     assert!(error.remote_error_metadata().unwrap().error_code.is_none());
 }
+
+#[test]
+fn sql_status_reports_structured_resource_identity() {
+    let mut status = tonic::Status::not_found("Function 'missing' was not found");
+    status
+        .metadata_mut()
+        .insert("x-lancedb-error-code", "not_found".parse().unwrap());
+    status.metadata_mut().insert(
+        "x-lancedb-resource",
+        "eyJraW5kIjoiZnVuY3Rpb24iLCJuYW1lIjoibWlzc2luZyIsIm5hbWVzcGFjZV9wYXRoIjpbIm5zIl19"
+            .parse()
+            .unwrap(),
+    );
+    status
+        .metadata_mut()
+        .insert("x-lancedb-sql-job-id", "sql-job-1".parse().unwrap());
+
+    let error = super::sql_status_error("current-request", &status);
+    let metadata = format!("{:?}", error.remote_error_metadata().unwrap());
+    assert!(metadata.contains("function"), "{metadata}");
+    assert!(metadata.contains("missing"), "{metadata}");
+    assert!(metadata.contains("ns"), "{metadata}");
+}
