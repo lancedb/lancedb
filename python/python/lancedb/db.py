@@ -11,6 +11,7 @@ from pathlib import Path
 from dataclasses import asdict
 import json
 import sys
+import warnings
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -3651,7 +3652,12 @@ class AsyncConnection(object):
         existing name is an error. Only the last visible revision's removal
         releases the name and schedules background object cleanup.
         """
-        return await self._inner.drop_function(name, version, namespace_path)
+        dropped, drop_warnings = await self._drop_function_with_warnings(
+            name, version, namespace_path
+        )
+        for warning in drop_warnings:
+            warnings.warn(warning, UserWarning, stacklevel=2)
+        return dropped
 
     async def _drop_function_with_warnings(
         self,
