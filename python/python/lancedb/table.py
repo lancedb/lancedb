@@ -545,39 +545,16 @@ def _into_pyarrow_reader(
             data = _serialize_json_values(data, schema)
             table = _blob_input_to_arrow(data, schema)
             if table is None:
-                if schema is not None:
-                    observed_keys = set()
-                    for row in data:
-                        if isinstance(row, dict):
-                            observed_keys.update(row.keys())
-                    batch_fields = [f for f in schema if f.name in observed_keys]
-                    if batch_fields and observed_keys.issubset(
-                        {f.name for f in batch_fields}
-                    ):
-                        batch_schema = pa.schema(batch_fields)
-                        table = pa.Table.from_pylist(data, schema=batch_schema)
-                    else:
-                        all_keys = dict.fromkeys(
-                            k for row in data if isinstance(row, dict) for k in row
-                        )
-                        normalized = [
-                            {**{k: None for k in all_keys}, **row}
-                            if isinstance(row, dict)
-                            else row
-                            for row in data
-                        ]
-                        table = pa.Table.from_pylist(normalized)
-                else:
-                    all_keys = dict.fromkeys(
-                        k for row in data if isinstance(row, dict) for k in row
-                    )
-                    normalized = [
-                        {**{k: None for k in all_keys}, **row}
-                        if isinstance(row, dict)
-                        else row
-                        for row in data
-                    ]
-                    table = pa.Table.from_pylist(normalized)
+                all_keys = dict.fromkeys(
+                    k for row in data if isinstance(row, dict) for k in row
+                )
+                normalized = [
+                    {**{k: None for k in all_keys}, **row}
+                    if isinstance(row, dict)
+                    else row
+                    for row in data
+                ]
+                table = pa.Table.from_pylist(normalized)
             return table.to_reader()
     elif _check_for_pandas(data) and isinstance(data, pd.DataFrame):
         table = _blob_input_to_arrow(data, schema)
