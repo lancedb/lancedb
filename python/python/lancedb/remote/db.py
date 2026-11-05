@@ -38,7 +38,7 @@ import pyarrow as pa
 from ..common import DATA
 from lancedb.listing import Listing, NamespaceListing, TableListing
 from ..db import DBConnection, LOOP
-from ..functions import FunctionVersion, UdfDefinition
+from ..functions import FunctionVersion, FunctionDefinition
 from ..graph import EdgeTable, NodeTable, PropertyGraph
 from ..job import AsyncJob, Job
 from ..sql import Query as SqlQuery
@@ -968,7 +968,7 @@ class RemoteDBConnection(DBConnection):
     @override
     def create_function_async(
         self,
-        definition: UdfDefinition,
+        definition: FunctionDefinition,
         *,
         secrets: Optional[Sequence[EnvVarSecret]] = None,
         namespace_path: Optional[List[str]] = None,

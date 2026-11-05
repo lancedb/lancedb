@@ -10,7 +10,7 @@ import lancedb
 import numpy as np
 import pyarrow as pa
 import pytest
-from lancedb import LanceDBConnection, udf
+from lancedb import LanceDBConnection, function
 from lancedb.index import FTS
 
 # TODO: setup integ test mark and script
@@ -98,7 +98,7 @@ def test_function_execution_controls_through_sql_and_materialized_view():
     view_name = f"batch_probe_view_{suffix}"
     registered_version = None
 
-    @udf(
+    @function(
         name=function_name,
         input_schema=pa.schema([pa.field("value", pa.int64(), nullable=False)]),
         output_schema=pa.int64(),

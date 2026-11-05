@@ -3,6 +3,7 @@
 
 
 import os
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from typing import Dict, Optional, Union, Any, List, Iterable, Literal, TYPE_CHECKING
@@ -39,12 +40,13 @@ from .functions import (
     FunctionArtifactRequest as FunctionArtifactRequest,
     FunctionApplication as FunctionApplication,
     FunctionBinding as FunctionBinding,
+    FunctionDefinition as FunctionDefinition,
     FunctionRegistrationRequest as FunctionRegistrationRequest,
     FunctionVersion as FunctionVersion,
     HuggingFaceModel as HuggingFaceModel,
     PythonRuntimeSpec as PythonRuntimeSpec,
     RefreshColumnResult as RefreshColumnResult,
-    UdfDefinition as UdfDefinition,
+    function as function,
     udf as udf,
 )
 from .secrets import EnvVarSecret as EnvVarSecret
@@ -77,6 +79,7 @@ from .catalog import (
 
 if TYPE_CHECKING:
     from lance.blob import BlobType as BlobType
+    from .functions import UdfDefinition as UdfDefinition
 
 
 def __getattr__(name: str):
@@ -85,6 +88,13 @@ def __getattr__(name: str):
 
         globals()["BlobType"] = BlobType
         return BlobType
+    if name == "UdfDefinition":
+        from . import functions
+
+        warnings.warn(
+            functions.UDF_DEFINITION_DEPRECATION, DeprecationWarning, stacklevel=2
+        )
+        return functions.FunctionDefinition
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

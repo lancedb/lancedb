@@ -29,9 +29,9 @@ inferred from the annotations:
 
 <CodeGroup>
 ```python Python icon="python"
-from lancedb import udf
+from lancedb import function
 
-@udf(pip=["numpy==2.2.0"])
+@function(pip=["numpy==2.2.0"])
 def score(value: float) -> float:
     return value * 2
 
@@ -55,9 +55,9 @@ same doubling logic, vectorized over a whole batch at once:
 ```python Python icon="python"
 import pyarrow as pa
 import pyarrow.compute as pc
-from lancedb import udf
+from lancedb import function
 
-@udf(
+@function(
     pip=["numpy==2.2.0"],
     batch_size=32,
     row_timeout_seconds=90,
@@ -81,15 +81,15 @@ service's default per-call deadline.
 
 ## Stateful Functions: load once, call many times {#stateful}
 
-A `@udf`-decorated **class** is the same callable with state. Each remote
+A `@function`-decorated **class** is the same callable with state. Each remote
 instance calls `__init__` once, calls `__call__` for every row or batch it
 processes, and calls `close()`, if defined, once when it retires:
 
 <CodeGroup>
 ```python Python icon="python"
-from lancedb import udf
+from lancedb import function
 
-@udf
+@function
 class scale:
     def __init__(self, factor: float, offset: float = 0.0):
         self.factor = factor
@@ -119,13 +119,13 @@ in the Function version. `gpu=True` remains required:
 <CodeGroup>
 ```python Python icon="python"
 import pyarrow as pa
-from lancedb import udf
+from lancedb import function
 
 gpu_class = next(
     gpu.name for gpu in db.list_gpu_classes() if gpu.gpu_model == "NVIDIA A10G"
 )
 
-@udf(
+@function(
     gpu=True,
     gpu_class=gpu_class,
     pip=["torch==2.12.0", "sentence-transformers==5.7.0"],
@@ -215,9 +215,9 @@ how the `video: BlobReader` parameter does that:
 from datetime import timedelta
 
 from lancedb import BlobReader, col
-from lancedb.functions import udf
+from lancedb.functions import function
 
-@udf(
+@function(
     name="extract_frame",
     gpu=True,
     pip=["av==13.1.0", "pillow==11.0.0"],
@@ -264,7 +264,7 @@ A second Function can bind a blob another Function produced. Register
 
 <CodeGroup>
 ```python Python icon="python"
-@udf(gpu=True, pip=["transformers==4.47.0"])
+@function(gpu=True, pip=["transformers==4.47.0"])
 def caption(jpeg: bytes) -> str:
     ...  # run a vision-language model over the JPEG, return one sentence
 
@@ -342,10 +342,10 @@ box type without loading the rest of the video:
 
 <CodeGroup>
 ```python Python icon="python"
-from lancedb import BlobReader, udf
+from lancedb import BlobReader, function
 
 
-@udf
+@function
 def first_box_type(video: BlobReader) -> bytes:
     video.seek(4)
     return video.read(4)

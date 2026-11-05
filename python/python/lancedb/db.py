@@ -58,7 +58,7 @@ from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
 
 from . import __version__
 from ._lancedb import _append_doc_url, connect as lancedb_connect  # type: ignore
-from .functions import FunctionVersion, UdfDefinition
+from .functions import FunctionVersion, FunctionDefinition
 from .graph import (
     AsyncPropertyGraph,
     EdgeTable,
@@ -958,12 +958,12 @@ class DBConnection(EnforceOverrides):
 
     def create_function(
         self,
-        definition: UdfDefinition,
+        definition: FunctionDefinition,
         *,
         secrets: Optional[Sequence[EnvVarSecret]] = None,
         namespace_path: Optional[List[str]] = None,
     ) -> FunctionVersion:
-        """Build and register a scalar Python UDF, then return its version.
+        """Build and register a scalar Python function, then return its version.
 
         The server builds the OCI image and registers the completed artifact.
         This is the blocking counterpart of :meth:`create_function_async`.
@@ -971,8 +971,8 @@ class DBConnection(EnforceOverrides):
 
         Parameters
         ----------
-        definition : UdfDefinition
-            A callable decorated with [udf][lancedb.udf].
+        definition : FunctionDefinition
+            A callable decorated with [function][lancedb.function].
         secrets : sequence of EnvVarSecret, optional
             One [EnvVarSecret][lancedb.secrets.EnvVarSecret] per credential the
             Function needs, each naming a Secret and the environment variable
@@ -1002,12 +1002,12 @@ class DBConnection(EnforceOverrides):
 
     def create_function_async(
         self,
-        definition: UdfDefinition,
+        definition: FunctionDefinition,
         *,
         secrets: Optional[Sequence[EnvVarSecret]] = None,
         namespace_path: Optional[List[str]] = None,
     ) -> Job[FunctionVersion]:
-        """Submit a scalar Python UDF for building and registration.
+        """Submit a scalar Python function for building and registration.
 
         The server-side job builds the OCI image, then registers the completed
         artifact. The returned job has type ``query`` and the SQL query UUID as
@@ -2284,7 +2284,7 @@ class LanceDBConnection(DBConnection):
     @override
     def create_function_async(
         self,
-        definition: UdfDefinition,
+        definition: FunctionDefinition,
         *,
         secrets: Optional[Sequence[EnvVarSecret]] = None,
         namespace_path: Optional[List[str]] = None,
@@ -3573,12 +3573,12 @@ class AsyncConnection(object):
 
     async def create_function_async(
         self,
-        definition: UdfDefinition,
+        definition: FunctionDefinition,
         *,
         secrets: Optional[Sequence[EnvVarSecret]] = None,
         namespace_path: Optional[List[str]] = None,
     ) -> AsyncJob[FunctionVersion]:
-        """Submit a scalar Python UDF for building and registration.
+        """Submit a scalar Python function for building and registration.
 
         The server-side job builds the OCI image, then registers the completed
         artifact. The returned job has type ``query`` and the SQL query UUID as
@@ -3589,8 +3589,8 @@ class AsyncConnection(object):
         the namespace the Function is registered in; None or an empty list is
         the root. LanceDB Embedded connections raise ``NotImplementedError``.
         """
-        if not isinstance(definition, UdfDefinition):
-            raise TypeError("create_function_async requires a @udf definition")
+        if not isinstance(definition, FunctionDefinition):
+            raise TypeError("create_function_async requires a @function definition")
         request = definition.bind_secrets(secrets)
         inner = await self._inner.create_function_async(
             request.to_canonical_json(), namespace_path
