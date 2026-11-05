@@ -1872,7 +1872,12 @@ class _RawFunctionCatalog:
     def __init__(self, definition, *, encode=False):
         self.definition = json.dumps(definition) if encode else definition
 
-    async def get_function(self, _name, _version, _namespace_path):
+    async def get_function(self, _name, *args, **kwargs):
+        if args:
+            _version, _namespace_path = args
+        else:
+            _version = kwargs["version"]
+            _namespace_path = kwargs["namespace_path"]
         return self.definition
 
     def __getattr__(self, name):
