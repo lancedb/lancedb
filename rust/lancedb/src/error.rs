@@ -257,7 +257,7 @@ pub enum Error {
     #[snafu(display("Job{} failed{failure}", job_id.as_ref().map(|id| format!(" {id}")).unwrap_or_default()))]
     JobFailed {
         job_id: Option<String>,
-        failure: JobFailure,
+        failure: Box<JobFailure>,
     },
     #[snafu(display("Job{} was cancelled", job_id.as_ref().map(|id| format!(" {id}")).unwrap_or_default()))]
     JobCancelled { job_id: Option<String> },

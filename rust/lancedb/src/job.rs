@@ -583,7 +583,7 @@ impl Outcome {
             Self::Failed(source) => {
                 let (job_id, failure) = match source.as_ref() {
                     Error::JobFailed { job_id, failure } => (job_id.clone(), failure.clone()),
-                    _ => (None, JobFailure::from_source(source)),
+                    _ => (None, Box::new(JobFailure::from_source(source))),
                 };
                 Err(Error::JobFailed { job_id, failure })
             }
