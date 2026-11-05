@@ -1,1 +1,8 @@
 tools/cli.mdx
+# Branching is Beta; not documented until early access. tables/branching.mdx
+# stays reachable (out of the nav only): SDK error messages link to it.
+# To restore: docs.json Tutorials > Feature Engineering, after tutorials/feature-engineering/materialized-views.
+agent-branch-experiments.mdx
+# JSON columns are Beta; not documented until early access.
+# To restore: docs.json Documentation > SQL Reference > DQL, after sql/dql/vector-distance.
+sql/dql/json-functions.mdx

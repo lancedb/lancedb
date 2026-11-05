@@ -1,6 +1,7 @@
 ---
 title: "GPU Function Execution"
-sidebarTitle: "GPU Function Execution"
+tag: "Early access"
+sidebarTitle: "GPU Functions"
 description: "How a GPU Function's worker gets scheduled onto a GPU-capable node, and what happens when none is free."
 icon: microchip
 keywords: ["gpu", "gpu class", "scheduling", "function", "udf", "kubernetes", "node selector"]
@@ -8,6 +9,8 @@ availability:
   embedded: unavailable
   enterprise: available
 ---
+
+<Badge color="purple">Early access</Badge>
 
 [Registering a GPU Function](/curation/create-function#gpu) sets `gpu=True`
 and an optional `gpu_class`; this page covers what happens after that, when

@@ -15,7 +15,7 @@ plus what Lance adds.
 
 | | |
 | --- | --- |
-| [Scalar functions](/sql/dql/scalar-functions) | per row: math, string, regex, date/time, array, struct, JSON |
+| [Scalar functions](/sql/dql/scalar-functions) | per row: math, string, regex, date/time, array, struct{/* Draft until JSON columns reach early access: restore ", JSON" */} |
 | [Aggregate functions](/sql/dql/aggregation#functions) | per group: `count`, `sum`, statistical, approximate |
 | [Window functions](/sql/dql/window#functions) | per window: ranking, offset, running aggregates |
 | [Table functions](#table-functions) | produce a relation rather than a value |
@@ -45,13 +45,17 @@ see [Data types](/sql/data-types#pseudo-columns).
 
 ## What Lance accelerates {#accelerated}
 
-Two function families use an index rather than scanning, which is the difference
+`contains_tokens` uses an index rather than scanning, which is the difference
 between a fast predicate and a slow one:
 
 | | Index used |
 | --- | --- |
 | [`contains_tokens`](/sql/dql/contains-tokens) | full-text index |
+
+{/*
+Draft until JSON columns reach early access; restore "Two function families" above.
 | [`json_get`, typed variants, `json_extract`](/sql/dql/json-functions) | JSON scalar index |
+*/}
 
 Confirm with [`EXPLAIN`](/sql/dql/explain): an accelerated predicate shows an
 index node rather than a `LanceScan` followed by a filter.

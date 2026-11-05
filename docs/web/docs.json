@@ -590,7 +590,6 @@
                   "sql/dql/dedupe",
                   "sql/dql/duplicate-pairs",
                   "sql/dql/vector-distance",
-                  "sql/dql/json-functions",
                   "sql/dql/blob-descriptor",
                   "sql/dql/generate-series",
                   "sql/dql/explain"
@@ -708,8 +707,7 @@
             "group": "Feature Engineering",
             "pages": [
               "tutorials/feature-engineering/feature-engineering-101",
-              "tutorials/feature-engineering/materialized-views",
-              "agent-branch-experiments"
+              "tutorials/feature-engineering/materialized-views"
             ]
           },
           {
