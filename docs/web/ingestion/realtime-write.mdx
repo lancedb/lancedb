@@ -1,5 +1,5 @@
 ---
-title: "Real Time writes"
+title: "RTE writes"
 sidebarTitle: "RTE Write"
 description: "Enable the real time engine on a table and absorb small, frequent writes cheaply, each one committed in milliseconds."
 icon: "bolt"
@@ -12,7 +12,7 @@ availability:
 The [real time engine](/tables/realtime-engine) puts an LSM-style write tier in
 front of a table, turning many small writes into a few large commits. This
 page covers enabling it and writing to a table; for querying an RTE table, see
-[Real Time reads](/search/realtime-read).
+[RTE reads](/search/realtime-read).
 
 `table.enable_rte(spec)` is the same call on both connections, but what it
 does underneath differs:
@@ -22,7 +22,7 @@ does underneath differs:
   there is no separate serving layer to scale or configure.
 - **Enterprise** forwards the call to the server, which runs it on a
   dedicated, horizontally scalable WAL-node tier instead of your table's
-  query-serving fleet. See [Distributed Real Time Write](/enterprise/distributed-real-time-write)
+  query-serving fleet. See [Distributed RTE Write](/enterprise/distributed-real-time-write)
   for how that tier shards a table's writes and the throughput limits that come with it.
 
 ## Getting started {#getting-started}
@@ -162,7 +162,7 @@ conditional updates or deleting rows missing from the source, are rejected.
 </Warning>
 
 Writes go through `merge_insert` on the primary key, and are visible to queries
-immediately — see [Real Time reads](/search/realtime-read) for querying them
+immediately — see [RTE reads](/search/realtime-read) for querying them
 back:
 
 <CodeGroup>
@@ -232,13 +232,13 @@ your own machine's resources.
 An Enterprise table can be split into shards that write independently, with
 each shard's durable-append throughput bounded by its WAL node's own
 capacity -- measured, not an enforced cap. See
-[Distributed Real Time Write](/enterprise/distributed-real-time-write#throughput)
+[Distributed RTE Write](/enterprise/distributed-real-time-write#throughput)
 for the numbers.
 
 ## Next steps {#next-steps}
 
-- [Real Time reads](/search/realtime-read) — query an RTE table
-- [Distributed Real Time Write](/enterprise/distributed-real-time-write) — how Enterprise shards and scales this
+- [RTE reads](/search/realtime-read) — query an RTE table
+- [Distributed RTE Write](/enterprise/distributed-real-time-write) — how Enterprise shards and scales this
 - [How the real time engine works](/tables/realtime-engine#memwal-format)
 - [Merge insert](/ingestion/merge-insert)
 - [`ALTER TABLE ... SET RTE`](/sql/ddl/table#properties)

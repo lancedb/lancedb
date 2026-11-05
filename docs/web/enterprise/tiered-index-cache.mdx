@@ -67,21 +67,25 @@ flowchart LR
 
 Where enabled, the index disk tier and the
 [data page cache](/enterprise/data-page-cache)'s disk tier draw from one
-combined disk allocation per executor: a configurable percentage of the
-provisioned volume (90% by default, leaving headroom for filesystem
-metadata and kubelet usage), out of which the index disk tier reserves its
-own configurable share of the *full* provisioned volume. On a 200 GiB
-volume, the 90% default leaves 180 GiB combined; reserving 25% of the full
-200 GiB (50 GiB) for the index disk tier leaves the remaining 130 GiB for
-data pages. An exact byte split overrides the percentage split when you
-need one tier sized precisely rather than proportionally. Setting the
-index disk tier's share to zero disables it while leaving the in-memory
-index cache and the data page cache's disk tier untouched.
+combined, configurable disk allocation per executor, split between the two
+tiers so neither one needs its own dedicated volume.
+
+## Why it matters {#why-it-matters}
+
+Vector, full-text, and scalar indexes can easily outgrow available memory
+on large tables. Without this cache, an eviction means re-reading and
+re-deserializing that index from object storage on the next request --
+slow, and repeated on every eviction. Spilling to local disk instead keeps
+index lookups fast even when the working set is larger than memory, without
+giving every executor enough memory to hold every index at once.
+
+[Contact us](https://www.lancedb.com/contact) to learn more about how
+caching is sized and tuned for your workload.
 
 ## Index cache interfaces {#interfaces}
 
-- [Cache Prewarm](/enterprise/cache-prewarm) for how `startup_prewarm_idx`
-  warms this cache ahead of the first request.
+- [Cache Prewarm](/enterprise/cache-prewarm) for warming this cache ahead
+  of the first request.
 - [Data Page Cache](/enterprise/data-page-cache) for the related cache
   that holds raw table data pages instead of deserialized index structures.
 - [Vector indexes](/indexing/vector-index), [full-text indexes](/indexing/fts-index),

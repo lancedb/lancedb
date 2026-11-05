@@ -91,7 +91,7 @@ qualifies. It applies to a plain inner equi-join (a single `ON left_col
 `LIMIT` fused into it) where one side -- and only one side -- bottoms out
 at a single, otherwise-unfiltered table scan: no existing row filter,
 scan range, fragment subset, deleted-row handling, or
-[real-time write](/ingestion/realtime-write) tier. If both sides would
+[RTE write](/ingestion/realtime-write) tier. If both sides would
 otherwise qualify, the side with a BlobV2 column is preferred over the
 other; if neither or both sides have one, the rewrite declines rather
 than guessing which to narrow.
