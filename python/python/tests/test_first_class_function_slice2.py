@@ -1872,18 +1872,13 @@ class _RawFunctionCatalog:
     def __init__(self, definition, *, encode=False):
         self.definition = json.dumps(definition) if encode else definition
 
-    async def get_function(self, _name, *args, **kwargs):
-        if args:
-            _version, _namespace_path = args
-        else:
-            _version = kwargs["version"]
-            _namespace_path = kwargs["namespace_path"]
+    async def get_function(self, _name, version, namespace_path):
         return self.definition
 
-    def __getattr__(self, name):
-        if name.startswith("list_"):
-            return lambda **_kwargs: self
-        raise AttributeError(name)
+    def list_functions(
+        self, *, namespace_path=None, page_token=None, page_limit=None
+    ):
+        return self
 
     def __aiter__(self):
         return self
@@ -1920,16 +1915,10 @@ async def test_async_catalog_path_preserves_execution_controls():
         result_stability="input_and_context",
     )
     connection = AsyncConnection(_RawFunctionCatalog(definition, encode=True))
-    list_catalog = next(
-        name
-        for name in dir(connection)
-        if name.startswith("list_")
-        and "FunctionVersion"
-        in str(getattr(AsyncConnection, name).__annotations__.get("return"))
-    )
 
     exact = await connection.get_function("embed", version="1")
-    listed = [item async for item in getattr(connection, list_catalog)(page_limit=32)]
+    listed = [item async for item in connection.list_functions(page_limit=32)]
+    assert len(listed) == 1
     for version in [exact, *listed]:
         assert _assert_execution_control_encoding(version) == definition
 
@@ -1945,16 +1934,10 @@ def test_sync_catalog_path_preserves_execution_controls():
     )
     connection = object.__new__(RemoteDBConnection)
     connection._conn = _RawFunctionCatalog(FunctionVersion(**definition))
-    list_catalog = next(
-        name
-        for name in dir(RemoteDBConnection)
-        if name.startswith("list_")
-        and "FunctionVersion"
-        in str(getattr(RemoteDBConnection, name).__annotations__.get("return"))
-    )
 
     exact = connection.get_function("embed", version="1")
-    listed = list(getattr(connection, list_catalog)(page_limit=32))
+    listed = list(connection.list_functions(page_limit=32))
+    assert len(listed) == 1
     for version in [exact, *listed]:
         assert _assert_execution_control_encoding(version) == definition
 
