@@ -383,7 +383,6 @@
               "quickstart",
               "basics/sdk",
               "basics/sql",
-              "tools/cli",
               "basics/agentic-skills",
               "deployment/support"
             ]
@@ -494,7 +493,6 @@
               "management/database",
               "management/namespace",
               "management/table",
-              "tables/branching",
               "management/view",
               "management/materialized-view",
               "management/secret",
