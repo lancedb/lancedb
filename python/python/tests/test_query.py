@@ -2658,17 +2658,24 @@ def test_blob_v2_to_batches_row_id(tmp_db):
     assert [blobs[i].as_py() for i in range(len(blobs))] == [b"one", b"two"]
 
 
-@pytest.mark.parametrize("metric", ["l2", "cosine", "dot"])
 @pytest.mark.parametrize(
-    "effort,probes", [(None, 4), (0, 1), (0.25, 2), (0.5, 4), (0.75, 8), (1, 16)]
+    "metric,probes80,probes90", [("l2", 2, 3), ("cosine", 1, 2), ("dot", 1, 2)]
 )
-def test_search_effort_probe_budget(tmp_path, monkeypatch, metric, effort, probes):
+@pytest.mark.parametrize("effort", [None, 0, 0.1, 0.25, 0.5, 0.75, 1])
+def test_search_effort_probe_budget(
+    tmp_path, monkeypatch, metric, effort, probes80, probes90
+):
     import re
     from lancedb.index import IvfFlat
 
     monkeypatch.setenv("LANCE_AUTO_PROBE_MARGIN", "0")
     monkeypatch.setenv("LANCE_AUTO_MIN_INITIAL_NPROBES", "4")
     monkeypatch.setenv("LANCE_AUTO_MAX_INITIAL_NPROBES", "4")
+    # The lower tiers use metric/k calibration; Auto and the upper tiers retain
+    # their existing budgets. Keep exact execution counts and precedence checks.
+    probes = {None: 4, 0: 1, 0.1: probes80, 0.25: probes90, 0.5: 4, 0.75: 8, 1: 16}[
+        effort
+    ]
     rng = np.random.default_rng(42)
     vectors = np.repeat(np.eye(16, dtype=np.float32), 32, axis=0)
     vectors += rng.normal(0, 0.001, vectors.shape).astype(np.float32)
@@ -2752,7 +2759,7 @@ def test_search_effort_invalid_sync(table, effort):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("hybrid", [False, True])
-@pytest.mark.parametrize("effort", [None, 0, 0.25, 0.5, 0.75, 1])
+@pytest.mark.parametrize("effort", [None, 0, 0.1, 0.25, 0.5, 0.75, 1])
 async def test_search_effort_async_roundtrip(table_async, hybrid, effort):
     query = table_async.vector_search([0, 0])
     if hybrid:
