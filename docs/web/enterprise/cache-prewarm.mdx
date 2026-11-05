@@ -3,61 +3,78 @@ title: "Cache Prewarm"
 sidebarTitle: "Cache Prewarm"
 description: "Populate the tiered index cache ahead of a request, instead of filling it lazily on first read."
 icon: "fire"
-keywords: ["prewarm", "cache", "page cache", "index cache", "startup"]
+keywords: ["prewarm", "cache", "index cache", "startup"]
 availability:
   embedded: unavailable
   enterprise: available
 ---
 
-This page is about `startup_prewarm_idx`, which warms the distributed
-[tiered index cache](/enterprise/tiered-index-cache) a plan executor keeps
-as part of Enterprise's serving layer -- LanceDB Embedded has no such
-cache, so there is nothing for it to warm on Embedded. Embedded does have
-its own, separate `prewarm_index()` on a table, an idempotent hint that
-loads a built index into memory ahead of a query; it has no equivalent for
-raw column data, where only Enterprise supports prewarming. On Enterprise,
-the index cache fills lazily on first read by default; `startup_prewarm_idx`
-loads it ahead of that first request instead. The
-[data page cache](/enterprise/data-page-cache) is a separate cache with its
-own, on-demand prewarm -- `startup_prewarm_idx` does not touch it.
+Cache Prewarm loads the [tiered index cache](/enterprise/tiered-index-cache)
+a plan executor keeps as part of Enterprise's serving layer, instead of
+leaving it to fill lazily on first read. It runs as part of a plan
+executor's own startup, before the executor joins the fleet and starts
+serving queries.
 
-## At plan executor startup {#startup}
+LanceDB Embedded has no such cache, so there is nothing for it to warm
+there. Embedded does have its own, separate `prewarm_index()` on a table --
+an idempotent hint that loads a built index into memory ahead of a query.
 
-`startup_prewarm_idx` runs as part of a plan executor's own boot sequence,
-before it joins the fleet, rather than on a schedule. A deployment configures
-it with `startup_prewarm_enabled`, an index selection (which columns' indexes
-to warm, up to 1024 entries), and a concurrency limit for how many it loads
-at once.
+<div className="hidden dark:block">
 
-Whether this delays the executor from serving queries is a separate setting,
-`startup_prewarm_block_query_ready`, off by default in the binary itself but
-**on by default in the Helm chart** -- most deployments block on it unless
-the chart value is set otherwise:
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
+  "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
+  "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "18px"
+}}}%%
+flowchart LR
+    Start["Plan executor<br/>starts up"] --> Warm["Loads configured<br/>indexes into cache"]
+    Warm --> Ready["Joins the fleet,<br/>serves queries"]
+    classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
+    classDef accent fill:#2a1810,stroke:#e8582d,stroke-width:1.5px,color:#f4ebe8
+    class Warm accent
+```
 
-- **Unset:** the executor becomes query-ready immediately and
-  prewarm runs concurrently in the background. Early queries may still miss
-  the cache; later ones benefit once prewarm catches up.
-- **Set (the Helm chart's default):** query readiness waits for prewarm to
-  finish, up to `startup_prewarm_timeout_secs`. Blocking query readiness
-  this way requires `healthPort` to be set (9096 in the chart's default
-  values), so process health stays reachable while readiness is gated.
+</div>
 
-If prewarm fails or times out, `startup_prewarm_failure_policy` decides what
-happens next:
+<div className="block dark:hidden">
 
-| Policy | Behavior |
-| --- | --- |
-| `mark_ready_cold` (default) | The executor becomes query-ready anyway, just without a warm cache. |
-| `stay_not_ready` | Combined with blocking query readiness, the executor never becomes ready -- a failed prewarm keeps it out of the fleet rather than serving cold. |
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
+  "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
+  "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "18px"
+}}}%%
+flowchart LR
+    Start["Plan executor<br/>starts up"] --> Warm["Loads configured<br/>indexes into cache"]
+    Warm --> Ready["Joins the fleet,<br/>serves queries"]
+    classDef default fill:#ffffff,stroke:#ad9e95,stroke-width:1px,color:#221d19
+    classDef accent fill:#fff1ec,stroke:#e8582d,stroke-width:1.5px,color:#221d19
+    class Warm accent
+```
+
+</div>
+
+## Why it matters {#why-it-matters}
+
+Without prewarming, the indexes a fresh or restarted executor needs fill in
+lazily -- the first queries it serves pay the cost of loading and
+deserializing those indexes from object storage. Prewarming front-loads
+that cost before the executor takes traffic, so performance is consistent
+from the moment it joins the fleet instead of dipping right after every
+restart or rollout.
+
+[Contact us](https://www.lancedb.com/contact) to learn more about how
+prewarming is configured for your deployment.
 
 ## What to read next {#next}
 
 <CardGroup cols={2}>
   <Card title="Data Page Cache" icon="database" href="/enterprise/data-page-cache">
-    The raw-data-page cache -- warmed on demand, not by startup prewarm.
+    The raw-data-page cache -- a separate cache from the one prewarm fills.
   </Card>
   <Card title="Tiered Index Cache" icon="layer-group" href="/enterprise/tiered-index-cache">
-    The deserialized-index cache startup prewarm fills.
+    The deserialized-index cache prewarm fills.
   </Card>
   <Card title="Architecture" icon="diagram-project" href="/index#architecture">
     Where plan executors and query nodes sit in the serving fleet.

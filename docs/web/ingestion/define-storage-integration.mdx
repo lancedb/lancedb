@@ -50,11 +50,6 @@ CREATE STORAGE INTEGRATION raw
 ```
 </CodeGroup>
 
-{/*
-Draft for the storage-integration SDK release (#4618). Keep this section
-unpublished until create_storage_integration ships in a release; it is not
-in v0.41.0.
-
 <CodeGroup>
 ```python Python icon="python"
 db.create_storage_integration(
@@ -84,7 +79,6 @@ let info = db.create_storage_integration(
 ).await?;
 ```
 </CodeGroup>
-*/}
 
 ### Google Cloud Storage {#gcp}
 
@@ -97,11 +91,6 @@ CREATE STORAGE INTEGRATION gcs
 ```
 </CodeGroup>
 
-{/*
-Draft for the storage-integration SDK release (#4618). Keep this section
-unpublished until create_storage_integration ships in a release; it is not
-in v0.41.0.
-
 <CodeGroup>
 ```python Python icon="python"
 db.create_storage_integration(
@@ -111,7 +100,6 @@ db.create_storage_integration(
 )
 ```
 </CodeGroup>
-*/}
 
 The Secret holds the full service-account JSON key. GCP has no
 role-based alternative.
@@ -130,11 +118,6 @@ CREATE STORAGE INTEGRATION blobs
 ```
 </CodeGroup>
 
-{/*
-Draft for the storage-integration SDK release (#4618). Keep this section
-unpublished until create_storage_integration ships in a release; it is not
-in v0.41.0.
-
 <CodeGroup>
 ```python Python icon="python"
 db.create_storage_integration(
@@ -147,7 +130,6 @@ db.create_storage_integration(
 )
 ```
 </CodeGroup>
-*/}
 
 All four options are required together; there is no role-based
 alternative for Azure.
@@ -163,11 +145,6 @@ CREATE STORAGE INTEGRATION hub
 ```
 </CodeGroup>
 
-{/*
-Draft for the storage-integration SDK release (#4618, #4775). Keep this
-section unpublished until create_storage_integration ships in a release;
-it is not in v0.41.0.
-
 <CodeGroup>
 ```python Python icon="python"
 db.create_storage_integration(
@@ -177,7 +154,6 @@ db.create_storage_integration(
 )
 ```
 </CodeGroup>
-*/}
 
 `HUGGINGFACE_TOKEN_SECRET` is required to create this integration; omitting
 it is rejected, not treated as anonymous. For anonymous access at
