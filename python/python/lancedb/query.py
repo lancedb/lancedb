@@ -236,6 +236,7 @@ def _query_is_plain_scan(query: Query) -> bool:
         query.vector is None
         and query.full_text_query is None
         and query.take_offsets is None
+        and query.take_row_ids is None
         and not query.postfilter
         and not query.order_by
     )
@@ -1009,6 +1010,9 @@ class Query(pydantic.BaseModel):
     # This is populated when a take query is converted to this serializable form.
     take_offsets: Optional[List[int]] = None
 
+    # Row IDs whose requested order and duplicate occurrences must be restored.
+    take_row_ids: Optional[List[int]] = None
+
     # if true, will only search the indexed data
     fast_search: Optional[bool] = None
 
@@ -1034,6 +1038,7 @@ class Query(pydantic.BaseModel):
         query.limit = req.limit
         query.offset = req.offset
         query.take_offsets = req.take_offsets
+        query.take_row_ids = req.take_row_ids
         query.filter = req.filter
         query.full_text_query = req.full_text_search
         query.columns = req.select

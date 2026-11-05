@@ -121,7 +121,7 @@ fn requires_local_namespace_execution(query: &AnyQuery) -> bool {
     // The namespace QueryTable request cannot represent approx_mode, search_effort or use_rte.
     // For use_rte that is worse than a tuning miss: RTE read routing lives only
     // in `create_plan`, so a pushed-down query would return stale base-only data.
-    if query.base().use_rte.is_some() || query.base().take_offsets.is_some() {
+    if query.base().use_rte.is_some() || query.base().has_take() {
         return true;
     }
     matches!(
@@ -164,10 +164,9 @@ pub async fn create_plan(
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let query = query.canonicalized()?;
     if let AnyQuery::Query(request) = &query
-        && let Some(offsets) = &request.take_offsets
+        && request.has_take()
     {
-        return crate::query::create_take_offsets_plan(table, request, offsets, options, false)
-            .await;
+        return crate::query::create_take_plan(table, request, options, false).await;
     }
 
     let query = match query {

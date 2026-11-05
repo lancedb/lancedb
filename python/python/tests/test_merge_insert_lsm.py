@@ -278,7 +278,7 @@ def test_lsm_read_unsupported_shape_errors_without_use_rte_false(tmp_path):
 
     # with_row_id is unsupported by the LSM scanner; on an RTE table the default
     # (auto-routed) read hard-errors instead of silently reading a stale base.
-    with pytest.raises(Exception):
+    with pytest.raises(Exception, match=r"with_row_id.*use_rte\(false\)"):
         table.search().with_row_id(True).to_arrow()
 
     # use_rte(False) is the escape hatch: it reads the base table only.
@@ -563,19 +563,28 @@ def test_lsm_read_time_travel_errors(tmp_path):
     assert sorted(base["id"].to_pylist()) == [1, 2, 3]
 
 
-def test_lsm_read_take_row_ids_errors(tmp_path):
+@pytest.mark.parametrize("with_row_id", [False, True])
+@pytest.mark.parametrize("use_rte", [None, True])
+def test_lsm_read_take_row_ids_errors(tmp_path, with_row_id, use_rte):
     db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(seconds=0))
     table = db.create_table("t", _reader([1, 2, 3]))
     table.set_unenforced_primary_key("id")
     table.enable_rte(RTEWriteSpec.unsharded())
     _lsm_upsert(table, [4])
-    # take-by-row-id auto-routes through the LSM scanner, which has no stable _rowid,
-    # so it hard-errors instead of failing with an opaque column-not-found error.
-    with pytest.raises(Exception, match="row id"):
-        table.take_row_ids([0, 1]).to_arrow()
+    # Automatic and explicit RTE routing must explain the unsupported take,
+    # including when row IDs are only requested internally for ordering.
+    take = table.take_row_ids([1, 0, 1, 2**64 - 1], with_row_id=with_row_id)
+    if use_rte is not None:
+        take = take.use_rte(use_rte)
+    with pytest.raises(Exception, match=r"take by row id.*use_rte\(false\)"):
+        take.to_arrow()
     # use_rte(False) is the escape hatch: it reads the base table.
-    base = table.take_row_ids([0, 1]).use_rte(False).to_arrow()
-    assert base.num_rows == 2
+    base = take.use_rte(False).to_arrow()
+    assert base["id"].to_pylist() == [2, 1, 2]
+    assert base["value"].to_pylist() == [1, 0, 1]
+    assert ("_rowid" in base.column_names) == with_row_id
+    if with_row_id:
+        assert base["_rowid"].to_pylist() == [1, 0, 1]
 
 
 def test_lsm_read_fts_postfilter_errors(tmp_path):

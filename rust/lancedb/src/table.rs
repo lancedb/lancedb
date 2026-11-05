@@ -1864,9 +1864,20 @@ impl Table {
     /// There is an ongoing effort to make row ids stable which is tracked at
     /// https://github.com/lancedb/lancedb/issues/1120
     ///
-    /// No guarantees are made regarding the order in which results are returned.  If you
-    /// desire an output order that matches the order of the given ids, you will need
-    /// to add the row id column to the output and align it yourself.
+    /// Results follow the requested row-id order, including repeated IDs. Missing or
+    /// deleted IDs are omitted. An explicit nonempty [`QueryBase::order_by`] overrides
+    /// the requested order. Limits and offsets apply after restoring occurrences.
+    /// These guarantees also apply to remote tables.
+    ///
+    /// ```rust
+    /// use lancedb::query::ExecutableQuery;
+    /// # async fn example(table: &lancedb::Table, first: u64, second: u64) -> lancedb::Result<()> {
+    /// // If both IDs exist, return second, first, then second again.
+    /// let rows = table.take_row_ids(vec![second, first, second]).execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
     /// Parameters
     /// ----------
     /// row_ids: list[int]

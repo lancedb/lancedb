@@ -2417,13 +2417,36 @@ def test_take_queries(tmp_path):
     assert sorted(converted["idx"].to_pylist()) == [2, 5, 5, 17]
 
     # Take by row id
-    assert list(
-        sorted(table.take_row_ids([5, 2, 17]).to_pandas()["idx"].to_list())
-    ) == [
-        2,
-        5,
-        17,
-    ]
+    assert table.take_row_ids([5, 2, 17]).to_pandas()["idx"].to_list() == [5, 2, 17]
+
+
+@pytest.mark.parametrize("selection", [None, [], ["idx"], {"_rowid": "100 - idx"}])
+@pytest.mark.parametrize("empty", [False, True])
+def test_take_row_ids_order_and_roundtrip(tmp_path, selection, empty):
+    table = lancedb.connect(tmp_path).create_table("test", pa.table({"idx": [0, 1]}))
+    table.add(pa.table({"idx": [2, 3]}))
+    rows = table.search().with_row_id(True).to_arrow().to_pylist()
+    row_ids = {row["idx"]: row["_rowid"] for row in rows}
+    table.delete("idx = 1")
+    requested = (
+        [] if empty else [row_ids[3], row_ids[1], row_ids[3], 2**64 - 1, row_ids[0]]
+    )
+    take = table.take_row_ids(requested)
+    if selection is not None:
+        take = take.select(selection)
+    actual = take.to_arrow()
+    assert actual.num_rows == (0 if empty else 3)
+    if selection == {"_rowid": "100 - idx"}:
+        assert actual.column_names == ["_rowid"]
+        assert actual["_rowid"].to_pylist() == ([] if empty else [97, 97, 100])
+    elif selection == []:
+        assert actual.num_columns == 0
+    else:
+        assert actual.column_names == ["idx"]
+        assert actual["idx"].to_pylist() == ([] if empty else [3, 3, 0])
+    query = take.to_query_object()
+    assert query.take_row_ids == requested
+    assert table._execute_query(query).read_all() == actual
 
 
 def test_take_queries_with_row_id(tmp_path):
@@ -2432,6 +2455,7 @@ def test_take_queries_with_row_id(tmp_path):
 
     by_row_id = table.take_row_ids([5, 2, 17], with_row_id=True).to_arrow()
     assert "_rowid" in by_row_id.column_names
+    assert by_row_id["_rowid"].to_pylist() == [5, 2, 17]
     by_offset = table.take_offsets([5, 2, 17], with_row_id=True).to_arrow()
     assert "_rowid" in by_offset.column_names
 
@@ -2446,6 +2470,7 @@ async def test_take_queries_with_row_id_async(tmp_path):
 
     by_row_id = await table.take_row_ids([5, 2, 17], with_row_id=True).to_arrow()
     assert "_rowid" in by_row_id.column_names
+    assert by_row_id["_rowid"].to_pylist() == [5, 2, 17]
     by_offset = await table.take_offsets([5, 2, 17], with_row_id=True).to_arrow()
     assert "_rowid" in by_offset.column_names
 
@@ -2472,16 +2497,12 @@ def test_take_queries_to_batches(tmp_path):
     rs = list(table.take_row_ids([5, 2, 17]).to_batches())
     assert all(isinstance(b, pa.RecordBatch) for b in rs)
     assert sum(b.num_rows for b in rs) == 3
-    assert sorted(v for b in rs for v in b.column("idx").to_pylist()) == [2, 5, 17]
+    assert [v for b in rs for v in b.column("idx").to_pylist()] == [5, 2, 17]
 
     # Take with select projection → to_batches preserves the projection
     rs = list(table.take_row_ids([5, 2, 17]).select(["label"]).to_batches())
     assert all(b.schema.names == ["label"] for b in rs)
-    assert sorted(v for b in rs for v in b.column("label").to_pylist()) == [
-        "17",
-        "2",
-        "5",
-    ]
+    assert [v for b in rs for v in b.column("label").to_pylist()] == ["5", "2", "17"]
 
 
 def test_getitems(tmp_path):

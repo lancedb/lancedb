@@ -897,6 +897,7 @@ class PyQueryRequest:
     limit: Optional[int]
     offset: Optional[int]
     take_offsets: Optional[List[int]]
+    take_row_ids: Optional[List[int]]
     filter: Optional[Union[str, bytes]]
     full_text_search: Optional[FullTextQuery]
     select: Optional[Union[str, List[str]]]

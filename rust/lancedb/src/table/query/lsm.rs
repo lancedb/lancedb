@@ -161,6 +161,19 @@ fn reject_unsupported(query: &VectorQueryRequest) -> Result<()> {
     if !query.query_vector.is_empty() && query.base.full_text_search.is_some() {
         return unsupported("hybrid (vector + full-text) search");
     }
+    // Take lookups add with_row_id internally to restore requested order. Report
+    // the unsupported take before that implementation detail. Neither _rowid nor
+    // _rowoffset is exposed by the LSM scanner, which only exposes _rowaddr.
+    if let Some(QueryFilter::Datafusion(expr)) = &query.base.filter
+        && expr
+            .column_refs()
+            .iter()
+            .any(|c| c.name == "_rowid" || c.name == "_rowoffset")
+    {
+        return unsupported(
+            "take by row id or row offset (the LSM scanner has no stable _rowid / _rowoffset)",
+        );
+    }
     if query.base.with_row_id {
         return unsupported("with_row_id (the LSM scanner exposes _rowaddr, not a stable _rowid)");
     }
@@ -203,19 +216,6 @@ fn reject_unsupported(query: &VectorQueryRequest) -> Result<()> {
     }
     if let Some(QueryFilter::Substrait(_)) = &query.base.filter {
         return unsupported("Substrait filters");
-    }
-    // Take-by-row-id / row-offset queries carry a `_rowid` / `_rowoffset` filter,
-    // columns the LSM scanner never exposes (only `_rowaddr`); reject with guidance
-    // rather than failing deep in datafusion with a column-not-found error.
-    if let Some(QueryFilter::Datafusion(expr)) = &query.base.filter
-        && expr
-            .column_refs()
-            .iter()
-            .any(|c| c.name == "_rowid" || c.name == "_rowoffset")
-    {
-        return unsupported(
-            "take by row id or row offset (the LSM scanner has no stable _rowid / _rowoffset)",
-        );
     }
     Ok(())
 }

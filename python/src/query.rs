@@ -355,6 +355,7 @@ pub struct PyQueryRequest {
     pub limit: Option<usize>,
     pub offset: Option<usize>,
     pub take_offsets: Option<Vec<u64>>,
+    pub take_row_ids: Option<Vec<u64>>,
     pub filter: Option<PyQueryFilter>,
     pub full_text_search: Option<PyLanceDB<FtsQuery>>,
     pub select: PySelect,
@@ -387,6 +388,7 @@ impl From<AnyQuery> for PyQueryRequest {
                 limit: query_request.limit,
                 offset: query_request.offset,
                 take_offsets: query_request.take_offsets,
+                take_row_ids: query_request.take_row_ids,
                 filter: query_request.filter.map(PyQueryFilter),
                 full_text_search: query_request
                     .full_text_search
@@ -419,6 +421,7 @@ impl From<AnyQuery> for PyQueryRequest {
                 limit: vector_query.base.limit,
                 offset: vector_query.base.offset,
                 take_offsets: vector_query.base.take_offsets,
+                take_row_ids: vector_query.base.take_row_ids,
                 filter: vector_query.base.filter.map(PyQueryFilter),
                 full_text_search: None,
                 select_source_columns: PySelect::source_columns(&vector_query.base.select),
