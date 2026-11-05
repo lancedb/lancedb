@@ -98,3 +98,5 @@ tableVersion: number;
 ```ts
 optional traceback: string;
 ```
+
+User-code traceback, possibly truncated by the server.
