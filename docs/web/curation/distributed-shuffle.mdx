@@ -11,7 +11,7 @@ availability:
 A distributed SQL query plans as a sequence of **stages**, each with its
 own set of partitions, connected by an **exchange**: a streaming gRPC
 service that carries one stage's output to the next stage's plan
-executors. [Distributed search](/enterprise/distributed-search) covers
+executors. [Distributed Search](/enterprise/distributed-search) covers
 how a query gets placed on the fleet in the first place; this page covers
 what happens between placement and the final result, for a query whose
 plan needs data repartitioned across machines -- a hash join or a grouped
@@ -102,7 +102,7 @@ connection.
 ## What to read next {#next}
 
 <CardGroup cols={2}>
-  <Card title="Distributed search" icon="network-wired" href="/enterprise/distributed-search">
+  <Card title="Distributed Search" icon="network-wired" href="/enterprise/distributed-search">
     How a query gets placed on the query-serving fleet in the first place.
   </Card>
   <Card title="Query plans" icon="map" href="/basics/sql#query-plans">

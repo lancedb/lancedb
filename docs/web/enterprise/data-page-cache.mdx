@@ -56,36 +56,21 @@ flowchart LR
 
 </div>
 
-A table's local disk cache shares one budget with the
+A table's local disk cache shares one configurable budget with the
 [tiered index cache](/enterprise/tiered-index-cache#disk-budget)'s disk
-tier where both are enabled on the same executor -- raising one's share of
-that budget lowers the other's.
+tier where both are enabled on the same executor.
 
-## Prewarming on demand {#prewarm}
+## Why it matters {#why-it-matters}
 
-[Cache Prewarm](/enterprise/cache-prewarm)'s `startup_prewarm_idx` only
-warms the [tiered index cache](/enterprise/tiered-index-cache), not this
-one. The data page cache has its own, separate on-demand prewarm, run by a
-deployment operator rather than called from application code, optionally
-scoped to specific columns:
+Object storage is durable and cheap, but every round trip to it adds
+latency and egress cost. For workloads that read the same ranges
+repeatedly -- a hot subset of embeddings, a frequently-filtered column --
+the data page cache turns most of those reads into local memory or disk
+hits instead, so performance stays predictable as traffic grows and you
+pay object storage once per page, not once per read.
 
-<CodeGroup>
-```bash CLI icon="terminal"
-lancedb admin cache prewarm data --table embedding_table --column embedding
-```
-</CodeGroup>
-
-The command returns once the request is accepted, not once prewarming
-finishes; it is idempotent and safe to run concurrently from multiple
-clients. Prewarming has a large upfront cost, so it pays off for workloads
-that repeatedly query the same columns -- large columns such as embeddings
-or binary data may not be practical to prewarm this way.
-
-<Warning>
-The OSS SDK's `table.prewarm_data()` targets LanceDB Cloud, a different
-product; calling it against an Enterprise deployment 404s. Use the admin
-command above instead.
-</Warning>
+[Contact us](https://www.lancedb.com/contact) to learn more about how
+caching is sized and tuned for your workload.
 
 ## Cache interfaces {#interfaces}
 
