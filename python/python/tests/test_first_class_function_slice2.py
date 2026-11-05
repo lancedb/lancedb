@@ -27,6 +27,7 @@ import lancedb
 from lancedb import BlobReader
 from lancedb.db import AsyncConnection
 from lancedb.functions import (
+    FunctionVersion,
     HuggingFaceModel,
     PythonRuntimeSpec,
     SecretBinding,
@@ -38,6 +39,7 @@ from lancedb.functions import (
     udf,
 )
 from lancedb.secrets import EnvVarSecret
+from lancedb.remote.db import RemoteDBConnection
 from utils import start_server_thread
 
 THRESHOLD = 20
@@ -1867,8 +1869,8 @@ def test_local_function_catalog_operations_are_not_supported(tmp_path):
 
 
 class _RawFunctionCatalog:
-    def __init__(self, definition):
-        self.definition = json.dumps(definition)
+    def __init__(self, definition, *, encode=False):
+        self.definition = json.dumps(definition) if encode else definition
 
     async def get_function(self, _name, _version, _namespace_path):
         return self.definition
@@ -1904,7 +1906,7 @@ async def test_async_catalog_path_preserves_execution_controls():
         row_timeout_seconds=8.0,
         result_stability="input_and_context",
     )
-    connection = AsyncConnection(_RawFunctionCatalog(definition))
+    connection = AsyncConnection(_RawFunctionCatalog(definition, encode=True))
     list_catalog = next(
         name
         for name in dir(connection)
@@ -1914,6 +1916,30 @@ async def test_async_catalog_path_preserves_execution_controls():
 
     exact = await connection.get_function("embed", version="1")
     listed = [item async for item in getattr(connection, list_catalog)(page_limit=32)]
+    for version in [exact, *listed]:
+        assert json.loads(version.to_canonical_json()) == definition
+
+
+def test_sync_catalog_path_preserves_execution_controls():
+    definition = json.loads(
+        (FIXTURES / "remote_function_version.canonical.json").read_text()
+    )
+    definition.update(
+        batch_size=12,
+        row_timeout_seconds=8.0,
+        result_stability="input_and_context",
+    )
+    connection = object.__new__(RemoteDBConnection)
+    connection._conn = _RawFunctionCatalog(FunctionVersion(**definition))
+    list_catalog = next(
+        name
+        for name in dir(RemoteDBConnection)
+        if name.startswith("list_")
+        and "Function version" in (getattr(RemoteDBConnection, name).__doc__ or "")
+    )
+
+    exact = connection.get_function("embed", version="1")
+    listed = list(getattr(connection, list_catalog)(page_limit=32))
     for version in [exact, *listed]:
         assert json.loads(version.to_canonical_json()) == definition
 

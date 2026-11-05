@@ -44,7 +44,8 @@ if [[ "$MODE" == "all" || "$MODE" == "python" ]]; then
             cd "$ROOT/python"
             RUSTUP_TOOLCHAIN=1.97.0 uv run --extra tests pytest -q \
                 python/tests/test_first_class_function_slice1.py::test_function_version_preserves_execution_controls \
-                python/tests/test_first_class_function_slice2.py::test_async_catalog_path_preserves_execution_controls
+                python/tests/test_first_class_function_slice2.py::test_async_catalog_path_preserves_execution_controls \
+                python/tests/test_first_class_function_slice2.py::test_sync_catalog_path_preserves_execution_controls
         )
         python_status=$?
         echo "PYTHON_TEST_STATUS=$python_status"
