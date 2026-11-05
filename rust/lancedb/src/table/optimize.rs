@@ -447,11 +447,16 @@ pub(crate) async fn execute_optimize(
 #[cfg(test)]
 mod tests {
     use super::{oversized_sq_partition, segment_touches_fragments, sq_vector_dimension};
+    use arrow::compute::concat_batches;
     use arrow_array::{
         Array, FixedSizeListArray, Float32Array, Int32Array, RecordBatch, StringArray,
+        cast::AsArray,
+        types::{Float32Type, Int32Type},
     };
     use arrow_schema::{DataType, Field, Schema};
+    use lance::index::DatasetIndexExt;
     use lance_arrow::FixedSizeListArrayExt;
+    use lance_index::frag_reuse::FRAG_REUSE_INDEX_NAME;
     use rstest::rstest;
     use std::{collections::HashSet, sync::Arc};
 
@@ -462,7 +467,7 @@ mod tests {
         scalar::BTreeIndexBuilder,
         vector::{IvfHnswSqIndexBuilder, IvfRqIndexBuilder},
     };
-    use crate::query::ExecutableQuery;
+    use crate::query::{ExecutableQuery, QueryBase};
     use crate::table::{CompactionOptions, OptimizeAction, OptimizeStats};
     use futures::TryStreamExt;
 
@@ -1338,6 +1343,138 @@ mod tests {
         let mut expected: Vec<i32> = (0..100).chain(0..100).collect();
         expected.sort();
         assert_eq!(all_values, expected);
+    }
+
+    #[tokio::test]
+    async fn test_refined_rq_query_after_deferred_compaction() {
+        const ROWS: i32 = 128;
+        const DIMENSION: i32 = 32;
+        let conn = connect("memory://").execute().await.unwrap();
+        let vectors = FixedSizeListArray::try_new_from_values(
+            Float32Array::from_iter_values((0..ROWS).flat_map(|id| {
+                (0..DIMENSION).map(move |offset| (id as f32 * 0.1 + offset as f32 * 0.3).sin())
+            })),
+            DIMENSION,
+        )
+        .unwrap();
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int32, false),
+                Field::new("vector", vectors.data_type().clone(), false),
+            ])),
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..ROWS)),
+                Arc::new(vectors),
+            ],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("refined_rq_compaction", batch.slice(0, 64))
+            .storage_option(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS, "false")
+            .execute()
+            .await
+            .unwrap();
+        table.add(batch.slice(64, 64)).execute().await.unwrap();
+        table
+            .create_index(
+                &["vector"],
+                Index::IvfRq(
+                    IvfRqIndexBuilder::default()
+                        .num_partitions(4)
+                        .num_bits(7)
+                        .max_iterations(5),
+                ),
+            )
+            .name("rq".to_string())
+            .execute()
+            .await
+            .unwrap();
+        table.delete("id % 7 = 0").await.unwrap();
+        let dataset = table.dataset().unwrap().get().await.unwrap();
+        assert_eq!(dataset.fragments().len(), 2);
+        let original_index = dataset.load_indices_by_name("rq").await.unwrap()[0].uuid;
+
+        let key = (0..DIMENSION)
+            .map(|offset| (0.5 + offset as f32 * 0.3).sin())
+            .collect::<Vec<_>>();
+        let query = || {
+            table
+                .query()
+                .only_if("id % 3 != 0")
+                .nearest_to(key.as_slice())
+                .unwrap()
+                .nprobes(4)
+                .unwrap()
+                .limit(8)
+        };
+        let before = query()
+            .fast_search()
+            .refine_factor(4)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let before = concat_batches(&before[0].schema(), &before).unwrap();
+
+        let stats = table
+            .optimize(OptimizeAction::Compact {
+                options: CompactionOptions {
+                    target_rows_per_fragment: 256,
+                    defer_index_remap: true,
+                    ..Default::default()
+                },
+                remap_options: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(stats.compaction.unwrap().fragments_removed, 2);
+        let dataset = table.dataset().unwrap().get().await.unwrap();
+        assert_eq!(dataset.fragments().len(), 1);
+        assert_eq!(
+            dataset.load_indices_by_name("rq").await.unwrap()[0].uuid,
+            original_index
+        );
+        assert!(
+            dataset
+                .load_indices()
+                .await
+                .unwrap()
+                .iter()
+                .any(|index| index.name == FRAG_REUSE_INDEX_NAME)
+        );
+
+        let refined = query().fast_search().refine_factor(4);
+        let plan = refined.explain_plan(false).await.unwrap();
+        assert!(plan.contains("ANNIvf"), "{plan}");
+        let after = refined
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let after = concat_batches(&after[0].schema(), &after).unwrap();
+        assert_eq!(after.num_rows(), 8);
+        assert_eq!(after["id"].as_ref(), before["id"].as_ref());
+        assert_eq!(after["_distance"].as_ref(), before["_distance"].as_ref());
+        let found = after["id"].as_primitive::<Int32Type>().values();
+        assert!(found.iter().all(|id| id % 7 != 0 && id % 3 != 0));
+        assert!(after["_distance"].as_primitive::<Float32Type>().values()[0] < 1e-5);
+
+        let exact = query()
+            .bypass_vector_index()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let exact = concat_batches(&exact[0].schema(), &exact).unwrap();
+        let truth = exact["id"].as_primitive::<Int32Type>().values();
+        let recall = found.iter().filter(|id| truth.contains(id)).count() as f64 / 8.0;
+        assert!(recall >= 0.5, "recall={recall}");
     }
 
     #[tokio::test]
