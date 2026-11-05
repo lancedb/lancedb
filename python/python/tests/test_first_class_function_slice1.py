@@ -301,10 +301,15 @@ def test_unknown_fields_and_discriminators_are_forward_decodable():
 
     version = FunctionVersion.from_json(json.dumps(value))
     assert version.image.descriptor["future_interface"] == {"kind": "wasm"}
-    assert json.loads(version.to_canonical_json())["image"]["descriptor"][
-        "future_interface"
-    ] == {"kind": "wasm"}
     assert version.signature.output.kind == "future_output_shape"
+    assert not hasattr(version, "future_version_metadata")
+
+    canonical = json.loads(version.to_canonical_json())
+    expected = json.loads(fixture("remote_function_version.canonical.json"))
+    expected["image"]["descriptor"]["future_interface"] = {"kind": "wasm"}
+    expected["signature"]["output"]["kind"] = "future_output_shape"
+    assert canonical == expected
+    assert "future_version_metadata" not in canonical
 
 
 def test_function_application_uses_rename_columns_only():

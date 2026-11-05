@@ -469,6 +469,12 @@ _ObjectVersion = Annotated[
 class FunctionVersion(_RemoteValue):
     """A pinned object revision, independent of its executable image digest.
 
+    Unknown top-level fields from newer servers are accepted for forward
+    decoding, but they are not exposed on this value and are omitted from
+    ``to_canonical_json()``. Known fields retain their complete values, while
+    unknown fields inside the open ``image.descriptor`` mapping remain
+    available.
+
     ``name`` and ``namespace_path`` are the Function's parts, as a
     [SecretReference][lancedb.functions.SecretReference] carries a Secret's;
     they are what [get_function][lancedb.db.DBConnection.get_function] takes.
