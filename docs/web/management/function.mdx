@@ -401,9 +401,8 @@ full worked example.
 
 ## Failure handling {#failures}
 
-By default, a Function that raises fails the refresh job. The Function
-definition has no error-handling parameter; choose the row-error policy on
-the refresh instead:
+By default, a Function that raises fails the refresh job. Choose how the
+refresh handles row errors with its error policy:
 
 <CodeGroup>
 ```sql SQL icon="database"
@@ -423,6 +422,43 @@ next unfiltered refresh [skips rows that are filled and current](/feature-engine
 but how much of the failed job's work was kept is not guaranteed, so do not
 count on the retry costing only the rows that did not complete. A refresh with
 `WHERE` recomputes every matching live row, including already-filled outputs.
+
+{/*
+Draft for the Function retry policy release.
+
+### Retry transient errors
+
+Native retries require an SDK that exposes `FunctionRetryPolicy` and a
+LanceDB Enterprise server that supports Function retry policies. Upgrading
+the SDK alone does not enable retries on an older server. If a refresh
+override reports that the Function image does not support retry policies,
+re-register the Function on a supporting server.
+
+Import `FunctionRetryPolicy` from `lancedb.functions` and pass a policy to
+`@function` through `retry_policy`. For example,
+`FunctionRetryPolicy(transient=True, max_attempts=3)` allows up to three
+calls for matching transient failures. `max_attempts` includes the first
+call; setting it to `1` disables user-error retries. A
+[refresh override](/feature-engineering/refresh-column#resources) replaces
+the registered policy for that refresh.
+
+Enable retries only when repeating a failed call's partial work is safe.
+An external request may have succeeded before the Function raised, so this
+policy does not guarantee exactly-once external effects. Functions declared
+with external side effects reject retry policies. Calls that return
+successfully are not repeated by this policy; infrastructure recovery and
+later refreshes have separate replay behavior.
+
+Each failed callable invocation has one attempt budget. After exhaustion,
+the refresh's `error_policy` applies. With an explicit retry policy, `skip`
+on a batch Function writes nulls for every row in the failed call and records
+their errors. It does not split that call into smaller retries with new
+budgets. A row Function handles each row separately. Error records expose
+`attempts` when the server records it; older records may omit the count.
+
+Worker recovery uses a separate retry budget. Framework deadlines and
+cancellation stop execution without consuming further user-error retries.
+*/}
 
 ## What gets packaged {#packaging}
 

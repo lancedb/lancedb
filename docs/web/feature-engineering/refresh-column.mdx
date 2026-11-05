@@ -159,6 +159,34 @@ work sizes. For Function columns, the refresh defaults to
 failing rows and record them in the error store, subject to failure limits.
 See the [SQL refresh options](/sql/dml/refresh-column#options).
 
+{/*
+Draft for the Function retry policy release.
+
+For registered Function columns, pass `retry_policy` to
+`refresh_column_async` to replace the Function's registered retry policy
+for this refresh. For example,
+`retry_policy=FunctionRetryPolicy(transient=True, max_attempts=3)` allows
+three attempts, including the first call. Import `FunctionRetryPolicy`
+from `lancedb.functions`. Use `FunctionRetryPolicy(max_attempts=1)` to
+disable user-error retries. Omitting the override preserves the registered
+policy.
+
+This requires a supporting LanceDB Enterprise server as well as an SDK
+that exposes these options. An older Function image may need
+re-registration before it accepts a refresh override. Only enable retries
+when repeating a failed call's partial work is safe, including any external
+requests made before the error.
+
+The attempt budget belongs to one failed Function call. With an explicit
+retry policy and `error_policy="skip"`, exhaustion in a batch Function
+writes nulls for the whole failed call and records its errors, subject to
+failure limits. It does not split the batch to restart the retry budget.
+Row Functions isolate failures per row. Infrastructure recovery, framework
+deadlines and cancellation remain separate from this user-error policy.
+See [Function failure handling](/management/function#failures) for the
+retry and replay boundaries.
+*/}
+
 For a column filled by a registered Function, the Python and Rust job APIs can
 override the Function's GPU placement for this refresh:
 
