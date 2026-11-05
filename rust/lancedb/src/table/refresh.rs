@@ -59,6 +59,10 @@ use crate::{Error, Result};
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct RefreshColumnOptions {
+    /// Override the Function's default user-code retry policy. Enterprise only.
+    pub retry_policy: Option<crate::function::FunctionRetryPolicy>,
+    /// Action after user-code failure or retry exhaustion. Enterprise only.
+    pub error_policy: Option<crate::function::FunctionErrorPolicy>,
     /// Maximum rows per Function call in LanceDB Enterprise.
     ///
     /// Must be greater than zero. `None` uses the server default. This has no
@@ -77,6 +81,17 @@ pub struct RefreshColumnOptions {
 }
 
 impl RefreshColumnOptions {
+    /// Override retries of failed Function calls for this refresh.
+    pub fn retry_policy(mut self, policy: crate::function::FunctionRetryPolicy) -> Self {
+        self.retry_policy = Some(policy);
+        self
+    }
+
+    /// Select fail or skip after the retry policy is exhausted.
+    pub fn error_policy(mut self, policy: crate::function::FunctionErrorPolicy) -> Self {
+        self.error_policy = Some(policy);
+        self
+    }
     /// Limit each Function call to at most `batch_size` rows.
     pub fn batch_size(mut self, batch_size: usize) -> Self {
         self.batch_size = Some(batch_size);
@@ -97,6 +112,9 @@ impl RefreshColumnOptions {
 
     /// Validate client-side constraints before any request is sent.
     pub fn validate(&self) -> Result<()> {
+        if let Some(policy) = &self.retry_policy {
+            policy.validate()?;
+        }
         if self.batch_size == Some(0) {
             return Err(Error::InvalidInput {
                 message: "batch_size must be greater than zero".into(),

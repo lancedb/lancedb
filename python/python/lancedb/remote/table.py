@@ -48,7 +48,11 @@ from lancedb.index import (
     LabelList,
 )
 from lancedb.job import Job
-from lancedb.functions import FunctionApplication, RefreshColumnResult
+from lancedb.functions import (
+    FunctionApplication,
+    FunctionRetryPolicy,
+    RefreshColumnResult,
+)
 from lancedb.remote.db import LOOP
 from lancedb.table import IndexConfigType, _maybe_add_fts_error_note
 import pyarrow as pa
@@ -1137,6 +1141,8 @@ class RemoteTable(Table):
         batch_size: Optional[int] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
+        retry_policy: Optional[FunctionRetryPolicy] = None,
+        error_policy: Optional[Literal["fail", "skip"]] = None,
     ):
         return LOOP.run(
             self._table.refresh_column(
@@ -1144,6 +1150,8 @@ class RemoteTable(Table):
                 batch_size=batch_size,
                 gpu_class=gpu_class,
                 gpu_count=gpu_count,
+                retry_policy=retry_policy,
+                error_policy=error_policy,
             )
         )
 
@@ -1154,6 +1162,8 @@ class RemoteTable(Table):
         batch_size: Optional[int] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
+        retry_policy: Optional[FunctionRetryPolicy] = None,
+        error_policy: Optional[Literal["fail", "skip"]] = None,
     ) -> Job[RefreshColumnResult]:
         return Job(
             LOOP.run(
@@ -1162,6 +1172,8 @@ class RemoteTable(Table):
                     batch_size=batch_size,
                     gpu_class=gpu_class,
                     gpu_count=gpu_count,
+                    retry_policy=retry_policy,
+                    error_policy=error_policy,
                 )
             )
         )

@@ -159,6 +159,34 @@ def test_function_execution_controls_apply_to_vectorized_functions():
     assert request["row_timeout_seconds"] == 1.25
 
 
+def test_function_retry_policy_is_part_of_registration():
+    policy = lancedb.FunctionRetryPolicy(transient=True, max_attempts=4)
+    definition = function(retry_policy=policy)(normalize_score.__wrapped__)
+    request = json.loads(definition.registration_request.to_canonical_json())
+    assert request["retry_policy"] == {"max_attempts": 4, "transient": True}
+    assert lancedb.FunctionRetryPolicy(max_attempts=1).max_attempts == 1
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"max_attempts": 0, "transient": True},
+        {"max_attempts": 101, "transient": True},
+        {"max_attempts": True},
+        {"max_attempts": 3},
+        {"transient": True, "initial_backoff_seconds": -1},
+        {"transient": True, "max_backoff_seconds": float("inf")},
+        {"transient": True, "max_backoff_seconds": 0},
+        {"message_pattern": "["},
+        {"exception_types": [""]},
+        {"transient": True, "typo": 1},
+    ],
+)
+def test_function_retry_policy_rejects_invalid_options(options):
+    with pytest.raises(ValueError):
+        lancedb.FunctionRetryPolicy(**options)
+
+
 @pytest.mark.parametrize(
     ("options", "field"),
     [

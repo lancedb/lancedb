@@ -5984,6 +5984,14 @@ def test_refresh_column_rejects_invalid_batch_size(tmp_path, method, batch_size)
         getattr(table, method)("x", batch_size=batch_size)
 
 
+@pytest.mark.parametrize("method", ["refresh_column", "refresh_column_async"])
+def test_local_refresh_rejects_function_retry_policy(tmp_path, method):
+    table = lancedb.connect(tmp_path).create_table("rows", [{"x": 1}])
+    policy = lancedb.FunctionRetryPolicy(transient=True)
+    with pytest.raises(NotImplementedError, match="Enterprise Function refresh"):
+        getattr(table, method)("x", retry_policy=policy)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("method", ["refresh_column", "refresh_column_async"])
 @pytest.mark.parametrize("batch_size", [0, -1])

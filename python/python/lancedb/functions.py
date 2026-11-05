@@ -213,6 +213,45 @@ class _OpenRemoteValue(_RemoteValue):
         return set((self.__pydantic_extra__ or {}).keys())
 
 
+class FunctionRetryPolicy(_RemoteValue):
+    """Bound retries of selected errors inside one Enterprise Function call.
+
+    ``max_attempts`` includes the first call. Matchers are alternatives;
+    ``transient=True`` selects connection/timeouts, HTTP 429/503 and the
+    provider codes ``SlowDown`` and ``ServiceUnavailable``. Exception names
+    may be qualified, and subclasses and wrapped causes also match.
+
+    Backoff doubles with full jitter, bounded by ``max_backoff_seconds``.
+    Retry-After above that bound ends retries. A failed batch is retried as
+    one call: under ``skip``, exhaustion nulls every row in that call.
+    Completed calls are never repeated. Only opt in when repeating partial
+    work is safe; this does not make external side effects exactly once.
+
+    >>> policy = FunctionRetryPolicy(transient=True, max_attempts=3)
+    >>> policy.max_attempts
+    3
+    >>> disabled = FunctionRetryPolicy(max_attempts=1)
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    max_attempts: Annotated[int, Field(strict=True)] = 3
+    initial_backoff_seconds: Annotated[float, Field(strict=True)] = 0.2
+    max_backoff_seconds: Annotated[float, Field(strict=True)] = 30.0
+    exception_types: tuple[str, ...] = ()
+    message_pattern: Optional[str] = None
+    error_codes: tuple[str, ...] = ()
+    transient: Annotated[bool, Field(strict=True)] = False
+    honor_retry_after: Annotated[bool, Field(strict=True)] = True
+
+    @model_validator(mode="after")
+    def _validate_policy(self):
+        from ._lancedb import validate_function_retry_policy
+
+        validate_function_retry_policy(self.model_dump_json())
+        return self
+
+
 class FunctionArtifact(_RemoteValue):
     """Content-addressed Python artifact identity."""
 
@@ -653,6 +692,7 @@ class FunctionRegistrationRequest(_RemoteValue):
     runtime: PythonRuntimeSpec
     batch_size: Optional[int] = None
     row_timeout_seconds: Optional[float] = None
+    retry_policy: Optional[FunctionRetryPolicy] = None
     secret_bindings: tuple[SecretBinding, ...] = ()
     models: tuple[HuggingFaceModel, ...] = ()
 
@@ -2108,6 +2148,7 @@ class FunctionDefinition:
         python_version: Optional[str],
         batch_size: Optional[int] = None,
         row_timeout_seconds: Optional[float] = None,
+        retry_policy: Optional[FunctionRetryPolicy] = None,
         gpu: bool = False,
         gpu_class: Optional[str] = None,
         conda: tuple[str, ...] = (),
@@ -2254,6 +2295,7 @@ class FunctionDefinition:
             runtime=runtime,
             batch_size=batch_size,
             row_timeout_seconds=row_timeout_seconds,
+            retry_policy=retry_policy,
             models=models,
         )
         # A class's own __dict__ holds its methods; copying it would shadow
@@ -2351,6 +2393,7 @@ def function(
     python_version: Optional[str] = None,
     batch_size: Optional[int] = None,
     row_timeout_seconds: Optional[float] = None,
+    retry_policy: Optional[FunctionRetryPolicy] = None,
     gpu: bool = False,
     gpu_class: Optional[str] = None,
     conda: tuple[str, ...] | list[str] = (),
@@ -2373,6 +2416,7 @@ def function(
     python_version: Optional[str] = None,
     batch_size: Optional[int] = None,
     row_timeout_seconds: Optional[float] = None,
+    retry_policy: Optional[FunctionRetryPolicy] = None,
     gpu: bool = False,
     gpu_class: Optional[str] = None,
     conda: tuple[str, ...] | list[str] = (),
@@ -2504,6 +2548,11 @@ def function(
         scalar Functions and one batch for vectorized Functions. This does not
         govern class initialization. When omitted, the service applies its
         default per-call budget.
+    retry_policy : FunctionRetryPolicy, optional
+        Retry selected failed calls inside the Function, with bounded attempts
+        and backoff. A refresh may override this default. Retrying a partial
+        call must be safe; completed calls are not repeated. For batch Functions,
+        skip after exhaustion applies to the whole failed call.
     gpu : bool, default False
         Whether every remote execution requires a GPU. The execution platform
         selects one compatible GPU for each worker. The requirement is part of
@@ -2631,6 +2680,7 @@ def function(
             python_version=python_version,
             batch_size=batch_size,
             row_timeout_seconds=row_timeout_seconds,
+            retry_policy=retry_policy,
             gpu=gpu,
             gpu_class=gpu_class,
             conda=tuple(conda),
@@ -2657,6 +2707,7 @@ __all__ = [
     "FunctionOutput",
     "FunctionParameter",
     "FunctionRegistrationRequest",
+    "FunctionRetryPolicy",
     "FunctionResultField",
     "FunctionSignature",
     "FunctionImage",

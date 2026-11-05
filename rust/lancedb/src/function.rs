@@ -16,6 +16,9 @@ use serde_json::Value;
 use crate::secrets::SecretBinding;
 use crate::{Error, Result};
 
+mod retry;
+pub use retry::{FunctionErrorPolicy, FunctionRetryPolicy};
+
 /// Semantic Function type for a Blob v2 value.
 pub const FUNCTION_BLOB_V2_TYPE: &str = "blob_v2";
 
@@ -787,6 +790,9 @@ fn validate_row_timeout_value(value: Option<f64>) -> std::result::Result<(), &'s
 /// database already holds, which Sophon resolves inside the remote runtime.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FunctionRegistrationRequest {
+    /// Default retries of failed user-code calls. Enterprise only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_policy: Option<FunctionRetryPolicy>,
     pub name: String,
     pub artifact: FunctionArtifactRequest,
     pub signature: FunctionSignature,
@@ -836,6 +842,9 @@ impl FunctionRegistrationRequest {
         };
         validate_batch_size_value(self.batch_size).map_err(invalid_input)?;
         validate_row_timeout_value(self.row_timeout_seconds).map_err(invalid_input)?;
+        if let Some(policy) = &self.retry_policy {
+            policy.validate()?;
+        }
         Ok(())
     }
 }
@@ -1094,6 +1103,9 @@ impl FunctionErrorsRequest {
 /// read access to the table.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionErrorRecord {
+    /// Number of user-code calls for this failed invocation, when recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempts: Option<u32>,
     /// The refresh job that recorded the error.
     pub job_id: String,
     /// The fragment holding the row.
