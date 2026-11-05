@@ -185,6 +185,9 @@ Pass `enterprise_db` to `Knowledge` the same way as the local `vector_db`.
 
 Install Ollama, pull an embedding model, and install the Python client with `pip install ollama`.
 Set `dimensions` to the size of that model. `nomic-embed-text` uses 768.
+Store those vectors in `agent_notes_ollama`.
+The OpenAI quickstart writes 1536-dimensional vectors to `agent_notes` in the same directory, and a later search fails when the query width does not match that column.
+Insert the notes with the Ollama embedder, then search `agent_notes_ollama`.
 
 <CodeBlock filename="Python" language="Python" icon="python">
   {PyFrameworksAgnoOllama}

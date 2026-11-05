@@ -1759,11 +1759,22 @@ def test_frameworks_agno_ollama_example() -> None:
         knowledge = Knowledge(
             vector_db=LanceDb(
                 uri="./tmp/lancedb",
-                table_name="agent_notes",
+                table_name="agent_notes_ollama",
                 search_type=SearchType.hybrid,
                 embedder=OllamaEmbedder(id="nomic-embed-text", dimensions=768),
             ),
         )
+        knowledge.insert(
+            name="LanceDB stores",
+            text_content=(
+                "LanceDB stores vectors, text, and metadata in one table. "
+                "A local directory keeps that table on disk."
+            ),
+            metadata={"source": "notes"},
+        )
+        matches = knowledge.search("where the table lives", max_results=1)
+        print(matches[0].content)
+
         agent = Agent(
             model=Ollama(id="llama3.2"),
             knowledge=knowledge,
@@ -1772,6 +1783,10 @@ def test_frameworks_agno_ollama_example() -> None:
         )
         # --8<-- [end:frameworks_agno_ollama]
         assert agent.search_knowledge is True
+        assert knowledge.vector_db.table_name == "agent_notes_ollama"
+        assert matches
+        vector_field = knowledge.vector_db.table.schema.field("vector")
+        assert vector_field.type.list_size == 768
     finally:
         shutil.rmtree("./tmp", ignore_errors=True)
 
