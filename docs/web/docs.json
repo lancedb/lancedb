@@ -453,7 +453,6 @@
               "curation/dedupe",
               "feature-engineering/view",
               "curation/vend-secret",
-              "curation/gpu-function-execution",
               "curation/slurm-scheduling"
             ]
           },
@@ -469,7 +468,6 @@
               "enterprise/auto-refresh",
               "enterprise/checkpointing",
               "enterprise/adaptive-execution",
-              "enterprise/gpu-refresh-execution",
               "enterprise/slurm-refresh-scheduling"
             ]
           },
