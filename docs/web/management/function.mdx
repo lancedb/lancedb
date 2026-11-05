@@ -414,7 +414,7 @@ REFRESH COLUMN embedding ON documents WITH (error_policy = 'skip')
 `skip` writes null outputs for failing rows and records their errors. Inspect
 them with `SHOW ERRORS` or `table.function_errors()`. Failure limits still
 apply, and initialization or infrastructure failures can still fail the job.
-See the [SQL refresh options](/sql/dml/refresh#refresh-column-options). A Function
+See the [SQL refresh options](/sql/dml/refresh-column#options). A Function
 that calls a transiently failing external service can handle bounded retries
 inside its body.
 
