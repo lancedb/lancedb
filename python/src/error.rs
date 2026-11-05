@@ -429,7 +429,7 @@ mod tests {
         Python::attach(|py| {
             let value = py_err.value(py);
             let job_failed = py
-                .import("lancedb.remote.errors")
+                .import("lancedb.exceptions")
                 .unwrap()
                 .getattr("JobFailedError")
                 .unwrap();
