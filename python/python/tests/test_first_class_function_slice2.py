@@ -1901,6 +1901,14 @@ class _RawFunctionCatalog:
         return None
 
 
+def _assert_execution_control_encoding(version):
+    encoded = json.loads(version.to_canonical_json())
+    assert type(encoded["batch_size"]) is int
+    assert type(encoded["row_timeout_seconds"]) is float
+    assert type(encoded["result_stability"]) is str
+    return encoded
+
+
 @pytest.mark.asyncio
 async def test_async_catalog_path_preserves_execution_controls():
     definition = json.loads(
@@ -1923,7 +1931,7 @@ async def test_async_catalog_path_preserves_execution_controls():
     exact = await connection.get_function("embed", version="1")
     listed = [item async for item in getattr(connection, list_catalog)(page_limit=32)]
     for version in [exact, *listed]:
-        assert json.loads(version.to_canonical_json()) == definition
+        assert _assert_execution_control_encoding(version) == definition
 
 
 def test_sync_catalog_path_preserves_execution_controls():
@@ -1948,7 +1956,7 @@ def test_sync_catalog_path_preserves_execution_controls():
     exact = connection.get_function("embed", version="1")
     listed = list(getattr(connection, list_catalog)(page_limit=32))
     for version in [exact, *listed]:
-        assert json.loads(version.to_canonical_json()) == definition
+        assert _assert_execution_control_encoding(version) == definition
 
 
 @contextlib.contextmanager

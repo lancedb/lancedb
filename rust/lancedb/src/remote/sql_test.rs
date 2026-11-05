@@ -2818,6 +2818,9 @@ async fn function_creation_and_description_use_sql_query_handles() {
         let created = job.wait().await.unwrap();
         assert_eq!(created.name(), "embed");
         assert_eq!(created.version(), "1");
+        assert_eq!(created.batch_size(), Some(12));
+        assert_eq!(created.row_timeout_seconds(), Some(8.0));
+        assert_eq!(created.result_stability(), Some("input_and_context"));
         // Assert the actual SQL body, after the same native JSON decode used
         // by the Python binding, rather than only the Python declaration.
         {
@@ -2846,6 +2849,9 @@ async fn function_creation_and_description_use_sql_query_handles() {
             .await
             .unwrap();
         assert_eq!(described.name(), "embed");
+        assert_eq!(described.batch_size(), Some(12));
+        assert_eq!(described.row_timeout_seconds(), Some(8.0));
+        assert_eq!(described.result_stability(), Some("input_and_context"));
         let described_json: serde_json::Value =
             serde_json::from_str(&described.to_canonical_json().unwrap()).unwrap();
         assert_eq!(described_json["image"].get("models"), expected_models);
@@ -2857,6 +2863,12 @@ async fn function_creation_and_description_use_sql_query_handles() {
             .await
             .unwrap();
         assert_eq!(listed.items.len(), 1);
+        assert_eq!(listed.items[0].batch_size(), Some(12));
+        assert_eq!(listed.items[0].row_timeout_seconds(), Some(8.0));
+        assert_eq!(
+            listed.items[0].result_stability(),
+            Some("input_and_context")
+        );
         let listed_json: serde_json::Value =
             serde_json::from_str(&listed.items[0].to_canonical_json().unwrap()).unwrap();
         assert_eq!(listed_json["image"].get("models"), expected_models);

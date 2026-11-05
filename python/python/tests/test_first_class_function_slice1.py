@@ -188,8 +188,12 @@ def test_function_version_preserves_execution_controls():
         result_stability="input_and_context",
     )
     version = FunctionVersion.from_json(json.dumps(value))
+    encoded = json.loads(version.to_canonical_json())
 
-    assert json.loads(version.to_canonical_json()) == value
+    assert encoded == value
+    assert type(encoded["batch_size"]) is int
+    assert type(encoded["row_timeout_seconds"]) is float
+    assert type(encoded["result_stability"]) is str
 
 
 def test_function_version_binds_named_columns_as_one_immutable_application():
