@@ -1121,6 +1121,9 @@ pub struct FunctionErrorRecord {
     pub error_type: String,
     /// The error's text.
     pub error_message: String,
+    /// User-code traceback, possibly truncated by the server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub traceback: Option<String>,
     /// When the error was recorded, in milliseconds since the epoch.
     pub created_at_millis: i64,
 }

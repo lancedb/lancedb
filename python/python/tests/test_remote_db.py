@@ -2055,6 +2055,9 @@ def test_remote_function_errors_lists_the_rows_a_refresh_skipped():
                 "table_version": 11,
                 "error_type": "ValueError",
                 "error_message": "bad input 'x'",
+                "traceback": (
+                    "Traceback (most recent call last):\nValueError: bad input 'x'"
+                ),
                 "created_at_millis": 1700000000000,
             }
         ],
@@ -2102,6 +2105,9 @@ def test_remote_function_errors_lists_the_rows_a_refresh_skipped():
     assert errors.records[0].row_id == 42
     assert errors.records[0].row_address == 12884901897
     assert errors.records[0].function_version == "2"
+    assert errors.records[0].traceback == (
+        "Traceback (most recent call last):\nValueError: bad input 'x'"
+    )
     assert repr(errors.records[0]) == (
         'FunctionErrorRecord(job_id="j-7", fragment_id=3, row_offset=9, '
         'row_address=12884901897, column="embedding", '
@@ -5128,6 +5134,10 @@ def test_remote_connection_jobs_surface():
                         failure=dict(
                             phase="execute",
                             message="worker died",
+                            traceback=(
+                                "Traceback (most recent call last):\n"
+                                "RuntimeError: worker died"
+                            ),
                             retryable=True,
                             sql_job_id="sql-job-1",
                         ),
@@ -5217,6 +5227,9 @@ def test_remote_connection_jobs_surface():
         assert progress["waiting_for_job_id"] == "job-maintenance"
         assert progress["paused_at_millis"] == 1200
         assert job.failure.message == "worker died"
+        assert job.failure.traceback == (
+            "Traceback (most recent call last):\nRuntimeError: worker died"
+        )
         assert job.failure.sql_job_id == "sql-job-1"
         assert repr(job.failure) == (
             'JobFailureInfo(phase="execute", message="worker died", retryable=True, '

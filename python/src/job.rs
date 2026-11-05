@@ -232,6 +232,8 @@ impl From<lancedb::database::JobInfo> for JobInfo {
 pub struct JobFailureInfo {
     phase: Option<String>,
     message: Option<String>,
+    /// User-code traceback, possibly truncated by the server.
+    traceback: Option<String>,
     retryable: Option<bool>,
     sql_job_id: Option<String>,
 }
@@ -342,6 +344,7 @@ impl From<lancedb::database::JobDescription> for JobDescription {
             failure: description.failure.map(|failure| JobFailureInfo {
                 phase: failure.phase,
                 message: failure.message,
+                traceback: failure.traceback,
                 retryable: failure.retryable,
                 sql_job_id: failure.sql_job_id,
             }),

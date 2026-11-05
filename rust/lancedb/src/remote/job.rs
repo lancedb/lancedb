@@ -74,6 +74,8 @@ pub(super) struct ReportedFailure {
     #[serde(default)]
     message: Option<String>,
     #[serde(default)]
+    traceback: Option<String>,
+    #[serde(default)]
     retryable: Option<bool>,
     #[serde(default)]
     sql_job_id: Option<String>,
@@ -134,6 +136,7 @@ impl ReportedFailure {
         JobFailure {
             phase: self.phase,
             message: self.message,
+            traceback: self.traceback,
             retryable: self.retryable,
             sql_job_id: self.sql_job_id,
             source: None,
@@ -266,10 +269,12 @@ impl<S: HttpSend> JobHandle for RemoteJob<S> {
                 JobState::Failed => {
                     return Err(Error::JobFailed {
                         job_id: Some(self.job_id.clone()),
-                        failure: description
-                            .failure
-                            .map(ReportedFailure::into_job_failure)
-                            .unwrap_or_default(),
+                        failure: Box::new(
+                            description
+                                .failure
+                                .map(ReportedFailure::into_job_failure)
+                                .unwrap_or_default(),
+                        ),
                     });
                 }
                 JobState::Cancelled => {
