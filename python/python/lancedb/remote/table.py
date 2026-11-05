@@ -307,6 +307,16 @@ class RemoteTable(Table):
         )
 
     def checkout(self, version: Union[int, str]):
+        """Check out a version number or tag as a read-only view in place.
+
+        A tag must belong to this handle's current branch. To read a tag on
+        another branch, first obtain that branch's handle with
+        `table.branches.checkout("branch_name")`, then call `checkout(tag)` on
+        that handle. A tag on another branch raises an error without changing
+        the current selection.
+
+        Call `checkout_latest()` to return to the latest version of this branch.
+        """
         result = LOOP.run(self._table.checkout(version))
         self._checkout_version = self.version
         return result
