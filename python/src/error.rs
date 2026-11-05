@@ -354,13 +354,15 @@ fn sql_has_resource_error(metadata: &RemoteErrorMetadata, grpc_code: i32) -> boo
     metadata.resource.is_some()
         && matches!(
             (metadata.error_code.as_deref(), grpc_code),
-            (Some("not_found"), 3) | (Some("already_exists"), 6)
+            // These are gRPC status codes, not HTTP status codes.
+            (Some("not_found"), 5) | (Some("already_exists"), 6)
         )
 }
 
 fn grpc_code_to_http_status(grpc_code: i32) -> Option<u16> {
     match grpc_code {
-        3 => Some(404),
+        3 => Some(400),
+        5 => Some(404),
         6 => Some(409),
         7 => Some(403),
         9 => Some(400),
@@ -398,7 +400,7 @@ mod tests {
         let source = LanceError::Sql {
             message: "Function 'missing' was not found".into(),
             request_id: "current-request".into(),
-            grpc_code: 3,
+            grpc_code: 5,
             metadata: Box::new({
                 let mut metadata = RemoteErrorMetadata::default();
                 metadata.error_code = Some("not_found".into());
@@ -529,7 +531,7 @@ mod tests {
             let error = LanceError::Sql {
                 message: format!("{kind} '{name}' was not found"),
                 request_id: "current-request".into(),
-                grpc_code: 3,
+                grpc_code: 5,
                 metadata: Box::new(metadata),
             };
             let py_err = Python::attach(|_| {

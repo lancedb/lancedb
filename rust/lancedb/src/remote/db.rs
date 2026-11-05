@@ -1956,7 +1956,7 @@ mod tests {
         let sql = Error::Sql {
             message: "Function 'missing' was not found".into(),
             request_id: "worker-request".into(),
-            grpc_code: 3,
+            grpc_code: 5,
             metadata: Box::new(RemoteErrorMetadata {
                 error_code: Some("not_found".into()),
                 job_id: Some("job-1".into()),
