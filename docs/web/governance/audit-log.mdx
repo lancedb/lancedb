@@ -20,7 +20,7 @@ failure is logged; on success, the final successful check is logged.
 %%{init: {"theme": "base", "themeVariables": {
   "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
   "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
-  "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+  "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "18px"
 }}}%%
 flowchart LR
     R["Request arrives"] --> C["Authorization check"]
@@ -30,7 +30,7 @@ flowchart LR
     L2 --> T
     T --> Q["SELECT ... FROM system.public.__audit_log"]
     classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
-    classDef accent fill:#2a1810,stroke:#ff734a,stroke-width:1.5px,color:#f4ebe8
+    classDef accent fill:#2a1810,stroke:#e8582d,stroke-width:1.5px,color:#f4ebe8
     class T accent
 ```
 
@@ -42,7 +42,7 @@ flowchart LR
 %%{init: {"theme": "base", "themeVariables": {
   "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
   "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
-  "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+  "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "18px"
 }}}%%
 flowchart LR
     R["Request arrives"] --> C["Authorization check"]
