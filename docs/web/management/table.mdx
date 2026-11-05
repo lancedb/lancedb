@@ -330,7 +330,7 @@ as it is to the format.
 | String and binary | `utf8`, `large_utf8`, `binary`, `large_binary`, `fixed_size_binary(n)` |
 | Date and time | `date32`, `date64`, `time32`, `time64`, `timestamp`, `duration` |
 | Nested | `struct`, `list`, `large_list`, `fixed_size_list`, `map` |
-| Lance extensions | vectors, JSON, [blobs](#multimodal), bfloat16 |
+| Lance extensions | vectors, JSON{/* Draft until JSON columns reach early access: link as [JSON](/sql/data-types#json) */}, [blobs](#multimodal), bfloat16 |
 
 A vector column is a `fixed_size_list<float32, dim>`, an ordinary Arrow type,
 which is why it is selectable and joinable but why arithmetic over it is list
