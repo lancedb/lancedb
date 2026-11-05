@@ -3301,9 +3301,31 @@ class Table(ABC):
             ``records``, ``fragments`` and ``truncated``, the last saying
             whether the listing stopped at its limit.
 
-        Each record identifies its row with ``fragment_id``, ``row_offset``
-        and the physical ``row_address`` (``(fragment_id << 32) |
-        row_offset``). To retry the recorded rows, collect the non-null
+        Each record identifies its row with ``fragment_id``, ``row_offset``,
+        the physical ``row_address`` (``(fragment_id << 32) |
+        row_offset``), and, when the table uses stable row IDs, the stable
+        ``row_id`` read from the refresh's pinned table version. Prefer
+        ``row_id`` for retries: compaction and rewrite can change the
+        physical fields, while a stable row ID survives them.
+
+        To retry the recorded rows with stable row IDs:
+
+        .. code-block:: python
+
+            errors = table.function_errors(column="embedding")
+            row_ids = sorted(
+                record.row_id
+                for record in errors.records
+                if record.row_id is not None
+            )
+            if row_ids:
+                row_id_list = ", ".join(str(row_id) for row_id in row_ids)
+                database.execute_query(
+                    f"REFRESH COLUMN embedding ON {table.name} "
+                    f"WHERE _rowid IN ({row_id_list})"
+                )
+
+        For a table without stable row IDs, collect the non-null physical
         addresses before the table is compacted or rewritten and run the
         SQL refresh:
 
@@ -3318,7 +3340,7 @@ class Table(ABC):
             if addresses:
                 address_list = ", ".join(str(address) for address in addresses)
                 database.execute_query(
-                    f"REFRESH COLUMN embedding ON {table.name()} "
+                    f"REFRESH COLUMN embedding ON {table.name} "
                     f"WHERE _rowaddr IN ({address_list})"
                 )
 
@@ -7786,9 +7808,31 @@ class AsyncTable:
             ``records``, ``fragments`` and ``truncated``, the last saying
             whether the listing stopped at its limit.
 
-        Each record identifies its row with ``fragment_id``, ``row_offset``
-        and the physical ``row_address`` (``(fragment_id << 32) |
-        row_offset``). To retry the recorded rows, collect the non-null
+        Each record identifies its row with ``fragment_id``, ``row_offset``,
+        the physical ``row_address`` (``(fragment_id << 32) |
+        row_offset``), and, when the table uses stable row IDs, the stable
+        ``row_id`` read from the refresh's pinned table version. Prefer
+        ``row_id`` for retries: compaction and rewrite can change the
+        physical fields, while a stable row ID survives them.
+
+        To retry the recorded rows with stable row IDs:
+
+        .. code-block:: python
+
+            errors = await table.function_errors(column="embedding")
+            row_ids = sorted(
+                record.row_id
+                for record in errors.records
+                if record.row_id is not None
+            )
+            if row_ids:
+                row_id_list = ", ".join(str(row_id) for row_id in row_ids)
+                await database.execute_query(
+                    f"REFRESH COLUMN embedding ON {table.name} "
+                    f"WHERE _rowid IN ({row_id_list})"
+                )
+
+        For a table without stable row IDs, collect the non-null physical
         addresses before the table is compacted or rewritten and run the
         SQL refresh:
 
@@ -7803,7 +7847,7 @@ class AsyncTable:
             if addresses:
                 address_list = ", ".join(str(address) for address in addresses)
                 await database.execute_query(
-                    f"REFRESH COLUMN embedding ON {table.name()} "
+                    f"REFRESH COLUMN embedding ON {table.name} "
                     f"WHERE _rowaddr IN ({address_list})"
                 )
 

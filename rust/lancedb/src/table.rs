@@ -2141,6 +2141,10 @@ impl Table {
     /// capped. Filter by job or column through the request; a listing that
     /// hit its limit reports [`FunctionErrors::truncated`].
     ///
+    /// A record carries a stable `row_id` when the refresh source used stable
+    /// row IDs. Prefer it over the physical `row_address` for retries:
+    /// compaction and rewrite can change the address.
+    ///
     /// LanceDB Enterprise only, and the caller needs read access
     /// to the table, since a message carries the value that failed.
     ///
