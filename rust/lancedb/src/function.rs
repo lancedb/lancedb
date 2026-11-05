@@ -570,6 +570,12 @@ impl<'de> Deserialize<'de> for RowTimeoutSeconds {
 ///
 /// The Function is named by its parts, `name` and `namespace_path`, the way a
 /// [`SecretReference`](crate::secrets::SecretReference) names a Secret.
+///
+/// Unknown top-level fields from newer servers are accepted for forward
+/// decoding, but they are not part of this value and are omitted from
+/// canonical JSON. Known fields retain their complete values, while unknown
+/// fields inside the open [`FunctionImage::descriptor`] JSON object remain
+/// available.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionVersion {
     name: String,
