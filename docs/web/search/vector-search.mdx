@@ -268,6 +268,24 @@ Use `search_effort` to tune how much work a search does. It accepts values from
 too low, or decrease it when you can trade some recall for lower latency.
 `search_effort(0.95)` does **not** mean 95% recall.
 
+SDK builds using Lance 15.0.0-beta.11 or later provide these calibrated tiers:
+
+| Effort | Empirical mean partition-routing target |
+| :--- | :--- |
+| `0.1` | 80% |
+| `0.25` | 90% |
+| `0.5` (default) | Approximately 95%; existing Auto behavior |
+
+The probe budget adapts to the distance metric and requested `k`, so you can
+keep the same effort when changing the result count. The lower tiers were
+calibrated for `l2`, `cosine` and `dot` through `k=100000`. This is the tested
+range, not a limit on `k`; Hamming and larger requests remain uncalibrated.
+
+These are average routing objectives, not guarantees for each query or final
+Recall@k. Quantization, filtering and explicit probe bounds can lower final
+recall. Remote queries require a server with the corresponding Lance version;
+upgrading only the client does not change server-side routing.
+
 <CodeBlock filename="Python" language="python" icon="python">
 {PyVectorIndexSearchEffort}
 </CodeBlock>

@@ -2060,6 +2060,11 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
     def search_effort(self, search_effort: Optional[float]) -> LanceVectorQueryBuilder:
         """Set the initial IVF search effort to a finite value in [0, 1].
 
+        Efforts 0.1 and 0.25 target empirical mean partition-routing recall of
+        80% and 90% for L2, cosine and dot through k=100000. The probe budget
+        adapts to the metric and k. Hamming and larger k remain uncalibrated;
+        100000 is not an API limit. Remote queries also require server support.
+
         None (the default) uses Auto, internally 0.5. Zero starts at the caller
         minimum; one searches all partitions within the caller maximum. Later
         probing may continue when too few candidates are found. Any explicit
@@ -3018,6 +3023,11 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
     def search_effort(self, search_effort: Optional[float]) -> LanceHybridQueryBuilder:
         """Set the initial IVF search effort to a finite value in [0, 1].
+
+        Efforts 0.1 and 0.25 target empirical mean partition-routing recall of
+        80% and 90% for L2, cosine and dot through k=100000. The probe budget
+        adapts to the metric and k. Hamming and larger k remain uncalibrated;
+        100000 is not an API limit. Remote queries also require server support.
 
         None (the default) uses Auto, internally 0.5. Zero starts at the caller
         minimum; one searches all partitions within the caller maximum. Later
@@ -4425,6 +4435,11 @@ class AsyncVectorQueryBase:
 
     def search_effort(self, search_effort: Optional[float]) -> Self:
         """Set the initial IVF search effort to a finite value in [0, 1].
+
+        Efforts 0.1 and 0.25 target empirical mean partition-routing recall of
+        80% and 90% for L2, cosine and dot through k=100000. The probe budget
+        adapts to the metric and k. Hamming and larger k remain uncalibrated;
+        100000 is not an API limit. Remote queries also require server support.
 
         None preserves Auto (internally 0.5) and fixed nprobes. Any explicit
         effort, including 0.5, overrides nprobes in either call order; explicit

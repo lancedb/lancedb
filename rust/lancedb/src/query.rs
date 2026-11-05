@@ -1329,7 +1329,11 @@ impl VectorQuery {
     ///
     /// None (the default) resolves to 0.5, preserving Auto probing. At 0 the
     /// search starts at the caller minimum; at 1 it searches all partitions
-    /// within the caller maximum. Intermediate values interpolate around Auto.
+    /// within the caller maximum. Efforts 0.1 and 0.25 target empirical mean
+    /// partition-routing recall of 80% and 90%, respectively, for L2, cosine
+    /// and dot with k up to 100,000. The budget adapts to the metric and k;
+    /// this is a calibration boundary, not a limit on k. Hamming and larger k
+    /// retain uncalibrated behavior. Other values interpolate between tiers.
     /// Later probing may continue when too few candidates are found.
     /// Any explicit value, including 0.5, overrides [`Self::nprobes`] regardless
     /// of setter order. Explicit minimum and maximum bounds still apply.
