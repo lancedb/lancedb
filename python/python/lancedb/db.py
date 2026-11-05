@@ -3650,7 +3650,12 @@ class AsyncConnection(object):
         Returns True when the requested revision was removed and False for a
         repeated drop or a missing name. A revision never published under an
         existing name is an error. Only the last visible revision's removal
-        releases the name and schedules background object cleanup.
+        releases the name and schedules background object cleanup. When the
+        remote server reports a warning, it is emitted as ``UserWarning``
+        before this method returns, subject to the standard ``warnings``
+        filters. A warnings-as-errors setting can therefore raise after the
+        catalog removal; it does not roll back the drop. Older servers that
+        omit the warning field remain silent.
         """
         dropped, drop_warnings = await self._drop_function_with_warnings(
             name, version, namespace_path
