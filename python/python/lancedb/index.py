@@ -131,6 +131,35 @@ class NGram:
 
 
 @dataclass
+class BloomFilter:
+    """Describe a BloomFilter index configuration.
+
+    A `BloomFilter` index is a scalar index that stores a compact probabilistic
+    set-membership filter for each block of rows. It accelerates equality and
+    `IN (...)` filters on high-cardinality columns by skipping blocks that
+    provably cannot contain a queried value. A Bloom filter can report a false
+    positive but never a false negative, so candidate blocks are still scanned
+    and the results are identical with or without the index.
+
+    Unlike `Bitmap`, which does best on low-cardinality columns, `BloomFilter`
+    targets high-cardinality columns such as `id`, `uuid`, or `hash`.
+
+    Parameters
+    ----------
+    number_of_items: Optional[int], default None
+        The expected number of rows covered by each Bloom filter. Must be
+        greater than zero. When unset, Lance's default is used.
+    probability: Optional[float], default None
+        The desired false-positive probability for each Bloom filter. Must be
+        finite and strictly between 0 and 1; lower values use more space. When
+        unset, Lance's default is used.
+    """
+
+    number_of_items: Optional[int] = None
+    probability: Optional[float] = None
+
+
+@dataclass
 class FTS:
     """Describe a FTS index configuration.
 
