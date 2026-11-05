@@ -419,7 +419,7 @@
             ]
           },
           {
-            "group": "Semantic Search",
+            "group": "Search",
             "pages": [
               "search/index",
               "search/vector-search",
