@@ -622,6 +622,8 @@ pub struct FunctionErrorRecord {
     pub table_version: u64,
     pub error_type: String,
     pub error_message: String,
+    /// User-code traceback, possibly truncated by the server.
+    pub traceback: Option<String>,
     pub created_at_millis: i64,
 }
 
@@ -662,6 +664,7 @@ impl From<lancedb::function::FunctionErrorRecord> for FunctionErrorRecord {
             table_version: record.table_version,
             error_type: record.error_type,
             error_message: record.error_message,
+            traceback: record.traceback,
             created_at_millis: record.created_at_millis,
         }
     }

@@ -37,7 +37,7 @@ group it uses:
   "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
   "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
   "clusterBkg": "#211d1a", "clusterBorder": "#4c443f",
-  "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+  "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "18px"
 }}}%%
 flowchart TB
     subgraph G0["Replica group 0"]
@@ -62,7 +62,7 @@ flowchart TB
     TA -.-> G1
     TB["Table B<br/>group 2 only · RF 3"] -.-> G2
     classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
-    classDef accent fill:#2a1810,stroke:#ff734a,stroke-width:1.5px,color:#f4ebe8
+    classDef accent fill:#2a1810,stroke:#e8582d,stroke-width:1.5px,color:#f4ebe8
     class TA,TB accent
 ```
 
@@ -75,7 +75,7 @@ flowchart TB
   "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
   "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
   "clusterBkg": "#f4ebe8", "clusterBorder": "#ad9e95",
-  "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+  "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "18px"
 }}}%%
 flowchart TB
     subgraph G0["Replica group 0"]
@@ -139,7 +139,7 @@ letting each table's read drift to a different group.
   "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
   "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
   "clusterBkg": "#211d1a", "clusterBorder": "#4c443f",
-  "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+  "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "18px"
 }}}%%
 flowchart LR
     Q["Query node<br/>routes to the lead group"]
@@ -161,7 +161,7 @@ flowchart LR
     Q -. "only if group 0 has no healthy PE" .-> B0
     Q -. "only if group 0 has no healthy PE" .-> B1
     classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
-    classDef accent fill:#2a1810,stroke:#ff734a,stroke-width:1.5px,color:#f4ebe8
+    classDef accent fill:#2a1810,stroke:#e8582d,stroke-width:1.5px,color:#f4ebe8
     class Q accent
 ```
 
@@ -174,7 +174,7 @@ flowchart LR
   "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
   "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
   "clusterBkg": "#f4ebe8", "clusterBorder": "#ad9e95",
-  "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+  "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "18px"
 }}}%%
 flowchart LR
     Q["Query node<br/>routes to the lead group"]

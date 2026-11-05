@@ -465,6 +465,10 @@ class JobFailureInfo:
     @property
     def message(self) -> Optional[str]: ...
     @property
+    def traceback(self) -> Optional[str]:
+        """User-code traceback, possibly truncated by the server."""
+        ...
+    @property
     def retryable(self) -> Optional[bool]: ...
     @property
     def sql_job_id(self) -> Optional[str]: ...
@@ -1014,6 +1018,8 @@ class FunctionErrorRecord:
     table_version: int
     error_type: str
     error_message: str
+    traceback: Optional[str]
+    """User-code traceback, possibly truncated by the server."""
     created_at_millis: int
 
 class FunctionErrorFragment:

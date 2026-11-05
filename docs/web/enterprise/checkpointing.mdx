@@ -30,7 +30,7 @@ example) can have those side effects repeated for that part's rows.
 %%{init: {"theme": "base", "themeVariables": {
   "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
   "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
-  "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+  "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "18px"
 }}}%%
 flowchart LR
     S["Part started<br/>event recorded"] --> E["Function executes"]
@@ -42,7 +42,7 @@ flowchart LR
     S -. "worker dies here" .-> R["Next attempt reads the log,<br/>sees no completion,<br/>redoes only this part"]
     C -. "worker dies here" .-> R2["Next attempt reads the log,<br/>sees this part done,<br/>inherits it, moves on"]
     classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
-    classDef accent fill:#2a1810,stroke:#ff734a,stroke-width:1.5px,color:#f4ebe8
+    classDef accent fill:#2a1810,stroke:#e8582d,stroke-width:1.5px,color:#f4ebe8
     class R,R2 accent
 ```
 
@@ -54,7 +54,7 @@ flowchart LR
 %%{init: {"theme": "base", "themeVariables": {
   "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
   "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
-  "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+  "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "18px"
 }}}%%
 flowchart LR
     S["Part started<br/>event recorded"] --> E["Function executes"]
