@@ -69,7 +69,7 @@ print(f"native_binding={path}")
 print(f"native_sha256={hashlib.sha256(path.read_bytes()).hexdigest()}")
 '
 run_step python-remote-tests \
-    "$venv/bin/pytest" -q python/tests/test_remote_db.py \
+    "$venv/bin/pytest" -q python/python/tests/test_remote_db.py \
     -k 'remote_function_errors_lists_the_rows_a_refresh_skipped or remote_connection_jobs_surface'
 
 git diff --exit-code
