@@ -1,7 +1,7 @@
 ---
-title: "Distributed Real Time Write"
+title: "Distributed RTE Write"
 sidebarTitle: "Distributed RTE Write"
-description: "How Enterprise scales real time writes horizontally across a dedicated serving tier, and the throughput limits that come with it."
+description: "How Enterprise scales RTE writes horizontally across a dedicated serving tier, and the throughput limits that come with it."
 icon: "bolt"
 keywords: ["rte", "real time engine", "shard", "sharding", "horizontal scaling", "write throughput"]
 availability:
@@ -9,7 +9,7 @@ availability:
   enterprise: available
 ---
 
-[Real Time writes](/ingestion/realtime-write) describes `table.enable_rte(spec)`
+[RTE writes](/ingestion/realtime-write) describes `table.enable_rte(spec)`
 as one call that works the same way on either connection. On Enterprise, that
 call does not run locally -- it posts to the server, which installs the write
 path on a dedicated, horizontally scalable serving tier instead of running it
@@ -123,13 +123,13 @@ throughput than this provides.
 ## What to read next {#next}
 
 <CardGroup cols={2}>
-  <Card title="Real Time writes" icon="bolt" href="/ingestion/realtime-write">
+  <Card title="RTE writes" icon="bolt" href="/ingestion/realtime-write">
     Enable RTE and write to a table; the same call on Embedded or Enterprise.
   </Card>
   <Card title="How the real time engine works" icon="database" href="/tables/realtime-engine">
     MemWAL, shards, memtables and SSTables -- the shared architecture.
   </Card>
-  <Card title="Distributed Real Time Read" icon="magnifying-glass" href="/enterprise/distributed-real-time-read">
+  <Card title="Distributed RTE Read" icon="magnifying-glass" href="/enterprise/distributed-real-time-read">
     How reads combine the WAL tier's fresh rows with the base table across the fleet.
   </Card>
 </CardGroup>

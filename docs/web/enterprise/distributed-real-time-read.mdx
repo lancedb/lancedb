@@ -1,5 +1,5 @@
 ---
-title: "Distributed Real Time Read"
+title: "Distributed RTE Read"
 sidebarTitle: "Distributed RTE Read"
 description: "How a query combines the real time engine's fresh tier with the ordinary distributed query-serving path, machine to machine."
 icon: "network-wired"
@@ -8,7 +8,7 @@ availability:
   enterprise: available
 ---
 
-[Real Time Read](/search/realtime-read) covers what a query against an
+[RTE Read](/search/realtime-read) covers what a query against an
 RTE-enabled table returns: base-table rows merged with the fresh tier,
 fresh rows superseding base rows with the same primary key. On a single
 Embedded process that merge is one function call against one Lance
@@ -199,10 +199,10 @@ table alone.
 ## What to read next {#next}
 
 <CardGroup cols={2}>
-  <Card title="Real Time Read" icon="magnifying-glass" href="/search/realtime-read">
+  <Card title="RTE Read" icon="magnifying-glass" href="/search/realtime-read">
     What a query returns, and how Embedded does this same merge in-process.
   </Card>
-  <Card title="Distributed Real Time Write" icon="bolt" href="/enterprise/distributed-real-time-write">
+  <Card title="Distributed RTE Write" icon="bolt" href="/enterprise/distributed-real-time-write">
     How writes reach the RTE node this page's queries read from.
   </Card>
   <Card title="Distributed search" icon="network-wired" href="/enterprise/distributed-search">

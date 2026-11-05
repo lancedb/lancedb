@@ -1,6 +1,6 @@
 ---
-title: "Distributed compaction"
-sidebarTitle: "Distributed compaction"
+title: "Distributed Compaction"
+sidebarTitle: "Distributed Compaction"
 description: "How LanceDB Enterprise distributes compaction across a fleet of job workers."
 icon: "compress"
 availability:
@@ -12,8 +12,8 @@ Distributed compaction splits a table's fragments into independent,
 fragment-disjoint tasks and fans them out across job workers in LanceDB
 Enterprise. Unlike an index build, a compaction plan needs no bin-packing:
 Lance's own planner already produces disjoint tasks, so workers claim and
-execute them directly through the job registry, with no coordination
-needed to decide who does what. See [Architecture](/index#architecture).
+execute them directly, with no coordination needed to decide who does
+what. See [Architecture](/index#architecture).
 
 <div className="hidden dark:block">
 
@@ -24,16 +24,16 @@ needed to decide who does what. See [Architecture](/index#architecture).
   "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "18px"
 }}}%%
 flowchart LR
-    L["Lance's planner<br/>splits fragments into<br/>disjoint tasks"] --> R[("Job registry")]
-    R --> W1["Worker<br/>claims fragments 1-2"]
-    R --> W2["Worker<br/>claims fragments 3-4"]
-    R --> W3["Worker<br/>claims fragments 5-6"]
+    L["Lance's planner<br/>splits fragments into<br/>disjoint tasks"]
+    L --> W1["Worker<br/>claims fragments 1-2"]
+    L --> W2["Worker<br/>claims fragments 3-4"]
+    L --> W3["Worker<br/>claims fragments 5-6"]
     W1 --> C["Fleet-wide eligibility gate:<br/>one worker claims the commit"]
     W2 --> C
     W3 --> C
     classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
     classDef accent fill:#2a1810,stroke:#e8582d,stroke-width:1.5px,color:#f4ebe8
-    class R,C accent
+    class C accent
 ```
 
 </div>
@@ -47,16 +47,16 @@ flowchart LR
   "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "18px"
 }}}%%
 flowchart LR
-    L["Lance's planner<br/>splits fragments into<br/>disjoint tasks"] --> R[("Job registry")]
-    R --> W1["Worker<br/>claims fragments 1-2"]
-    R --> W2["Worker<br/>claims fragments 3-4"]
-    R --> W3["Worker<br/>claims fragments 5-6"]
+    L["Lance's planner<br/>splits fragments into<br/>disjoint tasks"]
+    L --> W1["Worker<br/>claims fragments 1-2"]
+    L --> W2["Worker<br/>claims fragments 3-4"]
+    L --> W3["Worker<br/>claims fragments 5-6"]
     W1 --> C["Fleet-wide eligibility gate:<br/>one worker claims the commit"]
     W2 --> C
     W3 --> C
     classDef default fill:#ffffff,stroke:#ad9e95,stroke-width:1px,color:#221d19
     classDef accent fill:#fff1ec,stroke:#e8582d,stroke-width:1.5px,color:#221d19
-    class R,C accent
+    class C accent
 ```
 
 </div>

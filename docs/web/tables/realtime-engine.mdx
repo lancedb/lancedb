@@ -25,7 +25,7 @@ table, and nothing about how you query that table changes.
 RTE is built on **MemWAL**, a log-structured-merge (LSM) format that Lance
 itself defines -- the structure Enterprise serves is part of the open Lance
 format, not a layer bolted on beside it. A table with RTE enabled is divided
-into one or more **shards** (see [Real Time writes](/ingestion/realtime-write#primary-key)
+into one or more **shards** (see [RTE writes](/ingestion/realtime-write#primary-key)
 for enabling and sizing them), and each shard holds:
 
 - A **memtable**: the active, in-memory table for that shard's newest rows,
@@ -49,8 +49,8 @@ later folds SSTables into the base table, catching its indexes up as it goes.
 This section describes LanceDB Enterprise's serving layer. LanceDB Embedded
 runs the same MemWAL mechanics directly against the local dataset, in one
 process -- there is no separate node to route to or scale; see
-[Real Time writes](/ingestion/realtime-write#getting-started) and
-[Real Time reads](/search/realtime-read#embedded) for what that looks like.
+[RTE writes](/ingestion/realtime-write#getting-started) and
+[RTE reads](/search/realtime-read#embedded) for what that looks like.
 
 RTE's Enterprise serving layer is a dedicated component, separate from the
 [query nodes and plan executors](/enterprise/distributed-search)
@@ -81,13 +81,13 @@ pods are never both appending to the same shard's WAL at once.
 Every query runs against the base table and the fresh tier -- every shard's
 memtable and not-yet-compacted SSTables -- in parallel. Fresh rows supersede
 base rows with the same primary key, and the two are merged into one result.
-See [Real Time reads](/search/realtime-read) for what this means for query
+See [RTE reads](/search/realtime-read) for what this means for query
 results.
 
 ## Next steps {#next-steps}
 
-- [Real Time writes](/ingestion/realtime-write) — enable RTE and write to a table
-- [Real Time reads](/search/realtime-read) — query an RTE table
-- [Distributed Real Time Write](/enterprise/distributed-real-time-write) — how Enterprise shards and scales writes
-- [Distributed Real Time Read](/enterprise/distributed-real-time-read) — how Enterprise combines reads across machines
+- [RTE writes](/ingestion/realtime-write) — enable RTE and write to a table
+- [RTE reads](/search/realtime-read) — query an RTE table
+- [Distributed RTE Write](/enterprise/distributed-real-time-write) — how Enterprise shards and scales writes
+- [Distributed RTE Read](/enterprise/distributed-real-time-read) — how Enterprise combines reads across machines
 - [RTE Compaction](/enterprise/realtime-engine-compaction) — how Enterprise folds shards into the base table

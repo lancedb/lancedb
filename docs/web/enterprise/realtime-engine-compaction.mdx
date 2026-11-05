@@ -8,7 +8,7 @@ availability:
   enterprise: available
 ---
 
-[Distributed compaction](/enterprise/distributed-compaction) merges small
+[Distributed Compaction](/enterprise/distributed-compaction) merges small
 base-table fragments and reclaims deleted rows -- the same operation
 [Compaction](/maintenance/compaction) describes for LanceDB Embedded. A
 table with the [real time engine](/tables/realtime-engine) enabled has a
@@ -191,7 +191,7 @@ Either way, the bound also assumes a free compaction slot when
 the shard becomes eligible; an eligible shard can wait in queue behind
 `WAL_COMPACT_CONCURRENCY` other passes already running, so the actual
 delay can run longer than the trigger alone suggests. See
-[Real Time reads](/search/realtime-read)
+[RTE reads](/search/realtime-read)
 for what a live RTE read sees instead.
 
 ## What to read next {#next}
@@ -200,7 +200,7 @@ for what a live RTE read sees instead.
   <Card title="Real Time Engine" icon="bolt" href="/tables/realtime-engine">
     The MemWAL format, shards, and WAL nodes this page assumes.
   </Card>
-  <Card title="Distributed compaction" icon="compress" href="/enterprise/distributed-compaction">
+  <Card title="Distributed Compaction" icon="compress" href="/enterprise/distributed-compaction">
     The unrelated, ordinary compaction every table -- WAL-enabled or not -- gets.
   </Card>
   <Card title="Job Framework" icon="list-check" href="/basics/jobs">
