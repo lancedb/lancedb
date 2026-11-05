@@ -77,15 +77,19 @@ def split_into_passages(text):
 
 ## Explode it in a query {#explode}
 
-Call the function in the `FROM` clause, after the source table, with an
-alias: a Function there yields one row per element of the list it returns,
-with every other column repeated. Reference the function's output fields
-through the alias:
+Wrap the function call in `UNNEST` in the `SELECT` list, with an alias: it
+yields one row per element of the list the function returns, with every
+other selected column repeated. Reference the exploded struct's fields
+through that alias in a query over this one:
 
 <CodeGroup>
 ```sql SQL icon="database"
+WITH exploded AS (
+    SELECT doc_id, title, UNNEST(split_into_passages(text)) AS p
+    FROM documents
+)
 SELECT doc_id, title, p.chunk_index, p.chunk_text
-FROM documents, split_into_passages(text) AS p
+FROM exploded
 ```
 </CodeGroup>
 
@@ -160,8 +164,12 @@ timestamp, then call `extract_frame` on each row to produce its image:
 
 <CodeGroup>
 ```sql SQL icon="database"
+WITH sampled AS (
+    SELECT video_id, video, UNNEST(sample_frame_timestamps(duration_seconds)) AS f
+    FROM videos
+)
 SELECT video_id, f.frame_index, f.ts, extract_frame(video, f.ts) AS jpeg
-FROM videos, sample_frame_timestamps(duration_seconds) AS f
+FROM sampled
 ```
 </CodeGroup>
 
@@ -179,8 +187,12 @@ recomputing the explosion on every query:
 <CodeGroup>
 ```sql SQL icon="database"
 CREATE MATERIALIZED VIEW chunks AS
+WITH exploded AS (
+    SELECT doc_id, title, UNNEST(split_into_passages(text)) AS p
+    FROM documents
+)
 SELECT doc_id, title, p.chunk_index, p.chunk_text
-FROM documents, split_into_passages(text) AS p
+FROM exploded
 ```
 </CodeGroup>
 
@@ -194,10 +206,11 @@ FROM documents, split_into_passages(text) AS p
 The view refreshes like any other materialized view: new source rows are
 chunked and inserted, deleted source rows drop their children, and an
 updated row's old children are replaced by freshly chunked ones on the next
-[refresh](/feature-engineering/refresh-column). A single Function call or
-`UNNEST(column)` is the only lateral source a materialized view can carry --
-not both, and not combined with `GROUP BY` -- so keep aggregation or further
-curation in a second step over the chunked table.
+[refresh](/feature-engineering/refresh-column). A single `UNNEST(...)` --
+whether unnesting a Function's list output directly, as above, or an
+existing list column -- is the only lateral expansion a materialized view
+can carry, and it can't be combined with `GROUP BY`, so keep aggregation or
+further curation in a second step over the chunked table.
 
 ## Chunk, then curate {#next}
 

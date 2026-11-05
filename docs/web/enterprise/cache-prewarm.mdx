@@ -30,7 +30,7 @@ an idempotent hint that loads a built index into memory ahead of a query.
 }}}%%
 flowchart LR
     List[("Configured list<br/>of tables to prewarm")]
-    Start["Plan executor starts<br/>(not ready — no queries served)"] --> Warm["Loads each table's<br/>indexes into cache"]
+    Start["Plan executor starts<br/>(not ready — no queries served)"] --> Warm["Loads the configured<br/>tables' indexes into cache"]
     List -.-> Warm
     Warm --> Ready["Ready — joins the fleet,<br/>starts serving queries"]
     classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
@@ -50,7 +50,7 @@ flowchart LR
 }}}%%
 flowchart LR
     List[("Configured list<br/>of tables to prewarm")]
-    Start["Plan executor starts<br/>(not ready — no queries served)"] --> Warm["Loads each table's<br/>indexes into cache"]
+    Start["Plan executor starts<br/>(not ready — no queries served)"] --> Warm["Loads the configured<br/>tables' indexes into cache"]
     List -.-> Warm
     Warm --> Ready["Ready — joins the fleet,<br/>starts serving queries"]
     classDef default fill:#ffffff,stroke:#ad9e95,stroke-width:1px,color:#221d19

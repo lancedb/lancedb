@@ -1,37 +1,114 @@
 ---
 title: "Slurm Scheduling"
 sidebarTitle: "Slurm Scheduling"
-description: "A computed column or materialized view refresh launches worker pods through the same SUNK-backed scheduling configuration as any other job worker."
+description: "Run a computed column or materialized view refresh's GPU UDFs on a Neocloud's Slurm cluster, even in a different cloud from the rest of your deployment."
 icon: "server"
-keywords: ["slurm", "sunk", "scheduling", "refresh", "computed column"]
+keywords: ["slurm", "scheduling", "refresh", "computed column", "gpu", "neocloud", "cross-cloud"]
 availability:
   embedded: unavailable
   enterprise: available
 ---
 
-This page is about [Slurm scheduling](/curation/slurm-scheduling) as it
-applies to a computed column or materialized view refresh specifically --
-the mechanism itself is covered in depth on that Data Curation page. A
-refresh's top-level job -- the one that shows up in `SHOW JOBS` -- is an
-agent-launched job worker like any other, and shares the full scheduling
-configuration: node selector, tolerations, scheduler name and
-termination grace period alike.
+[Slurm scheduling](/curation/slurm-scheduling) lets LanceDB Enterprise's
+pods run under the same scheduler as GPU training infrastructure -- that
+mechanism applies to a computed column or materialized view refresh the
+same way it applies to the rest of the deployment. This page covers what's
+specific to refresh: running a refresh's GPU-bound Functions on a
+**different cloud** from the one your deployment lives in.
 
-<Warning>
-That job's own *child* workers -- the ones that actually plan, finalize
-and run a Function during the refresh -- are different: they inherit the
-scheduler name, but not the termination grace period, so they launch
-with Kubernetes' 30-second default regardless of the shared
-configuration. See [What SUNK changes](/curation/slurm-scheduling#what-changes)
-for why that matters on most SUNK deployments, and confirm with your
-deployment operator before running a Function-backed refresh there.
-</Warning>
+## How it fits together {#architecture}
+
+A refresh job splits into two parts that don't have to run in the same
+place: the orchestration -- planning the refresh, tracking its progress,
+committing results -- stays with your LanceDB Enterprise deployment in its
+own cloud. The GPU-bound Function calls a refresh needs can instead
+dispatch to a Neocloud's Slurm-scheduled GPU pool, in a separate cloud
+account and region, and send their results back to complete the refresh.
+
+<div className="hidden dark:block">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
+  "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
+  "clusterBkg": "#211d1a", "clusterBorder": "#4c443f", "edgeLabelBackground": "#171513",
+  "fontFamily": "Inter, sans-serif", "fontSize": "18px"
+}}}%%
+flowchart LR
+    subgraph P["Your cloud"]
+        direction TB
+        QN["Query node"]
+        Job["Refresh job<br/>orchestration"]
+    end
+
+    subgraph N["Neocloud (e.g. CoreWeave, Nebius)"]
+        direction TB
+        Slurm["Slurm scheduler"]
+        GPU["GPU UDF execution"]
+    end
+
+    QN --> Job
+    Job -- "dispatches GPU work" --> Slurm
+    Slurm --> GPU
+    GPU -- "results" --> Job
+    classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
+    classDef accent fill:#2a1810,stroke:#e8582d,stroke-width:1.5px,color:#f4ebe8
+    class GPU accent
+```
+
+</div>
+
+<div className="block dark:hidden">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
+  "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
+  "clusterBkg": "#f4ebe8", "clusterBorder": "#ad9e95", "edgeLabelBackground": "#ffffff",
+  "fontFamily": "Inter, sans-serif", "fontSize": "18px"
+}}}%%
+flowchart LR
+    subgraph P["Your cloud"]
+        direction TB
+        QN["Query node"]
+        Job["Refresh job<br/>orchestration"]
+    end
+
+    subgraph N["Neocloud (e.g. CoreWeave, Nebius)"]
+        direction TB
+        Slurm["Slurm scheduler"]
+        GPU["GPU UDF execution"]
+    end
+
+    QN --> Job
+    Job -- "dispatches GPU work" --> Slurm
+    Slurm --> GPU
+    GPU -- "results" --> Job
+    classDef default fill:#ffffff,stroke:#ad9e95,stroke-width:1px,color:#221d19
+    classDef accent fill:#fff1ec,stroke:#e8582d,stroke-width:1.5px,color:#221d19
+    class GPU accent
+```
+
+</div>
+
+## Why it matters {#why-it-matters}
+
+GPU capacity is often cheaper and more available on a Neocloud built
+around Slurm-scheduled GPU clusters than inside a general-purpose cloud.
+Splitting orchestration from GPU execution means you don't have to choose
+between keeping your deployment where your data and other infrastructure
+already live, and getting access to that GPU capacity -- a refresh can do
+both, without migrating the deployment or provisioning GPUs in your
+primary cloud at all.
+
+[Contact us](https://www.lancedb.com/contact) to learn more about setting
+up cross-cloud GPU execution for your deployment.
 
 ## What to read next {#next}
 
 <CardGroup cols={2}>
   <Card title="Slurm Scheduling" icon="server" href="/curation/slurm-scheduling">
-    The full scheduling configuration this page reuses.
+    The scheduling mechanism this page's cross-cloud case builds on.
   </Card>
   <Card title="GPU Refresh Execution" icon="microchip" href="/enterprise/gpu-refresh-execution">
     GPU-specific placement for a refresh's Function workers.
