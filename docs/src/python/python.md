@@ -811,8 +811,8 @@ so the fetch APIs cannot read their bytes yet.
 ## Exceptions
 
 Remote HTTP responses with structured resource details raise a subclass of
-`HttpError`. Older servers that omit those details raise plain `HttpError`, so
-`except HttpError` remains a compatible catch-all:
+`HttpError`. Older servers that omit those details generally raise plain
+`HttpError`, so `except HttpError` remains a compatible catch-all:
 
 ```python
 from lancedb.remote.errors import (
@@ -832,6 +832,12 @@ except AlreadyExistsError as error:
 except HttpError as error:
     print("request failed:", error.request_id, error.status_code)
 ```
+
+Remote branch deletion sends a single request. If the server rejects it with
+HTTP 409, it raises `ConflictError` with the server's reason, including when an
+older server omits structured resource details. A structured `already_exists`
+response keeps its more specific `AlreadyExistsError` type. Both are subclasses
+of `HttpError`.
 
 SQL response failures raise `SqlError`, retaining the numeric `grpc_code` and
 `request_id`. Servers that report a recognized `x-lancedb-error-code` select a
@@ -897,6 +903,8 @@ generic HTTP/SQL exceptions with their transport status and current request ID.
 ::: lancedb.remote.errors.NamespaceNotFoundError
 
 ::: lancedb.remote.errors.AlreadyExistsError
+
+::: lancedb.remote.errors.ConflictError
 
 ::: lancedb.exceptions.MissingValueError
 

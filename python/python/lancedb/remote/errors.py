@@ -149,6 +149,8 @@ def _http_error_class(
             return input_class
     if error_code == "already_exists":
         return AlreadyExistsError
+    if status_code == 409:
+        return ConflictError
     if error_code != "not_found" or resource_kind is None:
         return None
     return {
@@ -266,6 +268,22 @@ class NamespaceNotFoundError(HttpError):
 
 class AlreadyExistsError(HttpError):
     """A remote resource already exists."""
+
+
+class ConflictError(HttpError):
+    """A remote operation conflicts with the current state of a resource.
+
+    For example, deleting a branch whose files are still needed by another
+    branch raises this error. The server's reason is included in the message.
+
+    Examples
+    --------
+    >>> error = HttpError("main depends on the branch's files", "req-1", 409)
+    >>> isinstance(error, ConflictError)
+    True
+    >>> error.status_code
+    409
+    """
 
 
 class TableNotFoundError(HttpError, ValueError, _NamespaceTableNotFoundError):
