@@ -1839,9 +1839,11 @@ class _SourcePackager:
 
     def _require_importable(self, module_name: str) -> None:
         """Warn about an import the Function's environment may not be able to
-        satisfy: a module the client cannot resolve or one that lives in a
-        local source tree, is not shipped with ``code=``, and names no
-        declared package.
+        satisfy.
+
+        An unresolved module warns only when the Function declares no package
+        dependencies. A local source module warns unless ``code=`` ships it or
+        a declared requirement matches its top-level name.
 
         A warning rather than an error: a distribution name need not match
         the module it installs, so a declared package can still provide the
@@ -1858,14 +1860,15 @@ class _SourcePackager:
             return
         locations = _module_locations_for_name(top)
         if not locations:
-            self._warned_imports.add(top)
-            warnings.warn(
-                f"@function source imports {top!r}, which is unavailable in the "
-                "client environment and has no declared pip/conda dependencies. "
-                "Remote availability cannot be verified; declare the required "
-                "package or confirm that the base image provides it.",
-                UserWarning,
-            )
+            if not self._requirements:
+                self._warned_imports.add(top)
+                warnings.warn(
+                    f"@function source imports {top!r}, which is unavailable in the "
+                    "client environment and has no declared pip/conda dependencies. "
+                    "Remote availability cannot be verified; declare the required "
+                    "package or confirm that the base image provides it.",
+                    UserWarning,
+                )
             return
         roots = _installed_roots()
         if any(location.startswith(roots) for location in locations):
@@ -2449,15 +2452,15 @@ def function(
 
     A module imported by the packaged source -- including a direct ``import``
     inside a function or method body -- draws a warning at registration when
-    the client cannot resolve its top-level module, or when it resolves to
-    local source outside ``code``, unless a declared requirement matches the
-    imported module name. The warning does not assert that the remote
-    environment lacks the module: ``pip``/``conda`` distribution names need
-    not match the modules they install, and the client cannot inspect the
-    contents of a base or custom image. Warnings follow normal Python warning
-    filters and may be promoted to errors. Declare every third-party import
-    in ``pip`` or ``conda`` even when it happens to be installed on the
-    registration host.
+    the client cannot resolve its top-level module and declares no package
+    dependencies, or when it resolves to local source outside ``code`` and
+    no declared requirement matches the imported module name. The warning
+    does not assert that the remote environment lacks the module:
+    ``pip``/``conda`` distribution names need not match the modules they
+    install, and the client cannot inspect the contents of a base or custom
+    image. Warnings follow normal Python warning filters and may be promoted
+    to errors. Declare every third-party import in ``pip`` or ``conda`` even
+    when it happens to be installed on the registration host.
     Closures, lambdas, nested definitions, mutable module-level
     objects, code that reaches the module namespace another way
     (``globals()``/``eval``, ``sys.modules``, ``builtins``), and a

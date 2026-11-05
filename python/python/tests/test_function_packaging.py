@@ -642,15 +642,16 @@ def test_resolved_or_declared_module_imports_do_not_warn(tmp_path, helper_packag
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         define("fx_imports_stdlib", "import os.path", "")
+        # Distribution names need not match the imported top-level module.
         define(
             "fx_imports_declared_pip",
             f"import {package}.plugin",
-            "pip=['fx-missing-remote-package-ent3448==1.0']",
+            "pip=['Pillow>=10']",
         )
         define(
             "fx_imports_declared_conda",
             f"import {package}.plugin",
-            "conda=['fx_missing_remote_package_ent3448']",
+            "conda=['numpy']",
         )
         define(
             "fx_imports_shipped_code",
