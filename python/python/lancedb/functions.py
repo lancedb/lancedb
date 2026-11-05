@@ -1838,9 +1838,10 @@ class _SourcePackager:
         return f"{name} = {_literal_source(value)}"
 
     def _require_importable(self, module_name: str) -> None:
-        """Warn about an import the Function's environment likely cannot
-        satisfy: a module that lives in a local source tree, is not shipped
-        with ``code=``, and names no declared package.
+        """Warn about an import the Function's environment may not be able to
+        satisfy: a module the client cannot resolve or one that lives in a
+        local source tree, is not shipped with ``code=``, and names no
+        declared package.
 
         A warning rather than an error: a distribution name need not match
         the module it installs, so a declared package can still provide the
@@ -1856,8 +1857,18 @@ class _SourcePackager:
         ):
             return
         locations = _module_locations_for_name(top)
+        if not locations:
+            self._warned_imports.add(top)
+            warnings.warn(
+                f"@function source imports {top!r}, which is unavailable in the "
+                "client environment and has no declared pip/conda dependencies. "
+                "Remote availability cannot be verified; declare the required "
+                "package or confirm that the base image provides it.",
+                UserWarning,
+            )
+            return
         roots = _installed_roots()
-        if not locations or any(location.startswith(roots) for location in locations):
+        if any(location.startswith(roots) for location in locations):
             return
         self._warned_imports.add(top)
         warnings.warn(
@@ -2438,12 +2449,14 @@ def function(
 
     A module imported by the packaged source -- including a direct ``import``
     inside a function or method body -- draws a warning at registration when
-    it resolves to local source outside ``code`` and no declared requirement
-    matches the imported module name. The client cannot reliably validate
-    imports provided only by the base image: ``pip``/``conda`` distribution
-    names need not match the modules they install, and the client does not
-    know the contents of a built or custom image. Declare every third-party
-    import in ``pip`` or ``conda`` even when it happens to be installed on the
+    the client cannot resolve its top-level module, or when it resolves to
+    local source outside ``code``, unless a declared requirement matches the
+    imported module name. The warning does not assert that the remote
+    environment lacks the module: ``pip``/``conda`` distribution names need
+    not match the modules they install, and the client cannot inspect the
+    contents of a base or custom image. Warnings follow normal Python warning
+    filters and may be promoted to errors. Declare every third-party import
+    in ``pip`` or ``conda`` even when it happens to be installed on the
     registration host.
     Closures, lambdas, nested definitions, mutable module-level
     objects, code that reaches the module namespace another way
