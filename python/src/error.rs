@@ -398,15 +398,17 @@ mod tests {
             message: "Function 'missing' was not found".into(),
             request_id: "current-request".into(),
             grpc_code: 3,
-            metadata: Box::new(RemoteErrorMetadata {
-                error_code: Some("not_found".into()),
-                job_id: Some("outer-job".into()),
-                job_request_id: Some("worker-request".into()),
-                resource: Some(RemoteResourceIdentity::new(
+            metadata: Box::new({
+                let mut metadata = RemoteErrorMetadata::default();
+                metadata.error_code = Some("not_found".into());
+                metadata.job_id = Some("outer-job".into());
+                metadata.job_request_id = Some("worker-request".into());
+                metadata.resource = Some(RemoteResourceIdentity::new(
                     "function",
                     "missing",
                     vec!["ns".into()],
-                )),
+                ));
+                metadata
             }),
         };
         let error = LanceError::JobFailed {
