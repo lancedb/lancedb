@@ -37,7 +37,7 @@ retention period comes from its configuration instead.
 
 The latest version is never removed, whatever you pass. `timedelta(0)` makes
 every older version eligible for removal, but cleanup still keeps tagged
-versions and the files branches still read, as the warning below describes.
+versions{/* Draft until branching reaches early access: restore " and the files branches still read" */}, as the warning below describes.
 
 <Warning>
 Pruning is what makes [time travel](/management/table#versioning) finite: an
@@ -47,12 +47,18 @@ whatever its age, when it is:
 - the **latest** version;
 - a **tagged** version.
 
+{/*
+Draft until branching reaches early access.
+
 Cleanup also keeps the files a **branch** still reads, and the version the
 branch was forked from while the branch's remaining versions read the parent's
 files. That does not keep the fork for good: once the branch has replaced the
 data it inherited and its own older versions are pruned, cleanup prunes the
-fork version like any other. To keep a version recoverable, tag it, subject to
-the policy below, or keep the window wide enough to cover it.
+fork version like any other.
+*/}
+
+To keep a version recoverable, tag it, subject to the policy below, or keep
+the window wide enough to cover it.
 
 Under the default policy, a tag can also stop cleanup. When a tagged version is
 older than the window and is not the latest, cleanup refuses to run: it raises
@@ -75,7 +81,7 @@ need before running this, not after.
 
 [Managed blobs](/management/table#managed-blobs) store out-of-line payloads
 under the table's `_blobs/` directory. Cleanup follows the references from
-retained snapshots, including protected tags and branches, before selecting
+retained snapshots, including protected tags{/* Draft until branching reaches early access: restore " and branches" */}, before selecting
 objects for deletion. Replacing a blob or deleting a row makes its old payload
 eligible only after no retained snapshot references it.
 

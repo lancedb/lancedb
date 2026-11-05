@@ -143,8 +143,8 @@ import {
 
 A table stores data in rows and columns and keeps a history of committed
 versions. Queries read table data, writes update it, and indexes accelerate
-searches over its columns. Branches let you make changes separately from the
-main table history.
+searches over its columns.{/* Draft until branching reaches early access: restore "Branches let you make changes separately from the
+main table history." */}
 
 This page covers table management, data types, schema changes and version
 history. For loading records, see [Ingestion](/ingestion). For changes to
@@ -330,7 +330,7 @@ as it is to the format.
 | String and binary | `utf8`, `large_utf8`, `binary`, `large_binary`, `fixed_size_binary(n)` |
 | Date and time | `date32`, `date64`, `time32`, `time64`, `timestamp`, `duration` |
 | Nested | `struct`, `list`, `large_list`, `fixed_size_list`, `map` |
-| Lance extensions | vectors, JSON{/* Draft until JSON columns reach early access: link as [JSON](/sql/data-types#json) */}, [blobs](#multimodal), bfloat16 |
+| Lance extensions | vectors, [blobs](#multimodal), bfloat16{/* Draft until JSON columns reach early access: restore "[JSON](/sql/data-types#json), " after "vectors, " */} |
 
 A vector column is a `fixed_size_list<float32, dim>`, an ordinary Arrow type,
 which is why it is selectable and joinable but why arithmetic over it is list
