@@ -51,9 +51,10 @@ The SQL form is [`REFRESH COLUMN`](/sql/dml/refresh-column), with the same resou
 
 ## What a refresh recomputes {#idempotent}
 
-A refresh fills rows that have no value and recomputes rows whose inputs
-changed since they were computed. Every other row is left alone, so a second
-refresh with nothing changed does nothing. This supports two common workflows.
+Without a `WHERE` predicate, a refresh fills unassigned rows and recomputes
+values whose inputs changed since they were computed. Every other row is left
+alone, so a second refresh with nothing changed does nothing. This supports
+two common workflows.
 
 **Appending is cheap.** Rows added since the last refresh are filled by the
 next one; filled rows whose inputs are unchanged are skipped. Backfilling a
@@ -85,6 +86,21 @@ committing to the whole table:
 REFRESH COLUMN embedding ON documents WHERE created_at > '2026-01-01'
 ```
 </CodeGroup>
+
+A filtered refresh recomputes **every matching live row**, including rows
+whose outputs are already current. Repeating the same predicate repeats those
+Function calls and their cost. To select only null outputs within a slice:
+
+<CodeGroup>
+```sql SQL icon="database"
+REFRESH COLUMN embedding ON documents
+  WHERE created_at > '2026-01-01' AND embedding IS NULL
+```
+</CodeGroup>
+
+This skips non-null outputs even when their inputs changed, and can recompute
+outputs that were successfully computed as `NULL`. Use an unfiltered refresh
+to let LanceDB track which outputs need updating.
 
 <Note>
 **Enterprise job type:** `computed_refresh` for a SQL-expression column,
@@ -130,10 +146,18 @@ REFRESH COLUMN embedding ON documents
 ```
 </CodeGroup>
 
-`num_workers` sets the count instead of a per-worker budget; the two are
-alternatives rather than a pair. `batch_size` controls how many rows a worker
-takes at a time, and `error_policy = 'skip'` continues past rows that fail
-rather than failing the job.
+The resource values cap the Function workers together: this example allows
+up to 8 CPUs, 16 GiB of memory, and 2 GPUs across the fleet. They are not
+per-worker allocations or a guaranteed worker count. `num_workers` is only
+accepted for SQL-expression columns; registered Function columns reject it.
+When setting CPU or memory, supply all three budget fields, using
+`gpu_count = 0` for a CPU-only Function.
+
+`batch_size` caps rows in one Function call; LanceDB adapts actual call and
+work sizes. For Function columns, the refresh defaults to
+`error_policy = 'fail'`. Set `error_policy = 'skip'` to write null outputs for
+failing rows and record them in the error store, subject to failure limits.
+See the [SQL refresh options](/sql/dml/refresh#refresh-column-options).
 
 For a column filled by a registered Function, the Python and Rust job APIs can
 override the Function's GPU placement for this refresh:
