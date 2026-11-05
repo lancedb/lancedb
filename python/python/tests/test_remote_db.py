@@ -45,6 +45,7 @@ from lancedb.query import (
 from lancedb.remote import ClientConfig
 from lancedb.remote.errors import (
     AlreadyExistsError,
+    ConflictError,
     HttpError,
     NamespaceNotFoundError,
     RetryError,
@@ -731,6 +732,43 @@ def test_remote_table_branches_sync():
         assert checked.current_branch() == "exp"
 
         table.branches.delete("exp")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
+@pytest.mark.parametrize("json_response", [False, True])
+async def test_remote_branch_delete_conflict_is_not_retried(use_async, json_response):
+    request_ids = []
+    reason = "Conflict: branch 'exp' cannot be deleted, main depends on its files"
+
+    def handler(request):
+        if request.path == "/v1/table/test/describe/":
+            _branch_open_handler(request)
+            return
+
+        assert request.path == "/v1/table/test/branches/delete/"
+        content_len = int(request.headers["Content-Length"])
+        assert json.loads(request.rfile.read(content_len)) == {"name": "exp"}
+        request_ids.append(request.headers["x-request-id"])
+        request.send_response(409)
+        request.end_headers()
+        body = json.dumps({"code": 14, "error": reason}) if json_response else reason
+        request.wfile.write(body.encode())
+
+    if use_async:
+        async with mock_lancedb_connection_async(handler) as db:
+            table = await db.open_table("test")
+            with pytest.raises(ConflictError, match=re.escape(reason)) as exc_info:
+                await table.branches.delete("exp")
+    else:
+        with mock_lancedb_connection(handler) as db:
+            table = db.open_table("test")
+            with pytest.raises(ConflictError, match=re.escape(reason)) as exc_info:
+                table.branches.delete("exp")
+
+    assert request_ids == [exc_info.value.request_id]
+    assert exc_info.value.status_code == 409
+    assert isinstance(exc_info.value, HttpError)
 
 
 def test_remote_table_cherry_pick_defaults_to_execute():

@@ -10,6 +10,7 @@ from lance_namespace.errors import TableNotFoundError as NamespaceTableNotFoundE
 from lancedb.db import DBConnection
 from lancedb.remote.errors import (
     AlreadyExistsError,
+    ConflictError,
     FunctionNotFoundError,
     HttpError,
     LanceDBClientError,
@@ -70,6 +71,20 @@ def test_pickle_http_transport_error():
     assert isinstance(restored, HttpError)
     assert restored.is_transport_error is True
     assert restored.request_id == "req-789"
+
+
+@pytest.mark.parametrize("error_code", [None, "conflict", "future_conflict_code"])
+def test_http_conflict_error_preserves_reason_and_metadata(error_code):
+    reason = "Conflict: branch 'exp' cannot be deleted, main depends on its files"
+    original = HttpError(reason, "req-conflict", 409, error_code)
+    for error in [original, pickle.loads(pickle.dumps(original))]:
+        assert type(error) is ConflictError
+        assert isinstance(error, HttpError)
+        assert str(error) == reason
+        assert error.request_id == "req-conflict"
+        assert error.status_code == 409
+        assert error.error_code == error_code
+        assert error.is_transport_error is False
 
 
 @pytest.mark.parametrize(
@@ -251,6 +266,9 @@ def test_sql_errors_use_only_server_codes(code, category, type_name):
         (400, "schema_mismatch", "SchemaMismatchError"),
         (404, "table_not_found", "TableNotFoundError"),
         (404, "reference_not_found", "ReferenceNotFoundError"),
+        (409, None, "ConflictError"),
+        (409, "conflict", "ConflictError"),
+        (500, "conflict", "HttpError"),
         (500, "column_not_found", "HttpError"),
         (503, "table_not_found", "HttpError"),
     ],

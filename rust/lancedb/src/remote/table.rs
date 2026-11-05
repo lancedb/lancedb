@@ -2796,7 +2796,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .client
             .post(&format!("/v1/table/{}/branches/delete/", self.identifier))
             .json(&serde_json::json!({ "name": name }));
-        let (request_id, response) = self.send(request, true).await?;
+        // Deletion is not idempotent: preserve conflicts and partial failures
+        // instead of replaying a request that may already have removed the ref.
+        let (request_id, response) = self.send(request, false).await?;
         if response.status() == StatusCode::NOT_FOUND {
             return Err(Error::TableNotFound {
                 name: format!("{} (branch: {})", self.name, name),
@@ -16005,6 +16007,73 @@ mod tests {
         });
         let err = table.delete_branch("ghost").await.unwrap_err();
         assert!(matches!(err, Error::TableNotFound { .. }), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn test_delete_branch_conflict_is_not_retried() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let captured = requests.clone();
+        let reason = "Conflict: branch 'exp' cannot be deleted, main depends on its files";
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/branches/delete/");
+            captured.fetch_add(1, Ordering::SeqCst);
+            http::Response::builder()
+                .status(409)
+                .body(json!({ "code": 14, "error": reason }).to_string())
+                .unwrap()
+        });
+
+        let err = table.delete_branch("exp").await.unwrap_err();
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        assert!(err.to_string().contains(reason), "got {err:?}");
+        assert!(
+            matches!(
+                err,
+                Error::Http {
+                    status_code: Some(StatusCode::CONFLICT),
+                    ..
+                }
+            ),
+            "expected the original conflict, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delete_branch_partial_failure_is_not_retried() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let captured = requests.clone();
+        let table = Table::new_with_handler("my_table", move |_| {
+            // The ref was removed before the first response failed. Replaying
+            // the deletion would hide that failure behind a missing-branch error.
+            if captured.fetch_add(1, Ordering::SeqCst) == 0 {
+                http::Response::builder()
+                    .status(500)
+                    .body("failed after removing branch ref")
+                    .unwrap()
+            } else {
+                http::Response::builder()
+                    .status(404)
+                    .body("no such branch")
+                    .unwrap()
+            }
+        });
+
+        let err = table.delete_branch("exp").await.unwrap_err();
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        assert!(
+            err.to_string().contains("failed after removing branch ref"),
+            "got {err:?}"
+        );
+        assert!(
+            matches!(
+                err,
+                Error::Http {
+                    status_code: Some(StatusCode::INTERNAL_SERVER_ERROR),
+                    ..
+                }
+            ),
+            "expected the original server error, got {err:?}"
+        );
     }
 
     fn sample_branch_diff_json() -> &'static str {
