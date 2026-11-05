@@ -25,6 +25,7 @@ import pytest
 
 import lancedb
 from lancedb import BlobReader
+from lancedb.db import AsyncConnection
 from lancedb.functions import (
     HuggingFaceModel,
     PythonRuntimeSpec,
@@ -1863,6 +1864,58 @@ def test_local_function_catalog_operations_are_not_supported(tmp_path):
         list(db.list_functions())
     with pytest.raises(NotImplementedError, match=message):
         db.drop_function("normalize_score", version=FUNCTION_VERSION)
+
+
+class _RawFunctionCatalog:
+    def __init__(self, definition):
+        self.definition = json.dumps(definition)
+
+    async def get_function(self, _name, _version, _namespace_path):
+        return self.definition
+
+    def __getattr__(self, name):
+        if name.startswith("list_"):
+            return lambda **_kwargs: self
+        raise AttributeError(name)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self.definition is None:
+            raise StopAsyncIteration
+        definition, self.definition = self.definition, None
+        return definition
+
+    def num_page_results(self):
+        return int(self.definition is not None)
+
+    def page_token(self):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_async_catalog_path_preserves_execution_controls():
+    definition = json.loads(
+        (FIXTURES / "remote_function_version.canonical.json").read_text()
+    )
+    definition.update(
+        batch_size=12,
+        row_timeout_seconds=8.0,
+        result_stability="input_and_context",
+    )
+    connection = AsyncConnection(_RawFunctionCatalog(definition))
+    list_catalog = next(
+        name
+        for name in dir(connection)
+        if name.startswith("list_")
+        and "Function version" in (getattr(AsyncConnection, name).__doc__ or "")
+    )
+
+    exact = await connection.get_function("embed", version="1")
+    listed = [item async for item in getattr(connection, list_catalog)(page_limit=32)]
+    for version in [exact, *listed]:
+        assert json.loads(version.to_canonical_json()) == definition
 
 
 @contextlib.contextmanager

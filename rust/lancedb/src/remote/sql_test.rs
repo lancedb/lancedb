@@ -2775,6 +2775,9 @@ async fn function_creation_and_description_use_sql_query_handles() {
             "secret_ref": {"name": "hf-prod"},
         }]);
         let mut version_json: serde_json::Value = serde_json::from_str(VERSION).unwrap();
+        version_json["batch_size"] = serde_json::json!(12);
+        version_json["row_timeout_seconds"] = serde_json::json!(8.0);
+        version_json["result_stability"] = serde_json::json!("input_and_context");
         if with_models {
             let models = serde_json::json!([{
                 "repo": "sentence-transformers/all-MiniLM-L6-v2",
@@ -2831,6 +2834,9 @@ async fn function_creation_and_description_use_sql_query_handles() {
         let created_json: serde_json::Value =
             serde_json::from_str(&created.to_canonical_json().unwrap()).unwrap();
         assert_eq!(created_json["image"].get("models"), expected_models);
+        assert_eq!(created_json["batch_size"], 12);
+        assert_eq!(created_json["row_timeout_seconds"], 8.0);
+        assert_eq!(created_json["result_stability"], "input_and_context");
         assert_eq!(
             client.describe(id).await.unwrap().status,
             QueryStatus::Finished
@@ -2843,6 +2849,9 @@ async fn function_creation_and_description_use_sql_query_handles() {
         let described_json: serde_json::Value =
             serde_json::from_str(&described.to_canonical_json().unwrap()).unwrap();
         assert_eq!(described_json["image"].get("models"), expected_models);
+        assert_eq!(described_json["batch_size"], 12);
+        assert_eq!(described_json["row_timeout_seconds"], 8.0);
+        assert_eq!(described_json["result_stability"], "input_and_context");
         let listed = db
             .list_functions(&["team".into()], Default::default())
             .await
@@ -2851,6 +2860,9 @@ async fn function_creation_and_description_use_sql_query_handles() {
         let listed_json: serde_json::Value =
             serde_json::from_str(&listed.items[0].to_canonical_json().unwrap()).unwrap();
         assert_eq!(listed_json["image"].get("models"), expected_models);
+        assert_eq!(listed_json["batch_size"], 12);
+        assert_eq!(listed_json["row_timeout_seconds"], 8.0);
+        assert_eq!(listed_json["result_stability"], "input_and_context");
         let seen = statements.lock().unwrap();
         assert_eq!(seen[1], "DESCRIBE FUNCTION \"embed\" WITH (version = '1')");
         shutdown.send(()).unwrap();
