@@ -30,8 +30,8 @@ run_check() {
 }
 
 run_check cargo-format cargo fmt --all -- --check
-run_check python-format "$venv/bin/ruff" format --check python/python/lancedb/_lancedb.pyi
-run_check python-lint "$venv/bin/ruff" check python/python/lancedb/_lancedb.pyi
+run_check python-format uvx --from ruff==0.17.3 ruff format --check python/python/lancedb/_lancedb.pyi
+run_check python-lint uvx --from ruff==0.17.3 ruff check python/python/lancedb/_lancedb.pyi
 cd nodejs
 run_check node-build pnpm build
 run_check node-docs pnpm run docs
