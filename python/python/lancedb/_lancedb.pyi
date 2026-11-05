@@ -465,6 +465,8 @@ class JobFailureInfo:
     @property
     def message(self) -> Optional[str]: ...
     @property
+    def traceback(self) -> Optional[str]: ...
+    @property
     def retryable(self) -> Optional[bool]: ...
     @property
     def sql_job_id(self) -> Optional[str]: ...
@@ -1014,6 +1016,7 @@ class FunctionErrorRecord:
     table_version: int
     error_type: str
     error_message: str
+    traceback: Optional[str]
     created_at_millis: int
 
 class FunctionErrorFragment:

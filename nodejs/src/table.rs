@@ -1530,6 +1530,7 @@ pub struct FunctionErrorRecord {
     pub table_version: i64,
     pub error_type: String,
     pub error_message: String,
+    pub traceback: Option<String>,
     pub created_at_millis: i64,
 }
 
@@ -1545,6 +1546,7 @@ impl From<lancedb::function::FunctionErrorRecord> for FunctionErrorRecord {
             table_version: record.table_version as i64,
             error_type: record.error_type,
             error_message: record.error_message,
+            traceback: record.traceback,
             created_at_millis: record.created_at_millis,
         }
     }

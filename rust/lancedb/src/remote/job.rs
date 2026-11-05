@@ -74,6 +74,8 @@ pub(super) struct ReportedFailure {
     #[serde(default)]
     message: Option<String>,
     #[serde(default)]
+    traceback: Option<String>,
+    #[serde(default)]
     retryable: Option<bool>,
     #[serde(default)]
     sql_job_id: Option<String>,
@@ -134,6 +136,7 @@ impl ReportedFailure {
         JobFailure {
             phase: self.phase,
             message: self.message,
+            traceback: self.traceback,
             retryable: self.retryable,
             sql_job_id: self.sql_job_id,
             source: None,

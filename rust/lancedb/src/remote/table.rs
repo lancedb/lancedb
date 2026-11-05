@@ -8592,6 +8592,7 @@ mod tests {
         // The server said only that it failed, so nothing may be invented.
         assert!(failure.message.is_none(), "{failure:?}");
         assert!(failure.phase.is_none(), "{failure:?}");
+        assert!(failure.traceback.is_none(), "{failure:?}");
         assert!(failure.retryable.is_none(), "{failure:?}");
         assert_eq!(err.to_string(), "Job job-err failed");
     }
@@ -8616,7 +8617,7 @@ mod tests {
                 "/v1/jobs/describe" => http::Response::builder()
                     .status(200)
                     .body(
-                        r#"{"job_id": "job-err", "job_state": "FAILED", "failure": {"phase": "commit", "message": "preempted", "retryable": true}}"#
+                        r#"{"job_id": "job-err", "job_state": "FAILED", "failure": {"phase": "commit", "message": "preempted", "traceback": "Traceback (most recent call last):\nValueError: preempted", "retryable": true}}"#
                             .to_string(),
                     )
                     .unwrap(),
@@ -8634,6 +8635,10 @@ mod tests {
             panic!("expected JobFailed, got {err:?}");
         };
         assert_eq!(failure.message.as_deref(), Some("preempted"));
+        assert_eq!(
+            failure.traceback.as_deref(),
+            Some("Traceback (most recent call last):\nValueError: preempted")
+        );
         assert_eq!(failure.phase.as_deref(), Some("commit"));
         assert_eq!(failure.retryable, Some(true));
         assert_eq!(err.to_string(), "Job job-err failed: preempted (in commit)");
@@ -11029,7 +11034,8 @@ mod tests {
                         "row_id": 42, "row_address": 12884901897,
                         "column": "embedding", "function": "embed", "function_version": "2",
                         "table_version": 11, "error_type": "ValueError",
-                        "error_message": "bad input 'x'", "created_at_millis": 1700000000000}],
+                        "error_message": "bad input 'x'", "traceback": "Traceback (most recent call last):\nValueError: bad input 'x'",
+                        "created_at_millis": 1700000000000}],
                         "fragments": [{"job_id": "j-7", "fragment_id": 4, "rows_skipped": 500,
                         "rows_recorded": 100}],
                         "truncated": true}"#,
@@ -11060,6 +11066,9 @@ mod tests {
                 table_version: 11,
                 error_type: "ValueError".into(),
                 error_message: "bad input 'x'".into(),
+                traceback: Some(
+                    "Traceback (most recent call last):\nValueError: bad input 'x'".into()
+                ),
                 created_at_millis: 1_700_000_000_000,
             }]
         );
@@ -11091,6 +11100,7 @@ mod tests {
         .unwrap();
         assert!(legacy.row_id.is_none());
         assert!(legacy.row_address.is_none());
+        assert!(legacy.traceback.is_none());
 
         // No filter sends no filter, and an empty listing reads as such.
         let table = Table::new_with_handler("my_table", |request| {

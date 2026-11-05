@@ -141,6 +141,7 @@ impl Job {
         self.inner.failure().map(|failure| JobFailureInfo {
             phase: failure.phase,
             message: failure.message,
+            traceback: failure.traceback,
             retryable: failure.retryable,
         })
     }
@@ -218,5 +219,6 @@ impl From<lancedb::database::JobInfo> for JobInfo {
 pub struct JobFailureInfo {
     pub phase: Option<String>,
     pub message: Option<String>,
+    pub traceback: Option<String>,
     pub retryable: Option<bool>,
 }

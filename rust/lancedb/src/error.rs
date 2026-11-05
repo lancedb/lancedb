@@ -159,6 +159,8 @@ pub struct JobFailure {
     pub phase: Option<String>,
     /// A human-readable reason, when known.
     pub message: Option<String>,
+    /// Full user-code traceback, when the server reported one.
+    pub traceback: Option<String>,
     /// Whether a retry could clear the failure, when known.
     pub retryable: Option<bool>,
     /// Isolated SQL job that raised this failure, when the server supplies
