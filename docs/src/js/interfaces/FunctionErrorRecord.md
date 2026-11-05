@@ -90,3 +90,11 @@ detail was capped.
 ```ts
 tableVersion: number;
 ```
+
+***
+
+### traceback?
+
+```ts
+optional traceback: string;
+```

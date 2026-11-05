@@ -31,3 +31,11 @@ optional phase: string;
 ```ts
 optional retryable: boolean;
 ```
+
+***
+
+### traceback?
+
+```ts
+optional traceback: string;
+```
