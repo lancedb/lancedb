@@ -38,8 +38,7 @@ venv="$run_dir/venv"
 uv venv --python 3.12 "$venv"
 # shellcheck source=/dev/null
 source "$venv/bin/activate"
-uv pip install maturin
-uv pip install -e ".[tests]"
+UV_PROJECT_ENVIRONMENT="$venv" uv sync --frozen --extra tests
 pytest -q python/tests/test_remote_db.py \
     -k 'remote_function_errors_lists_the_rows_a_refresh_skipped or remote_connection_jobs_surface'
 
