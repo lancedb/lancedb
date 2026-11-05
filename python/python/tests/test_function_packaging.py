@@ -575,8 +575,11 @@ def test_local_module_imported_in_function_body_warns_at_registration(
     assert "import fx_body_local" in artifact(installed).decode()
 
 
-def test_missing_module_without_declared_package_warns_at_registration(tmp_path):
+def test_missing_module_without_declared_package_warns_at_registration(
+    tmp_path, monkeypatch
+):
     package = "fx_missing_remote_package_ent3448"
+    monkeypatch.syspath_prepend(str(tmp_path))
 
     def define(name):
         (tmp_path / f"{name}.py").write_text(
