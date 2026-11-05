@@ -121,11 +121,11 @@
     },
     {
       "source": "/curation/sunk-integration",
-      "destination": "/curation/slurm-scheduling"
+      "destination": "/deployment/slurm"
     },
     {
       "source": "/curation/slurm-integration",
-      "destination": "/curation/slurm-scheduling"
+      "destination": "/deployment/slurm"
     },
     {
       "source": "/curation/sampling",
@@ -362,6 +362,14 @@
     {
       "source": "/enterprise/distributed-column-refresh",
       "destination": "/enterprise/adaptive-execution"
+    },
+    {
+      "source": "/curation/slurm-scheduling",
+      "destination": "/deployment/slurm"
+    },
+    {
+      "source": "/enterprise/slurm-refresh-scheduling",
+      "destination": "/deployment/slurm"
     }
   ],
   "navigation": {
@@ -452,8 +460,7 @@
               "curation/clustering",
               "curation/dedupe",
               "feature-engineering/view",
-              "curation/vend-secret",
-              "curation/slurm-scheduling"
+              "curation/vend-secret"
             ]
           },
           {
@@ -467,8 +474,7 @@
               "enterprise/incremental-refresh",
               "enterprise/auto-refresh",
               "enterprise/checkpointing",
-              "enterprise/adaptive-execution",
-              "enterprise/slurm-refresh-scheduling"
+              "enterprise/adaptive-execution"
             ]
           },
           {
@@ -532,7 +538,9 @@
             "pages": [
               "enterprise/horizontal-scaling",
               "deployment/opentelemetry",
-              "enterprise/deployment/kubernetes"
+              "enterprise/deployment/kubernetes",
+              "deployment/multicloud",
+              "deployment/slurm"
             ]
           },
           {

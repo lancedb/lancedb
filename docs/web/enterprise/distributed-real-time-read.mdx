@@ -14,7 +14,7 @@ fresh rows superseding base rows with the same primary key. On a single
 Embedded process that merge is one function call against one Lance
 dataset. In LanceDB Enterprise, the base table and the fresh tier are
 usually served by different machines -- plan executors for the base table,
-a [WAL node](/tables/realtime-engine#wal-nodes) for the table's shards --
+an [RTE node](/tables/realtime-engine#wal-nodes) for the table's shards --
 so a query has to combine their results across the network instead.
 
 <div className="hidden dark:block">
@@ -34,7 +34,7 @@ flowchart LR
     B1["Base-table arm<br/>index-covered scan or ANN search"]
     end
 
-    subgraph WN["WAL node (owns this table's shards)"]
+    subgraph WN["RTE node (owns this table's shards)"]
     direction TB
     W1["SSTable arm<br/>index-covered"]
     W2["Active memtable arm<br/>vector: in-memory HNSW*<br/>FTS/scalar: indexed"]
@@ -73,7 +73,7 @@ flowchart LR
     B1["Base-table arm<br/>index-covered scan or ANN search"]
     end
 
-    subgraph WN["WAL node (owns this table's shards)"]
+    subgraph WN["RTE node (owns this table's shards)"]
     direction TB
     W1["SSTable arm<br/>index-covered"]
     W2["Active memtable arm<br/>vector: in-memory HNSW*<br/>FTS/scalar: indexed"]
@@ -99,24 +99,76 @@ flowchart LR
 
 The distributed plan for an RTE-enabled table is an ordinary plan executor
 query plan with one additional node spliced in: a union exec that queries
-the owning WAL node's shard and merges its rows into the base arm's stream
+the owning RTE node's shard and merges its rows into the base arm's stream
 by primary key, keeping the newest generation on a collision and cutting
 back to the requested top-K once both sides have contributed. An optimizer
-pass inserts this node only when the query actually touches a WAL-enabled
+pass inserts this node only when the query actually touches an RTE-enabled
 table; a query that touches none produces a plan identical to one with no
 RTE tables involved at all, so RTE adds no overhead to queries that never
 use it.
 
 Because the base arm already read through the plan-executor fleet's ordinary
 caches and index structures, the only new network hop this adds is the one
-to the WAL node that owns the table's shards -- the same WAL node [Real Time
+to the RTE node that owns the table's shards -- the same RTE node [Real Time
 writes](/ingestion/realtime-write) land on, found by the query node through
 the same consistent hash of database and table name.
 
-## Semantic search stays index-covered {#index-coverage}
+## Search stays index-covered {#index-coverage}
+
+Every tier the union exec reads from -- the base table, the RTE node's
+SSTables, and its currently-active memtable -- is covered by a maintained
+index, for vector, full-text, and scalar search alike:
+
+| Layer | Vector search | Full-text / scalar search |
+| --- | --- | --- |
+| Base table | ANN index | Maintained index |
+| SSTables | ANN index | Maintained index |
+| Active memtable | In-memory HNSW graph\* | Maintained index |
+
+<div className="hidden dark:block">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
+  "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
+  "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "18px"
+}}}%%
+flowchart LR
+    B["Base table"] --> I1["Vector, full-text, and<br/>scalar index coverage"]
+    S["SSTables"] --> I1
+    M["Active memtable"] --> I2["Full-text and scalar index<br/>coverage; vector via<br/>in-memory HNSW*"]
+    I1 --> R["No unindexed data<br/>left to scan in full"]
+    I2 --> R
+    classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
+    classDef accent fill:#2a1810,stroke:#e8582d,stroke-width:1.5px,color:#f4ebe8
+    class R accent
+```
+
+</div>
+
+<div className="block dark:hidden">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
+  "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
+  "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "18px"
+}}}%%
+flowchart LR
+    B["Base table"] --> I1["Vector, full-text, and<br/>scalar index coverage"]
+    S["SSTables"] --> I1
+    M["Active memtable"] --> I2["Full-text and scalar index<br/>coverage; vector via<br/>in-memory HNSW*"]
+    I1 --> R["No unindexed data<br/>left to scan in full"]
+    I2 --> R
+    classDef default fill:#ffffff,stroke:#ad9e95,stroke-width:1px,color:#221d19
+    classDef accent fill:#fff1ec,stroke:#e8582d,stroke-width:1.5px,color:#221d19
+    class R accent
+```
+
+</div>
 
 For full-text and scalar search, a maintained index covers every tier the
-union exec reads from -- the base table, the WAL node's SSTables, and its
+union exec reads from -- the base table, the RTE node's SSTables, and its
 currently-active memtable -- so a row written a moment ago is just as
 index-searchable as one written yesterday. If a resident memtable predates
 an index being added to the maintained set, the query is rejected outright
@@ -151,7 +203,7 @@ table alone.
     What a query returns, and how Embedded does this same merge in-process.
   </Card>
   <Card title="Distributed Real Time Write" icon="bolt" href="/enterprise/distributed-real-time-write">
-    How writes reach the WAL node this page's queries read from.
+    How writes reach the RTE node this page's queries read from.
   </Card>
   <Card title="Distributed search" icon="network-wired" href="/enterprise/distributed-search">
     The ordinary plan-executor path this layers on top of.
