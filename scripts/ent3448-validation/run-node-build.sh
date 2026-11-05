@@ -35,3 +35,5 @@ cd nodejs
 run_check install pnpm install --frozen-lockfile
 run_check build pnpm build
 sha256sum dist/*.node > "$evidence_dir/native.sha256"
+run_check docs pnpm run docs
+git diff --stat > "$evidence_dir/generated-docs.stat"
