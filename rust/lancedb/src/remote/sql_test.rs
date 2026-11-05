@@ -3,7 +3,7 @@
 
 use std::sync::atomic::AtomicUsize;
 
-use arrow_array::builder::StringDictionaryBuilder;
+use arrow_array::builder::{ListBuilder, StringBuilder, StringDictionaryBuilder};
 use arrow_array::types::{Float32Type, Int32Type};
 use arrow_array::{Array, ArrayRef, FixedSizeListArray, Float32Array, Int64Array, StringArray};
 use arrow_flight::encode::FlightDataEncoderBuilder;
@@ -2942,6 +2942,45 @@ async fn function_drop_keeps_the_query_id_and_reports_catalog_removal() {
         );
         shutdown.send(()).unwrap();
     }
+}
+
+#[tokio::test]
+async fn function_drop_decodes_server_warnings_for_the_binding_bridge() {
+    let mut warning_values = ListBuilder::new(StringBuilder::new());
+    warning_values
+        .values()
+        .append_value("materialized view \"pinned\" references Function \"embed\" version \"1\"");
+    warning_values.append(true);
+    let result = RecordBatch::try_from_iter(vec![
+        (
+            "status",
+            Arc::new(StringArray::from(vec!["dropped"])) as ArrayRef,
+        ),
+        ("warnings", Arc::new(warning_values.finish()) as ArrayRef),
+    ])
+    .unwrap();
+    let service = TestSqlService {
+        adaptive: true,
+        defer: true,
+        result,
+        ..Default::default()
+    };
+    let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
+        panic!("unexpected REST request");
+    })
+    .with_sql_client(client);
+
+    let (dropped, warnings) = db
+        .drop_function_with_warnings("embed", "1", &[])
+        .await
+        .unwrap();
+    assert!(dropped);
+    assert_eq!(
+        warnings,
+        ["materialized view \"pinned\" references Function \"embed\" version \"1\""]
+    );
+    shutdown.send(()).unwrap();
 }
 
 #[tokio::test]

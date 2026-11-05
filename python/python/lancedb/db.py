@@ -1085,7 +1085,9 @@ class DBConnection(EnforceOverrides):
         Returns True when the revision was removed and False for a repeated drop
         or a missing name. A revision never published under an existing name is
         an error. Dropping the last visible revision releases the name and
-        schedules physical cleanup in the background. Use
+        schedules physical cleanup in the background. When the remote server
+        reports dependent warnings, they are emitted as ``UserWarning`` before
+        this method returns. Use
         :meth:`drop_function_async` to
         access the query job, whose completion confirms catalog removal of the
         revision. Local connections raise NotImplementedError.
@@ -3650,6 +3652,16 @@ class AsyncConnection(object):
         releases the name and schedules background object cleanup.
         """
         return await self._inner.drop_function(name, version, namespace_path)
+
+    async def _drop_function_with_warnings(
+        self,
+        name: str,
+        version: str,
+        namespace_path: Optional[List[str]] = None,
+    ) -> Tuple[bool, List[str]]:
+        return await self._inner._drop_function_with_warnings(
+            name, version, namespace_path
+        )
 
     async def drop_function_async(
         self,
