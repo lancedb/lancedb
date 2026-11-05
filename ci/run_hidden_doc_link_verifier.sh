@@ -59,6 +59,7 @@ run() {
         return 65
     fi
 
+    cd "$repo"
     {
         printf 'label=%s\n' "$label"
         printf 'requested_commit=%s\n' "$commit"
