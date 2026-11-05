@@ -28,10 +28,10 @@ mkdir -p "$task_tmp"
 export TMPDIR=$task_tmp
 export CARGO_BUILD_JOBS=4
 
-mbx test --quiet -p lancedb function_error_traceback --lib
-mbx test --quiet -p lancedb job_failure_legacy --lib
-mbx test --quiet -p lancedb job_failure_traceback --lib
-mbx check --quiet -p lancedb-python -p lancedb-nodejs
+mbx test --quiet -p lancedb test_job_wait_surfaces_failure --lib
+mbx test --quiet -p lancedb test_job_wait_reports_the_server_failure_reason --lib
+mbx test --quiet -p lancedb test_function_errors_lists_the_rows_a_refresh_skipped --lib
+mbx check --quiet -p lancedb-nodejs
 
 cd python
 venv="$run_dir/venv"
