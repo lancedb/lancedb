@@ -541,6 +541,31 @@ fn deserialize_object_version<'de, D: Deserializer<'de>>(
     }
 }
 
+/// A positive, finite per-call deadline reported by the catalog.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(transparent)]
+struct RowTimeoutSeconds(f64);
+
+impl Eq for RowTimeoutSeconds {}
+
+impl RowTimeoutSeconds {
+    fn get(self) -> f64 {
+        self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for RowTimeoutSeconds {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let seconds = f64::deserialize(deserializer)?;
+        if !seconds.is_finite() || seconds <= 0.0 {
+            return Err(de::Error::custom(
+                "row_timeout_seconds must be positive and finite",
+            ));
+        }
+        Ok(Self(seconds))
+    }
+}
+
 /// One immutable Function object revision and its executable artifact.
 ///
 /// The Function is named by its parts, `name` and `namespace_path`, the way a
@@ -570,6 +595,19 @@ pub struct FunctionVersion {
     /// Operator-defined GPU class declared at registration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     gpu_class: Option<String>,
+    /// Default maximum rows in one callable batch.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_batch_size"
+    )]
+    batch_size: Option<u32>,
+    /// Per-call deadline in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    row_timeout_seconds: Option<RowTimeoutSeconds>,
+    /// Result-stability value declared at registration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    result_stability: Option<String>,
 }
 
 impl FunctionVersion {
@@ -627,6 +665,21 @@ impl FunctionVersion {
     /// Operator-defined GPU class declared at registration.
     pub fn gpu_class(&self) -> Option<&str> {
         self.gpu_class.as_deref()
+    }
+
+    /// Default maximum rows in one callable batch, when declared.
+    pub fn batch_size(&self) -> Option<u32> {
+        self.batch_size
+    }
+
+    /// Per-call deadline in seconds, when declared.
+    pub fn row_timeout_seconds(&self) -> Option<f64> {
+        self.row_timeout_seconds.map(RowTimeoutSeconds::get)
+    }
+
+    /// Result-stability value declared at registration, when present.
+    pub fn result_stability(&self) -> Option<&str> {
+        self.result_stability.as_deref()
     }
 
     pub fn signature(&self) -> &FunctionSignature {

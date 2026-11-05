@@ -482,6 +482,10 @@ class FunctionVersion(_RemoteValue):
 
     ``gpu_class`` is the operator-defined GPU pool fixed into this Function
     version, or ``None`` when registration used the deployment default.
+
+    ``batch_size``, ``row_timeout_seconds``, and ``result_stability`` retain
+    the execution controls reported by the catalog. They are ``None`` for
+    versions registered before the corresponding declaration.
     """
 
     name: str
@@ -497,6 +501,19 @@ class FunctionVersion(_RemoteValue):
     metadata: Mapping[str, str]
     disabled: bool
     gpu_class: Optional[str] = None
+    batch_size: Optional[int] = None
+    row_timeout_seconds: Optional[float] = None
+    result_stability: Optional[str] = None
+
+    @field_validator("batch_size", mode="before")
+    @classmethod
+    def _validate_batch_size(cls, value):
+        return _validate_batch_size(value)
+
+    @field_validator("row_timeout_seconds", mode="before")
+    @classmethod
+    def _validate_row_timeout(cls, value):
+        return _validate_row_timeout(value)
 
     def __call__(self, **arguments: Any) -> FunctionApplication:
         """Bind this exact version to named table columns.
