@@ -40,10 +40,6 @@
       "destination": "/deployment/opentelemetry"
     },
     {
-      "source": "/enterprise",
-      "destination": "/basics/embedded-vs-enterprise"
-    },
-    {
       "source": "/enterprise/intelligent-scheduling",
       "destination": "/enterprise/intelligent-auto-maintenance"
     },
@@ -414,14 +410,13 @@
               "ingestion/index",
               "ingestion/create-table",
               "ingestion/insert",
-              "ingestion/merge-insert",
               "ingestion/update",
               "ingestion/delete",
+              "ingestion/realtime-write",
               "ingestion/define-storage-integration",
               "ingestion/migrate-from-embedded",
               "ingestion/import",
               "enterprise/distributed-write",
-              "ingestion/realtime-write",
               "enterprise/distributed-real-time-write"
             ]
           },
@@ -449,7 +444,6 @@
               "curation/inspect-datasets",
               "curation/create-function",
               "curation/chunking",
-              "curation/changes",
               "curation/statistical-sampling",
               "curation/selective-sampling",
               "curation/aggregate",
@@ -459,6 +453,7 @@
               "curation/windowing",
               "curation/clustering",
               "curation/dedupe",
+              "curation/changes",
               "feature-engineering/view",
               "curation/vend-secret"
             ]
