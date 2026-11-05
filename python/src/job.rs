@@ -232,6 +232,7 @@ impl From<lancedb::database::JobInfo> for JobInfo {
 pub struct JobFailureInfo {
     phase: Option<String>,
     message: Option<String>,
+    /// User-code traceback, possibly truncated by the server.
     traceback: Option<String>,
     retryable: Option<bool>,
     sql_job_id: Option<String>,

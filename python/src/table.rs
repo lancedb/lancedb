@@ -622,6 +622,7 @@ pub struct FunctionErrorRecord {
     pub table_version: u64,
     pub error_type: String,
     pub error_message: String,
+    /// User-code traceback, possibly truncated by the server.
     pub traceback: Option<String>,
     pub created_at_millis: i64,
 }
