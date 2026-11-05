@@ -180,6 +180,22 @@ def test_function_version_exposes_registered_gpu_class():
     assert json.loads(version.to_canonical_json())["gpu_class"] == "a10g"
 
 
+def test_function_version_preserves_execution_controls():
+    value = job_result("remote_function_job.json")
+    value.update(
+        batch_size=12,
+        row_timeout_seconds=8.0,
+        result_stability="input_and_context",
+    )
+    version = FunctionVersion.from_json(json.dumps(value))
+    encoded = json.loads(version.to_canonical_json())
+
+    assert encoded == value
+    assert type(encoded["batch_size"]) is int
+    assert type(encoded["row_timeout_seconds"]) is float
+    assert type(encoded["result_stability"]) is str
+
+
 def test_function_version_binds_named_columns_as_one_immutable_application():
     version = FunctionVersion.from_json(
         json.dumps(job_result("remote_function_job.json"))
