@@ -386,16 +386,81 @@ fn is_transport_error(err: &(dyn std::error::Error + 'static)) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::ffi::CString;
+    use std::sync::{Arc, Once};
 
     use lancedb::error::{JobFailure, RemoteResourceIdentity};
-    use pyo3::types::PyAnyMethods;
+    use pyo3::types::{PyAnyMethods, PyModule};
 
     use super::*;
 
+    static INSTALL_PYTHON_ERROR_MODULES: Once = Once::new();
+
+    fn install_python_error_modules(py: Python<'_>) -> PyResult<()> {
+        // Load the checked-in error classes without requiring an installed wheel.
+        // The namespace exception is only a base for an unrelated remote class.
+        PyModule::from_code(
+            py,
+            c"import sys\n\nimport types\n\n\
+              lancedb = types.ModuleType('lancedb')\n\
+              lancedb.__path__ = []\n\
+              lancedb_remote = types.ModuleType('lancedb.remote')\n\
+              lancedb_remote.__path__ = []\n\
+              lancedb.remote = lancedb_remote\n\
+              namespace = types.ModuleType('lance_namespace')\n\
+              namespace_errors = types.ModuleType('lance_namespace.errors')\n\
+              namespace_errors.TableNotFoundError = RuntimeError\n\
+              namespace.errors = namespace_errors\n\
+              sys.modules['lancedb'] = lancedb\n\
+              sys.modules['lancedb.remote'] = lancedb_remote\n\
+              sys.modules['lance_namespace'] = namespace\n\
+              sys.modules['lance_namespace.errors'] = namespace_errors",
+            c"error_test_bootstrap.py",
+            c"lancedb_error_test_bootstrap",
+        )?;
+
+        let exceptions_code =
+            CString::new(include_str!("../../python/python/lancedb/exceptions.py")).unwrap();
+        let exceptions = PyModule::from_code(
+            py,
+            &exceptions_code,
+            c"exceptions.py",
+            c"lancedb.exceptions",
+        )?;
+        let lancedb = py.import("lancedb")?;
+        lancedb.setattr("exceptions", &exceptions)?;
+        py.import("sys")?
+            .getattr("modules")?
+            .set_item("lancedb.exceptions", &exceptions)?;
+
+        let remote_errors_code =
+            CString::new(include_str!("../../python/python/lancedb/remote/errors.py")).unwrap();
+        let remote_errors = PyModule::from_code(
+            py,
+            &remote_errors_code,
+            c"remote/errors.py",
+            c"lancedb.remote.errors",
+        )?;
+        lancedb
+            .getattr("remote")?
+            .setattr("errors", &remote_errors)?;
+        py.import("sys")?
+            .getattr("modules")?
+            .set_item("lancedb.remote.errors", &remote_errors)?;
+        Ok(())
+    }
+
+    fn ensure_python_error_modules() {
+        Python::initialize();
+        // Once waits without holding the GIL; only its one-time closure attaches.
+        INSTALL_PYTHON_ERROR_MODULES.call_once(|| {
+            Python::attach(install_python_error_modules).unwrap();
+        });
+    }
+
     #[test]
     fn generic_job_failure_retains_the_named_resource_as_its_cause() {
-        Python::initialize();
+        ensure_python_error_modules();
         let source = LanceError::Sql {
             message: "Function 'missing' was not found".into(),
             request_id: "current-request".into(),
@@ -515,7 +580,7 @@ mod tests {
 
     #[test]
     fn direct_catalog_lookup_is_raised_as_the_named_resource_error() {
-        Python::initialize();
+        ensure_python_error_modules();
         for (kind, name, namespace_path, exception) in [
             (
                 "function",
