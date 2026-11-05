@@ -1655,6 +1655,9 @@ pub(super) fn sql_status_error(request_id: &str, status: &tonic::Status) -> Erro
         error_code: header("x-lancedb-error-code"),
         job_id: header(SQL_JOB_ID_METADATA_KEY),
         job_request_id: header("x-job-request-id"),
+        resource: header("x-lancedb-resource")
+            .as_deref()
+            .and_then(crate::error::parse_flight_resource_identity),
     };
     let sql_job_id = metadata.job_id.clone();
     let error = Error::Sql {

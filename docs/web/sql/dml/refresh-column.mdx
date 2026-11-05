@@ -1,7 +1,7 @@
 ---
 title: "REFRESH COLUMN"
 sidebarTitle: "REFRESH COLUMN"
-description: "Filling a computed column: idempotent, scoped, and resumable."
+description: "Fill computed outputs and select rows to recompute."
 icon: arrows-rotate
 keywords: ["refresh column", "backfill", "computed column"]
 availability:
@@ -28,27 +28,38 @@ REFRESH COLUMN embedding ON documents WHERE created_at > '2026-01-01'
 ```
 </CodeGroup>
 
-A refresh gives values to rows that lack them, recomputes rows whose inputs
-changed, and **leaves other filled rows alone**. That makes it idempotent, cheap
-to repeat as data arrives, and safe to re-run after a failure, though a re-run
-can recompute values the failed run had already written.
+Without `WHERE`, a refresh fills unassigned rows and recomputes values whose
+inputs changed, leaving other current values alone. A retry after a failure
+can still repeat work that was not committed.
 
-`WHERE` scopes the refresh, which is how you fill a slice and check it before
-committing to the whole table.
+With `WHERE`, a refresh **recomputes every matching live row**, including rows
+that already have current values. Repeating a predicate can repeat the Function
+calls and their cost. To select only null outputs within a slice:
+
+<CodeGroup>
+```sql SQL icon="database"
+REFRESH COLUMN embedding ON documents
+  WHERE created_at > '2026-01-01' AND embedding IS NULL
+```
+</CodeGroup>
+
+This skips non-null outputs even if their inputs changed. It also selects
+outputs that were successfully computed as `NULL`. Use an unfiltered refresh
+to let LanceDB track which outputs need updating.
 
 ## Options {#options}
 
 | Option | Meaning |
 | --- | --- |
-| `num_workers` | how many workers to use |
-| `cpu_millis` | aggregate CPU ceiling across the refresh's workers, not a per-worker size |
-| `memory_bytes` | aggregate memory ceiling across the refresh's workers |
+| `num_workers` | fixed worker count for SQL-expression columns; rejected for registered Function columns |
+| `cpu_millis` | aggregate CPU ceiling across the refresh's Function workers, in thousandths of a CPU |
+| `memory_bytes` | aggregate memory ceiling across the refresh's Function workers, in bytes |
 | `gpu_count` | aggregate GPU budget across the refresh's workers. Function columns only |
 | `gpu_class` | GPU class name for the refresh's workers. Function columns only |
-| `batch_size` | rows passed to each Function call. Function columns only |
+| `batch_size` | maximum rows passed to one Function call; actual calls can be smaller. Function columns only |
 | `max_executor_processes_per_worker` | cap on executor processes per worker. Function columns only |
 | `row_timeout_seconds` | deadline for one Function call. Function columns only |
-| `error_policy` | `'skip'` continues past failing rows instead of failing the job. Function columns only |
+| `error_policy` | `'fail'` (default) stops on a row error; `'skip'` writes null outputs and records row errors, subject to failure limits. Function columns only |
 | `max_failed_fraction` | fail the job once more than this share of rows has failed. Function columns only |
 | `max_failed_rows` | fail the job once more than this many rows has failed. Function columns only |
 
@@ -59,9 +70,15 @@ REFRESH COLUMN embedding ON documents
 ```
 </CodeGroup>
 
-`num_workers` sets a count; the budget options size the refresh's workers in
-aggregate, not each one individually. They are alternatives rather than a
-pair.
+The example allows up to 8 CPUs, 16 GiB of memory, and 2 GPUs across the
+Function workers together. It does not reserve those resources per worker or
+guarantee a worker count. When setting CPU or memory, provide all three budget
+fields. A complete CPU-only budget uses `gpu_count = 0`.
+
+Set `error_policy` on the refresh, not on the Function definition. With `skip`,
+inspect failures with `SHOW ERRORS` or `table.function_errors()` and retry the
+affected rows after fixing the cause. Initialization, infrastructure, and
+publication failures can still fail the job.
 
 <Note>
 `num_workers` is refused for a column filled by a registered

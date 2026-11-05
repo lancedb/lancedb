@@ -52,6 +52,34 @@ use super::util::parse_server_version;
 use super::{ARROW_STREAM_CONTENT_TYPE, extract_job_id};
 use futures::TryStreamExt;
 
+#[cfg(feature = "remote")]
+fn direct_catalog_resource_error(error: Error) -> Error {
+    let Error::JobFailed { failure, .. } = &error else {
+        return error;
+    };
+    let Some(Error::Sql {
+        message,
+        request_id,
+        grpc_code,
+        metadata,
+    }) = failure.source.as_deref()
+    else {
+        return error;
+    };
+    let named_catalog_resource = metadata.resource.as_ref().is_some_and(|resource| {
+        matches!(resource.kind.as_str(), "function" | "namespace" | "secret")
+    });
+    if !named_catalog_resource {
+        return error;
+    }
+    Error::Sql {
+        message: message.clone(),
+        request_id: request_id.clone(),
+        grpc_code: *grpc_code,
+        metadata: metadata.clone(),
+    }
+}
+
 // Request structure for the remote clone table API
 #[derive(serde::Serialize)]
 struct RemoteCloneTableRequest {
@@ -861,6 +889,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         self.sql_client()?
             .describe_function(name, version, namespace_path)
             .await
+            .map_err(direct_catalog_resource_error)
     }
 
     async fn list_functions(
@@ -991,6 +1020,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         self.sql_client()?
             .write_secret(name, value, namespace_path, true)
             .await
+            .map_err(direct_catalog_resource_error)
     }
     async fn alter_secret(&self, name: &str, value: &str, namespace_path: &[String]) -> Result<()> {
         crate::utils::validate_secret_name(name)?;
@@ -998,6 +1028,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         self.sql_client()?
             .write_secret(name, value, namespace_path, false)
             .await
+            .map_err(direct_catalog_resource_error)
     }
     async fn list_secrets(
         &self,
@@ -1008,11 +1039,15 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         self.sql_client()?
             .list_secrets(namespace_path, options)
             .await
+            .map_err(direct_catalog_resource_error)
     }
     async fn drop_secret(&self, name: &str, namespace_path: &[String]) -> Result<()> {
         crate::utils::validate_secret_name(name)?;
         validate_namespace(namespace_path)?;
-        self.sql_client()?.drop_secret(name, namespace_path).await
+        self.sql_client()?
+            .drop_secret(name, namespace_path)
+            .await
+            .map_err(direct_catalog_resource_error)
     }
     async fn describe_secret(&self, name: &str, namespace_path: &[String]) -> Result<SecretInfo> {
         crate::utils::validate_secret_name(name)?;
@@ -1020,6 +1055,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         self.sql_client()?
             .describe_secret(name, namespace_path)
             .await
+            .map_err(direct_catalog_resource_error)
     }
 
     async fn create_view(
@@ -1910,6 +1946,7 @@ mod tests {
 
     use crate::connection::ConnectBuilder;
     use crate::database::Database;
+    use crate::error::{JobFailure, RemoteErrorMetadata, RemoteResourceIdentity};
     use crate::graph::{EdgeTable, Endpoint, NodeTable, PropertyGraphDefinition};
     use crate::materialized_view::CreateMaterializedViewRequest;
     use crate::{
@@ -1918,6 +1955,53 @@ mod tests {
         job::JobEventsRequest,
         remote::{ARROW_STREAM_CONTENT_TYPE, ClientConfig, HeaderProvider, JSON_CONTENT_TYPE},
     };
+
+    #[test]
+    fn catalog_helpers_unwrap_only_a_named_resource_job_failure() {
+        let job_failed = |source: Error| Error::JobFailed {
+            job_id: Some("job-1".into()),
+            failure: Box::new(JobFailure {
+                sql_job_id: Some("job-1".into()),
+                source: Some(Arc::new(source)),
+                ..Default::default()
+            }),
+        };
+
+        for (kind, name) in [
+            ("function", "missing"),
+            ("namespace", "missing_ns"),
+            ("secret", "missing_secret"),
+        ] {
+            let resource = RemoteResourceIdentity::new(kind, name, vec!["ns".into()]);
+            let sql = Error::Sql {
+                message: format!("{kind} '{name}' was not found"),
+                request_id: "worker-request".into(),
+                grpc_code: 5,
+                metadata: Box::new(RemoteErrorMetadata {
+                    error_code: Some("not_found".into()),
+                    job_id: Some("job-1".into()),
+                    resource: Some(resource.clone()),
+                    ..Default::default()
+                }),
+            };
+            let Error::Sql { metadata, .. } = super::direct_catalog_resource_error(job_failed(sql))
+            else {
+                panic!("catalog helper must surface the {kind} resource failure");
+            };
+            assert_eq!(metadata.resource, Some(resource));
+        }
+
+        let generic = Error::Sql {
+            message: "query failed".into(),
+            request_id: "worker-request".into(),
+            grpc_code: 3,
+            metadata: Box::new(RemoteErrorMetadata::default()),
+        };
+        assert!(matches!(
+            super::direct_catalog_resource_error(job_failed(generic)),
+            Error::JobFailed { .. }
+        ));
+    }
 
     #[tokio::test]
     async fn test_catalog_namespace_identifier_validates_all_namespace_components() {

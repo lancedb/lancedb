@@ -401,15 +401,28 @@ full worked example.
 
 ## Failure handling {#failures}
 
-A function that raises fails the job. There is no per-row retry or skip policy
-in the function definition: `@function` takes no error-handling parameter, so a
-function that calls a flaky external service should handle that itself, inside
-the function body.
+By default, a Function that raises fails the refresh job. The Function
+definition has no error-handling parameter; choose the row-error policy on
+the refresh instead:
+
+<CodeGroup>
+```sql SQL icon="database"
+REFRESH COLUMN embedding ON documents WITH (error_policy = 'skip')
+```
+</CodeGroup>
+
+`skip` writes null outputs for failing rows and records their errors. Inspect
+them with `SHOW ERRORS` or `table.function_errors()`. Failure limits still
+apply, and initialization or infrastructure failures can still fail the job.
+See the [SQL refresh options](/sql/dml/refresh-column#options). A Function
+that calls a transiently failing external service can handle bounded retries
+inside its body.
 
 Letting the job fail is the other option: fix the cause and refresh again. The
-next refresh [skips rows that are filled and current](/feature-engineering/refresh-column#idempotent),
+next unfiltered refresh [skips rows that are filled and current](/feature-engineering/refresh-column#idempotent),
 but how much of the failed job's work was kept is not guaranteed, so do not
-count on the retry costing only the rows that did not complete.
+count on the retry costing only the rows that did not complete. A refresh with
+`WHERE` recomputes every matching live row, including already-filled outputs.
 
 ## What gets packaged {#packaging}
 

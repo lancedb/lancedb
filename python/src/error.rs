@@ -310,6 +310,9 @@ fn new_py_sql_error<'py>(
     grpc_code: i32,
     metadata: &RemoteErrorMetadata,
 ) -> PyResult<Bound<'py, PyAny>> {
+    if sql_has_resource_error(metadata, grpc_code) {
+        return new_py_sql_resource_error(py, message, request_id, grpc_code, metadata);
+    }
     py.import("lancedb.remote.errors")?
         .getattr("SqlError")?
         .call1((
@@ -320,6 +323,51 @@ fn new_py_sql_error<'py>(
             metadata.job_id.as_deref(),
             metadata.job_request_id.as_deref(),
         ))
+}
+
+fn new_py_sql_resource_error<'py>(
+    py: Python<'py>,
+    message: &str,
+    request_id: &str,
+    grpc_code: i32,
+    metadata: &RemoteErrorMetadata,
+) -> PyResult<Bound<'py, PyAny>> {
+    let resource = metadata.resource.as_ref().unwrap();
+    py.import("lancedb.remote.errors")?
+        .getattr("HttpError")?
+        .call1((
+            message,
+            request_id,
+            grpc_code_to_http_status(grpc_code),
+            metadata.error_code.as_deref(),
+            resource.kind.as_str(),
+            resource.name.as_str(),
+            resource.namespace_path.clone(),
+            false,
+            metadata.job_id.as_deref(),
+            metadata.job_request_id.as_deref(),
+        ))
+}
+
+fn sql_has_resource_error(metadata: &RemoteErrorMetadata, grpc_code: i32) -> bool {
+    metadata.resource.is_some()
+        && matches!(
+            (metadata.error_code.as_deref(), grpc_code),
+            // These are gRPC status codes, not HTTP status codes.
+            (Some("not_found"), 5) | (Some("already_exists"), 6)
+        )
+}
+
+fn grpc_code_to_http_status(grpc_code: i32) -> Option<u16> {
+    match grpc_code {
+        3 => Some(400),
+        5 => Some(404),
+        6 => Some(409),
+        7 => Some(403),
+        9 => Some(400),
+        12 => Some(501),
+        _ => None,
+    }
 }
 
 // Preserve the typed transport classification across the Python boundary.
@@ -334,4 +382,179 @@ fn is_transport_error(err: &(dyn std::error::Error + 'static)) -> bool {
             || error.is_decode();
     }
     err.source().is_some_and(is_transport_error)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use lancedb::error::{JobFailure, RemoteResourceIdentity};
+    use pyo3::types::PyAnyMethods;
+
+    use super::*;
+
+    #[test]
+    fn generic_job_failure_retains_the_named_resource_as_its_cause() {
+        Python::initialize();
+        let source = LanceError::Sql {
+            message: "Function 'missing' was not found".into(),
+            request_id: "current-request".into(),
+            grpc_code: 5,
+            metadata: Box::new({
+                let mut metadata = RemoteErrorMetadata::default();
+                metadata.error_code = Some("not_found".into());
+                metadata.job_id = Some("outer-job".into());
+                metadata.job_request_id = Some("worker-request".into());
+                metadata.resource = Some(RemoteResourceIdentity::new(
+                    "function",
+                    "missing",
+                    vec!["ns".into()],
+                ));
+                metadata
+            }),
+        };
+        let error = LanceError::JobFailed {
+            job_id: Some("outer-job".into()),
+            failure: Box::new(JobFailure {
+                message: Some("Function 'missing' was not found".into()),
+                traceback: None,
+                sql_job_id: Some("outer-job".into()),
+                source: Some(Arc::new(source)),
+                ..Default::default()
+            }),
+        };
+
+        let py_err = Python::attach(|_| {
+            let result: std::result::Result<(), LanceError> = Err(error);
+            result.infer_error().unwrap_err()
+        });
+        Python::attach(|py| {
+            let value = py_err.value(py);
+            let job_failed = py
+                .import("lancedb.exceptions")
+                .unwrap()
+                .getattr("JobFailedError")
+                .unwrap();
+            assert!(value.is_instance(&job_failed).unwrap(), "{py_err:?}");
+            let cause = value.getattr("__cause__").unwrap();
+            let function_not_found = py
+                .import("lancedb.remote.errors")
+                .unwrap()
+                .getattr("FunctionNotFoundError")
+                .unwrap();
+            assert!(
+                cause.is_instance(&function_not_found).unwrap(),
+                "{py_err:?}"
+            );
+            assert_eq!(
+                cause
+                    .getattr("error_code")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "not_found"
+            );
+            assert_eq!(
+                cause
+                    .getattr("resource_kind")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "function"
+            );
+            assert_eq!(
+                cause
+                    .getattr("resource_name")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "missing"
+            );
+            assert_eq!(
+                cause
+                    .getattr("namespace_path")
+                    .unwrap()
+                    .extract::<Vec<String>>()
+                    .unwrap(),
+                ["ns"]
+            );
+            assert_eq!(
+                cause
+                    .getattr("status_code")
+                    .unwrap()
+                    .extract::<u16>()
+                    .unwrap(),
+                404
+            );
+            assert_eq!(
+                cause
+                    .getattr("request_id")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "current-request"
+            );
+            assert_eq!(
+                cause
+                    .getattr("job_id")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "outer-job"
+            );
+            assert_eq!(
+                cause
+                    .getattr("job_request_id")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "worker-request"
+            );
+        });
+    }
+
+    #[test]
+    fn direct_catalog_lookup_is_raised_as_the_named_resource_error() {
+        Python::initialize();
+        for (kind, name, namespace_path, exception) in [
+            (
+                "function",
+                "missing",
+                vec!["ns".into()],
+                "FunctionNotFoundError",
+            ),
+            ("namespace", "ns", Vec::new(), "NamespaceNotFoundError"),
+        ] {
+            let mut metadata = RemoteErrorMetadata::default();
+            metadata.error_code = Some("not_found".into());
+            metadata.resource = Some(RemoteResourceIdentity::new(kind, name, namespace_path));
+            let error = LanceError::Sql {
+                message: format!("{kind} '{name}' was not found"),
+                request_id: "current-request".into(),
+                grpc_code: 5,
+                metadata: Box::new(metadata),
+            };
+            let py_err = Python::attach(|_| {
+                let result: std::result::Result<(), LanceError> = Err(error);
+                result.infer_error().unwrap_err()
+            });
+            Python::attach(|py| {
+                let value = py_err.value(py);
+                let class = py
+                    .import("lancedb.remote.errors")
+                    .unwrap()
+                    .getattr(exception)
+                    .unwrap();
+                assert!(value.is_instance(&class).unwrap(), "{py_err:?}");
+                assert_eq!(
+                    value
+                        .getattr("resource_name")
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    name
+                );
+            });
+        }
+    }
 }
