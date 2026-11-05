@@ -575,6 +575,90 @@ def test_local_module_imported_in_function_body_warns_at_registration(
     assert "import fx_body_local" in artifact(installed).decode()
 
 
+def test_missing_module_without_declared_package_warns_at_registration(tmp_path):
+    package = "fx_missing_remote_package_ent3448"
+
+    def define(name):
+        (tmp_path / f"{name}.py").write_text(
+            textwrap.dedent(
+                f"""
+                from lancedb import function
+
+
+                @function(pip=())
+                def {name}(value: int) -> int:
+                    import {package}.plugin
+
+                    return value
+                """
+            )
+        )
+        importlib.invalidate_caches()
+        return getattr(importlib.import_module(name), name)
+
+    with pytest.warns(UserWarning) as caught:
+        definition = define("fx_uses_missing_package")
+
+    message = str(caught[0].message)
+    assert f"imports {package!r}" in message
+    assert "unavailable in the client environment" in message
+    assert "no declared pip/conda dependencies" in message
+    assert "Remote availability cannot be verified" in message
+    assert "confirm that the base image provides it" in message
+    assert "cannot import" not in message
+    assert f"import {package}.plugin" in artifact(definition).decode()
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        with pytest.raises(UserWarning, match="Remote availability cannot be verified"):
+            define("fx_missing_package_as_error")
+
+
+def test_resolved_or_declared_module_imports_do_not_warn(tmp_path, helper_package):
+    package = "fx_missing_remote_package_ent3448"
+    helper_package("fx_declared_code_package", {"__init__.py": ""})
+
+    def define(name, body, options, imports=""):
+        (tmp_path / f"{name}.py").write_text(
+            textwrap.dedent(
+                f"""
+                {imports}
+                from lancedb import function
+
+
+                @function({options})
+                def {name}(value: int) -> int:
+                    {body}
+                    return value
+                """
+            )
+        )
+        importlib.invalidate_caches()
+        return getattr(importlib.import_module(name), name)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        define("fx_imports_stdlib", "import os.path", "")
+        define(
+            "fx_imports_declared_pip",
+            f"import {package}.plugin",
+            "pip=['fx-missing-remote-package-ent3448==1.0']",
+        )
+        define(
+            "fx_imports_declared_conda",
+            f"import {package}.plugin",
+            "conda=['fx_missing_remote_package_ent3448']",
+        )
+        define(
+            "fx_imports_shipped_code",
+            "import fx_declared_code_package",
+            "code=[fx_declared_code_package]",
+            "import fx_declared_code_package",
+        )
+
+    assert not caught
+
+
 MMLB_HELPERS = {
     "__init__.py": "",
     "rate.py": """
