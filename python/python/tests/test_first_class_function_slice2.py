@@ -1875,9 +1875,7 @@ class _RawFunctionCatalog:
     async def get_function(self, _name, version, namespace_path):
         return self.definition
 
-    def list_functions(
-        self, *, namespace_path=None, page_token=None, page_limit=None
-    ):
+    def list_functions(self, *, namespace_path=None, page_token=None, page_limit=None):
         return self
 
     def __aiter__(self):
