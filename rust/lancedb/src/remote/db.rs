@@ -66,10 +66,9 @@ fn direct_catalog_resource_error(error: Error) -> Error {
     else {
         return error;
     };
-    let named_catalog_resource = metadata
-        .resource
-        .as_ref()
-        .is_some_and(|resource| matches!(resource.kind.as_str(), "function" | "namespace"));
+    let named_catalog_resource = metadata.resource.as_ref().is_some_and(|resource| {
+        matches!(resource.kind.as_str(), "function" | "namespace" | "secret")
+    });
     if !named_catalog_resource {
         return error;
     }
@@ -1021,6 +1020,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         self.sql_client()?
             .write_secret(name, value, namespace_path, true)
             .await
+            .map_err(direct_catalog_resource_error)
     }
     async fn alter_secret(&self, name: &str, value: &str, namespace_path: &[String]) -> Result<()> {
         crate::utils::validate_secret_name(name)?;
@@ -1028,6 +1028,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         self.sql_client()?
             .write_secret(name, value, namespace_path, false)
             .await
+            .map_err(direct_catalog_resource_error)
     }
     async fn list_secrets(
         &self,
@@ -1038,11 +1039,15 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         self.sql_client()?
             .list_secrets(namespace_path, options)
             .await
+            .map_err(direct_catalog_resource_error)
     }
     async fn drop_secret(&self, name: &str, namespace_path: &[String]) -> Result<()> {
         crate::utils::validate_secret_name(name)?;
         validate_namespace(namespace_path)?;
-        self.sql_client()?.drop_secret(name, namespace_path).await
+        self.sql_client()?
+            .drop_secret(name, namespace_path)
+            .await
+            .map_err(direct_catalog_resource_error)
     }
     async fn describe_secret(&self, name: &str, namespace_path: &[String]) -> Result<SecretInfo> {
         crate::utils::validate_secret_name(name)?;
@@ -1050,6 +1055,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         self.sql_client()?
             .describe_secret(name, namespace_path)
             .await
+            .map_err(direct_catalog_resource_error)
     }
 
     async fn create_view(
@@ -1951,19 +1957,7 @@ mod tests {
     };
 
     #[test]
-    fn catalog_lookup_unwraps_only_a_named_resource_job_failure() {
-        let resource = RemoteResourceIdentity::new("function", "missing", vec!["ns".into()]);
-        let sql = Error::Sql {
-            message: "Function 'missing' was not found".into(),
-            request_id: "worker-request".into(),
-            grpc_code: 5,
-            metadata: Box::new(RemoteErrorMetadata {
-                error_code: Some("not_found".into()),
-                job_id: Some("job-1".into()),
-                resource: Some(resource.clone()),
-                ..Default::default()
-            }),
-        };
+    fn catalog_helpers_unwrap_only_a_named_resource_job_failure() {
         let job_failed = |source: Error| Error::JobFailed {
             job_id: Some("job-1".into()),
             failure: JobFailure {
@@ -1973,11 +1967,29 @@ mod tests {
             },
         };
 
-        let Error::Sql { metadata, .. } = super::direct_catalog_resource_error(job_failed(sql))
-        else {
-            panic!("catalog lookup must surface the typed resource failure");
-        };
-        assert_eq!(metadata.resource, Some(resource));
+        for (kind, name) in [
+            ("function", "missing"),
+            ("namespace", "missing_ns"),
+            ("secret", "missing_secret"),
+        ] {
+            let resource = RemoteResourceIdentity::new(kind, name, vec!["ns".into()]);
+            let sql = Error::Sql {
+                message: format!("{kind} '{name}' was not found"),
+                request_id: "worker-request".into(),
+                grpc_code: 5,
+                metadata: Box::new(RemoteErrorMetadata {
+                    error_code: Some("not_found".into()),
+                    job_id: Some("job-1".into()),
+                    resource: Some(resource.clone()),
+                    ..Default::default()
+                }),
+            };
+            let Error::Sql { metadata, .. } = super::direct_catalog_resource_error(job_failed(sql))
+            else {
+                panic!("catalog helper must surface the {kind} resource failure");
+            };
+            assert_eq!(metadata.resource, Some(resource));
+        }
 
         let generic = Error::Sql {
             message: "query failed".into(),
