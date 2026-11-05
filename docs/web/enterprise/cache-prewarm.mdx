@@ -11,9 +11,10 @@ availability:
 
 Cache Prewarm loads the [tiered index cache](/enterprise/tiered-index-cache)
 a plan executor keeps as part of Enterprise's serving layer, instead of
-leaving it to fill lazily on first read. It runs as part of a plan
-executor's own startup, before the executor joins the fleet and starts
-serving queries.
+leaving it to fill lazily on first read. You configure which tables to
+prewarm; on startup, each plan executor loads those tables' indexes into
+cache before it joins the fleet. The executor does not accept queries until
+prewarming finishes, so it never serves a request against a cold cache.
 
 LanceDB Embedded has no such cache, so there is nothing for it to warm
 there. Embedded does have its own, separate `prewarm_index()` on a table --
@@ -28,11 +29,13 @@ an idempotent hint that loads a built index into memory ahead of a query.
   "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "18px"
 }}}%%
 flowchart LR
-    Start["Plan executor<br/>starts up"] --> Warm["Loads configured<br/>indexes into cache"]
-    Warm --> Ready["Joins the fleet,<br/>serves queries"]
+    List[("Configured list<br/>of tables to prewarm")]
+    Start["Plan executor starts<br/>(not ready — no queries served)"] --> Warm["Loads each table's<br/>indexes into cache"]
+    List -.-> Warm
+    Warm --> Ready["Ready — joins the fleet,<br/>starts serving queries"]
     classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
     classDef accent fill:#2a1810,stroke:#e8582d,stroke-width:1.5px,color:#f4ebe8
-    class Warm accent
+    class Warm,List accent
 ```
 
 </div>
@@ -46,23 +49,25 @@ flowchart LR
   "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "18px"
 }}}%%
 flowchart LR
-    Start["Plan executor<br/>starts up"] --> Warm["Loads configured<br/>indexes into cache"]
-    Warm --> Ready["Joins the fleet,<br/>serves queries"]
+    List[("Configured list<br/>of tables to prewarm")]
+    Start["Plan executor starts<br/>(not ready — no queries served)"] --> Warm["Loads each table's<br/>indexes into cache"]
+    List -.-> Warm
+    Warm --> Ready["Ready — joins the fleet,<br/>starts serving queries"]
     classDef default fill:#ffffff,stroke:#ad9e95,stroke-width:1px,color:#221d19
     classDef accent fill:#fff1ec,stroke:#e8582d,stroke-width:1.5px,color:#221d19
-    class Warm accent
+    class Warm,List accent
 ```
 
 </div>
 
 ## Why it matters {#why-it-matters}
 
-Without prewarming, the indexes a fresh or restarted executor needs fill in
-lazily -- the first queries it serves pay the cost of loading and
-deserializing those indexes from object storage. Prewarming front-loads
-that cost before the executor takes traffic, so performance is consistent
-from the moment it joins the fleet instead of dipping right after every
-restart or rollout.
+Without prewarming, a fresh or restarted executor would fill its indexes
+lazily, so the first queries it serves pay the cost of loading and
+deserializing them from object storage. Holding the executor out of the
+fleet until its configured tables are warm means every query it ever
+serves gets a warm cache, so performance stays consistent through restarts
+and rollouts instead of dipping right after each one.
 
 [Contact us](https://www.lancedb.com/contact) to learn more about how
 prewarming is configured for your deployment.

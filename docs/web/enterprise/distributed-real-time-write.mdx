@@ -38,22 +38,22 @@ another one directly.
   "fontFamily": "Inter, sans-serif", "fontSize": "18px"
 }}}%%
 flowchart LR
-    Q["Query node<br/>routes each table to one RTE node"]
+    Q["Query node<br/>routes each table's shards to an RTE node"]
 
-    subgraph W0["RTE node A — owns table 'frames'"]
+    subgraph W0["RTE node A"]
         direction TB
-        S0["Shard 0"]
-        S1["Shard 1"]
-        S2["Shard 2"]
+        S0["Shard 0 — table 'frames'"]
+        S1["Shard 0 — table 'events'"]
     end
 
-    subgraph W1["RTE node B — owns table 'events'"]
+    subgraph W1["RTE node B"]
         direction TB
-        S3["Shard 0"]
+        S2["Shard 0 — table 'metrics'"]
     end
 
-    Q -- "writes + reads for 'frames'" --> W0
-    Q -- "writes + reads for 'events'" --> W1
+    Q -- "'frames'" --> W0
+    Q -- "'events'" --> W0
+    Q -- "'metrics'" --> W1
     classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
 ```
 
@@ -69,22 +69,22 @@ flowchart LR
   "fontFamily": "Inter, sans-serif", "fontSize": "18px"
 }}}%%
 flowchart LR
-    Q["Query node<br/>routes each table to one RTE node"]
+    Q["Query node<br/>routes each table's shards to an RTE node"]
 
-    subgraph W0["RTE node A — owns table 'frames'"]
+    subgraph W0["RTE node A"]
         direction TB
-        S0["Shard 0"]
-        S1["Shard 1"]
-        S2["Shard 2"]
+        S0["Shard 0 — table 'frames'"]
+        S1["Shard 0 — table 'events'"]
     end
 
-    subgraph W1["RTE node B — owns table 'events'"]
+    subgraph W1["RTE node B"]
         direction TB
-        S3["Shard 0"]
+        S2["Shard 0 — table 'metrics'"]
     end
 
-    Q -- "writes + reads for 'frames'" --> W0
-    Q -- "writes + reads for 'events'" --> W1
+    Q -- "'frames'" --> W0
+    Q -- "'events'" --> W0
+    Q -- "'metrics'" --> W1
     classDef default fill:#ffffff,stroke:#ad9e95,stroke-width:1px,color:#221d19
 ```
 
@@ -93,24 +93,16 @@ flowchart LR
 ## Shards scale one table, replicas scale the cluster {#shards-vs-replicas}
 
 `RTEWriteSpec::bucket(column, num_buckets)` splits a table into `num_buckets`
-**table shards**, each a separate, independently-appending stream. A shard's
-identity is derived from the table itself, not assigned by an operator, so a
-shard survives the table being claimed by a different RTE node later.
+**table shards**, each a separate, independently-appending stream, giving the
+table that many parallel write paths instead of one. A shard's identity is
+derived from the table itself, not assigned by an operator, so a shard
+survives the table being claimed by a different RTE node later.
 
-This is where the horizontal scaling actually happens, and where its limit
-is: **one RTE node owns every shard of a given table.** Splitting `frames`
-into 8 shards gives it 8 independent append streams, all still served by the
-one node that owns `frames` -- it raises that table's own ceiling, not the
-number of nodes working on it. Adding RTE node replicas instead spreads
-*other* tables' ownership across more nodes, raising how many tables the
-cluster can serve, not how fast any single one of them can write.
-
-<Note>
-A single table's write throughput is capped by one node's capacity, however
-many shards you give it. A workload that needs to exceed one node's ceiling
-on one table is not solved by adding shards -- there is no path to spreading
-one table's shards across multiple RTE nodes today.
-</Note>
+This is where the horizontal scaling actually happens: splitting `frames`
+into 8 shards gives it 8 independent append streams instead of 1, raising
+that table's own write ceiling. Adding RTE node replicas spreads shard
+ownership across more nodes, so the cluster can host more tables -- and more
+shards -- without any one node becoming a bottleneck for everything it serves.
 
 `RTEWriteSpec::identity(column)` and `RTEWriteSpec::unsharded()` both resolve
 to a single table shard -- `bucket` is the sharding mode that actually
@@ -125,8 +117,8 @@ scaling nearly linearly with shard count up to at least 8 shards on one
 node -- the bottleneck is the durable write itself, not CPU or memory. This
 is observed capacity, not an enforced quota; nothing in the deployment caps
 a shard's or a table's throughput below it. [Contact
-support](https://www.lancedb.com/contact) if your workload needs more than
-one node's worth of capacity for a single table.
+support](https://www.lancedb.com/contact) if your workload needs more write
+throughput than this provides.
 
 ## What to read next {#next}
 

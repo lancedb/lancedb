@@ -48,9 +48,6 @@ CREATE STORAGE INTEGRATION raw
     STORAGE_AWS_ACCESS_KEY_ID_SECRET = aws_key_id
     STORAGE_AWS_SECRET_ACCESS_KEY_SECRET = aws_key_secret
 ```
-</CodeGroup>
-
-<CodeGroup>
 ```python Python icon="python"
 db.create_storage_integration(
     "raw", "s3://customer-data/raw/",
@@ -65,7 +62,6 @@ db.create_storage_integration(
     aws_secret_access_key_secret="aws_key_secret",
 )
 ```
-
 ```rust
 use lancedb::storage_integration::CreateStorageIntegrationRequest;
 
@@ -89,9 +85,6 @@ CREATE STORAGE INTEGRATION gcs
     STORAGE_PREFIX = 'gs://customer-data/raw/'
     GCP_CREDENTIALS_JSON_SECRET = gcp_service_account
 ```
-</CodeGroup>
-
-<CodeGroup>
 ```python Python icon="python"
 db.create_storage_integration(
     "gcs", "gs://customer-data/raw/",
@@ -116,9 +109,6 @@ CREATE STORAGE INTEGRATION blobs
     STORAGE_AZURE_CLIENT_ID_SECRET = azure_client
     STORAGE_AZURE_CLIENT_SECRET_SECRET = azure_credential
 ```
-</CodeGroup>
-
-<CodeGroup>
 ```python Python icon="python"
 db.create_storage_integration(
     "blobs", "az://customer-data/raw/",
@@ -143,9 +133,6 @@ CREATE STORAGE INTEGRATION hub
     STORAGE_PREFIX = 'hf://datasets/owner/private/data/'
     HUGGINGFACE_TOKEN_SECRET = hf_token
 ```
-</CodeGroup>
-
-<CodeGroup>
 ```python Python icon="python"
 db.create_storage_integration(
     "hub", "hf://datasets/owner/private/data/",
