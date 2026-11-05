@@ -972,7 +972,7 @@ impl<S: HttpSend> RemoteTable<S> {
     }
 
     /// Resolve a tag to its `(branch, version)` coordinate via the `tags/version`
-    /// endpoint, since the `/branches/create` contract accepts no `from_tag`.
+    /// endpoint.
     async fn resolve_tag_ref(&self, tag: &str) -> Result<(Option<String>, u64)> {
         let request = self
             .client
@@ -3650,22 +3650,19 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         // Resolve the tag without attaching freshness headers; a stale
         // `min_version` from a previous write should not ride along on an
         // explicit time-travel request.
-        let request = self
-            .client
-            .post(&format!("/v1/table/{}/tags/version/", self.identifier));
-        let version = self
-            .resolve_tag_version_with_request(tag, request, false)
-            .await?;
+        let (branch, version) = self.resolve_tag_ref(tag).await?;
+        if branch != self.branch {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "Tag '{tag}' belongs to branch '{}', but this table handle is scoped to branch '{}'. Check out the tag's branch first.",
+                    branch.as_deref().unwrap_or("main"),
+                    self.branch.as_deref().unwrap_or("main"),
+                ),
+            });
+        }
 
-        let mut write_guard = self.version.write().await;
-        // Commit the selector and its freshness mode while holding the selector
-        // write lock, with no cancellation point between the two updates.
-        self.reset_freshness(None, true);
-        *write_guard = Some(version);
-        self.invalidate_schema_cache();
-        drop(write_guard);
-
-        Ok(())
+        // Validate the version before pinning the handle.
+        self.checkout(version).await
     }
     /// Only `OptimizeAction::Compact` with default `options` and no custom
     /// `remap_options` is supported remotely: it submits a durable
@@ -13380,12 +13377,13 @@ mod tests {
             .checkout_tag("v2")
             .await
             .expect("checkout_tag should succeed");
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
 
         // Schema call after checkout_tag should re-fetch (cache was invalidated)
         let schema3 = table.schema().await.unwrap();
         assert_eq!(
             call_count.load(Ordering::SeqCst),
-            2,
+            3,
             "Cache should have been invalidated and re-fetched"
         );
         assert_ne!(
@@ -15238,12 +15236,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_freshness_checkout_tag_resolve_sends_no_min_version() {
-        // Same invariant for checkout_tag: the tag-resolve request must not
-        // pick up a stale min_version from a prior write.
+    async fn test_freshness_checkout_tag_validation_sends_no_min_version() {
+        // Neither the tag lookup nor the version validation should pick up a
+        // stale min_version from a prior write.
         let (handler, captured) = path_capturing_handler(|path| match path {
             "/v1/table/my_table/update/" => r#"{"rows_updated":1,"version":7}"#.to_string(),
             "/v1/table/my_table/tags/version/" => r#"{"version":5}"#.to_string(),
+            "/v1/table/my_table/describe/" => r#"{"version":5,"schema":{"fields":[]}}"#.to_string(),
             _ => panic!("unexpected path: {}", path),
         });
         let table = Table::new_with_handler("my_table", handler);
@@ -15252,14 +15251,20 @@ mod tests {
         table.checkout_tag("v_initial").await.unwrap();
 
         let captured = captured.lock().unwrap();
-        let resolve_headers = captured
-            .get("/v1/table/my_table/tags/version/")
-            .expect("tags/version should have been called by checkout_tag");
-        assert!(
-            !resolve_headers.contains_key("x-lancedb-min-version"),
-            "checkout_tag resolve must not carry stale min_version",
-        );
-        assert!(!resolve_headers.contains_key("x-lancedb-min-timestamp"));
+        for path in [
+            "/v1/table/my_table/tags/version/",
+            "/v1/table/my_table/describe/",
+        ] {
+            let headers = captured
+                .get(path)
+                .expect("checkout_tag should call endpoint");
+            assert!(
+                !headers.contains_key("x-lancedb-min-version"),
+                "{path} must not carry stale min_version",
+            );
+            assert!(!headers.contains_key("x-lancedb-min-timestamp"));
+            assert!(!headers.contains_key("x-lancedb-min-read-version"));
+        }
     }
 
     #[tokio::test]
@@ -16056,6 +16061,221 @@ mod tests {
             } => assert_eq!(code, reqwest::StatusCode::NO_CONTENT),
             other => panic!("expected Http error, got {other:?}"),
         }
+    }
+
+    #[rstest]
+    #[case(None, Some("exp"))]
+    #[case(Some("exp"), None)]
+    #[case(Some("exp"), Some("main"))]
+    #[case(Some("exp"), Some("other"))]
+    #[tokio::test]
+    async fn test_checkout_tag_rejects_other_branch(
+        #[case] handle_branch: Option<&'static str>,
+        #[case] tag_branch: Option<&'static str>,
+        #[values(None, Some(1))] initial_version: Option<u64>,
+    ) {
+        let table = RemoteTable::new_mock(
+            "my_table".to_string(),
+            move |request| {
+                let body = request_body_json(&request);
+                let response = match request.url().path() {
+                    "/v1/table/my_table/tags/version/" => {
+                        assert_eq!(body, json!({"tag": "cross_branch"}));
+                        json!({"branch": tag_branch, "version": 2}).to_string()
+                    }
+                    "/v1/table/my_table/describe/" => {
+                        assert_eq!(body["branch"].as_str(), handle_branch);
+                        assert_eq!(body["version"].as_u64(), initial_version);
+                        json!({"version": initial_version.unwrap_or(7), "schema": {"fields": []}})
+                            .to_string()
+                    }
+                    "/v1/table/my_table/count_rows/" => {
+                        assert_eq!(body["branch"].as_str(), handle_branch);
+                        assert_eq!(body["version"].as_u64(), initial_version);
+                        "3".to_string()
+                    }
+                    path => panic!("unexpected request: {path}"),
+                };
+                http::Response::builder()
+                    .status(200)
+                    .body(response)
+                    .unwrap()
+            },
+            None,
+        )
+        .with_branch(handle_branch.map(String::from));
+        if let Some(version) = initial_version {
+            table.checkout(version).await.unwrap();
+        } else {
+            table.checkout_latest().await.unwrap();
+        }
+        let schema = table.schema().await.unwrap();
+        let before = table.snapshot_read_state().await;
+
+        let error = table.checkout_tag("cross_branch").await.unwrap_err();
+        assert!(matches!(error, Error::InvalidInput { .. }), "{error:?}");
+        let message = error.to_string();
+        assert!(message.contains("cross_branch"), "{message}");
+        assert!(message.contains(tag_branch.unwrap_or("main")), "{message}");
+        assert!(
+            message.contains(handle_branch.unwrap_or("main")),
+            "{message}"
+        );
+
+        let after = table.snapshot_read_state().await;
+        assert_eq!(after.version, before.version);
+        assert_eq!(
+            after.freshness_state.generation,
+            before.freshness_state.generation
+        );
+        assert_eq!(after.freshness_state.pinned, before.freshness_state.pinned);
+        assert_eq!(
+            after.freshness_state.min_version,
+            before.freshness_state.min_version
+        );
+        assert_eq!(
+            after.freshness_state.min_read_version,
+            before.freshness_state.min_read_version
+        );
+        assert_eq!(
+            after.freshness_state.checkout_baseline,
+            before.freshness_state.checkout_baseline
+        );
+        assert_eq!(table.current_branch().as_deref(), handle_branch);
+        assert!(Arc::ptr_eq(&schema, &table.schema().await.unwrap()));
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+    }
+
+    #[rstest]
+    #[case(None, None)]
+    #[case(None, Some("main"))]
+    #[case(None, Some(""))]
+    #[case(None, Some(" main "))]
+    #[case(Some("exp"), Some("exp"))]
+    #[tokio::test]
+    async fn test_checkout_tag_on_same_branch(
+        #[case] handle_branch: Option<&'static str>,
+        #[case] tag_branch: Option<&'static str>,
+    ) {
+        let table = RemoteTable::new_mock(
+            "my_table".to_string(),
+            move |request| {
+                let body = request_body_json(&request);
+                let response = match request.url().path() {
+                    "/v1/table/my_table/tags/version/" => {
+                        assert_eq!(body, json!({"tag": "snapshot"}));
+                        json!({"branch": tag_branch, "version": 2}).to_string()
+                    }
+                    "/v1/table/my_table/describe/" => {
+                        assert_eq!(body["branch"].as_str(), handle_branch);
+                        assert_eq!(body["version"], 2);
+                        for header in [
+                            MIN_VERSION_HEADER,
+                            MIN_READ_VERSION_HEADER,
+                            MIN_TIMESTAMP_HEADER,
+                        ] {
+                            assert!(!request.headers().contains_key(header));
+                        }
+                        r#"{"version":2,"schema":{"fields":[]}}"#.to_string()
+                    }
+                    "/v1/table/my_table/count_rows/" => {
+                        assert_eq!(body["branch"].as_str(), handle_branch);
+                        if body["version"].is_null() {
+                            "4".to_string()
+                        } else {
+                            assert_eq!(body["version"], 2);
+                            "3".to_string()
+                        }
+                    }
+                    path => panic!("unexpected request: {path}"),
+                };
+                http::Response::builder()
+                    .status(200)
+                    .body(response)
+                    .unwrap()
+            },
+            None,
+        )
+        .with_branch(handle_branch.map(String::from));
+
+        table.checkout_latest().await.unwrap();
+        table.checkout_tag("snapshot").await.unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+        assert_eq!(table.current_branch().as_deref(), handle_branch);
+        table.checkout_latest().await.unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 4);
+        assert_eq!(table.current_branch().as_deref(), handle_branch);
+    }
+
+    #[rstest]
+    #[case(None)]
+    #[case(Some("exp"))]
+    #[tokio::test]
+    async fn test_checkout_tag_missing_version_leaves_handle_unchanged(
+        #[case] branch: Option<&'static str>,
+        #[values(None, Some(1))] initial_version: Option<u64>,
+    ) {
+        let table = RemoteTable::new_mock(
+            "my_table".to_string(),
+            move |request| {
+                let body = request_body_json(&request);
+                if request.url().path() == "/v1/table/my_table/tags/version/" {
+                    return http::Response::builder()
+                        .status(200)
+                        .body(json!({"branch": branch, "version": 99}).to_string())
+                        .unwrap();
+                }
+                assert_eq!(body["branch"].as_str(), branch);
+                if body["version"] == 99 {
+                    assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
+                    return http::Response::builder()
+                        .status(404)
+                        .body("not found".to_string())
+                        .unwrap();
+                }
+                assert_eq!(body["version"].as_u64(), initial_version);
+                let response = match request.url().path() {
+                    "/v1/table/my_table/describe/" => {
+                        json!({"version": initial_version.unwrap_or(7), "schema": {"fields": []}})
+                            .to_string()
+                    }
+                    "/v1/table/my_table/count_rows/" => "3".to_string(),
+                    path => panic!("unexpected request: {path}"),
+                };
+                http::Response::builder()
+                    .status(200)
+                    .body(response)
+                    .unwrap()
+            },
+            None,
+        )
+        .with_branch(branch.map(String::from));
+        if let Some(version) = initial_version {
+            table.checkout(version).await.unwrap();
+        } else {
+            table.checkout_latest().await.unwrap();
+        }
+        let schema = table.schema().await.unwrap();
+        let before = table.snapshot_read_state().await;
+
+        let error = table.checkout_tag("missing_version").await.unwrap_err();
+        assert!(matches!(error, Error::TableNotFound { .. }), "{error:?}");
+        assert!(error.to_string().contains("version: 99"));
+        let after = table.snapshot_read_state().await;
+        assert_eq!(after.version, before.version);
+        assert_eq!(
+            after.freshness_state.generation,
+            before.freshness_state.generation
+        );
+        assert_eq!(
+            after.freshness_state.checkout_baseline,
+            before.freshness_state.checkout_baseline
+        );
+        // HTTP errors invalidate the schema cache, but the refreshed schema
+        // must still come from the original selector.
+        assert_eq!(schema, table.schema().await.unwrap());
+        assert_eq!(table.current_branch().as_deref(), branch);
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
     }
 
     #[tokio::test]
