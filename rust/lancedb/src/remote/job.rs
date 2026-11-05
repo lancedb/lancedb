@@ -269,10 +269,12 @@ impl<S: HttpSend> JobHandle for RemoteJob<S> {
                 JobState::Failed => {
                     return Err(Error::JobFailed {
                         job_id: Some(self.job_id.clone()),
-                        failure: description
-                            .failure
-                            .map(ReportedFailure::into_job_failure)
-                            .unwrap_or_default(),
+                        failure: Box::new(
+                            description
+                                .failure
+                                .map(ReportedFailure::into_job_failure)
+                                .unwrap_or_default(),
+                        ),
                     });
                 }
                 JobState::Cancelled => {

@@ -1666,14 +1666,14 @@ pub(super) fn sql_status_error(request_id: &str, status: &tonic::Status) -> Erro
     if let Some(sql_job_id) = sql_job_id {
         return Error::JobFailed {
             job_id: Some(sql_job_id.clone()),
-            failure: JobFailure {
+            failure: Box::new(JobFailure {
                 phase: None,
                 message: Some(status.message().into()),
                 traceback: None,
                 retryable: None,
                 sql_job_id: Some(sql_job_id),
                 source: Some(Arc::new(error)),
-            },
+            }),
         };
     }
     error
