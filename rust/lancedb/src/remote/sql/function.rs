@@ -159,7 +159,7 @@ impl SqlClient {
         name: &str,
         version: &str,
         namespace: &[String],
-    ) -> Result<(DropFunctionOutcome, Job<DropFunctionOutcome>)> {
+    ) -> Result<(DropFunctionOutcome, Job)> {
         validate_function_name(name)?;
         validate_namespace(namespace)?;
         let job = self
@@ -195,10 +195,7 @@ impl SqlClient {
             message: "invalid SQL query job id".into(),
         })?;
         let outcome = job.wait().await?;
-        let completed = outcome.clone();
-        let job = Job::from_query_task(id, tokio::spawn(async move { Ok(completed) }), || async {
-            Ok(())
-        });
+        let job = Job::from_query_task(id, tokio::spawn(async { Ok(()) }), || async { Ok(()) });
         Ok((outcome, job))
     }
 
@@ -209,12 +206,6 @@ impl SqlClient {
         namespace: &[String],
     ) -> Result<(bool, Job)> {
         let (outcome, job) = self.drop_function_outcome(name, version, namespace).await?;
-        let id = job.id().unwrap().parse().map_err(|_| Error::Runtime {
-            message: "invalid SQL query job id".into(),
-        })?;
-        Ok((
-            outcome.dropped,
-            Job::from_query_task(id, tokio::spawn(async { Ok(()) }), || async { Ok(()) }),
-        ))
+        Ok((outcome.dropped, job))
     }
 }

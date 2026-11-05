@@ -941,11 +941,11 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     ) -> Result<(bool, Vec<String>)> {
         validate_function_name(name)?;
         validate_namespace(namespace_path)?;
-        let (_outcome, job) = self
+        let (outcome, job) = self
             .sql_client()?
             .drop_function_outcome(name, version, namespace_path)
             .await?;
-        let outcome = job.wait().await?;
+        job.wait().await?;
         Ok((outcome.dropped, outcome.warnings))
     }
 
