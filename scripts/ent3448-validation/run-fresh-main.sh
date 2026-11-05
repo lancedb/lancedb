@@ -28,9 +28,9 @@ mkdir -p "$task_tmp"
 export TMPDIR=$task_tmp
 export CARGO_BUILD_JOBS=4
 
-mbx test --quiet -p lancedb test_job_wait_surfaces_failure --lib
-mbx test --quiet -p lancedb test_job_wait_reports_the_server_failure_reason --lib
-mbx test --quiet -p lancedb test_function_errors_lists_the_rows_a_refresh_skipped --lib
+mbx test --quiet -p lancedb --lib --features remote test_job_wait_surfaces_failure
+mbx test --quiet -p lancedb --lib --features remote test_job_wait_reports_the_server_failure_reason
+mbx test --quiet -p lancedb --lib --features remote test_function_errors_lists_the_rows_a_refresh_skipped
 mbx check --quiet -p lancedb-nodejs
 
 cd python
