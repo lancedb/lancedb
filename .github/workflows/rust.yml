@@ -14,6 +14,8 @@ on:
       - docs/web-tests/blob-v2/rs/**
       - nodejs/Cargo.toml
       - python/Cargo.toml
+      - ci/build_no_lock.py
+      - ci/tests/test_build_no_lock.py
       - .github/actions/setup-protoc/**
       - .github/workflows/rust.yml
 
@@ -135,7 +137,8 @@ jobs:
           command: check advisories bans licenses sources
 
   build-no-lock:
-    runs-on: ubuntu-24.04
+    # Keep the existing Linux runner; its available disk varies by image.
+    runs-on: ubuntu-2404-4x-x64
     timeout-minutes: 30
     env:
       # Need up-to-date compilers for kernels
@@ -162,9 +165,22 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y protobuf-compiler libssl-dev
+      - name: Test build output cleanup
+        run: python3 -m unittest discover -s ci/tests -p test_build_no_lock.py -v
       - name: Build all
         run: |
-          cargo build --profile ci --benches --all-features --tests
+          df -h .
+          # Every target is linked, but this job never executes the test binaries.
+          python3 ci/build_no_lock.py
+      - name: Report build disk usage
+        if: always()
+        run: |
+          df -h .
+          for build_path in target "$HOME/.cargo/registry" "$HOME/.cargo/git"; do
+            if [ -d "$build_path" ]; then
+              du -h -d 2 "$build_path"
+            fi
+          done
 
   linux:
     timeout-minutes: 60
@@ -180,6 +196,8 @@ jobs:
       # Need up-to-date compilers for kernels
       CC: clang-18
       CXX: clang++-18
+      # Preserve the repository CPU flags and use setup-mold's system linker.
+      RUSTFLAGS: "-C target-cpu=haswell -C target-feature=+avx2,+fma,+f16c -C linker-features=-lld"
     steps:
       - uses: actions/checkout@v6
         with:
@@ -248,6 +266,8 @@ jobs:
     env:
       CC: clang-18
       CXX: clang++-18
+      # Rust's default rust-lld bypasses setup-mold's /usr/bin/ld replacement.
+      RUSTFLAGS: "-C target-cpu=haswell -C target-feature=+avx2,+fma,+f16c -C linker-features=-lld"
       GH_TOKEN: ${{ github.token }}
       SOPHON_READ_TOKEN: ${{ secrets.SOPHON_READ_TOKEN }}
     steps:

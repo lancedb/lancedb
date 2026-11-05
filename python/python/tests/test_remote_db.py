@@ -2047,6 +2047,7 @@ def test_remote_function_errors_lists_the_rows_a_refresh_skipped():
                 "job_id": "j-7",
                 "fragment_id": 3,
                 "row_offset": 9,
+                "row_id": 42,
                 "row_address": 12884901897,
                 "column": "embedding",
                 "function": "embed",
@@ -2098,6 +2099,7 @@ def test_remote_function_errors_lists_the_rows_a_refresh_skipped():
     assert errors.truncated is True
     assert [r.error_message for r in errors.records] == ["bad input 'x'"]
     assert errors.records[0].row_offset == 9
+    assert errors.records[0].row_id == 42
     assert errors.records[0].row_address == 12884901897
     assert errors.records[0].function_version == "2"
     assert repr(errors.records[0]) == (
@@ -2494,7 +2496,6 @@ def remote_unsupported_operations():
     return [
         ("uses_v2_manifest_paths", (), {}, "uses_v2_manifest_paths"),
         ("migrate_v2_manifest_paths", (), {}, "migrate_manifest_paths_v2"),
-        ("optimize", (), {}, "optimize"),
         ("create_index", ("vector",), {"config": HnswPq()}, "IVF_HNSW_PQ"),
     ]
 
@@ -5626,3 +5627,177 @@ def test_local_connections_refuse_property_graphs(tmp_path):
         list(db.list_property_graphs())
     with pytest.raises(NotImplementedError, match=refused):
         db.drop_property_graph("social")
+
+
+@pytest.mark.parametrize(
+    "status,category,type_name",
+    [
+        (400, "column_not_found", "ColumnNotFoundError"),
+        (400, "schema_mismatch", "SchemaMismatchError"),
+        (404, "table_not_found", "TableNotFoundError"),
+        (404, "reference_not_found", "ReferenceNotFoundError"),
+    ],
+)
+@pytest.mark.parametrize("operation", ["describe_namespace", "open_table"])
+def test_remote_input_error_metadata_crosses_native_boundary(
+    status, category, type_name, operation
+):
+    from lancedb.remote import errors
+
+    request_ids = []
+
+    def handler(request):
+        request_ids.append(request.headers["x-request-id"])
+        request.send_response(status)
+        request.send_header("Content-Type", "application/json")
+        request.send_header("x-lancedb-error-code", category)
+        request.send_header("x-lancedb-sql-job-id", "sql-job-1")
+        request.send_header("x-job-request-id", "worker-request")
+        request.end_headers()
+        request.wfile.write(json.dumps({"error": "original diagnostic"}).encode())
+
+    with mock_lancedb_connection(handler) as db:
+        with pytest.raises(getattr(errors, type_name)) as exc_info:
+            if operation == "open_table":
+                db.open_table("analytics")
+            else:
+                db.describe_namespace(["analytics"])
+    error = exc_info.value
+    assert isinstance(error, HttpError)
+    assert error.request_id == request_ids[-1]
+    assert error.status_code == status
+    assert error.error_code == category
+    assert error.job_id == "sql-job-1"
+    assert error.job_request_id == "worker-request"
+    assert str(error) == "original diagnostic"
+
+
+def _create_table_handler(request):
+    if request.path == "/v1/table/test/create/?mode=create":
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(b"{}")
+    else:
+        request.send_response(404)
+        request.end_headers()
+
+
+@contextlib.contextmanager
+def _mock_remote_table_with_sql(flight_server):
+    """A remote table backed by a mock REST server (for create/open) and the
+    given mock Flight SQL server (for the SQL statements `optimize()` submits
+    as jobs)."""
+    with http.server.ThreadingHTTPServer(
+        ("127.0.0.1", 0), make_mock_http_handler(_create_table_handler)
+    ) as rest_server:
+        rest_port = rest_server.server_address[1]
+        handle = start_server_thread(rest_server)
+        try:
+            with flight_server:
+                db = lancedb.connect(
+                    "db://dev",
+                    api_key="fake",
+                    host_override=f"http://127.0.0.1:{rest_port}",
+                    sql_host_override=f"grpc://127.0.0.1:{flight_server.port}",
+                )
+                yield db.create_table("test", [{"id": 1}])
+        finally:
+            rest_server.shutdown()
+            handle.join()
+
+
+def test_remote_optimize_skips_prune_and_index():
+    """Regression test: a remote table's `optimize()` used to submit a
+    compaction job and then raise `NotImplementedError` once it went on to
+    request pruning, which is not supported remotely. Retrying that failure
+    resubmitted another compaction job. It should instead succeed, with
+    zeroed pruning statistics, once compaction is submitted.
+
+    The SQL job submission for a query without parameters (like
+    `OPTIMIZE TABLE ... REWRITE DATA`) goes over plain Flight `do_get`, not
+    `do_exchange`: the client sends a ticket wrapping the statement and reads
+    back whatever the server returns as the job's result stream.
+    """
+    flight = pytest.importorskip("pyarrow.flight")
+
+    class AckServer(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.tickets = []
+
+        def do_get(self, context, ticket):
+            self.tickets.append(ticket.ticket)
+            return flight.RecordBatchStream(
+                pa.table({"ok": pa.array([], type=pa.bool_())})
+            )
+
+    server = AckServer()
+    with _mock_remote_table_with_sql(server) as table:
+        stats = table.optimize()
+
+    assert len(server.tickets) == 1
+    assert b"OPTIMIZE TABLE" in server.tickets[0]
+    assert stats.prune.bytes_removed == 0
+    assert stats.prune.old_versions_removed == 0
+
+
+def test_remote_optimize_rejects_non_default_compaction_options_before_submitting():
+    """Regression test: `RemoteTable.optimize()` used to drop
+    `compaction_options` instead of forwarding it to the Rust layer, so a
+    non-default value was silently ignored -- the server-side guard against
+    unsupported options never saw it. It should now reach that guard and
+    raise before any SQL statement is submitted."""
+    from lancedb.table import CompactionOptions
+
+    flight = pytest.importorskip("pyarrow.flight")
+
+    class UnreachableServer(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.tickets = []
+
+        def do_get(self, context, ticket):
+            self.tickets.append(ticket.ticket)
+            return flight.RecordBatchStream(
+                pa.table({"ok": pa.array([], type=pa.bool_())})
+            )
+
+    server = UnreachableServer()
+    options: CompactionOptions = {"target_rows_per_fragment": 5}
+    with _mock_remote_table_with_sql(server) as table:
+        with pytest.raises(NotImplementedError, match="CompactionOptions"):
+            table.optimize(compaction_options=options)
+
+    assert server.tickets == []
+
+
+def test_remote_optimize_rejects_explicit_pruning_before_submitting():
+    """Regression test: a remote table's `optimize()` used to silently drop
+    an explicit pruning request (`cleanup_older_than`), returning success
+    with zero bytes removed even though nothing was pruned. It should now
+    raise before any SQL statement is submitted, the same way a non-default
+    `compaction_options` does."""
+    from datetime import timedelta
+
+    flight = pytest.importorskip("pyarrow.flight")
+
+    class UnreachableServer(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.tickets = []
+
+        def do_get(self, context, ticket):
+            self.tickets.append(ticket.ticket)
+            return flight.RecordBatchStream(
+                pa.table({"ok": pa.array([], type=pa.bool_())})
+            )
+
+    server = UnreachableServer()
+    with _mock_remote_table_with_sql(server) as table:
+        with pytest.raises(NotImplementedError, match="pruning"):
+            table.optimize(cleanup_older_than=timedelta(days=1))
+        with pytest.raises(NotImplementedError, match="pruning"):
+            table.optimize(delete_unverified=True)
+
+    assert server.tickets == []

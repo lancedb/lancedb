@@ -6,6 +6,12 @@ from typing import Optional
 
 from lance_namespace.errors import TableNotFoundError as _NamespaceTableNotFoundError
 
+from lancedb.exceptions import (
+    ColumnNotFoundError as _ColumnNotFoundError,
+    ReferenceNotFoundError as _ReferenceNotFoundError,
+    SchemaMismatchError as _SchemaMismatchError,
+)
+
 
 class LanceDBClientError(RuntimeError):
     """An error that occurred in the LanceDB client.
@@ -57,6 +63,10 @@ class HttpError(LanceDBClientError):
     is_transport_error: bool
         Whether the request failed while connecting, sending, or reading, rather
         than because of an HTTP status or an invalid response payload.
+    job_id: str or None
+        SQL job reported by the server, when available.
+    job_request_id: str or None
+        Original request executed by the isolated SQL worker, when available.
     """
 
     def __new__(
@@ -69,9 +79,11 @@ class HttpError(LanceDBClientError):
         resource_name: Optional[str] = None,
         namespace_path: Optional[tuple[str, ...]] = None,
         is_transport_error: bool = False,
+        job_id: Optional[str] = None,
+        job_request_id: Optional[str] = None,
     ):
         if cls is HttpError:
-            mapped_cls = _http_error_class(error_code, resource_kind)
+            mapped_cls = _http_error_class(error_code, resource_kind, status_code)
             if mapped_cls is not None:
                 cls = mapped_cls
         return RuntimeError.__new__(cls)
@@ -86,9 +98,13 @@ class HttpError(LanceDBClientError):
         resource_name: Optional[str] = None,
         namespace_path: Optional[tuple[str, ...]] = None,
         is_transport_error: bool = False,
+        job_id: Optional[str] = None,
+        job_request_id: Optional[str] = None,
     ):
         super().__init__(message, request_id, status_code)
         self.is_transport_error = is_transport_error
+        self.job_id = job_id
+        self.job_request_id = job_request_id
         self.error_code = error_code
         self.resource_kind = resource_kind
         self.resource_name = resource_name
@@ -108,13 +124,29 @@ class HttpError(LanceDBClientError):
                 self.resource_name,
                 self.namespace_path,
                 self.is_transport_error,
+                self.job_id,
+                self.job_request_id,
             ),
         )
 
 
 def _http_error_class(
-    error_code: Optional[str], resource_kind: Optional[str]
+    error_code: Optional[str], resource_kind: Optional[str], status_code: Optional[int]
 ) -> Optional[type[HttpError]]:
+    if status_code == 400 and error_code is not None:
+        input_class = {
+            "column_not_found": ColumnNotFoundError,
+            "schema_mismatch": SchemaMismatchError,
+        }.get(error_code)
+        if input_class is not None:
+            return input_class
+    if status_code == 404 and error_code is not None:
+        input_class = {
+            "table_not_found": TableNotFoundError,
+            "reference_not_found": ReferenceNotFoundError,
+        }.get(error_code)
+        if input_class is not None:
+            return input_class
     if error_code == "already_exists":
         return AlreadyExistsError
     if error_code != "not_found" or resource_kind is None:
@@ -124,6 +156,100 @@ def _http_error_class(
         "function": FunctionNotFoundError,
         "namespace": NamespaceNotFoundError,
     }.get(resource_kind)
+
+
+class ColumnNotFoundError(HttpError, _ColumnNotFoundError):
+    """A remote HTTP request named a missing table column."""
+
+
+class ReferenceNotFoundError(HttpError, _ReferenceNotFoundError):
+    """A remote HTTP request named a missing branch or table reference."""
+
+
+class SchemaMismatchError(HttpError, _SchemaMismatchError):
+    """Input to a remote HTTP request does not match the table schema."""
+
+
+class SqlError(LanceDBClientError):
+    """A SQL response with its gRPC status and correlation fields.
+
+    ``grpc_code`` is the numeric gRPC code. ``error_code`` is an optional
+    machine-readable classification supplied by the server; message text is
+    never used to choose a subclass. ``job_id`` and ``job_request_id`` are absent
+    unless the server reports an isolated SQL job. ``request_id`` identifies the
+    current request. Older servers still produce SqlError without a category.
+
+    Examples
+    --------
+    >>> error = SqlError("Column 'missing' was not found", "req-1", 3,
+    ...                  "column_not_found", "job-1", "worker-1")
+    >>> isinstance(error, SqlColumnNotFoundError)
+    True
+    >>> error.job_request_id
+    'worker-1'
+    """
+
+    def __new__(
+        cls,
+        message: str,
+        request_id: str,
+        grpc_code: int,
+        error_code: Optional[str] = None,
+        job_id: Optional[str] = None,
+        job_request_id: Optional[str] = None,
+    ):
+        if cls is SqlError and error_code is not None:
+            cls = {
+                (3, "column_not_found"): SqlColumnNotFoundError,
+                (3, "schema_mismatch"): SqlSchemaMismatchError,
+                (5, "table_not_found"): SqlTableNotFoundError,
+                (5, "reference_not_found"): SqlReferenceNotFoundError,
+            }.get((grpc_code, error_code), cls)
+        return RuntimeError.__new__(cls)
+
+    def __init__(
+        self,
+        message: str,
+        request_id: str,
+        grpc_code: int,
+        error_code: Optional[str] = None,
+        job_id: Optional[str] = None,
+        job_request_id: Optional[str] = None,
+    ):
+        super().__init__(message, request_id)
+        self.grpc_code = grpc_code
+        self.error_code = error_code
+        self.job_id = job_id
+        self.job_request_id = job_request_id
+
+    def __reduce__(self):
+        return (
+            self.__class__,
+            (
+                str(self),
+                self.request_id,
+                self.grpc_code,
+                self.error_code,
+                self.job_id,
+                self.job_request_id,
+            ),
+        )
+
+
+class SqlColumnNotFoundError(SqlError, _ColumnNotFoundError):
+    """A SQL request named a missing column."""
+
+
+class SqlReferenceNotFoundError(SqlError, _ReferenceNotFoundError):
+    """A SQL request named a missing branch or table reference."""
+
+
+class SqlSchemaMismatchError(SqlError, _SchemaMismatchError):
+    """SQL input does not match the table schema."""
+
+
+class SqlTableNotFoundError(SqlError, ValueError, _NamespaceTableNotFoundError):
+    """A SQL request named a missing table."""
 
 
 class SecretNotFoundError(HttpError):

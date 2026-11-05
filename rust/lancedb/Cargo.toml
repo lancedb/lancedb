@@ -1,6 +1,6 @@
 [package]
 name = "lancedb"
-version = "0.42.0-beta.1"
+version = "0.42.0-beta.4"
 edition.workspace = true
 description = "LanceDB: A serverless, low-latency vector database for AI applications"
 license.workspace = true
@@ -106,7 +106,7 @@ candle-transformers = { version = "0.11.1", optional = true }
 candle-nn = { version = "0.11.1", optional = true }
 tokenizers = { version = "0.19.1", optional = true }
 semver = { workspace = true }
-roaring = "0.11.4"
+roaring = { version = "0.11.4", features = ["serde"] }
 sha2.workspace = true
 
 [dev-dependencies]

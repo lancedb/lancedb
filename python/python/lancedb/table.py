@@ -2935,6 +2935,17 @@ class Table(ABC):
         """
         Optimize the on-disk data and indices for better performance.
 
+        .. note::
+
+            On a LanceDB Enterprise (remote) table, only compaction is
+            currently supported. Pruning old versions and index optimization
+            are silently skipped there instead of being attempted, so this
+            call returns successfully, with zeroed pruning statistics, once
+            the compaction job has been submitted; it does not wait for that
+            job to finish. A non-default ``compaction_options`` raises
+            ``NotImplementedError`` before anything is submitted, since
+            there is no way yet to forward those settings to the server.
+
         Modeled after ``VACUUM`` in PostgreSQL.
 
         Optimization covers three operations:
@@ -2975,6 +2986,15 @@ class Table(ABC):
             ``target_rows_per_fragment`` from the expected row size to bound later
             passes. This does not cap the first pass over an existing oversized
             fragment; see [CompactionOptions][lancedb.table.CompactionOptions].
+
+        Returns
+        -------
+        OptimizeStats
+            The statistics of the optimization operation, containing:
+            - compaction: Statistics from file compaction (fragments and
+              files removed/added).
+            - prune: Statistics from pruning old versions (bytes and old
+              versions removed).
 
         Notes
         -----
@@ -3290,9 +3310,31 @@ class Table(ABC):
             ``records``, ``fragments`` and ``truncated``, the last saying
             whether the listing stopped at its limit.
 
-        Each record identifies its row with ``fragment_id``, ``row_offset``
-        and the physical ``row_address`` (``(fragment_id << 32) |
-        row_offset``). To retry the recorded rows, collect the non-null
+        Each record identifies its row with ``fragment_id``, ``row_offset``,
+        the physical ``row_address`` (``(fragment_id << 32) |
+        row_offset``), and, when the table uses stable row IDs, the stable
+        ``row_id`` read from the refresh's pinned table version. Prefer
+        ``row_id`` for retries: compaction and rewrite can change the
+        physical fields, while a stable row ID survives them.
+
+        To retry the recorded rows with stable row IDs:
+
+        .. code-block:: python
+
+            errors = table.function_errors(column="embedding")
+            row_ids = sorted(
+                record.row_id
+                for record in errors.records
+                if record.row_id is not None
+            )
+            if row_ids:
+                row_id_list = ", ".join(str(row_id) for row_id in row_ids)
+                database.execute_query(
+                    f"REFRESH COLUMN embedding ON {table.name} "
+                    f"WHERE _rowid IN ({row_id_list})"
+                )
+
+        For a table without stable row IDs, collect the non-null physical
         addresses before the table is compacted or rewritten and run the
         SQL refresh:
 
@@ -3307,7 +3349,7 @@ class Table(ABC):
             if addresses:
                 address_list = ", ".join(str(address) for address in addresses)
                 database.execute_query(
-                    f"REFRESH COLUMN embedding ON {table.name()} "
+                    f"REFRESH COLUMN embedding ON {table.name} "
                     f"WHERE _rowaddr IN ({address_list})"
                 )
 
@@ -5229,6 +5271,15 @@ class LanceTable(Table):
             ``target_rows_per_fragment`` from the expected row size to bound later
             passes. This does not cap the first pass over an existing oversized
             fragment; see [CompactionOptions][lancedb.table.CompactionOptions].
+
+        Returns
+        -------
+        OptimizeStats
+            The statistics of the optimization operation, containing:
+            - compaction: Statistics from file compaction (fragments and
+              files removed/added).
+            - prune: Statistics from pruning old versions (bytes and old
+              versions removed).
 
         Notes
         -----
@@ -7775,9 +7826,31 @@ class AsyncTable:
             ``records``, ``fragments`` and ``truncated``, the last saying
             whether the listing stopped at its limit.
 
-        Each record identifies its row with ``fragment_id``, ``row_offset``
-        and the physical ``row_address`` (``(fragment_id << 32) |
-        row_offset``). To retry the recorded rows, collect the non-null
+        Each record identifies its row with ``fragment_id``, ``row_offset``,
+        the physical ``row_address`` (``(fragment_id << 32) |
+        row_offset``), and, when the table uses stable row IDs, the stable
+        ``row_id`` read from the refresh's pinned table version. Prefer
+        ``row_id`` for retries: compaction and rewrite can change the
+        physical fields, while a stable row ID survives them.
+
+        To retry the recorded rows with stable row IDs:
+
+        .. code-block:: python
+
+            errors = await table.function_errors(column="embedding")
+            row_ids = sorted(
+                record.row_id
+                for record in errors.records
+                if record.row_id is not None
+            )
+            if row_ids:
+                row_id_list = ", ".join(str(row_id) for row_id in row_ids)
+                await database.execute_query(
+                    f"REFRESH COLUMN embedding ON {table.name} "
+                    f"WHERE _rowid IN ({row_id_list})"
+                )
+
+        For a table without stable row IDs, collect the non-null physical
         addresses before the table is compacted or rewritten and run the
         SQL refresh:
 
@@ -7792,7 +7865,7 @@ class AsyncTable:
             if addresses:
                 address_list = ", ".join(str(address) for address in addresses)
                 await database.execute_query(
-                    f"REFRESH COLUMN embedding ON {table.name()} "
+                    f"REFRESH COLUMN embedding ON {table.name} "
                     f"WHERE _rowaddr IN ({address_list})"
                 )
 
@@ -8195,6 +8268,17 @@ class AsyncTable:
         """
         Optimize the on-disk data and indices for better performance.
 
+        .. note::
+
+            On a LanceDB Enterprise (remote) table, only compaction is
+            currently supported. Pruning old versions and index optimization
+            are silently skipped there instead of being attempted, so this
+            call returns successfully, with zeroed pruning statistics, once
+            the compaction job has been submitted; it does not wait for that
+            job to finish. A non-default ``compaction_options`` raises
+            ``NotImplementedError`` before anything is submitted, since
+            there is no way yet to forward those settings to the server.
+
         Modeled after ``VACUUM`` in PostgreSQL.
 
         Optimization covers three operations:
@@ -8235,6 +8319,15 @@ class AsyncTable:
             ``target_rows_per_fragment`` from the expected row size to bound later
             passes. This does not cap the first pass over an existing oversized
             fragment; see [CompactionOptions][lancedb.table.CompactionOptions].
+
+        Returns
+        -------
+        OptimizeStats
+            The statistics of the optimization operation, containing:
+            - compaction: Statistics from file compaction (fragments and
+              files removed/added).
+            - prune: Statistics from pruning old versions (bytes and old
+              versions removed).
 
         Notes
         -----

@@ -19,6 +19,7 @@ pub use lance::dataset::ReadParams;
 pub use lance::dataset::Version;
 use lance::dataset::WriteMode;
 use lance::dataset::builder::DatasetBuilder;
+use lance::dataset::cleanup::RemovalStats;
 pub use lance::dataset::mem_wal::MemIndexRegistry;
 /// The traits a memtable index plugin implements; see [`MemIndexRegistry`].
 pub use lance::dataset::mem_wal::index as mem_index;
@@ -1900,6 +1901,13 @@ impl Table {
     /// optimize should be run frequently.  A good rule of thumb is to run optimize if
     /// you have added or modified 100,000 or more records or run more than 20 data
     /// modification operations.
+    ///
+    /// # LanceDB Enterprise (remote tables)
+    ///
+    /// Only [`OptimizeAction::Compact`] with default `options` and no custom
+    /// `remap_options` is supported; `All`, `Prune`, and `Index` return
+    /// [`crate::Error::NotSupported`]. See [`OptimizeAction::Compact`] for
+    /// what a remote call submits and what it does and does not wait for.
     pub async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats> {
         self.inner.optimize(action).await
     }
@@ -1929,6 +1937,77 @@ impl Table {
             compaction: None,
             prune: Some(prune),
         })
+    }
+
+    /// Run the maintenance cycle used by language bindings' `optimize()`
+    /// convenience method: compact, then -- on a local table -- prune and
+    /// optimize indices.
+    ///
+    /// This is an internal entry point for language bindings. On a remote
+    /// table (LanceDB Enterprise) only [`OptimizeAction::Compact`] with its
+    /// defaults is supported. A caller asking for anything pruning-related
+    /// (`older_than`, `before_timestamp`, or `delete_unverified: Some(true)`)
+    /// gets `NotSupported` before anything is submitted, the same way a
+    /// non-default `CompactionOptions` is already rejected -- rather than a
+    /// success that silently reports zero bytes pruned when nothing was
+    /// pruned at all. A plain call with none of those set only compacts:
+    /// `Prune` and `Index` are skipped here rather than attempted and
+    /// failed, since by this point the compaction job has already been
+    /// durably submitted and a caller retrying on that failure would
+    /// resubmit it. The returned prune stats are zeroed in that case. See
+    /// [`OptimizeAction::Compact`] for what the submission does and does not
+    /// wait for.
+    #[doc(hidden)]
+    pub async fn optimize_full(
+        &self,
+        compaction_options: CompactionOptions,
+        older_than: Option<chrono::Duration>,
+        before_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+        delete_unverified: Option<bool>,
+    ) -> Result<OptimizeStats> {
+        let is_remote = self.as_native().is_none();
+        if is_remote
+            && (older_than.is_some()
+                || before_timestamp.is_some()
+                || delete_unverified == Some(true))
+        {
+            return Err(Error::NotSupported {
+                message: "pruning (older_than, before_timestamp, or \
+                          delete_unverified) is not supported in LanceDB \
+                          Enterprise; omit those options to run compaction \
+                          only."
+                    .into(),
+            });
+        }
+        let compaction = self
+            .optimize(OptimizeAction::Compact {
+                options: compaction_options,
+                remap_options: None,
+            })
+            .await?
+            .compaction;
+        if is_remote {
+            return Ok(OptimizeStats {
+                compaction,
+                prune: Some(RemovalStats::default()),
+            });
+        }
+        let prune = if let Some(before_timestamp) = before_timestamp {
+            self.optimize_prune_before(before_timestamp, delete_unverified, None)
+                .await?
+                .prune
+        } else {
+            self.optimize(OptimizeAction::Prune {
+                older_than,
+                delete_unverified,
+                error_if_tagged_old_versions: None,
+            })
+            .await?
+            .prune
+        };
+        self.optimize(OptimizeAction::Index(OptimizeOptions::default()))
+            .await?;
+        Ok(OptimizeStats { compaction, prune })
     }
 
     /// Add new columns to the table, providing values to fill in.
@@ -2061,6 +2140,10 @@ impl Table {
     /// and the error, plus a summary for any fragment whose detail was
     /// capped. Filter by job or column through the request; a listing that
     /// hit its limit reports [`FunctionErrors::truncated`].
+    ///
+    /// A record carries a stable `row_id` when the refresh source used stable
+    /// row IDs. Prefer it over the physical `row_address` for retries:
+    /// compaction and rewrite can change the address.
     ///
     /// LanceDB Enterprise only, and the caller needs read access
     /// to the table, since a message carries the value that failed.

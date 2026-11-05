@@ -348,9 +348,14 @@ index statistics, and search. For example, `table.delete(where="id = 1")`,
 
 `create_scalar_index` defaults to `replace=True` on both backends. Both scalar
 and full-text index creation accept `wait_timeout`. LanceDB Enterprise maintenance methods
-accept the LanceDB Embedded options: cleanup and compaction warn that they are no-ops,
-while `optimize` reports an unsupported operation. Removed Tantivy options
-produce the same explanatory errors on both backends.
+accept the LanceDB Embedded options: cleanup and compaction warn that they are no-ops.
+`optimize` submits a durable compaction job and returns once that submission is
+accepted, not once compaction itself finishes. Pruning and index optimization
+are not yet supported remotely, so it silently skips them and returns with
+zeroed pruning statistics rather than attempting and failing. A non-default
+`compaction_options` raises `NotImplementedError` before anything is
+submitted, since there is no way yet to forward those settings to the server.
+Removed Tantivy options produce the same explanatory errors on both backends.
 
 The old LanceDB Enterprise keyword names `predicate` for `delete`, `index_name` for
 `drop_index`, `index_uuid` for `index_stats`, and `column` for `create_fts_index`
@@ -828,11 +833,60 @@ except HttpError as error:
     print("request failed:", error.request_id, error.status_code)
 ```
 
-Secret and function lifecycle APIs currently use Flight SQL and may still raise
-`RuntimeError`. The typed subclasses cover HTTP failures, including dependency
-errors during column refresh.
+SQL response failures raise `SqlError`, retaining the numeric `grpc_code` and
+`request_id`. Servers that report a recognized `x-lancedb-error-code` select a
+specific input-error subclass. HTTP failures use the corresponding `HttpError`
+subclass. Missing metadata stays absent; diagnostic text is never used to guess
+the error type. An Internal or Unavailable response remains a server failure,
+even if its message or metadata resembles an input error.
+
+For errors that can arrive over either transport, catch the shared input type:
+
+```python
+from lancedb.exceptions import ColumnNotFoundError, SchemaMismatchError
+from lancedb.remote.errors import HttpError, SqlError
+
+try:
+    db.execute_query("SELECT missing FROM events").read_all()
+except (ColumnNotFoundError, SchemaMismatchError) as error:
+    print(error.request_id, error.job_id, error.job_request_id)
+except (HttpError, SqlError) as error:
+    print(error.request_id)
+```
+
+`ReferenceNotFoundError` identifies a missing branch or table reference. Table
+errors are `TableNotFoundError` for HTTP and `SqlTableNotFoundError` for SQL;
+both remain compatible with `lance_namespace.errors.TableNotFoundError`.
+
+A background SQL job still raises `JobFailedError`. Its `__cause__` is the typed
+`SqlError` when available, and both carry the current `request_id` and original
+worker `job_request_id`. The outer job ID can differ from `sql_job_id`. These
+fields are `None` when the server does not report them. Older servers produce
+generic HTTP/SQL exceptions with their transport status and current request ID.
 
 ::: lancedb.remote.errors.HttpError
+
+::: lancedb.remote.errors.ColumnNotFoundError
+
+::: lancedb.remote.errors.ReferenceNotFoundError
+
+::: lancedb.remote.errors.SchemaMismatchError
+
+::: lancedb.remote.errors.SqlError
+
+::: lancedb.remote.errors.SqlColumnNotFoundError
+
+::: lancedb.remote.errors.SqlTableNotFoundError
+
+::: lancedb.remote.errors.SqlReferenceNotFoundError
+
+::: lancedb.remote.errors.SqlSchemaMismatchError
+
+::: lancedb.exceptions.ColumnNotFoundError
+
+::: lancedb.exceptions.ReferenceNotFoundError
+
+::: lancedb.exceptions.SchemaMismatchError
 
 ::: lancedb.remote.errors.TableNotFoundError
 

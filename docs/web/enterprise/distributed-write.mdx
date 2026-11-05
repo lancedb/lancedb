@@ -17,7 +17,14 @@ reports back. The query node collects those results and commits them
 together as the new table's first version; no separate coordinator
 service is involved. See [Architecture](/index#architecture).
 
+<div className="hidden dark:block">
+
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
+  "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
+  "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+}}}%%
 flowchart LR
     S["Source<br/>HuggingFace Parquet, or an<br/>existing Lance dataset in<br/>S3 / GCS / Azure"]
     Q["Query node<br/>plans the CTAS,<br/>commits the result"]
@@ -32,7 +39,41 @@ flowchart LR
     PE1 --> Q
     PE2 --> Q
     PE3 --> Q
+    classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
+    classDef accent fill:#2a1810,stroke:#ff734a,stroke-width:1.5px,color:#f4ebe8
+    class Q accent
 ```
+
+</div>
+
+<div className="block dark:hidden">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
+  "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
+  "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+}}}%%
+flowchart LR
+    S["Source<br/>HuggingFace Parquet, or an<br/>existing Lance dataset in<br/>S3 / GCS / Azure"]
+    Q["Query node<br/>plans the CTAS,<br/>commits the result"]
+    PE1["Plan executor<br/>writes uncommitted files"]
+    PE2["Plan executor<br/>writes uncommitted files"]
+    PE3["Plan executor<br/>writes uncommitted files"]
+
+    S --> Q
+    Q --> PE1
+    Q --> PE2
+    Q --> PE3
+    PE1 --> Q
+    PE2 --> Q
+    PE3 --> Q
+    classDef default fill:#ffffff,stroke:#ad9e95,stroke-width:1px,color:#221d19
+    classDef accent fill:#fff1ec,stroke:#e8582d,stroke-width:1.5px,color:#221d19
+    class Q accent
+```
+
+</div>
 
 An ordinary `INSERT` or `merge_insert`, from SQL or the SDK, does not
 distribute this way -- it runs as a single write, on whichever node or

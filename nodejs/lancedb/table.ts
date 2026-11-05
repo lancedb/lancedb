@@ -1019,6 +1019,12 @@ export abstract class Table {
    *  optimize should be run frequently.  A good rule of thumb is to run optimize if
    *  you have added or modified 100,000 or more records or run more than 20 data
    *  modification operations.
+   *
+   * On a LanceDB Enterprise (remote) table, only compaction is currently
+   * supported. Pruning old versions and index optimization are silently
+   * skipped there instead of being attempted, so this call resolves
+   * successfully, with zeroed pruning statistics, once the compaction job
+   * has been submitted; it does not wait for that job to finish.
    */
   abstract optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats>;
   /**

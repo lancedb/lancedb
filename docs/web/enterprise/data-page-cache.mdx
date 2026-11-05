@@ -16,7 +16,14 @@ the pages they serve. A background prewarm job can populate a cache ahead
 of a request that needs it, rather than filling it lazily on first read.
 See [Architecture](/index#architecture).
 
+<div className="hidden dark:block">
+
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
+  "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
+  "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+}}}%%
 flowchart LR
     R["Read request<br/>for a data page"] --> M{"In memory?"}
     M -->|hit| Return["Served from memory"]
@@ -24,7 +31,30 @@ flowchart LR
     D -->|hit| Promote["Loaded into memory,<br/>served"]
     D -->|miss| O[("Object storage")]
     O --> Fill["Fills memory and disk,<br/>served"]
+    classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
 ```
+
+</div>
+
+<div className="block dark:hidden">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
+  "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
+  "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+}}}%%
+flowchart LR
+    R["Read request<br/>for a data page"] --> M{"In memory?"}
+    M -->|hit| Return["Served from memory"]
+    M -->|miss| D{"In local disk cache?"}
+    D -->|hit| Promote["Loaded into memory,<br/>served"]
+    D -->|miss| O[("Object storage")]
+    O --> Fill["Fills memory and disk,<br/>served"]
+    classDef default fill:#ffffff,stroke:#ad9e95,stroke-width:1px,color:#221d19
+```
+
+</div>
 
 A table's local disk cache shares one budget with the
 [tiered index cache](/enterprise/tiered-index-cache#disk-budget)'s disk

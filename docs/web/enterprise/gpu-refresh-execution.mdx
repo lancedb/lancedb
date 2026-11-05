@@ -17,14 +17,47 @@ through the exact same placement path as
 Curation -- refreshing a column is not a separate scheduling code path
 from calling the Function directly, just a different caller.
 
+<div className="hidden dark:block">
+
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
+  "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
+  "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+}}}%%
 flowchart LR
     F["Function registered with<br/>gpu=True, gpu_class"] --> A{"Who requests<br/>a worker?"}
     A -->|"You, directly"| D["Data Curation:<br/>GPU Function execution"]
     A -->|"A refresh job"| R["Feature Engineering:<br/>computed column / MV refresh"]
     D --> P["Same GPU-class placement,<br/>same capacity-wait behavior"]
     R --> P
+    classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
+    classDef accent fill:#2a1810,stroke:#ff734a,stroke-width:1.5px,color:#f4ebe8
+    class P accent
 ```
+
+</div>
+
+<div className="block dark:hidden">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
+  "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
+  "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+}}}%%
+flowchart LR
+    F["Function registered with<br/>gpu=True, gpu_class"] --> A{"Who requests<br/>a worker?"}
+    A -->|"You, directly"| D["Data Curation:<br/>GPU Function execution"]
+    A -->|"A refresh job"| R["Feature Engineering:<br/>computed column / MV refresh"]
+    D --> P["Same GPU-class placement,<br/>same capacity-wait behavior"]
+    R --> P
+    classDef default fill:#ffffff,stroke:#ad9e95,stroke-width:1px,color:#221d19
+    classDef accent fill:#fff1ec,stroke:#e8582d,stroke-width:1.5px,color:#221d19
+    class P accent
+```
+
+</div>
 
 The Function's `gpu_class` (or the deployment's `default`) resolves to the
 same node selector, tolerations and resource name either way, and a

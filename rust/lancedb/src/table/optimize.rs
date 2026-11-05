@@ -206,6 +206,23 @@ pub enum OptimizeAction {
     /// new files.  If these operations are run frequently then compaction should run frequently.
     ///
     /// If these operations are never run (search only) then compaction is not necessary.
+    ///
+    /// # LanceDB Enterprise (remote tables)
+    ///
+    /// A remote table only supports `Compact` with default `options` and no
+    /// custom `remap_options`; both are rejected with
+    /// [`crate::Error::NotSupported`] otherwise. It submits a durable
+    /// compaction job to the server over SQL and waits for that submission to
+    /// be confirmed, not for compaction itself to finish: the job then runs
+    /// asynchronously on the server, so this call can return well before the
+    /// data is actually compacted. Because of that, the returned
+    /// [`OptimizeStats::compaction`] is a zeroed [`CompactionMetrics`]
+    /// placeholder rather than the real counts a local table reports.
+    ///
+    /// A branch-scoped table handle compacts that branch. The branch is not
+    /// validated to exist before the job is submitted, so a nonexistent
+    /// branch fails the compaction job asynchronously rather than failing
+    /// this call.
     Compact {
         options: CompactionOptions,
         remap_options: Option<Arc<dyn IndexRemapperOptions>>,

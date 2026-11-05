@@ -312,7 +312,6 @@ describe("remote connection", () => {
         const cases: [() => Promise<unknown>, string][] = [
           [() => table.usesV2ManifestPaths(), "uses_v2_manifest_paths"],
           [() => table.migrateManifestPathsV2(), "migrate_manifest_paths_v2"],
-          [() => table.optimize(), "optimize"],
           [
             () => table.createIndex("vector", { config: Index.hnswPq() }),
             "IVF_HNSW_PQ",

@@ -18,7 +18,14 @@ serve every other query, with the same data page cache in front of object
 storage. No training-specific configuration turns this on; it's a
 consequence of connecting to Enterprise at all.
 
+<div className="hidden dark:block">
+
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
+  "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
+  "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+}}}%%
 flowchart LR
     DL["PyTorch DataLoader<br/>/ StreamingDataset"] --> T["Enterprise-connected table"]
     T --> PE["Plan executor"]
@@ -26,7 +33,34 @@ flowchart LR
     C -->|hit| Fast["Served from memory<br/>or local disk"]
     C -->|miss| O[("Object storage")]
     O --> Fill["Fills the cache,<br/>served"]
+    classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
+    classDef accent fill:#2a1810,stroke:#ff734a,stroke-width:1.5px,color:#f4ebe8
+    class Fast accent
 ```
+
+</div>
+
+<div className="block dark:hidden">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
+  "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
+  "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+}}}%%
+flowchart LR
+    DL["PyTorch DataLoader<br/>/ StreamingDataset"] --> T["Enterprise-connected table"]
+    T --> PE["Plan executor"]
+    PE --> C{"In data page cache?"}
+    C -->|hit| Fast["Served from memory<br/>or local disk"]
+    C -->|miss| O[("Object storage")]
+    O --> Fill["Fills the cache,<br/>served"]
+    classDef default fill:#ffffff,stroke:#ad9e95,stroke-width:1px,color:#221d19
+    classDef accent fill:#fff1ec,stroke:#e8582d,stroke-width:1.5px,color:#221d19
+    class Fast accent
+```
+
+</div>
 
 This covers the ordinary tabular columns a query reads -- the data page
 cache's unit is a fixed-size page of table data. A [Blob v2](/management/table#managed-blobs)

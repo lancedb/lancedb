@@ -460,6 +460,7 @@ fn enrich_lance_field_not_found(
     let Some(field) = find_missing_field(&error) else {
         return error.into();
     };
+    log::info!("Query field rejected: {error}");
     field_not_found_error(field, &Schema::from(schema))
 }
 
@@ -480,7 +481,14 @@ fn field_not_found_error(field: &Column, schema: &Schema) -> Error {
     }
     message.push('.');
 
-    Error::InvalidInput { message }
+    Error::FieldNotFound {
+        name: field.name.clone(),
+        message,
+        source: Box::new(lance::Error::field_not_found(
+            field.name.clone(),
+            valid_fields,
+        )),
+    }
 }
 
 fn find_missing_field<'a>(error: &'a (dyn std::error::Error + 'static)) -> Option<&'a Column> {
@@ -1603,6 +1611,13 @@ mod tests {
             Box::new(None),
         );
         let error = field_not_found_diagnostic(&source, &schema).unwrap();
+        assert!(matches!(&error, Error::FieldNotFound { name, .. } if name == "missing"));
+        assert!(matches!(
+            std::error::Error::source(&error)
+                .unwrap()
+                .downcast_ref::<lance::Error>(),
+            Some(lance::Error::FieldNotFound { .. })
+        ));
         assert!(
             error.to_string().contains(
                 "Valid fields are `a`.`b`.`c`.`d`.`e`, `metadata`.`child.with.dot`, `metadata`.`Title`, `metadata`.`123child`, `metadata`.`child``tick`"
