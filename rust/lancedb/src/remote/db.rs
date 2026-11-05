@@ -60,7 +60,7 @@ fn direct_catalog_resource_error(error: Error) -> Error {
     let Some(Error::Sql {
         message,
         request_id,
-        grpc_code,
+        grpc_code: *grpc_code,
         metadata,
     }) = failure.source.as_deref()
     else {
