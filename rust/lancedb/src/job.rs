@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use arrow_array::RecordBatch;
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use tokio::sync::watch;
 use tokio::task::{AbortHandle, JoinHandle};
@@ -28,16 +28,12 @@ pub type JobProgressCallback = Arc<Mutex<dyn FnMut(&JobDescription) + Send>>;
 ///
 /// Warnings describe the state seen by the submitting server. They are not
 /// lifecycle events, reservations, or promises about future execution.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct JobWarning {
     pub code: String,
     pub message: String,
-    #[serde(default = "empty_warning_details", flatten)]
+    #[serde(flatten)]
     pub details: Value,
-}
-
-fn empty_warning_details() -> Value {
-    Value::Object(serde_json::Map::new())
 }
 
 /// Which of a job's events [`Job::events`] returns.

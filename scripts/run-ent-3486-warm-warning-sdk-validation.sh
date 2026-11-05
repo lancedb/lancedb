@@ -50,14 +50,14 @@ run_step diff-check git diff --check
 run_step rust-test mbx +1.97.1 test --locked --features remote -p lancedb \
     remote::table::tests::test_refresh_column_async_submits_a_backfill_job \
     -- --exact --nocapture
-run_step python-lint ruff check \
-    python/python/lancedb/job.py \
-    python/python/lancedb/table.py \
-    python/python/tests/test_remote_db.py
-run_step python-format ruff format --check \
-    python/python/lancedb/job.py \
-    python/python/lancedb/table.py \
-    python/python/tests/test_remote_db.py
+run_step_in "$source_root/python" python-lint uv run --frozen ruff check \
+    lancedb/job.py \
+    lancedb/table.py \
+    tests/test_remote_db.py
+run_step_in "$source_root/python" python-format uv run --frozen ruff format --check \
+    lancedb/job.py \
+    lancedb/table.py \
+    tests/test_remote_db.py
 
 run_step_in "$source_root/python" python-build \
     uv run --frozen --extra tests --extra dev maturin develop --extras tests,dev
