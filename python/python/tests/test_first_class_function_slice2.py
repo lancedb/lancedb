@@ -25,7 +25,9 @@ import pytest
 
 import lancedb
 from lancedb import BlobReader
+from lancedb.db import AsyncConnection
 from lancedb.functions import (
+    FunctionVersion,
     HuggingFaceModel,
     PythonRuntimeSpec,
     SecretBinding,
@@ -37,6 +39,7 @@ from lancedb.functions import (
     udf,
 )
 from lancedb.secrets import EnvVarSecret
+from lancedb.remote.db import RemoteDBConnection
 from utils import start_server_thread
 
 THRESHOLD = 20
@@ -1863,6 +1866,78 @@ def test_local_function_catalog_operations_are_not_supported(tmp_path):
         list(db.list_functions())
     with pytest.raises(NotImplementedError, match=message):
         db.drop_function("normalize_score", version=FUNCTION_VERSION)
+
+
+class _RawFunctionCatalog:
+    def __init__(self, definition, *, encode=False):
+        self.definition = json.dumps(definition) if encode else definition
+
+    async def get_function(self, _name, version, namespace_path):
+        return self.definition
+
+    def list_functions(self, *, namespace_path=None, page_token=None, page_limit=None):
+        return self
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self.definition is None:
+            raise StopAsyncIteration
+        definition, self.definition = self.definition, None
+        return definition
+
+    def num_page_results(self):
+        return int(self.definition is not None)
+
+    def page_token(self):
+        return None
+
+
+def _assert_execution_control_encoding(version):
+    encoded = json.loads(version.to_canonical_json())
+    assert type(encoded["batch_size"]) is int
+    assert type(encoded["row_timeout_seconds"]) is float
+    assert type(encoded["result_stability"]) is str
+    return encoded
+
+
+@pytest.mark.asyncio
+async def test_async_catalog_path_preserves_execution_controls():
+    definition = json.loads(
+        (FIXTURES / "remote_function_version.canonical.json").read_text()
+    )
+    definition.update(
+        batch_size=12,
+        row_timeout_seconds=8.0,
+        result_stability="input_and_context",
+    )
+    connection = AsyncConnection(_RawFunctionCatalog(definition, encode=True))
+
+    exact = await connection.get_function("embed", version="1")
+    listed = [item async for item in connection.list_functions(page_limit=32)]
+    assert len(listed) == 1
+    for version in [exact, *listed]:
+        assert _assert_execution_control_encoding(version) == definition
+
+
+def test_sync_catalog_path_preserves_execution_controls():
+    definition = json.loads(
+        (FIXTURES / "remote_function_version.canonical.json").read_text()
+    )
+    definition.update(
+        batch_size=12,
+        row_timeout_seconds=8.0,
+        result_stability="input_and_context",
+    )
+    connection = object.__new__(RemoteDBConnection)
+    connection._conn = _RawFunctionCatalog(FunctionVersion(**definition))
+
+    exact = connection.get_function("embed", version="1")
+    listed = list(connection.list_functions(page_limit=32))
+    assert len(listed) == 1
+    for version in [exact, *listed]:
+        assert _assert_execution_control_encoding(version) == definition
 
 
 @contextlib.contextmanager
