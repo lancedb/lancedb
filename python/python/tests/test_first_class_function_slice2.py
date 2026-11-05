@@ -1911,7 +1911,8 @@ async def test_async_catalog_path_preserves_execution_controls():
         name
         for name in dir(connection)
         if name.startswith("list_")
-        and "Function version" in (getattr(AsyncConnection, name).__doc__ or "")
+        and "FunctionVersion"
+        in str(getattr(AsyncConnection, name).__annotations__.get("return"))
     )
 
     exact = await connection.get_function("embed", version="1")
@@ -1935,7 +1936,8 @@ def test_sync_catalog_path_preserves_execution_controls():
         name
         for name in dir(RemoteDBConnection)
         if name.startswith("list_")
-        and "Function version" in (getattr(RemoteDBConnection, name).__doc__ or "")
+        and "FunctionVersion"
+        in str(getattr(RemoteDBConnection, name).__annotations__.get("return"))
     )
 
     exact = connection.get_function("embed", version="1")
