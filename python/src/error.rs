@@ -519,15 +519,14 @@ mod tests {
             ),
             ("namespace", "ns", Vec::new(), "NamespaceNotFoundError"),
         ] {
+            let mut metadata = RemoteErrorMetadata::default();
+            metadata.error_code = Some("not_found".into());
+            metadata.resource = Some(RemoteResourceIdentity::new(kind, name, namespace_path));
             let error = LanceError::Sql {
                 message: format!("{kind} '{name}' was not found"),
                 request_id: "current-request".into(),
                 grpc_code: 3,
-                metadata: Box::new(RemoteErrorMetadata {
-                    error_code: Some("not_found".into()),
-                    resource: Some(RemoteResourceIdentity::new(kind, name, namespace_path)),
-                    ..Default::default()
-                }),
+                metadata: Box::new(metadata),
             };
             let py_err = Python::attach(|_| {
                 let result: std::result::Result<(), LanceError> = Err(error);
