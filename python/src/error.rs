@@ -394,6 +394,7 @@ mod tests {
 
     #[test]
     fn generic_job_failure_retains_the_named_resource_as_its_cause() {
+        Python::initialize();
         let source = LanceError::Sql {
             message: "Function 'missing' was not found".into(),
             request_id: "current-request".into(),
@@ -512,6 +513,7 @@ mod tests {
 
     #[test]
     fn direct_catalog_lookup_is_raised_as_the_named_resource_error() {
+        Python::initialize();
         for (kind, name, namespace_path, exception) in [
             (
                 "function",
