@@ -4,7 +4,7 @@
 use super::{
     SqlClient,
     materialized_view::quote_identifier,
-    objects::{definition, literal, strings},
+    objects::{definition, literal, string_lists, strings},
 };
 use crate::{
     database::ExecuteQueryRequest,
@@ -15,6 +15,14 @@ use crate::{
     utils::{validate_function_name, validate_namespace},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+
+/// The SQL result of one Function drop, before the public boolean wrapper
+/// discards the advisory details.
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+pub(in crate::remote) struct DropFunctionOutcome {
+    pub(in crate::remote) dropped: bool,
+    pub(in crate::remote) warnings: Vec<String>,
+}
 
 impl SqlClient {
     pub(in crate::remote) async fn register_function(
@@ -146,12 +154,12 @@ impl SqlClient {
         };
         Ok(ListingPage { items, page_token })
     }
-    pub(in crate::remote) async fn drop_function(
+    pub(in crate::remote) async fn drop_function_outcome(
         &self,
         name: &str,
         version: &str,
         namespace: &[String],
-    ) -> Result<(bool, Job)> {
+    ) -> Result<(DropFunctionOutcome, Job)> {
         validate_function_name(name)?;
         validate_namespace(namespace)?;
         let job = self
@@ -167,23 +175,37 @@ impl SqlClient {
                 },
                 |batches| {
                     let rows = strings(&batches, "status")?;
-                    match rows.as_slice() {
-                        [status] if status == "dropped" => Ok(true),
-                        [status] if status == "not_found" => Ok(false),
-                        _ => Err(Error::Runtime {
-                            message: "invalid DROP FUNCTION result".into(),
-                        }),
-                    }
+                    let dropped = match rows.as_slice() {
+                        [status] if status == "dropped" => true,
+                        [status] if status == "not_found" => false,
+                        _ => {
+                            return Err(Error::Runtime {
+                                message: "invalid DROP FUNCTION result".into(),
+                            });
+                        }
+                    };
+                    Ok(DropFunctionOutcome {
+                        dropped,
+                        warnings: string_lists(&batches, "warnings")?,
+                    })
                 },
             )
             .await?;
         let id = job.id().unwrap().parse().map_err(|_| Error::Runtime {
             message: "invalid SQL query job id".into(),
         })?;
-        let dropped = job.wait().await?;
-        Ok((
-            dropped,
-            Job::from_query_task(id, tokio::spawn(async { Ok(()) }), || async { Ok(()) }),
-        ))
+        let outcome = job.wait().await?;
+        let job = Job::from_query_task(id, tokio::spawn(async { Ok(()) }), || async { Ok(()) });
+        Ok((outcome, job))
+    }
+
+    pub(in crate::remote) async fn drop_function(
+        &self,
+        name: &str,
+        version: &str,
+        namespace: &[String],
+    ) -> Result<(bool, Job)> {
+        let (outcome, job) = self.drop_function_outcome(name, version, namespace).await?;
+        Ok((outcome.dropped, job))
     }
 }

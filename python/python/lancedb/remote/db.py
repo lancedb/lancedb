@@ -1024,11 +1024,14 @@ class RemoteDBConnection(DBConnection):
         version: str,
         namespace_path: Optional[List[str]] = None,
     ) -> bool:
-        return LOOP.run(
-            self._conn.drop_function(
+        dropped, drop_warnings = LOOP.run(
+            self._conn._drop_function_with_warnings(
                 name, version=version, namespace_path=namespace_path
             )
         )
+        for warning in drop_warnings:
+            warnings.warn(warning, UserWarning, stacklevel=2)
+        return dropped
 
     @override
     def drop_function_async(

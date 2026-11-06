@@ -1972,6 +1972,45 @@ def test_sync_catalog_path_preserves_execution_controls():
         assert _assert_execution_control_encoding(version) == definition
 
 
+def test_sync_drop_function_emits_server_warnings_without_changing_bool_api():
+    class _DropConnection:
+        async def drop_function(self, name, *, version, namespace_path=None):
+            return True
+
+        async def _drop_function_with_warnings(
+            self, name, *, version, namespace_path=None
+        ):
+            return True, [
+                'materialized view "pinned" references Function "embed" version "1"'
+            ]
+
+    connection = object.__new__(RemoteDBConnection)
+    connection._conn = _DropConnection()
+
+    with pytest.warns(UserWarning, match="references Function"):
+        assert connection.drop_function("embed", version="1") is True
+
+
+@pytest.mark.asyncio
+async def test_async_drop_function_emits_server_warnings_without_changing_bool_api():
+    class _Inner:
+        async def _drop_function_with_warnings(
+            self, name, version, namespace_path=None
+        ):
+            return True, [
+                'materialized view "pinned" references Function "embed" version "1"'
+            ]
+
+        async def drop_function(self, name, version, namespace_path=None):
+            return True
+
+    connection = object.__new__(AsyncConnection)
+    connection._inner = _Inner()
+
+    with pytest.warns(UserWarning, match="references Function"):
+        assert await connection.drop_function("embed", version="1") is True
+
+
 @contextlib.contextmanager
 def _mock_remote_function_catalog():
     state = {"requests": [], "version": None}

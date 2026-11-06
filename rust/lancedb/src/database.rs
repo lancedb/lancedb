@@ -581,6 +581,18 @@ pub trait Database:
         let dropped = self.drop_function(name, version, namespace_path).await?;
         Ok((dropped, crate::job::Job::new_done()))
     }
+    /// Internal bridge for the Python binding to preserve the public bool API
+    /// while making advisory SQL warnings available to the wrapper.
+    #[doc(hidden)]
+    async fn drop_function_with_warnings(
+        &self,
+        name: &str,
+        version: &str,
+        namespace_path: &[String],
+    ) -> Result<(bool, Vec<String>)> {
+        let dropped = self.drop_function(name, version, namespace_path).await?;
+        Ok((dropped, Vec::new()))
+    }
     /// Create a database-owned storage integration in a namespace.
     async fn create_storage_integration(
         &self,

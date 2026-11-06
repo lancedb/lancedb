@@ -201,6 +201,9 @@ class Connection(object):
     async def drop_function(
         self, name: str, version: str, namespace_path: Optional[List[str]] = None
     ) -> bool: ...
+    async def _drop_function_with_warnings(
+        self, name: str, version: str, namespace_path: Optional[List[str]] = None
+    ) -> Tuple[bool, list[str]]: ...
     async def drop_function_async(
         self, name: str, version: str, namespace_path: Optional[List[str]] = None
     ) -> Tuple[bool, Job]: ...
