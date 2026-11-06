@@ -35,13 +35,10 @@ Draft until branching reaches early access. Add this item to the list above, aft
 - [**Branching**](/tables/branching) that gives each experiment or agent a writable fork of a table to review before it reaches `main`
 */}
 
-## Architecture: Embedded and Enterprise {#architecture}
+## Architecture {#architecture}
 
-LanceDB ships as two offerings on the same [Lance](/basics/lance) format and table model, which stores table data,
-versions, and indexes in open, columnar files. What changes between them is how storage and compute are organized
-around that format: start locally with Embedded, then move to Enterprise when your team needs distributed scale,
-managed infrastructure, private deployment, or higher-throughput curation, feature engineering, search and
-retrieval, and training workflows.
+LanceDB ships as two offerings on the same Lance format and table model, so moving between them requires no data conversion. Start 
+locally with Embedded, then move to Enterprise for distributed scale, feature engineering, managed infrastructure, and enterprise support.
 
 <CardGroup cols={2}>
   <Card title="LanceDB Embedded" icon="cube" href="/basics/lancedb-embedded">
@@ -49,13 +46,15 @@ retrieval, and training workflows.
     database server to deploy.
   </Card>
   <Card title="LanceDB Enterprise" icon="server" href="/enterprise/index">
-    Distributes query execution, indexing, caching, and maintenance across a cluster, with background maintenance
+    Distributes query execution, indexing, caching, feature engineering and maintenance across a cluster, with background maintenance
     and independently scalable compute. Deploy it in your cloud or use a LanceDB-managed deployment.
   </Card>
 </CardGroup>
 
 See [Embedded vs Enterprise](/basics/embedded-vs-enterprise) for a feature-by-feature comparison, including
 architecture, latency, throughput, and day-to-day usage differences.
+
+## Projects using LanceDB
 
 Teams use LanceDB for world-model and robotics training, as in
 [stable-worldmodel](https://github.com/galilai-group/stable-worldmodel) and
