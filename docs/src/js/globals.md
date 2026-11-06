@@ -74,6 +74,7 @@
 - [ClientConfig](interfaces/ClientConfig.md)
 - [ColumnAlteration](interfaces/ColumnAlteration.md)
 - [ColumnOrdering](interfaces/ColumnOrdering.md)
+- [CompactionOptions](interfaces/CompactionOptions.md)
 - [CompactionStats](interfaces/CompactionStats.md)
 - [ConnectNamespaceOptions](interfaces/ConnectNamespaceOptions.md)
 - [ConnectionOptions](interfaces/ConnectionOptions.md)

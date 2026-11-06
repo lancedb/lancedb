@@ -1927,8 +1927,9 @@ impl Table {
     ///
     /// # LanceDB Enterprise (remote tables)
     ///
-    /// Only [`OptimizeAction::Compact`] with default `options` and no custom
-    /// `remap_options` is supported; `All`, `Prune`, and `Index` return
+    /// [`OptimizeAction::Compact`] supports per-job `target_rows_per_fragment`,
+    /// `max_source_rows`, `io_buffer_size`, and `batch_size`, with no custom
+    /// `remap_options`. Other non-default options, `All`, `Prune`, and `Index` return
     /// [`crate::Error::NotSupported`]. See [`OptimizeAction::Compact`] for
     /// what a remote call submits and what it does and does not wait for.
     pub async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats> {
@@ -1968,10 +1969,10 @@ impl Table {
     ///
     /// This is an internal entry point for language bindings. On a remote
     /// table (LanceDB Enterprise) only [`OptimizeAction::Compact`] with its
-    /// defaults is supported. A caller asking for anything pruning-related
+    /// supported per-job options is supported. A caller asking for anything pruning-related
     /// (`older_than`, `before_timestamp`, or `delete_unverified: Some(true)`)
-    /// gets `NotSupported` before anything is submitted, the same way a
-    /// non-default `CompactionOptions` is already rejected -- rather than a
+    /// gets `NotSupported` before anything is submitted, the same way
+    /// unsupported `CompactionOptions` are rejected -- rather than a
     /// success that silently reports zero bytes pruned when nothing was
     /// pruned at all. A plain call with none of those set only compacts:
     /// `Prune` and `Index` are skipped here rather than attempted and

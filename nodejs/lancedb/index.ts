@@ -164,6 +164,7 @@ export {
   AddDataOptions,
   UpdateOptions,
   OptimizeOptions,
+  CompactionOptions,
   Version,
   WriteProgress,
   FtsToken,
