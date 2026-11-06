@@ -101,10 +101,10 @@ class EnvVarSecret:
     --------
     >>> from lancedb import EnvVarSecret
     >>> binding = EnvVarSecret(
-    ...     secret_name="openai-prod", env_variable="OPENAI_API_KEY"
+    ...     secret_name="model-api-key", env_variable="OPENAI_API_KEY"
     ... )
     >>> binding.secret_name, binding.env_variable
-    ('openai-prod', 'OPENAI_API_KEY')
+    ('model-api-key', 'OPENAI_API_KEY')
     """
 
     __slots__ = ("_secret_name", "_env_variable", "_secret_namespace_path")

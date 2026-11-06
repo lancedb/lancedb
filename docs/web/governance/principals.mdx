@@ -24,9 +24,9 @@ optional keyword to disambiguate:
 
 <CodeGroup>
 ```sql SQL icon="database"
-GRANT USAGE ON SECRET platform.`openai-prod` TO ROLE research
-GRANT USAGE ON SECRET platform.`openai-prod` TO USER alice
-GRANT USAGE ON SECRET platform.`openai-prod` TO GROUP `data-science`
+GRANT USAGE ON SECRET platform.`model-api-key` TO ROLE research
+GRANT USAGE ON SECRET platform.`model-api-key` TO USER alice
+GRANT USAGE ON SECRET platform.`model-api-key` TO GROUP `data-science`
 ```
 </CodeGroup>
 
@@ -41,7 +41,7 @@ keyword after the first:
 
 <CodeGroup>
 ```sql SQL icon="database"
-GRANT USAGE ON SECRET platform.`openai-prod` TO ROLE etl, rotation_service
+GRANT USAGE ON SECRET platform.`model-api-key` TO ROLE etl, rotation_service
 ```
 </CodeGroup>
 
