@@ -6,8 +6,8 @@ icon: "/static/assets/logo/lancedb-icon-gray.svg"
 keywords: ["multimodal lakehouse", "training", "feature engineering", "search", "open source", "oss"]
 ---
 
-**LanceDB** is a [multimodal lakehouse](https://lancedb.com/blog/multimodal-lakehouse/) for AI: one data layer for
-search and retrieval, curation, feature engineering, and model training. It is built on [Lance](/basics/lance), an
+**LanceDB** is a [multimodal lakehouse](https://lancedb.com/blog/multimodal-lakehouse/) for AI. It gives you one data
+layer for search and retrieval, curation, feature engineering, and model training. It is built on [Lance](/basics/lance), an
 open-source columnar format for multimodal AI data.
 
 Raw data, metadata, embeddings, and features live together in one versioned table, stored in open files on local
@@ -16,15 +16,15 @@ copying data into a separate system for each step.
 
 LanceDB includes:
 
-- [**Multimodal tables**](/management/table#multimodal): images, video, audio, text, embeddings, and metadata in
-  one schema-enforced table
+- [**Multimodal tables**](/management/table#multimodal) that hold images, video, audio, text, embeddings, and
+  metadata in one schema-enforced table
 - [**Vector search**](/search/vector-search), combined with [filters](/search/filtering) and
   [reranking](/reranking)
 - [**Full-text search**](/search/full-text-search) with BM25 ranking, and
   [**hybrid search**](/search/hybrid-search) that fuses it with vector results
-- [**Versioning**](/management/table#versioning): trace each training run back to the exact data it used
-- [**Training data loading**](/training/data-loading): shuffled, deterministic batches streamed into PyTorch
-- [**Curation**](/curation): sampling, deduplication, chunking, and joins (Enterprise)
+- [**Versioning**](/management/table#versioning) that traces each training run back to the exact data it used
+- [**Training data loading**](/training/data-loading) that streams shuffled, deterministic batches into PyTorch
+- [**Curation**](/curation) with sampling, deduplication, chunking, and joins (Enterprise)
 - [**Computed columns**](/feature-engineering/add-computed-column) and
   [**materialized views**](/feature-engineering/materialized-views) that refresh as data changes (Enterprise)
 - [**SQL**](/basics/sql) over the same tables, through Arrow Flight SQL (Enterprise)
@@ -32,7 +32,7 @@ LanceDB includes:
 
 {/*
 Draft until branching reaches early access. Add this item to the list above, after Versioning:
-- [**Branching**](/tables/branching): a writable fork of a table for each experiment or agent, reviewed before it reaches `main`
+- [**Branching**](/tables/branching) that gives each experiment or agent a writable fork of a table to review before it reaches `main`
 */}
 
 ## Architecture {#architecture}
@@ -41,10 +41,10 @@ LanceDB ships as two offerings on the same Lance format and table model, so movi
 data conversion.
 
 <Columns cols={2}>
-  <Frame caption="LanceDB Embedded: the SDK and the Lance format run in your application, reading and writing tables on local disk or in object storage.">
+  <Frame caption="In LanceDB Embedded, the SDK and the Lance format run in your application, reading and writing tables on local disk or in object storage.">
     <img src="/static/assets/images/overview/lancedb-embedded.png" alt="LanceDB Embedded architecture" />
   </Frame>
-  <Frame caption="LanceDB Enterprise: the SDK connects to a service whose query fleet, executor and cache fleets, realtime engine, and jobs fleet run on the Lance format and object storage.">
+  <Frame caption="In LanceDB Enterprise, the SDK connects to a service whose query fleet, executor and cache fleets, realtime engine, and jobs fleet run on the Lance format and object storage.">
     <img src="/static/assets/images/overview/lancedb-distributed.png" alt="LanceDB Enterprise architecture" />
   </Frame>
 </Columns>
