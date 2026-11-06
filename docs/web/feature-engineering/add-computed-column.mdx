@@ -58,7 +58,7 @@ ALTER TABLE frames ADD COLUMN caption AS caption(jpeg) WITH (version = 'fv_1')
 A Function application is called with its parameters bound to source
 columns through `col(...)`, keyed by the output column name. It commits a
 new, empty table version the same way a SQL expression does, so the usual
-[versioning](/tables/versioning) applies.
+[versioning](/management/table/versioning) applies.
 
 Both a Function application and a SQL expression accept the same
 `auto_refresh_enabled` and `auto_refresh_interval_seconds` options, and both
@@ -83,7 +83,7 @@ ALTER TABLE computed_demo ADD COLUMN doubled AS x * 2
 </CodeGroup>
 
 That commits a new table version with the column present and empty. It is an
-ordinary table version, so the usual [versioning](/tables/versioning) applies,
+ordinary table version, so the usual [versioning](/management/table/versioning) applies,
 including that you can travel back to before the column existed.
 
 The expression can reference any column in the table, including another

@@ -71,7 +71,7 @@ size. A descriptor's `kind` tells you which one was used:
 | `Managed` | `4` or `5` | Out-of-line values when managed storage is enabled | Stored in a Lance-owned object independently of the data file. |
 
 Managed storage must be enabled separately. See
-[Managed blobs](/tables/managed-blobs) for details. `kind=5` identifies a Managed
+[Managed blobs](/management/table/managed-blobs) for details. `kind=5` identifies a Managed
 object using an explicitly registered base.
 
 Lance uses the default thresholds unless you customize them. Explicitly
@@ -327,5 +327,5 @@ row ID does not address one list element, so `blob_columns()`, `fetch_blobs`,
 
 See the Lance [blob guide](https://lance.org/guide/blob/) for the storage format.
 
-For other storage options, see [Managed blobs](/tables/managed-blobs),
-[Binary columns](/tables/binary-data), and [Legacy blob columns](/tables/legacy-blobs).
+For other storage options, see [Managed blobs](/management/table/managed-blobs),
+[Binary columns](/management/table/binary-data), and [Legacy blob columns](/management/table/legacy-blobs).

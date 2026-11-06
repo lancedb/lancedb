@@ -22,7 +22,7 @@ WHERE created_at < '2026-01-01'
 `INSERT ... SELECT` is the form worth knowing: it moves rows between tables
 server-side, without a round trip through your process.
 
-Commits a new table version, so [versioning](/tables/versioning) and
+Commits a new table version, so [versioning](/management/table/versioning) and
 the [write guarantees](/basics/guarantees#writes) apply, including that the
 version advances even when the statement affects zero rows.
 

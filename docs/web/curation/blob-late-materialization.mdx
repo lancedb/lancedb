@@ -9,7 +9,7 @@ availability:
   enterprise: available
 ---
 
-A join that includes a wide column -- a [BlobV2](/tables/managed-blobs)
+A join that includes a wide column -- a [BlobV2](/management/table/managed-blobs)
 or an embedding -- can multiply that column's read far past the result's
 own row count: a naive plan reads the wide column for every candidate row
 the join considers, then throws most of that work away once the join

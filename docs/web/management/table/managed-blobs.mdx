@@ -10,7 +10,7 @@ availability:
 <span id="managed-blobs" style={{ display: "block", scrollMarginTop: "12rem" }} />
 
 Set the table schema metadata `lance.blob.managed` to `true` on a table with
-[`lancedb.blob()`](/tables/multimodal#multimodal-blob-v2) columns to store small values inline and
+[`lancedb.blob()`](/management/table/multimodal#multimodal-blob-v2) columns to store small values inline and
 larger values in managed objects under the table's `_blobs/` directory. Medium
 values can share a packed object, and large values use a dedicated object.
 

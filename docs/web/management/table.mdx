@@ -18,16 +18,16 @@ Create, open, rename, clone, and drop tables. For loading records, see
 [Ingestion](/ingestion). For other table tasks, choose a guide below.
 
 <CardGroup cols={2}>
-  <Card title="Schema evolution" icon="table-columns" href="/tables/schema">
+  <Card title="Schema evolution" icon="table-columns" href="/management/table/schema">
     Add and drop columns, alter their types, and update field metadata.
   </Card>
-  <Card title="Table versioning" icon="clock-rotate-left" href="/tables/versioning">
+  <Card title="Table versioning" icon="clock-rotate-left" href="/management/table/versioning">
     Inspect history, restore snapshots, and tag versions.
   </Card>
-  <Card title="Blob columns" icon="file-binary" href="/tables/multimodal">
+  <Card title="Blob columns" icon="file-binary" href="/management/table/multimodal">
     Store images, audio, video, and documents, and fetch bytes on demand.
   </Card>
-  <Card title="Binary columns" icon="image" href="/tables/binary-data">
+  <Card title="Binary columns" icon="image" href="/management/table/binary-data">
     Store file contents as raw bytes returned with query results.
   </Card>
 </CardGroup>
@@ -41,7 +41,7 @@ In LanceDB Enterprise, tables are also created and dropped in SQL with [`CREATE 
 | | |
 | --- | --- |
 | **Columns** | including vectors, blobs, and [computed](/feature-engineering/add-computed-column) columns |
-| **Versions** | every write commits one, so reads can [travel back](/tables/versioning) |
+| **Versions** | every write commits one, so reads can [travel back](/management/table/versioning) |
 | **Indexes** | vector, full-text and scalar, built over its columns |
 
 {/*
@@ -176,7 +176,7 @@ DROP TABLE documents
 
 <Warning>
 Dropping removes the table and **every version of it**.
-[Versioning](/tables/versioning) does not survive a drop, and neither
+[Versioning](/management/table/versioning) does not survive a drop, and neither
 `drop_all_tables` nor `drop_database` asks for confirmation. Both work only on
 a local database; on an Enterprise connection the SDK raises instead.
 </Warning>
@@ -212,7 +212,7 @@ as it is to the format.
 | String and binary | `utf8`, `large_utf8`, `binary`, `large_binary`, `fixed_size_binary(n)` |
 | Date and time | `date32`, `date64`, `time32`, `time64`, `timestamp`, `duration` |
 | Nested | `struct`, `list`, `large_list`, `fixed_size_list`, `map` |
-| Lance extensions | vectors, [blobs](/tables/multimodal), bfloat16{/* Draft until JSON columns reach early access: restore "[JSON](/sql/data-types#json), " after "vectors, " */} |
+| Lance extensions | vectors, [blobs](/management/table/multimodal), bfloat16{/* Draft until JSON columns reach early access: restore "[JSON](/sql/data-types#json), " after "vectors, " */} |
 
 A vector column is a `fixed_size_list<float32, dim>`, an ordinary Arrow type,
 which is why it is selectable and joinable but why arithmetic over it is list
@@ -241,13 +241,13 @@ precision does.
 <span id="multimodal-read-blobs" style={{ display: "block", scrollMarginTop: "12rem" }} />
 <span id="multimodal-blob-notes" style={{ display: "block", scrollMarginTop: "12rem" }} />
 
-[Blob columns: define a schema, write payloads, and read bytes](/tables/multimodal).
+[Blob columns: define a schema, write payloads, and read bytes](/management/table/multimodal).
 
 <span id="managed-blobs" style={{ display: "block", scrollMarginTop: "12rem" }} />
 <span id="managed-blobs-read-write" style={{ display: "block", scrollMarginTop: "12rem" }} />
 <span id="managed-blobs-lifecycle" style={{ display: "block", scrollMarginTop: "12rem" }} />
 
-[Managed blobs: configure storage, ownership, and cleanup](/tables/managed-blobs).
+[Managed blobs: configure storage, ownership, and cleanup](/management/table/managed-blobs).
 
 <span id="multimodal-store-binary-data" style={{ display: "block", scrollMarginTop: "12rem" }} />
 <span id="multimodal-1-setup-and-imports" style={{ display: "block", scrollMarginTop: "12rem" }} />
@@ -258,14 +258,14 @@ precision does.
 <span id="multimodal-convert-bytes-back-to-objects" style={{ display: "block", scrollMarginTop: "12rem" }} />
 <span id="multimodal-other-modalities" style={{ display: "block", scrollMarginTop: "12rem" }} />
 
-[Binary columns: store and retrieve raw file contents](/tables/binary-data).
+[Binary columns: store and retrieve raw file contents](/management/table/binary-data).
 
 <span id="multimodal-large-blobs-blob-api" style={{ display: "block", scrollMarginTop: "12rem" }} />
 <span id="multimodal-1-define-a-blob-schema" style={{ display: "block", scrollMarginTop: "12rem" }} />
 <span id="multimodal-2-ingest-large-blobs" style={{ display: "block", scrollMarginTop: "12rem" }} />
 <span id="multimodal-3-convert-blob-tables-to-pandas" style={{ display: "block", scrollMarginTop: "12rem" }} />
 
-[Legacy blob columns: work with existing Blob v1 tables](/tables/legacy-blobs).
+[Legacy blob columns: work with existing Blob v1 tables](/management/table/legacy-blobs).
 
 ## Schema evolution {#schema}
 
@@ -279,7 +279,7 @@ precision does.
 <span id="schema-drop-single-columns" style={{ display: "block", scrollMarginTop: "12rem" }} />
 <span id="schema-drop-multiple-columns" style={{ display: "block", scrollMarginTop: "12rem" }} />
 
-[Schema evolution: add and drop columns](/tables/schema).
+[Schema evolution: add and drop columns](/management/table/schema).
 
 <span id="schema-alter-existing-columns" style={{ display: "block", scrollMarginTop: "12rem" }} />
 <span id="schema-set-up-the-example-table-2" style={{ display: "block", scrollMarginTop: "12rem" }} />
@@ -290,12 +290,12 @@ precision does.
 <span id="schema-expression-based-type-changes" style={{ display: "block", scrollMarginTop: "12rem" }} />
 <span id="schema-alter-embedding-types-and-dimensions" style={{ display: "block", scrollMarginTop: "12rem" }} />
 
-[Alter columns: rename fields and change types, nullability, or vector dimensions](/tables/alter-columns).
+[Alter columns: rename fields and change types, nullability, or vector dimensions](/management/table/alter-columns).
 
 <span id="schema-update-field-metadata" style={{ display: "block", scrollMarginTop: "12rem" }} />
 <span id="schema-canonical-metadata-keys" style={{ display: "block", scrollMarginTop: "12rem" }} />
 
-[Field metadata: annotate columns with descriptions and tags](/tables/field-metadata).
+[Field metadata: annotate columns with descriptions and tags](/management/table/field-metadata).
 
 ## Versioning {#versioning}
 
@@ -315,7 +315,7 @@ precision does.
 <span id="versioning-delete-data" style={{ display: "block", scrollMarginTop: "12rem" }} />
 <span id="versioning-version-history-and-operations" style={{ display: "block", scrollMarginTop: "12rem" }} />
 
-[Table versioning: inspect history, restore snapshots, and manage tags](/tables/versioning).
+[Table versioning: inspect history, restore snapshots, and manage tags](/management/table/versioning).
 
 ## Privileges {#privileges}
 

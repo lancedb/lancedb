@@ -20,7 +20,7 @@ import {
 
 <span id="multimodal-large-blobs-blob-api" style={{ display: "block", scrollMarginTop: "12rem" }} />
 
-Use [`lancedb.blob()`](/tables/multimodal#multimodal-blob-v2) for new tables. The sections below
+Use [`lancedb.blob()`](/management/table/multimodal#multimodal-blob-v2) for new tables. The sections below
 cover existing tables that use the V1 large-binary Blob API
 (`pa.large_binary()` in Python, `LargeBinary` in TypeScript, and
 `DataType::LargeBinary` in Rust with `{"lance-encoding:blob": "true"}` field
@@ -28,7 +28,7 @@ metadata). Changing a field's metadata alone does not migrate an existing V1
 column to Blob v2.
 
 Start with the SDK imports and local `db` connection from
-[Blob setup](/tables/multimodal#multimodal-blob-v2-setup).
+[Blob setup](/management/table/multimodal#multimodal-blob-v2-setup).
 
 ## 1\. Define a blob schema {#multimodal-1-define-a-blob-schema}
 

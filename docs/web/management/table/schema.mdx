@@ -31,8 +31,8 @@ import {
 <span id="schema" style={{ display: "block", scrollMarginTop: "12rem" }} />
 
 Change a table's schema as your data requirements evolve. This guide covers
-adding and dropping columns. For other changes, see [Alter columns](/tables/alter-columns)
-and [Field metadata](/tables/field-metadata).
+adding and dropping columns. For other changes, see [Alter columns](/management/table/alter-columns)
+and [Field metadata](/management/table/field-metadata).
 
 <Note>
 In SQL, schema changes are [`ALTER TABLE`](/sql/ddl/table#alter).
@@ -43,8 +43,8 @@ In SQL, schema changes are [`ALTER TABLE`](/sql/ddl/table#alter).
 LanceDB supports four primary schema evolution operations:
 
 1. **Adding new columns**: Extend your table with additional attributes
-2. **[Altering existing columns](/tables/alter-columns)**: Change column names, data types, or nullability
-3. **[Updating field metadata](/tables/field-metadata)**: Attach or change per-column Arrow metadata
+2. **[Altering existing columns](/management/table/alter-columns)**: Change column names, data types, or nullability
+3. **[Updating field metadata](/management/table/field-metadata)**: Attach or change per-column Arrow metadata
 4. **Dropping columns**: Remove unnecessary columns from your schema
 
 
@@ -197,7 +197,7 @@ Remove several columns at once for efficiency:
 <Warning title="Dropping a column is undone only by restoring a version">
 Dropping a column changes the latest version only. Until
 [cleanup](/maintenance/cleanup) prunes the versions from before the drop,
-[restoring](/tables/versioning) one of them brings the column and its values back,
+[restoring](/management/table/versioning) one of them brings the column and its values back,
 along with the rest of the table as it was then. Once those versions are
 pruned, the drop cannot be undone, so check before dropping a column you may
 need.
