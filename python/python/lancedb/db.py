@@ -986,12 +986,12 @@ class DBConnection(EnforceOverrides):
         Examples
         --------
         ```python
-        db.create_secret("openai-prod", os.environ["OPENAI_API_KEY"])
+        db.create_secret("model-api-key", os.environ["MODEL_API_KEY"])
         db.create_function(
             analyze_caption,
             secrets=[
                 EnvVarSecret(
-                    secret_name="openai-prod", env_variable="OPENAI_API_KEY"
+                    secret_name="model-api-key", env_variable="MODEL_API_KEY"
                 )
             ],
         )
