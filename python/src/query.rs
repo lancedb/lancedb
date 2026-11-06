@@ -65,13 +65,14 @@ fn analyze_plan_options(distributed_metrics: Option<&str>) -> PyResult<QueryExec
 }
 
 fn validate_wand_factor(wand_factor: Option<f32>) -> PyResult<Option<f32>> {
-    if let Some(value) = wand_factor {
-        if !value.is_finite() || value < 0.0 {
-            return Err(PyValueError::new_err(
-                "wand_factor must be finite and non-negative",
-            ));
-        }
+    if let Some(value) = wand_factor
+        && (!value.is_finite() || value < 0.0)
+    {
+        return Err(PyValueError::new_err(
+            "wand_factor must be finite and non-negative",
+        ));
     }
+
     Ok(wand_factor)
 }
 
