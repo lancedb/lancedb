@@ -209,9 +209,9 @@ is not the latest stops cleanup instead (see the cleanup note at the bottom of t
 page).
 
 The tags API supports the standard CRUD operations (create, list, update, delete),
-plus checking out by tag name. The TypeScript and Rust examples refer to an
-existing table as `tagsTable` and `tags_table`, respectively; use a table with
-at least two committed versions.
+plus checking out by tag name. Continue with the same `table` created and
+modified above. Checking out a tag changes the snapshot the handle reads;
+return to the latest version before making further writes.
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">

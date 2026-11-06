@@ -8,6 +8,14 @@ availability:
 ---
 
 import {
+    PyTablesBasicConnect,
+    TsUpdateConnectLocal,
+    RsUpdateConnectLocal,
+    PySchemaFieldMetadataSetup,
+    TsSchemaFieldMetadataImports,
+    TsSchemaFieldMetadataSetup,
+    RsSchemaFieldMetadataImports,
+    RsSchemaFieldMetadataSetup,
     PySchemaFieldMetadataMerge as SchemaFieldMetadataMerge,
     TsSchemaFieldMetadataMerge as TsSchemaFieldMetadataMerge,
     RsSchemaFieldMetadataMerge as RsSchemaFieldMetadataMerge,
@@ -34,9 +42,27 @@ default, the keys you pass are **merged** into the field's existing metadata: ke
 mention are preserved, and passing `None` (Python) or `null` (TypeScript) deletes a key. Set
 `replace: true` to swap the field's entire metadata map instead of merging.
 
-The examples expect an existing table with a `category` column, opened as
-`table` in Python, `fieldMetadataTable` in TypeScript, or `field_metadata_table`
-in Rust. Rust also uses `lancedb::table::FieldMetadataUpdate`.
+## Create an example table {#field-metadata-setup}
+
+Connect to a local database and create a table with a `category` column.
+Run this setup before the metadata updates below. Run the TypeScript and Rust
+connection and table operations inside an async function.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyTablesBasicConnect + "\n" + PySchemaFieldMetadataSetup}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsSchemaFieldMetadataImports + "\n" + TsUpdateConnectLocal + "\n" + TsSchemaFieldMetadataSetup}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsSchemaFieldMetadataImports + "\n" + RsUpdateConnectLocal + "\n" + RsSchemaFieldMetadataSetup}
+    </CodeBlock>
+</CodeGroup>
+
+## Update field metadata {#field-metadata-update}
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
