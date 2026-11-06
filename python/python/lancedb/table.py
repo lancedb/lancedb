@@ -3497,6 +3497,11 @@ class Table(ABC):
         version. As a consequence, calling this method will disable any read consistency
         interval that was previously set.
 
+        In local mode, a tag must reference this handle's branch. A tag on another
+        branch raises `ValueError` without changing the handle. Use
+        [branches.checkout()][lancedb.table.Branches.checkout] to open a handle
+        scoped to that branch before checking out its tag.
+
         This is a read-only operation that turns the table into a sort of "view"
         or "detached head".  Other table instances will not be affected.  To make the
         change permanent you can use the `[Self::restore]` method.
@@ -3924,6 +3929,11 @@ class LanceTable(Table):
 
         Calling this method will set the table into time-travel mode. If you
         wish to return to standard mode, call `checkout_latest`.
+
+        A tag must reference this handle's branch. A tag on another branch raises
+        `ValueError` without changing the handle. Use
+        [branches.checkout()][lancedb.table.Branches.checkout] to open a handle
+        scoped to that branch before checking out its tag.
 
         Parameters
         ----------
@@ -8096,6 +8106,11 @@ class AsyncTable:
         Any read operation on the table will now access the data at the checked out
         version. As a consequence, calling this method will disable any read consistency
         interval that was previously set.
+
+        In local mode, a tag must reference this handle's branch. A tag on another
+        branch raises `ValueError` without changing the handle. Use
+        [branches.checkout()][lancedb.table.AsyncBranches.checkout] to open a handle
+        scoped to that branch before checking out its tag.
 
         This is a read-only operation that turns the table into a sort of "view"
         or "detached head".  Other table instances will not be affected.  To make the
