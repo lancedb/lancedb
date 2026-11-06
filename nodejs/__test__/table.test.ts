@@ -2106,6 +2106,12 @@ describe("When creating an index", () => {
       );
     });
 
+    it("rejects unknown FTS option names", () => {
+      expect(() =>
+        Index.fts({ splitIdentifier: true } as unknown as Partial<FtsOptions>),
+      ).toThrow("Unknown FTS option(s): splitIdentifier");
+    });
+
     it("allows code flags set to false on a text index", () => {
       expect(() =>
         Index.fts({ splitIdentifiers: false, indexOperators: false }),

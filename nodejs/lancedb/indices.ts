@@ -729,6 +729,27 @@ export interface FtsOptions {
   indexOperators?: boolean;
 }
 
+const FTS_OPTION_NAMES: ReadonlySet<string> = new Set<keyof FtsOptions>([
+  "withPosition",
+  "baseTokenizer",
+  "language",
+  "maxTokenLength",
+  "lowercase",
+  "stem",
+  "removeStopWords",
+  "customStopWords",
+  "asciiFolding",
+  "ngramMinLength",
+  "ngramMaxLength",
+  "prefixOnly",
+  "blockSize",
+  "analyzer",
+  "splitIdentifiers",
+  "splitOnNumerics",
+  "preserveOriginal",
+  "indexOperators",
+]);
+
 export class Index {
   private readonly inner: LanceDbIndex;
   private constructor(inner: LanceDbIndex) {
@@ -896,6 +917,15 @@ export class Index {
    * You can combine filters with full text search.
    */
   static fts(options?: Partial<FtsOptions>) {
+    const unknown = Object.keys(options ?? {}).filter(
+      (key) => !FTS_OPTION_NAMES.has(key),
+    );
+    if (unknown.length > 0) {
+      throw new Error(
+        `Unknown FTS option(s): ${unknown.join(", ")}. ` +
+          `Supported options: ${[...FTS_OPTION_NAMES].join(", ")}`,
+      );
+    }
     return new Index(
       LanceDbIndex.fts(
         options?.withPosition,
