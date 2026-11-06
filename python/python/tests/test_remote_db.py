@@ -1868,6 +1868,16 @@ def test_remote_create_index_async_returns_job():
             "error_policy": "skip",
         },
         {"retry_policy": {"max_attempts": 1}, "error_policy": "fail"},
+        {
+            "where": "id % 2 = 0",
+            "error_policy": "skip",
+            "max_failed_fraction": 0.01,
+            "max_failed_rows": 50,
+            "row_timeout_seconds": 30,
+            "init_timeout_seconds": 120,
+            "num_workers": 4,
+            "max_executor_processes_per_worker": 2,
+        },
     ],
 )
 async def test_remote_refresh_async_returns_typed_terminal_result(
@@ -1898,6 +1908,17 @@ async def test_remote_refresh_async_returns_typed_terminal_result(
                 ).model_dump(mode="json")
             if refresh_kwargs.get("error_policy") is not None:
                 expected["error_policy"] = refresh_kwargs["error_policy"]
+            for key in (
+                "where",
+                "max_failed_fraction",
+                "max_failed_rows",
+                "row_timeout_seconds",
+                "init_timeout_seconds",
+                "num_workers",
+                "max_executor_processes_per_worker",
+            ):
+                if refresh_kwargs.get(key) is not None:
+                    expected[key] = refresh_kwargs[key]
             assert json.loads(body) == expected
             request.send_response(202)
             request.send_header("Content-Type", "application/json")
@@ -2061,6 +2082,16 @@ def test_remote_refresh_async_forwards_progress_from_submitted_handle():
         ({"gpu_count": -1}, "gpu_count"),
         ({"retry_policy": {"transient": True, "max_attempts": 0}}, "retry_policy"),
         ({"error_policy": "retry"}, "error_policy"),
+        ({"where": "  "}, "where"),
+        ({"max_failed_fraction": 1.5}, "max_failed_fraction"),
+        ({"max_failed_rows": -1}, "max_failed_rows"),
+        ({"row_timeout_seconds": 0}, "row_timeout_seconds"),
+        ({"init_timeout_seconds": -5}, "init_timeout_seconds"),
+        ({"num_workers": 0}, "num_workers"),
+        (
+            {"max_executor_processes_per_worker": -2},
+            "max_executor_processes_per_worker",
+        ),
     ],
 )
 @pytest.mark.asyncio

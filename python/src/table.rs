@@ -42,14 +42,62 @@ use pyo3::{
 
 mod scannable;
 
-fn refresh_column_options(
+/// Keyword arguments shared by `refresh_column` and `refresh_column_async`.
+struct RefreshColumnArgs {
+    where_clause: Option<String>,
     batch_size: Option<i64>,
     gpu_class: Option<String>,
     gpu_count: Option<i64>,
     retry_policy: Option<String>,
     error_policy: Option<String>,
-) -> PyResult<RefreshColumnOptions> {
+    max_failed_fraction: Option<f64>,
+    max_failed_rows: Option<i64>,
+    row_timeout_seconds: Option<f64>,
+    init_timeout_seconds: Option<f64>,
+    num_workers: Option<i64>,
+    max_executor_processes_per_worker: Option<i64>,
+}
+
+fn positive_count<T: TryFrom<i64>>(value: Option<i64>, name: &str) -> PyResult<Option<T>> {
+    value
+        .map(|v| {
+            T::try_from(v)
+                .ok()
+                .filter(|_| v > 0)
+                .ok_or_else(|| PyValueError::new_err(format!("{name} must be greater than zero")))
+        })
+        .transpose()
+}
+
+fn refresh_column_options(args: RefreshColumnArgs) -> PyResult<RefreshColumnOptions> {
+    let RefreshColumnArgs {
+        where_clause,
+        batch_size,
+        gpu_class,
+        gpu_count,
+        retry_policy,
+        error_policy,
+        max_failed_fraction,
+        max_failed_rows,
+        row_timeout_seconds,
+        init_timeout_seconds,
+        num_workers,
+        max_executor_processes_per_worker,
+    } = args;
     let mut options = RefreshColumnOptions::default();
+    options.where_clause = where_clause;
+    options.max_failed_fraction = max_failed_fraction;
+    options.max_failed_rows = max_failed_rows
+        .map(u64::try_from)
+        .transpose()
+        .map_err(|_| PyValueError::new_err("max_failed_rows must be a non-negative integer"))?;
+    options.row_timeout_seconds = row_timeout_seconds;
+    options.init_timeout_seconds = init_timeout_seconds;
+    options.num_workers = positive_count(num_workers, "num_workers")?;
+    options.max_executor_processes_per_worker = positive_count(
+        max_executor_processes_per_worker,
+        "max_executor_processes_per_worker",
+    )?;
     options.retry_policy = retry_policy
         .map(|json| {
             serde_json::from_str(&json)
@@ -2142,18 +2190,38 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, *, batch_size=None, gpu_class=None, gpu_count=None, retry_policy=None, error_policy=None))]
+    #[pyo3(signature = (column, *, r#where=None, batch_size=None, gpu_class=None, gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None))]
+    #[allow(clippy::too_many_arguments)]
     pub fn refresh_column(
         self_: PyRef<'_, Self>,
         column: String,
+        r#where: Option<String>,
         batch_size: Option<i64>,
         gpu_class: Option<String>,
         gpu_count: Option<i64>,
         retry_policy: Option<String>,
         error_policy: Option<String>,
+        max_failed_fraction: Option<f64>,
+        max_failed_rows: Option<i64>,
+        row_timeout_seconds: Option<f64>,
+        init_timeout_seconds: Option<f64>,
+        num_workers: Option<i64>,
+        max_executor_processes_per_worker: Option<i64>,
     ) -> PyResult<Bound<'_, PyAny>> {
-        let options =
-            refresh_column_options(batch_size, gpu_class, gpu_count, retry_policy, error_policy)?;
+        let options = refresh_column_options(RefreshColumnArgs {
+            where_clause: r#where,
+            batch_size,
+            gpu_class,
+            gpu_count,
+            retry_policy,
+            error_policy,
+            max_failed_fraction,
+            max_failed_rows,
+            row_timeout_seconds,
+            init_timeout_seconds,
+            num_workers,
+            max_executor_processes_per_worker,
+        })?;
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let result = inner
@@ -2164,18 +2232,38 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, *, batch_size=None, gpu_class=None, gpu_count=None, retry_policy=None, error_policy=None))]
+    #[pyo3(signature = (column, *, r#where=None, batch_size=None, gpu_class=None, gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None))]
+    #[allow(clippy::too_many_arguments)]
     pub fn refresh_column_async(
         self_: PyRef<'_, Self>,
         column: String,
+        r#where: Option<String>,
         batch_size: Option<i64>,
         gpu_class: Option<String>,
         gpu_count: Option<i64>,
         retry_policy: Option<String>,
         error_policy: Option<String>,
+        max_failed_fraction: Option<f64>,
+        max_failed_rows: Option<i64>,
+        row_timeout_seconds: Option<f64>,
+        init_timeout_seconds: Option<f64>,
+        num_workers: Option<i64>,
+        max_executor_processes_per_worker: Option<i64>,
     ) -> PyResult<Bound<'_, PyAny>> {
-        let options =
-            refresh_column_options(batch_size, gpu_class, gpu_count, retry_policy, error_policy)?;
+        let options = refresh_column_options(RefreshColumnArgs {
+            where_clause: r#where,
+            batch_size,
+            gpu_class,
+            gpu_count,
+            retry_policy,
+            error_policy,
+            max_failed_fraction,
+            max_failed_rows,
+            row_timeout_seconds,
+            init_timeout_seconds,
+            num_workers,
+            max_executor_processes_per_worker,
+        })?;
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let job = inner

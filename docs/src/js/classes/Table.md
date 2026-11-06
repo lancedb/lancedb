@@ -1082,7 +1082,7 @@ for await (const batch of table.query()) {
 ### refreshColumn()
 
 ```ts
-abstract refreshColumn(column): Promise<RefreshColumnResult>
+abstract refreshColumn(column, options?): Promise<RefreshColumnResult>
 ```
 
 Fill the rows of a computed column that hold no value yet.
@@ -1098,6 +1098,10 @@ Enterprise a refresh runs as a server job, through [Table#refreshColumnAsync](Ta
 * **column**: `string`
     The name of the computed column to fill.
 
+* **options?**: [`RefreshColumnOptions`](../interfaces/RefreshColumnOptions.md)
+    Refresh options, all LanceDB
+    Enterprise only; see [Table#refreshColumnAsync](Table.md#refreshcolumnasync).
+
 #### Returns
 
 `Promise`&lt;[`RefreshColumnResult`](../interfaces/RefreshColumnResult.md)&gt;
@@ -1110,7 +1114,7 @@ number of rows filled and the new version number of the table.
 ### refreshColumnAsync()
 
 ```ts
-abstract refreshColumnAsync(column): Promise<Job>
+abstract refreshColumnAsync(column, options?): Promise<Job>
 ```
 
 Like [Table#refreshColumn](Table.md#refreshcolumn), but returns a handle to the refresh
@@ -1130,6 +1134,16 @@ LanceDB Enterprise it is the server's backfill job.
 * **column**: `string`
     The name of the computed column to fill.
 
+* **options?**: [`RefreshColumnOptions`](../interfaces/RefreshColumnOptions.md)
+    Refresh options, mirroring the SQL
+    `REFRESH COLUMN ... WHERE ... WITH (...)` form: `where` narrows the rows,
+    `errorPolicy`, `maxFailedFraction`, `maxFailedRows`, `rowTimeoutSeconds`
+    and `initTimeoutSeconds` govern failing rows, and `batchSize`,
+    `gpuClass`, `gpuCount`, `numWorkers` and `maxExecutorProcessesPerWorker`
+    size the workers. All are LanceDB Enterprise only; a LanceDB Embedded
+    refresh rejects every option other than `batchSize`, `gpuClass` and
+    `gpuCount`.
+
 #### Returns
 
 `Promise`&lt;[`Job`](Job.md)&gt;
@@ -1137,7 +1151,12 @@ LanceDB Enterprise it is the server's backfill job.
 #### Example
 
 ```ts
-const job = await table.refreshColumnAsync("doubled");
+const job = await table.refreshColumnAsync("embedding", {
+  where: "published_at > '2026-01-01'",
+  errorPolicy: "skip",
+  maxFailedFraction: 0.01,
+  rowTimeoutSeconds: 30,
+});
 await job.wait();
 console.log(await job.status()); // "finished"
 ```

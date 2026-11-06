@@ -38,6 +38,7 @@ import {
   Branches as NativeBranches,
   OptimizeStats,
   RTEStats,
+  RefreshColumnOptions,
   RefreshColumnResult,
   RefreshMaterializedViewResult,
   TableStatistics,
@@ -671,10 +672,15 @@ export abstract class Table {
    * everything else is left as it is. LanceDB Embedded only: in LanceDB
    * Enterprise a refresh runs as a server job, through {@link Table#refreshColumnAsync}.
    * @param {string} column The name of the computed column to fill.
+   * @param {RefreshColumnOptions} options Refresh options, all LanceDB
+   * Enterprise only; see {@link Table#refreshColumnAsync}.
    * @returns {Promise<RefreshColumnResult>} A promise that resolves to the
    * number of rows filled and the new version number of the table.
    */
-  abstract refreshColumn(column: string): Promise<RefreshColumnResult>;
+  abstract refreshColumn(
+    column: string,
+    options?: RefreshColumnOptions,
+  ): Promise<RefreshColumnResult>;
 
   /**
    * Like {@link Table#refreshColumn}, but returns a handle to the refresh
@@ -689,14 +695,30 @@ export abstract class Table {
    * than failing the job. In LanceDB Embedded the job runs in-process; in
    * LanceDB Enterprise it is the server's backfill job.
    * @param {string} column The name of the computed column to fill.
+   * @param {RefreshColumnOptions} options Refresh options, mirroring the SQL
+   * `REFRESH COLUMN ... WHERE ... WITH (...)` form: `where` narrows the rows,
+   * `errorPolicy`, `maxFailedFraction`, `maxFailedRows`, `rowTimeoutSeconds`
+   * and `initTimeoutSeconds` govern failing rows, and `batchSize`,
+   * `gpuClass`, `gpuCount`, `numWorkers` and `maxExecutorProcessesPerWorker`
+   * size the workers. All are LanceDB Enterprise only; a LanceDB Embedded
+   * refresh rejects every option other than `batchSize`, `gpuClass` and
+   * `gpuCount`.
    * @example
    * ```ts
-   * const job = await table.refreshColumnAsync("doubled");
+   * const job = await table.refreshColumnAsync("embedding", {
+   *   where: "published_at > '2026-01-01'",
+   *   errorPolicy: "skip",
+   *   maxFailedFraction: 0.01,
+   *   rowTimeoutSeconds: 30,
+   * });
    * await job.wait();
    * console.log(await job.status()); // "finished"
    * ```
    */
-  abstract refreshColumnAsync(column: string): Promise<Job>;
+  abstract refreshColumnAsync(
+    column: string,
+    options?: RefreshColumnOptions,
+  ): Promise<Job>;
 
   /**
    * The per-row errors Function refreshes recorded on this table.
@@ -1472,12 +1494,18 @@ export class LocalTable extends Table {
     throw new Error("Invalid input type for addColumns");
   }
 
-  async refreshColumn(column: string): Promise<RefreshColumnResult> {
-    return await this.inner.refreshColumn(column);
+  async refreshColumn(
+    column: string,
+    options?: RefreshColumnOptions,
+  ): Promise<RefreshColumnResult> {
+    return await this.inner.refreshColumn(column, options);
   }
 
-  async refreshColumnAsync(column: string): Promise<Job> {
-    return new Job(await this.inner.refreshColumnAsync(column));
+  async refreshColumnAsync(
+    column: string,
+    options?: RefreshColumnOptions,
+  ): Promise<Job> {
+    return new Job(await this.inner.refreshColumnAsync(column, options));
   }
 
   async functionErrors(

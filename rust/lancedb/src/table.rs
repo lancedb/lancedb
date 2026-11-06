@@ -883,18 +883,17 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "this operation is only supported on LanceDB Embedded".into(),
         })
     }
-    /// Refresh with options; expression-backed local refreshes ignore the
-    /// Function batch size.
+    /// Refresh with options. A local refresh ignores the Function batch size
+    /// and GPU placement and rejects every other option.
     async fn refresh_column_with_options(
         &self,
         column: &str,
         options: RefreshColumnOptions,
     ) -> Result<RefreshColumnResult> {
         options.validate()?;
-        if options.retry_policy.is_some() || options.error_policy.is_some() {
+        if let Some(name) = options.enterprise_only_option() {
             return Err(Error::NotSupported {
-                message: "Function retry and error policies require an Enterprise Function refresh"
-                    .into(),
+                message: format!("{name} requires a LanceDB Enterprise refresh"),
             });
         }
         self.refresh_column(column).await
@@ -916,10 +915,9 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         options: RefreshColumnOptions,
     ) -> Result<Job<crate::function::RefreshColumnResult>> {
         options.validate()?;
-        if options.retry_policy.is_some() || options.error_policy.is_some() {
+        if let Some(name) = options.enterprise_only_option() {
             return Err(Error::NotSupported {
-                message: "Function retry and error policies require an Enterprise Function refresh"
-                    .into(),
+                message: format!("{name} requires a LanceDB Enterprise refresh"),
             });
         }
         self.refresh_column_async(column).await

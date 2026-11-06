@@ -241,9 +241,58 @@ GPU class discovery.
 
 <Note>
 The Rust GPU discovery and refresh controls are not in the latest Rust
-release. TypeScript does not expose GPU class discovery or placement; a
-tracking issue is needed before adding equivalent controls.
+release. TypeScript does not expose GPU class discovery; pass `gpuClass`
+and `gpuCount` in the `refreshColumnAsync` options.
 </Note>
+
+The job APIs also take the row filter and failure handling of the SQL
+`REFRESH COLUMN ... WHERE ... WITH (...)` form, so a refresh can be narrowed
+to new rows and told to skip rows whose Function call fails:
+
+<CodeGroup>
+```python
+job = table.refresh_column_async(
+    "embedding",
+    where="published_at > '2026-01-01'",
+    error_policy="skip",
+    max_failed_fraction=0.01,
+    row_timeout_seconds=30,
+)
+```
+
+```typescript
+const job = await table.refreshColumnAsync("embedding", {
+  where: "published_at > '2026-01-01'",
+  errorPolicy: "skip",
+  maxFailedFraction: 0.01,
+  rowTimeoutSeconds: 30,
+});
+```
+
+```rust
+use lancedb::{function::FunctionErrorPolicy, table::RefreshColumnOptions};
+
+let _job = table
+    .refresh_column_async_with_options(
+        "embedding",
+        RefreshColumnOptions::default()
+            .where_clause("published_at > '2026-01-01'")
+            .error_policy(FunctionErrorPolicy::Skip)
+            .max_failed_fraction(0.01)
+            .row_timeout_seconds(30.0),
+    )
+    .await?;
+```
+</CodeGroup>
+
+`max_failed_rows`, `init_timeout_seconds`, `num_workers` and
+`max_executor_processes_per_worker` are accepted the same way; the
+[SQL refresh options](/sql/dml/refresh-column#options) describe each one.
+The SDK rejects a blank `where`, a `max_failed_fraction` outside 0 to 1, a
+timeout that is not a positive number and a zero worker or process count
+before sending the request; the server validates everything else. A LanceDB
+Embedded refresh rejects every option other than `batch_size`, `gpu_class`
+and `gpu_count`.
 
 ## When a refresh fails {#failures}
 

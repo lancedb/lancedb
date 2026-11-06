@@ -1138,20 +1138,34 @@ class RemoteTable(Table):
         self,
         column: str,
         *,
+        where: Optional[str] = None,
         batch_size: Optional[int] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
         error_policy: Optional[Literal["fail", "skip"]] = None,
+        max_failed_fraction: Optional[float] = None,
+        max_failed_rows: Optional[int] = None,
+        row_timeout_seconds: Optional[float] = None,
+        init_timeout_seconds: Optional[float] = None,
+        num_workers: Optional[int] = None,
+        max_executor_processes_per_worker: Optional[int] = None,
     ):
         return LOOP.run(
             self._table.refresh_column(
                 column,
+                where=where,
                 batch_size=batch_size,
                 gpu_class=gpu_class,
                 gpu_count=gpu_count,
                 retry_policy=retry_policy,
                 error_policy=error_policy,
+                max_failed_fraction=max_failed_fraction,
+                max_failed_rows=max_failed_rows,
+                row_timeout_seconds=row_timeout_seconds,
+                init_timeout_seconds=init_timeout_seconds,
+                num_workers=num_workers,
+                max_executor_processes_per_worker=max_executor_processes_per_worker,
             )
         )
 
@@ -1159,21 +1173,35 @@ class RemoteTable(Table):
         self,
         column: str,
         *,
+        where: Optional[str] = None,
         batch_size: Optional[int] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
         error_policy: Optional[Literal["fail", "skip"]] = None,
+        max_failed_fraction: Optional[float] = None,
+        max_failed_rows: Optional[int] = None,
+        row_timeout_seconds: Optional[float] = None,
+        init_timeout_seconds: Optional[float] = None,
+        num_workers: Optional[int] = None,
+        max_executor_processes_per_worker: Optional[int] = None,
     ) -> Job[RefreshColumnResult]:
         return Job(
             LOOP.run(
                 self._table.refresh_column_async(
                     column,
+                    where=where,
                     batch_size=batch_size,
                     gpu_class=gpu_class,
                     gpu_count=gpu_count,
                     retry_policy=retry_policy,
                     error_policy=error_policy,
+                    max_failed_fraction=max_failed_fraction,
+                    max_failed_rows=max_failed_rows,
+                    row_timeout_seconds=row_timeout_seconds,
+                    init_timeout_seconds=init_timeout_seconds,
+                    num_workers=num_workers,
+                    max_executor_processes_per_worker=max_executor_processes_per_worker,
                 )
             )
         )

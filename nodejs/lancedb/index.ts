@@ -56,6 +56,7 @@ export {
   MergeResult,
   AddResult,
   AddColumnsResult,
+  RefreshColumnOptions,
   RefreshColumnResult,
   FunctionErrors,
   FunctionErrorsOptions,
