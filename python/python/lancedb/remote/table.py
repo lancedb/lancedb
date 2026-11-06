@@ -40,6 +40,7 @@ from lancedb._lancedb import (
     UpdateResult,
 )
 from lancedb.embeddings.base import EmbeddingFunctionConfig
+from lancedb.delta import TableDelta
 from lancedb.expr import Expr
 from lancedb.index import (
     FTS,
@@ -279,6 +280,26 @@ class RemoteTable(Table):
     def list_versions(self):
         """List all versions of the table"""
         return LOOP.run(self._table.list_versions())
+
+    def delta(
+        self,
+        compared_against: Optional[int] = None,
+        *,
+        begin_version: Optional[int] = None,
+        end_version: Optional[int] = None,
+    ) -> TableDelta:
+        """Get the rows that changed between two versions of the table.
+
+        Reading the rows raises ``NotImplementedError`` for now: LanceDB
+        Enterprise has no route for table deltas yet.
+        """
+        return TableDelta(
+            self._table.delta(
+                compared_against,
+                begin_version=begin_version,
+                end_version=end_version,
+            )
+        )
 
     def to_arrow(self, *, blob_mode: BlobMode = "lazy") -> pa.Table:
         """to_arrow() is not supported in LanceDB Enterprise."""

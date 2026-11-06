@@ -6244,3 +6244,99 @@ async def test_async_computed_auto_refresh_uses_server_interval(tmp_path):
     metadata = (await table.schema()).field("doubled").metadata
     assert metadata[b"computed_column.auto_refresh_enabled"] == b"true"
     assert b"computed_column.auto_refresh_interval_seconds" not in metadata
+
+
+def _stable_row_id_options():
+    return {"new_table_enable_stable_row_ids": "true"}
+
+
+def _delta_history(db, stable_row_ids=True):
+    """Version 1 holds ids 1-3, then 4-5 are added, id 2 is updated and id 1
+    is deleted, giving version 4."""
+    table = db.create_table(
+        "delta_history",
+        data=[{"id": i, "value": 0} for i in (1, 2, 3)],
+        storage_options={
+            "new_table_enable_stable_row_ids": "true" if stable_row_ids else "false"
+        },
+    )
+    table.add([{"id": i, "value": 0} for i in (4, 5)])
+    table.update(where="id = 2", values={"value": 99})
+    table.delete("id = 1")
+    assert table.version == 4
+    return table
+
+
+def test_table_delta_reports_row_changes(tmp_path):
+    table = _delta_history(lancedb.connect(tmp_path))
+    delta = table.delta(compared_against=1)
+
+    def ids(reader):
+        return sorted(reader.read_all().column("id").to_pylist())
+
+    assert ids(delta.inserted_rows()) == [4, 5]
+    assert ids(delta.updated_rows()) == [2]
+    assert ids(delta.upserted_rows()) == [2, 4, 5]
+
+    upserted = delta.upserted_rows().read_all()
+    for name in ("_rowid", "_row_created_at_version", "_row_last_updated_at_version"):
+        assert name in upserted.column_names
+
+    deleted = table.delta(compared_against=3).deleted_row_ids().read_all()
+    assert deleted.num_rows == 1
+    assert "_rowid" in deleted.column_names
+
+
+def test_table_delta_explicit_version_range(tmp_path):
+    table = _delta_history(lancedb.connect(tmp_path))
+
+    delta = table.delta(begin_version=1, end_version=2)
+
+    assert sorted(delta.inserted_rows().read_all().column("id").to_pylist()) == [4, 5]
+    assert delta.updated_rows().read_all().num_rows == 0
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {},
+        {"begin_version": 1},
+        {"end_version": 3},
+        {"compared_against": 1, "end_version": 3},
+        {"begin_version": 3, "end_version": 1},
+    ],
+)
+def test_table_delta_rejects_invalid_ranges(tmp_path, kwargs):
+    table = _delta_history(lancedb.connect(tmp_path))
+
+    with pytest.raises(ValueError):
+        table.delta(**kwargs).inserted_rows()
+
+
+def test_table_delta_requires_stable_row_ids(tmp_path):
+    table = _delta_history(lancedb.connect(tmp_path), stable_row_ids=False)
+
+    with pytest.raises(ValueError, match="stable row id"):
+        table.delta(compared_against=1).inserted_rows().read_all()
+
+
+@pytest.mark.asyncio
+async def test_async_table_delta(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table(
+        "delta_history",
+        data=[{"id": i, "value": 0} for i in (1, 2, 3)],
+        storage_options=_stable_row_id_options(),
+    )
+    await table.add([{"id": 4, "value": 0}])
+    await table.update({"value": 99}, where="id = 2")
+
+    delta = table.delta(compared_against=1)
+
+    inserted = await (await delta.inserted_rows()).read_all()
+    assert [id_ for batch in inserted for id_ in batch.column("id").to_pylist()] == [4]
+    upserted = await (await delta.upserted_rows()).read_all()
+    ids = sorted(id_ for batch in upserted for id_ in batch.column("id").to_pylist())
+    assert ids == [2, 4]
+    with pytest.raises(ValueError):
+        await table.delta(begin_version=1).inserted_rows()

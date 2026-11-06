@@ -595,6 +595,13 @@ class Table:
         column: Optional[str] = None,
         index_name: Optional[str] = None,
     ) -> list[FtsToken]: ...
+    async def delta_rows(
+        self,
+        rows: str,
+        compared_against: Optional[int] = None,
+        begin_version: Optional[int] = None,
+        end_version: Optional[int] = None,
+    ) -> RecordBatchStream: ...
     async def delete(self, filter: Union[str, PyExpr]) -> DeleteResult: ...
     async def add_columns(self, columns: list[tuple[str, str]]) -> AddColumnsResult: ...
     async def add_columns_from_reader(
