@@ -10,6 +10,7 @@ use lancedb::index::{
     Index as LanceDbIndex,
     scalar::{
         BTreeIndexBuilder, DocumentGranularity, FmIndexBuilder, FtsIndexBuilder, NGramIndexBuilder,
+        ZoneMapIndexBuilder,
     },
 };
 use pyo3::IntoPyObject;
@@ -117,6 +118,7 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
             "LabelList" => Ok(LanceDbIndex::LabelList(Default::default())),
             "Fm" => Ok(LanceDbIndex::Fm(FmIndexBuilder::default())),
             "NGram" => Ok(LanceDbIndex::NGram(NGramIndexBuilder::default())),
+            "ZoneMap" => Ok(LanceDbIndex::ZoneMap(ZoneMapIndexBuilder::default())),
             "FTS" => {
                 let params = source.extract::<FtsParams>()?;
                 let code_options = CodeAnalyzerOptions {
@@ -291,7 +293,7 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                 Ok(LanceDbIndex::IvfHnswFlat(hnsw_flat_builder))
             }
             not_supported => Err(PyValueError::new_err(format!(
-                "Invalid index type '{}'.  Must be one of BTree, Bitmap, LabelList, Fm, NGram, FTS, IvfPq, IvfSq, IvfHnswPq, IvfHnswSq, or IvfHnswFlat",
+                "Invalid index type '{}'.  Must be one of BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, FTS, IvfPq, IvfSq, IvfHnswPq, IvfHnswSq, or IvfHnswFlat",
                 not_supported
             ))),
         }
