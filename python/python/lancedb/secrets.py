@@ -72,7 +72,7 @@ class EnvVarSecret:
 
     Pass these in the ``secrets`` sequence of
     [DBConnection.create_function][lancedb.db.DBConnection.create_function]. The
-    Function's source is unchanged by binding: it reads ``OPENAI_API_KEY`` the
+    Function's source is unchanged by binding: it reads ``MODEL_API_KEY`` the
     way it always did, and the binding is what puts a value there.
 
     This is a local value. Constructing it contacts no server, so it always
@@ -101,10 +101,10 @@ class EnvVarSecret:
     --------
     >>> from lancedb import EnvVarSecret
     >>> binding = EnvVarSecret(
-    ...     secret_name="model-api-key", env_variable="OPENAI_API_KEY"
+    ...     secret_name="model-api-key", env_variable="MODEL_API_KEY"
     ... )
     >>> binding.secret_name, binding.env_variable
-    ('model-api-key', 'OPENAI_API_KEY')
+    ('model-api-key', 'MODEL_API_KEY')
     """
 
     __slots__ = ("_secret_name", "_env_variable", "_secret_namespace_path")
