@@ -734,16 +734,24 @@ You can also use this method to create new "dynamic" columns based on your exist
 For example, you may not care about "a" or "b" but instead simply want "a + b".  This is often
 seen in the SELECT clause of an SQL query (e.g. `SELECT a+b FROM my_table`).
 
-To create dynamic columns you can pass in a Map<string, string>.  A column will be returned
-for each entry in the map.  The key provides the name of the column.  The value is
-an SQL string used to specify how the column is calculated.
+To create dynamic columns you can pass in a Map<string, string | Expr>.  A column will be
+returned for each entry in the map.  The key provides the name of the column.  The value is
+an SQL string or an `Expr` that specifies how the column is calculated.  An `Expr` built
+with `col` keeps the exact, case-sensitive column name.
 
 For example, an SQL query might state `SELECT a + b AS combined, c`.  The equivalent
-input to this method would be:
+input to this method would be `new Map([["combined", "a + b"], ["c", "c"]])`.
+
+Columns will always be returned in the order given, even if that order is different than
+the order used when adding the data.
+
+Note that you can pass in a `Record<string, string | Expr>` (e.g. an object literal). This
+method uses `Object.entries` which should preserve the insertion order of the object.
+However, object insertion order is easy to get wrong and `Map` is more foolproof.
 
 #### Parameters
 
-* **columns**: `string` \| `string`[] \| `Map`&lt;`string`, `string`&gt; \| `Record`&lt;`string`, `string`&gt;
+* **columns**: `string` \| `string`[] \| `Map`&lt;`string`, `string` \| [`Expr`](Expr.md)&gt; \| `Record`&lt;`string`, `string` \| [`Expr`](Expr.md)&gt;
 
 #### Returns
 
@@ -752,14 +760,8 @@ input to this method would be:
 #### Example
 
 ```ts
-new Map([["combined", "a + b"], ["c", "c"]])
-
-Columns will always be returned in the order given, even if that order is different than
-the order used when adding the data.
-
-Note that you can pass in a `Record<string, string>` (e.g. an object literal). This method
-uses `Object.entries` which should preserve the insertion order of the object.  However,
-object insertion order is easy to get wrong and `Map` is more foolproof.
+table.query().select(new Map([["combined", "a + b"], ["c", "c"]]));
+table.query().select({ id: "id", doubled: col("unitPrice").mul(2) });
 ```
 
 #### Inherited from
