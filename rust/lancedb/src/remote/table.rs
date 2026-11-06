@@ -3709,7 +3709,23 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                     .into(),
             });
         }
-        let compaction_options = optimize::compaction_sql_options(options)?;
+        let mut overrides = crate::table::optimize::CompactionOverrides::try_from(options.clone())?;
+        // The legacy Lance options type has no presence bit for this field.
+        // Use Table::compact to explicitly send a target equal to Lance's default.
+        if options.target_rows_per_fragment
+            == crate::table::CompactionOptions::default().target_rows_per_fragment
+        {
+            overrides.target_rows_per_fragment = None;
+        }
+        self.compact(overrides).await
+    }
+
+    async fn compact(
+        &self,
+        options: crate::table::optimize::CompactionOverrides,
+    ) -> Result<OptimizeStats> {
+        self.check_mutable().await?;
+        let compaction_options = optimize::compaction_sql_options(&options)?;
         let sql_client = self.sql_client.clone().ok_or_else(|| Error::NotSupported {
             message: "SQL is unavailable for this remote table client".to_string(),
         })?;

@@ -1790,6 +1790,10 @@ impl Table {
         compaction_options: Option<&Bound<'py, PyDict>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self_.inner_ref()?.clone();
+        let target_specified = compaction_options
+            .map(|options| options.contains("target_rows_per_fragment"))
+            .transpose()?
+            .unwrap_or(false);
         let compaction_options = parse_compaction_options(compaction_options)?;
         let older_than = if let Some(ms) = cleanup_since_ms {
             if ms > i64::MAX as u64 {
@@ -1804,10 +1808,22 @@ impl Table {
             None
         };
         future_into_py(self_.py(), async move {
-            let stats = inner
-                .optimize_full(compaction_options, older_than, None, delete_unverified)
-                .await
-                .infer_error()?;
+            let stats = if inner.as_native().is_some() {
+                inner
+                    .optimize_full(compaction_options, older_than, None, delete_unverified)
+                    .await
+            } else {
+                let mut overrides =
+                    lancedb::table::optimize::CompactionOverrides::try_from(compaction_options)
+                        .infer_error()?;
+                if !target_specified {
+                    overrides.target_rows_per_fragment = None;
+                }
+                inner
+                    .optimize_full_with_overrides(overrides, older_than, None, delete_unverified)
+                    .await
+            }
+            .infer_error()?;
             let compaction_stats = stats.compaction.unwrap();
             let prune_stats = stats.prune.unwrap();
             Ok(OptimizeStats {

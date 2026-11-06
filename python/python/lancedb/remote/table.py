@@ -1094,7 +1094,8 @@ class RemoteTable(Table):
         has been submitted; it does not wait for that job to finish. The
         per-job options ``target_rows_per_fragment``, ``max_source_rows``,
         ``io_buffer_size``, and ``batch_size`` are supported on compatible
-        servers. Other non-default settings raise ``NotImplementedError``
+        servers. Omitted fields inherit table tuning, then deployment/built-in
+        defaults. Other non-default settings raise ``NotImplementedError``
         before submission. Errors from older servers are propagated without
         retrying with the settings removed.
         """

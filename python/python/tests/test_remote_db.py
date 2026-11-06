@@ -5838,6 +5838,10 @@ def _mock_remote_table_with_sql(flight_server):
     "options,sql_options",
     [
         ({"target_rows_per_fragment": 100}, [b"target_rows_per_fragment = 100"]),
+        (
+            {"target_rows_per_fragment": 1_048_576},
+            [b"target_rows_per_fragment = 1048576"],
+        ),
         ({"max_source_rows": 500}, [b"max_source_rows = 500"]),
         ({"io_buffer_size": 0}, [b"io_buffer_size = 0"]),
         ({"batch_size": 16}, [b"batch_size = 16"]),

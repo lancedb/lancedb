@@ -3631,3 +3631,51 @@ async fn remote_optimize_forwards_per_job_options_on_main_and_branch() {
         shutdown.send(()).unwrap();
     }
 }
+
+#[tokio::test]
+async fn remote_compact_preserves_omissions_and_explicit_default_values() {
+    use crate::table::{CompactionOptions, CompactionOverrides};
+    let target = CompactionOptions::default().target_rows_per_fragment;
+    for (options, suffix) in [
+        (CompactionOverrides::default(), String::new()),
+        (
+            CompactionOverrides {
+                target_rows_per_fragment: Some(target),
+                ..Default::default()
+            },
+            format!(" WITH (target_rows_per_fragment = {target})"),
+        ),
+        (
+            CompactionOverrides {
+                io_buffer_size: Some(0),
+                ..Default::default()
+            },
+            " WITH (io_buffer_size = 0)".into(),
+        ),
+    ] {
+        let service = TestSqlService {
+            adaptive: true,
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let (sql_client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let client = client_with_handler(|request| -> http::Response<String> {
+            panic!("unexpected REST request: {}", request.url().path());
+        });
+        let table = RemoteTable::new_with_sql_client(
+            client,
+            "analytics".into(),
+            "events".into(),
+            vec![],
+            "events".into(),
+            Default::default(),
+            Some(sql_client),
+        );
+        table.compact(options).await.unwrap();
+        assert_eq!(
+            *statements.lock().unwrap(),
+            [format!("OPTIMIZE TABLE \"events\" REWRITE DATA{suffix}")]
+        );
+        shutdown.send(()).unwrap();
+    }
+}
