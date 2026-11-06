@@ -22,11 +22,11 @@ LanceDB includes:
   [reranking](/reranking)
 - [**Full-text search**](/search/full-text-search) with BM25 ranking, and
   [**hybrid search**](/search/hybrid-search) that fuses it with vector results
-- [**Versioning**](/management/table#versioning) that traces each training run back to the exact data it used
+- [**Versioning**](/management/table#versioning) to pin and revisit training datasets
 - [**Training data loading**](/training/data-loading) that streams shuffled, deterministic batches into PyTorch
 - [**Curation**](/curation) with sampling, deduplication, chunking, and joins (Enterprise)
 - [**Computed columns**](/feature-engineering/add-computed-column) and
-  [**materialized views**](/feature-engineering/materialized-views) that refresh as data changes (Enterprise)
+  [**materialized views**](/feature-engineering/materialized-views) with on-demand or scheduled refresh (Enterprise)
 - [**SQL**](/basics/sql) over the same tables, through Arrow Flight SQL (Enterprise)
 - [**SDKs**](/basics/sdk) for Python, TypeScript, and Rust
 
@@ -35,28 +35,27 @@ Draft until branching reaches early access. Add this item to the list above, aft
 - [**Branching**](/tables/branching) that gives each experiment or agent a writable fork of a table to review before it reaches `main`
 */}
 
-## Architecture {#architecture}
+## Architecture: Embedded and Enterprise {#architecture}
 
-LanceDB ships as two offerings on the same Lance format and table model, so moving from one to the other needs no
-data conversion.
+LanceDB ships as two offerings on the same [Lance](/basics/lance) format and table model, which stores table data,
+versions, and indexes in open, columnar files. What changes between them is how storage and compute are organized
+around that format: start locally with Embedded, then move to Enterprise when your team needs distributed scale,
+managed infrastructure, private deployment, or higher-throughput curation, feature engineering, search and
+retrieval, and training workflows.
 
-<Columns cols={2}>
-  <Frame caption="In LanceDB Embedded, the SDK and the Lance format run in your application, reading and writing tables on local disk or in object storage.">
-    <img src="/static/assets/images/overview/lancedb-embedded.png" alt="LanceDB Embedded architecture" />
-  </Frame>
-  <Frame caption="In LanceDB Enterprise, the SDK connects to a service whose query fleet, executor and cache fleets, realtime engine, and jobs fleet run on the Lance format and object storage.">
-    <img src="/static/assets/images/overview/lancedb-distributed.png" alt="LanceDB Enterprise architecture" />
-  </Frame>
-</Columns>
+<CardGroup cols={2}>
+  <Card title="LanceDB Embedded" icon="cube" href="/basics/lancedb-embedded">
+    An open-source, embedded retrieval library that runs inside your application process, with no separate
+    database server to deploy.
+  </Card>
+  <Card title="LanceDB Enterprise" icon="server" href="/enterprise/index">
+    Distributes query execution, indexing, caching, and maintenance across a cluster, with background maintenance
+    and independently scalable compute. Deploy it in your cloud or use a LanceDB-managed deployment.
+  </Card>
+</CardGroup>
 
-- [**LanceDB Embedded**](/basics/lancedb-embedded) is open source and runs inside your application's process, with
-  no server to deploy. It is limited to the resources of one host, and your application runs compaction and
-  indexing.
-- [**LanceDB Enterprise**](/enterprise/index) runs query execution, indexing, caching, and maintenance on a
-  distributed service outside your application, in your cloud or managed by LanceDB. It adds a service to deploy
-  and size, in return for capacity that grows with the cluster and maintenance that runs in the background.
-
-See [Embedded vs Enterprise](/basics/embedded-vs-enterprise) for a feature-by-feature comparison.
+See [Embedded vs Enterprise](/basics/embedded-vs-enterprise) for a feature-by-feature comparison, including
+architecture, latency, throughput, and day-to-day usage differences.
 
 Teams use LanceDB for world-model and robotics training, as in
 [stable-worldmodel](https://github.com/galilai-group/stable-worldmodel) and
