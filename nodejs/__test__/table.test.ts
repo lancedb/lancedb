@@ -5590,6 +5590,17 @@ describe("computed columns", () => {
     expect(rows.map((r) => r.doubled).sort()).toEqual([2, 4]);
   });
 
+  it("rejects Enterprise refresh options on local tables", async () => {
+    const db = await connect(tmpDir.name);
+    const table = await db.createTable("refresh_options_local", [{ x: 1 }]);
+    await expect(table.refreshColumn("x", { where: "x > 0" })).rejects.toThrow(
+      "where requires a LanceDB Enterprise refresh",
+    );
+    await expect(
+      table.refreshColumnAsync("x", { errorPolicy: "skip" }),
+    ).rejects.toThrow("error_policy requires a LanceDB Enterprise refresh");
+  });
+
   it("records Function errors only on remote tables", async () => {
     const db = await connect(tmpDir.name);
     const table = await db.createTable("errors_local", [{ x: 1 }]);

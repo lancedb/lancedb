@@ -3969,22 +3969,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     ) -> Result<Job<crate::function::RefreshColumnResult>> {
         options.validate()?;
         self.check_mutable().await?;
-        let mut body = serde_json::json!({ "column": column });
-        if let Some(batch_size) = options.batch_size {
-            body["batch_size"] = serde_json::json!(batch_size);
-        }
-        if let Some(gpu_class) = options.gpu_class {
-            body["gpu_class"] = serde_json::json!(gpu_class);
-        }
-        if let Some(gpu_count) = options.gpu_count {
-            body["gpu_count"] = serde_json::json!(gpu_count);
-        }
-        if let Some(policy) = options.retry_policy {
-            body["retry_policy"] = serde_json::json!(policy);
-        }
-        if let Some(policy) = options.error_policy {
-            body["error_policy"] = serde_json::json!(policy);
-        }
+        let mut body = serde_json::to_value(&options).map_err(|e| Error::Runtime {
+            message: format!("failed to serialize refresh options: {e}"),
+        })?;
+        body["column"] = serde_json::json!(column);
         self.apply_branch_body(&mut body);
         let request = self
             .client
@@ -11019,6 +11007,93 @@ mod tests {
                 .id(),
             Some("j-retry")
         );
+    }
+
+    #[tokio::test]
+    async fn test_refresh_column_async_filter_and_failure_options() {
+        use crate::function::FunctionErrorPolicy;
+        use crate::table::RefreshColumnOptions;
+
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/backfill_column");
+            assert_eq!(
+                request_body_json(&request),
+                serde_json::json!({
+                    "column": "quality",
+                    "where": "id % 2 = 0",
+                    "error_policy": "skip",
+                    "max_failed_fraction": 0.01,
+                    "max_failed_rows": 50,
+                    "row_timeout_seconds": 30.0,
+                    "init_timeout_seconds": 120.0,
+                    "num_workers": 4,
+                    "max_executor_processes_per_worker": 2,
+                })
+            );
+            http::Response::builder()
+                .status(202)
+                .body(r#"{"job_id": "j-filtered"}"#)
+                .unwrap()
+        });
+        let options = RefreshColumnOptions::default()
+            .where_clause("id % 2 = 0")
+            .error_policy(FunctionErrorPolicy::Skip)
+            .max_failed_fraction(0.01)
+            .max_failed_rows(50)
+            .row_timeout_seconds(30.0)
+            .init_timeout_seconds(120.0)
+            .num_workers(4)
+            .max_executor_processes_per_worker(2);
+        let job = table
+            .refresh_column_async_with_options("quality", options)
+            .await
+            .unwrap();
+        assert_eq!(job.id(), Some("j-filtered"));
+    }
+
+    #[tokio::test]
+    async fn test_refresh_column_rejects_invalid_filter_and_limit_options_before_request() {
+        use crate::table::RefreshColumnOptions;
+
+        let table = Table::new_with_handler("my_table", |_| -> http::Response<String> {
+            panic!("invalid refresh options must not send a request")
+        });
+        for (options, expected) in [
+            (RefreshColumnOptions::default().where_clause("  "), "where"),
+            (
+                RefreshColumnOptions::default().max_failed_fraction(1.5),
+                "max_failed_fraction",
+            ),
+            (
+                RefreshColumnOptions::default().max_failed_fraction(f64::NAN),
+                "max_failed_fraction",
+            ),
+            (
+                RefreshColumnOptions::default().row_timeout_seconds(0.0),
+                "row_timeout_seconds",
+            ),
+            (
+                RefreshColumnOptions::default().init_timeout_seconds(f64::INFINITY),
+                "init_timeout_seconds",
+            ),
+            (
+                RefreshColumnOptions::default().num_workers(0),
+                "num_workers",
+            ),
+            (
+                RefreshColumnOptions::default().max_executor_processes_per_worker(0),
+                "max_executor_processes_per_worker",
+            ),
+        ] {
+            let error = table
+                .refresh_column_async_with_options("quality", options)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(&error, Error::InvalidInput { message } if message.contains(expected)),
+                "{error:?}"
+            );
+        }
     }
 
     #[tokio::test]

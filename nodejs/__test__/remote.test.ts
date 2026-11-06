@@ -647,6 +647,80 @@ describe("remote connection", () => {
     ]);
   });
 
+  it("forwards refresh options to the backfill request", async () => {
+    const bodies: unknown[] = [];
+    await withMockDatabase(
+      (req, res) => {
+        const path = req.url ?? "";
+        if (path.endsWith("/describe/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              name: "docs",
+              version: 1,
+              schema: { fields: [] },
+            }),
+          );
+          return;
+        }
+        if (path === "/v1/table/docs/backfill_column") {
+          let body = "";
+          req.on("data", (chunk) => {
+            body += chunk;
+          });
+          req.on("end", () => {
+            bodies.push(JSON.parse(body));
+            res
+              .writeHead(202, { "Content-Type": "application/json" })
+              .end('{"job_id": "j-9"}');
+          });
+          return;
+        }
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const table = await db.openTable("docs");
+        const job = await table.refreshColumnAsync("embedding", {
+          where: "id % 2 = 0",
+          batchSize: 16,
+          gpuClass: "a10g",
+          gpuCount: 2,
+          errorPolicy: "skip",
+          maxFailedFraction: 0.01,
+          maxFailedRows: 50,
+          rowTimeoutSeconds: 30,
+          initTimeoutSeconds: 120,
+          maxExecutorProcessesPerWorker: 2,
+        });
+        expect(job.id).toBe("j-9");
+        await table.refreshColumnAsync("embedding");
+        // Invalid options reject before any request is sent.
+        for (const [options, message] of [
+          [{ maxFailedRows: -1 }, "maxFailedRows"],
+          [{ errorPolicy: "retry" }, "errorPolicy"],
+          [{ where: " " }, "where"],
+          [{ maxFailedFraction: 2 }, "max_failed_fraction"],
+          [{ rowTimeoutSeconds: 0 }, "row_timeout_seconds"],
+          [{ numWorkers: 0 }, "num_workers"],
+          [{ gpuCount: 0 }, "gpu_count"],
+        ] as const) {
+          await expect(
+            table.refreshColumnAsync("embedding", options),
+          ).rejects.toThrow(message);
+        }
+      },
+    );
+    expect(bodies).toEqual([
+      JSON.parse(
+        `{"column": "embedding", "where": "id % 2 = 0", "batch_size": 16,
+          "gpu_class": "a10g", "gpu_count": 2, "error_policy": "skip",
+          "max_failed_fraction": 0.01, "max_failed_rows": 50,
+          "row_timeout_seconds": 30, "init_timeout_seconds": 120,
+          "max_executor_processes_per_worker": 2}`,
+      ),
+      { column: "embedding" },
+    ]);
+  });
+
   it("surfaces JSON server errors from remote table operations", async () => {
     await withMockDatabase(
       (req, res) => {
