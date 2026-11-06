@@ -357,7 +357,10 @@ class CompactionOptions(TypedDict, total=False):
     """Number of rows per input scan batch."""
 
     io_buffer_size: Optional[int]
-    """Input scan I/O buffer size in bytes; zero disables buffering."""
+    """Input scan I/O read-ahead budget in bytes.
+
+    Zero disables byte-based I/O backpressure.
+    """
 
     defer_index_remap: bool
     """Whether to defer index remapping during compaction (default: False)."""

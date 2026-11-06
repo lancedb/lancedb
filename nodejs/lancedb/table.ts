@@ -157,7 +157,7 @@ export interface CompactionOptions {
   targetRowsPerFragment?: number;
   /** Positive live-source-row budget across whole tasks; an oversized first task can produce no work. */
   maxSourceRows?: number;
-  /** Scanner I/O buffer size in bytes; zero disables buffering. */
+  /** Scanner I/O read-ahead budget in bytes; zero disables byte-based I/O backpressure. */
   ioBufferSize?: number;
   /** Positive scanner batch size in rows. */
   batchSize?: number;
@@ -171,7 +171,7 @@ export interface OptimizeOptions {
    * @example
    * await tbl.optimize({ compactionOptions: {
    *   targetRowsPerFragment: 1000, maxSourceRows: 5000,
-   *   ioBufferSize: 0, batchSize: 128,
+   *   ioBufferSize: 64 * 1024 * 1024, batchSize: 128,
    * } });
    */
   compactionOptions?: CompactionOptions;
