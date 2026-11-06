@@ -142,7 +142,7 @@ An explicit schema also determines which columns accept missing values (`null`).
 non-nullable column, or provide actual nulls for it, ingestion fails; nullable columns can be
 omitted or written with null values. Without an explicit schema, Python infers list-like vector
 values as fixed-size `float32` vector fields from the observed dimension. For images, audio, video, or
-other binary columns whose payloads should load on demand, declare a [blob column](/management/table#multimodal-blob-v2) in the schema.
+other binary columns whose payloads should load on demand, declare a [blob column](/tables/multimodal#multimodal-blob-v2) in the schema.
 
 For Python ingestion, malformed vectors fail by default (`on_bad_vectors="error"`). This includes
 vectors with incorrect sizes, NaNs, or null components, including pandas NaNs converted to Arrow

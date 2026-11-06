@@ -46,7 +46,7 @@ name.
 SQL `ADD COLUMN` requires an `AS` binding, so a plain column such as
 `ALTER TABLE t ADD COLUMN c INT` is rejected. Add an empty, nullable column
 with the SDK instead. See
-[Add nullable columns](/management/table#schema-add-nullable-columns).
+[Add nullable columns](/tables/schema#schema-add-nullable-columns).
 
 ### A computed column {#computed-column}
 
@@ -200,8 +200,8 @@ rows a sample would draw from are not all in the fragments yet.
 | `ALTER TABLE ... DROP COLUMN` | not supported |
 
 Dropping, renaming, or retyping a column is an SDK operation
-([`drop_columns`](/management/table#schema) and
-[`alter_columns`](/management/table#schema)), not a SQL statement.
+([`drop_columns`](/tables/schema#schema-drop-columns) and
+[`alter_columns`](/tables/alter-columns)), not a SQL statement.
 
 ## CLONE {#clone}
 
@@ -254,7 +254,7 @@ deployment stores its catalog. See
   <Card title="Table" icon="table" href="/management/table">
     The SDK equivalent, and what a table carries.
   </Card>
-  <Card title="Schema evolution" icon="boxes-stacked" href="/management/table#schema">
+  <Card title="Schema evolution" icon="boxes-stacked" href="/tables/schema">
     Renaming, retyping and dropping columns from the SDK.
   </Card>
 </CardGroup>

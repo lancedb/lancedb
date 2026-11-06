@@ -1,0 +1,93 @@
+---
+title: "Legacy blob columns"
+description: "Read and write existing large-binary Blob v1 columns."
+icon: file-binary
+availability:
+  embedded: available
+  enterprise: available
+---
+
+import {
+    PyLegacyBlobApiSchema as LegacyBlobApiSchema,
+    TsLegacyBlobApiSchema as TsLegacyBlobApiSchema,
+    RsLegacyBlobApiSchema as RsLegacyBlobApiSchema,
+    PyLegacyBlobApiIngest as LegacyBlobApiIngest,
+    TsLegacyBlobApiIngest as TsLegacyBlobApiIngest,
+    RsLegacyBlobApiIngest as RsLegacyBlobApiIngest,
+    PyLegacyBlobApiToPandas as LegacyBlobApiToPandas,
+    PyLegacyQueryToPandasKwargs as LegacyQueryToPandasKwargs,
+} from '/snippets/multimodal.mdx';
+
+<span id="multimodal-large-blobs-blob-api" style={{ display: "block", scrollMarginTop: "12rem" }} />
+
+Use [`lancedb.blob()`](/tables/multimodal#multimodal-blob-v2) for new tables. The sections below
+cover existing tables that use the V1 large-binary Blob API
+(`pa.large_binary()` in Python, `LargeBinary` in TypeScript, and
+`DataType::LargeBinary` in Rust with `{"lance-encoding:blob": "true"}` field
+metadata). Changing a field's metadata alone does not migrate an existing V1
+column to Blob v2.
+
+Start with the SDK imports and local `db` connection from
+[Blob setup](/tables/multimodal#multimodal-blob-v2-setup).
+
+## 1\. Define a blob schema {#multimodal-1-define-a-blob-schema}
+
+V1 blob columns use a `large_binary` field marked with `{"lance-encoding:blob": "true"}` metadata:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {LegacyBlobApiSchema}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsLegacyBlobApiSchema}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsLegacyBlobApiSchema}
+    </CodeBlock>
+</CodeGroup>
+
+## 2\. Ingest large blobs {#multimodal-2-ingest-large-blobs}
+
+Write raw bytes to a V1 blob column:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {LegacyBlobApiIngest}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsLegacyBlobApiIngest}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsLegacyBlobApiIngest}
+    </CodeBlock>
+</CodeGroup>
+
+## 3\. Convert blob tables to pandas {#multimodal-3-convert-blob-tables-to-pandas}
+
+On LanceDB Embedded tables with V1 blob columns, `to_pandas()` in Python accepts
+`blob_mode` (`"lazy"`, `"bytes"`, or `"descriptions"`). Enterprise tables raise
+`NotImplementedError`, and `"bytes"` is not supported on in-memory tables.
+Extra keyword arguments such as `split_blocks` or `self_destruct` are forwarded
+to the PyArrow / Lance pandas conversion:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {LegacyBlobApiToPandas}
+    </CodeBlock>
+</CodeGroup>
+
+The query examples also assume an async table named `tbl_async` and a query
+vector named `query_vector`. On query builders with V1 blob columns, plain scans support `"lazy"`, `"bytes"`,
+and `"descriptions"`. Vector, FTS, hybrid, and ordered queries cannot
+materialize V1 blob columns through `to_pandas()`, so omit those columns from
+the projection:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {LegacyQueryToPandasKwargs}
+    </CodeBlock>
+</CodeGroup>

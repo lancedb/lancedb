@@ -176,7 +176,7 @@ evaluation, and how that differs from rotating or revoking it later.
 
 ## Read and produce blobs {#blobs}
 
-A Function can bind a [Blob v2 column](/management/table#managed-blobs) and
+A Function can bind a [Blob v2 column](/tables/managed-blobs) and
 return another blob, including a blob nested inside a struct field, not only
 at the top level. In row mode, a top-level blob parameter arrives as Python
 `bytes`, or `None` for a nullable input, after the worker has read the

@@ -93,7 +93,7 @@ than a full one.
 
 ## The Blob v2 optimization {#blob-v2}
 
-A Function whose output includes a [Blob v2](/management/table#managed-blobs)
+A Function whose output includes a [Blob v2](/tables/managed-blobs)
 column needs an identifier for every blob it writes. Allocating those
 IDs piggybacks on the same durable event that already records a part
 starting: the event log itself hands out the next unclaimed range,

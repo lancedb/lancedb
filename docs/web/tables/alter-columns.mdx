@@ -1,0 +1,210 @@
+---
+title: "Alter columns"
+description: "Rename columns and change data types, nullability, or embedding dimensions."
+icon: pen-to-square
+availability:
+  embedded: available
+  enterprise: available
+---
+
+import {
+    PySchemaAlterSetup as SchemaAlterSetup,
+    TsSchemaAlterSetup as TsSchemaAlterSetup,
+    RsSchemaAlterSetup as RsSchemaAlterSetup,
+    PyAlterColumnsRename as AlterColumnsRename,
+    TsAlterColumnsRename as TsAlterColumnsRename,
+    RsAlterColumnsRename as RsAlterColumnsRename,
+    PyAlterColumnsDataType as AlterColumnsDataType,
+    TsAlterColumnsDataType as TsAlterColumnsDataType,
+    RsAlterColumnsDataType as RsAlterColumnsDataType,
+    PyAlterColumnsNullable as AlterColumnsNullable,
+    TsAlterColumnsNullable as TsAlterColumnsNullable,
+    RsAlterColumnsNullable as RsAlterColumnsNullable,
+    PyAlterColumnsMultiple as AlterColumnsMultiple,
+    TsAlterColumnsMultiple as TsAlterColumnsMultiple,
+    PyAlterColumnsWithExpression as AlterColumnsWithExpression,
+    TsAlterColumnsWithExpression as TsAlterColumnsWithExpression,
+    RsAlterColumnsMultiple as RsAlterColumnsMultiple,
+    RsAlterColumnsWithExpression as RsAlterColumnsWithExpression,
+    PyAlterVectorColumn as AlterVectorColumn,
+    TsAlterVectorColumn as TsAlterVectorColumn,
+    RsAlterVectorColumn as RsAlterVectorColumn,
+} from '/snippets/tables.mdx';
+
+<span id="schema-alter-existing-columns" style={{ display: "block", scrollMarginTop: "12rem" }} />
+
+You can alter columns using the [`alter_columns`](https://lancedb.github.io/lancedb/python/python/#lancedb.table.Table.alter_columns)
+method in Python, [`alterColumns`](https://lancedb.github.io/lancedb/js/classes/Table/#altercolumns) in TypeScript/JavaScript, or `alter_columns` in Rust. This allows you to:
+
+- Rename a column
+- Change a column's data type
+- Modify nullability (whether a column can contain NULL values)
+
+
+## Set up the example table {#schema-set-up-the-example-table-2}
+
+The examples use a local database connection named `db`; see [Connect to LanceDB](/quickstart#connect-via-local-directory-path).
+Run each setup before the operations that follow it.
+
+For Python, import NumPy as `np` and PyArrow as `pa`, and set `data = None`
+to use the sample records. For TypeScript, import `apache-arrow` as `arrow`.
+
+Create a table with a custom schema to demonstrate column alterations:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {SchemaAlterSetup}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsSchemaAlterSetup}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsSchemaAlterSetup}
+    </CodeBlock>
+</CodeGroup>
+
+## Rename columns {#schema-rename-columns}
+
+Change column names to better reflect their purpose:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {AlterColumnsRename}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsAlterColumnsRename}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsAlterColumnsRename}
+    </CodeBlock>
+</CodeGroup>
+
+## Change data types {#schema-change-data-types}
+
+Convert column data types for better performance or compatibility:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {AlterColumnsDataType}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsAlterColumnsDataType}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsAlterColumnsDataType}
+    </CodeBlock>
+</CodeGroup>
+
+## Make columns nullable {#schema-make-columns-nullable}
+
+You can alter columns to contain NULL values:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {AlterColumnsNullable}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsAlterColumnsNullable}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsAlterColumnsNullable}
+    </CodeBlock>
+</CodeGroup>
+
+Changing a column to nullable affects future writes and merges too: missing values are accepted
+only when the target column is nullable.
+
+## Multiple changes at once {#schema-multiple-changes-at-once}
+
+Apply several alterations in a single operation:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {AlterColumnsMultiple}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsAlterColumnsMultiple}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsAlterColumnsMultiple}
+    </CodeBlock>
+</CodeGroup>
+
+## Expression-based type changes {#schema-expression-based-type-changes}
+
+For transformations that are not simple casts (for example, converting `"$100"` to an integer), use a SQL-expression column add, then drop and rename:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {AlterColumnsWithExpression}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsAlterColumnsWithExpression}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsAlterColumnsWithExpression}
+    </CodeBlock>
+</CodeGroup>
+
+## Alter embedding types and dimensions {#schema-alter-embedding-types-and-dimensions}
+
+{/*
+Draft for the embedding schema-evolution protection release.
+
+<Note title="Embedding function bindings on local tables">
+Local tables reject renaming or dropping source and vector columns referenced by
+`embedding_functions` schema metadata or native Rust embedding definitions in
+`lancedb::column_definitions`. The operation fails before changing any columns,
+preserving the configuration used to generate embeddings on later writes.
+
+The add/drop/rename recipe below applies only to vector columns without a registered
+embedding function. To change the dimension of a registered embedding column, create
+a new table with the updated embedding configuration and regenerate its embeddings.
+</Note>
+*/}
+
+It's quite common to need to change an embedding column's schema, in case a new model becomes available with a different embedding dimension.
+- In Python, the example shows an in-place type update when the cast is compatible.
+- In TypeScript and Rust, the example shows a dimension change (`384 -> 1024`), which cannot be cast in-place.
+
+For dimension changes, use this 3-step pattern: add a new column with the target type, drop the old column, then rename the new column to the original name.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {AlterVectorColumn}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsAlterVectorColumn}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsAlterVectorColumn}
+    </CodeBlock>
+</CodeGroup>
+
+<Warning>
+**`FixedSizeList` Dimension Changes in TypeScript and Rust**
+
+`alterColumns` / `alter_columns` can cast between compatible types, but changing `FixedSizeList` dimensions (for example `384 -> 1024`) is not a compatible cast.
+For such cases, use `addColumns` / `add_columns` (with `arrow_cast`), then `dropColumns` / `drop_columns`, then rename the replacement column.
+</Warning>
+
+<Warning title="Data Type Changes">
+Changing data types requires rewriting the column data and may be resource-intensive for large tables. Renaming columns or changing nullability is more efficient as it only updates metadata.
+</Warning>
+
+To add or remove columns, see [Schema evolution](/tables/schema). To change
+column annotations, see [Field metadata](/tables/field-metadata).

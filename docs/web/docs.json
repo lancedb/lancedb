@@ -164,10 +164,6 @@
       "destination": "/ingestion"
     },
     {
-      "source": "/tables/multimodal",
-      "destination": "/management/table#multimodal"
-    },
-    {
       "source": "/search/select",
       "destination": "/sql/select"
     },
@@ -198,14 +194,6 @@
     {
       "source": "/basics/data-types",
       "destination": "/sql/data-types"
-    },
-    {
-      "source": "/tables/schema",
-      "destination": "/management/table#schema"
-    },
-    {
-      "source": "/tables/versioning",
-      "destination": "/management/table#versioning"
     },
     {
       "source": "/search/multivector-search",
@@ -491,7 +479,25 @@
               "management/catalog",
               "management/database",
               "management/namespace",
-              "management/table",
+              {
+                "group": "Tables",
+                "pages": [
+                  "management/table",
+                  "tables/schema",
+                  "tables/alter-columns",
+                  "tables/field-metadata",
+                  "tables/versioning",
+                  {
+                    "group": "Multimodal data",
+                    "pages": [
+                      "tables/multimodal",
+                      "tables/managed-blobs",
+                      "tables/binary-data",
+                      "tables/legacy-blobs"
+                    ]
+                  }
+                ]
+              },
               "management/view",
               "management/materialized-view",
               "management/secret",

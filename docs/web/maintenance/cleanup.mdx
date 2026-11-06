@@ -10,7 +10,7 @@ availability:
 ---
 
 Every write keeps the version before it, which is what makes
-[time travel](/management/table#versioning) possible. Cleanup is what ends
+[time travel](/tables/versioning) possible. Cleanup is what ends
 that: pruning versions older than a retention window, and the files that only
 those versions referenced.
 
@@ -40,7 +40,7 @@ every older version eligible for removal, but cleanup still keeps tagged
 versions{/* Draft until branching reaches early access: restore " and the files branches still read" */}, as the warning below describes.
 
 <Warning>
-Pruning is what makes [time travel](/management/table#versioning) finite: an
+Pruning is what makes [time travel](/tables/versioning) finite: an
 eligible version outside the retention window is gone. Cleanup keeps a version,
 whatever its age, when it is:
 
@@ -79,7 +79,7 @@ need before running this, not after.
 
 ## Managed blob objects {#managed-blobs}
 
-[Managed blobs](/management/table#managed-blobs) store out-of-line payloads
+[Managed blobs](/tables/managed-blobs) store out-of-line payloads
 under the table's `_blobs/` directory. Cleanup follows the references from
 retained snapshots, including protected tags{/* Draft until branching reaches early access: restore " and branches" */}, before selecting
 objects for deletion. Replacing a blob or deleting a row makes its old payload

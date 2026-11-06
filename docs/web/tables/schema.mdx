@@ -1,0 +1,204 @@
+---
+title: "Schema evolution"
+description: "Add and drop columns, and choose the right operation for other schema changes."
+icon: table-columns
+availability:
+  embedded: available
+  enterprise: available
+---
+
+import {
+    PySchemaAddSetup,
+    TsSchemaAddSetup as TsSchemaAddSetup,
+    RsSchemaAddSetup as RsSchemaAddSetup,
+    PyAddColumnsDefaultValues as AddColumnsDefaultValues,
+    TsAddColumnsDefaultValues as TsAddColumnsDefaultValues,
+    RsAddColumnsDefaultValues as RsAddColumnsDefaultValues,
+    PyAddColumnsNullable as AddColumnsNullable,
+    TsAddColumnsNullable as TsAddColumnsNullable,
+    RsAddColumnsNullable as RsAddColumnsNullable,
+    PySchemaDropSetup as SchemaDropSetup,
+    TsSchemaDropSetup as TsSchemaDropSetup,
+    RsSchemaDropSetup as RsSchemaDropSetup,
+    PyDropColumnsSingle as DropColumnsSingle,
+    TsDropColumnsSingle as TsDropColumnsSingle,
+    RsDropColumnsSingle as RsDropColumnsSingle,
+    PyDropColumnsMultiple as DropColumnsMultiple,
+    TsDropColumnsMultiple as TsDropColumnsMultiple,
+    RsDropColumnsMultiple as RsDropColumnsMultiple,
+} from '/snippets/tables.mdx';
+
+<span id="schema" style={{ display: "block", scrollMarginTop: "12rem" }} />
+
+Change a table's schema as your data requirements evolve. This guide covers
+adding and dropping columns. For other changes, see [Alter columns](/tables/alter-columns)
+and [Field metadata](/tables/field-metadata).
+
+<Note>
+In SQL, schema changes are [`ALTER TABLE`](/sql/ddl/table#alter).
+</Note>
+
+## Schema evolution operations {#schema-schema-evolution-operations}
+
+LanceDB supports four primary schema evolution operations:
+
+1. **Adding new columns**: Extend your table with additional attributes
+2. **[Altering existing columns](/tables/alter-columns)**: Change column names, data types, or nullability
+3. **[Updating field metadata](/tables/field-metadata)**: Attach or change per-column Arrow metadata
+4. **Dropping columns**: Remove unnecessary columns from your schema
+
+
+<Tip title="Schema Evolution Performance">
+Schema evolution operations are applied immediately but do not typically require rewriting all data. However, data type changes may involve more substantial operations.
+</Tip>
+
+Each schema evolution operation commits a new table version and returns status metadata such as
+the committed `version`. Run these operations from a mutable table handle; if you checked out an
+older version for reads, call `checkout_latest` / `checkoutLatest` before modifying the schema.
+
+The examples use a local database connection named `db`; see [Connect to LanceDB](/quickstart#connect-via-local-directory-path).
+Run each setup before the operations that follow it.
+
+## Add new columns {#schema-add-new-columns}
+
+You can add new columns to a table with the [`add_columns`](https://lancedb.github.io/lancedb/python/python/#lancedb.table.Table.add_columns)
+method in Python, [`addColumns`](https://lancedb.github.io/lancedb/js/classes/Table/#addcolumns) in TypeScript/JavaScript, or `add_columns` in Rust.
+New columns are populated based on SQL expressions you provide. On local tables,
+the Python SDK also accepts precomputed values from DataFrames and Arrow readers;
+see [Create a computed column](/feature-engineering/add-computed-column#computed-vs-transforms)
+for the supported inputs and row-order requirements.
+
+
+### Set up the example table {#schema-set-up-the-example-table}
+
+First, let's create a sample table with product data to demonstrate schema evolution:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PySchemaAddSetup}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsSchemaAddSetup}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsSchemaAddSetup}
+    </CodeBlock>
+</CodeGroup>
+
+<Note>
+Columns derived from existing data (SQL expressions over other columns) are
+covered in [Create a computed column](/feature-engineering/add-computed-column),
+because deriving values is a feature-engineering job rather than a schema one.
+</Note>
+
+### Add columns with default values {#schema-add-columns-with-default-values}
+
+Add boolean columns with default values for status tracking:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {AddColumnsDefaultValues}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsAddColumnsDefaultValues}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsAddColumnsDefaultValues}
+    </CodeBlock>
+</CodeGroup>
+
+### Add nullable columns {#schema-add-nullable-columns}
+
+Add timestamp columns that can contain NULL values:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {AddColumnsNullable}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsAddColumnsNullable}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsAddColumnsNullable}
+    </CodeBlock>
+</CodeGroup>
+
+<Warning title="NULL Values in New Columns">
+When adding columns that should contain NULL values, be sure to cast the NULL to the appropriate type, e.g., `cast(NULL as timestamp)`.
+</Warning>
+
+## Drop columns {#schema-drop-columns}
+
+You can remove columns using the [`drop_columns`](https://lancedb.github.io/lancedb/python/python/#lancedb.table.Table.drop_columns)
+ method in Python, [`dropColumns`](https://lancedb.github.io/lancedb/js/classes/Table/#dropcolumns) in TypeScript/JavaScript, or `drop_columns` in Rust.
+
+
+### Set up the example table {#schema-set-up-the-example-table-3}
+
+Create a table with temporary columns that we'll remove. For Python, import
+NumPy as `np` and set `data = None` to use this setup's sample records:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {SchemaDropSetup}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsSchemaDropSetup}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsSchemaDropSetup}
+    </CodeBlock>
+</CodeGroup>
+
+### Drop single columns {#schema-drop-single-columns}
+
+Remove individual columns that are no longer needed:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {DropColumnsSingle}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsDropColumnsSingle}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsDropColumnsSingle}
+    </CodeBlock>
+</CodeGroup>
+
+### Drop multiple columns {#schema-drop-multiple-columns}
+
+Remove several columns at once for efficiency:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {DropColumnsMultiple}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsDropColumnsMultiple}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsDropColumnsMultiple}
+    </CodeBlock>
+</CodeGroup>
+
+<Warning title="Dropping a column is undone only by restoring a version">
+Dropping a column changes the latest version only. Until
+[cleanup](/maintenance/cleanup) prunes the versions from before the drop,
+[restoring](/tables/versioning) one of them brings the column and its values back,
+along with the rest of the table as it was then. Once those versions are
+pruned, the drop cannot be undone, so check before dropping a column you may
+need.
+</Warning>

@@ -1,0 +1,82 @@
+---
+title: "Managed blobs"
+description: "Enable managed blob storage and understand payload ownership and cleanup."
+icon: box-archive
+availability:
+  embedded: available
+  enterprise: available
+---
+
+<span id="managed-blobs" style={{ display: "block", scrollMarginTop: "12rem" }} />
+
+Set the table schema metadata `lance.blob.managed` to `true` on a table with
+[`lancedb.blob()`](/tables/multimodal#multimodal-blob-v2) columns to store small values inline and
+larger values in managed objects under the table's `_blobs/` directory. Medium
+values can share a packed object, and large values use a dedicated object.
+
+The table owns these objects. You do not upload them separately, keep an object
+catalog, or delete their files yourself. Compaction preserves each descriptor
+and its payload object, so merging table fragments does not rewrite the blob
+payloads.
+
+<Warning>
+Use an SDK and Enterprise deployment that support Blob v2 Managed storage.
+Upgrade every reader, writer, and maintenance worker before activating Managed
+blobs on a table, and reopen existing table handles after the upgrade. Older
+clients cannot safely maintain a table containing Managed blobs.
+</Warning>
+
+## Write and read blobs {#managed-blobs-read-write}
+
+Import `lancedb` before running this example. It uses a local connection. The same schema, `add`, query, and
+`fetch_blobs` calls work with an Enterprise database connection:
+
+<CodeGroup>
+```python Python icon="python"
+import pyarrow as pa
+
+db = lancedb.connect("./media")
+table = db.create_table(
+    "images",
+    schema=pa.schema([
+        pa.field("id", pa.int64(), nullable=False),
+        lancedb.blob("image"),
+    ], metadata={"lance.blob.managed": "true"}),
+)
+table.add([
+    {"id": 1, "image": b""},
+    {"id": 2, "image": bytes(range(256)) * 400},
+    {"id": 3, "image": None},
+])
+
+# Query descriptors first, then fetch only the selected rows' payloads.
+hits = (
+    table.search()
+    .where("id <= 2")
+    .select(["id", "image"])
+    .with_row_id(True)
+    .to_arrow()
+)
+images = table.fetch_blobs("image", hits).to_pylist()
+by_id = dict(zip(hits["id"].to_pylist(), images, strict=True))
+assert by_id[1] == b""
+assert len(by_id[2]) == 102400
+```
+</CodeGroup>
+
+`fetch_blobs` materializes the selected payloads in memory, so fetch bounded
+batches when blobs are large. Row IDs belong to their table and snapshot. Keep
+descriptors opaque in application code, because their representation can differ
+between inline values and Managed objects.
+
+## Derived blobs and maintenance {#managed-blobs-lifecycle}
+
+Enterprise Functions can consume blob columns and
+return new blobs. Their output payloads are managed by the destination table.
+LanceDB Embedded tables can also derive blob columns with
+[SQL computed columns](/feature-engineering/add-computed-column).
+
+Deleting a row or replacing its blob does not immediately remove the old
+payload: retained table versions may still reference it. [Garbage Collection](/maintenance/cleanup#managed-blobs)
+reclaims objects after those references expire. A packed object remains while
+any of its contained blobs is still referenced.

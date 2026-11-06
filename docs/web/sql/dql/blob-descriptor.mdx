@@ -15,7 +15,7 @@ SELECT id, blob_descriptor(video) AS descriptor FROM videos
 ```
 </CodeGroup>
 
-A [BlobV2](/management/table#managed-blobs) column's bytes are not fetched by
+A [BlobV2](/tables/managed-blobs) column's bytes are not fetched by
 a plain `SELECT`: that already returns `large_binary`, the same as any other
 binary column. `blob_descriptor` instead returns a small struct describing
 where the payload lives, without reading it. Pass one row's descriptor to
@@ -36,7 +36,7 @@ newer version.
 ## What to read next {#next}
 
 <CardGroup cols={2}>
-  <Card title="Managed blobs" icon="file-binary" href="/management/table#managed-blobs">
+  <Card title="Managed blobs" icon="file-binary" href="/tables/managed-blobs">
     The BlobV2 column type this function describes.
   </Card>
 </CardGroup>
