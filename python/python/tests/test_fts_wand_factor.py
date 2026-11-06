@@ -1,4 +1,5 @@
-"""Tests for wand_factor support in LanceDB FTS and Hybrid Search APIs."""
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import lancedb
 import numpy as np
