@@ -3,6 +3,7 @@
 
 pub mod blobs;
 pub mod insert;
+mod optimize;
 
 use self::insert::{RemoteWriteExec, WriteOp};
 use super::client::RequestResultExt;
@@ -3662,7 +3663,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         Ok(())
     }
-    /// Only `OptimizeAction::Compact` with default `options` and no custom
+    /// Only `OptimizeAction::Compact` with supported `options` and no custom
     /// `remap_options` is supported remotely: it submits a durable
     /// compaction job through the server's `OPTIMIZE TABLE ... REWRITE DATA`
     /// SQL statement, the same atomic, single-worker, index-safe path the
@@ -3680,11 +3681,12 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     /// optimization. A branch-scoped table handle submits a
     /// `WITH (branch = '<branch>')` clause; the statement does not itself
     /// validate the branch exists, so a nonexistent branch surfaces as an
-    /// async job failure rather than an error from this call. A non-default
-    /// `CompactionOptions` (for example `target_rows_per_fragment` or
-    /// `max_source_bytes`) is rejected: the SQL statement has no `WITH`
-    /// clause to carry it yet, so accepting it would silently ignore
-    /// settings a caller may be relying on to bound the job.
+    /// async job failure rather than an error from this call. Per-job
+    /// `target_rows_per_fragment`, `max_source_rows`, `io_buffer_size`, and
+    /// `batch_size` are forwarded in the SQL `WITH` clause. Other non-default
+    /// options are rejected before submission. Servers must support these
+    /// SQL options; an older server's error is returned without retrying
+    /// with the settings removed.
     async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats> {
         self.check_mutable().await?;
         let OptimizeAction::Compact {
@@ -3707,17 +3709,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                     .into(),
             });
         }
-        if *options != lance::dataset::optimize::CompactionOptions::default() {
-            return Err(Error::NotSupported {
-                message: "custom CompactionOptions are not supported in LanceDB \
-                          Enterprise; the OPTIMIZE TABLE ... REWRITE DATA SQL \
-                          statement has no WITH clause to carry them yet, so a \
-                          non-default value would be silently ignored rather than \
-                          applied. Omit options to use the server's managed \
-                          compaction settings."
-                    .into(),
-            });
-        }
+        let compaction_options = optimize::compaction_sql_options(options)?;
         let sql_client = self.sql_client.clone().ok_or_else(|| Error::NotSupported {
             message: "SQL is unavailable for this remote table client".to_string(),
         })?;
@@ -3725,8 +3717,13 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             "OPTIMIZE TABLE {} REWRITE DATA",
             quote_sql_identifier(&self.name)
         );
+        let mut sql_options = Vec::new();
         if let Some(branch) = &self.branch {
-            statement.push_str(&format!(" WITH (branch = {})", quote_sql_string(branch)));
+            sql_options.push(format!("branch = {}", quote_sql_string(branch)));
+        }
+        sql_options.extend(compaction_options);
+        if !sql_options.is_empty() {
+            statement.push_str(&format!(" WITH ({})", sql_options.join(", ")));
         }
         // `OptimizeStats` carries `lance::dataset::optimize` metric types that
         // are not `Serialize`/`Deserialize`/`Clone`, which `Job<T>` requires,
@@ -15863,7 +15860,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_optimize_rejects_non_default_compaction_options() {
+    async fn test_optimize_rejects_unsupported_compaction_options() {
         let table = Table::new_with_handler("my_table", move |_| -> http::Response<String> {
             panic!("custom compaction options must be rejected before any request is sent")
         });

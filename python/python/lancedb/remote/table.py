@@ -1091,10 +1091,12 @@ class RemoteTable(Table):
         Enterprise job. Pruning old versions and index optimization are not
         yet supported remotely, so this call skips them and returns
         successfully with zeroed pruning statistics once the compaction job
-        has been submitted; it does not wait for that job to finish. Passing
-        a non-default ``compaction_options`` raises ``NotImplementedError``
-        before anything is submitted, since there is no way yet to forward
-        those settings to the server.
+        has been submitted; it does not wait for that job to finish. The
+        per-job options ``target_rows_per_fragment``, ``max_source_rows``,
+        ``io_buffer_size``, and ``batch_size`` are supported on compatible
+        servers. Other non-default settings raise ``NotImplementedError``
+        before submission. Errors from older servers are propagated without
+        retrying with the settings removed.
         """
         return LOOP.run(
             self._table.optimize(
