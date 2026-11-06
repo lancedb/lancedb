@@ -33,7 +33,7 @@ pub struct CompactionOptions {
 }
 
 impl CompactionOptions {
-    fn into_lance(self) -> napi::Result<lancedb::table::CompactionOptions> {
+    fn into_overrides(self) -> napi::Result<lancedb::table::optimize::CompactionOverrides> {
         const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
         fn integer(
             value: Option<f64>,
@@ -57,14 +57,14 @@ impl CompactionOptions {
             }
             Ok(Some(value as u64))
         }
-        let mut options = lancedb::table::CompactionOptions::default();
+        let mut options = lancedb::table::optimize::CompactionOverrides::default();
         if let Some(target) = integer(
             self.target_rows_per_fragment,
             "targetRowsPerFragment",
             u32::MAX as u64,
             false,
         )? {
-            options.target_rows_per_fragment = target as usize;
+            options.target_rows_per_fragment = Some(target as usize);
         }
         options.max_source_rows = integer(
             self.max_source_rows,
@@ -804,9 +804,9 @@ impl Table {
             .transpose()?;
 
         let stats = inner
-            .optimize_full(
+            .optimize_full_with_overrides(
                 compaction_options
-                    .map(CompactionOptions::into_lance)
+                    .map(CompactionOptions::into_overrides)
                     .transpose()?
                     .unwrap_or_default(),
                 None,

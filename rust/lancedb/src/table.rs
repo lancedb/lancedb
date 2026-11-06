@@ -111,7 +111,8 @@ pub use lance::dataset::refs::{BranchContents, Ref, TagContents, Tags as LanceTa
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
 pub use lance_index::optimize::OptimizeOptions;
 pub use optimize::{
-    CompactionMode, CompactionOptions, IndexRemapMode, OptimizeAction, OptimizeStats,
+    CompactionMode, CompactionOptions, CompactionOverrides, IndexRemapMode, OptimizeAction,
+    OptimizeStats,
 };
 pub use refresh::{RefreshColumnOptions, RefreshColumnResult};
 pub use rte_stats::{MemtableStats, RTEStats, SsTableStats, TableShardStats};
@@ -842,6 +843,14 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn tags(&self) -> Result<Box<dyn Tags + '_>>;
     /// Optimize the dataset.
     async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats>;
+    /// Compact with optional fields, preserving remote policy inheritance.
+    async fn compact(&self, options: optimize::CompactionOverrides) -> Result<OptimizeStats> {
+        self.optimize(OptimizeAction::Compact {
+            options: options.into_options(),
+            remap_options: None,
+        })
+        .await
+    }
     /// Add columns to the table.
     async fn add_columns(
         &self,
@@ -1932,6 +1941,53 @@ impl Table {
     /// what a remote call submits and what it does and does not wait for.
     pub async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats> {
         self.inner.optimize(action).await
+    }
+
+    /// Compact data files with optional tuning fields. On remote tables,
+    /// omitted fields inherit table tuning, then deployment/built-in defaults.
+    /// Returns after job submission; remote statistics are placeholders.
+    ///
+    /// ```
+    /// use lancedb::{Table, table::optimize::CompactionOverrides};
+    /// # async fn compact(table: &Table) -> lancedb::Result<()> {
+    /// table.compact(CompactionOverrides {
+    ///     io_buffer_size: Some(64 * 1024 * 1024),
+    ///     ..Default::default()
+    /// }).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn compact(&self, options: optimize::CompactionOverrides) -> Result<OptimizeStats> {
+        self.inner.compact(options).await
+    }
+
+    /// Language-binding entry point retaining optional compaction fields.
+    #[doc(hidden)]
+    pub async fn optimize_full_with_overrides(
+        &self,
+        options: optimize::CompactionOverrides,
+        older_than: Option<chrono::Duration>,
+        before_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+        delete_unverified: Option<bool>,
+    ) -> Result<OptimizeStats> {
+        if self.as_native().is_some() {
+            return self
+                .optimize_full(
+                    options.into_options(),
+                    older_than,
+                    before_timestamp,
+                    delete_unverified,
+                )
+                .await;
+        }
+        if older_than.is_some() || before_timestamp.is_some() || delete_unverified == Some(true) {
+            return Err(Error::NotSupported { message: "pruning is not supported in LanceDB Enterprise; omit pruning options to run compaction only".into() });
+        }
+        let stats = self.compact(options).await?;
+        Ok(OptimizeStats {
+            compaction: stats.compaction,
+            prune: Some(RemovalStats::default()),
+        })
     }
 
     /// Prune versions committed before an absolute timestamp.
