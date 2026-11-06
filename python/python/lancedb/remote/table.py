@@ -86,6 +86,7 @@ from ..util import infer_vector_column_name
 if TYPE_CHECKING:
     import lance
     import polars as pl
+    from .._lancedb import OptimizeStats
 
 
 def _deprecated_keyword(old_name: str, new_name: str):
@@ -1086,7 +1087,7 @@ class RemoteTable(Table):
         delete_unverified: bool = False,
         retrain: bool = False,
         compaction_options: Optional[CompactionOptions] = None,
-    ):
+    ) -> OptimizeStats:
         """Compact the table's data files via a durable, asynchronous
         Enterprise job. Pruning old versions and index optimization are not
         yet supported remotely, so this call skips them and returns
