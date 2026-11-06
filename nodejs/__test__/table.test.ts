@@ -46,7 +46,7 @@ import {
   getRegistry,
   register,
 } from "../lancedb/embedding";
-import { Index } from "../lancedb/indices";
+import { type FtsOptions, Index } from "../lancedb/indices";
 import { experimentalFunctionsEnabled } from "../lancedb/native";
 import {
   BooleanQuery,
@@ -2018,6 +2018,99 @@ describe("When creating an index", () => {
     expect(typeof vectorIdx.indexUuid).toBe("string");
     expect(vectorIdx.numIndexedRows).toBe(300);
     expect(typeof vectorIdx.indexDetails).toBe("object");
+  });
+
+  describe("with the code analyzer", () => {
+    const text = "def parseHTTPRequest(user_id): pass";
+
+    async function codeTable(options: Partial<FtsOptions>) {
+      const db = await connect(tmpDir.name);
+      const table = await db.createTable(
+        "code_analyzer",
+        [{ text }, { text: "unrelated" }],
+        { mode: "overwrite" },
+      );
+      await table.createIndex("text", { config: Index.fts(options) });
+      return table;
+    }
+
+    async function matches(table: Table, query: string) {
+      const rows = await table.search(query, "fts").toArray();
+      return rows.map((row) => row.text);
+    }
+
+    it("matches subwords when identifiers are split", async () => {
+      const table = await codeTable({
+        analyzer: "code",
+        splitIdentifiers: true,
+        preserveOriginal: true,
+      });
+
+      for (const query of ["http", "request", "parseHTTPRequest"]) {
+        expect(await matches(table, query)).toEqual([text]);
+      }
+    });
+
+    it("keeps identifiers whole when splitting is off", async () => {
+      const table = await codeTable({
+        analyzer: "code",
+        splitIdentifiers: false,
+      });
+
+      expect(await matches(table, "request")).toEqual([]);
+      expect(await matches(table, "parseHTTPRequest")).toEqual([text]);
+    });
+
+    it("treats analyzer code like the code base tokenizer", async () => {
+      const table = await codeTable({ baseTokenizer: "code" });
+
+      expect(await matches(table, "request")).toEqual([]);
+      expect(await matches(table, "parseHTTPRequest")).toEqual([text]);
+    });
+
+    it.each([
+      [{ analyzer: "code", baseTokenizer: "ngram" }, "requires baseTokenizer"],
+      [{ analyzer: "text", baseTokenizer: "code" }, "requires analyzer 'code'"],
+      [{ analyzer: "java" }, "analyzer must be"],
+      [{ splitIdentifiers: true }, "require analyzer 'code'"],
+      [
+        { baseTokenizer: "raw", indexOperators: true },
+        "require analyzer 'code'",
+      ],
+    ])("rejects invalid options %j", (options, message) => {
+      expect(() => Index.fts(options as Partial<FtsOptions>)).toThrow(message);
+    });
+
+    it("tokenizes with the code analyzer flags", async () => {
+      const texts = async (options: Partial<FtsOptions>) =>
+        (await tokenize("parseHTTPRequest utf8", options)).map((t) => t.text);
+
+      expect(await texts({ analyzer: "code" })).toEqual(
+        await texts({ baseTokenizer: "code" }),
+      );
+      expect(await texts({ analyzer: "code", splitIdentifiers: true })).toEqual(
+        expect.arrayContaining(["parse", "http", "request", "utf"]),
+      );
+      expect(
+        await texts({ analyzer: "code", splitIdentifiers: false }),
+      ).not.toContain("parse");
+      expect(
+        await texts({
+          analyzer: "code",
+          splitIdentifiers: true,
+          splitOnNumerics: false,
+        }),
+      ).toContain("utf8");
+      await expect(tokenize("x", { splitIdentifiers: true })).rejects.toThrow(
+        "require analyzer 'code'",
+      );
+    });
+
+    it("allows code flags set to false on a text index", () => {
+      expect(() =>
+        Index.fts({ splitIdentifiers: false, indexOperators: false }),
+      ).not.toThrow();
+    });
   });
 });
 
