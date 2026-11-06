@@ -215,8 +215,10 @@ pub enum OptimizeAction {
     /// before submission. The server must support these SQL options; errors
     /// from older servers are returned without dropping the settings.
     /// The source-row budget admits whole tasks and may perform no work when
-    /// the first task exceeds it. Zero I/O buffer size disables buffering;
-    /// row targets, source-row budgets, and batch sizes must be positive.
+    /// the first task exceeds it. Zero I/O buffer size disables byte-based I/O
+    /// backpressure. Use a positive size to limit I/O read-ahead; this is not a
+    /// total-memory limit. Row targets, source-row budgets, and batch sizes must
+    /// be positive.
     /// Omitted options preserve the remote server's defaults, and options
     /// affect only this job, without changing ongoing table policy.
     ///
@@ -235,7 +237,7 @@ pub enum OptimizeAction {
     ///     options: CompactionOptions {
     ///         target_rows_per_fragment: 100_000,
     ///         max_source_rows: Some(1_000_000),
-    ///         io_buffer_size: Some(0),
+    ///         io_buffer_size: Some(64 * 1024 * 1024),
     ///         batch_size: Some(1024),
     ///         ..Default::default()
     ///     },
