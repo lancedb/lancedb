@@ -165,7 +165,7 @@
     },
     {
       "source": "/tables/multimodal",
-      "destination": "/management/table#multimodal"
+      "destination": "/management/table/multimodal"
     },
     {
       "source": "/search/select",
@@ -201,11 +201,11 @@
     },
     {
       "source": "/tables/schema",
-      "destination": "/management/table#schema"
+      "destination": "/management/table/schema"
     },
     {
       "source": "/tables/versioning",
-      "destination": "/management/table#versioning"
+      "destination": "/management/table/versioning"
     },
     {
       "source": "/search/multivector-search",
@@ -491,7 +491,25 @@
               "management/catalog",
               "management/database",
               "management/namespace",
-              "management/table",
+              {
+                "group": "Tables",
+                "pages": [
+                  "management/table",
+                  "management/table/schema",
+                  "management/table/alter-columns",
+                  "management/table/field-metadata",
+                  "management/table/versioning",
+                  {
+                    "group": "Multimodal data",
+                    "pages": [
+                      "management/table/multimodal",
+                      "management/table/managed-blobs",
+                      "management/table/binary-data",
+                      "management/table/legacy-blobs"
+                    ]
+                  }
+                ]
+              },
               "management/view",
               "management/materialized-view",
               "management/secret",

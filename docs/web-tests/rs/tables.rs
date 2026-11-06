@@ -1,22 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+// --8<-- [start:schema_field_metadata_imports]
 use std::sync::Arc;
+
+use arrow_array::{Int64Array, RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray};
+use arrow_schema::{DataType, Field, Schema};
+use lancedb::connect;
+use lancedb::database::CreateTableMode;
+use lancedb::table::FieldMetadataUpdate;
+// --8<-- [end:schema_field_metadata_imports]
+
 use std::time::Duration as StdDuration;
 
 use arrow_array::types::Float32Type;
-use arrow_array::{
-    Array, FixedSizeListArray, Float32Array, Float64Array, Int32Array, Int64Array, RecordBatch,
-    RecordBatchIterator, RecordBatchReader, StringArray,
-};
-use arrow_schema::{DataType, Field, Schema};
+use arrow_array::{Array, FixedSizeListArray, Float32Array, Float64Array, Int32Array};
 use futures::TryStreamExt;
-use lancedb::connect;
 use lancedb::query::ExecutableQuery;
-use lancedb::database::CreateTableMode;
-use lancedb::table::{
-    ColumnAlteration, Duration, FieldMetadataUpdate, NewColumnTransform, OptimizeAction,
-};
+use lancedb::table::{ColumnAlteration, Duration, NewColumnTransform, OptimizeAction};
 
 // --8<-- [start:update_make_users_reader]
 fn make_users_reader(
@@ -836,6 +837,7 @@ async fn main() {
     // --8<-- [end:alter_vector_column]
     assert_eq!(vector_table.count_rows(None).await.unwrap(), 1);
 
+    // --8<-- [start:schema_field_metadata_setup]
     let field_metadata_schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new("category", DataType::Utf8, false),
@@ -848,15 +850,18 @@ async fn main() {
         ],
     )
     .unwrap();
-    let field_metadata_reader: Box<dyn RecordBatchReader + Send> = Box::new(
-        RecordBatchIterator::new(vec![Ok(field_metadata_batch)].into_iter(), field_metadata_schema),
-    );
+    let field_metadata_reader: Box<dyn RecordBatchReader + Send> =
+        Box::new(RecordBatchIterator::new(
+            vec![Ok(field_metadata_batch)].into_iter(),
+            field_metadata_schema,
+        ));
     let field_metadata_table = db
         .create_table("schema_field_metadata_example", field_metadata_reader)
         .mode(CreateTableMode::Overwrite)
         .execute()
         .await
         .unwrap();
+    // --8<-- [end:schema_field_metadata_setup]
 
     // --8<-- [start:schema_field_metadata_merge]
     // Set two metadata keys on the `category` field.
@@ -1295,47 +1300,12 @@ async fn main() {
     assert_eq!(version_count_after_rollback, version_count_after_mod + 1);
     assert_eq!(table.count_rows(None).await.unwrap(), 5);
 
-    // --8<-- [start:versioning_checkout_latest]
-    table.checkout_latest().await.unwrap();
-    // --8<-- [end:versioning_checkout_latest]
-    let latest_version = table.version().await.unwrap();
-    let versions_after_checkout = table.list_versions().await.unwrap();
-    assert_eq!(latest_version, versions_after_checkout.last().unwrap().version);
-
-    // --8<-- [start:versioning_delete_data]
-    table.delete("author = 'Morty'").await.unwrap();
-    let rows_after_deletion = table.count_rows(None).await.unwrap();
-    println!("Number of rows after deletion: {}", rows_after_deletion);
-    // --8<-- [end:versioning_delete_data]
-    assert_eq!(rows_after_deletion, 3);
-
-    // Setup: build a table with three versions to operate on with tags.
-    let tags_table = db
-        .create_table(
-            "quotes_tags_example",
-            make_quotes_reader(vec![(1, "Richard", "Wubba Lubba Dub Dub!")]),
-        )
-        .mode(CreateTableMode::Overwrite)
-        .execute()
-        .await
-        .unwrap(); // v1
-    tags_table
-        .add(make_quotes_reader(vec![(2, "Morty", "Aww geez, Rick!")]))
-        .execute()
-        .await
-        .unwrap(); // v2
-    tags_table
-        .add(make_quotes_reader(vec![(3, "Summer", "Whatever, Grandpa")]))
-        .execute()
-        .await
-        .unwrap(); // v3
-
     // --8<-- [start:versioning_tags]
-    let mut tags = tags_table.tags().await.unwrap();
+    let mut tags = table.tags().await.unwrap();
 
     // Create a tag pointing at a specific version
     tags.create("baseline", 1).await.unwrap();
-    let current_version = tags_table.version().await.unwrap();
+    let current_version = table.version().await.unwrap();
     tags.create("with-edits", current_version).await.unwrap();
 
     // List all tags on this table
@@ -1350,19 +1320,33 @@ async fn main() {
     tags.update("baseline", 2).await.unwrap();
 
     // Check out a version by tag name (separate method in Rust)
-    tags_table.checkout_tag("baseline").await.unwrap();
-    println!("Current version: {}", tags_table.version().await.unwrap());
+    table.checkout_tag("baseline").await.unwrap();
+    println!("Current version: {}", table.version().await.unwrap());
 
     // Delete a tag (does not delete the underlying version)
     tags.delete("with-edits").await.unwrap();
 
     // Return to the latest version
-    tags_table.checkout_latest().await.unwrap();
+    table.checkout_latest().await.unwrap();
     // --8<-- [end:versioning_tags]
-    assert_eq!(tags_table.version().await.unwrap(), 3);
+    assert_eq!(table.version().await.unwrap(), version_after_mod + 1);
     let remaining = tags.list().await.unwrap();
     assert!(remaining.contains_key("baseline"));
     assert!(!remaining.contains_key("with-edits"));
+
+    // --8<-- [start:versioning_checkout_latest]
+    table.checkout_latest().await.unwrap();
+    // --8<-- [end:versioning_checkout_latest]
+    let latest_version = table.version().await.unwrap();
+    let versions_after_checkout = table.list_versions().await.unwrap();
+    assert_eq!(latest_version, versions_after_checkout.last().unwrap().version);
+
+    // --8<-- [start:versioning_delete_data]
+    table.delete("author = 'Morty'").await.unwrap();
+    let rows_after_deletion = table.count_rows(None).await.unwrap();
+    println!("Number of rows after deletion: {}", rows_after_deletion);
+    // --8<-- [end:versioning_delete_data]
+    assert_eq!(rows_after_deletion, 3);
 
     // Setup: a fresh quotes table to demonstrate branches on.
     let branches_table = db

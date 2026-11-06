@@ -317,7 +317,7 @@ undecorated class, so local tests can create an instance and call it directly.
 
 ## Blob v2 columns {#blobs}
 
-A Function can bind a [Blob v2 column](/management/table#managed-blobs) as
+A Function can bind a [Blob v2 column](/management/table/managed-blobs) as
 input and return another. In row mode, a top-level blob parameter arrives as
 Python `bytes`, or `None` for a nullable input, after the worker has read
 the payload; annotate it `BlobReader` instead for seekable, incremental

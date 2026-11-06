@@ -50,7 +50,7 @@ Use `lancedb` for search, retrieval, data curation, multimodal blob access and
 application code. Install `pylance` (`import lance`) only when building query
 engines or connectors, calling format-level fragment APIs directly, or
 converting plain-scan lazy or legacy blob columns with `to_pandas()` (see
-[Multimodal data and blobs](/management/table#multimodal) for `pylance`-free
+[Blob columns](/management/table/multimodal) for `pylance`-free
 conversions).
 
 | `pylance` (`import lance`) | `lancedb` (`import lancedb`) |
@@ -72,7 +72,7 @@ conversions).
 <span id="evolution" />
 
 - [Lance format specification](https://lance.org/format): how the format works.
-- [Multimodal data and blobs](/management/table#multimodal): declare `lancedb.blob()` columns and read blobs on demand.
-- [Table versioning](/management/table#versioning): read and manage table versions.
+- [Blob columns](/management/table/multimodal): declare `lancedb.blob()` columns and read blobs on demand.
+- [Table versioning](/management/table/versioning): read and manage table versions.
 - [Computed columns](/feature-engineering/add-computed-column): add derived features to your data.
 - [Architecture](/index#architecture): how LanceDB Embedded and Enterprise build on Lance.
