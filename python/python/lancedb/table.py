@@ -136,6 +136,10 @@ def _requires_local_namespace_execution(query: Query) -> bool:
         or query.take_row_ids is not None
         or query.search_effort is not None
         or query.approx_mode is not None
+        or (
+            query.full_text_query is not None
+            and getattr(query.full_text_query, "wand_factor", None) is not None
+        )
     )
 
 
@@ -7361,6 +7365,8 @@ class AsyncTable:
             async_query = async_query.nearest_to_text(
                 query.full_text_query.query, query.full_text_query.columns
             )
+            if getattr(query.full_text_query, "wand_factor", None) is not None:
+                async_query = async_query.wand_factor(query.full_text_query.wand_factor)
 
         return async_query
 

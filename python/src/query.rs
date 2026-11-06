@@ -64,6 +64,17 @@ fn analyze_plan_options(distributed_metrics: Option<&str>) -> PyResult<QueryExec
     Ok(options)
 }
 
+fn validate_wand_factor(wand_factor: Option<f32>) -> PyResult<Option<f32>> {
+    if let Some(value) = wand_factor {
+        if !value.is_finite() || value < 0.0 {
+            return Err(PyValueError::new_err(
+                "wand_factor must be finite and non-negative",
+            ));
+        }
+    }
+    Ok(wand_factor)
+}
+
 impl<'a, 'py> FromPyObject<'a, 'py> for PyLanceDB<FtsQuery> {
     type Error = PyErr;
 
@@ -358,6 +369,7 @@ pub struct PyQueryRequest {
     pub take_row_ids: Option<Vec<u64>>,
     pub filter: Option<PyQueryFilter>,
     pub full_text_search: Option<PyLanceDB<FtsQuery>>,
+    pub wand_factor: Option<f32>,
     pub select: PySelect,
     pub select_source_columns: Option<HashMap<String, String>>,
     pub fast_search: Option<bool>,
@@ -392,7 +404,12 @@ impl From<AnyQuery> for PyQueryRequest {
                 filter: query_request.filter.map(PyQueryFilter),
                 full_text_search: query_request
                     .full_text_search
-                    .map(|fts| PyLanceDB(fts.query)),
+                    .as_ref()
+                    .map(|fts| PyLanceDB(fts.query.clone())),
+                wand_factor: query_request
+                    .full_text_search
+                    .as_ref()
+                    .and_then(|fts| fts.wand_factor),
                 select_source_columns: PySelect::source_columns(&query_request.select),
                 select: PySelect(query_request.select),
                 fast_search: Some(query_request.fast_search),
@@ -423,7 +440,16 @@ impl From<AnyQuery> for PyQueryRequest {
                 take_offsets: vector_query.base.take_offsets,
                 take_row_ids: vector_query.base.take_row_ids,
                 filter: vector_query.base.filter.map(PyQueryFilter),
-                full_text_search: None,
+                full_text_search: vector_query
+                    .base
+                    .full_text_search
+                    .as_ref()
+                    .map(|fts| PyLanceDB(fts.query.clone())),
+                wand_factor: vector_query
+                    .base
+                    .full_text_search
+                    .as_ref()
+                    .and_then(|fts| fts.wand_factor),
                 select_source_columns: PySelect::source_columns(&vector_query.base.select),
                 select: PySelect(vector_query.base.select),
                 fast_search: Some(vector_query.base.fast_search),
@@ -600,7 +626,12 @@ impl Query {
                 "Query text is required for nearest_to_text",
             ))?;
 
-        let query = if let Ok(query_text) = fts_query.cast::<PyString>() {
+        let wand_factor = query
+            .get_item("wand_factor")?
+            .map(|wf| wf.extract::<f32>())
+            .transpose()?;
+
+        let mut query = if let Ok(query_text) = fts_query.cast::<PyString>() {
             let mut query_text = query_text.to_string();
             let columns = query
                 .get_item("columns")?
@@ -642,6 +673,10 @@ impl Query {
             let query = fts_query.extract::<PyLanceDB<FtsQuery>>()?;
             FullTextSearchQuery::new_query(query.0)
         };
+
+        if let Some(wf) = validate_wand_factor(wand_factor)? {
+            query.wand_factor = Some(wf);
+        }
 
         Ok(FTSQuery {
             inner: self.inner.clone(),
@@ -939,6 +974,15 @@ impl FTSQuery {
 
     pub fn get_query(&self) -> String {
         self.fts_query.query.query().clone()
+    }
+
+    pub fn wand_factor(&mut self, wand_factor: Option<f32>) -> PyResult<()> {
+        self.fts_query.wand_factor = validate_wand_factor(wand_factor)?;
+        Ok(())
+    }
+
+    pub fn get_wand_factor(&self) -> Option<f32> {
+        self.fts_query.wand_factor
     }
 
     pub fn to_query_request(&self) -> PyQueryRequest {
@@ -1295,6 +1339,14 @@ impl HybridQuery {
 
     pub fn get_with_row_id(&mut self) -> bool {
         self.inner_fts.inner.current_request().with_row_id
+    }
+
+    pub fn wand_factor(&mut self, wand_factor: Option<f32>) -> PyResult<()> {
+        self.inner_fts.wand_factor(wand_factor)
+    }
+
+    pub fn get_wand_factor(&self) -> Option<f32> {
+        self.inner_fts.get_wand_factor()
     }
 
     pub fn to_query_request(&self) -> PyQueryRequest {
