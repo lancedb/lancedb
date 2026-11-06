@@ -33,6 +33,27 @@ tbl.optimize({cleanupOlderThan: new Date()});
 
 ***
 
+### compactionOptions?
+
+```ts
+optional compactionOptions: CompactionOptions;
+```
+
+Compaction settings for this invocation. Omitted values retain defaults.
+Remote tables require a server supporting these SQL options; settings do
+not change table policy. This is not a runtime or total-memory limit.
+
+#### Example
+
+```ts
+await tbl.optimize({ compactionOptions: {
+  targetRowsPerFragment: 1000, maxSourceRows: 5000,
+  ioBufferSize: 0, batchSize: 128,
+} });
+```
+
+***
+
 ### deleteUnverified
 
 ```ts

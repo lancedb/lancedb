@@ -209,15 +209,41 @@ pub enum OptimizeAction {
     ///
     /// # LanceDB Enterprise (remote tables)
     ///
-    /// A remote table only supports `Compact` with default `options` and no
-    /// custom `remap_options`; both are rejected with
-    /// [`crate::Error::NotSupported`] otherwise. It submits a durable
+    /// A remote table supports per-job `target_rows_per_fragment`,
+    /// `max_source_rows`, `io_buffer_size`, and `batch_size`. Other non-default
+    /// options and custom `remap_options` return [`crate::Error::NotSupported`]
+    /// before submission. The server must support these SQL options; errors
+    /// from older servers are returned without dropping the settings.
+    /// The source-row budget admits whole tasks and may perform no work when
+    /// the first task exceeds it. Zero I/O buffer size disables buffering;
+    /// row targets, source-row budgets, and batch sizes must be positive.
+    /// Omitted options preserve the remote server's defaults, and options
+    /// affect only this job, without changing ongoing table policy.
+    ///
+    /// It submits a durable
     /// compaction job to the server over SQL and waits for that submission to
     /// be confirmed, not for compaction itself to finish: the job then runs
     /// asynchronously on the server, so this call can return well before the
     /// data is actually compacted. Because of that, the returned
     /// [`OptimizeStats::compaction`] is a zeroed [`CompactionMetrics`]
     /// placeholder rather than the real counts a local table reports.
+    ///
+    /// ```
+    /// use lancedb::{Table, table::{CompactionOptions, OptimizeAction}};
+    /// # async fn compact(table: &Table) -> lancedb::Result<()> {
+    /// table.optimize(OptimizeAction::Compact {
+    ///     options: CompactionOptions {
+    ///         target_rows_per_fragment: 100_000,
+    ///         max_source_rows: Some(1_000_000),
+    ///         io_buffer_size: Some(0),
+    ///         batch_size: Some(1024),
+    ///         ..Default::default()
+    ///     },
+    ///     remap_options: None,
+    /// }).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     ///
     /// A branch-scoped table handle compacts that branch. The branch is not
     /// validated to exist before the job is submitted, so a nonexistent

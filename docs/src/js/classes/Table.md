@@ -948,6 +948,9 @@ supported. Pruning old versions and index optimization are silently
 skipped there instead of being attempted, so this call resolves
 successfully, with zeroed pruning statistics, once the compaction job
 has been submitted; it does not wait for that job to finish.
+`compactionOptions` can tune the four per-job settings documented in
+[CompactionOptions](../interfaces/CompactionOptions.md). Older-server errors are propagated without
+retrying with the settings removed.
 
 #### Parameters
 
