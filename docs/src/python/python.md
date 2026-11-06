@@ -357,14 +357,15 @@ zeroed pruning statistics. Remote `compaction_options` support per-job
 on compatible servers. Other non-default settings raise `NotImplementedError`
 before submission; older-server errors are returned without dropping options.
 The source-row budget selects whole tasks and can produce no work if the first
-task exceeds it. An I/O buffer size of zero disables buffering. These options
-apply only to the submitted job and leave table policy unchanged.
+task exceeds it. An I/O buffer size of zero disables byte-based I/O backpressure.
+Use a positive size to limit I/O read-ahead; this is not a total-memory limit.
+These options apply only to the submitted job and leave table policy unchanged.
 
 ```python
 table.optimize(compaction_options={
     "target_rows_per_fragment": 100_000,
     "max_source_rows": 1_000_000,
-    "io_buffer_size": 0,
+    "io_buffer_size": 64 * 1024 * 1024,
     "batch_size": 1024,
 })
 ```

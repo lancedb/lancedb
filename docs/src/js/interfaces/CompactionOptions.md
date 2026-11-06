@@ -26,7 +26,7 @@ Positive scanner batch size in rows.
 optional ioBufferSize: number;
 ```
 
-Scanner I/O buffer size in bytes; zero disables buffering.
+Scanner I/O read-ahead budget in bytes; zero disables byte-based I/O backpressure.
 
 ***
 
