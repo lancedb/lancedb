@@ -676,7 +676,79 @@ export interface FtsOptions {
    * the experimental FTS V3 format and may introduce breaking changes.
    */
   blockSize?: 128 | 256;
+
+  /**
+   * The analyzer family to use.
+   *
+   * "code" selects the code analyzer, which is the same as
+   * `baseTokenizer: "code"`. "text" selects a text-family analyzer with the
+   * selected `baseTokenizer`. When it is not set, the analyzer is inferred
+   * from `baseTokenizer`.
+   *
+   * "code" cannot be combined with a `baseTokenizer` other than "simple" or
+   * "code", and "text" cannot be combined with `baseTokenizer: "code"`.
+   */
+  analyzer?: "text" | "code";
+
+  /**
+   * Split code identifiers such as `camelCase` and `snake_case` into subwords.
+   *
+   * Setting this to true requires the code analyzer. The default is false, so
+   * `analyzer: "code"` alone keeps identifiers whole.
+   *
+   * Note: with the default `preserveOriginal`, partial-identifier AND and
+   * phrase queries on JSON columns can miss matches
+   * (https://github.com/lance-format/lance/issues/9674). Spell phrase queries
+   * with the same identifier boundaries as the indexed text
+   * (https://github.com/lance-format/lance/issues/9658).
+   */
+  splitIdentifiers?: boolean;
+
+  /**
+   * Split identifier subwords at letter and number boundaries, for example
+   * `utf8` into `utf` and `8`.
+   *
+   * The code analyzer default is true, but this only takes effect when
+   * `splitIdentifiers` is true.
+   */
+  splitOnNumerics?: boolean;
+
+  /**
+   * Also index the complete identifier next to its subwords.
+   *
+   * The code analyzer default is true, but this only takes effect when
+   * `splitIdentifiers` is true.
+   */
+  preserveOriginal?: boolean;
+
+  /**
+   * Index code operators such as `::`, `->` and `!=`.
+   *
+   * The code analyzer default is false.
+   */
+  indexOperators?: boolean;
 }
+
+const FTS_OPTION_NAMES: ReadonlySet<string> = new Set<keyof FtsOptions>([
+  "withPosition",
+  "baseTokenizer",
+  "language",
+  "maxTokenLength",
+  "lowercase",
+  "stem",
+  "removeStopWords",
+  "customStopWords",
+  "asciiFolding",
+  "ngramMinLength",
+  "ngramMaxLength",
+  "prefixOnly",
+  "blockSize",
+  "analyzer",
+  "splitIdentifiers",
+  "splitOnNumerics",
+  "preserveOriginal",
+  "indexOperators",
+]);
 
 export class Index {
   private readonly inner: LanceDbIndex;
@@ -845,6 +917,15 @@ export class Index {
    * You can combine filters with full text search.
    */
   static fts(options?: Partial<FtsOptions>) {
+    const unknown = Object.keys(options ?? {}).filter(
+      (key) => !FTS_OPTION_NAMES.has(key),
+    );
+    if (unknown.length > 0) {
+      throw new Error(
+        `Unknown FTS option(s): ${unknown.join(", ")}. ` +
+          `Supported options: ${[...FTS_OPTION_NAMES].join(", ")}`,
+      );
+    }
     return new Index(
       LanceDbIndex.fts(
         options?.withPosition,
@@ -860,6 +941,11 @@ export class Index {
         options?.ngramMaxLength,
         options?.prefixOnly,
         options?.blockSize,
+        options?.analyzer,
+        options?.splitIdentifiers,
+        options?.splitOnNumerics,
+        options?.preserveOriginal,
+        options?.indexOperators,
       ),
     );
   }
