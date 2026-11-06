@@ -2505,6 +2505,10 @@ impl Table {
 
     /// Checks out a specific version of the Table by tag
     ///
+    /// On remote tables, the tag must belong to this handle's branch. Use
+    /// [`Self::checkout_branch`] to obtain a handle for another branch first.
+    /// A failed remote tag checkout leaves the handle unchanged.
+    ///
     /// Any read operation on the table will now access the data at the version referenced by the tag.
     /// As a consequence, calling this method will disable any read consistency interval
     /// that was previously set.
