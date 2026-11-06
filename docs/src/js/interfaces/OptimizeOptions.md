@@ -39,7 +39,8 @@ tbl.optimize({cleanupOlderThan: new Date()});
 optional compactionOptions: CompactionOptions;
 ```
 
-Compaction settings for this invocation. Omitted values retain defaults.
+Compaction settings for this invocation. Omitted remote values inherit table
+tuning, then deployment/built-in defaults.
 Remote tables require a server supporting these SQL options; settings do
 not change table policy. This is not a runtime or total-memory limit.
 

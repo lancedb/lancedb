@@ -310,8 +310,9 @@ class CompactionOptions(TypedDict, total=False):
     Unspecified options use Lance's defaults for local tables. Remote tables
     forward ``target_rows_per_fragment``, ``max_source_rows``, ``io_buffer_size``,
     and ``batch_size`` as per-job SQL options; other non-default settings are
-    unsupported. Omitted remote options retain the server's defaults. The server
-    must support these SQL options. These settings do not change table policy.
+    unsupported. Omitted remote options inherit table tuning, then deployment/built-in
+    defaults. The server must support these SQL options. These settings do not
+    change table policy.
 
     Compaction planning is row based. Lowering ``target_rows_per_fragment``
     based on the expected row size can bound later compaction passes once
@@ -2952,7 +2953,8 @@ class Table(ABC):
             the compaction job has been submitted; it does not wait for that
             job to finish. Remote compaction supports per-job
             ``target_rows_per_fragment``, ``max_source_rows``, ``io_buffer_size``,
-            and ``batch_size``. Other non-default compaction settings raise
+            and ``batch_size``. Omitted fields inherit table tuning, then
+            deployment/built-in defaults. Other non-default compaction settings raise
             ``NotImplementedError`` before submission. The server must support
             these SQL options; older-server errors are propagated without
             dropping the requested settings.
@@ -8489,7 +8491,8 @@ class AsyncTable:
             the compaction job has been submitted; it does not wait for that
             job to finish. Remote compaction supports per-job
             ``target_rows_per_fragment``, ``max_source_rows``, ``io_buffer_size``,
-            and ``batch_size``. Other non-default compaction settings raise
+            and ``batch_size``. Omitted fields inherit table tuning, then
+            deployment/built-in defaults. Other non-default compaction settings raise
             ``NotImplementedError`` before submission. The server must support
             these SQL options; older-server errors are propagated without
             dropping the requested settings.

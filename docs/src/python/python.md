@@ -359,7 +359,10 @@ before submission; older-server errors are returned without dropping options.
 The source-row budget selects whole tasks and can produce no work if the first
 task exceeds it. An I/O buffer size of zero disables byte-based I/O backpressure.
 Use a positive size to limit I/O read-ahead; this is not a total-memory limit.
-These options apply only to the submitted job and leave table policy unchanged.
+Each field resolves as invocation option → table tuning → deployment/built-in
+default. These options apply only to the submitted job and leave table policy
+unchanged. Table `enabled` controls automatic scheduling; explicit manual runs
+remain allowed.
 
 ```python
 table.optimize(compaction_options={
