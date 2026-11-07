@@ -59,6 +59,37 @@ Use `view.table.count_rows()` for the view's row count at any time; on
 LanceDB Embedded it always matches `rows_written` from the most recent
 refresh.
 
+## Resource budgets {#resources}
+
+For training-data curation, bound the resources used to recompute a view:
+
+```python
+job = view.refresh_async(
+    cpu_millis=8000,
+    memory_bytes=16 * 1024**3,
+    gpu_count=2,
+    gpu_class="h100",
+)
+job.wait()
+```
+
+The same options are available on `refresh`, asynchronous Python connections,
+and the Rust refresh builder (`cpu_millis`, `memory_bytes`, `gpu_count`, and
+`gpu_class`). CPU is in millicores (8000 means eight cores), memory is bytes,
+and GPU count is an aggregate concurrent cap. CPU or memory requires all three
+budget fields. Use zero GPUs for a CPU-only view, or specify a GPU cap alone.
+
+The cap covers the refresh execution and its Function processes together.
+It does not allocate that budget separately to each Function. A GPU class
+selects placement for this execution; discover configured classes with
+`db.list_gpu_classes()`. A cap does not promise more parallelism: current MV
+refreshes use at most one GPU. Omitted settings keep existing defaults.
+
+These controls require an Enterprise server with an isolated backend that can
+enforce them; Embedded and unsupported execution backends reject them. Earlier
+Enterprise servers reject the new SQL options. See the
+[SQL resource options](/sql/dml/refresh-materialized-view#resources).
+
 ## Automatic refresh {#auto-refresh}
 
 A materialized view can refresh itself on a schedule instead of waiting

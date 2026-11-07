@@ -2379,6 +2379,17 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         source_version: Option<u64>,
         full: bool,
     ) -> Result<Job<RefreshMaterializedViewResult>> {
+        self.refresh_materialized_view_async_with_options(source_version, full, Default::default())
+            .await
+    }
+
+    async fn refresh_materialized_view_async_with_options(
+        &self,
+        source_version: Option<u64>,
+        full: bool,
+        options: crate::materialized_view::RefreshMaterializedViewOptions,
+    ) -> Result<Job<RefreshMaterializedViewResult>> {
+        let with_clause = options.sql_clause(full)?;
         self.check_mutable().await?;
         if source_version.is_some() {
             return Err(Error::NotSupported {
@@ -2392,7 +2403,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let statement = format!(
             "REFRESH MATERIALIZED VIEW {}{}",
             quote_sql_identifier(&self.name),
-            if full { " WITH (full = true)" } else { "" },
+            with_clause,
         );
         let namespace = self.namespace.clone();
         let client = self.client.clone();

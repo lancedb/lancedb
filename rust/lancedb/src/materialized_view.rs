@@ -1863,7 +1863,83 @@ impl MaterializedView {
             view: self.clone(),
             source_version: None,
             full: false,
+            options: Default::default(),
         }
+    }
+}
+
+/// Per-execution resource caps and GPU placement for Enterprise MV refreshes.
+///
+/// CPU is in millicores (1000 = one core), memory is bytes, and GPUs are a
+/// simultaneous cap across the refresh, not a per-Function allocation. CPU or
+/// memory requires all three budget fields. Embedded refreshes reject options.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RefreshMaterializedViewOptions {
+    pub cpu_millis: Option<u64>,
+    pub memory_bytes: Option<u64>,
+    pub gpu_count: Option<u32>,
+    pub gpu_class: Option<String>,
+}
+
+impl RefreshMaterializedViewOptions {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.cpu_millis.is_none()
+            && self.memory_bytes.is_none()
+            && self.gpu_count.is_none()
+            && self.gpu_class.is_none()
+    }
+
+    pub(crate) fn validate(&self) -> Result<()> {
+        let invalid = |message: &str| Error::InvalidInput {
+            message: message.into(),
+        };
+        if self.cpu_millis == Some(0) || self.memory_bytes == Some(0) {
+            return Err(invalid(
+                "cpu_millis and memory_bytes must be positive integers",
+            ));
+        }
+        if (self.cpu_millis.is_some() || self.memory_bytes.is_some())
+            && !(self.cpu_millis.is_some()
+                && self.memory_bytes.is_some()
+                && self.gpu_count.is_some())
+        {
+            return Err(invalid(
+                "cpu_millis, memory_bytes, and gpu_count must be specified together",
+            ));
+        }
+        if let Some(class) = &self.gpu_class {
+            crate::function::validate_gpu_class_name(class)?;
+            if self.gpu_count == Some(0) {
+                return Err(invalid("gpu_class requires a positive GPU budget"));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn sql_clause(&self, full: bool) -> Result<String> {
+        self.validate()?;
+        let mut values = Vec::new();
+        if full {
+            values.push("full = true".to_string());
+        }
+        if let Some(cpu) = self.cpu_millis {
+            values.push(format!("cpu_millis = {cpu}"));
+        }
+        if let Some(memory) = self.memory_bytes {
+            values.push(format!("memory_bytes = {memory}"));
+        }
+        if let Some(gpu) = self.gpu_count {
+            values.push(format!("gpu_count = {gpu}"));
+        }
+        if let Some(class) = &self.gpu_class {
+            values.push(format!("gpu_class = '{class}'"));
+        }
+        Ok(if values.is_empty() {
+            String::new()
+        } else {
+            format!(" WITH ({})", values.join(", "))
+        })
     }
 }
 
@@ -1872,9 +1948,34 @@ pub struct RefreshMaterializedViewBuilder {
     view: MaterializedView,
     source_version: Option<u64>,
     full: bool,
+    options: RefreshMaterializedViewOptions,
 }
 
 impl RefreshMaterializedViewBuilder {
+    /// Cap total CPU capacity in millicores; requires memory and GPU budgets.
+    pub fn cpu_millis(mut self, cpu_millis: u64) -> Self {
+        self.options.cpu_millis = Some(cpu_millis);
+        self
+    }
+
+    /// Cap total memory in bytes; requires CPU and GPU budgets.
+    pub fn memory_bytes(mut self, memory_bytes: u64) -> Self {
+        self.options.memory_bytes = Some(memory_bytes);
+        self
+    }
+
+    /// Cap concurrent GPUs for this refresh. Zero is CPU-only.
+    pub fn gpu_count(mut self, gpu_count: u32) -> Self {
+        self.options.gpu_count = Some(gpu_count);
+        self
+    }
+
+    /// Select an operator-configured GPU class for this execution only.
+    pub fn gpu_class(mut self, gpu_class: impl Into<String>) -> Self {
+        self.options.gpu_class = Some(gpu_class.into());
+        self
+    }
+
     /// Force a complete rebuild instead of letting the server choose
     /// the refresh mode. Defaults to `false`. LanceDB Embedded views always rebuild.
     ///
@@ -1900,13 +2001,21 @@ impl RefreshMaterializedViewBuilder {
 
     /// Submit the refresh and return a job that settles with its result.
     pub async fn execute_async(self) -> Result<Job<RefreshMaterializedViewResult>> {
+        self.options.validate()?;
         if self.view.table.as_native().is_none() {
             return self
                 .view
                 .table
                 .base_table()
-                .refresh_materialized_view_async(self.source_version, self.full)
+                .refresh_materialized_view_async_with_options(
+                    self.source_version,
+                    self.full,
+                    self.options,
+                )
                 .await;
+        }
+        if !self.options.is_empty() {
+            return Err(Error::NotSupported { message: "resource budgets and GPU placement require an Enterprise materialized-view refresh".into() });
         }
         crate::require_experimental_functions()?;
         Ok(Job::spawned(tokio::spawn(async move {
@@ -1916,6 +2025,10 @@ impl RefreshMaterializedViewBuilder {
 
     /// Refresh the view, waiting for the job to finish.
     pub async fn execute(self) -> Result<RefreshMaterializedViewResult> {
+        self.options.validate()?;
+        if self.view.table.as_native().is_some() && !self.options.is_empty() {
+            return Err(Error::NotSupported { message: "resource budgets and GPU placement require an Enterprise materialized-view refresh".into() });
+        }
         if self.view.table.as_native().is_some() {
             return refresh::execute_refresh(&self.view.table, self.source_version).await;
         }
