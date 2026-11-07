@@ -63,7 +63,17 @@ def mock_remote_materialized_view_refresh():
 @pytest.mark.parametrize("sync", [False, True])
 @pytest.mark.parametrize("background", [False, True])
 @pytest.mark.parametrize("full", [False, True])
-async def test_remote_refresh_reports_unknown_metrics(sync, background, full):
+@pytest.mark.parametrize(
+    "resources",
+    [
+        {},
+        {"gpu_count": 2, "gpu_class": "h100"},
+        {"cpu_millis": 8000, "memory_bytes": 16 * 1024**3, "gpu_count": 0},
+    ],
+)
+async def test_remote_refresh_reports_unknown_metrics(
+    sync, background, full, resources
+):
     flight = pytest.importorskip("pyarrow.flight")
 
     class RefreshServer(flight.FlightServerBase):
@@ -90,7 +100,7 @@ async def test_remote_refresh_reports_unknown_metrics(sync, background, full):
         mock_remote_materialized_view_refresh() as (host, requests),
         RefreshServer() as server,
     ):
-        options = {"full": True} if full else {}
+        options = {"full": full, **resources}
         connect = lancedb.connect if sync else lancedb.connect_async
         db = connect(
             "db://dev",
@@ -140,7 +150,28 @@ async def test_remote_refresh_reports_unknown_metrics(sync, background, full):
         )
         (refresh,) = refreshes
         assert b'REFRESH MATERIALIZED VIEW "view"' in refresh
-        assert (b"WITH (full = true)" in refresh) is full
+        assert (b"full = true" in refresh) is full
+        for key, value in resources.items():
+            expected = (
+                f"{key} = '{value}'" if key == "gpu_class" else f"{key} = {value}"
+            )
+            assert expected.encode() in refresh
+        previous = len(server.commands)
+        for invalid in [
+            {"cpu_millis": 0},
+            {"memory_bytes": 1},
+            {"gpu_count": -1},
+            {"gpu_count": True},
+            {"gpu_count": 2**32},
+            {"gpu_class": "H200:8"},
+            {"gpu_count": 0, "gpu_class": "h100"},
+        ]:
+            with pytest.raises(ValueError):
+                if sync:
+                    view.refresh(**invalid)
+                else:
+                    await view.refresh(**invalid)
+        assert len(server.commands) == previous
         assert not any("count_rows" in path for path in requests)
 
 
