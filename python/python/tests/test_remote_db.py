@@ -5837,10 +5837,8 @@ def _create_table_handler(request):
 
 
 @contextlib.contextmanager
-def _mock_remote_table_with_sql(flight_server):
-    """A remote table backed by a mock REST server (for create/open) and the
-    given mock Flight SQL server (for the SQL statements `optimize()` submits
-    as jobs)."""
+def _mock_remote_sql_connection(flight_server):
+    """Connection arguments for mock REST and Flight SQL servers."""
     with http.server.ThreadingHTTPServer(
         ("127.0.0.1", 0), make_mock_http_handler(_create_table_handler)
     ) as rest_server:
@@ -5848,16 +5846,104 @@ def _mock_remote_table_with_sql(flight_server):
         handle = start_server_thread(rest_server)
         try:
             with flight_server:
-                db = lancedb.connect(
-                    "db://dev",
-                    api_key="fake",
-                    host_override=f"http://127.0.0.1:{rest_port}",
-                    sql_host_override=f"grpc://127.0.0.1:{flight_server.port}",
-                )
-                yield db.create_table("test", [{"id": 1}])
+                yield {
+                    "uri": "db://dev",
+                    "api_key": "fake",
+                    "host_override": f"http://127.0.0.1:{rest_port}",
+                    "sql_host_override": f"grpc://127.0.0.1:{flight_server.port}",
+                }
         finally:
             rest_server.shutdown()
             handle.join()
+
+
+@contextlib.contextmanager
+def _mock_remote_table_with_sql(flight_server):
+    with _mock_remote_sql_connection(flight_server) as kwargs:
+        yield lancedb.connect(**kwargs).create_table("test", [{"id": 1}])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize(
+    "options,sql_options",
+    [
+        ({"target_rows_per_fragment": 100}, [b"target_rows_per_fragment = 100"]),
+        (
+            {"target_rows_per_fragment": 1_048_576},
+            [b"target_rows_per_fragment = 1048576"],
+        ),
+        ({"max_source_rows": 500}, [b"max_source_rows = 500"]),
+        ({"io_buffer_size": 0}, [b"io_buffer_size = 0"]),
+        ({"batch_size": 16}, [b"batch_size = 16"]),
+        (
+            {
+                "target_rows_per_fragment": 100,
+                "max_source_rows": 500,
+                "io_buffer_size": 65536,
+                "batch_size": 16,
+            },
+            [
+                b"target_rows_per_fragment = 100",
+                b"max_source_rows = 500",
+                b"io_buffer_size = 65536",
+                b"batch_size = 16",
+            ],
+        ),
+        ({}, []),
+    ],
+)
+async def test_remote_optimize_forwards_per_job_compaction_options(
+    asynchronous, options, sql_options
+):
+    flight = pytest.importorskip("pyarrow.flight")
+
+    class AckServer(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.tickets = []
+
+        def do_get(self, context, ticket):
+            self.tickets.append(ticket.ticket)
+            return flight.RecordBatchStream(
+                pa.table({"ok": pa.array([], type=pa.bool_())})
+            )
+
+    server = AckServer()
+    with _mock_remote_sql_connection(server) as kwargs:
+        if asynchronous:
+            db = await lancedb.connect_async(**kwargs)
+            table = await db.create_table("test", [{"id": 1}])
+            stats = await table.optimize(compaction_options=options)
+        else:
+            table = lancedb.connect(**kwargs).create_table("test", [{"id": 1}])
+            stats = table.optimize(compaction_options=options)
+    assert len(server.tickets) == 1
+    assert b"OPTIMIZE" in server.tickets[0]
+    assert all(option in server.tickets[0] for option in sql_options)
+    if not sql_options:
+        assert b"WITH (" not in server.tickets[0]
+    assert stats.prune.bytes_removed == 0
+
+
+def test_remote_optimize_does_not_drop_options_after_server_rejection():
+    flight = pytest.importorskip("pyarrow.flight")
+
+    class OldServer(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.tickets = []
+
+        def do_get(self, context, ticket):
+            self.tickets.append(ticket.ticket)
+            raise flight.FlightServerError("Unknown OPTIMIZE option 'max_source_rows'")
+
+    server = OldServer()
+    with _mock_remote_table_with_sql(server) as table:
+        with pytest.raises(Exception, match="max_source_rows"):
+            table.optimize(compaction_options={"max_source_rows": 500})
+    assert server.tickets
+    assert all(b"max_source_rows = 500" in ticket for ticket in server.tickets)
 
 
 def test_remote_optimize_skips_prune_and_index():
@@ -5868,7 +5954,7 @@ def test_remote_optimize_skips_prune_and_index():
     zeroed pruning statistics, once compaction is submitted.
 
     The SQL job submission for a query without parameters (like
-    `OPTIMIZE TABLE ... REWRITE DATA`) goes over plain Flight `do_get`, not
+    `OPTIMIZE ... REWRITE DATA`) goes over plain Flight `do_get`, not
     `do_exchange`: the client sends a ticket wrapping the statement and reads
     back whatever the server returns as the job's result stream.
     """
@@ -5890,12 +5976,12 @@ def test_remote_optimize_skips_prune_and_index():
         stats = table.optimize()
 
     assert len(server.tickets) == 1
-    assert b"OPTIMIZE TABLE" in server.tickets[0]
+    assert b"OPTIMIZE" in server.tickets[0]
     assert stats.prune.bytes_removed == 0
     assert stats.prune.old_versions_removed == 0
 
 
-def test_remote_optimize_rejects_non_default_compaction_options_before_submitting():
+def test_remote_optimize_rejects_unsupported_compaction_options_before_submitting():
     """Regression test: `RemoteTable.optimize()` used to drop
     `compaction_options` instead of forwarding it to the Rust layer, so a
     non-default value was silently ignored -- the server-side guard against
@@ -5917,7 +6003,7 @@ def test_remote_optimize_rejects_non_default_compaction_options_before_submittin
             )
 
     server = UnreachableServer()
-    options: CompactionOptions = {"target_rows_per_fragment": 5}
+    options: CompactionOptions = {"max_source_bytes": 1024}
     with _mock_remote_table_with_sql(server) as table:
         with pytest.raises(NotImplementedError, match="CompactionOptions"):
             table.optimize(compaction_options=options)

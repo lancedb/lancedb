@@ -11,6 +11,7 @@ import {
   AutoQuery,
   type BlobInput,
   type BlobMode,
+  type CompactionOptions,
   Connection,
   MatchQuery,
   PhraseQuery,
@@ -3997,7 +3998,93 @@ it("passes cleanupOlderThan to the native binding as an absolute timestamp", asy
 
   await table.optimize({ cleanupOlderThan: cutoff, deleteUnverified: true });
 
-  expect(optimize).toHaveBeenCalledWith(cutoff.getTime(), true);
+  expect(optimize).toHaveBeenCalledWith(cutoff.getTime(), true, undefined);
+});
+
+it("forwards per-job compaction options to the native binding", async () => {
+  const optimize = jest.fn().mockResolvedValue({});
+  const table = new LocalTable({ optimize } as never);
+  const compactionOptions = {
+    targetRowsPerFragment: 20,
+    maxSourceRows: 25,
+    ioBufferSize: 0,
+    batchSize: 8,
+  };
+  await table.optimize({ compactionOptions });
+  expect(optimize).toHaveBeenCalledWith(
+    undefined,
+    undefined,
+    compactionOptions,
+  );
+});
+
+it("rejects unsupported JavaScript compaction options before native submission", async () => {
+  const optimize = jest.fn();
+  const table = new LocalTable({ optimize } as never);
+  await expect(
+    table.optimize({
+      compactionOptions: {
+        maxSourceBytes: 1024,
+      } as unknown as CompactionOptions,
+    }),
+  ).rejects.toThrow("Unsupported compaction option: maxSourceBytes");
+  expect(optimize).not.toHaveBeenCalled();
+});
+
+describe("per-job compaction options", () => {
+  let tmpDir: tmp.DirResult;
+  let table: Table;
+  beforeEach(async () => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+    const db = await connect(tmpDir.name);
+    table = await db.createTable(
+      "bounded",
+      Array.from({ length: 10 }, (_, id) => ({ id })),
+    );
+    for (let f = 1; f < 8; f++) {
+      await table.add(
+        Array.from({ length: 10 }, (_, id) => ({ id: f * 10 + id })),
+      );
+    }
+  });
+  afterEach(() => {
+    tmpDir.removeCallback();
+  });
+  it("bounds source work and preserves zero I/O buffering", async () => {
+    const stats = await table.optimize({
+      compactionOptions: {
+        targetRowsPerFragment: 20,
+        maxSourceRows: 25,
+        ioBufferSize: 0,
+        batchSize: 8,
+      },
+    });
+    expect(stats.compaction.fragmentsRemoved).toBe(2);
+    expect(stats.compaction.fragmentsAdded).toBe(1);
+    expect(await table.countRows()).toBe(80);
+    const defaults = await table.optimize();
+    expect(defaults.compaction.fragmentsRemoved).toBe(7);
+    expect(defaults.compaction.fragmentsAdded).toBe(1);
+    expect(await table.countRows()).toBe(80);
+  });
+  const invalid: CompactionOptions[] = [
+    { targetRowsPerFragment: 0 },
+    { maxSourceRows: 0 },
+    { batchSize: 0 },
+    { ioBufferSize: -1 },
+    { batchSize: 1.5 },
+    { maxSourceRows: Number.NaN },
+    { ioBufferSize: Number.POSITIVE_INFINITY },
+    { maxSourceRows: Number.MAX_SAFE_INTEGER + 1 },
+    { targetRowsPerFragment: 2 ** 32 },
+    { batchSize: 2 ** 32 },
+  ];
+  it.each(invalid)("rejects invalid settings %p", async (compactionOptions) => {
+    await expect(table.optimize({ compactionOptions })).rejects.toThrow(
+      /safe integer/,
+    );
+    expect(await table.countRows()).toBe(80);
+  });
 });
 
 describe.each(arrowVersions)(
