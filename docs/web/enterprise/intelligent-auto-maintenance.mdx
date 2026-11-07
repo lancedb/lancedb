@@ -112,13 +112,21 @@ a compaction and a cleanup are unrelated and can both launch together -- but
 some gate each other where running them at the same time would be unsafe,
 like index operations waiting on a compaction that can't defer its remap.
 
+Compaction's four tuning fields can be set per table. Automatic jobs use table
+tuning before deployment/built-in defaults; explicit manual invocation values
+take precedence over both. Automatic enablement still gates background jobs,
+while manual compaction can run with it disabled. Resolved tuning is captured in
+each job. See [table compaction defaults](/maintenance/compaction#table-compaction-defaults)
+for the fields, precedence, source-budget no-ops, and compatible-version requirements.
+
 ### When cleanup is due {#cleanup}
 
 [Cleanup](/maintenance/cleanup) prunes old table versions and the files only
 they referenced. In LanceDB Embedded, that always happens because you asked
-for it -- a call to `optimize()`. LanceDB Enterprise does not support a
-manual `optimize()` call at all; cleanup there is entirely this planner's own
-decision, off by default unless the deployment sets a minimum version age --
+for it, through a call to `optimize()`. In LanceDB Enterprise, a
+[manual `optimize()` call](/maintenance/compaction#enterprise-manual-compaction)
+submits compaction only. Cleanup remains this planner's own decision, off by
+default unless the deployment sets a minimum version age:
 with no minimum age configured, nothing is ever old enough to clean up
 automatically, and old versions simply accumulate until an operator enables
 it. A table can also disable it individually even when the deployment allows

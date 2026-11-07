@@ -301,7 +301,9 @@ fallback and searches only indexed rows.
 **Operational checks**
 
 In the embedded library, use `optimize()` after appends or other writes to fold new rows into existing indexes.
-A deployment does this in the background, and `optimize()` is not available there.
+LanceDB Enterprise does this in the background. Its
+[manual `optimize()` path](/maintenance/compaction#enterprise-manual-compaction)
+submits compaction only and does not add unindexed rows to the vector index.
 </Info>
 #### Check Index Status
 

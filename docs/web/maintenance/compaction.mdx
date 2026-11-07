@@ -13,8 +13,10 @@ import { PyStorageCompactionTuning, PyStorageRebuildVectorIndex, RsStorageCompac
 Every write commits a new table version, and versions accumulate: small files
 from frequent appends, superseded files from updates and deletes, and rows added
 since an index was built. In the embedded library, `optimize()` addresses all
-three; a deployment handles them in the background and does not support
-`optimize()`.
+three. LanceDB Enterprise schedules maintenance in the background and also
+supports explicit compaction jobs through the CLI, SQL, and compatible SDKs.
+[Manual Enterprise compaction](#enterprise-manual-compaction) rewrites data files;
+cleanup and index optimization remain separate operations.
 
 Run optimization as regular table maintenance, particularly after many small
 writes or a large ingest.
@@ -37,7 +39,7 @@ optimize. Rebuilding with the default IVF partitioning can also choose enough
 partitions.
 */}
 
-## Optimize a table {#what-it-does}
+## Optimize an Embedded table {#what-it-does}
 
 <CodeGroup>
 ```python Python icon="python"
@@ -62,6 +64,172 @@ needs to.
 separately from [`cleanup`](/maintenance/cleanup). The two are distinct jobs
 even though `optimize()` bundles both in one LanceDB Embedded call.
 </Note>
+
+## Submit Enterprise compaction {#enterprise-manual-compaction}
+
+Use an existing Enterprise table and a connection configured for its database.
+The CLI needs Flight SQL connectivity to submit the job and REST connectivity
+to read table settings and job progress.
+
+<Note>
+Use versions of the SDK, query nodes, agents, and workers that support these
+options.
+Older agents or workers can silently discard new job fields and run without the
+requested source-row cap. Older-server errors propagate through the SDK without
+retrying after dropping the settings. Manual submission requires a deployment
+with storage-backed SQL job submission; the PostgreSQL-backed SaaS catalog does
+not currently support this path.
+</Note>
+
+Submit the same four invocation settings through any of these interfaces:
+
+<CodeGroup>
+```bash CLI icon="terminal"
+lancedb admin table optimize --table events \
+  --target-rows-per-fragment 100000 \
+  --max-source-rows 1000000 \
+  --io-buffer-size 67108864 \
+  --batch-size 1024
+```
+```sql SQL icon="database"
+OPTIMIZE events REWRITE DATA WITH (
+  target_rows_per_fragment = 100000,
+  max_source_rows = 1000000,
+  io_buffer_size = 67108864,
+  batch_size = 1024
+);
+```
+```python Python icon="python"
+options = {
+    "target_rows_per_fragment": 100_000,
+    "max_source_rows": 1_000_000,
+    "io_buffer_size": 64 * 1024 * 1024,
+    "batch_size": 1024,
+}
+stats = table.optimize(compaction_options=options)
+
+# With an AsyncTable, inside an async function:
+async def compact_async(async_table):
+    return await async_table.optimize(compaction_options=options)
+```
+```typescript TypeScript icon="js"
+const stats = await table.optimize({
+  compactionOptions: {
+    targetRowsPerFragment: 100_000,
+    maxSourceRows: 1_000_000,
+    ioBufferSize: 64 * 1024 * 1024,
+    batchSize: 1024,
+  },
+});
+```
+```rust Rust icon="rust"
+use lancedb::{Table, table::CompactionOverrides};
+
+async fn compact(table: &Table) -> lancedb::Result<()> {
+    let _stats = table
+        .compact(CompactionOverrides {
+            target_rows_per_fragment: Some(100_000),
+            max_source_rows: Some(1_000_000),
+            io_buffer_size: Some(64 * 1024 * 1024),
+            batch_size: Some(1024),
+        })
+        .await?;
+    Ok(())
+}
+```
+</CodeGroup>
+
+Add `--branch exp` to the CLI command or `branch = 'exp'` to SQL's `WITH`
+clause to target a branch. SDK calls use the table handle's selected branch.
+Without a branch, the job targets main. A nonexistent branch can be accepted at
+submission and fail asynchronously.
+
+The call returns after durable submission, before the worker finishes. CLI and
+SQL expose a job ID; SDK compaction counts are placeholders rather than final
+worker metrics, and SDK calls do not currently return the job ID. Find SDK-submitted
+jobs with a table-scoped list, replacing `DATABASE` with the database name:
+
+```bash
+lancedb job list --db-name DATABASE --table-name events --job-type compact
+```
+
+For a namespaced table or branch, also pass `--namespace` or `--branch-name`.
+Correlate the job's submission time and stored specification, then inspect
+completion and worker events with a CLI profile for that deployment:
+
+```bash
+lancedb job describe --job-id JOB_ID
+lancedb job events --job-id JOB_ID
+```
+
+Under Standard authorization, submission requires table Ownership. Describing
+jobs requires system Operate, and listing jobs or reading events requires system
+Usage. Successful submission alone does not grant those inspection privileges.
+
+Manual compaction uses one worker with atomic execution and inline index
+remapping. Remote `optimize` does not prune old versions or optimize indexes;
+explicit pruning, index optimization, and unsupported non-default compaction
+settings are rejected. Cleanup continues through the deployment's separate
+[cleanup policy](/maintenance/cleanup).
+
+### Choose invocation settings {#compaction-invocation-options}
+
+| SQL / Python / Rust | TypeScript | Meaning |
+| --- | --- | --- |
+| `target_rows_per_fragment` | `targetRowsPerFragment` | Positive target rows per output fragment; also affects candidate selection. This is a target, not an exact output-size guarantee. |
+| `max_source_rows` | `maxSourceRows` | Positive live-source-row budget across whole planned tasks. Selection stops before a task would exceed the remaining budget. An oversized first task can produce a successful no-op. |
+| `io_buffer_size` | `ioBufferSize` | Nonnegative I/O read-ahead budget in bytes. Zero disables byte-based I/O backpressure; a positive value limits read-ahead. It is not a total-memory limit. |
+| `batch_size` | `batchSize` | Positive scanner input-batch size in rows. |
+
+These settings do not impose a runtime limit. Values must be integers in the
+interface's supported range. Python and TypeScript fragment targets and batch
+sizes are limited to `u32::MAX`; TypeScript additionally requires safe integers.
+
+### Set table defaults {#table-compaction-defaults}
+
+Table tuning supports the same four fields under `job_types.compaction`:
+
+```bash
+lancedb admin table overrides get --table events
+lancedb admin table overrides set --table events \
+  '{"job_types":{"compaction":{"enabled":false,"target_rows_per_fragment":100000,"max_source_rows":1000000,"io_buffer_size":67108864,"batch_size":1024}}}'
+```
+
+`set` replaces the whole overrides object. The example assumes no other settings
+need preserving; read the current object and retain unrelated fields when
+editing an existing policy. Use the same namespace and branch for policy reads,
+writes, and compaction submission.
+
+Each manual field resolves as **invocation option → table tuning →
+deployment/built-in default**. Automatic jobs resolve **table tuning →
+deployment/built-in default**. Only the fragment target has a shared deployment
+tuning value here; unset source-row, I/O, and batch settings use the existing
+Lance/scanner defaults.
+
+The table's `enabled` flag controls automatic scheduling and admission. An
+explicit manual job can run while table or deployment automatic compaction is
+disabled. For example, inherit the table's target, source budget, and batch size
+while overriding I/O backpressure for one run:
+
+```bash
+lancedb admin table optimize --table events --io-buffer-size 0
+```
+
+```sql
+OPTIMIZE events REWRITE DATA WITH (io_buffer_size = 0);
+```
+
+Resolved tuning is stored with the durable job. A later table-policy change
+affects future jobs and does not rewrite an existing job's settings. Automatic
+preflight skips plans that cannot admit a whole task and checks again after
+tuning changes. A small table budget can therefore prevent automatic compaction
+from making progress.
+
+SDKs forward supplied fields and leave inheritance to the server. An explicitly
+supplied SDK-default fragment target still overrides table tuning. Rust callers
+should use `Table::compact(CompactionOverrides)` for that distinction: the legacy
+`OptimizeAction::Compact` path treats its default-valued Lance fragment target
+as unspecified because the options type has no presence bit.
 
 ## Retraining indexes {#retrain}
 

@@ -1570,7 +1570,10 @@ mixing in lower-level Lance file operations.
 System operations like `optimize()`, index updates, and table compaction also increment table version numbers.
 In LanceDB Embedded, `optimize()` can prune older versions based on its retention setting (`cleanup_older_than`, 7 days by default),
 which is when old-version files are removed and disk space is reclaimed. A deployment prunes them in the background
-when its configuration enables [cleanup](/maintenance/cleanup); `optimize()` is not available there.
+when its configuration enables [cleanup](/maintenance/cleanup). With compatible
+releases, Enterprise `optimize()` submits [manual compaction](/maintenance/compaction#enterprise-manual-compaction)
+only; it does not prune old versions. Submission returns before workers finish,
+so observe the completed job and resulting table state before expecting a new version.
 
 **Tagged versions are never pruned.** A version with a tag pointing at it is
 retained regardless of age. When a tagged version is older than the retention window and

@@ -19,7 +19,7 @@ file format, so moving data from one edition to the other does not require a dat
 | **Mode** | Single process | Distributed fleet | LanceDB Embedded runs on one host, so scale is limited to what it can provide. Enterprise spreads work across nodes, adds capacity by adding nodes, and keeps serving even if one node fails. |
 | **Query serving** | Uses the resources of your application process | Adds independently scaled query compute | Size the Enterprise cluster for your workload and latency target. See the expected-performance sections on [vector search](/search/vector-search#expected-performance) and [full-text search](/search/full-text-search#expected-performance) for representative measurements. |
 | **Cache** | In-process index and metadata caches | Adds a distributed NVMe data cache | LanceDB Embedded caches indexes and metadata in your application's memory. Enterprise also keeps hot table data near compute on NVMe and avoids repeated S3 calls -- see the [Data Page Cache](/enterprise/data-page-cache). |
-| **Indexing & compaction** | Manual | Platform-managed workflows | LanceDB Embedded requires application-managed maintenance; Enterprise schedules it in the background. See [Indexing in LanceDB](/indexing/). |
+| **Indexing & compaction** | Manual | Platform-managed workflows and explicit compaction | LanceDB Embedded requires application-managed maintenance; Enterprise schedules it in the background. See [Indexing in LanceDB](/indexing/). |
 | **Data format** | Lance | Lance | Both use the same open table format. Plan catalog registration, access and transfer when moving existing data. |
 | **Deployment** | Embedded in your code | BYOC or Managed | Enterprise adds deployment operations and support for shared workloads. |
 | **SQL analytics** | Not available | Arrow Flight SQL | Enterprise runs joins, grouping, sampling and [curation](/curation) over SQL. See [SQL reference](/sql). |
@@ -137,15 +137,25 @@ Instead, materialize results through query/search builders, for example
 
 ### 4\. Maintenance lifecycle {#4-maintenance-lifecycle}
 
-In LanceDB Embedded, you run maintenance yourself: `optimize()` compacts data files, adds new rows to
-existing indexes, and removes old table versions. In Enterprise, the cluster runs this work -- along with
-async write and reindexing workflows -- as background jobs, and the SDK's maintenance calls do not trigger
-it. On an Enterprise table, the synchronous Python `optimize()`, `compact_files()`, and
-`cleanup_old_versions()` only emit a warning, and the asynchronous Python, TypeScript, and Rust clients
-reject `optimize()` as not supported.
+In LanceDB Embedded, `optimize()` compacts data files, adds new rows to existing
+indexes, and removes old table versions. LanceDB Enterprise schedules that work
+through separate background jobs and also accepts explicit compaction requests
+with compatible releases.
 
-That means maintenance is managed by platform behavior and cluster configuration, not by explicit
-per-table maintenance calls in your application code.
+Python sync/async `optimize()`, TypeScript `optimize()`, and Rust
+`Table::compact(CompactionOverrides)` submit durable compaction jobs and return
+after submission, before workers finish. Returned compaction counts are
+placeholders. Remote optimize does not prune versions or optimize indexes;
+explicit requests for those unsupported operations are rejected. The synchronous
+Python `compact_files()` and `cleanup_old_versions()` helpers remain warning-only
+no-ops on remote tables.
+
+Manual compaction accepts four invocation options and inherits omitted fields
+from the selected branch's table tuning, then deployment/built-in defaults.
+Automatic-compaction enablement gates background scheduling while explicit
+manual jobs can still run. See
+[manual Enterprise compaction](/maintenance/compaction#enterprise-manual-compaction)
+for CLI, SQL, and SDK examples and rollout requirements.
 
 ### 5\. Guardrails and limits {#5-guardrails-and-limits}
 
