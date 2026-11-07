@@ -5919,7 +5919,7 @@ async def test_remote_optimize_forwards_per_job_compaction_options(
             table = lancedb.connect(**kwargs).create_table("test", [{"id": 1}])
             stats = table.optimize(compaction_options=options)
     assert len(server.tickets) == 1
-    assert b"OPTIMIZE TABLE" in server.tickets[0]
+    assert b"OPTIMIZE" in server.tickets[0]
     assert all(option in server.tickets[0] for option in sql_options)
     if not sql_options:
         assert b"WITH (" not in server.tickets[0]
@@ -5936,9 +5936,7 @@ def test_remote_optimize_does_not_drop_options_after_server_rejection():
 
         def do_get(self, context, ticket):
             self.tickets.append(ticket.ticket)
-            raise flight.FlightServerError(
-                "Unknown OPTIMIZE TABLE option 'max_source_rows'"
-            )
+            raise flight.FlightServerError("Unknown OPTIMIZE option 'max_source_rows'")
 
     server = OldServer()
     with _mock_remote_table_with_sql(server) as table:
@@ -5956,7 +5954,7 @@ def test_remote_optimize_skips_prune_and_index():
     zeroed pruning statistics, once compaction is submitted.
 
     The SQL job submission for a query without parameters (like
-    `OPTIMIZE TABLE ... REWRITE DATA`) goes over plain Flight `do_get`, not
+    `OPTIMIZE ... REWRITE DATA`) goes over plain Flight `do_get`, not
     `do_exchange`: the client sends a ticket wrapping the statement and reads
     back whatever the server returns as the job's result stream.
     """
@@ -5978,7 +5976,7 @@ def test_remote_optimize_skips_prune_and_index():
         stats = table.optimize()
 
     assert len(server.tickets) == 1
-    assert b"OPTIMIZE TABLE" in server.tickets[0]
+    assert b"OPTIMIZE" in server.tickets[0]
     assert stats.prune.bytes_removed == 0
     assert stats.prune.old_versions_removed == 0
 
