@@ -3,14 +3,14 @@
 
 use std::sync::Mutex;
 
-use lancedb::index::Index as LanceDbIndex;
 use lancedb::index::scalar::{
-    BTreeIndexBuilder, FmIndexBuilder, FtsIndexBuilder, RTreeIndexBuilder,
+    BTreeIndexBuilder, FmIndexBuilder, FtsIndexBuilder, NGramIndexBuilder, RTreeIndexBuilder,
 };
 use lancedb::index::vector::{
     IvfFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder,
     IvfRqIndexBuilder,
 };
+use lancedb::index::Index as LanceDbIndex;
 use lancedb::tokenize as lancedb_tokenize;
 use napi_derive::napi;
 
@@ -237,6 +237,13 @@ impl Index {
         Ok(Self {
             inner: Mutex::new(Some(LanceDbIndex::RTree(builder))),
         })
+    }
+
+    #[napi(factory)]
+    pub fn ngram() -> Self {
+        Self {
+            inner: Mutex::new(Some(LanceDbIndex::NGram(NGramIndexBuilder::default()))),
+        }
     }
 
     #[napi(factory)]
