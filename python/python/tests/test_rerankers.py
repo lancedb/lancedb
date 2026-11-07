@@ -372,6 +372,60 @@ def test_base_reranker_multivector_empty_input(deduplicate):
         VectorReranker().rerank_multivector([], None, deduplicate=deduplicate)
 
 
+@pytest.mark.parametrize(
+    "results, message",
+    [
+        ([pa.table({"text": ["a"]})], "'_rowid' is required"),
+        (
+            [pa.table({"_rowid": [1], "text": ["a"]}), pa.table({"text": ["b", "c"]})],
+            "'_rowid' is required",
+        ),
+        (
+            [pa.table({"_rowid": [1, None], "text": ["a", "b"]})],
+            "must not contain nulls",
+        ),
+    ],
+)
+def test_base_reranker_multivector_invalid_row_ids(results, message):
+    class VectorReranker(Reranker):
+        def rerank_hybrid(self, query, vector_results, fts_results):
+            raise AssertionError("should not rerank")
+
+        def rerank_vector(self, query, vector_results):
+            raise AssertionError("should not rerank")
+
+    with pytest.raises(ValueError, match=message):
+        VectorReranker().rerank_multivector(results, None, deduplicate=True)
+
+
+@pytest.mark.parametrize("deduplicate", [False, True])
+def test_base_reranker_multivector_row_ids(deduplicate):
+    class VectorReranker(Reranker):
+        def rerank_hybrid(self, query, vector_results, fts_results):
+            raise NotImplementedError
+
+        def rerank_vector(self, query, vector_results):
+            return vector_results
+
+    results = [pa.table({"_rowid": [1, 2]}), pa.table({"_rowid": [2, 3]})]
+    reranked = VectorReranker().rerank_multivector(results, None, deduplicate)
+    assert reranked["_rowid"].to_pylist() == (
+        [1, 2, 3] if deduplicate else [1, 2, 2, 3]
+    )
+
+
+def test_base_reranker_multivector_without_row_ids():
+    class VectorReranker(Reranker):
+        def rerank_hybrid(self, query, vector_results, fts_results):
+            raise NotImplementedError
+
+        def rerank_vector(self, query, vector_results):
+            return vector_results
+
+    results = [pa.table({"text": ["a", "b"]})]
+    assert VectorReranker().rerank_multivector(results, None).equals(results[0])
+
+
 def test_mrr_reranker_empty_input():
     reranker = MRRReranker()
     with pytest.raises(ValueError, match="must not be empty"):
