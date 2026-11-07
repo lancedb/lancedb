@@ -9481,6 +9481,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_delta_is_not_supported_on_remote_tables() {
+        let table = Table::new_with_handler("my_table", |request| -> http::Response<String> {
+            panic!(
+                "delta must not send a request, got {}",
+                request.url().path()
+            )
+        });
+
+        let delta = table.delta().compared_against_version(1).build().unwrap();
+        let err = delta.upserted_rows().await.err().unwrap();
+        assert!(matches!(err, Error::NotSupported { .. }), "{err}");
+    }
+
+    #[tokio::test]
     async fn test_tokenize_uses_remote_index_details() {
         let schema = Schema::new(vec![Field::new("text", DataType::Utf8, false)]);
         let index_details = serde_json::json!({

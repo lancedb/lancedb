@@ -11,6 +11,7 @@ use std::{
 
 use crate::runtime::{block_on, future_into_py, spawn_background};
 use crate::{
+    arrow::RecordBatchStream,
     connection::Connection,
     error::PythonErrorExt,
     expr::PyExpr,
@@ -1651,6 +1652,46 @@ impl Table {
                     })
                     .collect::<PyResult<Vec<_>>>()
             })
+        })
+    }
+
+    /// Open a stream of the rows that changed over a version range.
+    ///
+    /// `rows` is one of `inserted`, `updated`, `upserted` or `deleted_row_ids`.
+    #[pyo3(signature = (rows, compared_against=None, begin_version=None, end_version=None))]
+    pub fn delta_rows(
+        self_: PyRef<'_, Self>,
+        rows: String,
+        compared_against: Option<u64>,
+        begin_version: Option<u64>,
+        end_version: Option<u64>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let mut builder = inner.delta();
+            if let Some(version) = compared_against {
+                builder = builder.compared_against_version(version);
+            }
+            if let Some(version) = begin_version {
+                builder = builder.with_begin_version(version);
+            }
+            if let Some(version) = end_version {
+                builder = builder.with_end_version(version);
+            }
+            let delta = builder.build().infer_error()?;
+            let stream = match rows.as_str() {
+                "inserted" => delta.inserted_rows().await,
+                "updated" => delta.updated_rows().await,
+                "upserted" => delta.upserted_rows().await,
+                "deleted_row_ids" => delta.deleted_row_ids().await,
+                other => {
+                    return Err(PyValueError::new_err(format!(
+                        "unknown delta rows '{other}'"
+                    )));
+                }
+            }
+            .infer_error()?;
+            Ok(RecordBatchStream::new(stream))
         })
     }
 
