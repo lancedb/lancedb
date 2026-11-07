@@ -4316,6 +4316,9 @@ wheels = [
     { url = "https://pypi.fury.io/lance-format/-/ver_wto7I/pylance-15.0.0b13-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:8b8730195df05fa7242d12f4c759019b658f668b90d7ceba380059597bb5951a" },
     { url = "https://pypi.fury.io/lance-format/-/ver_13UO9X/pylance-15.0.0b13-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:a41f292084694a681773990e6d96a675b45e4d232d7a67b21b05762dd5976e8a" },
     { url = "https://pypi.fury.io/lance-format/-/ver_1Mjytl/pylance-15.0.0b13-cp310-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:76d2f6a5a8ac150bee990006cc7b7c920e1af2532e4d3ff6a142ab5a5412483e" },
+    { url = "https://pypi.fury.io/lance-format/-/ver_1XuqE6/pylance-15.0.0b13-cp310-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:ac2b50bf8af53aac65d56703010cdf9c1567fdfe230c7fbac1d69584933d7793" },
+    { url = "https://pypi.fury.io/lance-format/-/ver_Fj6Go/pylance-15.0.0b13-cp310-abi3-win_amd64.whl", hash = "sha256:7e6556db1a812cb0846cc0e30c0f273468d5e58dc210f3ee9955d9cdc3bc762a" },
+    { url = "https://pypi.fury.io/lance-format/-/ver_zqD9j/pylance-15.0.0b13-cp310-abi3-win_arm64.whl", hash = "sha256:b3aecc63299a687d9ae69d80655f869321d922d5b462f4657efc83d73456551e" },
 ]
 
 [[package]]
