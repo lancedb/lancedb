@@ -45,7 +45,7 @@ from ._blob import (
     validate_blob_mode,
 )
 from .types import BlobMode
-from lancedb.arrow import peek_reader
+from lancedb.arrow import _table_from_dicts, peek_reader
 from lancedb.background_loop import LOOP, embedding_executor
 from lancedb.job import AsyncJob, Job, _typed_job
 from .dependencies import (
@@ -539,9 +539,7 @@ def _into_pyarrow_reader(
         else:
             data = _serialize_json_values(data, schema)
             table = _blob_input_to_arrow(data, schema)
-            return (
-                table if table is not None else pa.Table.from_pylist(data)
-            ).to_reader()
+            return (table if table is not None else _table_from_dicts(data)).to_reader()
     elif _check_for_pandas(data) and isinstance(data, pd.DataFrame):
         table = _blob_input_to_arrow(data, schema)
         if table is None:
