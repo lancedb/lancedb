@@ -1515,6 +1515,282 @@ def test_platforms_duckdb_examples() -> None:
     # --8<-- [end:platforms_duckdb_mean_price]
 
 
+def test_frameworks_agno_lancedb_roundtrip(tmp_path) -> None:
+    """Exercise the documented Knowledge flow without a model provider."""
+    pytest.importorskip("agno")
+
+    import hashlib
+    from dataclasses import dataclass
+    from typing import Dict, List, Optional, Tuple
+
+    from agno.knowledge.embedder.base import Embedder
+    from agno.knowledge.knowledge import Knowledge
+    from agno.vectordb.lancedb import LanceDb, SearchType
+
+    @dataclass
+    class HashEmbedder(Embedder):
+        dimensions: Optional[int] = 32
+
+        def get_embedding(self, text: str) -> List[float]:
+            digest = hashlib.sha256(text.encode()).digest()
+            return [
+                digest[i % len(digest)] / 255.0 for i in range(self.dimensions or 32)
+            ]
+
+        def get_embedding_and_usage(
+            self, text: str
+        ) -> Tuple[List[float], Optional[Dict]]:
+            return self.get_embedding(text), None
+
+    vector_db = LanceDb(
+        uri=str(tmp_path / "lancedb"),
+        table_name="agent_notes",
+        search_type=SearchType.hybrid,
+        embedder=HashEmbedder(),
+    )
+    knowledge = Knowledge(vector_db=vector_db)
+    notes = [
+        (
+            "LanceDB stores",
+            "LanceDB stores vectors, text, and metadata in one table. "
+            "A local directory keeps that table on disk.",
+        ),
+        (
+            "Hybrid search",
+            "Hybrid search combines vector similarity with full-text search "
+            "so exact names and paraphrases can both match.",
+        ),
+    ]
+    for name, text in notes:
+        knowledge.insert(name=name, text_content=text, metadata={"source": "notes"})
+
+    matches = knowledge.search("hybrid search", max_results=2)
+    assert {match.name for match in matches} == {"LanceDB stores", "Hybrid search"}
+
+    vector_db.search_type = SearchType.keyword
+    keyword_matches = knowledge.search("paraphrases", max_results=1)
+    assert keyword_matches[0].name == "Hybrid search"
+
+    vector_db.search_type = SearchType.vector
+    assert knowledge.search("table on disk", max_results=1)
+
+    knowledge.insert(
+        name="Ava preferences",
+        text_content="Ava prefers hybrid search when the question names a product.",
+        metadata={"source": "notes"},
+        user_id="ava",
+    )
+    ava_names = {
+        match.name
+        for match in knowledge.search("hybrid search", max_results=5, user_id="ava")
+    }
+    assert "Ava preferences" in ava_names
+    assert "LanceDB stores" in ava_names
+
+    assert vector_db.delete_by_name("LanceDB stores")
+    vector_db.search_type = SearchType.keyword
+    assert knowledge.search("directory", max_results=5) == []
+    remaining = knowledge.search("paraphrases", max_results=5)
+    assert [match.name for match in remaining] == ["Hybrid search"]
+
+
+def test_frameworks_agno_knowledge_examples() -> None:
+    require_flag("RUN_AGNO_SNIPPETS")
+    require_env("OPENAI_API_KEY")
+    pytest.importorskip("agno")
+
+    # --8<-- [start:frameworks_agno_quickstart]
+    from agno.knowledge.embedder.openai import OpenAIEmbedder
+    from agno.knowledge.knowledge import Knowledge
+    from agno.vectordb.lancedb import LanceDb, SearchType
+
+    vector_db = LanceDb(
+        uri="./tmp/lancedb",
+        table_name="agent_notes",
+        search_type=SearchType.hybrid,
+        embedder=OpenAIEmbedder(id="text-embedding-3-small"),
+    )
+    knowledge = Knowledge(vector_db=vector_db)
+
+    notes = [
+        (
+            "LanceDB stores",
+            "LanceDB stores vectors, text, and metadata in one table. "
+            "A local directory keeps that table on disk.",
+        ),
+        (
+            "Hybrid search",
+            "Hybrid search combines vector similarity with full-text search "
+            "so exact names and paraphrases can both match.",
+        ),
+    ]
+    for name, text in notes:
+        knowledge.insert(
+            name=name,
+            text_content=text,
+            metadata={"source": "notes"},
+        )
+    # --8<-- [end:frameworks_agno_quickstart]
+
+    # --8<-- [start:frameworks_agno_ask]
+    from agno.agent import Agent
+    from agno.models.openai import OpenAIResponses
+
+    agent = Agent(
+        model=OpenAIResponses(id="gpt-5-mini"),
+        knowledge=knowledge,
+        search_knowledge=True,
+        instructions="Answer from the retrieved notes. If they do not say it, say so.",
+        markdown=True,
+    )
+    agent.print_response("Where does a local LanceDB table live?", markdown=True)
+    # --8<-- [end:frameworks_agno_ask]
+
+    # --8<-- [start:frameworks_agno_search]
+    matches = knowledge.search("hybrid search", max_results=2)
+    for match in matches:
+        print(match.name)
+        print(match.content)
+    # --8<-- [end:frameworks_agno_search]
+
+    # --8<-- [start:frameworks_agno_search_mode]
+    vector_db.search_type = SearchType.keyword
+    keyword_matches = knowledge.search("paraphrases", max_results=1)
+    print(keyword_matches[0].content)
+    # --8<-- [end:frameworks_agno_search_mode]
+
+    # --8<-- [start:frameworks_agno_user_scope]
+    knowledge.insert(
+        name="Ava preferences",
+        text_content="Ava prefers hybrid search when the question names a product.",
+        metadata={"source": "notes"},
+        user_id="ava",
+    )
+    ava_matches = knowledge.search("hybrid search", max_results=3, user_id="ava")
+    for match in ava_matches:
+        print(match.name)
+    # --8<-- [end:frameworks_agno_user_scope]
+
+    # --8<-- [start:frameworks_agno_delete]
+    vector_db.delete_by_name("LanceDB stores")
+    # --8<-- [end:frameworks_agno_delete]
+
+    with open("handbook.txt", "w", encoding="utf-8") as handle:
+        handle.write("LanceDB can store images next to their vectors.\n")
+    try:
+        # --8<-- [start:frameworks_agno_path]
+        knowledge.insert(name="Handbook", path="handbook.txt")
+        # --8<-- [end:frameworks_agno_path]
+    finally:
+        os.remove("handbook.txt")
+    import shutil
+
+    shutil.rmtree("./tmp", ignore_errors=True)
+
+
+def test_frameworks_agno_url_example() -> None:
+    require_flag("RUN_AGNO_SNIPPETS")
+    require_env("OPENAI_API_KEY")
+    pytest.importorskip("agno")
+    pytest.importorskip("pypdf")
+
+    from agno.knowledge.embedder.openai import OpenAIEmbedder
+    from agno.knowledge.knowledge import Knowledge
+    from agno.vectordb.lancedb import LanceDb, SearchType
+
+    vector_db = LanceDb(
+        uri="./tmp/lancedb",
+        table_name="recipes",
+        search_type=SearchType.hybrid,
+        embedder=OpenAIEmbedder(id="text-embedding-3-small"),
+    )
+    knowledge = Knowledge(vector_db=vector_db)
+
+    # --8<-- [start:frameworks_agno_url]
+    knowledge.insert(
+        name="Thai Recipes",
+        url="https://agno-public.s3.amazonaws.com/recipes/ThaiRecipes.pdf",
+        metadata={"doc_type": "recipe_book"},
+    )
+    # --8<-- [end:frameworks_agno_url]
+    import shutil
+
+    shutil.rmtree("./tmp", ignore_errors=True)
+
+
+def test_frameworks_agno_enterprise_example() -> None:
+    require_flag("RUN_AGNO_SNIPPETS")
+    require_env("LANCEDB_API_KEY")
+    require_env("LANCEDB_URI")
+    pytest.importorskip("agno")
+
+    # --8<-- [start:frameworks_agno_enterprise]
+    import os
+
+    from agno.knowledge.embedder.openai import OpenAIEmbedder
+    from agno.vectordb.lancedb import LanceDb, SearchType
+
+    enterprise_db = LanceDb(
+        uri=os.environ["LANCEDB_URI"],
+        api_key=os.environ["LANCEDB_API_KEY"],
+        table_name="agent_notes",
+        search_type=SearchType.hybrid,
+        embedder=OpenAIEmbedder(id="text-embedding-3-small"),
+    )
+    # --8<-- [end:frameworks_agno_enterprise]
+    assert enterprise_db.table_name == "agent_notes"
+
+
+def test_frameworks_agno_ollama_example() -> None:
+    require_flag("RUN_AGNO_SNIPPETS")
+    pytest.importorskip("agno")
+    pytest.importorskip("ollama")
+
+    import shutil
+
+    try:
+        # --8<-- [start:frameworks_agno_ollama]
+        from agno.agent import Agent
+        from agno.knowledge.embedder.ollama import OllamaEmbedder
+        from agno.knowledge.knowledge import Knowledge
+        from agno.models.ollama import Ollama
+        from agno.vectordb.lancedb import LanceDb, SearchType
+
+        knowledge = Knowledge(
+            vector_db=LanceDb(
+                uri="./tmp/lancedb",
+                table_name="agent_notes_ollama",
+                search_type=SearchType.hybrid,
+                embedder=OllamaEmbedder(id="nomic-embed-text", dimensions=768),
+            ),
+        )
+        knowledge.insert(
+            name="LanceDB stores",
+            text_content=(
+                "LanceDB stores vectors, text, and metadata in one table. "
+                "A local directory keeps that table on disk."
+            ),
+            metadata={"source": "notes"},
+        )
+        matches = knowledge.search("where the table lives", max_results=1)
+        print(matches[0].content)
+
+        agent = Agent(
+            model=Ollama(id="llama3.2"),
+            knowledge=knowledge,
+            search_knowledge=True,
+            markdown=True,
+        )
+        # --8<-- [end:frameworks_agno_ollama]
+        assert agent.search_knowledge is True
+        assert knowledge.vector_db.table_name == "agent_notes_ollama"
+        assert matches
+        vector_field = knowledge.vector_db.table.schema.field("vector")
+        assert vector_field.type.list_size == 768
+    finally:
+        shutil.rmtree("./tmp", ignore_errors=True)
+
+
 def test_frameworks_agno_openai_examples() -> None:
     require_flag("RUN_AGNO_SNIPPETS")
     pytest.importorskip("agno")
