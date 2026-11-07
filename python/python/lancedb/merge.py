@@ -100,17 +100,29 @@ class LanceMergeInsertBuilder(object):
 
     def use_index(self, use_index: bool) -> LanceMergeInsertBuilder:
         """
-        Controls whether to use indexes for the merge operation.
+        Controls the join and write strategy for the merge operation.
 
-        When set to `True` (the default), the operation will use an index if available
-        on the join key for improved performance. When set to `False`, it forces a full
-        table scan even if an index exists. This can be useful for benchmarking or when
-        the query optimizer chooses a suboptimal path.
+        When ``True`` (the default), the operation can use scalar indexes on the
+        join keys when the operation supports the indexed path and all join keys
+        have usable indexes. When a partial-column update actually takes this path,
+        it patches the supplied columns, rewriting those columns for every row in
+        each fragment containing a match.
+
+        When ``False``, the operation performs a full-scan join and rewrites matched
+        rows by deleting and appending them. This can also happen with ``True``, for
+        example when a join key lacks a usable index or a partial-column update
+        includes a blob column. Any full-scan plan can materialize the entire target
+        table on the hash-join build side and exhaust the server on large tables.
+        The default flag alone is not a memory safeguard. Do not treat ``False`` as
+        a general-purpose row-rewrite switch.
+
+        See [How merge insert executes](https://docs.lancedb.com/ingestion/merge-insert#how-merge-insert-executes)
+        for the performance and index-coverage tradeoffs.
 
         Parameters
         ----------
         use_index: bool
-            Whether to use indices for the merge operation. Defaults to `True`.
+            Whether to allow index use for the merge. Defaults to ``True``.
         """
         self._use_index = use_index
         return self
