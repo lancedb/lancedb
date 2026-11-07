@@ -1245,6 +1245,39 @@ describe("When creating an index", () => {
     expect(indices2.length).toBe(0);
   });
 
+  it("should create an ngram scalar index on a string column", async () => {
+    const db = await connect(tmpDir.name);
+    const ngramTable = await db.createTable("ngram_table", [
+      { id: 0, text: "cat" },
+      { id: 1, text: "category" },
+      { id: 2, text: "concatenate" },
+      { id: 3, text: "dog" },
+      { id: 4, text: "cathedral" },
+    ]);
+
+    await ngramTable.createIndex("text", { config: Index.ngram() });
+
+    const indices = await ngramTable.listIndices();
+    expect(indices.length).toBe(1);
+    expect(indices[0]).toEqual(
+      expect.objectContaining({
+        indexType: "NGram",
+        columns: ["text"],
+      }),
+    );
+
+    const stats = await ngramTable.indexStats(indices[0].name);
+    expect(stats).toBeDefined();
+
+    // The ngram index accelerates substring predicates without changing their
+    // results: four of the five rows contain "cat".
+    const result = await ngramTable
+      .query()
+      .where("contains(text, 'cat')")
+      .toArrow();
+    expect(result.numRows).toBe(4);
+  });
+
   it("should preserve canonical nested field paths across index lifecycle", async () => {
     const db = await connect(tmpDir.name);
     const nestedSchema = new Schema([
