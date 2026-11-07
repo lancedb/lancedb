@@ -9,8 +9,10 @@ import {
   ClientConfig,
   Connection,
   ConnectionOptions,
+  HttpError,
   OAuthConfig,
   OAuthFlowType,
+  RetryError,
   TlsConfig,
   blob,
   connect,
@@ -572,11 +574,21 @@ describe("remote connection", () => {
         try {
           await db.tableNames();
           fail("expected an error");
-          // biome-ignore lint/suspicious/noExplicitAny: skip
-        } catch (e: any) {
+        } catch (e: unknown) {
+          expect(e).toBeInstanceOf(RetryError);
+          if (!(e instanceof RetryError)) {
+            throw e;
+          }
+          expect(e.code).toBe("Retry");
           expect(e.message).toContain("Hit retry limit for request_id=");
-          expect(e.message).toContain("Caused by: Http error");
-          expect(e.message).toContain("500 Internal Server Error");
+          expect(e.message).not.toContain("Caused by:");
+          expect(e.requestId).toEqual(expect.any(String));
+          expect(e.cause).toBeInstanceOf(HttpError);
+          if (!(e.cause instanceof HttpError)) {
+            throw e.cause;
+          }
+          expect(e.cause.message).toContain("Http error");
+          expect(`${e.message}\n${e.cause.message}`).toContain("500");
         }
       },
       {
