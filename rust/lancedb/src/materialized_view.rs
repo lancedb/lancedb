@@ -2264,6 +2264,15 @@ mod tests {
             .await
             .unwrap();
 
+        assert!(matches!(
+            view.refresh().gpu_count(0).execute().await,
+            Err(Error::NotSupported { .. })
+        ));
+        assert!(matches!(
+            view.refresh().gpu_class("h100").execute_async().await,
+            Err(Error::NotSupported { .. })
+        ));
+
         assert_eq!(view.table().count_rows(None).await.unwrap(), 2);
         assert!(
             view.table()
