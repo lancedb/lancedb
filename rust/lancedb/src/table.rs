@@ -595,6 +595,25 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
                 .append_to("remote materialized-view refresh is not supported on this table type"),
         })
     }
+    /// Submit an Enterprise refresh with aggregate resource caps and GPU placement.
+    #[doc(hidden)]
+    async fn refresh_materialized_view_async_with_options(
+        &self,
+        source_version: Option<u64>,
+        full: bool,
+        options: crate::materialized_view::RefreshMaterializedViewOptions,
+    ) -> Result<Job<crate::materialized_view::RefreshMaterializedViewResult>> {
+        options.validate()?;
+        if !options.is_empty() {
+            return Err(Error::NotSupported {
+                message:
+                    "this table cannot enforce materialized-view resource budgets or GPU placement"
+                        .into(),
+            });
+        }
+        self.refresh_materialized_view_async(source_version, full)
+            .await
+    }
     /// Create a read-only handle pinned to the table's current active revision.
     ///
     /// The returned handle is independent from later refreshes or checkouts on
