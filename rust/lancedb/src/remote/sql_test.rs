@@ -2318,7 +2318,7 @@ async fn remote_optimize_submits_a_compaction_job_over_sql() {
     assert!(stats.prune.is_none());
     assert_eq!(
         *statements.lock().unwrap(),
-        ["OPTIMIZE TABLE \"events\" REWRITE DATA"]
+        ["OPTIMIZE \"events\" REWRITE DATA"]
     );
     assert!(
         headers
@@ -2362,7 +2362,7 @@ async fn remote_optimize_on_a_branch_submits_a_with_clause_over_sql() {
 
     assert_eq!(
         *statements.lock().unwrap(),
-        ["OPTIMIZE TABLE \"events\" REWRITE DATA WITH (branch = 'o''brien')"]
+        ["OPTIMIZE \"events\" REWRITE DATA WITH (branch = 'o''brien')"]
     );
     shutdown.send(()).unwrap();
 }
@@ -2426,7 +2426,7 @@ async fn remote_optimize_full_skips_prune_and_index() {
     );
     assert_eq!(
         *statements.lock().unwrap(),
-        ["OPTIMIZE TABLE \"events\" REWRITE DATA"]
+        ["OPTIMIZE \"events\" REWRITE DATA"]
     );
     shutdown.send(()).unwrap();
 }
@@ -3657,7 +3657,7 @@ async fn remote_optimize_forwards_per_job_options_on_main_and_branch() {
         assert_eq!(
             *statements.lock().unwrap(),
             [format!(
-                "OPTIMIZE TABLE \"events\" REWRITE DATA WITH ({prefix}target_rows_per_fragment = 100, max_source_rows = 500, io_buffer_size = 0, batch_size = 16)"
+                "OPTIMIZE \"events\" REWRITE DATA WITH ({prefix}target_rows_per_fragment = 100, max_source_rows = 500, io_buffer_size = 0, batch_size = 16)"
             )]
         );
         assert!(
@@ -3713,7 +3713,7 @@ async fn remote_compact_preserves_omissions_and_explicit_default_values() {
         table.compact(options).await.unwrap();
         assert_eq!(
             *statements.lock().unwrap(),
-            [format!("OPTIMIZE TABLE \"events\" REWRITE DATA{suffix}")]
+            [format!("OPTIMIZE \"events\" REWRITE DATA{suffix}")]
         );
         shutdown.send(()).unwrap();
     }
