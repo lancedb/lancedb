@@ -78,7 +78,7 @@ class RRFReranker(Reranker):
         self,
         vector_results: Union[List[pa.Table], List["LanceVectorQueryBuilder"]],
         query: str = None,
-        deduplicate: bool = True,  # noqa: F821 # TODO: automatically deduplicates
+        deduplicate: bool = True,  # noqa: F821
     ):
         """
         Overridden method to rerank the results from multiple vector searches.
@@ -119,7 +119,8 @@ class RRFReranker(Reranker):
                 rrf_score_map[result_id] += 1 / (i + self.K)
 
         combined = pa.concat_tables(vector_results, **self._concat_tables_args)
-        combined = self._deduplicate(combined)
+        if deduplicate:
+            combined = self._deduplicate(combined)
         relevance_scores = [
             rrf_score_map[row_id] for row_id in combined["_rowid"].to_pylist()
         ]

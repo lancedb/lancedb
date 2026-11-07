@@ -443,6 +443,36 @@ def test_rrf_multivector_ranks_each_result_list():
 
 
 @pytest.mark.parametrize("reranker_cls", [RRFReranker, MRRReranker])
+def test_rank_fusion_multivector_respects_deduplicate(reranker_cls):
+    first = pa.table(
+        {
+            "_rowid": pa.array([1, 2], type=pa.int64()),
+            "source": ["first", "first"],
+        }
+    )
+    second = pa.table(
+        {
+            "_rowid": pa.array([2, 3], type=pa.int64()),
+            "source": ["second", "second"],
+        }
+    )
+    reranker = reranker_cls()
+
+    default = reranker.rerank_multivector([first, second])
+    deduplicated = reranker.rerank_multivector([first, second], deduplicate=True)
+    duplicates = reranker.rerank_multivector([first, second], deduplicate=False)
+
+    assert default.equals(deduplicated)
+    assert sorted(default["_rowid"].to_pylist()) == [1, 2, 3]
+    assert sorted(duplicates["_rowid"].to_pylist()) == [1, 2, 2, 3]
+    rows_for_two = [row for row in duplicates.to_pylist() if row["_rowid"] == 2]
+    assert sorted(row["source"] for row in rows_for_two) == ["first", "second"]
+    assert rows_for_two[0]["_relevance_score"] == pytest.approx(
+        rows_for_two[1]["_relevance_score"]
+    )
+
+
+@pytest.mark.parametrize("reranker_cls", [RRFReranker, MRRReranker])
 def test_rank_fusion_return_score_all_keeps_both_scores(reranker_cls):
     # A row found by both searches must keep its vector `_distance` and its FTS
     # `_score` when the reranker is asked to return all scores.
