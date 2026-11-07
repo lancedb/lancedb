@@ -1,0 +1,103 @@
+---
+title: "Firecrawl"
+sidebarTitle: "Firecrawl"
+description: "Crawl or search the web with Firecrawl, store the pages as Markdown chunks in a LanceDB table with an embedding function, and search them by meaning."
+keywords: ["firecrawl", "web crawling", "web search", "markdown", "rag", "ingestion"]
+---
+
+import {
+  PyFirecrawlChunk,
+  PyFirecrawlCrawl,
+  PyFirecrawlQuery,
+  PyFirecrawlTable,
+  PyFirecrawlWebSearch,
+} from '/snippets/firecrawl.mdx';
+
+[Firecrawl](https://www.firecrawl.dev) is a web data API that turns websites into clean
+Markdown. It can crawl a whole site, scrape a single page, or run a web search and return the
+content of each result. That makes it a convenient source for a LanceDB table: Firecrawl
+fetches and cleans the pages, and LanceDB embeds, stores, and searches them.
+
+This page builds a small retrieval pipeline in Python. It crawls a documentation site, splits
+each page into chunks, stores the chunks with their source URL in a LanceDB table that embeds
+them with a local Sentence Transformers model, and then searches the table. A last step adds
+web search results to the same table.
+
+## Install {#install}
+
+```bash
+pip install lancedb firecrawl-py sentence-transformers
+```
+
+The examples use `firecrawl-py` 4.3.3 or later. Create an API key in the
+[Firecrawl dashboard](https://www.firecrawl.dev/app/api-keys) and export it:
+
+```bash
+export FIRECRAWL_API_KEY="fc-..."
+```
+
+The embedding model, `all-MiniLM-L6-v2`, runs locally, so no other API key is needed.
+
+## Crawl a site {#crawl-a-site}
+
+`crawl` starts at a URL, follows links below it, and waits until the job finishes. `limit`
+caps the number of pages, and `formats` asks for each page as Markdown. The `integration`
+argument labels the requests as coming from this guide; you can leave it out.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFirecrawlCrawl}
+</CodeBlock>
+
+Each item in `crawl.data` has the page's `markdown` and a `metadata` object with fields
+such as `source_url` and `title`. To fetch a single page instead of a site, call
+`firecrawl.scrape(url, formats=["markdown"])`, which returns one such item.
+
+## Split pages into chunks {#split-pages-into-chunks}
+
+A crawled page is often longer than an embedding model reads in one pass. Split the Markdown on
+blank lines and group paragraphs into chunks of about 1,000 characters, so each row covers one
+topic:
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFirecrawlChunk}
+</CodeBlock>
+
+## Store the chunks in LanceDB {#store-the-chunks-in-lancedb}
+
+Get the Sentence Transformers embedding function from the
+[embedding registry](/embedding) and declare a schema with `LanceModel`. The `text` field is
+the source field, so LanceDB fills in `vector` from it as rows are added. Keep `source_url`
+and `title` beside each chunk so search results can point back to the page they came from.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFirecrawlTable}
+</CodeBlock>
+
+## Search the pages {#search-the-pages}
+
+The table stores its embedding function, so a text query is embedded with the same model as
+the rows:
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFirecrawlQuery}
+</CodeBlock>
+
+## Add web search results {#add-web-search-results}
+
+`search` runs a web search. With `formats` set to Markdown, Firecrawl also scrapes each
+result, so the results can go into the same table as the crawled pages:
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFirecrawlWebSearch}
+</CodeBlock>
+
+To refresh a page later, crawl it again, delete that page's old rows with
+`table.delete(f"source_url = '{url}'")`, and add its new chunks. Every chunk of a page shares
+the same `source_url`, so it cannot serve as a [`merge_insert`](/ingestion/merge-insert) key
+until each chunk has its own identity.
+
+## Learn more {#learn-more}
+
+- [Firecrawl documentation](https://docs.firecrawl.dev)
+- [Firecrawl Python SDK](https://docs.firecrawl.dev/sdks/python)
+- [Embedding functions in LanceDB](/embedding)
