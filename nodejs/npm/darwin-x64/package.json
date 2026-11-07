@@ -1,0 +1,16 @@
+{
+	"name": "@lancedb/lancedb-darwin-x64",
+	"version": "0.41.0-beta.17",
+	"os": ["darwin"],
+	"cpu": ["x64"],
+	"main": "lancedb.darwin-x64.node",
+	"files": ["lancedb.darwin-x64.node"],
+	"license": "Apache-2.0",
+	"engines": {
+		"node": ">= 18"
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/lancedb/lancedb"
+	}
+}
