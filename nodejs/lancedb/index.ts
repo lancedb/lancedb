@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import "./errors_install";
+
 import {
   Connection,
   LocalConnection,
@@ -211,6 +213,43 @@ export {
   IntoVector,
   MultiVector,
 } from "./arrow";
+export {
+  ColumnAlreadyExistsError,
+  ColumnNotFoundError,
+  CreateDirError,
+  DatabaseAlreadyExistsError,
+  DatabaseNotFoundError,
+  EmbeddingFunctionNotFoundError,
+  ExternalError,
+  FieldNotFoundError,
+  HttpError,
+  IndexNotFoundError,
+  InvalidExpressionError,
+  InvalidInputError,
+  InvalidTableNameError,
+  JobCancelledError,
+  JobFailedError,
+  JobNotFoundError,
+  LanceArrowError,
+  LanceError,
+  LanceFormatError,
+  LanceRuntimeError,
+  NotAComputedColumnError,
+  NotAMaterializedViewError,
+  NotSupportedError,
+  ObjectStoreError,
+  OtherError,
+  RetryError,
+  SchemaError,
+  SqlError,
+  TableAlreadyExistsError,
+  TableCorruptedError,
+  TableNotFoundError,
+  TimeoutError,
+  isAlreadyExistsError,
+  isLanceError,
+} from "./errors";
+export type { LanceErrorOptions } from "./errors";
 export { IntoSql, packBits } from "./util";
 export { Expr, col, lit, litBool, litInt, func } from "./expr";
 export type { ExprLike } from "./expr";
