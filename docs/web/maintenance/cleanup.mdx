@@ -96,8 +96,10 @@ maintenance workers to a version that understands Managed blobs before using
 them, and reopen handles created before that upgrade.
 
 For LanceDB Embedded tables, `optimize()` performs compaction and cleanup.
-Enterprise runs these as background jobs; Python tables connected to Enterprise
-do not support `optimize()`.
+Enterprise schedules them as separate background jobs. With compatible releases,
+remote `optimize()` also submits [manual compaction](/maintenance/compaction#enterprise-manual-compaction),
+but does not prune versions or remove their files. Cleanup remains governed by
+the deployment's separate policy.
 See [Intelligent Auto-Maintenance](/enterprise/intelligent-auto-maintenance#cleanup) for the Enterprise path.
 
 ## Disk usage does not drop immediately {#disk}

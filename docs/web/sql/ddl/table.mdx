@@ -1,9 +1,9 @@
 ---
 title: "Table"
 sidebarTitle: "Table"
-description: "CREATE, DESCRIBE, ALTER, CLONE and DROP TABLE."
+description: "CREATE, DESCRIBE, ALTER, OPTIMIZE, CLONE and DROP TABLE."
 icon: table
-keywords: ["create table", "alter table", "drop table", "describe", "clone", "ddl"]
+keywords: ["create table", "alter table", "drop table", "describe", "clone", "optimize", "ddl"]
 availability:
   embedded: unavailable
   enterprise: available
@@ -247,6 +247,40 @@ Removes the table and every version of it. There is no undrop.
 deployment stores its catalog. See
 [Object teardown](/basics/jobs#teardown).
 </Note>
+
+## OPTIMIZE REWRITE DATA {#optimize}
+
+Submit a durable manual compaction job on a compatible Enterprise deployment:
+
+```sql
+OPTIMIZE events REWRITE DATA WITH (
+  target_rows_per_fragment = 100000,
+  max_source_rows = 1000000,
+  io_buffer_size = 67108864,
+  batch_size = 1024
+);
+```
+
+Write the table name immediately after `OPTIMIZE`, without a `TABLE` keyword.
+All four settings are optional. Add `branch = 'exp'` in the same `WITH (...)`
+clause to select a branch; an omitted branch targets main. Row targets,
+source-row budgets, and scanner batch sizes must be positive integers. The I/O
+budget is in bytes and accepts zero to disable byte-based I/O backpressure.
+Unknown or duplicate options and invalid numbers are rejected before submission.
+
+Each field uses its invocation value, then that branch's table tuning, then
+deployment/built-in defaults. The automatic-compaction `enabled` flags do not
+block an explicit manual job. Tuning is captured in the durable specification;
+later table changes affect future jobs.
+
+The statement returns a `job_id` after submission, before worker completion.
+It runs atomic compaction on one worker with inline index remapping, without
+pruning versions or optimizing indexes. A whole-task source-row budget can
+produce a successful no-op, and an unknown branch can fail asynchronously.
+
+See [manual compaction](/maintenance/compaction#enterprise-manual-compaction)
+for the option meanings, supported deployment and version requirements,
+authorization, job inspection, table defaults, and equivalent CLI/SDK examples.
 
 ## What to read next {#next}
 
