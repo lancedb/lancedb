@@ -4318,6 +4318,7 @@ wheels = [
     { url = "https://pypi.fury.io/lance-format/-/ver_1gqym0/pylance-15.0.0b14-cp310-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:bb59f5d5b8740eb5df57c1777bce61f3e2a9f7d47ab31068e2ccf43549627103" },
     { url = "https://pypi.fury.io/lance-format/-/ver_1FHTtC/pylance-15.0.0b14-cp310-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:357357f9f419efe9f90ba63d4dc371fc93e191aa692cf6f88d327607680f77da" },
     { url = "https://pypi.fury.io/lance-format/-/ver_1LzfL9/pylance-15.0.0b14-cp310-abi3-win_amd64.whl", hash = "sha256:916fcc39051bdd2e8ca50950ee4d8afb941c130fd278ac7cea252c2059beab58" },
+    { url = "https://pypi.fury.io/lance-format/-/ver_nDQ2x/pylance-15.0.0b14-cp310-abi3-win_arm64.whl", hash = "sha256:e1449bbb7a207cb2890d9afeef41f816d2ab4a459ed73cc46c919d463e46fe10" },
 ]
 
 [[package]]

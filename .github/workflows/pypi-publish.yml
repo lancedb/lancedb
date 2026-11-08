@@ -36,7 +36,8 @@ concurrency:
 jobs:
   linux:
     name: Python ${{ matrix.config.package_name }} ${{ matrix.config.platform }} manylinux${{ matrix.config.manylinux }}
-    timeout-minutes: 60
+    # The ARM64 release build can exceed an hour with fat LTO on a cold runner.
+    timeout-minutes: ${{ matrix.config.platform == 'aarch64' && 120 || 60 }}
     strategy:
       matrix:
         config:
