@@ -36,13 +36,14 @@ import {
   IndexConfig,
   IndexStatistics,
   Branches as NativeBranches,
+  Tags as NativeTags,
   OptimizeStats,
   RTEStats,
   RefreshColumnOptions,
   RefreshColumnResult,
   RefreshMaterializedViewResult,
   TableStatistics,
-  Tags,
+  TagContents,
   UpdateFieldMetadataResult,
   UpdateResult,
   Table as _NativeTable,
@@ -1568,6 +1569,7 @@ export class LocalTable extends Table {
   }
 
   async enableRTE(spec: RTEWriteSpec): Promise<void> {
+    validateNonNegativeInteger(spec.numBuckets, "numBuckets");
     return await this.inner.enableRTE(spec);
   }
 
@@ -1614,6 +1616,7 @@ export class LocalTable extends Table {
     if (typeof version === "string") {
       return this.inner.checkoutTag(version);
     }
+    validateNonNegativeInteger(version, "version");
     return this.inner.checkout(version);
   }
 
@@ -1634,7 +1637,7 @@ export class LocalTable extends Table {
   }
 
   async tags(): Promise<Tags> {
-    return await this.inner.tags();
+    return new Tags(await this.inner.tags());
   }
 
   async branches(): Promise<Branches> {
@@ -1924,6 +1927,50 @@ export class Branches {
       fromBranch,
       dryRun,
     )) as unknown as CherryPickResult;
+  }
+}
+
+/**
+ * Manager for the table's version tags, obtained via {@link Table.tags}.
+ *
+ * A tag is a stable name pinned to a table version.
+ */
+export class Tags {
+  #inner: NativeTags;
+
+  /**
+   * Construct a Tags manager. Internal use only.
+   * @hidden
+   */
+  constructor(inner: NativeTags) {
+    this.#inner = inner;
+  }
+
+  /** List all tags, mapping name to tag metadata. */
+  async list(): Promise<Record<string, TagContents>> {
+    return await this.#inner.list();
+  }
+
+  /** Get the version a tag currently points to. */
+  async getVersion(tag: string): Promise<number> {
+    return await this.#inner.getVersion(tag);
+  }
+
+  /** Create a tag pointing at the given table version. */
+  async create(tag: string, version: number): Promise<void> {
+    validateNonNegativeInteger(version, "version");
+    return await this.#inner.create(tag, version);
+  }
+
+  /** Delete a tag. */
+  async delete(tag: string): Promise<void> {
+    return await this.#inner.delete(tag);
+  }
+
+  /** Move a tag to the given table version. */
+  async update(tag: string, version: number): Promise<void> {
+    validateNonNegativeInteger(version, "version");
+    return await this.#inner.update(tag, version);
   }
 }
 

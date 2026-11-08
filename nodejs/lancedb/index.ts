@@ -50,7 +50,6 @@ export {
   TableStatistics,
   FragmentStatistics,
   FragmentSummaryStats,
-  Tags,
   TagContents,
   BranchContents,
   MergeResult,
@@ -154,6 +153,7 @@ export {
 export {
   Table,
   Branches,
+  Tags,
   BranchColumnSummary,
   BranchColumnChange,
   BranchIndexSummary,
