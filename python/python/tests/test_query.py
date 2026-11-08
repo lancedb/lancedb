@@ -1383,6 +1383,68 @@ def test_query_builder_with_metric(table):
     assert 0 <= df_cosine._distance[0] <= 1
 
 
+@pytest.mark.parametrize("dimension", [2, 8, 16, 33])
+@pytest.mark.parametrize(
+    "candidate_scale,query_scale",
+    [
+        (1e20, 1.0),
+        (1e-30, 1e-30),
+        (1e-20, 1e-20),
+        (np.finfo(np.float32).max, 1.0),
+        (np.nextafter(np.float32(0), np.float32(1)), 1e-30),
+        (1.0, np.finfo(np.float32).max),
+    ],
+)
+@pytest.mark.asyncio
+async def test_exact_cosine_extreme_float32(
+    tmp_path, dimension, candidate_scale, query_scale
+):
+    vectors = np.zeros((2, dimension), dtype=np.float32)
+    vectors[0, 0] = candidate_scale
+    vectors[1, :2] = [0.5, 0.8660254]
+    query = np.zeros(dimension, dtype=np.float32)
+    query[0] = query_scale
+    data = pa.table(
+        {
+            "id": [0, 1],
+            "vector": pa.array(
+                vectors.tolist(), type=pa.list_(pa.float32(), dimension)
+            ),
+        }
+    )
+    table = lancedb.connect(tmp_path).create_table("vectors", data)
+    # Compute the reference from the actual FLOAT32 inputs using FLOAT64 arithmetic.
+    wide_vectors = vectors.astype(np.float64)
+    wide_query = query.astype(np.float64)
+    expected = 1 - (wide_vectors @ wide_query) / (
+        np.linalg.norm(wide_vectors, axis=1) * np.linalg.norm(wide_query)
+    )
+
+    def check(result):
+        assert result["id"].to_pylist() == [0, 1]
+        distances = result["_distance"].to_numpy()
+        assert np.isfinite(distances).all()
+        np.testing.assert_allclose(distances, expected, atol=1e-6)
+        assert result["vector"].combine_chunks().equals(data["vector"].combine_chunks())
+
+    check(
+        table.search(query)
+        .distance_type("cosine")
+        .bypass_vector_index()
+        .limit(2)
+        .to_arrow()
+    )
+    async_db = await lancedb.connect_async(tmp_path)
+    async_table = await async_db.open_table("vectors")
+    check(
+        await async_table.vector_search(query)
+        .distance_type("cosine")
+        .bypass_vector_index()
+        .limit(2)
+        .to_arrow()
+    )
+
+
 def test_query_builder_with_different_vector_column():
     table = mock.MagicMock(spec=LanceTable)
     query = [4, 8]
