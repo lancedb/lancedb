@@ -29,7 +29,7 @@ also ``$<name>``.
 def _parameter_array(value: Any) -> pa.Array:
     """One parameter as a one-element array of its own type."""
     if isinstance(value, pa.Scalar):
-        return pa.array([value.as_py()], type=value.type)
+        return pa.array([value], type=value.type)
     # A 1-D array is a vector: keep its element type and make it the
     # fixed-size list a vector column stores, rather than a list of Python
     # floats that would come back as float64.

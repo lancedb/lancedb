@@ -243,6 +243,22 @@ async def test_async_execute_query_sends_parameters_as_a_batch():
     assert unparameterized is None
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw", [1001, 86399999999999, 1000, None])
+@pytest.mark.parametrize("named", [False, True])
+async def test_async_query_preserves_arrow_scalar_values(raw, named):
+    value = pa.scalar(raw, pa.time64("ns"))
+    native = FakeNativeConnection()
+    connection = AsyncConnection(native)
+    await connection.execute_query_async(
+        "SELECT $time" if named else "SELECT $1",
+        parameters={"time": value} if named else [value],
+    )
+    (sent,) = native.parameters
+    assert sent.schema.types == [value.type]
+    assert sent.column(0).cast(pa.int64()).to_pylist() == [raw]
+
+
 def test_parameters_reach_the_server_as_the_values_that_were_sent():
     """A round trip through the bindings against a Flight server that answers
     each exchange with the parameter row it received."""
@@ -271,7 +287,12 @@ def test_parameters_reach_the_server_as_the_values_that_were_sent():
             sql_host_override=f"grpc://127.0.0.1:{server.port}",
         )
         echoed = db.execute_query(
-            "SELECT echo", parameters={"vector": vector, "k": 10}
+            "SELECT echo",
+            parameters={
+                "vector": vector,
+                "k": 10,
+                "time": pa.scalar(1001, pa.time64("ns")),
+            },
         ).read_all()
         (command,) = server.commands
 
@@ -281,6 +302,8 @@ def test_parameters_reach_the_server_as_the_values_that_were_sent():
     received = echoed.column("vector").combine_chunks().flatten().to_numpy()
     assert received.view(np.uint32).tolist() == vector.view(np.uint32).tolist()
     assert echoed.column("k").to_pylist() == [10]
+    assert echoed.schema.field("time").type == pa.time64("ns")
+    assert echoed.column("time").cast(pa.int64()).to_pylist() == [1001]
 
 
 @pytest.mark.parametrize("job_id", [None, "sql-job-1"])
