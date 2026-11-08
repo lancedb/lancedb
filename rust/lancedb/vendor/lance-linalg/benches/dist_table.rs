@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
 // SPDX-FileCopyrightText: Copyright The Lance Authors
 
 //! Benchmark of 4-bit LUT distance table summation (RaBitQ inner loop).

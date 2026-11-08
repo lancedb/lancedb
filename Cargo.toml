@@ -27,7 +27,6 @@ lance-file = { "version" = "=15.0.0-beta.13", "tag" = "v15.0.0-beta.13", "git" =
 lance-io = { "version" = "=15.0.0-beta.13", default-features = false, "tag" = "v15.0.0-beta.13", "git" = "https://github.com/lance-format/lance.git" }
 lance-index = { "version" = "=15.0.0-beta.13", "tag" = "v15.0.0-beta.13", "git" = "https://github.com/lance-format/lance.git" }
 lance-jsonb = { "version" = "=15.0.0-beta.13", "tag" = "v15.0.0-beta.13", "git" = "https://github.com/lance-format/lance.git" }
-lance-linalg = { "version" = "=15.0.0-beta.13", "tag" = "v15.0.0-beta.13", "git" = "https://github.com/lance-format/lance.git" }
 lance-namespace = { "version" = "=15.0.0-beta.13", "tag" = "v15.0.0-beta.13", "git" = "https://github.com/lance-format/lance.git" }
 lance-namespace-impls = { "version" = "=15.0.0-beta.13", default-features = false, "tag" = "v15.0.0-beta.13", "git" = "https://github.com/lance-format/lance.git" }
 lance-table = { "version" = "=15.0.0-beta.13", "tag" = "v15.0.0-beta.13", "git" = "https://github.com/lance-format/lance.git" }
