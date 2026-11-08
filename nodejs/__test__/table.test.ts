@@ -3906,6 +3906,31 @@ describe("when dealing with tags", () => {
     await table.add([{ id: 3n, vector: [0.5, 0.6] }]);
     expect(await table.countRows()).toBe(2);
   });
+
+  it("should list tags as plain serializable objects", async () => {
+    const conn = await connect(tmpDir.name, {
+      readConsistencyInterval: 0,
+    });
+
+    const table = await conn.createTable("my_table", [
+      { id: 1n, vector: [0.1, 0.2] },
+    ]);
+    const tagsManager = await table.tags();
+    await tagsManager.create("tag1", 1);
+
+    const list = await tagsManager.list();
+    const tag1 = list["tag1"];
+
+    // values are plain objects: enumerable, spreadable, JSON-serializable
+    expect(Object.keys(tag1)).toEqual(
+      expect.arrayContaining(["version", "manifestSize"]),
+    );
+    expect({ ...tag1 }.version).toBe(1);
+
+    const serialized = JSON.parse(JSON.stringify(list));
+    expect(serialized["tag1"].version).toBe(1);
+    expect(serialized["tag1"].manifestSize).toBeGreaterThan(0);
+  });
 });
 
 /** Returns a Date strictly later than every instant observed before the call. */
