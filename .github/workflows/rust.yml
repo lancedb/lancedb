@@ -241,6 +241,13 @@ jobs:
           sudo swapon "$swapfile"
       - name: Build
         run: cargo build --profile ci --all-features --tests --locked --examples
+      - name: Reclaim completed workspace build artifacts
+        run: |
+          # Package-level tests resolve a different feature graph from the workspace
+          # build. Reclaim its lancedb outputs before linking the test graph.
+          df -h .
+          cargo clean --profile ci -p lancedb
+          df -h .
       - name: Run feature tests
         run: CARGO_ARGS="--profile ci" make -C ./lancedb feature-tests
       - name: Run examples
