@@ -13,7 +13,7 @@ def test_python_sdk_utm_content_and_doc_links(tmp_path):
     expected_content = f"utm_content=python-{_core_version}"
     assert (
         compaction_url
-        == f"https://docs.lancedb.com/performance?utm_source=lancedb_sdk&utm_medium=warning&utm_campaign=compaction&{expected_content}#compaction-and-cleanup"
+        == f"https://docs.lancedb.com/maintenance/compaction?utm_source=lancedb_sdk&utm_medium=warning&utm_campaign=compaction&{expected_content}#when"
     )
 
     db = lancedb.connect(tmp_path)
