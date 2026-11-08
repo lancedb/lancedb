@@ -16,6 +16,7 @@ import {
   PhraseQuery,
   Query,
   Table,
+  Tags,
   VectorQuery,
   blob,
   connect,
@@ -3915,6 +3916,27 @@ describe("when dealing with tags", () => {
     expect(await table.countRows()).toBe(1);
     await table.add([{ id: 3n, vector: [0.5, 0.6] }]);
     expect(await table.countRows()).toBe(2);
+  });
+
+  it("keeps Tags compatible with structural implementations", async () => {
+    const manager: Tags = {
+      async list() {
+        return {};
+      },
+      async getVersion(_tag: string) {
+        return 1;
+      },
+      async create(_tag: string, _version: number) {
+        return;
+      },
+      async delete(_tag: string) {
+        return;
+      },
+      async update(_tag: string, _version: number) {
+        return;
+      },
+    };
+    expect(await manager.getVersion("v1")).toBe(1);
   });
 
   it("rejects non-integer tag versions", async () => {

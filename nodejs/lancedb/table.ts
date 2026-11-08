@@ -1930,47 +1930,49 @@ export class Branches {
   }
 }
 
+// Keep the public Tags type structural: storing native state in a private
+// class field would prevent existing mock implementations from type-checking.
+const nativeTags = new WeakMap<Tags, NativeTags>();
+
 /**
  * Manager for the table's version tags, obtained via {@link Table.tags}.
  *
  * A tag is a stable name pinned to a table version.
  */
 export class Tags {
-  #inner: NativeTags;
-
   /**
    * Construct a Tags manager. Internal use only.
    * @hidden
    */
   constructor(inner: NativeTags) {
-    this.#inner = inner;
+    nativeTags.set(this, inner);
   }
 
   /** List all tags, mapping name to tag metadata. */
   async list(): Promise<Record<string, TagContents>> {
-    return await this.#inner.list();
+    return await nativeTags.get(this)!.list();
   }
 
   /** Get the version a tag currently points to. */
   async getVersion(tag: string): Promise<number> {
-    return await this.#inner.getVersion(tag);
+    return await nativeTags.get(this)!.getVersion(tag);
   }
 
   /** Create a tag pointing at the given table version. */
   async create(tag: string, version: number): Promise<void> {
     validateNonNegativeInteger(version, "version");
-    return await this.#inner.create(tag, version);
+    return await nativeTags.get(this)!.create(tag, version);
   }
 
   /** Delete a tag. */
   async delete(tag: string): Promise<void> {
-    return await this.#inner.delete(tag);
+    return await nativeTags.get(this)!.delete(tag);
   }
 
   /** Move a tag to the given table version. */
   async update(tag: string, version: number): Promise<void> {
     validateNonNegativeInteger(version, "version");
-    return await this.#inner.update(tag, version);
+    return await nativeTags.get(this)!.update(tag, version);
   }
 }
 

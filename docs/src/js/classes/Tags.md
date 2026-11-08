@@ -6,17 +6,9 @@
 
 # Class: Tags
 
-## Constructors
+Manager for the table's version tags, obtained via [Table.tags](Table.md#tags).
 
-### new Tags()
-
-```ts
-new Tags(): Tags
-```
-
-#### Returns
-
-[`Tags`](Tags.md)
+A tag is a stable name pinned to a table version.
 
 ## Methods
 
@@ -26,11 +18,13 @@ new Tags(): Tags
 create(tag, version): Promise<void>
 ```
 
+Create a tag pointing at the given table version.
+
 #### Parameters
 
-* **tag**: `string`
+• **tag**: `string`
 
-* **version**: `number`
+• **version**: `number`
 
 #### Returns
 
@@ -44,9 +38,11 @@ create(tag, version): Promise<void>
 delete(tag): Promise<void>
 ```
 
+Delete a tag.
+
 #### Parameters
 
-* **tag**: `string`
+• **tag**: `string`
 
 #### Returns
 
@@ -60,9 +56,11 @@ delete(tag): Promise<void>
 getVersion(tag): Promise<number>
 ```
 
+Get the version a tag currently points to.
+
 #### Parameters
 
-* **tag**: `string`
+• **tag**: `string`
 
 #### Returns
 
@@ -76,9 +74,11 @@ getVersion(tag): Promise<number>
 list(): Promise<Record<string, TagContents>>
 ```
 
+List all tags, mapping name to tag metadata.
+
 #### Returns
 
-`Promise`&lt;`Record`&lt;`string`, [`TagContents`](TagContents.md)&gt;&gt;
+`Promise`&lt;`Record`&lt;`string`, [`TagContents`](../interfaces/TagContents.md)&gt;&gt;
 
 ***
 
@@ -88,11 +88,13 @@ list(): Promise<Record<string, TagContents>>
 update(tag, version): Promise<void>
 ```
 
+Move a tag to the given table version.
+
 #### Parameters
 
-* **tag**: `string`
+• **tag**: `string`
 
-* **version**: `number`
+• **version**: `number`
 
 #### Returns
 
