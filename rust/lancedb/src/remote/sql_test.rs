@@ -1329,7 +1329,30 @@ async fn remote_refresh_omits_unknown_metrics_and_forwards_full() {
         .await
         .unwrap();
 
-    for result in [first, second] {
+    let third = view
+        .refresh()
+        .full(true)
+        .cpu_millis(8000)
+        .memory_bytes(16 << 30)
+        .gpu_count(2)
+        .gpu_class("h100")
+        .execute_async()
+        .await
+        .unwrap()
+        .wait()
+        .await
+        .unwrap();
+    for invalid in [
+        view.refresh().cpu_millis(1),
+        view.refresh().gpu_class("H200:8"),
+        view.refresh().gpu_count(0).gpu_class("h100"),
+    ] {
+        assert!(matches!(
+            invalid.execute_async().await,
+            Err(Error::InvalidInput { .. })
+        ));
+    }
+    for result in [first, second, third] {
         assert_eq!(result.mode, None);
         assert_eq!(result.rows_written, None);
         assert_eq!(result.source_version, None);
@@ -1350,6 +1373,7 @@ async fn remote_refresh_omits_unknown_metrics_and_forwards_full() {
             "DESCRIBE MATERIALIZED VIEW \"view\"",
             "REFRESH MATERIALIZED VIEW \"view\"",
             "REFRESH MATERIALIZED VIEW \"view\" WITH (full = true)",
+            "REFRESH MATERIALIZED VIEW \"view\" WITH (full = true, cpu_millis = 8000, memory_bytes = 17179869184, gpu_count = 2, gpu_class = 'h100')",
         ]
     );
     assert!(
