@@ -159,22 +159,17 @@ class RTree:
 
     The index answers ``ST_Intersects``, ``ST_Contains``, ``ST_Within``,
     ``ST_Touches``, ``ST_Crosses``, ``ST_Overlaps``, ``ST_Covers`` and
-    ``ST_CoveredBy`` when the indexed column is the first argument and the
-    second is a constant geometry, for example
+    ``ST_CoveredBy`` between the indexed column and a constant geometry, in
+    either argument order, for example
     ``ST_Within(geom, ST_GeomFromText('POLYGON ((...))'))``, as well as
     ``geom IS NULL``. These filters can be combined with other conditions
     using ``AND``. Bounding boxes only narrow the scan to candidate rows; the
     exact predicate is then evaluated on those rows, so the results are the
     same with or without the index.
 
-    Write the column first. The index is not used when the constant comes
-    first, and asymmetric predicates in that form, such as
-    ``ST_Contains(<constant>, geom)``, currently evaluate with their arguments
-    swapped, in queries and in ``delete()`` or ``update()`` conditions alike;
-    use ``ST_Within(geom, <constant>)`` instead. Other spatial functions such
-    as ``ST_Distance`` work in filters but scan every row. Spatial functions
-    are planar, so distances are in the units of the column's coordinates.
-    ``ST_DWithin`` is not available.
+    Other spatial functions such as ``ST_Distance`` work in filters but scan
+    every row. Spatial functions are planar, so distances are in the units of
+    the column's coordinates. ``ST_DWithin`` is not available.
 
     On a vector search, a spatial prefilter (the default) uses the index to
     restrict the candidates before the nearest neighbors are found. A
