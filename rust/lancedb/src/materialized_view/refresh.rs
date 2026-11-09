@@ -133,7 +133,7 @@ pub(crate) async fn execute_refresh(
     })?;
 
     let physical = Arc::new(ArrowSchema::from(view_ds.schema()));
-    ensure_declarations_are_planned(&physical)?;
+    ensure_declarations_are_planned(&physical, view_ds.session().datafusion_session())?;
     if let Some(field) = physical
         .fields()
         .iter()

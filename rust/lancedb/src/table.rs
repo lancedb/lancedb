@@ -3388,7 +3388,11 @@ impl NativeTable {
         namespace_client: Option<Arc<dyn LanceNamespace>>,
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
     ) -> Result<Self> {
-        let batches = computed_columns::admit_create_source(batches)?;
+        let session = params.as_ref().and_then(|p| p.session.as_deref());
+        let batches = computed_columns::admit_create_source(
+            batches,
+            session.and_then(lance::session::Session::datafusion_session),
+        )?;
         // Default params uses format v1.
         let params = params.unwrap_or(WriteParams {
             ..Default::default()
@@ -3489,7 +3493,12 @@ impl NativeTable {
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
         session: Option<Arc<lance::session::Session>>,
     ) -> Result<Self> {
-        let batches = computed_columns::admit_create_source(batches)?;
+        let batches = computed_columns::admit_create_source(
+            batches,
+            session
+                .as_deref()
+                .and_then(lance::session::Session::datafusion_session),
+        )?;
         // Build table_id from namespace + name for the storage options provider
         let mut table_id = namespace.clone();
         table_id.push(name.to_string());

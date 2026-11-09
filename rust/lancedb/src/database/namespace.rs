@@ -336,6 +336,9 @@ impl Database for LanceNamespaceDatabase {
         // Refuse a bad declaration before the namespace records a table.
         crate::table::computed_columns::ensure_declarations_are_planned(
             &request.data.arrow_schema(),
+            self.session
+                .as_deref()
+                .and_then(lance::session::Session::datafusion_session),
         )?;
         let mut table_id = request.namespace_path.clone();
         table_id.push(request.name.clone());

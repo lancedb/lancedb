@@ -958,7 +958,7 @@ fn is_declaration(key: &str) -> bool {
         || crate::table::computed_columns::is_declaration_key(key)
 }
 
-fn without_declarations(field: &ArrowField) -> ArrowField {
+pub(crate) fn without_declarations(field: &ArrowField) -> ArrowField {
     let metadata: HashMap<String, String> = field
         .metadata()
         .iter()
@@ -1123,6 +1123,10 @@ impl PreparedDeclaration {
     /// are validated over the assembled schema, and read only columns the
     /// view holds (see [`PreparedDeclaration::input_column`]).
     ///
+    /// `session` holds the DataFusion functions a declaration may call, as
+    /// for [`AddColumnsBuilder::computed`](crate::table::AddColumnsBuilder::computed);
+    /// `None` plans against Lance's built-in functions only.
+    ///
     /// ```no_run
     /// # #![recursion_limit = "256"]
     /// # use std::collections::HashMap;
@@ -1148,7 +1152,7 @@ impl PreparedDeclaration {
     ///     (INPUTS_META_KEY.into(), format!("[\"{text}\"]")),
     /// ]));
     /// let view = prepared
-    ///     .with_computed_columns(vec![(1, length)], &[])?
+    ///     .with_computed_columns(vec![(1, length)], &[], None)?
     ///     .create("lengths")
     ///     .await?;
     /// view.refresh().execute().await?; // rows land with `length` NULL
@@ -1160,6 +1164,7 @@ impl PreparedDeclaration {
         mut self,
         columns: Vec<(usize, ArrowField)>,
         bindings: &[FunctionBinding],
+        session: Option<&datafusion::execution::context::SessionContext>,
     ) -> Result<Self> {
         let invalid = |message: String| Error::InvalidInput { message };
         if columns.is_empty() {
@@ -1223,7 +1228,7 @@ impl PreparedDeclaration {
         }
         rewrite_column_definitions(&mut metadata, self.schema.as_ref(), &fields)?;
         let schema = ArrowSchema::new_with_metadata(fields, metadata);
-        ensure_declarations_are_planned(&schema)?;
+        ensure_declarations_are_planned(&schema, session)?;
         self.schema = Arc::new(schema);
         Ok(self)
     }
@@ -2563,7 +2568,7 @@ mod tests {
                 (INPUTS_META_KEY.into(), "[\"x\"]".into()),
             ]));
         let view = prepared
-            .with_computed_columns(vec![(1, doubled)], &[])
+            .with_computed_columns(vec![(1, doubled)], &[], None)
             .unwrap()
             .create("m")
             .await
