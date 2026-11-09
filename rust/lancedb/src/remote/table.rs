@@ -3,6 +3,7 @@
 
 pub mod blobs;
 pub mod insert;
+mod ipc_stream;
 mod optimize;
 
 use self::insert::{RemoteWriteExec, WriteOp};
@@ -61,15 +62,15 @@ use crate::{
     },
 };
 use arrow_array::{LargeBinaryArray, RecordBatch, RecordBatchReader};
-use arrow_ipc::reader::{FileReader, StreamReader};
-use arrow_schema::{ArrowError, DataType, SchemaRef};
+use arrow_ipc::reader::FileReader;
+use arrow_schema::{DataType, SchemaRef};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use datafusion_common::DataFusionError;
 use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion_physical_plan::{ExecutionPlan, RecordBatchStream, SendableRecordBatchStream};
 use futures::{StreamExt, TryStreamExt};
-use http::header::CONTENT_TYPE;
+use http::header::{ACCEPT, CONTENT_TYPE};
 use http::{HeaderName, StatusCode};
 use lance::arrow::json::{JsonDataType, JsonSchema};
 use lance::dataset::refs::TagContents;
@@ -91,6 +92,10 @@ const MIN_VERSION_HEADER: HeaderName = HeaderName::from_static("x-lancedb-min-ve
 const MIN_TIMESTAMP_HEADER: HeaderName = HeaderName::from_static("x-lancedb-min-timestamp");
 const MIN_READ_VERSION_HEADER: HeaderName = HeaderName::from_static("x-lancedb-min-read-version");
 const VERSION_HEADER: HeaderName = HeaderName::from_static("x-lancedb-version");
+/// Asks for stream framing, which is decoded as it arrives. Servers that do not
+/// stream query results ignore this and answer with file framing.
+const QUERY_ACCEPT: &str =
+    "application/vnd.apache.arrow.stream, application/vnd.apache.arrow.file;q=0.9";
 const METRIC_TYPE_KEY: &str = "metric_type";
 const INDEX_TYPE_KEY: &str = "index_type";
 const SCHEMA_CACHE_TTL: Duration = Duration::from_secs(30);
@@ -1155,25 +1160,30 @@ impl<S: HttpSend> RemoteTable<S> {
             .map(str::to_owned);
         let framing = resolve_arrow_ipc_framing(content_type.as_deref(), request_id)?;
 
-        // Buffer the whole body. File framing keeps its footer at the end, so /query
-        // cannot decode incrementally. Stream framing could, via
-        // arrow_ipc::reader::StreamDecoder, but fetch_blobs concatenates every batch
-        // before returning, so no caller would see data sooner.
-        let body = response.bytes().await.err_to_http(request_id.into())?;
-        type IpcBatchIterator =
-            Box<dyn Iterator<Item = std::result::Result<RecordBatch, ArrowError>> + Send>;
-        let (schema, batches): (SchemaRef, IpcBatchIterator) = match framing {
+        match framing {
             ArrowIpcFraming::Stream => {
-                let reader = StreamReader::try_new(Cursor::new(body), None)?;
-                (reader.schema(), Box::new(reader))
+                let table_version = response
+                    .headers()
+                    .get(&VERSION_HEADER)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse().ok());
+                ipc_stream::read_ipc_stream(
+                    response.bytes_stream(),
+                    request_id.to_string(),
+                    table_version,
+                )
+                .await
             }
             ArrowIpcFraming::File => {
+                // File framing keeps its footer at the end, so the whole body is
+                // needed before anything can be decoded.
+                let body = response.bytes().await.err_to_http(request_id.into())?;
                 let reader = FileReader::try_new(Cursor::new(body), None)?;
-                (reader.schema(), Box::new(reader))
+                let schema = reader.schema();
+                let stream = futures::stream::iter(reader).map_err(DataFusionError::from);
+                Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
             }
-        };
-        let stream = futures::stream::iter(batches).map_err(DataFusionError::from);
-        Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
+        }
     }
 
     fn apply_query_params(
@@ -1544,8 +1554,15 @@ impl<S: HttpSend> RemoteTable<S> {
     ) -> Result<Vec<Pin<Box<dyn RecordBatchStream + Send>>>> {
         let mut request = self
             .client
-            .post(&format!("/v1/table/{}/query/", self.identifier));
+            .post(&format!("/v1/table/{}/query/", self.identifier))
+            .header(ACCEPT, QUERY_ACCEPT);
 
+        // The timeout bounds the whole query, including reading the response, as
+        // the server's own deadline for this request does. A deadline too far
+        // away to represent is never reached.
+        let deadline = options
+            .timeout
+            .and_then(|timeout| Some((tokio::time::Instant::now().checked_add(timeout)?, timeout)));
         if let Some(timeout) = options.timeout {
             // Also send to server, so it can abort the query if it takes too long.
             // (If it doesn't fit into u64, it's not worth sending anyways.)
@@ -1569,28 +1586,28 @@ impl<S: HttpSend> RemoteTable<S> {
         });
         let streams = futures::future::try_join_all(futures);
 
-        let streams = if let Some(timeout) = options.timeout {
-            let timeout_future = tokio::time::sleep(timeout);
-            tokio::pin!(timeout_future);
-            tokio::pin!(streams);
-            tokio::select! {
-                _ = &mut timeout_future => {
-                    return Err(Error::Other {
-                        message: format!("Query timeout after {} ms", timeout.as_millis()),
-                        source: None,
-                    })
-                }
-                result = &mut streams => {
-                    result?
-                }
-            }
+        let streams = if let Some((deadline, timeout)) = deadline {
+            tokio::time::timeout_at(deadline, streams)
+                .await
+                .map_err(|_| Error::Other {
+                    message: format!("Query timeout after {} ms", timeout.as_millis()),
+                    source: None,
+                })??
         } else {
             streams.await?
         };
 
         Ok(streams
             .into_iter()
-            .map(|stream| restore_projection_order(stream, &query.base().select))
+            .map(|stream| {
+                let stream = restore_projection_order(stream, &query.base().select);
+                match deadline {
+                    Some((deadline, timeout)) => {
+                        Box::pin(TimeoutStream::with_deadline(stream, timeout, deadline))
+                    }
+                    None => stream,
+                }
+            })
             .collect())
     }
 
@@ -1714,8 +1731,9 @@ fn schema_from_description(schema: JsonSchema) -> Result<SchemaRef> {
     )))
 }
 
-/// How a response body frames its Arrow IPC payload. `/query` answers with file framing
-/// and `fetch_blobs` with stream framing, so the reader is picked per response.
+/// How a response body frames its Arrow IPC payload. `fetch_blobs` answers with stream
+/// framing, and `/query` with stream framing only on servers that stream query results,
+/// so the reader is picked per response.
 enum ArrowIpcFraming {
     File,
     Stream,
@@ -4428,6 +4446,7 @@ mod tests {
         BinaryArray, Int32Array, Int64Array, RecordBatch, RecordBatchIterator, StringArray,
         StructArray, record_batch,
     };
+    use arrow_ipc::reader::StreamReader;
     use arrow_schema::{DataType, Field, Schema};
     use chrono::{DateTime, Utc};
     use futures::{StreamExt, TryFutureExt, TryStreamExt, future::BoxFuture};
@@ -7082,25 +7101,36 @@ mod tests {
         assert_eq!(blobs.value(0), b"alpha");
     }
 
+    // Read as a stream, a file's leading magic declares a message longer than the
+    // whole body, so the body ends before the stream does.
     #[rstest]
-    #[case(ARROW_STREAM_CONTENT_TYPE, write_ipc_file(&one_row_blob_batch("image")))]
+    #[case(ARROW_STREAM_CONTENT_TYPE, write_ipc_file(&one_row_blob_batch("image")), true)]
     #[case(
         ARROW_FILE_CONTENT_TYPE,
-        write_ipc_stream_uncompressed(&one_row_blob_batch("image"))
+        write_ipc_stream_uncompressed(&one_row_blob_batch("image")),
+        false
     )]
     #[tokio::test]
     async fn test_fetch_blobs_fails_when_the_body_contradicts_the_content_type(
         #[case] content_type: &'static str,
         #[case] body: Vec<u8>,
+        #[case] ends_early: bool,
     ) {
         let table = table_with_fetch_blobs_content_type(Some(content_type), body);
 
         let error = table.fetch_blobs("image", &[10]).await.unwrap_err();
 
-        assert!(
-            matches!(error, Error::Arrow { .. }),
-            "expected an Arrow decode failure, got {error}"
-        );
+        if ends_early {
+            assert!(
+                matches!(error, Error::ResponseInterrupted { batches: 0, .. }),
+                "expected an incomplete stream, got {error}"
+            );
+        } else {
+            assert!(
+                matches!(error, Error::Arrow { .. }),
+                "expected an Arrow decode failure, got {error}"
+            );
+        }
     }
 
     #[tokio::test]

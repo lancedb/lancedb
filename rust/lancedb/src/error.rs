@@ -362,6 +362,27 @@ pub enum Error {
         source: Box<dyn std::error::Error + Send + Sync>,
         status_code: Option<reqwest::StatusCode>,
     },
+    /// A streamed response stopped before the server signalled that it was complete.
+    ///
+    /// The batches already returned are valid, but the result is incomplete. The
+    /// request is not retried, because re-issuing it would return those batches
+    /// again. `table_version` is the table version the response reflected, when
+    /// the server reported one, so a caller can re-issue the request against it.
+    #[cfg(feature = "remote")]
+    #[snafu(display(
+        "Response for request_id={request_id} interrupted after {batches} batches \
+        ({rows} rows): {source}{}",
+        http_timeout_hint(source.as_ref())
+    ))]
+    ResponseInterrupted {
+        request_id: String,
+        /// Batches returned before the interruption.
+        batches: u64,
+        /// Rows in those batches.
+        rows: u64,
+        table_version: Option<u64>,
+        source: BoxError,
+    },
     #[snafu(display("Arrow error: {source}"))]
     Arrow { source: ArrowError },
     #[snafu(display("LanceDBError: not supported: {message}"))]
