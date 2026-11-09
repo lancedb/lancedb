@@ -3806,15 +3806,10 @@ impl BaseTable for NativeTable {
     ) -> Result<SendableRecordBatchStream> {
         let dataset = self.dataset.get().await?;
         let builder = dataset.delta();
-        let builder = match range {
-            delta::DeltaRange::ComparedAgainst(version) => {
-                builder.compared_against_version(version)
-            }
-            delta::DeltaRange::Between { begin, end } => {
-                builder.with_begin_version(begin).with_end_version(end)
-            }
-        };
-        let delta = builder.build()?;
+        let delta = builder
+            .with_begin_version(range.begin)
+            .with_end_version(range.end)
+            .build()?;
         let stream = match rows {
             delta::DeltaRows::Inserted => delta.get_inserted_rows().await?,
             delta::DeltaRows::Updated => delta.get_updated_rows().await?,

@@ -10,7 +10,7 @@
 //! ```no_run
 //! # use futures::TryStreamExt;
 //! # async fn example(table: &lancedb::Table, checkpoint: u64) -> lancedb::Result<()> {
-//! let delta = table.delta().compared_against_version(checkpoint).build()?;
+//! let delta = table.delta().compared_against_version(checkpoint).build().await?;
 //! let mut upserted = delta.upserted_rows().await?;
 //! while let Some(batch) = upserted.try_next().await? {
 //!     // `_rowid`, `_row_created_at_version`, `_row_last_updated_at_version`
@@ -44,14 +44,12 @@ pub enum DeltaRows {
     DeletedRowIds,
 }
 
-/// The version range a delta compares.
+/// The fixed version range a delta compares: `begin` is exclusive and `end` is
+/// inclusive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeltaRange {
-    /// Compare the table's current version against `version`. Lance orders the
-    /// two versions, so the checkpoint may be older or newer than the table.
-    ComparedAgainst(u64),
-    /// Compare an explicit range. `begin` is exclusive and `end` is inclusive.
-    Between { begin: u64, end: u64 },
+pub struct DeltaRange {
+    pub begin: u64,
+    pub end: u64,
 }
 
 /// Builds a [`TableDelta`].
@@ -98,16 +96,28 @@ impl DeltaBuilder {
     }
 
     /// Validate the range and build the delta.
-    pub fn build(self) -> Result<TableDelta> {
+    ///
+    /// The version pair is fixed here. With
+    /// [`compared_against_version`](Self::compared_against_version) the table's
+    /// current version is read once, so every reader of the delta, and every
+    /// retry, compares the same two versions even if the table is written to
+    /// afterwards.
+    pub async fn build(self) -> Result<TableDelta> {
         let range = match (self.compared_against, self.begin, self.end) {
-            (Some(version), None, None) => DeltaRange::ComparedAgainst(version),
+            (Some(checkpoint), None, None) => {
+                let current = self.table.version().await?;
+                DeltaRange {
+                    begin: checkpoint.min(current),
+                    end: checkpoint.max(current),
+                }
+            }
             (None, Some(begin), Some(end)) => {
                 if begin > end {
                     return Err(Error::InvalidInput {
                         message: format!("begin version {begin} is newer than end version {end}"),
                     });
                 }
-                DeltaRange::Between { begin, end }
+                DeltaRange { begin, end }
             }
             (Some(_), _, _) => {
                 return Err(Error::InvalidInput {
@@ -139,8 +149,8 @@ impl DeltaBuilder {
 
 /// The rows that changed between two versions of a table.
 ///
-/// Each method returns a stream of record batches. The stream reads from the
-/// table version the delta was built against; later writes do not change it.
+/// Each method returns a stream of record batches over the same fixed version
+/// range, chosen when the delta was built; later writes do not change it.
 pub struct TableDelta {
     table: Arc<dyn BaseTable>,
     range: DeltaRange,
@@ -171,6 +181,9 @@ impl TableDelta {
     }
 
     /// The `_rowid` of every row removed in the range.
+    ///
+    /// Needs stable row ids at both endpoints of the range (version 0 is
+    /// exempt).
     pub async fn deleted_row_ids(&self) -> Result<SendableRecordBatchStream> {
         self.table
             .delta_rows(self.range, DeltaRows::DeletedRowIds)
@@ -251,7 +264,12 @@ mod tests {
     #[tokio::test]
     async fn test_delta_reports_inserted_updated_and_upserted_rows() {
         let table = history_table(true).await;
-        let delta = table.delta().compared_against_version(1).build().unwrap();
+        let delta = table
+            .delta()
+            .compared_against_version(1)
+            .build()
+            .await
+            .unwrap();
 
         assert_eq!(
             sorted_ids(delta.inserted_rows().await.unwrap()).await,
@@ -267,7 +285,12 @@ mod tests {
     #[tokio::test]
     async fn test_delta_rows_carry_version_metadata() {
         let table = history_table(true).await;
-        let delta = table.delta().compared_against_version(1).build().unwrap();
+        let delta = table
+            .delta()
+            .compared_against_version(1)
+            .build()
+            .await
+            .unwrap();
 
         let batches = delta
             .inserted_rows()
@@ -296,7 +319,12 @@ mod tests {
     #[tokio::test]
     async fn test_delta_reports_deleted_row_ids() {
         let table = history_table(true).await;
-        let delta = table.delta().compared_against_version(3).build().unwrap();
+        let delta = table
+            .delta()
+            .compared_against_version(3)
+            .build()
+            .await
+            .unwrap();
 
         let deleted = delta
             .deleted_row_ids()
@@ -320,9 +348,10 @@ mod tests {
             .with_begin_version(1)
             .with_end_version(2)
             .build()
+            .await
             .unwrap();
 
-        assert_eq!(delta.range(), DeltaRange::Between { begin: 1, end: 2 });
+        assert_eq!(delta.range(), DeltaRange { begin: 1, end: 2 });
         assert_eq!(
             sorted_ids(delta.inserted_rows().await.unwrap()).await,
             [4, 5]
@@ -337,7 +366,12 @@ mod tests {
     #[tokio::test]
     async fn test_delta_requires_stable_row_ids_for_row_changes() {
         let table = history_table(false).await;
-        let delta = table.delta().compared_against_version(1).build().unwrap();
+        let delta = table
+            .delta()
+            .compared_against_version(1)
+            .build()
+            .await
+            .unwrap();
 
         let err = delta.inserted_rows().await.err().unwrap();
         assert!(err.to_string().contains("stable row id"), "{err}");
@@ -357,9 +391,34 @@ mod tests {
             table.delta().with_begin_version(3).with_end_version(1),
         ] {
             assert!(matches!(
-                builder.build().err().unwrap(),
+                builder.build().await.err().unwrap(),
                 Error::InvalidInput { .. }
             ));
         }
+    }
+
+    #[tokio::test]
+    async fn test_delta_is_pinned_when_built() {
+        let table = history_table(true).await;
+        let delta = table
+            .delta()
+            .compared_against_version(2)
+            .build()
+            .await
+            .unwrap();
+        assert_eq!(delta.range(), DeltaRange { begin: 2, end: 4 });
+
+        // A later write must not change what the delta reads.
+        table.delete("id = 5").await.unwrap();
+        assert_eq!(table.version().await.unwrap(), 5);
+        let deleted = delta
+            .deleted_row_ids()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(deleted.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+        assert_eq!(sorted_ids(delta.upserted_rows().await.unwrap()).await, [2]);
     }
 }

@@ -18,31 +18,54 @@ class AsyncTableDelta:
     """The rows that changed between two versions of an async table.
 
     Get one from :meth:`lancedb.table.AsyncTable.delta`. Every method returns
-    an :class:`~lancedb.arrow.AsyncRecordBatchReader` over the changed rows.
+    an :class:`~lancedb.arrow.AsyncRecordBatchReader` over the changed rows. The
+    compared version range is fixed when the delta is created, so all methods,
+    and any retry, see the same changes.
 
     Inserted, updated and upserted rows need stable row ids on the table. Create
     the table with ``storage_options={"new_table_enable_stable_row_ids": "true"}``.
     The returned batches hold the table columns plus ``_rowid``,
     ``_row_created_at_version`` and ``_row_last_updated_at_version``.
+
+    ``deleted_row_ids()`` needs stable row ids at both endpoints of the range
+    (version 0 is exempt).
     """
 
-    def __init__(
-        self,
+    def __init__(self, inner: "LanceDBTable", begin_version: int, end_version: int):
+        self._inner = inner
+        self._begin_version = begin_version
+        self._end_version = end_version
+
+    @classmethod
+    async def _create(
+        cls,
         inner: "LanceDBTable",
         *,
         compared_against: Optional[int] = None,
         begin_version: Optional[int] = None,
         end_version: Optional[int] = None,
-    ):
-        self._inner = inner
-        self._range = {
-            "compared_against": compared_against,
-            "begin_version": begin_version,
-            "end_version": end_version,
-        }
+    ) -> "AsyncTableDelta":
+        # Fix the version pair now so every reader, and every retry, compares
+        # the same two versions even if the table is written to afterwards.
+        begin, end = await inner.delta_range(
+            compared_against, begin_version, end_version
+        )
+        return cls(inner, begin, end)
+
+    @property
+    def begin_version(self) -> int:
+        """Start of the compared range (exclusive)."""
+        return self._begin_version
+
+    @property
+    def end_version(self) -> int:
+        """End of the compared range (inclusive)."""
+        return self._end_version
 
     async def _rows(self, rows: str) -> AsyncRecordBatchReader:
-        stream = await self._inner.delta_rows(rows, **self._range)
+        stream = await self._inner.delta_rows(
+            rows, self._begin_version, self._end_version
+        )
         return AsyncRecordBatchReader(stream)
 
     async def inserted_rows(self) -> AsyncRecordBatchReader:
@@ -66,16 +89,31 @@ class TableDelta:
     """The rows that changed between two versions of a table.
 
     Get one from :meth:`lancedb.table.Table.delta`. Every method returns a
-    ``pyarrow.RecordBatchReader`` that streams the changed rows.
+    ``pyarrow.RecordBatchReader`` that streams the changed rows. The compared
+    version range is fixed when the delta is created, so all methods, and any
+    retry, see the same changes.
 
     Inserted, updated and upserted rows need stable row ids on the table. Create
     the table with ``storage_options={"new_table_enable_stable_row_ids": "true"}``.
     The returned batches hold the table columns plus ``_rowid``,
     ``_row_created_at_version`` and ``_row_last_updated_at_version``.
+
+    ``deleted_row_ids()`` needs stable row ids at both endpoints of the range
+    (version 0 is exempt).
     """
 
     def __init__(self, delta: AsyncTableDelta):
         self._delta = delta
+
+    @property
+    def begin_version(self) -> int:
+        """Start of the compared range (exclusive)."""
+        return self._delta.begin_version
+
+    @property
+    def end_version(self) -> int:
+        """End of the compared range (inclusive)."""
+        return self._delta.end_version
 
     @staticmethod
     def _to_reader(async_reader: AsyncRecordBatchReader) -> pa.RecordBatchReader:

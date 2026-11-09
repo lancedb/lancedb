@@ -366,6 +366,8 @@ code that used the former LanceDB Enterprise-only argument order.
 
 ::: lancedb.table.Table
 
+::: lancedb.delta.TableDelta
+
 ::: lancedb.table.CompactionOptions
 
 ::: lancedb.table.FragmentStatistics
@@ -1035,6 +1037,8 @@ listing. The same behavior applies to namespaces.
 Table hold your actual data as a collection of records / rows.
 
 ::: lancedb.table.AsyncTable
+
+::: lancedb.delta.AsyncTableDelta
 
 ::: lancedb.table.AsyncTags
 

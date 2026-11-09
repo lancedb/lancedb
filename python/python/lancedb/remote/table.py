@@ -294,10 +294,12 @@ class RemoteTable(Table):
         Enterprise has no route for table deltas yet.
         """
         return TableDelta(
-            self._table.delta(
-                compared_against,
-                begin_version=begin_version,
-                end_version=end_version,
+            LOOP.run(
+                self._table.delta(
+                    compared_against,
+                    begin_version=begin_version,
+                    end_version=end_version,
+                )
             )
         )
 

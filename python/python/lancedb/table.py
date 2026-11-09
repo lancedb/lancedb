@@ -3570,8 +3570,9 @@ class Table(ABC):
         -------
         TableDelta
             Read the changed rows with ``inserted_rows()``, ``updated_rows()``,
-            ``upserted_rows()`` or ``deleted_row_ids()``. Invalid ranges raise
-            ``ValueError`` when the rows are read.
+            ``upserted_rows()`` or ``deleted_row_ids()``. The version range is
+            fixed now, so later writes do not change it. Invalid ranges raise
+            ``ValueError``.
 
         Examples
         --------
@@ -3584,6 +3585,8 @@ class Table(ABC):
         -----
         Inserted, updated and upserted rows need stable row ids. Create the table
         with ``storage_options={"new_table_enable_stable_row_ids": "true"}``.
+        ``deleted_row_ids()`` needs stable row ids at both endpoints of the range
+        (version 0 is exempt).
         """
 
     @cached_property
@@ -3849,10 +3852,12 @@ class LanceTable(Table):
         end_version: Optional[int] = None,
     ) -> "TableDelta":
         return TableDelta(
-            self._table.delta(
-                compared_against,
-                begin_version=begin_version,
-                end_version=end_version,
+            LOOP.run(
+                self._table.delta(
+                    compared_against,
+                    begin_version=begin_version,
+                    end_version=end_version,
+                )
             )
         )
 
@@ -8148,7 +8153,7 @@ class AsyncTable:
 
         return versions
 
-    def delta(
+    async def delta(
         self,
         compared_against: Optional[int] = None,
         *,
@@ -8174,15 +8179,18 @@ class AsyncTable:
         -------
         AsyncTableDelta
             Read the changed rows with ``inserted_rows()``, ``updated_rows()``,
-            ``upserted_rows()`` or ``deleted_row_ids()``. Invalid ranges raise
-            ``ValueError`` when the rows are read.
+            ``upserted_rows()`` or ``deleted_row_ids()``. The version range is
+            fixed now, so later writes do not change it. Invalid ranges raise
+            ``ValueError``.
 
         Notes
         -----
         Inserted, updated and upserted rows need stable row ids. Create the table
         with ``storage_options={"new_table_enable_stable_row_ids": "true"}``.
+        ``deleted_row_ids()`` needs stable row ids at both endpoints of the range
+        (version 0 is exempt).
         """
-        return AsyncTableDelta(
+        return await AsyncTableDelta._create(
             self._inner,
             compared_against=compared_against,
             begin_version=begin_version,

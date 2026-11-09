@@ -9493,14 +9493,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_delta_is_not_supported_on_remote_tables() {
-        let table = Table::new_with_handler("my_table", |request| -> http::Response<String> {
-            panic!(
-                "delta must not send a request, got {}",
-                request.url().path()
-            )
+        // Only the version lookup that pins the range may reach the server.
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"version": 3, "schema": { "fields": [] }}"#)
+                .unwrap()
         });
 
-        let delta = table.delta().compared_against_version(1).build().unwrap();
+        let delta = table
+            .delta()
+            .compared_against_version(1)
+            .build()
+            .await
+            .unwrap();
         let err = delta.upserted_rows().await.err().unwrap();
         assert!(matches!(err, Error::NotSupported { .. }), "{err}");
     }

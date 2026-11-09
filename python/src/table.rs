@@ -1607,13 +1607,12 @@ impl Table {
         })
     }
 
-    /// Open a stream of the rows that changed over a version range.
-    ///
-    /// `rows` is one of `inserted`, `updated`, `upserted` or `deleted_row_ids`.
-    #[pyo3(signature = (rows, compared_against=None, begin_version=None, end_version=None))]
-    pub fn delta_rows(
+    /// Validate a delta range and fix it to a concrete `(begin, end)` version
+    /// pair. A `compared_against` checkpoint is resolved against the table's
+    /// current version once, here, so later readers cannot drift.
+    #[pyo3(signature = (compared_against=None, begin_version=None, end_version=None))]
+    pub fn delta_range(
         self_: PyRef<'_, Self>,
-        rows: String,
         compared_against: Option<u64>,
         begin_version: Option<u64>,
         end_version: Option<u64>,
@@ -1630,7 +1629,31 @@ impl Table {
             if let Some(version) = end_version {
                 builder = builder.with_end_version(version);
             }
-            let delta = builder.build().infer_error()?;
+            let range = builder.build().await.infer_error()?.range();
+            Ok((range.begin, range.end))
+        })
+    }
+
+    /// Open a stream of the rows that changed over a fixed version range, as
+    /// returned by `delta_range`.
+    ///
+    /// `rows` is one of `inserted`, `updated`, `upserted` or `deleted_row_ids`.
+    #[pyo3(signature = (rows, begin_version, end_version))]
+    pub fn delta_rows(
+        self_: PyRef<'_, Self>,
+        rows: String,
+        begin_version: u64,
+        end_version: u64,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let delta = inner
+                .delta()
+                .with_begin_version(begin_version)
+                .with_end_version(end_version)
+                .build()
+                .await
+                .infer_error()?;
             let stream = match rows.as_str() {
                 "inserted" => delta.inserted_rows().await,
                 "updated" => delta.updated_rows().await,

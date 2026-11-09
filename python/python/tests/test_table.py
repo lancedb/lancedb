@@ -6310,7 +6310,7 @@ def test_table_delta_rejects_invalid_ranges(tmp_path, kwargs):
     table = _delta_history(lancedb.connect(tmp_path))
 
     with pytest.raises(ValueError):
-        table.delta(**kwargs).inserted_rows()
+        table.delta(**kwargs)
 
 
 def test_table_delta_requires_stable_row_ids(tmp_path):
@@ -6331,7 +6331,7 @@ async def test_async_table_delta(tmp_path):
     await table.add([{"id": 4, "value": 0}])
     await table.update({"value": 99}, where="id = 2")
 
-    delta = table.delta(compared_against=1)
+    delta = await table.delta(compared_against=1)
 
     inserted = await (await delta.inserted_rows()).read_all()
     assert [id_ for batch in inserted for id_ in batch.column("id").to_pylist()] == [4]
@@ -6339,4 +6339,19 @@ async def test_async_table_delta(tmp_path):
     ids = sorted(id_ for batch in upserted for id_ in batch.column("id").to_pylist())
     assert ids == [2, 4]
     with pytest.raises(ValueError):
-        await table.delta(begin_version=1).inserted_rows()
+        await table.delta(begin_version=1)
+
+
+def test_table_delta_is_pinned_when_created(tmp_path):
+    table = _delta_history(lancedb.connect(tmp_path))
+    delta = table.delta(compared_against=2)
+    assert (delta.begin_version, delta.end_version) == (2, table.version)
+
+    table.add([{"id": 6, "value": 0}])
+    table.delete("id = 5")
+
+    # The writes above land after the delta was created, so it ignores them.
+    assert (delta.begin_version, delta.end_version) == (2, 4)
+    assert delta.inserted_rows().read_all().num_rows == 0
+    assert delta.deleted_row_ids().read_all().num_rows == 1
+    assert sorted(delta.upserted_rows().read_all().column("id").to_pylist()) == [2]
