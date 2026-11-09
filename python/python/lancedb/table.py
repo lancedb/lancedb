@@ -609,7 +609,7 @@ def _iterator_to_reader(
                     raise ValueError(
                         f"Input iterator yielded a batch with schema that "
                         f"does not match the schema of other batches.\n"
-                        f"Expected:\n{schema}\nGot:\n{batch.schema}"
+                        f"Expected:\n{schema}\nGot:\n{table.schema}"
                     )
             yield from table.to_batches()
 
