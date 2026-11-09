@@ -77,13 +77,21 @@ catch-up works when it's re-enabled after being off.
 
 ## Refreshing part of a table {#partial}
 
-<Badge color="red">Enterprise</Badge> In SQL a refresh can be scoped to a
-predicate, which is useful for filling a slice first and checking it before
-committing to the whole table:
+<Badge color="red">Enterprise</Badge> A refresh can be scoped to a predicate,
+with `where=` in Python or `WHERE` in SQL, which is useful for filling a slice
+first and checking it before committing to the whole table:
 
 <CodeGroup>
+```python Python icon="python"
+job = table.refresh_column_async(
+    "embedding",
+    where="created_at > date '2026-01-01'",
+)
+job.wait()
+```
+
 ```sql SQL icon="database"
-REFRESH COLUMN embedding ON documents WHERE created_at > '2026-01-01'
+REFRESH COLUMN embedding ON documents WHERE created_at > date '2026-01-01'
 ```
 </CodeGroup>
 
@@ -92,9 +100,17 @@ whose outputs are already current. Repeating the same predicate repeats those
 Function calls and their cost. To select only null outputs within a slice:
 
 <CodeGroup>
+```python Python icon="python"
+job = table.refresh_column_async(
+    "embedding",
+    where="created_at > date '2026-01-01' AND embedding IS NULL",
+)
+job.wait()
+```
+
 ```sql SQL icon="database"
 REFRESH COLUMN embedding ON documents
-  WHERE created_at > '2026-01-01' AND embedding IS NULL
+  WHERE created_at > date '2026-01-01' AND embedding IS NULL
 ```
 </CodeGroup>
 
@@ -247,13 +263,14 @@ and `gpuCount` in the `refreshColumnAsync` options.
 
 The job APIs also take the row filter and failure handling of the SQL
 `REFRESH COLUMN ... WHERE ... WITH (...)` form, so a refresh can be narrowed
-to new rows and told to skip rows whose Function call fails:
+to new rows (see [what a filter recomputes](#partial)) and told to skip rows
+whose Function call fails:
 
 <CodeGroup>
 ```python
 job = table.refresh_column_async(
     "embedding",
-    where="published_at > '2026-01-01'",
+    where="created_at > date '2026-01-01'",
     error_policy="skip",
     max_failed_fraction=0.01,
     row_timeout_seconds=30,
@@ -262,7 +279,7 @@ job = table.refresh_column_async(
 
 ```typescript
 const job = await table.refreshColumnAsync("embedding", {
-  where: "published_at > '2026-01-01'",
+  where: "created_at > date '2026-01-01'",
   errorPolicy: "skip",
   maxFailedFraction: 0.01,
   rowTimeoutSeconds: 30,
@@ -276,7 +293,7 @@ let _job = table
     .refresh_column_async_with_options(
         "embedding",
         RefreshColumnOptions::default()
-            .where_clause("published_at > '2026-01-01'")
+            .where_clause("created_at > date '2026-01-01'")
             .error_policy(FunctionErrorPolicy::Skip)
             .max_failed_fraction(0.01)
             .row_timeout_seconds(30.0),
