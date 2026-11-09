@@ -261,6 +261,36 @@ release. TypeScript does not expose GPU class discovery; pass `gpuClass`
 and `gpuCount` in the `refreshColumnAsync` options.
 </Note>
 
+Completed Function outputs publish with their fragment by default. To opt into
+a row-count publication threshold, set `publication_interval_rows` in Python or
+`publication_interval_rows()` in Rust:
+
+<CodeGroup>
+```python Python icon="python"
+job = table.refresh_column_async(
+    "embedding",
+    publication_interval_rows=60,
+)
+job.wait()
+```
+
+```rust Rust icon="rust"
+use lancedb::table::RefreshColumnOptions;
+
+let _job = table
+    .refresh_column_async_with_options(
+        "embedding",
+        RefreshColumnOptions::default().publication_interval_rows(60),
+    )
+    .await?;
+```
+</CodeGroup>
+
+The threshold is opt-in and must be greater than zero. The number of rows in an
+individual publication can differ from this value depending on completed work
+and Function batching; this is not an exact-N contract. Omit it to keep
+whole-fragment publication.
+
 The job APIs also take the row filter and failure handling of the SQL
 `REFRESH COLUMN ... WHERE ... WITH (...)` form, so a refresh can be narrowed
 to new rows (see [what a filter recomputes](#partial)) and told to skip rows

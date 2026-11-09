@@ -46,6 +46,7 @@ mod scannable;
 struct RefreshColumnArgs {
     where_clause: Option<String>,
     batch_size: Option<i64>,
+    publication_interval_rows: Option<i64>,
     gpu_class: Option<String>,
     gpu_count: Option<i64>,
     retry_policy: Option<String>,
@@ -73,6 +74,7 @@ fn refresh_column_options(args: RefreshColumnArgs) -> PyResult<RefreshColumnOpti
     let RefreshColumnArgs {
         where_clause,
         batch_size,
+        publication_interval_rows,
         gpu_class,
         gpu_count,
         retry_policy,
@@ -114,6 +116,8 @@ fn refresh_column_options(args: RefreshColumnArgs) -> PyResult<RefreshColumnOpti
         .map(usize::try_from)
         .transpose()
         .map_err(|_| PyValueError::new_err("batch_size must be greater than zero"))?;
+    options.publication_interval_rows =
+        positive_count(publication_interval_rows, "publication_interval_rows")?;
     options.gpu_class = gpu_class;
     options.gpu_count = gpu_count
         .map(|count| {
@@ -2206,13 +2210,14 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, *, r#where=None, batch_size=None, gpu_class=None, gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None))]
+    #[pyo3(signature = (column, *, r#where=None, batch_size=None, publication_interval_rows=None, gpu_class=None, gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None))]
     #[allow(clippy::too_many_arguments)]
     pub fn refresh_column(
         self_: PyRef<'_, Self>,
         column: String,
         r#where: Option<String>,
         batch_size: Option<i64>,
+        publication_interval_rows: Option<i64>,
         gpu_class: Option<String>,
         gpu_count: Option<i64>,
         retry_policy: Option<String>,
@@ -2227,6 +2232,7 @@ impl Table {
         let options = refresh_column_options(RefreshColumnArgs {
             where_clause: r#where,
             batch_size,
+            publication_interval_rows,
             gpu_class,
             gpu_count,
             retry_policy,
@@ -2248,13 +2254,14 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, *, r#where=None, batch_size=None, gpu_class=None, gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None))]
+    #[pyo3(signature = (column, *, r#where=None, batch_size=None, publication_interval_rows=None, gpu_class=None, gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None))]
     #[allow(clippy::too_many_arguments)]
     pub fn refresh_column_async(
         self_: PyRef<'_, Self>,
         column: String,
         r#where: Option<String>,
         batch_size: Option<i64>,
+        publication_interval_rows: Option<i64>,
         gpu_class: Option<String>,
         gpu_count: Option<i64>,
         retry_policy: Option<String>,
@@ -2269,6 +2276,7 @@ impl Table {
         let options = refresh_column_options(RefreshColumnArgs {
             where_clause: r#where,
             batch_size,
+            publication_interval_rows,
             gpu_class,
             gpu_count,
             retry_policy,
