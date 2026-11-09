@@ -78,7 +78,7 @@ List all tags, mapping name to tag metadata.
 
 #### Returns
 
-`Promise`&lt;`Record`&lt;`string`, [`TagContents`](../interfaces/TagContents.md)&gt;&gt;
+`Promise`&lt;`Record`&lt;`string`, [`TagContents`](TagContents.md)&gt;&gt;
 
 ***
 
