@@ -22,7 +22,7 @@ Computed columns require LanceDB Enterprise.
 job = table.refresh_column_async("doubled")
 job.wait()
 
-table.to_arrow().sort_by("x").to_pandas()
+table.search().to_arrow().sort_by("x").to_pandas()
 #    x  doubled
 # 0  1        2
 # 1  2        4
