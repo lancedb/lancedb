@@ -292,9 +292,9 @@ geometries with `ST_GeomFromText('<WKT>')` or `ST_Point(x, y)`:
 </CodeGroup>
 
 The index answers `ST_Intersects`, `ST_Contains`, `ST_Within`, `ST_Touches`,
-`ST_Crosses`, `ST_Overlaps`, `ST_Covers` and `ST_CoveredBy` when the indexed
-column is the **first** argument and the second argument is a constant
-geometry, as well as `IS NULL` on the column. A spatial predicate combined
+`ST_Crosses`, `ST_Overlaps`, `ST_Covers` and `ST_CoveredBy` between the
+indexed column and a constant geometry, in either argument order, as well as
+`IS NULL` on the column. A spatial predicate combined
 with other conditions through `AND` still uses the index; one combined through
 `OR` with a condition on an unindexed column does not.
 
@@ -303,16 +303,6 @@ every row whose bounding box overlaps the query geometry's bounding box. LanceDB
 then evaluates the exact predicate on those candidate rows, so the results are
 the same with or without the index. A point just outside a triangle but inside
 the triangle's bounding box is read, then discarded.
-
-<Warning>
-Write the column as the first argument. With the constant first, as in
-`ST_Contains(<constant>, location)`, the index is not used, and the
-asymmetric predicates (`ST_Contains`, `ST_Within`, `ST_Covers`,
-`ST_CoveredBy`) currently evaluate with their arguments swapped and return
-wrong results. This applies to `delete()`, `update()` and `merge_insert()`
-conditions as well as queries. Write `ST_Within(location, <constant>)`
-instead of `ST_Contains(<constant>, location)`.
-</Warning>
 
 Other spatial functions, such as `ST_Distance(location, ST_Point(x, y)) < d`
 for a radius filter, work in filters but are evaluated row by row, without the

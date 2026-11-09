@@ -544,74 +544,63 @@ async def test_geoarrow_column_round_trips(point_table: AsyncTable):
     assert sorted(await query_ids(point_table.query().where("id < 3"))) == [0, 1, 2]
 
 
-# GeoDataFusion evaluates an asymmetric predicate with its arguments swapped when
-# the constant comes first, and panics on a NULL constant geometry without an index.
-# Both are fixed upstream; remove these markers when Lance picks up the fix.
-CONSTANT_FIRST_BUG = pytest.mark.xfail(
-    reason="GeoDataFusion relates the constant-first form with swapped arguments",
-    strict=True,
-)
+# Asymmetric predicates with the constant geometry first. GeoDataFusion once
+# evaluated these with the arguments swapped, so a write filter silently matched
+# the wrong rows. Only the three interior points are contained, the boundary
+# points are also covered, and no point contains or covers the triangle.
+CONSTANT_FIRST_CASES = [
+    (f"ST_Contains({TRIANGLE}, geom)", [11, 12, 21]),
+    (f"ST_Covers({TRIANGLE}, geom)", TRIANGLE_IDS),
+    (f"ST_Within({TRIANGLE}, geom)", []),
+    (f"ST_CoveredBy({TRIANGLE}, geom)", []),
+    (f"ST_Intersects({TRIANGLE}, geom)", TRIANGLE_IDS),
+]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("indexed", [False, True])
-@pytest.mark.parametrize(
-    "predicate, expected_ids",
-    [
-        pytest.param(
-            f"ST_Contains({TRIANGLE}, geom)", [11, 12, 21], marks=CONSTANT_FIRST_BUG
-        ),
-        pytest.param(
-            f"ST_Covers({TRIANGLE}, geom)", TRIANGLE_IDS, marks=CONSTANT_FIRST_BUG
-        ),
-        # Symmetric predicates already give the right answer either way.
-        (f"ST_Intersects({TRIANGLE}, geom)", TRIANGLE_IDS),
-    ],
-)
+@pytest.mark.parametrize("predicate, expected_ids", CONSTANT_FIRST_CASES)
 async def test_spatial_filter_constant_first(
     point_table: AsyncTable, indexed: bool, predicate: str, expected_ids: list
 ):
     if indexed:
         await point_table.create_index("geom", config=RTree())
-    assert sorted(await query_ids(point_table.query().where(predicate))) == (
-        expected_ids
-    )
-
-
-@CONSTANT_FIRST_BUG
-@pytest.mark.asyncio
-async def test_delete_with_constant_first_spatial_filter(point_table: AsyncTable):
-    # Delete everything outside the triangle; the interior points must survive.
-    await point_table.delete(f"NOT ST_Contains({TRIANGLE}, geom)")
-    assert sorted(await query_ids(point_table.query())) == [11, 12, 21]
-
-
-@CONSTANT_FIRST_BUG
-@pytest.mark.asyncio
-async def test_update_with_constant_first_spatial_filter(point_table: AsyncTable):
-    await point_table.update({"id": "-id"}, where=f"ST_Contains({TRIANGLE}, geom)")
-    assert sorted(await query_ids(point_table.query().where("id < 0"))) == [
-        -21,
-        -12,
-        -11,
-    ]
+    query = point_table.query().where(predicate)
+    assert sorted(await query_ids(query)) == expected_ids
+    if indexed:
+        assert "ScalarIndexQuery" in await query.explain_plan(True)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "indexed",
-    [
-        pytest.param(
-            False,
-            marks=pytest.mark.xfail(
-                reason="GeoDataFusion panics on a NULL constant geometry",
-                raises=Exception,
-                strict=True,
-            ),
-        ),
-        True,
-    ],
-)
+@pytest.mark.parametrize("indexed", [False, True])
+@pytest.mark.parametrize("predicate, expected_ids", CONSTANT_FIRST_CASES)
+async def test_delete_with_constant_first_spatial_filter(
+    point_table: AsyncTable, indexed: bool, predicate: str, expected_ids: list
+):
+    if indexed:
+        await point_table.create_index("geom", config=RTree())
+    # Delete every row the predicate rejects; exactly the matching rows survive.
+    await point_table.delete(f"NOT {predicate}")
+    assert sorted(await query_ids(point_table.query())) == expected_ids
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("indexed", [False, True])
+@pytest.mark.parametrize("predicate, expected_ids", CONSTANT_FIRST_CASES)
+async def test_update_with_constant_first_spatial_filter(
+    point_table: AsyncTable, indexed: bool, predicate: str, expected_ids: list
+):
+    if indexed:
+        await point_table.create_index("geom", config=RTree())
+    # Map each matching id to a negative one (-id - 1 keeps row 0 distinct).
+    await point_table.update(updates_sql={"id": "-id - 1"}, where=predicate)
+    updated = await query_ids(point_table.query().where("id < 0"))
+    assert sorted(-new_id - 1 for new_id in updated) == expected_ids
+    assert await point_table.count_rows() == 100
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("indexed", [False, True])
 async def test_spatial_filter_with_null_constant(point_table: AsyncTable, indexed):
     if indexed:
         await point_table.create_index("geom", config=RTree())
