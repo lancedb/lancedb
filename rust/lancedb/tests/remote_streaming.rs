@@ -45,6 +45,7 @@ fn read_request(stream: &mut TcpStream) -> String {
 #[derive(Clone, Copy)]
 enum Framing {
     Stream,
+    SchemaOnlyNoEos,
     File,
     MissingContentType,
 }
@@ -56,6 +57,7 @@ async fn run_query(framing: Framing, timeout: bool) {
     )
     .unwrap();
     let mut writer = StreamWriter::try_new(Vec::new(), &batch.schema()).unwrap();
+    let schema_only = writer.get_ref().clone();
     writer.write(&batch).unwrap();
     let head = writer.get_ref().clone();
     writer.finish().unwrap();
@@ -87,6 +89,10 @@ async fn run_query(framing: Framing, timeout: bool) {
         );
         assert!(request.to_lowercase().contains("accept: application/vnd.apache.arrow.stream, application/vnd.apache.arrow.file;q=0.9"), "{request}");
         match framing {
+            Framing::SchemaOnlyNoEos => {
+                write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.apache.arrow.stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", schema_only.len()).unwrap();
+                socket.write_all(&schema_only).unwrap();
+            }
             Framing::Stream => {
                 write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.apache.arrow.stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n", head.len()).unwrap();
                 socket.write_all(&head).unwrap();
@@ -129,6 +135,12 @@ async fn run_query(framing: Framing, timeout: bool) {
     .await
     .expect("query setup must not buffer the HTTP body")
     .unwrap();
+    if matches!(framing, Framing::SchemaOnlyNoEos) {
+        assert_eq!(batches.schema(), batch.schema());
+        assert!(batches.try_next().await.unwrap().is_none());
+        server.join().unwrap();
+        return;
+    }
     let first = tokio::time::timeout(Duration::from_secs(2), batches.try_next())
         .await
         .expect("first batch must not await EOF")
@@ -167,4 +179,9 @@ async fn public_query_accepts_legacy_file_responses() {
 #[tokio::test]
 async fn public_query_accepts_file_responses_without_content_type() {
     run_query(Framing::MissingContentType, false).await;
+}
+
+#[tokio::test]
+async fn public_query_accepts_schema_only_response_without_eos() {
+    run_query(Framing::SchemaOnlyNoEos, false).await;
 }

@@ -5,12 +5,13 @@
 
 use arrow_array::RecordBatch;
 use arrow_buffer::Buffer;
-use arrow_ipc::reader::StreamDecoder;
+use arrow_ipc::reader::{StreamDecoder, StreamReader};
 use arrow_schema::ArrowError;
 use datafusion_common::DataFusionError;
 use datafusion_physical_plan::SendableRecordBatchStream;
 use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use futures::{Stream, StreamExt};
+use std::io::Cursor;
 use std::pin::Pin;
 use tokio::time::Instant;
 
@@ -24,6 +25,7 @@ struct Decoder {
     decoder: StreamDecoder,
     buffer: Buffer,
     first_batch: Option<RecordBatch>,
+    schema_prefix: Vec<u8>,
     request_id: String,
     deadline: Option<Instant>,
 }
@@ -43,10 +45,15 @@ impl Decoder {
         match next {
             Some(chunk) => {
                 self.buffer = Buffer::from(chunk.err_to_http(self.request_id.clone())?);
+                if self.decoder.schema().is_none() {
+                    self.schema_prefix.extend_from_slice(&self.buffer);
+                }
                 Ok(true)
             }
             None => {
-                self.decoder.finish()?;
+                if self.decoder.schema().is_some() {
+                    self.decoder.finish()?;
+                }
                 Ok(false)
             }
         }
@@ -89,6 +96,7 @@ pub(super) async fn read_arrow_stream(
         decoder: StreamDecoder::new(),
         buffer: Buffer::from(Vec::<u8>::new()),
         first_batch: None,
+        schema_prefix: Vec::new(),
         request_id: request_id.to_owned(),
         deadline,
     };
@@ -98,10 +106,27 @@ pub(super) async fn read_arrow_stream(
         if !state.buffer.is_empty() {
             state.first_batch = state.decoder.decode(&mut state.buffer)?;
             if let Some(schema) = state.decoder.schema() {
+                state.schema_prefix = Vec::new();
                 break schema;
             }
         } else if !state.next_chunk().await? {
-            return Err(ArrowError::IpcError("Missing schema in Arrow IPC stream".into()).into());
+            // StreamDecoder can leave a zero-length schema body pending when
+            // its metadata ends exactly at EOF. A schema-only stream need not
+            // carry an EOS marker. Validate the prefix with StreamReader, which
+            // handles that boundary, rather than ignoring a finish() error that
+            // could also indicate genuinely truncated metadata or batch data.
+            let mut reader = StreamReader::try_new(Cursor::new(state.schema_prefix), None)?;
+            let schema = reader.schema();
+            if let Some(batch) = reader.next() {
+                batch?;
+                return Err(
+                    ArrowError::IpcError("Unexpected batch before schema decoding".into()).into(),
+                );
+            }
+            return Ok(Box::pin(RecordBatchStreamAdapter::new(
+                schema,
+                futures::stream::empty::<std::result::Result<RecordBatch, DataFusionError>>(),
+            )));
         }
     };
     let batches = futures::stream::try_unfold(state, |mut state| async move {
@@ -283,6 +308,79 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(batches, vec![batch(1), batch(2)]);
+    }
+
+    #[tokio::test]
+    async fn accepts_stream_that_ends_without_eos_marker() {
+        // Some servers close the HTTP body instead of writing the optional
+        // Arrow end-of-stream marker; a clean message boundary is enough.
+        let first = batch(1);
+        let mut writer = StreamWriter::try_new(Vec::new(), &first.schema()).unwrap();
+        writer.write(&first).unwrap();
+        let batches = read_arrow_stream(
+            response(writer.get_ref().clone().into()),
+            "no-eos-request",
+            None,
+        )
+        .await
+        .unwrap()
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap();
+        assert_eq!(batches, vec![first]);
+    }
+
+    #[tokio::test]
+    async fn accepts_schema_only_stream_without_eos_marker() {
+        let writer = StreamWriter::try_new(Vec::new(), &batch(1).schema()).unwrap();
+        let mut batches = read_arrow_stream(
+            response(writer.get_ref().clone().into()),
+            "schema-no-eos-request",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(batches.schema(), batch(1).schema());
+        assert!(batches.try_next().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn schema_only_eof_fallback_rejects_truncated_metadata() {
+        let writer = StreamWriter::try_new(Vec::new(), &batch(1).schema()).unwrap();
+        let data = writer.get_ref();
+        for length in [0, 4, 8, 12, data.len() - 1] {
+            assert!(
+                read_arrow_stream(
+                    response(data[..length].to_vec().into()),
+                    "truncated-schema",
+                    None,
+                )
+                .await
+                .is_err(),
+                "accepted truncated schema at {length} bytes"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn accepts_byte_sized_schema_only_stream_without_eos() {
+        let writer = StreamWriter::try_new(Vec::new(), &batch(1).schema()).unwrap();
+        let body = stream::iter(
+            writer
+                .get_ref()
+                .clone()
+                .into_iter()
+                .map(|byte| Ok::<_, std::io::Error>(Bytes::from(vec![byte]))),
+        );
+        let mut batches = read_arrow_stream(
+            response(reqwest::Body::wrap_stream(body)),
+            "split-schema-eof",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(batches.schema(), batch(1).schema());
+        assert!(batches.try_next().await.unwrap().is_none());
     }
 
     #[tokio::test]
