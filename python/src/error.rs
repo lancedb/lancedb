@@ -168,6 +168,28 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
                     err.setattr(intern!(py, "__cause__"), cause_err)?;
                     Err(PyErr::from_value(err))
                 }),
+                LanceError::ResponseInterrupted {
+                    request_id,
+                    batches,
+                    rows,
+                    table_version,
+                    source,
+                } => Python::attach(|py| {
+                    let error = py
+                        .import(intern!(py, "lancedb.remote.errors"))?
+                        .getattr(intern!(py, "ResponseInterruptedError"))?
+                        .call1((
+                            err.to_string(),
+                            request_id,
+                            *batches,
+                            *rows,
+                            *table_version,
+                            is_transport_error(source.as_ref()),
+                        ))?;
+                    let cause = http_from_rust_error(py, source.as_ref(), request_id, None)?;
+                    error.setattr(intern!(py, "__cause__"), cause)?;
+                    Err(PyErr::from_value(error))
+                }),
                 LanceError::Sql {
                     message,
                     request_id,

@@ -1335,6 +1335,9 @@ class LanceQueryBuilder(ABC):
         and also the "_distance" column which is the distance between the query
         vector and the returned vectors.
 
+        This collects all results in memory. To process a large result a batch
+        at a time, use [to_batches][lancedb.query.LanceQueryBuilder.to_batches].
+
         Parameters
         ----------
         timeout: Optional[timedelta]
@@ -1366,6 +1369,11 @@ class LanceQueryBuilder(ABC):
         ``fetch_blobs``. The ``"bytes"`` and ``"descriptions"`` modes hide
         automatic row ids.
 
+        A remote table decodes batches as they arrive when the server streams
+        query results. If the response stops partway, reading raises
+        [ResponseInterruptedError][lancedb.remote.errors.ResponseInterruptedError]
+        after the batches already returned, which are valid but incomplete.
+
         Parameters
         ----------
         batch_size: int
@@ -1373,6 +1381,8 @@ class LanceQueryBuilder(ABC):
         timeout: Optional[timedelta]
             The maximum time to wait for the query to complete.
             If None, wait indefinitely.
+            The timeout also covers reading the batches, so consuming them
+            slowly can exceed it.
         blob_mode: str, default "lazy"
             ``"lazy"`` keeps blob descriptors and auto row ids for manual fetches.
             ``"descriptions"`` omits auto row ids. ``"bytes"`` fetches blob v2
@@ -2303,6 +2313,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         timeout: timedelta, default None
             The maximum time to wait for the query to complete.
             If None, wait indefinitely.
+            The timeout also covers reading the batches, so consuming them
+            slowly can exceed it.
         blob_mode: str, default "lazy"
             Controls blob conversion as described in
             :meth:`LanceQueryBuilder.to_batches`.
@@ -3570,6 +3582,11 @@ class AsyncQueryBase(object):
         """
         Execute the query and return the results as an Apache Arrow RecordBatchReader.
 
+        A remote table decodes batches as they arrive when the server streams
+        query results. If the response stops partway, reading raises
+        [ResponseInterruptedError][lancedb.remote.errors.ResponseInterruptedError]
+        after the batches already returned, which are valid but incomplete.
+
         Parameters
         ----------
 
@@ -3582,6 +3599,8 @@ class AsyncQueryBase(object):
             The maximum time to wait for the query to complete.
             If not specified, no timeout is applied. If the query does not
             complete within the specified time, an error will be raised.
+            The timeout also covers reading the batches, so consuming them
+            slowly can exceed it.
         blob_mode: str, default "lazy"
             ``"lazy"`` keeps blob descriptors and auto row ids for manual fetches.
             ``"descriptions"`` omits auto row ids. ``"bytes"`` fetches blob v2
@@ -5114,6 +5133,8 @@ class BaseQueryBuilder(object):
             The maximum time to wait for the query to complete.
             If not specified, no timeout is applied. If the query does not
             complete within the specified time, an error will be raised.
+            The timeout also covers reading the batches, so consuming them
+            slowly can exceed it.
         blob_mode: str, default "lazy"
             Controls blob conversion as described in
             :meth:`AsyncQueryBase.to_batches`.
