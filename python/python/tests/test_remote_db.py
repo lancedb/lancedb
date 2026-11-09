@@ -1862,6 +1862,7 @@ def test_remote_create_index_async_returns_job():
         {"batch_size": None},
         {"batch_size": 1},
         {"batch_size": 8},
+        {"publication_interval_rows": 60},
         {"gpu_class": "a10g", "gpu_count": 2},
         {
             "retry_policy": {"transient": True, "max_attempts": 3},
@@ -1910,6 +1911,7 @@ async def test_remote_refresh_async_returns_typed_terminal_result(
                 expected["error_policy"] = refresh_kwargs["error_policy"]
             for key in (
                 "where",
+                "publication_interval_rows",
                 "max_failed_fraction",
                 "max_failed_rows",
                 "row_timeout_seconds",
@@ -2087,6 +2089,8 @@ def test_remote_refresh_async_forwards_progress_from_submitted_handle():
         ({"max_failed_rows": -1}, "max_failed_rows"),
         ({"row_timeout_seconds": 0}, "row_timeout_seconds"),
         ({"init_timeout_seconds": -5}, "init_timeout_seconds"),
+        ({"publication_interval_rows": 0}, "publication_interval_rows"),
+        ({"publication_interval_rows": -1}, "publication_interval_rows"),
         ({"num_workers": 0}, "num_workers"),
         (
             {"max_executor_processes_per_worker": -2},

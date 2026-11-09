@@ -3178,6 +3178,7 @@ class Table(ABC):
         *,
         where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        publication_interval_rows: Optional[int] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -3216,6 +3217,12 @@ class Table(ABC):
             Maximum rows per Function call on the remote server. Must be
             greater than zero. None uses the server default. Has no effect on
             local expression-backed columns.
+        publication_interval_rows: int, optional
+            Opt-in publication threshold for completed Function outputs. Must
+            be greater than zero. None keeps whole-fragment publication. The
+            actual publication boundary can be larger than this threshold
+            because it also depends on completed work and Function batching.
+            LanceDB Enterprise only; local refreshes reject this option.
         gpu_class: str, optional
             GPU class for Function workers. Must be a lowercase name of 1-63
             letters, digits, or hyphens, without a leading or trailing hyphen.
@@ -3263,6 +3270,7 @@ class Table(ABC):
         *,
         where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        publication_interval_rows: Optional[int] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -3300,6 +3308,12 @@ class Table(ABC):
             greater than zero. None uses the server default. Lower this for
             slow Functions to stay within the executor's per-call deadline.
             Has no effect on local expression-backed columns.
+        publication_interval_rows: int, optional
+            Opt-in publication threshold for completed Function outputs. Must
+            be greater than zero. None keeps whole-fragment publication. The
+            actual publication boundary can be larger than this threshold
+            because it also depends on completed work and Function batching.
+            LanceDB Enterprise only; local refreshes reject this option.
         gpu_class: str, optional
             GPU class for Function workers. Must be a lowercase name of 1-63
             letters, digits, or hyphens, without a leading or trailing hyphen.
@@ -5442,6 +5456,7 @@ class LanceTable(Table):
         *,
         where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        publication_interval_rows: Optional[int] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -5461,6 +5476,7 @@ class LanceTable(Table):
                 column,
                 where=where,
                 batch_size=batch_size,
+                publication_interval_rows=publication_interval_rows,
                 gpu_class=gpu_class,
                 gpu_count=gpu_count,
                 retry_policy=retry_policy,
@@ -5480,6 +5496,7 @@ class LanceTable(Table):
         *,
         where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        publication_interval_rows: Optional[int] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -5501,6 +5518,7 @@ class LanceTable(Table):
                     column,
                     where=where,
                     batch_size=batch_size,
+                    publication_interval_rows=publication_interval_rows,
                     gpu_class=gpu_class,
                     gpu_count=gpu_count,
                     retry_policy=retry_policy,
@@ -7865,6 +7883,7 @@ class AsyncTable:
         *,
         where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        publication_interval_rows: Optional[int] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -7903,6 +7922,12 @@ class AsyncTable:
             Maximum rows per Function call on the remote server. Must be
             greater than zero. None uses the server default. Has no effect on
             local expression-backed columns.
+        publication_interval_rows: int, optional
+            Opt-in publication threshold for completed Function outputs. Must
+            be greater than zero. None keeps whole-fragment publication. The
+            actual publication boundary can be larger than this threshold
+            because it also depends on completed work and Function batching.
+            LanceDB Enterprise only; local refreshes reject this option.
         gpu_class: str, optional
             GPU class for Function workers. Must be a lowercase name of 1-63
             letters, digits, or hyphens, without a leading or trailing hyphen.
@@ -7945,6 +7970,7 @@ class AsyncTable:
             column,
             where=where,
             batch_size=batch_size,
+            publication_interval_rows=publication_interval_rows,
             gpu_class=gpu_class,
             gpu_count=gpu_count,
             retry_policy=None
@@ -8054,6 +8080,7 @@ class AsyncTable:
         *,
         where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        publication_interval_rows: Optional[int] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -8091,6 +8118,12 @@ class AsyncTable:
             greater than zero. None uses the server default. Lower this for
             slow Functions to stay within the executor's per-call deadline.
             Has no effect on local expression-backed columns.
+        publication_interval_rows: int, optional
+            Opt-in publication threshold for completed Function outputs. Must
+            be greater than zero. None keeps whole-fragment publication. The
+            actual publication boundary can be larger than this threshold
+            because it also depends on completed work and Function batching.
+            LanceDB Enterprise only; local refreshes reject this option.
         gpu_class: str, optional
             GPU class for Function workers. Must be a lowercase name of 1-63
             letters, digits, or hyphens, without a leading or trailing hyphen.
@@ -8150,6 +8183,7 @@ class AsyncTable:
                 column,
                 where=where,
                 batch_size=batch_size,
+                publication_interval_rows=publication_interval_rows,
                 gpu_class=gpu_class,
                 gpu_count=gpu_count,
                 retry_policy=None
