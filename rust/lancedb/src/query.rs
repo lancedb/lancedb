@@ -741,6 +741,11 @@ pub trait ExecutableQuery {
     /// Note: The size of the returned batches and the order of individual rows is
     /// not deterministic.
     ///
+    /// For remote tables, batches are delivered incrementally only when the
+    /// server honors the Arrow stream-framing content negotiation; servers
+    /// that answer with Arrow file framing (or no content type) are buffered
+    /// in full before the first batch is returned.
+    ///
     /// LanceDb will use many threads to calculate results and, when
     /// the result set is large, multiple batches will be processed at one time.
     /// This readahead is limited however and backpressure will be applied if this

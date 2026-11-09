@@ -10,6 +10,7 @@ mod authz;
 pub mod catalog;
 pub(crate) mod client;
 pub(crate) mod db;
+mod ipc;
 pub(crate) mod job;
 pub mod oauth;
 mod retry;

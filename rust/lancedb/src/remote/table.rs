@@ -61,15 +61,15 @@ use crate::{
     },
 };
 use arrow_array::{LargeBinaryArray, RecordBatch, RecordBatchReader};
-use arrow_ipc::reader::{FileReader, StreamReader};
-use arrow_schema::{ArrowError, DataType, SchemaRef};
+use arrow_ipc::reader::FileReader;
+use arrow_schema::{DataType, SchemaRef};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use datafusion_common::DataFusionError;
 use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion_physical_plan::{ExecutionPlan, RecordBatchStream, SendableRecordBatchStream};
 use futures::{StreamExt, TryStreamExt};
-use http::header::CONTENT_TYPE;
+use http::header::{ACCEPT, CONTENT_TYPE};
 use http::{HeaderName, StatusCode};
 use lance::arrow::json::{JsonDataType, JsonSchema};
 use lance::dataset::refs::TagContents;
@@ -1145,6 +1145,16 @@ impl<S: HttpSend> RemoteTable<S> {
         request_id: &str,
         response: reqwest::Response,
     ) -> Result<SendableRecordBatchStream> {
+        self.read_arrow_response_with_deadline(request_id, response, None)
+            .await
+    }
+
+    async fn read_arrow_response_with_deadline(
+        &self,
+        request_id: &str,
+        response: reqwest::Response,
+        deadline: Option<tokio::time::Instant>,
+    ) -> Result<SendableRecordBatchStream> {
         let response = self.check_table_response(request_id, response).await?;
 
         // The header has to be read before the body, which consumes the response.
@@ -1155,24 +1165,16 @@ impl<S: HttpSend> RemoteTable<S> {
             .map(str::to_owned);
         let framing = resolve_arrow_ipc_framing(content_type.as_deref(), request_id)?;
 
-        // Buffer the whole body. File framing keeps its footer at the end, so /query
-        // cannot decode incrementally. Stream framing could, via
-        // arrow_ipc::reader::StreamDecoder, but fetch_blobs concatenates every batch
-        // before returning, so no caller would see data sooner.
+        if matches!(framing, ArrowIpcFraming::Stream) {
+            return super::ipc::read_arrow_stream(response, request_id, deadline).await;
+        }
+
+        // File framing keeps its footer at the end, so older servers still need
+        // a buffered reader. Stream framing above yields batches incrementally.
         let body = response.bytes().await.err_to_http(request_id.into())?;
-        type IpcBatchIterator =
-            Box<dyn Iterator<Item = std::result::Result<RecordBatch, ArrowError>> + Send>;
-        let (schema, batches): (SchemaRef, IpcBatchIterator) = match framing {
-            ArrowIpcFraming::Stream => {
-                let reader = StreamReader::try_new(Cursor::new(body), None)?;
-                (reader.schema(), Box::new(reader))
-            }
-            ArrowIpcFraming::File => {
-                let reader = FileReader::try_new(Cursor::new(body), None)?;
-                (reader.schema(), Box::new(reader))
-            }
-        };
-        let stream = futures::stream::iter(batches).map_err(DataFusionError::from);
+        let reader = FileReader::try_new(Cursor::new(body), None)?;
+        let schema = reader.schema();
+        let stream = futures::stream::iter(reader).map_err(DataFusionError::from);
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
     }
 
@@ -1542,9 +1544,16 @@ impl<S: HttpSend> RemoteTable<S> {
         query: &AnyQuery,
         options: &QueryExecutionOptions,
     ) -> Result<Vec<Pin<Box<dyn RecordBatchStream + Send>>>> {
+        let deadline = options
+            .timeout
+            .map(|timeout| tokio::time::Instant::now() + timeout);
         let mut request = self
             .client
-            .post(&format!("/v1/table/{}/query/", self.identifier));
+            .post(&format!("/v1/table/{}/query/", self.identifier))
+            .header(
+                ACCEPT,
+                "application/vnd.apache.arrow.stream, application/vnd.apache.arrow.file;q=0.9",
+            );
 
         if let Some(timeout) = options.timeout {
             // Also send to server, so it can abort the query if it takes too long.
@@ -1565,7 +1574,8 @@ impl<S: HttpSend> RemoteTable<S> {
             let (request_id, response) = self
                 .send_with_freshness(req, true, read_snapshot.freshness)
                 .await?;
-            self.read_arrow_response(&request_id, response).await
+            self.read_arrow_response_with_deadline(&request_id, response, deadline)
+                .await
         });
         let streams = futures::future::try_join_all(futures);
 
@@ -1714,8 +1724,8 @@ fn schema_from_description(schema: JsonSchema) -> Result<SchemaRef> {
     )))
 }
 
-/// How a response body frames its Arrow IPC payload. `/query` answers with file framing
-/// and `fetch_blobs` with stream framing, so the reader is picked per response.
+/// How a response body frames its Arrow IPC payload. New servers can stream
+/// `/query` responses; older servers use files. Pick the reader per response.
 enum ArrowIpcFraming {
     File,
     Stream,
@@ -4410,6 +4420,7 @@ impl TryFrom<MergeInsertBuilder> for MergeInsertRequest {
 
 #[cfg(test)]
 mod tests {
+    use arrow_ipc::reader::StreamReader;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
@@ -4428,7 +4439,7 @@ mod tests {
         BinaryArray, Int32Array, Int64Array, RecordBatch, RecordBatchIterator, StringArray,
         StructArray, record_batch,
     };
-    use arrow_schema::{DataType, Field, Schema};
+    use arrow_schema::{ArrowError, DataType, Field, Schema};
     use chrono::{DateTime, Utc};
     use futures::{StreamExt, TryFutureExt, TryStreamExt, future::BoxFuture};
     use lance_index::scalar::inverted::{DocumentGranularity, query::MatchQuery};
