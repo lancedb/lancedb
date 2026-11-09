@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import { setTimeout } from "node:timers/promises";
 import "reflect-metadata";
 import {
   DataType,
@@ -16,6 +17,86 @@ import {
 } from "../arrow";
 import { sanitizeType } from "../sanitize";
 import { getRegistry } from "./registry";
+
+/**
+ * Options for {@link retryWithExponentialBackoff}.
+ */
+export interface RetryOptions {
+  /** Initial delay in seconds before the first retry. Defaults to 1. */
+  initialDelay?: number;
+  /** Base for the exponential backoff multiplier. Defaults to 2. */
+  exponentialBase?: number;
+  /** Whether to add random jitter to the delay. Defaults to true. */
+  jitter?: boolean;
+  /** Maximum number of retries. Set to 0 to disable retries. Defaults to 7. */
+  maxRetries?: number;
+}
+
+function isNonRetryableError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) {
+    return false;
+  }
+  const err = error as Record<string, unknown>;
+
+  if (err.constructor?.name === "AuthenticationError") {
+    return true;
+  }
+  if (typeof err.status_code === "number") {
+    return err.status_code === 401 || err.status_code === 403;
+  }
+  if (typeof err.status === "number") {
+    return err.status === 401 || err.status === 403;
+  }
+  return false;
+}
+
+/**
+ * Retry an async function with exponential backoff.
+ *
+ * Non-retryable errors (authentication failures, 401/403 status codes) are
+ * rethrown immediately without consuming retries.
+ *
+ * @param fn    - The async function to retry.
+ * @param options - Optional {@link RetryOptions} to configure retry behavior.
+ * @returns The resolved value of `fn`.
+ */
+export async function retryWithExponentialBackoff<R>(
+  fn: () => Promise<R>,
+  options?: RetryOptions,
+): Promise<R> {
+  const {
+    initialDelay = 1,
+    exponentialBase = 2,
+    jitter = true,
+    maxRetries = 7,
+  } = options ?? {};
+
+  let numRetries = 0;
+  let delay = initialDelay;
+
+  while (true) {
+    try {
+      return await fn();
+    } catch (e) {
+      // Don't retry on authentication errors (e.g., OpenAI 401)
+      // These are permanent failures that won't be fixed by retrying
+      if (isNonRetryableError(e)) throw e;
+
+      numRetries += 1;
+      if (numRetries > maxRetries) {
+        throw new Error(`Maximum number of retries (${maxRetries}) exceeded.`, {
+          cause: e,
+        });
+      }
+      delay *= exponentialBase * (1 + (jitter ? Math.random() : 0));
+      console.warn(
+        `Embedding retry ${numRetries}/${maxRetries} after error: ${e}. ` +
+          `Retrying in ${delay.toFixed(1)}s...`,
+      );
+      await setTimeout(delay * 1000);
+    }
+  }
+}
 
 /**
  * Options for a given embedding function
@@ -61,6 +142,12 @@ export abstract class EmbeddingFunction<
    */
   // biome-ignore lint/style/useNamingConvention: we want to keep the name as it is
   readonly TOptions!: M;
+
+  /**
+   * Maximum number of retries for embedding API calls.
+   * Set to 0 to disable retries. Defaults to 7.
+   */
+  maxRetries = 7;
 
   #config: Partial<M>;
 
@@ -237,6 +324,30 @@ export abstract class EmbeddingFunction<
   async computeQueryEmbeddings(data: T): Promise<Awaited<IntoVector>> {
     return this.computeSourceEmbeddings([data]).then(
       (embeddings) => embeddings[0],
+    );
+  }
+
+  /**
+   * Compute the embeddings for a given query with retries
+   */
+  async computeQueryEmbeddingsWithRetry(data: T): Promise<Awaited<IntoVector>> {
+    return retryWithExponentialBackoff(
+      () => this.computeQueryEmbeddings(data),
+      {
+        maxRetries: this.maxRetries,
+      },
+    );
+  }
+
+  /**
+   * Compute the embeddings for the source column in the database with retries
+   */
+  async computeSourceEmbeddingsWithRetry(
+    data: T[],
+  ): Promise<number[][] | Float32Array[] | Float64Array[]> {
+    return retryWithExponentialBackoff(
+      () => this.computeSourceEmbeddings(data),
+      { maxRetries: this.maxRetries },
     );
   }
 }
