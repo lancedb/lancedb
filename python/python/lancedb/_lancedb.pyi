@@ -654,10 +654,24 @@ class Table:
         limit: Optional[int] = None,
     ) -> FunctionErrors: ...
     async def refresh_materialized_view(
-        self, source_version: Optional[int] = None, *, full: bool = False
+        self,
+        source_version: Optional[int] = None,
+        *,
+        full: bool = False,
+        cpu_millis: Optional[int] = None,
+        memory_bytes: Optional[int] = None,
+        gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
     ) -> RefreshMaterializedViewResult: ...
     async def refresh_materialized_view_async(
-        self, source_version: Optional[int] = None, *, full: bool = False
+        self,
+        source_version: Optional[int] = None,
+        *,
+        full: bool = False,
+        cpu_millis: Optional[int] = None,
+        memory_bytes: Optional[int] = None,
+        gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
     ) -> Job: ...
     async def materialized_view_definition(self) -> str: ...
     async def add_columns_with_schema(self, schema: pa.Schema) -> AddColumnsResult: ...

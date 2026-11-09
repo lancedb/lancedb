@@ -1117,71 +1117,32 @@ mod tests {
             do_dot_test(&x, &y)?;
         }
 
-        /// Cross-backend parity: scalar fallback must match the dispatched
-        /// SIMD path within numerical tolerance. Exercises `dot_f64_scalar`
-        /// directly so the runtime fallback is exercised even on AVX2-capable
-        /// CI hosts.
+        /// Every f64 kernel the host supports, plus the runtime dispatch, must
+        /// match the scalar fallback. Calling `dot_f64_scalar` directly
+        /// exercises the fallback even on AVX2-capable CI hosts.
         #[cfg(target_arch = "x86_64")]
         #[test]
-        fn test_dot_f64_scalar_simd_parity(
+        fn test_dot_f64_kernels_match_scalar(
             (x, y) in arbitrary_vector_pair(arbitrary_f64, 4..4048)
         ) {
             let scalar = dot_f64_scalar(&x, &y);
-            let simd = dot_f64_simd(&x, &y);
             let max_error = max_error::<f64>(&x, &y);
-            prop_assert!(approx::relative_eq!(scalar, simd, epsilon = max_error));
-        }
-
-        /// AVX-512-direct parity: explicitly compares the scalar fallback
-        /// against the native AVX-512 inner kernel on AVX-512F-capable hosts
-        /// (Skylake-X+, Ice Lake, Sapphire Rapids, Zen 4). Early-returns on
-        /// hosts without AVX-512F.
-        #[cfg(target_arch = "x86_64")]
-        #[test]
-        fn test_dot_f64_scalar_vs_avx512_parity(
-            (x, y) in arbitrary_vector_pair(arbitrary_f64, 4..4048)
-        ) {
-            if !std::is_x86_feature_detected!("avx512f") {
-                return Ok(());
+            let mut results = vec![("dispatched", dot_f64_simd(&x, &y))];
+            if std::is_x86_feature_detected!("avx512f") {
+                results.push(("avx512", unsafe { x86::dot_f64_avx512(&x, &y) }));
             }
-            let scalar = dot_f64_scalar(&x, &y);
-            let avx512 = unsafe { x86::dot_f64_avx512(&x, &y) };
-            let max_error = max_error::<f64>(&x, &y);
-            prop_assert!(approx::relative_eq!(scalar, avx512, epsilon = max_error));
-        }
-
-        /// AVX + FMA-direct parity for the f64 dot kernel. Covers the AMD
-        /// Piledriver / Steamroller / FX-7500 tier. Early-returns on hosts
-        /// without both AVX and FMA.
-        #[cfg(target_arch = "x86_64")]
-        #[test]
-        fn test_dot_f64_scalar_vs_avx_fma_parity(
-            (x, y) in arbitrary_vector_pair(arbitrary_f64, 4..4048)
-        ) {
-            if !(std::is_x86_feature_detected!("avx") && std::is_x86_feature_detected!("fma")) {
-                return Ok(());
+            if std::is_x86_feature_detected!("avx") && std::is_x86_feature_detected!("fma") {
+                results.push(("avx_fma", unsafe { x86::dot_f64_avx_fma(&x, &y) }));
             }
-            let scalar = dot_f64_scalar(&x, &y);
-            let avx_fma = unsafe { x86::dot_f64_avx_fma(&x, &y) };
-            let max_error = max_error::<f64>(&x, &y);
-            prop_assert!(approx::relative_eq!(scalar, avx_fma, epsilon = max_error));
-        }
-
-        /// AVX-only-direct parity for the f64 dot kernel. Covers the Intel
-        /// Sandy Bridge / Ivy Bridge tier (AVX without FMA). Early-returns
-        /// on hosts without AVX.
-        #[cfg(target_arch = "x86_64")]
-        #[test]
-        fn test_dot_f64_scalar_vs_avx_parity(
-            (x, y) in arbitrary_vector_pair(arbitrary_f64, 4..4048)
-        ) {
-            if !std::is_x86_feature_detected!("avx") {
-                return Ok(());
+            if std::is_x86_feature_detected!("avx") {
+                results.push(("avx", unsafe { x86::dot_f64_avx(&x, &y) }));
             }
-            let scalar = dot_f64_scalar(&x, &y);
-            let avx = unsafe { x86::dot_f64_avx(&x, &y) };
-            let max_error = max_error::<f64>(&x, &y);
-            prop_assert!(approx::relative_eq!(scalar, avx, epsilon = max_error));
+            for (kernel, got) in results {
+                prop_assert!(
+                    approx::relative_eq!(scalar, got, epsilon = max_error),
+                    "{kernel}: {got} != scalar {scalar}"
+                );
+            }
         }
     }
 

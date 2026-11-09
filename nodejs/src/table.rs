@@ -23,6 +23,63 @@ use crate::merge::NativeMergeInsertBuilder;
 use crate::query::{Query, TakeQuery, VectorQuery};
 use crate::util::schema_to_buffer;
 
+/// Per-invocation file-compaction settings. All numbers must be safe integers.
+#[napi(object)]
+pub struct CompactionOptions {
+    pub target_rows_per_fragment: Option<f64>,
+    pub max_source_rows: Option<f64>,
+    pub io_buffer_size: Option<f64>,
+    pub batch_size: Option<f64>,
+}
+
+impl CompactionOptions {
+    fn into_overrides(self) -> napi::Result<lancedb::table::optimize::CompactionOverrides> {
+        const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+        fn integer(
+            value: Option<f64>,
+            name: &str,
+            max: u64,
+            allow_zero: bool,
+        ) -> napi::Result<Option<u64>> {
+            let Some(value) = value else {
+                return Ok(None);
+            };
+            let min = if allow_zero { 0 } else { 1 };
+            let max = max.min(MAX_SAFE_INTEGER);
+            if !value.is_finite()
+                || value.fract() != 0.0
+                || value < min as f64
+                || value > max as f64
+            {
+                return Err(napi::Error::from_reason(format!(
+                    "{name} must be a safe integer between {min} and {max}"
+                )));
+            }
+            Ok(Some(value as u64))
+        }
+        let mut options = lancedb::table::optimize::CompactionOverrides::default();
+        if let Some(target) = integer(
+            self.target_rows_per_fragment,
+            "targetRowsPerFragment",
+            u32::MAX as u64,
+            false,
+        )? {
+            options.target_rows_per_fragment = Some(target as usize);
+        }
+        options.max_source_rows = integer(
+            self.max_source_rows,
+            "maxSourceRows",
+            usize::MAX as u64,
+            false,
+        )?
+        .map(|v| v as usize);
+        options.io_buffer_size = integer(self.io_buffer_size, "ioBufferSize", u64::MAX, true)?;
+        options.batch_size =
+            integer(self.batch_size, "batchSize", u32::MAX as u64, false)?.map(|v| v as usize);
+        Ok(options)
+    }
+}
+
 #[napi]
 pub struct Table {
     // We keep a duplicate of the table name so we can use it for error
@@ -732,6 +789,7 @@ impl Table {
         &self,
         before_timestamp_ms: Option<i64>,
         delete_unverified: Option<bool>,
+        compaction_options: Option<CompactionOptions>,
     ) -> napi::Result<OptimizeStats> {
         let inner = self.inner_ref()?;
 
@@ -746,8 +804,11 @@ impl Table {
             .transpose()?;
 
         let stats = inner
-            .optimize_full(
-                lancedb::table::CompactionOptions::default(),
+            .optimize_full_with_overrides(
+                compaction_options
+                    .map(CompactionOptions::into_overrides)
+                    .transpose()?
+                    .unwrap_or_default(),
                 None,
                 before_timestamp,
                 delete_unverified,

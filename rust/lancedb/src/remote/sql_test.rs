@@ -1329,7 +1329,30 @@ async fn remote_refresh_omits_unknown_metrics_and_forwards_full() {
         .await
         .unwrap();
 
-    for result in [first, second] {
+    let third = view
+        .refresh()
+        .full(true)
+        .cpu_millis(8000)
+        .memory_bytes(16 << 30)
+        .gpu_count(2)
+        .gpu_class("h100")
+        .execute_async()
+        .await
+        .unwrap()
+        .wait()
+        .await
+        .unwrap();
+    for invalid in [
+        view.refresh().cpu_millis(1),
+        view.refresh().gpu_class("H200:8"),
+        view.refresh().gpu_count(0).gpu_class("h100"),
+    ] {
+        assert!(matches!(
+            invalid.execute_async().await,
+            Err(Error::InvalidInput { .. })
+        ));
+    }
+    for result in [first, second, third] {
         assert_eq!(result.mode, None);
         assert_eq!(result.rows_written, None);
         assert_eq!(result.source_version, None);
@@ -1350,6 +1373,7 @@ async fn remote_refresh_omits_unknown_metrics_and_forwards_full() {
             "DESCRIBE MATERIALIZED VIEW \"view\"",
             "REFRESH MATERIALIZED VIEW \"view\"",
             "REFRESH MATERIALIZED VIEW \"view\" WITH (full = true)",
+            "REFRESH MATERIALIZED VIEW \"view\" WITH (full = true, cpu_millis = 8000, memory_bytes = 17179869184, gpu_count = 2, gpu_class = 'h100')",
         ]
     );
     assert!(
@@ -2318,7 +2342,7 @@ async fn remote_optimize_submits_a_compaction_job_over_sql() {
     assert!(stats.prune.is_none());
     assert_eq!(
         *statements.lock().unwrap(),
-        ["OPTIMIZE TABLE \"events\" REWRITE DATA"]
+        ["OPTIMIZE \"events\" REWRITE DATA"]
     );
     assert!(
         headers
@@ -2362,7 +2386,7 @@ async fn remote_optimize_on_a_branch_submits_a_with_clause_over_sql() {
 
     assert_eq!(
         *statements.lock().unwrap(),
-        ["OPTIMIZE TABLE \"events\" REWRITE DATA WITH (branch = 'o''brien')"]
+        ["OPTIMIZE \"events\" REWRITE DATA WITH (branch = 'o''brien')"]
     );
     shutdown.send(()).unwrap();
 }
@@ -2426,7 +2450,7 @@ async fn remote_optimize_full_skips_prune_and_index() {
     );
     assert_eq!(
         *statements.lock().unwrap(),
-        ["OPTIMIZE TABLE \"events\" REWRITE DATA"]
+        ["OPTIMIZE \"events\" REWRITE DATA"]
     );
     shutdown.send(()).unwrap();
 }
@@ -3611,4 +3635,110 @@ fn sql_status_reports_structured_resource_identity() {
     assert_eq!(resource.kind, "function");
     assert_eq!(resource.name, "missing");
     assert_eq!(resource.namespace_path, ["ns"]);
+}
+
+#[tokio::test]
+async fn remote_optimize_forwards_per_job_options_on_main_and_branch() {
+    for branch in [None, Some("o'brien")] {
+        let service = TestSqlService {
+            adaptive: true,
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let headers = service.headers.clone();
+        let (sql_client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let client = client_with_handler(|request| -> http::Response<String> {
+            panic!("unexpected REST request: {}", request.url().path());
+        });
+        let table = RemoteTable::new_with_sql_client(
+            client,
+            "analytics".into(),
+            "events".into(),
+            vec!["team".into()],
+            "team$events".into(),
+            Default::default(),
+            Some(sql_client),
+        )
+        .with_branch(branch.map(str::to_string));
+        table
+            .optimize(crate::table::optimize::OptimizeAction::Compact {
+                options: crate::table::optimize::CompactionOptions {
+                    target_rows_per_fragment: 100,
+                    max_source_rows: Some(500),
+                    io_buffer_size: Some(0),
+                    batch_size: Some(16),
+                    ..Default::default()
+                },
+                remap_options: None,
+            })
+            .await
+            .unwrap();
+        let prefix = if branch.is_some() {
+            "branch = 'o''brien', "
+        } else {
+            ""
+        };
+        assert_eq!(
+            *statements.lock().unwrap(),
+            [format!(
+                "OPTIMIZE \"events\" REWRITE DATA WITH ({prefix}target_rows_per_fragment = 100, max_source_rows = 500, io_buffer_size = 0, batch_size = 16)"
+            )]
+        );
+        assert!(
+            headers
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|h| h.namespace_path == "team")
+        );
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn remote_compact_preserves_omissions_and_explicit_default_values() {
+    use crate::table::{CompactionOptions, CompactionOverrides};
+    let target = CompactionOptions::default().target_rows_per_fragment;
+    for (options, suffix) in [
+        (CompactionOverrides::default(), String::new()),
+        (
+            CompactionOverrides {
+                target_rows_per_fragment: Some(target),
+                ..Default::default()
+            },
+            format!(" WITH (target_rows_per_fragment = {target})"),
+        ),
+        (
+            CompactionOverrides {
+                io_buffer_size: Some(0),
+                ..Default::default()
+            },
+            " WITH (io_buffer_size = 0)".into(),
+        ),
+    ] {
+        let service = TestSqlService {
+            adaptive: true,
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let (sql_client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let client = client_with_handler(|request| -> http::Response<String> {
+            panic!("unexpected REST request: {}", request.url().path());
+        });
+        let table = RemoteTable::new_with_sql_client(
+            client,
+            "analytics".into(),
+            "events".into(),
+            vec![],
+            "events".into(),
+            Default::default(),
+            Some(sql_client),
+        );
+        table.compact(options).await.unwrap();
+        assert_eq!(
+            *statements.lock().unwrap(),
+            [format!("OPTIMIZE \"events\" REWRITE DATA{suffix}")]
+        );
+        shutdown.send(()).unwrap();
+    }
 }

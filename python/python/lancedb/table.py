@@ -307,7 +307,12 @@ IndexConfigType = Union[
 class CompactionOptions(TypedDict, total=False):
     """Options that control file compaction during table optimization.
 
-    Unspecified options use Lance's defaults.
+    Unspecified options use Lance's defaults for local tables. Remote tables
+    forward ``target_rows_per_fragment``, ``max_source_rows``, ``io_buffer_size``,
+    and ``batch_size`` as per-job SQL options; other non-default settings are
+    unsupported. Omitted remote options inherit table tuning, then deployment/built-in
+    defaults. The server must support these SQL options. These settings do not
+    change table policy.
 
     Compaction planning is row based. Lowering ``target_rows_per_fragment``
     based on the expected row size can bound later compaction passes once
@@ -353,7 +358,10 @@ class CompactionOptions(TypedDict, total=False):
     """Number of rows per input scan batch."""
 
     io_buffer_size: Optional[int]
-    """Maximum number of bytes queued in the input scan I/O buffer."""
+    """Input scan I/O read-ahead budget in bytes.
+
+    Zero disables byte-based I/O backpressure.
+    """
 
     defer_index_remap: bool
     """Whether to defer index remapping during compaction (default: False)."""
@@ -2943,9 +2951,13 @@ class Table(ABC):
             are silently skipped there instead of being attempted, so this
             call returns successfully, with zeroed pruning statistics, once
             the compaction job has been submitted; it does not wait for that
-            job to finish. A non-default ``compaction_options`` raises
-            ``NotImplementedError`` before anything is submitted, since
-            there is no way yet to forward those settings to the server.
+            job to finish. Remote compaction supports per-job
+            ``target_rows_per_fragment``, ``max_source_rows``, ``io_buffer_size``,
+            and ``batch_size``. Omitted fields inherit table tuning, then
+            deployment/built-in defaults. Other non-default compaction settings raise
+            ``NotImplementedError`` before submission. The server must support
+            these SQL options; older-server errors are propagated without
+            dropping the requested settings.
 
         Modeled after ``VACUUM`` in PostgreSQL.
 
@@ -8477,9 +8489,13 @@ class AsyncTable:
             are silently skipped there instead of being attempted, so this
             call returns successfully, with zeroed pruning statistics, once
             the compaction job has been submitted; it does not wait for that
-            job to finish. A non-default ``compaction_options`` raises
-            ``NotImplementedError`` before anything is submitted, since
-            there is no way yet to forward those settings to the server.
+            job to finish. Remote compaction supports per-job
+            ``target_rows_per_fragment``, ``max_source_rows``, ``io_buffer_size``,
+            and ``batch_size``. Omitted fields inherit table tuning, then
+            deployment/built-in defaults. Other non-default compaction settings raise
+            ``NotImplementedError`` before submission. The server must support
+            these SQL options; older-server errors are propagated without
+            dropping the requested settings.
 
         Modeled after ``VACUUM`` in PostgreSQL.
 

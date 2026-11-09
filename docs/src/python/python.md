@@ -352,9 +352,27 @@ accept the LanceDB Embedded options: cleanup and compaction warn that they are n
 `optimize` submits a durable compaction job and returns once that submission is
 accepted, not once compaction itself finishes. Pruning and index optimization
 are not yet supported remotely, so it silently skips them and returns with
-zeroed pruning statistics rather than attempting and failing. A non-default
-`compaction_options` raises `NotImplementedError` before anything is
-submitted, since there is no way yet to forward those settings to the server.
+zeroed pruning statistics. Remote `compaction_options` support per-job
+`target_rows_per_fragment`, `max_source_rows`, `io_buffer_size`, and `batch_size`
+on compatible servers. Other non-default settings raise `NotImplementedError`
+before submission; older-server errors are returned without dropping options.
+The source-row budget selects whole tasks and can produce no work if the first
+task exceeds it. An I/O buffer size of zero disables byte-based I/O backpressure.
+Use a positive size to limit I/O read-ahead; this is not a total-memory limit.
+Each field resolves as invocation option → table tuning → deployment/built-in
+default. These options apply only to the submitted job and leave table policy
+unchanged. Table `enabled` controls automatic scheduling; explicit manual runs
+remain allowed.
+
+```python
+table.optimize(compaction_options={
+    "target_rows_per_fragment": 100_000,
+    "max_source_rows": 1_000_000,
+    "io_buffer_size": 64 * 1024 * 1024,
+    "batch_size": 1024,
+})
+```
+
 Removed Tantivy options produce the same explanatory errors on both backends.
 
 The old LanceDB Enterprise keyword names `predicate` for `delete`, `index_name` for
