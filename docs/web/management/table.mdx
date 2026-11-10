@@ -477,6 +477,51 @@ the default `"lazy"` mode because it would open `BlobFile` handles. Query with
 `blob_mode="descriptions"`, then read bytes with `fetch_blobs` or
 `fetch_blob_files`.
 
+###### Copy a subset of blob rows {#multimodal-copy-subset}
+
+Blob query results describe the stored payload; they are not the bytes to
+insert into another table. These APIs return different values:
+
+| Read path | Value |
+| --- | --- |
+| SQL or an Arrow query in `"descriptions"` mode | Descriptor struct identifying the stored blob. Treat it as opaque. |
+| `table.fetch_blobs(column, row_ids)` | Arrow `large_binary` array; `.to_pylist()` gives `bytes` or `None` in the requested order. |
+| A Function parameter annotated `lancedb.BlobReader` | Lazy, seekable reader over the input blob, available inside the Function. |
+
+For an Enterprise source table, select the rows and fetch their bytes explicitly.
+The following example copies up to 100 rows from an existing `images` table with
+an integer `id` and a blob `image` column. Keep the source unchanged during this
+operation: selection and fetching are separate requests.
+
+```python
+import lancedb
+import pyarrow as pa
+
+source = db.open_table("images")
+hits = (
+    source.search()
+    .where("id < 100")
+    .select(["id"])
+    .with_row_id(True)
+    .limit(100)
+    .to_arrow()
+)
+payloads = source.fetch_blobs("image", hits["_rowid"]).to_pylist()
+subset = db.create_table(
+    "image_subset",
+    schema=pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")]),
+)
+if hits.num_rows:
+    subset.add([
+        {"id": row_id, "image": payload}
+        for row_id, payload in zip(hits["id"].to_pylist(), payloads, strict=True)
+    ])
+```
+
+Empty blobs remain `b""` and null blobs remain `None`. Fetch bounded batches
+for larger subsets; `fetch_blobs` materializes all requested bytes in memory.
+For incremental decoding, use `fetch_blob_files` instead.
+
 `blob_mode="bytes"` materializes top-level and struct-nested blob columns. It
 raises `ValueError` when the selected columns include blobs
 inside a list. Select those columns with `blob_mode="descriptions"`, or leave
