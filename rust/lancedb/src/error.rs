@@ -205,6 +205,48 @@ fn http_timeout_hint(source: &(dyn std::error::Error + 'static)) -> &'static str
     }
 }
 
+/// The error that ended a streamed response.
+///
+/// It is shared so that a copy of [`Error::ResponseInterrupted`] keeps it:
+/// DataFusion hands one error to every partition that reads the failed input.
+/// It dereferences to the underlying error, which is also the next error in the
+/// source chain.
+#[cfg(feature = "remote")]
+#[derive(Debug, Clone)]
+pub struct InterruptionSource(Arc<dyn std::error::Error + Send + Sync>);
+
+#[cfg(feature = "remote")]
+impl From<BoxError> for InterruptionSource {
+    fn from(source: BoxError) -> Self {
+        Self(source.into())
+    }
+}
+
+#[cfg(feature = "remote")]
+impl std::ops::Deref for InterruptionSource {
+    type Target = dyn std::error::Error + Send + Sync;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref()
+    }
+}
+
+#[cfg(feature = "remote")]
+impl Display for InterruptionSource {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+// Not `Error`: an `Arc` in the source chain hides the error it holds from
+// `downcast_ref`, and so would a wrapper that implements `Error`.
+#[cfg(feature = "remote")]
+impl snafu::AsErrorSource for InterruptionSource {
+    fn as_error_source(&self) -> &(dyn std::error::Error + 'static) {
+        self.0.as_ref()
+    }
+}
+
 /// Why a job failed, to whatever precision the backend provides.
 ///
 /// A job run in this process carries the error it failed with in [`Self::source`].
@@ -362,6 +404,27 @@ pub enum Error {
         source: Box<dyn std::error::Error + Send + Sync>,
         status_code: Option<reqwest::StatusCode>,
     },
+    /// A streamed response stopped before the server signalled that it was complete.
+    ///
+    /// The batches already returned are valid, but the result is incomplete. The
+    /// request is not retried, because re-issuing it would return those batches
+    /// again. `table_version` is the table version the response reflected, when
+    /// the server reported one, so a caller can re-issue the request against it.
+    #[cfg(feature = "remote")]
+    #[snafu(display(
+        "Response for request_id={request_id} interrupted after {batches} batches \
+        ({rows} rows): {source}{}",
+        http_timeout_hint(&**source)
+    ))]
+    ResponseInterrupted {
+        request_id: String,
+        /// Batches returned before the interruption.
+        batches: u64,
+        /// Rows in those batches.
+        rows: u64,
+        table_version: Option<u64>,
+        source: InterruptionSource,
+    },
     #[snafu(display("Arrow error: {source}"))]
     Arrow { source: ArrowError },
     #[snafu(display("LanceDBError: not supported: {message}"))]
@@ -393,11 +456,31 @@ impl From<DataFusionError> for Error {
         match source {
             DataFusionError::ArrowError(source, _) => (*source).into(),
             DataFusionError::External(source) => Self::from_box_error(source),
+            // DataFusion adds context to an error, and shares one error between
+            // the partitions that read a failed input. An error of ours beneath
+            // either keeps its type; other errors keep the wrapper's message.
+            DataFusionError::Context(_, inner) if find_error(inner.as_ref()).is_some() => {
+                (*inner).into()
+            }
+            DataFusionError::Shared(shared) => match Arc::try_unwrap(shared) {
+                Ok(inner) => inner.into(),
+                Err(shared) => find_error(shared.as_ref())
+                    .and_then(Self::clone_shared)
+                    .unwrap_or_else(|| Self::External {
+                        source: Box::new(DataFusionError::Shared(shared)),
+                    }),
+            },
             other => Self::External {
                 source: Box::new(other),
             },
         }
     }
+}
+
+/// The first error of ours in an error's source chain.
+fn find_error<'a>(error: &'a (dyn std::error::Error + 'static)) -> Option<&'a Error> {
+    std::iter::successors(Some(error), |error| error.source())
+        .find_map(|error| error.downcast_ref::<Error>())
 }
 
 impl From<lance::Error> for Error {
@@ -509,6 +592,29 @@ impl Error {
         }
     }
 
+    /// A copy of an error that other partitions of a DataFusion plan still hold.
+    /// Only an interrupted response can be copied, because it shares its source.
+    fn clone_shared(&self) -> Option<Self> {
+        #[cfg(feature = "remote")]
+        if let Self::ResponseInterrupted {
+            request_id,
+            batches,
+            rows,
+            table_version,
+            source,
+        } = self
+        {
+            return Some(Self::ResponseInterrupted {
+                request_id: request_id.clone(),
+                batches: *batches,
+                rows: *rows,
+                table_version: *table_version,
+                source: source.clone(),
+            });
+        }
+        None
+    }
+
     fn from_box_error(mut source: Box<dyn std::error::Error + Send + Sync>) -> Self {
         source = match source.downcast::<Self>() {
             Ok(e) => match *e {
@@ -617,6 +723,67 @@ mod tests {
 
         let source = lance::Error::invalid_input("No field named missing");
         assert!(matches!(Error::from(source), Error::InvalidInput { .. }));
+    }
+
+    /// DataFusion shares an error between the partitions that read a failed
+    /// input, and may add context to it. Whether or not another partition still
+    /// holds it, an interrupted response keeps its fields and its source.
+    #[cfg(feature = "remote")]
+    #[rstest::rstest]
+    fn shared_interruption_keeps_its_type_and_source(
+        #[values(false, true)] still_held: bool,
+        #[values(false, true)] with_context: bool,
+    ) {
+        let reset = BoxError::from(std::io::Error::from(std::io::ErrorKind::ConnectionReset));
+        let interrupted = Error::ResponseInterrupted {
+            request_id: "req-1".into(),
+            batches: 2,
+            rows: 2048,
+            table_version: Some(7),
+            source: reset.into(),
+        };
+        let shared = Arc::new(DataFusionError::External(Box::new(interrupted)));
+        let held = still_held.then(|| shared.clone());
+        let mut error = DataFusionError::Shared(shared);
+        if with_context {
+            error = error.context("merging query results");
+        }
+
+        let error = Error::from(error);
+
+        assert!(
+            matches!(
+                &error,
+                Error::ResponseInterrupted {
+                    request_id,
+                    batches: 2,
+                    rows: 2048,
+                    table_version: Some(7),
+                    ..
+                } if request_id == "req-1"
+            ),
+            "{error:?}"
+        );
+        let source = std::error::Error::source(&error).unwrap();
+        assert_eq!(
+            source.downcast_ref::<std::io::Error>().map(|e| e.kind()),
+            Some(std::io::ErrorKind::ConnectionReset)
+        );
+        drop(held);
+    }
+
+    #[test]
+    fn other_shared_errors_keep_their_message() {
+        let shared = Arc::new(DataFusionError::Execution("boom".into()));
+        let _held = shared.clone();
+
+        let error = Error::from(DataFusionError::Shared(shared).context("merging"));
+
+        assert!(matches!(error, Error::External { .. }), "{error:?}");
+        assert_eq!(
+            error.to_string(),
+            "merging\ncaused by\nExecution error: boom"
+        );
     }
 
     #[cfg(feature = "remote")]

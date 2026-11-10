@@ -859,6 +859,13 @@ older server omits structured resource details. A structured `already_exists`
 response keeps its more specific `AlreadyExistsError` type. Both are subclasses
 of `HttpError`.
 
+A remote query whose streamed response stops partway raises
+`ResponseInterruptedError`, also a subclass of `HttpError`. It carries the number
+of batches and rows already returned and, when the server reports it, the table
+version the response reflected, so the query can be run again against that
+version. It is never retried automatically, because the batches already returned
+would be returned again.
+
 SQL response failures raise `SqlError`, retaining the numeric `grpc_code` and
 `request_id`. Servers that report a recognized `x-lancedb-error-code` select a
 specific input-error subclass. HTTP failures use the corresponding `HttpError`
@@ -925,6 +932,8 @@ generic HTTP/SQL exceptions with their transport status and current request ID.
 ::: lancedb.remote.errors.AlreadyExistsError
 
 ::: lancedb.remote.errors.ConflictError
+
+::: lancedb.remote.errors.ResponseInterruptedError
 
 ::: lancedb.exceptions.MissingValueError
 

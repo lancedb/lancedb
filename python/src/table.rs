@@ -2317,11 +2317,16 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (source_version=None, *, full=false))]
+    #[pyo3(signature = (source_version=None, *, full=false, cpu_millis=None, memory_bytes=None, gpu_count=None, gpu_class=None))]
+    #[allow(clippy::too_many_arguments)]
     pub fn refresh_materialized_view(
         self_: PyRef<'_, Self>,
         source_version: Option<u64>,
         full: bool,
+        cpu_millis: Option<u64>,
+        memory_bytes: Option<u64>,
+        gpu_count: Option<u32>,
+        gpu_class: Option<String>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
@@ -2329,6 +2334,18 @@ impl Table {
                 .await
                 .infer_error()?;
             let mut builder = view.refresh().full(full);
+            if let Some(value) = cpu_millis {
+                builder = builder.cpu_millis(value);
+            }
+            if let Some(value) = memory_bytes {
+                builder = builder.memory_bytes(value);
+            }
+            if let Some(value) = gpu_count {
+                builder = builder.gpu_count(value);
+            }
+            if let Some(value) = gpu_class {
+                builder = builder.gpu_class(value);
+            }
             if let Some(version) = source_version {
                 builder = builder.source_version(version);
             }
@@ -2337,11 +2354,16 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (source_version=None, *, full=false))]
+    #[pyo3(signature = (source_version=None, *, full=false, cpu_millis=None, memory_bytes=None, gpu_count=None, gpu_class=None))]
+    #[allow(clippy::too_many_arguments)]
     pub fn refresh_materialized_view_async(
         self_: PyRef<'_, Self>,
         source_version: Option<u64>,
         full: bool,
+        cpu_millis: Option<u64>,
+        memory_bytes: Option<u64>,
+        gpu_count: Option<u32>,
+        gpu_class: Option<String>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
@@ -2349,6 +2371,18 @@ impl Table {
                 .await
                 .infer_error()?;
             let mut builder = view.refresh().full(full);
+            if let Some(value) = cpu_millis {
+                builder = builder.cpu_millis(value);
+            }
+            if let Some(value) = memory_bytes {
+                builder = builder.memory_bytes(value);
+            }
+            if let Some(value) = gpu_count {
+                builder = builder.gpu_count(value);
+            }
+            if let Some(value) = gpu_class {
+                builder = builder.gpu_class(value);
+            }
             if let Some(version) = source_version {
                 builder = builder.source_version(version);
             }

@@ -14,7 +14,8 @@ A LanceDB extension with no DataFusion equivalent.
 <CodeGroup>
 ```sql SQL icon="database"
 REFRESH MATERIALIZED VIEW <name>
-  [WITH (full = <boolean>)]
+  [WITH (full = <boolean>, cpu_millis = <integer>, memory_bytes = <integer>,
+         gpu_count = <integer>, gpu_class = '<class>')]
 ```
 </CodeGroup>
 
@@ -35,6 +36,39 @@ incrementally when supported and rebuilds otherwise.
 regardless of what a local SDK's `refresh()` method accepts -- do not
 assume the two option sets match.
 </Note>
+
+## Resource budgets {#resources}
+
+Set budgets for one refresh execution:
+
+```sql
+REFRESH MATERIALIZED VIEW curated_training_set WITH (
+  cpu_millis = 8000,
+  memory_bytes = 17179869184,
+  gpu_count = 2,
+  gpu_class = 'h100'
+);
+```
+
+`cpu_millis` is CPU capacity in millicores (1000 = one core), not CPU time.
+`memory_bytes` caps memory in bytes. `gpu_count` caps concurrent GPUs for the
+refresh. These are aggregate caps across its SQL execution and Function
+processes; they are not multiplied by the number of Functions in the query.
+
+CPU or memory requires all three budget fields. CPU and memory must be positive;
+`gpu_count = 0` is allowed for CPU-only views. A GPU budget alone is also accepted.
+A cap does not reserve all of its GPUs or increase refresh parallelism. Current
+MV refreshes use at most one GPU, shared by their GPU Function calls.
+
+`gpu_class` selects an operator-configured class for this execution, leaving the
+Function registration and saved MV placement unchanged. Use `SHOW GPU CLASSES`
+to discover configured classes. Omitted budgets and class preserve defaults.
+Options can be combined with `full = true`.
+
+This requires an Enterprise server and an isolated execution backend that can
+enforce resource budgets. Unsupported backends reject constrained refreshes.
+Older servers reject the new options. Saved defaults and automatic refresh
+configuration are unchanged.
 
 ## Watching a refresh {#watching}
 
