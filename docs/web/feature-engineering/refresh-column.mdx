@@ -291,6 +291,8 @@ individual publication can differ from this value depending on completed work
 and Function batching; this is not an exact-N contract. Omit it to keep
 whole-fragment publication.
 
+The TypeScript SDK does not expose the publication threshold option yet.
+
 The job APIs also take the row filter and failure handling of the SQL
 `REFRESH COLUMN ... WHERE ... WITH (...)` form, so a refresh can be narrowed
 to new rows (see [what a filter recomputes](#partial)) and told to skip rows
