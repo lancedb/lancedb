@@ -40,7 +40,7 @@ In this example, we will be fetching movie information from the [Open Movie Data
 
 3. **Specify necessary credentials and/or embedding model details:**  
     
-    To fetch data from the OMDb API, you will need to pass a valid API key into your pipeline. Depending on whether you're using LanceDB OSS or LanceDB Enterprise, you also may need to provide the necessary credentials to connect to the LanceDB instance. These can be pasted inside `.dlt/secrets.toml`.
+    To fetch data from the OMDb API, you will need to pass a valid API key into your pipeline. Depending on whether you're using LanceDB Embedded or LanceDB Enterprise, you also may need to provide the necessary credentials to connect to the LanceDB instance. These can be pasted inside `.dlt/secrets.toml`.
 
     dlt's LanceDB integration also allows you to automatically embed the data during ingestion. Depending on the embedding model chosen, you may need to paste the necessary credentials inside `.dlt/secrets.toml`:
     ```toml
@@ -52,7 +52,7 @@ In this example, we will be fetching movie information from the [Open Movie Data
     embedding_model = "all-MiniLM-L6-v2"
     [destination.lancedb.credentials]
     uri = ".lancedb"
-    api_key = "api_key" # API key to connect to LanceDB Enterprise. Leave out if you are using LanceDB OSS.
+    api_key = "api_key" # API key to connect to LanceDB Enterprise. Leave out if you are using LanceDB Embedded.
     embedding_model_provider_api_key = "embedding_model_provider_api_key" # Not needed for providers that don't need authentication (ollama, sentence-transformers).
     ```
     See [here](https://dlthub.com/docs/dlt-ecosystem/destinations/lancedb#configure-the-destination) for more information and for a list of available models and model providers.  

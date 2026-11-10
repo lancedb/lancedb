@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Handles to SQL queries running on a remote database.
+//! Handles to SQL queries running on a LanceDB Distributed database.
 
 use std::{fmt, sync::Arc};
 
@@ -18,9 +18,9 @@ pub enum QueryStatus {
     Running,
     /// The server has made the complete result available.
     ///
-    /// A query submitted with parameters streams its rows on the call that
-    /// runs it, so it reports `Finished` only once its reader has received
-    /// the last batch. Read it rather than waiting for this status.
+    /// Directly streamed queries report `Finished` when their stream reaches
+    /// its end. Deferred queries report the server's execution state. Open the
+    /// reader directly instead of waiting for this status before reading.
     Finished,
     /// The server accepted cancellation but has not confirmed it yet.
     Cancelling,
@@ -64,9 +64,10 @@ pub(crate) trait QueryHandle: Send + Sync {
 /// A handle to a submitted SQL query.
 ///
 /// The handle can be inspected, opened as an Arrow reader, or cancelled.
-/// Dropping it does not cancel the server-side query, unless the query was
-/// submitted with parameters: those run on the call that returns their rows,
-/// so dropping the handle before reading, or dropping the reader, stops them.
+/// The server may stream results on the initial call or defer execution and
+/// return result tickets. Dropping an unread handle or its reader stops a
+/// directly streamed query; deferred execution continues until explicitly
+/// cancelled. This applies equally with and without parameters.
 /// Identifier lookup is scoped to the connection that submitted the query and
 /// is not a durable resume mechanism.
 pub struct Query {
@@ -95,10 +96,9 @@ impl Query {
 
     /// Get a point-in-time description of the query.
     ///
-    /// For a query submitted with parameters the status follows its result
-    /// stream: it stays [`QueryStatus::Running`] until the reader has received
-    /// every row, so open [`Self::reader`] directly instead of polling for
-    /// [`QueryStatus::Finished`] first.
+    /// Directly streamed queries stay [`QueryStatus::Running`] until the result
+    /// stream ends. Deferred queries expose the server's execution state. Open
+    /// [`Self::reader`] directly instead of waiting for [`QueryStatus::Finished`].
     pub async fn describe(&self) -> Result<QueryDescription> {
         self.handle.describe().await
     }

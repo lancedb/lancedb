@@ -69,11 +69,15 @@ class EmbeddingFunctionRegistry:
         def decorator(cls):
             if not issubclass(cls, EmbeddingFunction):
                 raise TypeError("Must be a subclass of EmbeddingFunction")
-            if cls.__name__ in self._functions:
-                raise KeyError(f"{cls.__name__} was already registered")
             key = alias or cls.__name__
+            if key in self._functions and (
+                not alias or self._functions[key] is not cls
+            ):
+                raise KeyError(f"{key} was already registered")
             self._functions[key] = cls
-            cls.__embedding_function_registry_alias__ = alias
+            # Store the name the class is registered under, so the table
+            # metadata written for it can be looked up again when reading.
+            cls.__embedding_function_registry_alias__ = key
             return cls
 
         return decorator
@@ -96,6 +100,25 @@ class EmbeddingFunctionRegistry:
             during registration
         """
         return self._functions[name]
+
+    def list_functions(self) -> list[str]:
+        """List the names of registered embedding functions.
+
+        Returns
+        -------
+        list[str]
+            Registered aliases, or class names for functions registered without
+            an alias, in registration order. Each name can be passed to
+            :meth:`get`. The returned list is a copy; changing it does not
+            change the registry.
+
+        Examples
+        --------
+        >>> registry = get_registry()
+        >>> "openai" in registry.list_functions()
+        True
+        """
+        return list(self._functions)
 
     def parse_functions(
         self, metadata: Optional[Dict[bytes, bytes]]

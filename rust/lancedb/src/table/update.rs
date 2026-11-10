@@ -94,9 +94,10 @@ pub(crate) async fn execute_update(
     // 1. Snapshot the current dataset
     let dataset = table.dataset.get().await?;
     crate::materialized_view::ensure_not_a_view(&table.name, &dataset.schema().metadata, "update")?;
-    super::computed_columns::ensure_no_function_bindings_for_mutation(
+    super::computed_columns::ensure_not_function_bound(
         &arrow_schema::Schema::from(dataset.schema()),
         "update",
+        update.columns.iter().map(|(name, _)| name.as_str()),
     )?;
     super::computed_columns::ensure_not_written(
         &arrow_schema::Schema::from(dataset.schema()),
@@ -444,5 +445,28 @@ mod tests {
         assert_eq!(1, tbl.count_rows(Some("i == 0".to_string())).await.unwrap());
         tbl.update().column("i", "i+1").execute().await.unwrap();
         assert_eq!(0, tbl.count_rows(Some("i == 0".to_string())).await.unwrap());
+    }
+
+    /// A Function binding protects only the columns it reads or writes; any
+    /// other column updates as on a plain table.
+    #[tokio::test]
+    async fn update_on_a_function_table_refuses_only_bound_columns() {
+        let table = crate::table::computed_columns::test_support::bound_table().await;
+        let result = table.update().column("spare", "7").execute().await.unwrap();
+        assert_eq!(result.rows_updated, 1);
+        for column in ["title", "search_text"] {
+            let err = table
+                .update()
+                .column(column, "'x'")
+                .execute()
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(&err, crate::Error::InvalidInput { message }
+                    if message.contains(&format!("update of '{column}'"))
+                        && message.contains("a Function binding reads or writes it")),
+                "{column}: {err:?}"
+            );
+        }
     }
 }

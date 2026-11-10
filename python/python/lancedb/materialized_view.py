@@ -2,7 +2,13 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 """Materialized views: tables defined by a query over a source table and
-maintained by refresh. See ``DBConnection.create_materialized_view``."""
+maintained by refresh. See ``DBConnection.create_materialized_view``.
+
+LanceDB Embedded creation and refresh require the ``experimental-functions``
+Cargo feature in a source build. Published packages disable it. Opening, reading,
+listing and dropping existing views and LanceDB Distributed operations remain
+available.
+"""
 
 from __future__ import annotations
 
@@ -179,31 +185,38 @@ class AsyncMaterializedView:
         return _definition_from_json(raw)
 
     async def refresh(
-        self, *, source_version: Optional[int] = None
+        self, *, full: bool = False, source_version: Optional[int] = None
     ) -> "RefreshMaterializedViewResult":
         """Recompute the view from its source.
 
-        Every refresh rebuilds the complete view. For local views,
-        ``source_version`` refreshes to that source version instead of the
-        latest; remote SQL refreshes do not support source-version pinning.
+        In LanceDB Distributed, ``full=True`` forces a rebuild; otherwise the
+        server chooses the refresh mode. LanceDB Embedded views always rebuild,
+        and ``source_version`` selects a source version instead of the latest.
+        LanceDB Distributed SQL refreshes do not support source-version pinning.
+
+        LanceDB Distributed results leave ``mode``, ``rows_written``, and
+        ``source_version`` as ``None`` because the SQL job adapter does not expose
+        these metrics.
         """
         return await self._table._inner.refresh_materialized_view(
-            source_version=source_version
+            source_version=source_version, full=full
         )
 
     async def refresh_async(
-        self, *, source_version: Optional[int] = None
+        self, *, full: bool = False, source_version: Optional[int] = None
     ) -> "AsyncJob[RefreshMaterializedViewResult]":
         """Submit a refresh and return its job without waiting.
 
-        The job may already be complete for a local view. Remote refreshes are
-        submitted through the SQL service.
+        The job may already be complete in LanceDB Embedded. In LanceDB
+        Distributed, refreshes are submitted through the SQL service. Options and
+        result metrics follow
+        [refresh][lancedb.materialized_view.AsyncMaterializedView.refresh].
         """
         from ._lancedb import RefreshMaterializedViewResult
 
         return _typed_job(
             await self._table._inner.refresh_materialized_view_async(
-                source_version=source_version
+                source_version=source_version, full=full
             ),
             RefreshMaterializedViewResult.from_json,
         )
@@ -235,18 +248,22 @@ class MaterializedView:
         return LOOP.run(self._async.definition())
 
     def refresh(
-        self, *, source_version: Optional[int] = None
+        self, *, full: bool = False, source_version: Optional[int] = None
     ) -> "RefreshMaterializedViewResult":
         """Recompute the view from its source. See
         [AsyncMaterializedView.refresh][lancedb.materialized_view.AsyncMaterializedView.refresh]."""
-        return LOOP.run(self._async.refresh(source_version=source_version))
+        return LOOP.run(self._async.refresh(full=full, source_version=source_version))
 
     def refresh_async(
-        self, *, source_version: Optional[int] = None
+        self, *, full: bool = False, source_version: Optional[int] = None
     ) -> "Job[RefreshMaterializedViewResult]":
         """Submit a refresh and return its job without waiting.
 
         See
         [AsyncMaterializedView.refresh_async][lancedb.materialized_view.AsyncMaterializedView.refresh_async].
         """
-        return Job(LOOP.run(self._async.refresh_async(source_version=source_version)))
+        return Job(
+            LOOP.run(
+                self._async.refresh_async(full=full, source_version=source_version)
+            )
+        )

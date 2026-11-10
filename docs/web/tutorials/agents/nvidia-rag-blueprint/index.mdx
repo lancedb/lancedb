@@ -6,7 +6,7 @@ description: "Use LanceDB as the retrieval layer for NVIDIA RAG Blueprint with a
 
 ## What this tutorial shows {#what-this-tutorial-shows}
 
-If you are using [NVIDIA RAG Blueprints](https://build.nvidia.com/blueprints) and want to evaluate LanceDB in that stack, this tutorial gives you a concrete starting point. It shows how to use LanceDB as the retrieval layer for a Docker-based NVIDIA RAG deployment with a small, script-driven reference integration where LanceDB OSS is embedded directly in the NVIDIA containers, the collection is prepared ahead of time, and the RAG server retrieves from it for search and generation. The example is intentionally retrieval-only, but it also includes hybrid search and reranker selection so you can see how LanceDB fits into a realistic NVIDIA retrieval workflow.
+If you are using [NVIDIA RAG Blueprints](https://build.nvidia.com/blueprints) and want to evaluate LanceDB in that stack, this tutorial gives you a concrete starting point. It shows how to use LanceDB as the retrieval layer for a Docker-based NVIDIA RAG deployment with a small, script-driven reference integration where LanceDB Embedded runs directly in the NVIDIA containers, the collection is prepared ahead of time, and the RAG server retrieves from it for search and generation. The example is intentionally retrieval-only, but it also includes hybrid search and reranker selection so you can see how LanceDB fits into a realistic NVIDIA retrieval workflow.
 
 <Tip>
 The runnable example for this tutorial lives in the
@@ -31,7 +31,7 @@ yet teach NVIDIA's ingestor how to write new documents into LanceDB automaticall
 
 ## Deployment model {#deployment-model}
 
-This reference integration uses **LanceDB OSS as an embedded retrieval library**, not as a separate
+This reference integration uses **LanceDB Embedded as an embedded retrieval library**, not as a separate
 database service. In practice, `APP_VECTORSTORE_NAME` is set to `lancedb`, `APP_VECTORSTORE_URL`
 points to a local filesystem path inside the NVIDIA containers, the LanceDB collection is prepared
 ahead of time, and the NVIDIA RAG server loads the LanceDB adapter to retrieve directly from that

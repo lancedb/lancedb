@@ -4,9 +4,10 @@ sidebarTitle: "Update"
 description: "UPDATE ... SET ... WHERE, and why it does not recompute derived columns."
 icon: pen
 keywords: ["update", "sql"]
+availability:
+  embedded: unavailable
+  enterprise: available
 ---
-
-<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 ```sql
 UPDATE documents SET title = upper(title) WHERE category = 'film'

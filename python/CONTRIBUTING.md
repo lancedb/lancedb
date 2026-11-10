@@ -48,6 +48,18 @@ Build the package
 make develop
 ```
 
+Local SQL computed columns and materialized-view creation/refresh are experimental
+and disabled in published packages. To opt in when building from this directory:
+
+```shell
+uv run --extra tests --extra dev maturin develop --features experimental-functions --extras tests,dev
+uv run --no-sync pytest python/tests -m experimental_functions
+```
+
+Rebuild without `--features experimental-functions` to test the default package.
+The tests detect the compiled feature; remote operations, metadata protections,
+and ordinary eager `add_columns` transforms remain available in both builds.
+
 Format:
 
 ```shell

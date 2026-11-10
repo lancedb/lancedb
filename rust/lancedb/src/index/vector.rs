@@ -362,6 +362,9 @@ impl IvfRqIndexBuilder {
     impl_distance_type_setter!();
     impl_ivf_params_setter!();
 
+    /// Set the number of bits used to encode each vector dimension.
+    ///
+    /// If unset, uses Lance's default (currently 5). Set to 1 for maximum compression.
     pub fn num_bits(mut self, num_bits: u32) -> Self {
         self.num_bits = Some(num_bits);
         self

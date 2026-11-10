@@ -17,8 +17,8 @@ use arrow::pyarrow::FromPyArrow;
 use arrow::pyarrow::IntoPyArrow;
 use arrow::pyarrow::ToPyArrow;
 use lancedb::index::scalar::{
-    BooleanQuery, BoostQuery, DocumentGranularity, FtsQuery, FullTextSearchQuery, MatchQuery,
-    MultiMatchQuery, Occur, Operator, PhraseQuery,
+    BooleanQuery, BoostQuery, CombinedFieldsQuery, DocumentGranularity, FtsQuery,
+    FullTextSearchQuery, MatchQuery, MultiMatchQuery, Occur, Operator, PhraseQuery,
 };
 use lancedb::query::AnalyzePlanDistributedMetrics;
 use lancedb::query::QueryBase;
@@ -103,7 +103,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for PyLanceDB<FtsQuery> {
             }
             "PhraseQuery" => {
                 let query = ob.getattr("query")?.extract()?;
-                let column = ob.getattr("column")?.extract()?;
+                let column = ob.getattr("column")?.extract::<Option<String>>()?;
                 let slop = ob.getattr("slop")?.extract()?;
                 let document_granularity = ob
                     .getattr("document_granularity")?
@@ -114,9 +114,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for PyLanceDB<FtsQuery> {
                     })
                     .transpose()?;
 
-                let mut query = PhraseQuery::new(query)
-                    .with_column(Some(column))
-                    .with_slop(slop);
+                let mut query = PhraseQuery::new(query).with_column(column).with_slop(slop);
                 if let Some(document_granularity) = document_granularity {
                     query = query.with_document_granularity(document_granularity);
                 }
@@ -137,6 +135,26 @@ impl<'a, 'py> FromPyObject<'a, 'py> for PyLanceDB<FtsQuery> {
                 let operator: String = ob.getattr("operator")?.extract()?;
 
                 let q = MultiMatchQuery::try_new(query, columns)
+                    .map_err(|e| PyValueError::new_err(format!("Invalid query: {}", e)))?;
+                let q = if let Some(boosts) = boosts {
+                    q.try_with_boosts(boosts)
+                        .map_err(|e| PyValueError::new_err(format!("Invalid boosts: {}", e)))?
+                } else {
+                    q
+                };
+
+                let op = Operator::try_from(operator.as_str())
+                    .map_err(|e| PyValueError::new_err(format!("Invalid operator: {}", e)))?;
+
+                Ok(Self(q.with_operator(op).into()))
+            }
+            "CombinedFieldsQuery" => {
+                let query = ob.getattr("query")?.extract()?;
+                let columns = ob.getattr("columns")?.extract()?;
+                let boosts: Option<Vec<f32>> = ob.getattr("boosts")?.extract()?;
+                let operator: String = ob.getattr("operator")?.extract()?;
+
+                let q = CombinedFieldsQuery::try_new(query, columns)
                     .map_err(|e| PyValueError::new_err(format!("Invalid query: {}", e)))?;
                 let q = if let Some(boosts) = boosts {
                     q.try_with_boosts(boosts)
@@ -180,9 +198,6 @@ impl<'py> IntoPyObject<'py> for PyLanceDB<FtsQuery> {
             .expect("Failed to import namespace");
 
         match self.0 {
-            FtsQuery::CombinedFields(_) => Err(PyValueError::new_err(
-                "Combined-fields FTS queries are not yet supported in Python",
-            )),
             FtsQuery::Match(query) => {
                 let kwargs = PyDict::new(py);
                 kwargs.set_item("boost", query.boost)?;
@@ -213,7 +228,7 @@ impl<'py> IntoPyObject<'py> for PyLanceDB<FtsQuery> {
                 }
                 namespace
                     .getattr(intern!(py, "PhraseQuery"))?
-                    .call((query.terms, query.column.unwrap()), Some(&kwargs))
+                    .call((query.terms, query.column), Some(&kwargs))
             }
             FtsQuery::Boost(query) => {
                 let positive = Self(query.positive.as_ref().clone()).into_pyobject(py)?;
@@ -237,6 +252,18 @@ impl<'py> IntoPyObject<'py> for PyLanceDB<FtsQuery> {
                 namespace
                     .getattr(intern!(py, "MultiMatchQuery"))?
                     .call((first.terms.clone(), columns), Some(&kwargs))
+            }
+            FtsQuery::CombinedFields(query) => {
+                let (columns, boosts): (Vec<_>, Vec<_>) = query
+                    .weighted_columns()
+                    .map(|(column, boost)| (column.to_string(), boost))
+                    .unzip();
+                let kwargs = PyDict::new(py);
+                kwargs.set_item("boosts", boosts)?;
+                kwargs.set_item::<_, &str>("operator", query.operator().into())?;
+                namespace
+                    .getattr(intern!(py, "CombinedFieldsQuery"))?
+                    .call((query.terms(), columns), Some(&kwargs))
             }
             FtsQuery::Boolean(query) => {
                 let mut queries: Vec<(&str, Bound<'py, PyAny>)> = Vec::with_capacity(
@@ -379,7 +406,7 @@ impl From<AnyQuery> for PyQueryRequest {
                 refine_factor: None,
                 distance_type: None,
                 bypass_vector_index: None,
-                postfilter: None,
+                postfilter: (!query_request.prefilter).then_some(true),
                 norm: None,
                 order_by: query_request
                     .order_by

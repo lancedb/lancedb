@@ -122,6 +122,10 @@ jobs:
         run: |
           pip install --extra-index-url https://pypi.fury.io/lance-format/ --extra-index-url https://pypi.fury.io/lancedb/ -e .[tests,dev,embeddings]
           pip install mlx
+      - name: Test remote torch data loader
+        run: |
+          python -c "import torch"
+          pytest python/tests/test_torch.py::test_remote_permutation_dataloader_multiprocessing -q -rs
       - name: Doctest
         run: pytest --doctest-modules python/lancedb
   linux:
@@ -162,7 +166,10 @@ jobs:
       - name: Delete wheels
         run: rm -rf target/wheels
   platform:
-    name: "Mac"
+    name: "Mac: ${{ matrix.features }}"
+    strategy:
+      matrix:
+        features: ["default", "experimental-functions"]
     timeout-minutes: 30
     runs-on: macos-14
     defaults:
@@ -188,7 +195,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: ./.github/workflows/build_mac_wheel
         with:
-          args: --profile ci
+          args: --profile ci --features ${{ matrix.features }}
       - uses: ./.github/workflows/run_tests
       # Make sure wheels are not included in the Rust cache
       - name: Delete wheels

@@ -64,13 +64,13 @@ The branch experiments leave you with the results side by side, and they
 deliberately never touch `main`. Once you've picked a winner, apply it to
 `main` yourself by rerunning that experiment's validated transformation
 directly against the `main` table. Rerunning the reviewed operation is the
-reliable path on both OSS and Enterprise: it replays exactly the transformation
+reliable path on both LanceDB Embedded and LanceDB Enterprise: it replays exactly the transformation
 you validated on the branch, and it works the same regardless of how the branch
 evolved.
 
 Suppose `nomic-embed-text` wins. Rerun the same Nomic embedding transformation
 you validated on `embed-nomic` against `main` in batches, then call
-`table.optimize()` on OSS. Verify a bounded vector search on `main`, and keep
+`table.optimize()` on LanceDB Embedded. Verify a bounded vector search on `main`, and keep
 the losing branch around until you're confident in the result.
 
 See [Branches](/tables/branching) for more on how branches, versions, and tags
@@ -96,5 +96,5 @@ branch that's isolated from `main` until you decide you want the new derived
 column in `main`.
 
 Once you've chosen a winner, rerun that validated transformation to ingest it into `main`
-yourself, on either LanceDB OSS or Enterprise. See our documentation on [branches](/tables/branching)
+yourself, on either LanceDB Embedded or LanceDB Enterprise. See our documentation on [branches](/tables/branching)
 for more information.

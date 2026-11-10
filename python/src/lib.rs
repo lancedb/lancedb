@@ -132,6 +132,10 @@ pub fn _lancedb(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(expr_lit, m)?)?;
     m.add_function(wrap_pyfunction!(expr_func, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    m.add(
+        "_experimental_functions_enabled",
+        cfg!(feature = "experimental-functions"),
+    )?;
     // Give the shared runtime a coordinated, bounded shutdown at normal
     // process exit -- see `shutdown_runtime` and `runtime::shutdown` for why.
     py.import("atexit")?

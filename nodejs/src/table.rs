@@ -470,11 +470,12 @@ impl Table {
     pub async fn refresh_materialized_view(
         &self,
         source_version: Option<i64>,
+        full: Option<bool>,
     ) -> napi::Result<RefreshMaterializedViewResult> {
         let view = lancedb::MaterializedView::from_table(self.inner_ref()?.clone())
             .await
             .default_error()?;
-        let mut builder = view.refresh();
+        let mut builder = view.refresh().full(full.unwrap_or(false));
         if let Some(version) = source_version {
             let version = u64::try_from(version).map_err(|_| {
                 napi::Error::from_reason("sourceVersion must be a non-negative integer")
@@ -830,7 +831,7 @@ impl Table {
         self.inner_ref()?
             .as_native()
             .ok_or_else(|| lancedb::Error::NotSupported {
-                message: "uses_v2_manifest_paths is not supported for remote tables.".into(),
+                message: "uses_v2_manifest_paths is not supported in LanceDB Distributed.".into(),
             })
             .default_error()?
             .uses_v2_manifest_paths()
@@ -843,7 +844,8 @@ impl Table {
         self.inner_ref()?
             .as_native()
             .ok_or_else(|| lancedb::Error::NotSupported {
-                message: "migrate_manifest_paths_v2 is not supported for remote tables.".into(),
+                message: "migrate_manifest_paths_v2 is not supported in LanceDB Distributed."
+                    .into(),
             })
             .default_error()?
             .migrate_manifest_paths_v2()
@@ -866,40 +868,40 @@ pub struct IndexConfig {
     pub columns: Vec<String>,
     /// The UUID of the first segment of the index.
     ///
-    /// `undefined` for remote tables, which do not yet surface this.
+    /// `undefined` in LanceDB Distributed, which does not yet surface this.
     pub index_uuid: Option<String>,
     /// The protobuf type URL, a precise type identifier for the index.
     ///
-    /// `undefined` for remote tables.
+    /// `undefined` in LanceDB Distributed.
     pub type_url: Option<String>,
     /// When the index was created.
     ///
-    /// `undefined` for remote tables or indices created before timestamps were tracked.
+    /// `undefined` in LanceDB Distributed or indices created before timestamps were tracked.
     pub created_at: Option<DateTime<Utc>>,
     /// The number of rows indexed, across all segments.
     ///
-    /// `undefined` for remote tables.
+    /// May be `undefined` in LanceDB Distributed if the server does not report it.
     pub num_indexed_rows: Option<i64>,
     /// The number of rows not yet covered by this index.
     ///
-    /// `undefined` for remote tables.
+    /// May be `undefined` in LanceDB Distributed if the server does not report it.
     pub num_unindexed_rows: Option<i64>,
     /// The total size in bytes of all index files across all segments.
     ///
-    /// `undefined` for remote tables or indices without size tracking.
+    /// `undefined` in LanceDB Distributed or indices without size tracking.
     pub size_bytes: Option<i64>,
     /// The number of segments that make up the index.
     ///
-    /// `undefined` for remote tables.
+    /// `undefined` in LanceDB Distributed.
     pub num_segments: Option<i32>,
     /// The on-disk index format version.
     ///
-    /// `undefined` for remote tables.
+    /// `undefined` in LanceDB Distributed.
     pub index_version: Option<i32>,
     /// Index-type-specific details parsed as a JavaScript object.
     ///
-    /// Falls back to a raw string if JSON parsing fails. `undefined` for
-    /// remote tables or when details are unavailable.
+    /// Falls back to a raw string if JSON parsing fails. `undefined` in
+    /// LanceDB Distributed or when details are unavailable.
     pub index_details: Option<serde_json::Value>,
 }
 
@@ -1615,22 +1617,24 @@ impl From<lancedb::function::FunctionErrors> for FunctionErrors {
 
 #[napi(object)]
 pub struct RefreshMaterializedViewResult {
-    /// How the view was brought up to date: "rebuild".
-    pub mode: String,
-    pub rows_written: i64,
-    pub source_version: i64,
+    /// How the view was brought up to date: "rebuild", or absent for LanceDB Distributed SQL refreshes.
+    pub mode: Option<String>,
+    /// Rows written by this refresh, or absent for LanceDB Distributed SQL refreshes.
+    pub rows_written: Option<i64>,
+    /// Source version refreshed to, or absent for LanceDB Distributed SQL refreshes.
+    pub source_version: Option<i64>,
     pub version: i64,
 }
 
 impl From<lancedb::RefreshMaterializedViewResult> for RefreshMaterializedViewResult {
     fn from(value: lancedb::RefreshMaterializedViewResult) -> Self {
-        let mode = match value.mode {
+        let mode = value.mode.map(|mode| match mode {
             lancedb::RefreshMode::Rebuild => "rebuild",
-        };
+        });
         Self {
-            mode: mode.to_string(),
-            rows_written: value.rows_written as i64,
-            source_version: value.source_version as i64,
+            mode: mode.map(str::to_string),
+            rows_written: value.rows_written.map(|rows| rows as i64),
+            source_version: value.source_version.map(|version| version as i64),
             version: value.version as i64,
         }
     }

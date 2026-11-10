@@ -69,6 +69,10 @@ abstract addColumns(newColumnTransforms): Promise<AddColumnsResult>
 
 Add new columns with defined values.
 
+LanceDB Embedded computed-column declaration and refresh require a source
+build with the `experimental-functions` Cargo feature. Published packages
+disable it; LanceDB Distributed operations remain available.
+
 The `{ computed }` form stores the expression rather than evaluating it
 now: the column is committed with no values, and rows get them from
 [Table#refreshColumn](Table.md#refreshcolumn). Declaring one therefore costs the same on a
@@ -79,7 +83,7 @@ computed, so a mutated input is reflected by the next refresh. While a
 declaration reads a column, that column cannot be renamed, retyped or
 dropped.
 
-On LanceDB Cloud and Enterprise the expression is planned by the
+In LanceDB Distributed the expression is planned by the
 server, and the refresh runs as a server job -- see
 [Table#refreshColumnAsync](Table.md#refreshcolumnasync).
 
@@ -382,6 +386,13 @@ await table.createIndex("vector", {
 ```
 
 ```ts
+// Or size the partitions by row count instead of choosing how many.
+await table.createIndex("vector", {
+  config: lancedb.Index.ivfPq({ targetPartitionSize: 4096 }),
+});
+```
+
+```ts
 // Or create a Scalar index
 await table.createIndex("my_float_col");
 ```
@@ -675,7 +686,7 @@ The per-row errors Function refreshes recorded on this table.
 A refresh running under a skip policy records each row it skipped with
 the input that failed and the error. This lists those records, newest
 job first, plus a summary for any fragment whose per-row detail was
-capped. LanceDB Cloud and Enterprise only; reading errors needs read
+capped. LanceDB Distributed only; reading errors needs read
 access to the table, since a message carries the value that failed.
 
 #### Parameters
@@ -928,7 +939,7 @@ Prewarm one or more columns of data in the table.
     Prewarming is generally useful for columns used in filters or projections.
     Large columns (e.g. high-dimensional vectors or binary data) may not be
     practical to prewarm.
-    This feature is currently only supported on remote tables.
+    This feature is currently only supported in LanceDB Distributed.
 
 #### Returns
 
@@ -1035,11 +1046,12 @@ abstract refreshColumn(column): Promise<RefreshColumnResult>
 ```
 
 Fill the rows of a computed column that hold no value yet.
+Local refresh requires a source build with `experimental-functions`.
 
 Rows appended since the last refresh are filled by the next one, and
 rows whose inputs changed since they were computed are recomputed;
-everything else is left as it is. Local tables only: a remote refresh
-runs as a server job, through [Table#refreshColumnAsync](Table.md#refreshcolumnasync).
+everything else is left as it is. LanceDB Embedded only: in LanceDB
+Distributed a refresh runs as a server job, through [Table#refreshColumnAsync](Table.md#refreshcolumnasync).
 
 #### Parameters
 
@@ -1063,12 +1075,15 @@ abstract refreshColumnAsync(column): Promise<Job>
 
 Like [Table#refreshColumn](Table.md#refreshcolumn), but returns a handle to the refresh
 job instead of blocking until it completes.
+LanceDB Embedded refresh requires a source build with
+`experimental-functions`. LanceDB Distributed jobs do not require this
+feature.
 
 The job may already be complete when returned; callers must not assume
 the column is filled until [Job.wait](Job.md#wait) resolves. Invalid input --
 an unknown column, or one that is not computed -- rejects here rather
-than failing the job. On local tables the job runs in-process; on
-LanceDB Cloud and Enterprise it is the server's backfill job.
+than failing the job. In LanceDB Embedded the job runs in-process; in
+LanceDB Distributed it is the server's backfill job.
 
 #### Parameters
 
@@ -1297,8 +1312,12 @@ Tokenize a full-text search query using the tokenizer configured on an FTS index
 Specify exactly one of `column` or `indexName`.
 
 Model-backed tokenizers such as `jieba/*` and `lindera/*` are rebuilt in
-the client process from index metadata. For remote tables, this means the
-same tokenizer model files must also exist locally.
+the client process from index metadata. In LanceDB Distributed, this means the
+same tokenizer model files must also exist locally (under
+`LANCE_LANGUAGE_MODEL_HOME`) and must match the files the server uses. A
+mismatch cannot be detected: the returned tokens may differ from what the
+server's index produces. If the model files are missing, an error naming
+the tokenizer is raised.
 
 #### Parameters
 
@@ -1423,8 +1442,6 @@ used when appropriate:
 - `lancedb:description`: for a human-readable description of a field.
 - `lancedb:tag:<name>`: for a user-defined key-value tag, where the suffix
   names the tag category; e.g. `lancedb:tag:model: "clip"`.
-- `lancedb:logical-column`: for a column grouping; e.g. `feature_v1` and
-  `feature_v2` might be in the same logical column.
 - `lancedb:status`: for status options (`production`, `candidate`,
   `deprecated`, `archived`) to designate the current life cycle state of
   this column.

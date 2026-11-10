@@ -2,6 +2,10 @@
 
 export const PyFunctionApply = "from lancedb import col\n\ntable.add_columns({\"doubled\": version(value=col(\"value\"))})\n";
 
+export const PyFunctionClassApply = "from lancedb import col\n\napplication = embedder(text=col(\"text\"), model=\"all-mpnet-base-v2\")\n";
+
+export const PyFunctionClassDefine = "@udf(pip=[\"sentence-transformers\"])\nclass embed:\n    def __init__(self, model: str = \"all-MiniLM-L6-v2\"):\n        # Runs on the worker, once per instance: only the worker needs the package.\n        from sentence_transformers import SentenceTransformer\n\n        self.model = SentenceTransformer(model)\n\n    def __call__(self, text: str) -> list[float]:\n        return self.model.encode(text).tolist()\n\n    def close(self):\n        del self.model\n";
+
 export const PyFunctionConnect = "import os\n\nimport lancedb\n\ndb = lancedb.connect(\n    uri=os.environ[\"LANCEDB_URI\"],  # db://your-database\n    api_key=os.environ[\"LANCEDB_API_KEY\"],\n    region=os.environ.get(\"LANCEDB_REGION\", \"us-east-1\"),\n    host_override=os.environ[\"LANCEDB_HOST_OVERRIDE\"],\n)\n";
 
 export const PyFunctionCreateTable = "import pyarrow as pa\n\nschema = pa.schema([pa.field(\"value\", pa.float64(), nullable=False)])\ntable = db.create_table(\n    \"function_demo\",\n    [{\"value\": 1.0}, {\"value\": 2.0}, {\"value\": 3.0}],\n    schema=schema,\n)\n";

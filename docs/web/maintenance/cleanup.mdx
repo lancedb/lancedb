@@ -5,10 +5,8 @@ description: "Pruning old versions and the files only they referenced."
 icon: broom
 keywords: ["cleanup", "retention", "prune", "delete_unverified", "vacuum"]
 availability:
-  oss: available
+  embedded: available
   enterprise: available
-  summary: >-
-    Both offerings support cleanup. Embedded `optimize()` uses a retention window of 7 days by default; Enterprise uses configured background cleanup and retention, and does not support `optimize()`.
 ---
 
 Every write keeps the version before it, which is what makes
@@ -18,7 +16,7 @@ those versions referenced.
 
 <Note>
 **Enterprise job type:** `cleanup`. Distinct from `compact`: compaction
-merges files, cleanup removes them. `optimize()` in OSS runs both in one call;
+merges files, cleanup removes them. `optimize()` in LanceDB Embedded runs both in one call;
 Enterprise schedules them as separate jobs, and runs cleanup only when the
 deployment's configuration enables it.
 </Note>
@@ -89,8 +87,9 @@ directly can corrupt current or historical snapshots. Upgrade all clients and
 maintenance workers to a version that understands Managed blobs before using
 them, and reopen handles created before that upgrade.
 
-For local tables, `optimize()` performs compaction and cleanup. Enterprise runs
-these as background jobs; the remote Python table does not support `optimize()`.
+For LanceDB Embedded tables, `optimize()` performs compaction and cleanup.
+Enterprise runs these as background jobs; Python tables connected to Enterprise
+do not support `optimize()`.
 See [Background jobs](/maintenance/background-jobs) for the Enterprise path.
 
 ## Disk usage does not drop immediately {#disk}

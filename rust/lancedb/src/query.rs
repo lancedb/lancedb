@@ -444,8 +444,8 @@ pub trait QueryBase {
     /// # }
     /// ```
     ///
-    /// Note: Expression filters are not supported for remote/server-side queries.
-    /// Use [`QueryBase::only_if`] with SQL strings for remote tables.
+    /// Note: Expression filters are not supported for LanceDB Distributed queries.
+    /// Use [`QueryBase::only_if`] with SQL strings in LanceDB Distributed.
     ///
     /// Calling this multiple times combines the expressions with a logical AND
     /// rather than replacing the previous filter.
@@ -1025,7 +1025,7 @@ impl Query {
     /// By default, there is no embedding model, and the input should be
     /// vector/slice of floats.
     /// NaN and infinite components are rejected with [`Error::InvalidInput`]
-    /// after conversion to Float32, for both local and remote tables.
+    /// after conversion to Float32, in both LanceDB Embedded and LanceDB Distributed.
     ///
     /// If there is only one vector column (a column whose data type is a
     /// fixed size list of floats) then the column does not need to be specified.
@@ -1269,7 +1269,7 @@ impl VectorQuery {
     /// result.
     ///
     /// NaN and infinite components are rejected with [`Error::InvalidInput`]
-    /// after conversion to Float32, for both local and remote tables.
+    /// after conversion to Float32, in both LanceDB Embedded and LanceDB Distributed.
     pub fn add_query_vector(mut self, vector: impl IntoQueryVector) -> Result<Self> {
         self.request.add_query_vector(vector)?;
         Ok(self)
@@ -1862,6 +1862,16 @@ impl DisplayAs for TakeRestoreExec {
 }
 
 impl ExecutionPlan for TakeRestoreExec {
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(
+            &Arc<dyn datafusion_physical_expr::PhysicalExpr>,
+        ) -> datafusion_common::Result<
+            datafusion_common::tree_node::TreeNodeRecursion,
+        >,
+    ) -> datafusion_common::Result<datafusion_common::tree_node::TreeNodeRecursion> {
+        Ok(datafusion_common::tree_node::TreeNodeRecursion::Continue)
+    }
     fn name(&self) -> &str {
         "TakeRestoreExec"
     }
@@ -2711,6 +2721,159 @@ mod tests {
         while let Some(batch) = stream.next().await {
             // pre filter should return 10 rows
             assert_eq!(batch.expect("should be Ok").num_rows(), 10);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_limit_usize_max() {
+        let conn = connect("memory://foo").execute().await.unwrap();
+        let table = conn
+            .create_table("my_table", make_non_empty_batches())
+            .execute()
+            .await
+            .unwrap();
+        let expected = table.count_rows(None).await.unwrap();
+
+        let batches: Vec<RecordBatch> = table
+            .query()
+            .limit(usize::MAX)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+        let num_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(num_rows, expected);
+
+        let batches: Vec<RecordBatch> = table
+            .query()
+            .limit(usize::MAX)
+            .offset(1)
+            .nearest_to(&[0.1; 4])
+            .unwrap()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+        let num_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(num_rows, expected - 1);
+    }
+
+    #[tokio::test]
+    async fn test_indexed_vector_limit_usize_max() {
+        use crate::index::vector::IvfFlatIndexBuilder;
+
+        let conn = connect("memory://indexed_limit").execute().await.unwrap();
+        let table = conn
+            .create_table("vectors", make_non_empty_batches())
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(
+                &["vector"],
+                Index::IvfFlat(IvfFlatIndexBuilder::default().num_partitions(1)),
+            )
+            .execute()
+            .await
+            .unwrap();
+        let expected = table.count_rows(None).await.unwrap();
+
+        for limit in [expected, i64::MAX as usize, usize::MAX] {
+            for offset in [0, 1, usize::MAX] {
+                for (bypass, refine_factor) in [(false, None), (false, Some(2)), (true, None)] {
+                    let query = table
+                        .query()
+                        .limit(limit)
+                        .offset(offset)
+                        .nearest_to(&[0.1; 4])
+                        .unwrap();
+                    let query = if bypass {
+                        query.bypass_vector_index()
+                    } else {
+                        query
+                    };
+                    let query = if let Some(factor) = refine_factor {
+                        query.refine_factor(factor)
+                    } else {
+                        query
+                    };
+                    let batches: Vec<RecordBatch> =
+                        query.execute().await.unwrap().try_collect().await.unwrap();
+                    assert_eq!(
+                        batches.iter().map(RecordBatch::num_rows).sum::<usize>(),
+                        expected.saturating_sub(offset),
+                        "limit={limit}, offset={offset}, bypass={bypass}, refine={refine_factor:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_empty_vector_limit_usize_max() {
+        let conn = connect("memory://empty_limit").execute().await.unwrap();
+        let table = conn
+            .create_table("vectors", make_test_batches())
+            .execute()
+            .await
+            .unwrap();
+        let batches: Vec<RecordBatch> = table
+            .query()
+            .limit(usize::MAX)
+            .nearest_to(&[0.1; 128])
+            .unwrap()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_fts_limit_usize_max_with_offset() {
+        let conn = connect("memory://fts_limit").execute().await.unwrap();
+        let data = RecordBatch::try_from_iter([(
+            "text",
+            Arc::new(StringArray::from_iter_values((0..32).map(|_| "hello")))
+                as arrow_array::ArrayRef,
+        )])
+        .unwrap();
+        let table = conn
+            .create_table("documents", data)
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(&["text"], Index::FTS(Default::default()))
+            .execute()
+            .await
+            .unwrap();
+
+        for limit in [32, i64::MAX as usize, usize::MAX] {
+            for offset in [0, 1, i64::MAX as usize, usize::MAX] {
+                let batches: Vec<RecordBatch> = table
+                    .query()
+                    .full_text_search(FullTextSearchQuery::new("hello".into()))
+                    .limit(limit)
+                    .offset(offset)
+                    .execute()
+                    .await
+                    .unwrap()
+                    .try_collect()
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    batches.iter().map(RecordBatch::num_rows).sum::<usize>(),
+                    32usize.saturating_sub(offset),
+                    "limit={limit}, offset={offset}"
+                );
+            }
         }
     }
 

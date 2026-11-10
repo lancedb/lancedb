@@ -79,11 +79,15 @@ jobs:
       # that dir is missing, so create an empty one for lint-only runs.
       run: mkdir -p ../dist && pnpm install --frozen-lockfile && pnpm lint-ci
   linux:
-    name: Linux (NodeJS ${{ matrix.node-version }})
+    name: Linux (NodeJS ${{ matrix.node-version }}, ${{ matrix.features }})
     timeout-minutes: 30
     strategy:
       matrix:
         node-version: [ "22", "24", "26" ]
+        features: [ "default" ]
+        include:
+          - node-version: "24"
+            features: "experimental-functions"
     runs-on: "ubuntu-22.04"
     defaults:
       run:
@@ -121,7 +125,7 @@ jobs:
         pnpm install --frozen-lockfile
         # No `--` separator: pnpm forwards it literally, which would
         # make napi-rs treat `--profile ci` as a cargo passthrough arg.
-        pnpm build:debug --profile ci
+        pnpm build:debug --profile ci --features ${{ matrix.features }}
         pnpm tsc
     - name: Setup examples
       working-directory: nodejs/examples

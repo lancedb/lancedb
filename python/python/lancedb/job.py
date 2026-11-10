@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-"""Handles to operations a server may run asynchronously."""
+"""Handles to asynchronous registry jobs, SQL queries, and local operations."""
 
 import asyncio
 import json
@@ -44,12 +44,12 @@ class AsyncJob(Generic[T]):
 
     @property
     def id(self) -> Optional[str]:
-        """Identifies the operation on the server that is running it.
+        """The operation's opaque ID, interpreted according to :attr:`job_type`.
 
-        Returned for correlating with server logs or the jobs API. Operations
-        that run in this process have no server id and return `None`. The value
-        is opaque: parsing it or storing it to resume the job later is not
-        supported.
+        Registry jobs expose a registry job ID; SQL-backed jobs expose a
+        connection-scoped query ID as a string. Local operations return ``None``.
+        Query IDs cannot be used with registry job APIs or to resume after a
+        client restart.
         """
         return self._inner.id if self._inner is not None else None
 
@@ -94,9 +94,11 @@ class AsyncJob(Generic[T]):
         """Ask the backend for this job's current state, and for a server-side
         job its full record, then cache it for the properties below.
 
-        The properties are all `None` until this runs, because submitting an
-        operation returns only a job id. `status` fetches the whole record too;
-        `wait` records only the terminal state it establishes.
+        Registry details are `None` until this runs, because submitting an
+        operation does not fetch its full registry record. Query-backed jobs
+        expose only lifecycle state through this method. For registry jobs,
+        `status` fetches the whole record too; `wait` records only the terminal
+        state it establishes.
         """
         if self._inner is None:
             return
@@ -114,11 +116,13 @@ class AsyncJob(Generic[T]):
 
     @property
     def job_type(self) -> Optional[str]:
-        """The job's type, as the server names it.
+        """The job's kind of work, without contacting the backend.
 
-        `None` for an in-process job, which has no server-side record.
+        SQL-backed handles report ``"query"`` immediately. Registry handles
+        report the server's job type after :meth:`refresh` or :meth:`status`.
+        In-process handles return ``None``.
         """
-        return self._field("job_type")
+        return self._inner.job_type if self._inner is not None else None
 
     @property
     def creation_ms(self) -> Optional[int]:
@@ -294,7 +298,7 @@ class Job(Generic[T]):
     @property
     def job_type(self) -> Optional[str]:
         """The job's type. See :attr:`AsyncJob.job_type`."""
-        return self._field("job_type")
+        return self._inner.job_type if self._inner is not None else None
 
     @property
     def creation_ms(self) -> Optional[int]:

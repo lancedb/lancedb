@@ -130,9 +130,15 @@ class AsyncCatalog:
             self._inner.list_databases(page_token=page_token, page_limit=page_limit)
         )
 
-    async def drop_database(self, name: str, *, ignore_missing: bool = False) -> None:
-        """Drop an empty database. A nonempty database is an error."""
-        await self._inner.drop_database(name, ignore_missing=ignore_missing)
+    async def drop_database(
+        self, name: str, *, ignore_missing: bool = False, cascade: bool = False
+    ) -> None:
+        """Drop a database. A nonempty database is an error unless ``cascade`` is set,
+        which drops everything in it first; the name stays taken until the server
+        finishes cleaning up their storage."""
+        await self._inner.drop_database(
+            name, ignore_missing=ignore_missing, cascade=cascade
+        )
 
 
 class Catalog:
@@ -207,9 +213,17 @@ class Catalog:
             self._inner.list_databases(page_token=page_token, page_limit=page_limit)
         )
 
-    def drop_database(self, name: str, *, ignore_missing: bool = False) -> None:
-        """Drop an empty database. A nonempty database is an error."""
-        LOOP.run(self._inner.drop_database(name, ignore_missing=ignore_missing))
+    def drop_database(
+        self, name: str, *, ignore_missing: bool = False, cascade: bool = False
+    ) -> None:
+        """Drop a database. A nonempty database is an error unless ``cascade`` is set,
+        which drops everything in it first; the name stays taken until the server
+        finishes cleaning up their storage."""
+        LOOP.run(
+            self._inner.drop_database(
+                name, ignore_missing=ignore_missing, cascade=cascade
+            )
+        )
 
 
 async def connect_catalog_async(

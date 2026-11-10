@@ -364,6 +364,8 @@ async def test_create_vector_index(some_table: AsyncTable):
     assert indices[0].columns == ["vector"]
     assert indices[0].name == "vector_idx"
 
+    await some_table.prewarm_index(indices[0].name)
+
     stats = await some_table.index_stats("vector_idx")
     assert stats.index_type == "IVF_PQ"
     assert stats.distance_type == "l2"
@@ -421,13 +423,45 @@ async def test_create_4bit_ivfpq_index(some_table: AsyncTable):
 
 
 @pytest.mark.asyncio
-async def test_create_ivfrq_index(some_table: AsyncTable):
-    await some_table.create_index("vector", config=IvfRq(num_bits=1))
+@pytest.mark.parametrize(
+    "config, expected_bits",
+    [
+        pytest.param(IvfRq(), 5, id="default"),
+        pytest.param(IvfRq(num_bits=None), 5, id="none"),
+        pytest.param(IvfRq(num_bits=1), 1, id="one-bit"),
+        pytest.param(IvfRq(num_bits=4), 4, id="multi-bit"),
+    ],
+)
+async def test_create_ivfrq_index(some_table: AsyncTable, config, expected_bits):
+    await some_table.create_index("vector", config=config)
     indices = await some_table.list_indices()
     assert len(indices) == 1
     assert indices[0].index_type == "IvfRq"
     assert indices[0].columns == ["vector"]
     assert indices[0].name == "vector_idx"
+    assert indices[0].index_details["compression"]["num_bits"] == expected_bits
+
+
+@pytest.mark.asyncio
+async def test_read_ivfrq_index_created_with_lance(db_async, some_table: AsyncTable):
+    pytest.importorskip("lance")
+    dataset = await some_table.to_lance()
+    dataset.create_index(
+        "vector",
+        index_type="IVF_RQ",
+        metric="cosine",
+        num_partitions=1,
+    )
+
+    # Open a fresh LanceDB handle so the index is discovered from disk.
+    table = await db_async.open_table("some_table")
+    indices = await table.list_indices()
+    assert len(indices) == 1
+    assert indices[0].index_type == "IvfRq"
+    assert indices[0].columns == ["vector"]
+
+    results = await table.query().nearest_to(list(range(DIM))).limit(8).to_arrow()
+    assert len(results) == 8
 
 
 @pytest.mark.asyncio

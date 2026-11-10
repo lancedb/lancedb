@@ -124,10 +124,17 @@ impl Catalog {
             .default_error()
     }
     #[napi]
-    pub async fn drop_database(&self, name: String, ignore_missing: Option<bool>) -> Result<()> {
+    pub async fn drop_database(
+        &self,
+        name: String,
+        ignore_missing: Option<bool>,
+        cascade: Option<bool>,
+    ) -> Result<()> {
         self.inner
             .drop_database(
-                DropDatabaseRequest::new(name).ignore_missing(ignore_missing.unwrap_or(false)),
+                DropDatabaseRequest::new(name)
+                    .ignore_missing(ignore_missing.unwrap_or(false))
+                    .cascade(cascade.unwrap_or(false)),
             )
             .await
             .default_error()

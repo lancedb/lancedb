@@ -25,6 +25,10 @@ pub struct TimeoutConfig {
     /// The timeout for reading data from the server in seconds. Default is 300
     /// seconds (5 minutes). This can also be set via the environment variable
     /// `LANCE_CLIENT_READ_TIMEOUT`, as an integer number of seconds.
+    ///
+    /// This also applies while waiting for response headers during an upload.
+    /// A large or slowly produced request body (for example, when creating a
+    /// table) may need a longer timeout even if data is still being uploaded.
     pub read_timeout: Option<f64>,
     /// The timeout for keeping idle connections in the connection pool in seconds.
     /// Default is 300 seconds (5 minutes). This can also be set via the
@@ -65,7 +69,7 @@ pub struct RetryConfig {
     /// `LANCE_CLIENT_RETRY_BACKOFF_JITTER`.
     pub backoff_jitter: Option<f64>,
     /// The HTTP status codes for which to retry the request. Default is
-    /// [429, 500, 502, 503].
+    /// [409, 429, 500, 502, 503, 504].
     ///
     /// You can also set this via the environment variable
     /// `LANCE_CLIENT_RETRY_STATUSES`. Use a comma-separated list of integers.
@@ -104,7 +108,7 @@ pub struct ClientConfig {
     pub tls_config: Option<TlsConfig>,
     /// User identifier for tracking purposes.
     ///
-    /// This is sent as the `x-lancedb-user-id` header in requests to LanceDB Cloud/Enterprise.
+    /// This is sent as the `x-lancedb-user-id` header in requests to LanceDB Enterprise.
     /// It can be set directly, or via the `LANCEDB_USER_ID` environment variable.
     /// Alternatively, set `LANCEDB_USER_ID_ENV_KEY` to specify another environment
     /// variable that contains the user ID value.

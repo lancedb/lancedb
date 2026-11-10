@@ -10,6 +10,9 @@ Generate embeddings via the [ollama](https://github.com/ollama/ollama-python) py
 - [Ollama docs on embeddings](https://github.com/ollama/ollama/blob/main/docs/api.md#generate-embeddings)
 - [Ollama blog on embeddings](https://ollama.com/blog/embedding-models)
 
+For direct calls, `compute_source_embeddings` accepts a list of strings or a
+one-dimensional NumPy string array. Both inputs are sent to Ollama in one batch.
+
 | Parameter              | Type                       | Default Value            | Description                                                                                                                                    |
 |------------------------|----------------------------|--------------------------|------------------------------------------------------------------------------------------------------------------------------------------------|
 | `name`                 | `str`                      | `nomic-embed-text`       | The name of the model.                                                                                                                         |

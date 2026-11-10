@@ -1,0 +1,28 @@
+extends: existence
+message: "Avoid '%s'. OSS is not a product name: write 'LanceDB Embedded', or 'open source' as a property."
+link: https://github.com/lancedb/docs/blob/main/STYLE.md#names
+level: warning
+ignorecase: false
+# Bare OSS used as a product, as in "OSS and Enterprise" or "in OSS". "LanceDB
+# OSS" is reported by LanceDB.EmbeddedName.
+tokens:
+  - 'OSS(?:\s+(?:and|or|vs\.?|versus)\s+|\s*/\s*)(?:LanceDB\s+)?Enterprise'
+  - 'Enterprise(?:\s+(?:and|or|vs\.?|versus)\s+|\s*/\s*)OSS'
+  - '(?:in|on|from|using|than)\s+OSS'
+tests:
+  - name: flags OSS presented as a product
+    input: Compare OSS vs Enterprise. It works in OSS and on OSS, unlike OSS/Enterprise.
+    want: |
+      1:9:LanceDB.OSSProduct:Avoid 'OSS vs Enterprise'. OSS is not a product name: write 'LanceDB Embedded', or 'open source' as a property.
+      1:37:LanceDB.OSSProduct:Avoid 'in OSS'. OSS is not a product name: write 'LanceDB Embedded', or 'open source' as a property.
+      1:48:LanceDB.OSSProduct:Avoid 'on OSS'. OSS is not a product name: write 'LanceDB Embedded', or 'open source' as a property.
+      1:63:LanceDB.OSSProduct:Avoid 'OSS/Enterprise'. OSS is not a product name: write 'LanceDB Embedded', or 'open source' as a property.
+  - name: flags the pair in either order
+    input: Both OSS and LanceDB Enterprise ship it, as do Enterprise or OSS.
+    want: |
+      1:6:LanceDB.OSSProduct:Avoid 'OSS and LanceDB Enterprise'. OSS is not a product name: write 'LanceDB Embedded', or 'open source' as a property.
+      1:48:LanceDB.OSSProduct:Avoid 'Enterprise or OSS'. OSS is not a product name: write 'LanceDB Embedded', or 'open source' as a property.
+  - name: leaves open source, identifiers and code alone
+    input: |
+      LanceDB Embedded (open source) and LanceDB Enterprise share the format. Set `oss: available` or read `in OSS` literally.
+    want: ''

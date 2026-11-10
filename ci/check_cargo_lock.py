@@ -1,4 +1,7 @@
-"""Fail if pruning Cargo.lock did more than remove packages and the edges to them.
+"""Fail if pruning Cargo.lock changes pins or adds dependency edges.
+
+Removing workspace members can disable optional dependency edges even when
+their target packages remain in use elsewhere in the packaged workspace.
 
 Usage: python ci/check_cargo_lock.py <lock-before> <lock-after>
 """
@@ -45,7 +48,7 @@ def main() -> None:
     for package, deps in edges_after.items():
         if package not in edges_before:
             errors.append(f"added or changed {package}")
-        elif deps != edges_before[package] - removed:
+        elif not deps <= edges_before[package]:
             errors.append(f"dependencies of {package[:2]} changed")
     if errors:
         sys.exit("error: the prune changed Cargo.lock:\n" + "\n".join(errors))
