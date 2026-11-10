@@ -3713,9 +3713,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     /// `target_rows_per_fragment`, `max_source_rows`, `io_buffer_size`, and
     /// `batch_size` are forwarded in the SQL `WITH` clause. Other non-default
     /// options are rejected before submission. Servers must support these
-    /// SQL options. Flight SQL capability metadata is checked before submission;
-    /// missing metadata retains one legacy SQL attempt. Recognized unsupported
-    /// optimize grammar errors become `NotSupported` with the server diagnostic.
+    /// SQL options. Recognized unsupported optimize grammar errors become
+    /// `NotSupported` with the server diagnostic after one SQL submission.
     /// No settings are removed and the operation is never resubmitted.
     async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats> {
         self.check_mutable().await?;
@@ -3760,13 +3759,6 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             message: "SQL is unavailable for this remote table client".to_string(),
         })?;
         let has_options = !compaction_options.is_empty();
-        sql_client
-            .optimize_capabilities(&self.namespace)
-            .await?
-            .check(has_options)
-            .map_err(|message| Error::NotSupported {
-                message: message.into(),
-            })?;
         let mut statement = format!("OPTIMIZE {} REWRITE DATA", quote_sql_identifier(&self.name));
         let mut sql_options = Vec::new();
         if let Some(branch) = &self.branch {
@@ -3783,10 +3775,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         sql_client
             .submit_as_job(statement, self.namespace.clone(), || async { Ok(()) })
             .await
-            .map_err(|error| optimize::map_legacy_optimize_error(error, has_options))?
+            .map_err(|error| optimize::map_optimize_error(error, has_options))?
             .wait()
             .await
-            .map_err(|error| optimize::map_legacy_optimize_error(error, has_options))?;
+            .map_err(|error| optimize::map_optimize_error(error, has_options))?;
         Ok(OptimizeStats {
             compaction: Some(lance::dataset::optimize::CompactionMetrics::default()),
             prune: None,

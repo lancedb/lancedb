@@ -95,11 +95,6 @@ struct TestSqlService {
     exchanges: ReceivedExchanges,
     result_overrides: Arc<std::sync::Mutex<HashMap<String, RecordBatch>>>,
     materialized_view_job_handle_supported: bool,
-    optimize_info: Option<RecordBatch>,
-    optimize_info_error: Option<Status>,
-    optimize_info_delay: Duration,
-    optimize_fetch_delay: Duration,
-    optimize_batch_delay: Duration,
     optimize_error: Option<Status>,
     /// How many exchange responses have been dropped, finished or not.
     exchange_drops: Arc<AtomicUsize>,
@@ -275,11 +270,6 @@ impl Default for TestSqlService {
             exchanges: Arc::new(std::sync::Mutex::new(Vec::new())),
             result_overrides: Arc::new(std::sync::Mutex::new(HashMap::new())),
             materialized_view_job_handle_supported: false,
-            optimize_info: None,
-            optimize_info_error: None,
-            optimize_info_delay: Duration::ZERO,
-            optimize_fetch_delay: Duration::ZERO,
-            optimize_batch_delay: Duration::ZERO,
             optimize_error: None,
             exchange_drops: Arc::new(AtomicUsize::new(0)),
             result,
@@ -315,31 +305,9 @@ impl FlightService for TestSqlService {
 
     async fn get_flight_info(
         &self,
-        request: Request<FlightDescriptor>,
+        _request: Request<FlightDescriptor>,
     ) -> std::result::Result<Response<FlightInfo>, Status> {
-        let command = Any::decode(request.get_ref().cmd.as_ref()).unwrap();
-        assert!(
-            command
-                .unpack::<arrow_flight::sql::CommandGetSqlInfo>()
-                .unwrap()
-                .is_some()
-        );
-        tokio::time::sleep(self.optimize_info_delay).await;
-        if let Some(error) = &self.optimize_info_error {
-            return Err(error.clone());
-        }
-        let Some(batch) = &self.optimize_info else {
-            return Err(Status::unimplemented("get_flight_info"));
-        };
-        self.capture_headers(request.metadata());
-        Ok(Response::new(
-            FlightInfo::new()
-                .try_with_schema(batch.schema().as_ref())
-                .unwrap()
-                .with_endpoint(
-                    FlightEndpoint::new().with_ticket(Ticket::new("optimize-capabilities")),
-                ),
-        ))
+        Err(Status::unimplemented("get_flight_info"))
     }
 
     async fn poll_flight_info(
@@ -466,27 +434,6 @@ impl FlightService for TestSqlService {
         &self,
         request: Request<Ticket>,
     ) -> std::result::Result<Response<<Self as FlightService>::DoGetStream>, Status> {
-        if request.get_ref().ticket.as_ref() == b"optimize-capabilities" {
-            tokio::time::sleep(self.optimize_fetch_delay).await;
-            let batch = self.optimize_info.clone().unwrap();
-            let delay = self.optimize_batch_delay;
-            let stream = FlightDataEncoderBuilder::new()
-                .with_schema(batch.schema())
-                .build(futures::stream::iter([Ok(batch)]))
-                .enumerate()
-                .then(move |(index, data)| async move {
-                    // Send the schema immediately, then allow the batch read to stall.
-                    if index > 0 {
-                        tokio::time::sleep(delay).await;
-                    }
-                    data
-                });
-            return Ok(Response::new(
-                stream
-                    .map_err(|error| Status::internal(error.to_string()))
-                    .boxed(),
-            ));
-        }
         self.do_get_count.fetch_add(1, Ordering::SeqCst);
         let initial = Any::decode(request.get_ref().ticket.clone())
             .ok()
@@ -3970,195 +3917,8 @@ async fn remote_compact_preserves_omissions_and_explicit_default_values() {
     }
 }
 
-fn optimize_info(rewrite_data: Option<bool>, options: Option<bool>) -> RecordBatch {
-    use crate::remote::optimize_capabilities::{
-        OPTIMIZE_INVOCATION_OPTIONS, OPTIMIZE_REWRITE_DATA,
-    };
-    let mut builder = arrow_flight::sql::metadata::SqlInfoDataBuilder::new();
-    builder.append(arrow_flight::sql::SqlInfo::FlightSqlServerVersion, "1");
-    if let Some(value) = rewrite_data {
-        builder.append(OPTIMIZE_REWRITE_DATA, value);
-    }
-    if let Some(value) = options {
-        builder.append(OPTIMIZE_INVOCATION_OPTIONS, value);
-    }
-    builder.build().unwrap().record_batch(None).unwrap()
-}
-
 #[tokio::test]
-async fn remote_optimize_discovery_honors_read_and_overall_deadlines() {
-    for shorter_read in [true, false] {
-        for phase in ["lookup", "fetch", "read"] {
-            let delay = Duration::from_millis(500);
-            let service = TestSqlService {
-                optimize_info: Some(optimize_info(Some(true), Some(true))),
-                optimize_info_delay: if phase == "lookup" {
-                    delay
-                } else {
-                    Duration::ZERO
-                },
-                optimize_fetch_delay: if phase == "fetch" {
-                    delay
-                } else {
-                    Duration::ZERO
-                },
-                optimize_batch_delay: if phase == "read" {
-                    delay
-                } else {
-                    Duration::ZERO
-                },
-                ..Default::default()
-            };
-            let statements = service.statements.clone();
-            let mut config = ClientConfig::default();
-            let short = Duration::from_millis(100);
-            let long = Duration::from_secs(2);
-            config.timeout_config.read_timeout = Some(if shorter_read { short } else { long });
-            config.timeout_config.timeout = Some(if shorter_read { long } else { short });
-            let (sql_client, shutdown) = start_sql_service(service, config).await;
-            // Isolate the discovery deadlines from initial connection establishment.
-            sql_client.inner.connection("warmup").await.unwrap();
-            let table = RemoteTable::new_with_sql_client(
-                client_with_handler(|_| -> http::Response<String> { panic!("no REST fallback") }),
-                "analytics".into(),
-                "events".into(),
-                vec![],
-                "events".into(),
-                Default::default(),
-                Some(sql_client),
-            );
-            let error = table.compact(Default::default()).await.unwrap_err();
-            let message = error.to_string();
-            if shorter_read {
-                assert!(
-                    message.contains(&format!("capability {phase} timed out")),
-                    "{message}"
-                );
-                assert!(message.contains("request_id="), "{message}");
-            } else {
-                assert!(
-                    message.contains("optimize capability discovery timed out"),
-                    "{message}"
-                );
-            }
-            assert!(statements.lock().unwrap().is_empty());
-            shutdown.send(()).unwrap();
-        }
-    }
-}
-
-#[tokio::test]
-async fn remote_optimize_discovery_resets_reads_but_keeps_overall_deadline() {
-    for overall in [None, Some(Duration::from_millis(450))] {
-        let service = TestSqlService {
-            optimize_info: Some(optimize_info(Some(true), Some(true))),
-            optimize_info_delay: Duration::from_millis(200),
-            optimize_fetch_delay: Duration::from_millis(200),
-            optimize_batch_delay: Duration::from_millis(200),
-            ..Default::default()
-        };
-        let mut config = ClientConfig::default();
-        config.timeout_config.read_timeout = Some(Duration::from_millis(500));
-        config.timeout_config.timeout = overall;
-        let (client, shutdown) = start_sql_service(service, config).await;
-        client.inner.connection("warmup").await.unwrap();
-        let result = client.optimize_capabilities(&[]).await;
-        if overall.is_none() {
-            assert_eq!(result.unwrap().rewrite_data, Some(true));
-        } else {
-            assert!(
-                result
-                    .unwrap_err()
-                    .to_string()
-                    .contains("optimize capability discovery timed out")
-            );
-        }
-        shutdown.send(()).unwrap();
-    }
-}
-
-#[tokio::test]
-async fn remote_optimize_capability_checks_gate_before_mutation() {
-    use crate::table::optimize::CompactionOverrides;
-    for branch in [None, Some("exp")] {
-        for (base, tuning, requested, accepted) in [
-            (Some(false), Some(false), false, false),
-            (Some(true), Some(false), false, true),
-            (Some(true), Some(false), true, false),
-            (Some(true), Some(true), true, true),
-            (None, None, true, true),
-        ] {
-            let service = TestSqlService {
-                adaptive: true,
-                optimize_info: Some(optimize_info(base, tuning)),
-                ..Default::default()
-            };
-            let statements = service.statements.clone();
-            let headers = service.headers.clone();
-            let (sql_client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
-            let client =
-                client_with_handler(|_| -> http::Response<String> { panic!("no REST fallback") });
-            let table = RemoteTable::new_with_sql_client(
-                client,
-                "analytics".into(),
-                "events".into(),
-                vec!["team".into()],
-                "team$events".into(),
-                Default::default(),
-                Some(sql_client),
-            )
-            .with_branch(branch.map(str::to_owned));
-            let result = table
-                .compact(CompactionOverrides {
-                    io_buffer_size: requested.then_some(0),
-                    ..Default::default()
-                })
-                .await;
-            assert_eq!(
-                result.is_ok(),
-                accepted,
-                "{branch:?} {base:?} {tuning:?}: {result:?}"
-            );
-            if !accepted {
-                assert!(matches!(result, Err(Error::NotSupported { .. })));
-            }
-            assert_eq!(statements.lock().unwrap().len(), usize::from(accepted));
-            assert!(
-                headers
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .all(|h| h.database == "analytics"
-                        && h.namespace_path == "team"
-                        && !h.api_key.is_empty())
-            );
-            shutdown.send(()).unwrap();
-        }
-    }
-}
-
-#[tokio::test]
-async fn remote_optimize_discovery_errors_keep_their_classification() {
-    for code in [
-        tonic::Code::PermissionDenied,
-        tonic::Code::Unavailable,
-        tonic::Code::InvalidArgument,
-    ] {
-        let service = TestSqlService {
-            optimize_info_error: Some(Status::new(code, "metadata unavailable")),
-            ..Default::default()
-        };
-        let statements = service.statements.clone();
-        let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
-        let error = client.optimize_capabilities(&[]).await.unwrap_err();
-        assert!(matches!(error, Error::Sql { grpc_code, .. } if grpc_code == code as i32));
-        assert!(statements.lock().unwrap().is_empty());
-        shutdown.send(()).unwrap();
-    }
-}
-
-#[tokio::test]
-async fn remote_optimize_legacy_parser_errors_are_clear_without_resubmission() {
+async fn remote_optimize_parser_errors_are_clear_without_resubmission() {
     use crate::table::optimize::CompactionOverrides;
     for (code, message, unsupported) in [
         (
@@ -4226,7 +3986,7 @@ async fn remote_optimize_legacy_parser_errors_are_clear_without_resubmission() {
 }
 
 #[tokio::test]
-async fn remote_optimize_legacy_branch_options_are_not_dropped() {
+async fn remote_optimize_branch_options_are_not_dropped() {
     let service = TestSqlService {
         adaptive: true,
         optimize_error: Some(Status::invalid_argument(

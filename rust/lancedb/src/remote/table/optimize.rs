@@ -35,16 +35,46 @@ pub(super) fn compaction_sql_options(
     Ok(result)
 }
 
-/// Apply legacy compatibility handling only to this constructed operation.
+const UNSUPPORTED_OPTIMIZE: &str = "Remote compaction requires an Enterprise server with OPTIMIZE <table> REWRITE DATA job submission enabled. Enable server-side job submission or upgrade to a compatible release.";
+const UNSUPPORTED_OPTIONS: &str = "This Enterprise server does not support the requested compaction invocation options. Upgrade the server; options will not be removed or retried.";
+
+/// Only recognize unsupported syntax in optimize statements the client constructs.
+fn unsupported_optimize_message(message: &str, has_options: bool) -> Option<&'static str> {
+    let message = message.to_ascii_lowercase();
+    let parser_error = message.contains("parsererror");
+    if (parser_error
+        && has_options
+        && (message.contains("expected: end of statement, found: with")
+            || message.contains("expected: ), found: ,")))
+        || [
+            "target_rows_per_fragment",
+            "max_source_rows",
+            "io_buffer_size",
+            "batch_size",
+        ]
+        .iter()
+        .any(|name| message.contains(&format!("unknown optimize option '{name}'")))
+    {
+        Some(UNSUPPORTED_OPTIONS)
+    } else if parser_error
+        && (message.contains("expected: end of statement, found: rewrite")
+            || message.contains("expected: table, found:"))
+    {
+        Some(UNSUPPORTED_OPTIMIZE)
+    } else {
+        None
+    }
+}
+
+/// Apply compatibility handling only to this constructed operation.
 /// Preserve every unrelated SQL/authentication/transport error unchanged.
-pub(super) fn map_legacy_optimize_error(error: Error, has_options: bool) -> Error {
-    use crate::remote::optimize_capabilities::legacy_optimize_error_message;
+pub(super) fn map_optimize_error(error: Error, has_options: bool) -> Error {
     fn unsupported(error: &Error, has_options: bool) -> Option<(&Error, &'static str)> {
         match error {
             Error::Sql {
                 message, grpc_code, ..
             } if *grpc_code == tonic::Code::InvalidArgument as i32 => {
-                legacy_optimize_error_message(message, has_options).map(|reason| (error, reason))
+                unsupported_optimize_message(message, has_options).map(|reason| (error, reason))
             }
             Error::JobFailed { failure, .. } => failure
                 .source
@@ -66,6 +96,44 @@ pub(super) fn map_legacy_optimize_error(error: Error, has_options: bool) -> Erro
 mod tests {
     use super::*;
     use crate::table::{CompactionOptions, CompactionOverrides};
+
+    #[test]
+    fn optimize_errors_do_not_classify_other_failures() {
+        assert_eq!(
+            unsupported_optimize_message(
+                "ParserError: Expected: end of statement, found: REWRITE",
+                false
+            ),
+            Some(UNSUPPORTED_OPTIMIZE)
+        );
+        assert_eq!(
+            unsupported_optimize_message("ParserError: Expected: TABLE, found: events", false),
+            Some(UNSUPPORTED_OPTIMIZE)
+        );
+        assert_eq!(
+            unsupported_optimize_message("Unknown OPTIMIZE option 'max_source_rows'", true),
+            Some(UNSUPPORTED_OPTIONS)
+        );
+        assert_eq!(
+            unsupported_optimize_message("ParserError: Expected: ), found: ,", true),
+            Some(UNSUPPORTED_OPTIONS)
+        );
+        assert!(
+            unsupported_optimize_message("ParserError: Expected: ), found: ,", false).is_none()
+        );
+        for message in [
+            "permission denied",
+            "table not found",
+            "connection reset",
+            "ParserError: Expected: identifier",
+            "Unknown OPTIMIZE option 'future_option'",
+        ] {
+            assert!(
+                unsupported_optimize_message(message, true).is_none(),
+                "{message}"
+            );
+        }
+    }
 
     #[test]
     fn omissions_and_explicit_default_target_are_distinct() {

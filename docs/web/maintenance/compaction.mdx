@@ -69,11 +69,12 @@ Remote `table.optimize()` submits a durable compaction job and returns after
 submission, before the worker finishes. Returned statistics are placeholders.
 Pruning and index optimization are not included in remote optimize.
 
-The client checks the Flight SQL endpoint for compaction and invocation-option
-support. Unsupported requests produce an actionable error. Older servers without
-capability metadata keep the existing SQL submission path; recognized unsupported
-optimize syntax errors explain the upgrade requirement. The client never removes
-requested options or retries through an older REST endpoint.
+The client submits the generated optimize SQL once. Recognized unsupported
+optimize syntax or option errors become actionable compatibility errors, retaining
+the original server diagnostic. In Python these raise `NotImplementedError`.
+Other SQL, authentication, table, transport, and execution errors keep their normal
+behavior. The client never removes requested options or retries through an older
+REST endpoint. No metadata probe or server-version check is performed.
 
 Upgrade the Enterprise deployment before relying on the four per-run options:
 `target_rows_per_fragment`, `max_source_rows`, `io_buffer_size`, and `batch_size`.
