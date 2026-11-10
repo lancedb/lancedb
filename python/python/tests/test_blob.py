@@ -1651,16 +1651,41 @@ def test_bytes_mode_rejects_blobs_inside_lists():
 
 
 def test_row_addressable_paths_exclude_list_children():
-    from lancedb.schema import row_addressable_blob_v2_paths
+    from lancedb.schema import (
+        row_addressable_blob_paths,
+        row_addressable_blob_v2_paths,
+    )
 
     schema = pa.schema(
         [
             pa.field("id", pa.int64()),
-            pa.field("info", pa.struct([lancedb.blob("blob")])),
+            pa.field(
+                "info",
+                pa.struct(
+                    [
+                        lancedb.blob("blob"),
+                        pa.field(
+                            "legacy",
+                            pa.large_binary(),
+                            metadata={"lance-encoding:blob": "true"},
+                        ),
+                    ]
+                ),
+            ),
+            pa.field(
+                "legacy",
+                pa.large_binary(),
+                metadata={"lance-encoding:blob": "true"},
+            ),
             pa.field("images", pa.list_(lancedb.blob("image"))),
         ]
     )
     assert blob_v2_column_paths(schema) == ["info.blob", "images.image"]
+    assert row_addressable_blob_paths(schema) == [
+        "info.blob",
+        "info.legacy",
+        "legacy",
+    ]
     assert row_addressable_blob_v2_paths(schema) == ["info.blob"]
 
 

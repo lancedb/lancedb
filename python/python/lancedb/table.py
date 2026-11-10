@@ -1589,8 +1589,8 @@ class Table(ABC):
         blob_mode: str, default "lazy"
             ``"lazy"`` returns blob v2 descriptors that carry the row id
             ``fetch_blobs`` reads. ``"descriptions"`` returns them without it.
-            ``"bytes"`` returns payload bytes and raises for legacy blob columns
-            and blobs inside lists.
+            ``"bytes"`` returns payload bytes for supported row-addressable blob
+            columns and raises for blobs inside lists.
 
         Returns
         -------
@@ -4140,7 +4140,7 @@ class LanceTable(Table):
         ):
             return self.to_arrow().to_pandas(**kwargs)
 
-        if blob_mode == "bytes" and blob_v2_column_paths(self.schema):
+        if blob_mode == "bytes" and schema_has_blob_field(self.schema):
             return self.search().to_pandas(blob_mode=blob_mode, **kwargs)
 
         return self.to_lance().to_pandas(blob_mode=blob_mode, **kwargs)
@@ -4153,8 +4153,8 @@ class LanceTable(Table):
         blob_mode: str, default "lazy"
             ``"lazy"`` returns blob v2 descriptors that carry the row id
             ``fetch_blobs`` reads. ``"descriptions"`` returns them without it.
-            ``"bytes"`` returns payload bytes and raises for legacy blob columns
-            and blobs inside lists.
+            ``"bytes"`` returns payload bytes for supported row-addressable blob
+            columns and raises for blobs inside lists.
 
         Returns
         -------
@@ -6616,7 +6616,7 @@ class AsyncTable:
 
         if blob_mode == "lazy" and get_uri_scheme(await self.uri()) == "memory":
             return (await self.to_arrow()).to_pandas(**kwargs)
-        if blob_mode == "bytes" and blob_v2_column_paths(schema):
+        if blob_mode == "bytes" and schema_has_blob_field(schema):
             return await self.query().to_pandas(blob_mode=blob_mode, **kwargs)
         return (await self.to_lance()).to_pandas(blob_mode=blob_mode, **kwargs)
 
@@ -6628,8 +6628,8 @@ class AsyncTable:
         blob_mode: str, default "lazy"
             ``"lazy"`` returns blob v2 descriptors that carry the row id
             ``fetch_blobs`` reads. ``"descriptions"`` returns them without it.
-            ``"bytes"`` returns payload bytes and raises for legacy blob columns
-            and blobs inside lists.
+            ``"bytes"`` returns payload bytes for supported row-addressable blob
+            columns and raises for blobs inside lists.
 
         Returns
         -------

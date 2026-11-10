@@ -48,6 +48,7 @@ from ._blob import (
     FetchBlobsAsync,
     FetchBlobsSync,
     blob_auto_row_id_for_scan,
+    blob_projection_sources,
     blob_v2_projection_sources,
     finalize_blob_query_table,
     reject_unfetchable_blob_columns,
@@ -242,6 +243,17 @@ def _query_is_plain_scan(query: Query) -> bool:
         and query.take_row_ids is None
         and not query.postfilter
         and not query.order_by
+    )
+
+
+def _query_is_plain_blob_scan(query: Query) -> bool:
+    """Whether native batch conversion can preserve this query's row result."""
+    return (
+        query.vector is None
+        and query.full_text_query is None
+        and query.take_offsets is None
+        and query.take_row_ids is None
+        and not query.postfilter
     )
 
 
@@ -1281,10 +1293,10 @@ class LanceQueryBuilder(ABC):
         blob_mode: str, default "lazy"
             Controls how blob columns are returned. Local blob v2 queries support
             ``"bytes"`` and ``"descriptions"`` without pylance. Eligible local
-            plain scans use pylance's scanner for lazy blob handles in ``"lazy"``
-            mode and for legacy blob columns. Other local blob v2
-            queries return descriptors in ``"lazy"`` and ``"descriptions"``
-            modes, or payloads in ``"bytes"`` mode, through :meth:`to_arrow`.
+            plain scans also support ``"bytes"`` for row-addressable legacy blob
+            columns without pylance. Other local blob v2 queries return
+            descriptors in ``"lazy"`` and ``"descriptions"`` modes, or payloads
+            in ``"bytes"`` mode, through :meth:`to_arrow`.
             LanceDB Enterprise blob queries support only ``"descriptions"`` until a
             stable
             table snapshot can bind the query and blob fetches.
@@ -1352,8 +1364,8 @@ class LanceQueryBuilder(ABC):
         blob_mode: str, default "lazy"
             ``"lazy"`` returns blob v2 descriptors that carry the row id
             ``fetch_blobs`` reads. ``"descriptions"`` returns them without it.
-            ``"bytes"`` returns payload bytes and raises for legacy blob columns
-            and blobs inside lists.
+            ``"bytes"`` returns payload bytes for supported row-addressable blob
+            columns and raises for blobs inside lists.
         """
         raise NotImplementedError
 
@@ -1599,20 +1611,41 @@ class LanceQueryBuilder(ABC):
     def _scan_needs_row_id(self) -> bool:
         return self._user_requested_row_id() or self._blob_auto_row_id_enabled()
 
-    def _query_for_scan(self) -> Query:
+    def _query_for_scan(self, blob_sources: Optional[dict[str, str]] = None) -> Query:
         query = self.to_query_object()
-        if self._scan_needs_row_id():
+        if self._scan_needs_row_id() or blob_sources:
             query.with_row_id = True
         return query
 
+    def _can_fetch_plain_legacy_blobs(self, blob_mode: BlobMode) -> bool:
+        if blob_mode != "bytes":
+            return False
+        try:
+            query = self.to_query_object()
+        except NotImplementedError:
+            return False
+        return (
+            _query_is_plain_blob_scan(query)
+            and getattr(self, "_reranker", None) is None
+            and not _query_needs_lance_scanner(self)
+            and _supports_local_blob_fetch(
+                self._table._table,
+                getattr(self._table, "_pushdown_operations", ()),
+            )
+        )
+
     def _validated_blob_sources(self, blob_mode: BlobMode) -> dict[str, str]:
-        """Map projected blob v2 outputs to their source columns.
+        """Map projected blob outputs to their source columns.
 
         Bytes mode is checked here, before the query runs.
         """
         validate_blob_mode(blob_mode)
         schema = self._table.schema
-        blob_sources = blob_v2_projection_sources(schema, self._columns)
+        blob_sources = blob_projection_sources(
+            schema,
+            self._columns,
+            include_legacy=self._can_fetch_plain_legacy_blobs(blob_mode),
+        )
         if blob_mode != "bytes":
             return blob_sources
         reject_unfetchable_blob_columns(schema, self._columns, blob_sources)
@@ -1645,18 +1678,23 @@ class LanceQueryBuilder(ABC):
         blob_sources: dict[str, str],
     ) -> pa.Table:
         blob_auto_row_id = self._blob_auto_row_id_enabled()
-        finalized = finalize_blob_query_table(
-            tbl,
-            user_requested_row_id=self._user_requested_row_id(),
-            blob_auto_row_id=blob_auto_row_id,
-            blob_paths=blob_sources.keys() if blob_auto_row_id else (),
-        )
+        if blob_mode == "bytes" and blob_sources:
+            # Bytes conversion reads _rowid directly, including when the
+            # projection mixes legacy and v2 columns.
+            finalized = tbl
+        else:
+            finalized = finalize_blob_query_table(
+                tbl,
+                user_requested_row_id=self._user_requested_row_id(),
+                blob_auto_row_id=blob_auto_row_id,
+                blob_paths=blob_sources.keys() if blob_auto_row_id else (),
+            )
         finalized = self._apply_arrow_blob_mode(finalized, blob_mode, blob_sources)
         # with_row_id(False) does not reach the scan, which adds _rowid anyway.
         # Lazy keeps it because fetch_blobs(hits) reads it there.
         if (
             blob_mode != "lazy"
-            and self._with_row_id is False
+            and not self._user_requested_row_id()
             and "_rowid" in finalized.column_names
         ):
             finalized = finalized.drop_columns(["_rowid"])
@@ -1896,18 +1934,29 @@ class LanceQueryBuilder(ABC):
         query = self.to_query_object()
         if not _query_is_plain_scan(query):
             return None
+        blob_sources = (
+            blob_projection_sources(
+                self._table.schema,
+                query.columns,
+                include_legacy=self._can_fetch_plain_legacy_blobs(blob_mode),
+            )
+            if blob_mode == "bytes"
+            else {}
+        )
 
         # Remote and in-memory tables have no Lance dataset to scan.
         if not self._table._table._inner._is_native() or (
             get_uri_scheme(self._table._dataset_path) == "memory"
         ):
             return None
-        # Blob v2 payloads and descriptions use LanceDB's native fetch path.
-        # Only lazy handles, legacy blobs, and scanner-only options need pylance.
-        if (
-            blob_mode != "lazy"
-            and not _query_needs_lance_scanner(self)
-            and blob_v2_projection_sources(self._table.schema, query.columns)
+        # Bytes conversions use LanceDB's fetch path for both blob versions.
+        # Descriptions for v2 do too; lazy handles still need the scanner.
+        if not _query_needs_lance_scanner(self) and (
+            (blob_mode == "bytes" and blob_sources)
+            or (
+                blob_mode == "descriptions"
+                and blob_v2_projection_sources(self._table.schema, query.columns)
+            )
         ):
             return None
         try:
@@ -1915,12 +1964,7 @@ class LanceQueryBuilder(ABC):
         except ImportError as err:
             raise _unsupported_blob_pandas_error(str(err)) from err
         blob_auto_row_id = self._blob_auto_row_id_enabled()
-        blob_sources = (
-            blob_v2_projection_sources(self._table.schema, query.columns)
-            if blob_mode == "bytes"
-            else {}
-        )
-        if blob_sources:
+        if blob_mode == "bytes":
             reject_unfetchable_blob_columns(
                 self._table.schema, query.columns, blob_sources
             )
@@ -2254,8 +2298,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         blob_mode: str, default "lazy"
             ``"lazy"`` returns blob v2 descriptors that carry the row id
             ``fetch_blobs`` reads. ``"descriptions"`` returns them without it.
-            ``"bytes"`` returns payload bytes and raises for legacy blob columns
-            and blobs inside lists.
+            ``"bytes"`` returns payload bytes for supported row-addressable blob
+            columns and raises for blobs inside lists.
         """
         blob_sources = self._validated_blob_sources(blob_mode)
         return self._finalize_blob_query_table(
@@ -2333,7 +2377,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         vector = self._query if isinstance(self._query, list) else self._query.tolist()
         if isinstance(vector[0], np.ndarray):
             vector = [v.tolist() for v in vector]
-        query = self._query_for_scan()
+        query = self._query_for_scan(blob_sources)
         result_set = self._table._execute_query(
             query, batch_size=batch_size, timeout=timeout
         )
@@ -2551,7 +2595,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         blob_sources = self._validated_blob_sources(blob_mode)
         self._table._ensure_no_legacy_fts_index()
 
-        query = self._query_for_scan()
+        query = self._query_for_scan(blob_sources)
         results = self._table._execute_query(query, timeout=timeout).read_all()
         if self._reranker is not None:
             results = self._reranker.rerank_fts(self._query, results)
@@ -2597,6 +2641,8 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
         blob_mode: BlobMode = "lazy",
     ) -> pa.Table:
         blob_sources = self._validated_blob_sources(blob_mode)
+        if blob_mode == "bytes" and blob_sources:
+            return self.to_batches(timeout=timeout, blob_mode=blob_mode).read_all()
         return self._finalize_blob_query_table(
             self.to_batches(timeout=timeout).read_all(),
             blob_mode=blob_mode,
@@ -2630,7 +2676,7 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
         blob_mode: BlobMode = "lazy",
     ) -> pa.RecordBatchReader:
         blob_sources = self._validated_blob_sources(blob_mode)
-        query = self._query_for_scan()
+        query = self._query_for_scan(blob_sources)
         reader = self._table._execute_query(
             query, batch_size=batch_size, timeout=timeout
         )
@@ -3501,6 +3547,22 @@ class AsyncQueryBase(object):
         self._blob_paths = tuple(blob_v2_projection_sources(schema, projection).keys())
         self._inner.with_row_id()
 
+    async def _can_fetch_plain_legacy_blobs(self, blob_mode: BlobMode) -> bool:
+        if blob_mode != "bytes" or self._table is None:
+            return False
+        try:
+            query = self.to_query_object()
+        except NotImplementedError:
+            return False
+        return (
+            _query_is_plain_blob_scan(query)
+            and getattr(self, "_reranker", None) is None
+            and not _query_needs_lance_scanner(self)
+            and _supports_local_blob_fetch(
+                self._table, self._table._pushdown_operations
+            )
+        )
+
     def select(self, columns: Union[List[str], dict[str, str]]) -> Self:
         """
         Return only the specified columns.
@@ -3620,13 +3682,16 @@ class AsyncQueryBase(object):
         """
         blob_sources = await self._validated_blob_sources(blob_mode)
         reader = await self._execute_batches(
-            max_batch_length=max_batch_length, timeout=timeout
+            max_batch_length=max_batch_length,
+            timeout=timeout,
+            blob_sources=blob_sources,
         )
         if blob_mode == "lazy":
             return reader
 
         async def convert(tbl: pa.Table) -> pa.Table:
-            tbl = self._finalize_blob_query_table(tbl)
+            if not (blob_mode == "bytes" and blob_sources):
+                tbl = self._finalize_blob_query_table(tbl)
             tbl = await self._apply_arrow_blob_mode(tbl, blob_mode, blob_sources)
             if not self._user_requested_row_id() and "_rowid" in tbl.column_names:
                 tbl = tbl.drop_columns(["_rowid"])
@@ -3647,8 +3712,11 @@ class AsyncQueryBase(object):
         *,
         max_batch_length: Optional[int] = None,
         timeout: Optional[timedelta] = None,
+        blob_sources: Optional[dict[str, str]] = None,
     ) -> AsyncRecordBatchReader:
         await self._maybe_add_blob_row_id()
+        if blob_sources and not self._user_requested_row_id():
+            self._inner.with_row_id()
         return AsyncRecordBatchReader(
             await self._inner.execute(
                 max_batch_length=max_batch_length, timeout=timeout
@@ -3664,7 +3732,7 @@ class AsyncQueryBase(object):
         return await self._inner.output_schema()
 
     async def _validated_blob_sources(self, blob_mode: BlobMode) -> dict[str, str]:
-        """Map projected blob v2 outputs to their source columns.
+        """Map projected blob outputs to their source columns.
 
         Bytes mode is checked here, before the query runs.
         """
@@ -3674,7 +3742,11 @@ class AsyncQueryBase(object):
             return {}
         schema = await self._table.schema()
         projection = _query_request_projection(self._inner.to_query_request())
-        blob_sources = blob_v2_projection_sources(schema, projection)
+        blob_sources = blob_projection_sources(
+            schema,
+            projection,
+            include_legacy=await self._can_fetch_plain_legacy_blobs(blob_mode),
+        )
         if blob_mode != "bytes":
             return blob_sources
         reject_unfetchable_blob_columns(schema, projection, blob_sources)
@@ -3721,11 +3793,14 @@ class AsyncQueryBase(object):
         blob_mode: str, default "lazy"
             ``"lazy"`` returns blob v2 descriptors that carry the row id
             ``fetch_blobs`` reads. ``"descriptions"`` returns them without it.
-            ``"bytes"`` returns payload bytes and raises for legacy blob columns
-            and blobs inside lists.
+            ``"bytes"`` returns payload bytes for supported row-addressable blob
+            columns and raises for blobs inside lists.
             LanceDB Enterprise and namespace query pushdown refuse ``"bytes"``.
         """
         blob_sources = await self._validated_blob_sources(blob_mode)
+        if blob_mode == "bytes" and blob_sources:
+            reader = await self.to_batches(timeout=timeout, blob_mode=blob_mode)
+            return pa.Table.from_batches(await reader.read_all(), schema=reader.schema)
         batch_iter = await self.to_batches(timeout=timeout)
         tbl = self._finalize_blob_query_table(
             pa.Table.from_batches(await batch_iter.read_all(), schema=batch_iter.schema)
@@ -3798,10 +3873,10 @@ class AsyncQueryBase(object):
         blob_mode: str, default "lazy"
             Controls how blob columns are returned. Local blob v2 queries support
             ``"bytes"`` and ``"descriptions"`` without pylance. Eligible local
-            plain scans use pylance's scanner for lazy blob handles in ``"lazy"``
-            mode and for legacy blob columns. Other local blob v2
-            queries return descriptors in ``"lazy"`` and ``"descriptions"``
-            modes, or payloads in ``"bytes"`` mode, through :meth:`to_arrow`.
+            plain scans also support ``"bytes"`` for row-addressable legacy blob
+            columns without pylance. Other local blob v2 queries return
+            descriptors in ``"lazy"`` and ``"descriptions"`` modes, or payloads
+            in ``"bytes"`` mode, through :meth:`to_arrow`.
             LanceDB Enterprise blob queries support only ``"descriptions"`` until a
             stable
             table snapshot can bind the query and blob fetches.
@@ -3879,21 +3954,27 @@ class AsyncQueryBase(object):
             with_row_id=self._with_row_id,
         )
         blob_sources = (
-            blob_v2_projection_sources(schema, query.columns)
+            blob_projection_sources(
+                schema,
+                query.columns,
+                include_legacy=await self._can_fetch_plain_legacy_blobs(blob_mode),
+            )
             if blob_mode == "bytes"
             else {}
         )
-        if blob_sources:
+        if blob_mode == "bytes":
             reject_unfetchable_blob_columns(schema, query.columns, blob_sources)
         # Remote and in-memory tables have no Lance dataset to scan.
         if not self._table._inner._is_native() or (
             get_uri_scheme(await self._table.uri()) == "memory"
         ):
             return None
-        if (
-            blob_mode != "lazy"
-            and not _query_needs_lance_scanner(self)
-            and blob_v2_projection_sources(schema, query.columns)
+        if not _query_needs_lance_scanner(self) and (
+            (blob_mode == "bytes" and blob_sources)
+            or (
+                blob_mode == "descriptions"
+                and blob_v2_projection_sources(schema, query.columns)
+            )
         ):
             return None
         try:
@@ -5182,8 +5263,7 @@ class BaseQueryBuilder(object):
         blob_mode: str, default "lazy"
             ``"lazy"`` returns blob v2 descriptors that carry the row id
             ``fetch_blobs`` reads. ``"descriptions"`` returns them without it.
-            ``"bytes"`` returns payload bytes and raises for legacy blob columns
-            and blobs inside lists.
+            ``"bytes"`` is not supported for remote or pushdown blob queries.
         """
         return LOOP.run(self._inner.to_arrow(timeout, blob_mode=blob_mode))
 
