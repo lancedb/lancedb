@@ -480,6 +480,14 @@ where
     /// because individual batch timestamps are not recorded. Running jobs return
     /// a partial recording without waiting for completion. Requires server support;
     /// in-process operations and SQL query handles do not support this operation.
+    ///
+    /// ```no_run
+    /// # async fn export(job: &lancedb::job::Job) -> Result<(), Box<dyn std::error::Error>> {
+    /// let trace = job.timeline().await?;
+    /// std::fs::write("job.trace.json", trace.to_string())?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn timeline(&self) -> Result<Value> {
         match &self.inner {
             JobInner::Handle { handle, .. } => handle.timeline().await,
