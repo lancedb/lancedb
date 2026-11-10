@@ -374,9 +374,7 @@ impl FlightService for TestSqlService {
                 .insert("x-lancedb-sql-job-id", "job-1".parse().unwrap());
             return Err(status);
         }
-        let complete = if query == "SELECT no info" {
-            stage >= 2
-        } else if query.starts_with("SELECT durable job") {
+        let complete = if query == "SELECT no info" || query.starts_with("SELECT durable job") {
             stage >= 2
         } else {
             stage >= 1
