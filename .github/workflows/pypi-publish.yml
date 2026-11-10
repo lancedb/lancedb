@@ -44,7 +44,7 @@ jobs:
           - platform: x86_64
             manylinux: "2_28"
             extra_args: "--features fp16kernels"
-            runner: ubuntu-22.04
+            runner: ubuntu-2404-8x-x64
             package_name: "lancedb"
             rustflags: ""
           # For successful fat LTO builds, we need a large runner to avoid OOM errors.
