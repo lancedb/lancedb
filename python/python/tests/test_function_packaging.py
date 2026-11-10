@@ -168,7 +168,8 @@ def test_supported_nested_literal_global_still_packages(helper_package):
     module = helper_package(
         "fx_literal_global",
         {
-            "__init__.py": "CAPTURED_VALUE = (None, True, 1, 'label', b'bytes', (1.5,))\n"
+            "__init__.py": "CAPTURED_VALUE = (None, True, 1, 'label', "
+            "b'bytes', (1.5,))\n"
             "def uses_global(value: int) -> int:\n"
             "    return value + CAPTURED_VALUE[2]\n"
         },
