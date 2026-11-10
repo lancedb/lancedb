@@ -1382,8 +1382,8 @@ class LanceQueryBuilder(ABC):
         Execute the query and return the results as a pyarrow
         [RecordBatchReader](https://arrow.apache.org/docs/python/generated/pyarrow.RecordBatchReader.html)
 
-        For row-addressable blob projections, the default ``blob_mode="lazy"``
-        keeps the auto ``_rowid`` column visible so batch consumers can call
+        For blob v2 projections, the default ``blob_mode="lazy"`` keeps the
+        auto ``_rowid`` column visible so batch consumers can call
         ``fetch_blobs``. The ``"bytes"`` and ``"descriptions"`` modes hide
         automatic row ids.
 
@@ -1402,10 +1402,11 @@ class LanceQueryBuilder(ABC):
             The timeout also covers reading the batches, so consuming them
             slowly can exceed it.
         blob_mode: str, default "lazy"
-            ``"lazy"`` keeps blob descriptors and auto row ids for manual fetches.
-            ``"descriptions"`` omits auto row ids. ``"bytes"`` fetches supported
-            row-addressable blob payloads one batch at a time, without requiring
-            pylance. Bytes mode has the same restrictions as :meth:`to_arrow`.
+            ``"lazy"`` keeps blob v2 descriptors and auto row ids for manual
+            fetches. ``"descriptions"`` omits auto row ids. ``"bytes"`` fetches
+            supported row-addressable blob payloads one batch at a time, without
+            requiring pylance. Bytes mode has the same restrictions as
+            :meth:`to_arrow`.
 
         Examples
         --------
@@ -3670,10 +3671,11 @@ class AsyncQueryBase(object):
             The timeout also covers reading the batches, so consuming them
             slowly can exceed it.
         blob_mode: str, default "lazy"
-            ``"lazy"`` keeps blob descriptors and auto row ids for manual fetches.
-            ``"descriptions"`` omits auto row ids. ``"bytes"`` fetches supported
-            row-addressable blob payloads one batch at a time, without requiring
-            pylance. Bytes mode has the same restrictions as :meth:`to_arrow`.
+            ``"lazy"`` keeps blob v2 descriptors and auto row ids for manual
+            fetches. ``"descriptions"`` omits auto row ids. ``"bytes"`` fetches
+            supported row-addressable blob payloads one batch at a time, without
+            requiring pylance. Bytes mode has the same restrictions as
+            :meth:`to_arrow`.
 
         Examples
         --------
