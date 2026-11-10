@@ -49,9 +49,10 @@ tbl = db.open_table("frames")  # opens /data/frames.lance; version=N pins a vers
 Use `lancedb` for search, retrieval, data curation, multimodal blob access and
 application code. Install `pylance` (`import lance`) only when building query
 engines or connectors, calling format-level fragment APIs directly, or
-converting plain-scan lazy or legacy blob columns with `to_pandas()` (see
-[Multimodal data and blobs](/management/table#multimodal) for `pylance`-free
-conversions).
+converting plain-scan lazy blob handles with `to_pandas()`. Legacy plain-scan
+byte conversions use LanceDB's native path without `pylance` (see
+[Multimodal data and blobs](/management/table#multimodal) for conversion
+boundaries).
 
 | `pylance` (`import lance`) | `lancedb` (`import lancedb`) |
 | --- | --- |
