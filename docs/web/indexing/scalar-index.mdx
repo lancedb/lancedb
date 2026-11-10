@@ -39,6 +39,7 @@ LanceDB supports these scalar index types, among others:
 - `FM`: FM-Index over string or binary columns that accelerates substring search via `contains(col, 'needle')`.
 - `NGRAM`: Trigram index over UTF-8 string columns that accelerates substring search via `contains(col, 'needle')`, along with some `LIKE` and regular-expression filters.
 - `RTREE`: R-tree over GeoArrow geometry columns that accelerates spatial filters such as `ST_Intersects` and `ST_Within`.
+- `BLOOM_FILTER`: Per-block Bloom filters that skip blocks which cannot contain a value. Suited to equality and `IN` filters on columns with many unique values (e.g., IDs, hashes).
 
 <Tip title="Working with scalar indices">
 Use scalar indexes with:
@@ -59,6 +60,7 @@ Use scalar indexes with:
 | String or binary (`Utf8`, `LargeUtf8`, `Binary`, `LargeBinary`) | `contains(col, 'needle')`                 | `FM`         |
 | String (`Utf8`, `LargeUtf8`)                                    | `contains(col, 'needle')`, `LIKE`, regex  | `NGRAM`      |
 | GeoArrow geometry (`geoarrow.point`, `geoarrow.polygon`, `geoarrow.wkb`, ...) | `ST_Intersects`, `ST_Within`, `ST_Contains` and other spatial relationships, `is null` | `RTREE` |
+| Numbers or strings with many unique values                      | `=`, `in`                                 | `BLOOM_FILTER` |
 
 ## Scalar Index Operations
 
@@ -361,6 +363,57 @@ type, and spatial filters are sent to the server as written. Whether the
 server can build the index and evaluate `ST_*` functions depends on its
 version.
 </Note>
+
+## BloomFilter index for equality lookups
+
+The `BloomFilter` index is a scalar index for equality and `IN (...)` filters on
+columns with many unique values, such as IDs or hashes. It stores a small Bloom
+filter for each block of rows and skips the blocks that cannot contain the
+queried value. A Bloom filter can report a false positive but never a false
+negative, so the remaining blocks are still scanned and the results are the
+same with or without the index. It does not serve range filters; use `BTREE`
+for those.
+
+### Create a BloomFilter index
+
+Build a BloomFilter index with the async `create_index` API by passing the
+`BloomFilter` config in Python. In Rust, use
+`Index::BloomFilter(BloomFilterIndexBuilder::default())`.
+
+<CodeGroup>
+```python Python icon="python"
+from lancedb.index import BloomFilter
+
+await tbl.create_index("user_id", config=BloomFilter())
+```
+
+```rust Rust icon="rust"
+use lancedb::index::Index;
+use lancedb::index::scalar::BloomFilterIndexBuilder;
+
+tbl.create_index(&["user_id"], Index::BloomFilter(BloomFilterIndexBuilder::default()))
+    .execute()
+    .await?;
+```
+</CodeGroup>
+
+Two optional parameters tune the filters: `number_of_items` is the number of
+rows covered by each filter, and `probability` is the target false-positive
+rate (lower values use more space). Both use Lance's defaults when unset.
+
+```python
+await tbl.create_index(
+    "user_id", config=BloomFilter(number_of_items=4096, probability=0.01)
+)
+```
+
+After the index is built, equality and `IN` filters use it automatically:
+
+```python
+await tbl.query().where("user_id = 42").to_pandas()
+```
+
+`list_indices()` reports the index type as `"BloomFilter"`.
 
 ## Index UUID Columns
 
