@@ -95,6 +95,9 @@ struct TestSqlService {
     exchanges: ReceivedExchanges,
     result_overrides: Arc<std::sync::Mutex<HashMap<String, RecordBatch>>>,
     materialized_view_job_handle_supported: bool,
+    optimize_info: Option<RecordBatch>,
+    optimize_info_error: Option<Status>,
+    optimize_error: Option<Status>,
     /// How many exchange responses have been dropped, finished or not.
     exchange_drops: Arc<AtomicUsize>,
     result: RecordBatch,
@@ -269,6 +272,9 @@ impl Default for TestSqlService {
             exchanges: Arc::new(std::sync::Mutex::new(Vec::new())),
             result_overrides: Arc::new(std::sync::Mutex::new(HashMap::new())),
             materialized_view_job_handle_supported: false,
+            optimize_info: None,
+            optimize_info_error: None,
+            optimize_error: None,
             exchange_drops: Arc::new(AtomicUsize::new(0)),
             result,
             large_result,
@@ -303,9 +309,30 @@ impl FlightService for TestSqlService {
 
     async fn get_flight_info(
         &self,
-        _request: Request<FlightDescriptor>,
+        request: Request<FlightDescriptor>,
     ) -> std::result::Result<Response<FlightInfo>, Status> {
-        Err(Status::unimplemented("get_flight_info"))
+        let command = Any::decode(request.get_ref().cmd.as_ref()).unwrap();
+        assert!(
+            command
+                .unpack::<arrow_flight::sql::CommandGetSqlInfo>()
+                .unwrap()
+                .is_some()
+        );
+        if let Some(error) = &self.optimize_info_error {
+            return Err(error.clone());
+        }
+        let Some(batch) = &self.optimize_info else {
+            return Err(Status::unimplemented("get_flight_info"));
+        };
+        self.capture_headers(request.metadata());
+        Ok(Response::new(
+            FlightInfo::new()
+                .try_with_schema(batch.schema().as_ref())
+                .unwrap()
+                .with_endpoint(
+                    FlightEndpoint::new().with_ticket(Ticket::new("optimize-capabilities")),
+                ),
+        ))
     }
 
     async fn poll_flight_info(
@@ -432,6 +459,17 @@ impl FlightService for TestSqlService {
         &self,
         request: Request<Ticket>,
     ) -> std::result::Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        if request.get_ref().ticket.as_ref() == b"optimize-capabilities" {
+            let batch = self.optimize_info.clone().unwrap();
+            let stream = FlightDataEncoderBuilder::new()
+                .with_schema(batch.schema())
+                .build(futures::stream::iter([Ok(batch)]));
+            return Ok(Response::new(
+                stream
+                    .map_err(|error| Status::internal(error.to_string()))
+                    .boxed(),
+            ));
+        }
         self.do_get_count.fetch_add(1, Ordering::SeqCst);
         let initial = Any::decode(request.get_ref().ticket.clone())
             .ok()
@@ -439,6 +477,11 @@ impl FlightService for TestSqlService {
             .and_then(|command| command.unpack::<CommandStatementQuery>().ok().flatten());
         if let Some(command) = &initial {
             self.statements.lock().unwrap().push(command.query.clone());
+            if command.query.starts_with("OPTIMIZE ")
+                && let Some(error) = &self.optimize_error
+            {
+                return Err(error.clone());
+            }
             if command.query == "SELECT rejected" {
                 return Err(Status::invalid_argument("invalid statement"));
             }
@@ -3908,4 +3951,205 @@ async fn remote_compact_preserves_omissions_and_explicit_default_values() {
         );
         shutdown.send(()).unwrap();
     }
+}
+
+fn optimize_info(rewrite_data: Option<bool>, options: Option<bool>) -> RecordBatch {
+    use crate::remote::optimize_capabilities::{
+        OPTIMIZE_INVOCATION_OPTIONS, OPTIMIZE_REWRITE_DATA,
+    };
+    let mut builder = arrow_flight::sql::metadata::SqlInfoDataBuilder::new();
+    builder.append(arrow_flight::sql::SqlInfo::FlightSqlServerVersion, "1");
+    if let Some(value) = rewrite_data {
+        builder.append(OPTIMIZE_REWRITE_DATA, value);
+    }
+    if let Some(value) = options {
+        builder.append(OPTIMIZE_INVOCATION_OPTIONS, value);
+    }
+    builder.build().unwrap().record_batch(None).unwrap()
+}
+
+#[tokio::test]
+async fn remote_optimize_capability_checks_gate_before_mutation() {
+    use crate::table::optimize::CompactionOverrides;
+    for branch in [None, Some("exp")] {
+        for (base, tuning, requested, accepted) in [
+            (Some(false), Some(false), false, false),
+            (Some(true), Some(false), false, true),
+            (Some(true), Some(false), true, false),
+            (Some(true), Some(true), true, true),
+            (None, None, true, true),
+        ] {
+            let service = TestSqlService {
+                adaptive: true,
+                optimize_info: Some(optimize_info(base, tuning)),
+                ..Default::default()
+            };
+            let statements = service.statements.clone();
+            let headers = service.headers.clone();
+            let (sql_client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+            let client =
+                client_with_handler(|_| -> http::Response<String> { panic!("no REST fallback") });
+            let table = RemoteTable::new_with_sql_client(
+                client,
+                "analytics".into(),
+                "events".into(),
+                vec!["team".into()],
+                "team$events".into(),
+                Default::default(),
+                Some(sql_client),
+            )
+            .with_branch(branch.map(str::to_owned));
+            let result = table
+                .compact(CompactionOverrides {
+                    io_buffer_size: requested.then_some(0),
+                    ..Default::default()
+                })
+                .await;
+            assert_eq!(
+                result.is_ok(),
+                accepted,
+                "{branch:?} {base:?} {tuning:?}: {result:?}"
+            );
+            if !accepted {
+                assert!(matches!(result, Err(Error::NotSupported { .. })));
+            }
+            assert_eq!(statements.lock().unwrap().len(), usize::from(accepted));
+            assert!(
+                headers
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|h| h.database == "analytics"
+                        && h.namespace_path == "team"
+                        && !h.api_key.is_empty())
+            );
+            shutdown.send(()).unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+async fn remote_optimize_discovery_errors_keep_their_classification() {
+    for code in [
+        tonic::Code::PermissionDenied,
+        tonic::Code::Unavailable,
+        tonic::Code::InvalidArgument,
+    ] {
+        let service = TestSqlService {
+            optimize_info_error: Some(Status::new(code, "metadata unavailable")),
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let error = client.optimize_capabilities(&[]).await.unwrap_err();
+        assert!(matches!(error, Error::Sql { grpc_code, .. } if grpc_code == code as i32));
+        assert!(statements.lock().unwrap().is_empty());
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn remote_optimize_legacy_parser_errors_are_clear_without_resubmission() {
+    use crate::table::optimize::CompactionOverrides;
+    for (code, message, unsupported) in [
+        (
+            tonic::Code::InvalidArgument,
+            "ParserError(\"Expected: end of statement, found: REWRITE at Line: 1\")",
+            true,
+        ),
+        (
+            tonic::Code::InvalidArgument,
+            "ParserError: Expected: TABLE, found: events",
+            true,
+        ),
+        (
+            tonic::Code::InvalidArgument,
+            "Unknown OPTIMIZE option 'io_buffer_size'",
+            true,
+        ),
+        (tonic::Code::PermissionDenied, "permission denied", false),
+        (tonic::Code::NotFound, "table not found", false),
+        (tonic::Code::Unavailable, "transport error", false),
+        (
+            tonic::Code::InvalidArgument,
+            "invalid table configuration",
+            false,
+        ),
+    ] {
+        let mut status = Status::new(code, message);
+        if message.contains("Expected: TABLE") {
+            status
+                .metadata_mut()
+                .insert("x-lancedb-sql-job-id", "legacy-sql-job".parse().unwrap());
+        }
+        let service = TestSqlService {
+            adaptive: true,
+            optimize_error: Some(status),
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let (sql_client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let client =
+            client_with_handler(|_| -> http::Response<String> { panic!("no REST fallback") });
+        let table = RemoteTable::new_with_sql_client(
+            client,
+            "analytics".into(),
+            "events".into(),
+            vec![],
+            "events".into(),
+            Default::default(),
+            Some(sql_client),
+        );
+        let error = table
+            .compact(CompactionOverrides::default())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            matches!(error, Error::NotSupported { .. }),
+            unsupported,
+            "{error:?}"
+        );
+        assert!(error.to_string().contains(message));
+        assert!(error.to_string().contains("request_id"));
+        assert_eq!(statements.lock().unwrap().len(), 1);
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn remote_optimize_legacy_branch_options_are_not_dropped() {
+    let service = TestSqlService {
+        adaptive: true,
+        optimize_error: Some(Status::invalid_argument(
+            "ParserError: Expected: ), found: , at Line: 1",
+        )),
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let (sql_client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let client = client_with_handler(|_| -> http::Response<String> { panic!("no REST fallback") });
+    let table = RemoteTable::new_with_sql_client(
+        client,
+        "analytics".into(),
+        "events".into(),
+        vec![],
+        "events".into(),
+        Default::default(),
+        Some(sql_client),
+    )
+    .with_branch(Some("exp".into()));
+    let error = table
+        .compact(crate::table::optimize::CompactionOverrides {
+            io_buffer_size: Some(0),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(error, Error::NotSupported { .. }));
+    assert!(error.to_string().contains("invocation options"));
+    assert_eq!(
+        *statements.lock().unwrap(),
+        ["OPTIMIZE \"events\" REWRITE DATA WITH (branch = 'exp', io_buffer_size = 0)"]
+    );
+    shutdown.send(()).unwrap();
 }

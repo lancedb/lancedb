@@ -35,6 +35,33 @@ pub(super) fn compaction_sql_options(
     Ok(result)
 }
 
+/// Apply legacy compatibility handling only to this constructed operation.
+/// Preserve every unrelated SQL/authentication/transport error unchanged.
+pub(super) fn map_legacy_optimize_error(error: Error, has_options: bool) -> Error {
+    use crate::remote::optimize_capabilities::legacy_optimize_error_message;
+    fn unsupported(error: &Error, has_options: bool) -> Option<(&Error, &'static str)> {
+        match error {
+            Error::Sql {
+                message, grpc_code, ..
+            } if *grpc_code == tonic::Code::InvalidArgument as i32 => {
+                legacy_optimize_error_message(message, has_options).map(|reason| (error, reason))
+            }
+            Error::JobFailed { failure, .. } => failure
+                .source
+                .as_deref()
+                .and_then(|source| unsupported(source, has_options)),
+            _ => None,
+        }
+    }
+    if let Some((source, reason)) = unsupported(&error, has_options) {
+        Error::NotSupported {
+            message: format!("{reason} Server diagnostic: {error}; {source}"),
+        }
+    } else {
+        error
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -42,3 +42,5 @@ pub use oauth::{
 pub use token_cache::{OAuthSession, SessionLogout, SessionStatus, TokenCacheOptions};
 
 pub use catalog::{RemoteCatalog, RemoteCatalogOptions};
+
+mod optimize_capabilities;

@@ -13,7 +13,8 @@ use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_client::FlightServiceClient;
 #[cfg(test)]
-use arrow_flight::sql::{CommandStatementQuery, ProstMessageExt};
+use arrow_flight::sql::CommandStatementQuery;
+use arrow_flight::sql::ProstMessageExt;
 use arrow_flight::{
     Action, CancelFlightInfoRequest, CancelFlightInfoResult, CancelStatus, FlightClient,
     FlightDescriptor, FlightEndpoint, FlightInfo, PollInfo,
@@ -304,6 +305,65 @@ impl SqlClient {
             self.queries
                 .insert(query_id, RegisteredQuery::Polled(query.clone()));
             Ok(Query::new(Arc::new(RemoteQueryHandle::new(query))))
+        })
+        .await
+    }
+
+    /// Read capability metadata from the same Flight endpoint that submits SQL.
+    /// Probe per invocation so a reconnect or rolling upgrade cannot retain a
+    /// stale positive capability in an otherwise long-lived table handle.
+    pub(super) async fn optimize_capabilities(
+        &self,
+        namespace: &[String],
+    ) -> Result<super::optimize_capabilities::OptimizeCapabilities> {
+        use super::optimize_capabilities::OptimizeCapabilities;
+        use arrow_flight::sql::CommandGetSqlInfo;
+        let request_id = Uuid::new_v4().to_string();
+        let timeout = self
+            .inner
+            .overall_timeout()?
+            .or(self.inner.client_config.timeout_config.read_timeout)
+            .unwrap_or(DEFAULT_READ_TIMEOUT);
+        with_overall_timeout(Some(timeout), "optimize capability discovery", async {
+            let connection = self.inner.connection(&request_id).await?;
+            let headers = self.inner.headers(namespace, &request_id).await?;
+            let mut client = client_with_headers(connection.client.clone(), &headers)?;
+            // Empty info requests all metadata, including vendor-defined IDs.
+            // Old servers omit our IDs without rejecting an unfamiliar ID.
+            let command = CommandGetSqlInfo { info: vec![] };
+            let info = match client
+                .get_flight_info(FlightDescriptor::new_cmd(command.as_any().encode_to_vec()))
+                .await
+            {
+                Ok(info) => info,
+                Err(FlightError::Tonic(status)) if status.code() == tonic::Code::Unimplemented => {
+                    return Ok(OptimizeCapabilities::default());
+                }
+                Err(error) => return Err(sql_flight_error(&request_id, &error)),
+            };
+            let mut batches = Vec::new();
+            for endpoint in info.endpoint {
+                let ticket = endpoint.ticket.ok_or_else(|| {
+                    sql_error(&request_id, "optimize SqlInfo endpoint has no ticket")
+                })?;
+                let stream = match client.do_get(ticket).await {
+                    Ok(stream) => stream,
+                    Err(FlightError::Tonic(status))
+                        if status.code() == tonic::Code::Unimplemented =>
+                    {
+                        return Ok(OptimizeCapabilities::default());
+                    }
+                    Err(error) => return Err(sql_flight_error(&request_id, &error)),
+                };
+                batches.extend(
+                    stream
+                        .try_collect::<Vec<_>>()
+                        .await
+                        .map_err(|error| sql_flight_error(&request_id, &error))?,
+                );
+            }
+            OptimizeCapabilities::from_batches(&batches)
+                .map_err(|error| sql_error(&request_id, error))
         })
         .await
     }

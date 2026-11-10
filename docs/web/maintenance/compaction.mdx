@@ -13,8 +13,8 @@ import { PyStorageCompactionTuning, PyStorageRebuildVectorIndex, RsStorageCompac
 Every write commits a new table version, and versions accumulate: small files
 from frequent appends, superseded files from updates and deletes, and rows added
 since an index was built. In the embedded library, `optimize()` addresses all
-three; a deployment handles them in the background and does not support
-`optimize()`.
+three. Enterprise handles maintenance in the background and also supports
+on-demand compaction through `optimize()` on compatible servers.
 
 Run optimization as regular table maintenance, particularly after many small
 writes or a large ingest.
@@ -62,6 +62,23 @@ needs to.
 separately from [`cleanup`](/maintenance/cleanup). The two are distinct jobs
 even though `optimize()` bundles both in one LanceDB Embedded call.
 </Note>
+
+## Enterprise compatibility
+
+Remote `table.optimize()` submits a durable compaction job and returns after
+submission, before the worker finishes. Returned statistics are placeholders.
+Pruning and index optimization are not included in remote optimize.
+
+The client checks the Flight SQL endpoint for compaction and invocation-option
+support. Unsupported requests produce an actionable error. Older servers without
+capability metadata keep the existing SQL submission path; recognized unsupported
+optimize syntax errors explain the upgrade requirement. The client never removes
+requested options or retries through an older REST endpoint.
+
+Upgrade the Enterprise deployment before relying on the four per-run options:
+`target_rows_per_fragment`, `max_source_rows`, `io_buffer_size`, and `batch_size`.
+The query nodes, agents, and workers must all support those options. A server
+release number alone does not identify support in historical development builds.
 
 ## Retraining indexes {#retrain}
 
