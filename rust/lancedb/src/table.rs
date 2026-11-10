@@ -2141,10 +2141,14 @@ impl Table {
     ///
     /// [`RefreshColumnOptions::batch_size()`] caps rows per Function call in
     /// LanceDB Enterprise and must be greater than zero when set.
+    /// [`RefreshColumnOptions::publication_interval_rows()`] sets an opt-in
+    /// row-count publication threshold for completed Function outputs; unset
+    /// keeps whole-fragment publication.
     /// [`RefreshColumnOptions::gpu_class()`] selects a GPU pool and
     /// [`RefreshColumnOptions::gpu_count()`] sets the aggregate GPU budget.
-    /// These options have no effect on expression-backed columns in LanceDB
-    /// Embedded. Remote refreshes require
+    /// Batch-size and GPU options have no effect on expression-backed columns
+    /// in LanceDB Embedded; a publication threshold is rejected there.
+    /// Remote refreshes require
     /// [`Table::refresh_column_async_with_options`].
     ///
     /// ```
@@ -2201,12 +2205,16 @@ impl Table {
     /// Set [`RefreshColumnOptions::batch_size()`] to cap the rows each remote
     /// Function call receives, for example to keep slow Functions within the
     /// executor's per-call deadline. Set
+    /// [`RefreshColumnOptions::publication_interval_rows()`] to publish
+    /// completed Function outputs at a row-count threshold; unset keeps
+    /// whole-fragment publication. Set
     /// [`RefreshColumnOptions::gpu_class()`] and
     /// [`RefreshColumnOptions::gpu_count()`] to override the registered GPU
     /// class or set an aggregate GPU budget for Function workers. Unset values
     /// use the Function and server defaults; zero counts and malformed class
     /// names are rejected before submitting a job. Embedded expression
-    /// refreshes ignore all three options.
+    /// refreshes ignore the batch-size and GPU options, and reject publication
+    /// thresholds and other Enterprise-only options.
     ///
     /// ```
     /// # use lancedb::{Table, table::RefreshColumnOptions};

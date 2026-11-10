@@ -100,6 +100,14 @@ pub struct RefreshColumnOptions {
     /// effect on expression-backed columns in LanceDB Embedded.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub batch_size: Option<usize>,
+    /// Opt-in row-count threshold for publishing completed Function outputs.
+    ///
+    /// Must be greater than zero. `None` keeps whole-fragment publication.
+    /// Actual publication boundaries can be larger than this threshold because
+    /// they also depend on completed work and Function batching. LanceDB Embedded
+    /// rejects this option.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub publication_interval_rows: Option<u64>,
     /// GPU class for Function workers in LanceDB Enterprise.
     ///
     /// `None` keeps the Function's registered class, or the deployment default
@@ -174,6 +182,13 @@ impl RefreshColumnOptions {
         self
     }
 
+    /// Use `rows` as the opt-in publication threshold for completed Function
+    /// outputs. The actual publication boundary can be larger than this value.
+    pub fn publication_interval_rows(mut self, rows: u64) -> Self {
+        self.publication_interval_rows = Some(rows);
+        self
+    }
+
     /// Request Function workers from `gpu_class`.
     pub fn gpu_class(mut self, gpu_class: impl Into<String>) -> Self {
         self.gpu_class = Some(gpu_class.into());
@@ -200,6 +215,10 @@ impl RefreshColumnOptions {
             (
                 "max_executor_processes_per_worker",
                 self.max_executor_processes_per_worker.is_some(),
+            ),
+            (
+                "publication_interval_rows",
+                self.publication_interval_rows.is_some(),
             ),
         ]
         .into_iter()
@@ -251,6 +270,11 @@ impl RefreshColumnOptions {
         if self.batch_size == Some(0) {
             return Err(Error::InvalidInput {
                 message: "batch_size must be greater than zero".into(),
+            });
+        }
+        if self.publication_interval_rows == Some(0) {
+            return Err(Error::InvalidInput {
+                message: "publication_interval_rows must be greater than zero".into(),
             });
         }
         if let Some(gpu_class) = &self.gpu_class {

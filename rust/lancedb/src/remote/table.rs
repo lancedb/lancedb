@@ -11072,6 +11072,7 @@ mod tests {
                 serde_json::json!({
                     "column": "quality",
                     "where": "id % 2 = 0",
+                    "publication_interval_rows": 60,
                     "error_policy": "skip",
                     "max_failed_fraction": 0.01,
                     "max_failed_rows": 50,
@@ -11088,6 +11089,7 @@ mod tests {
         });
         let options = RefreshColumnOptions::default()
             .where_clause("id % 2 = 0")
+            .publication_interval_rows(60)
             .error_policy(FunctionErrorPolicy::Skip)
             .max_failed_fraction(0.01)
             .max_failed_rows(50)
@@ -11134,6 +11136,10 @@ mod tests {
             (
                 RefreshColumnOptions::default().max_executor_processes_per_worker(0),
                 "max_executor_processes_per_worker",
+            ),
+            (
+                RefreshColumnOptions::default().publication_interval_rows(0),
+                "publication_interval_rows",
             ),
         ] {
             let error = table
