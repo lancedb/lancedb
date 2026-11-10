@@ -206,7 +206,10 @@ def _blob_bytes_without_snapshot_error() -> NotImplementedError:
         "blob_mode='bytes' cannot safely materialize blob columns without a "
         "stable table snapshot. LanceDB Enterprise and namespace QueryTable pushdown "
         "run the query on a server, so the blob fetch could read another table "
-        "version. Use blob_mode='descriptions'."
+        "version. Use blob_mode='descriptions' to inspect descriptors. To read "
+        "payloads, select row IDs with with_row_id(True), then call "
+        "table.fetch_blobs(column, row_ids) or table.fetch_blob_files(column, "
+        "row_ids). Keep the source unchanged between selection and fetching."
     )
 
 
@@ -453,7 +456,10 @@ def _finish_remote_pandas(
     raise NotImplementedError(
         f"remote to_pandas(blob_mode={blob_mode!r}) cannot safely materialize "
         "blob columns without a stable table snapshot; "
-        "use blob_mode='descriptions'"
+        "use blob_mode='descriptions' to inspect descriptors. To read payloads, "
+        "select row IDs with with_row_id(True), then call "
+        "table.fetch_blobs(column, row_ids) or table.fetch_blob_files(column, "
+        "row_ids). Keep the source unchanged between selection and fetching."
     )
 
 

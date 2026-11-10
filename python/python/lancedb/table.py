@@ -2626,6 +2626,12 @@ class Table(ABC):
         bytes. The client splits requests automatically and reads an individual
         larger blob through the Range route. This method still materializes all
         bytes in memory; for large values use :meth:`fetch_blob_files`.
+
+        The returned Arrow ``large_binary`` array contains payload bytes, not
+        SQL/query descriptor dictionaries. Use ``.to_pylist()`` to obtain
+        Python ``bytes`` or ``None`` values for copying into a blob column.
+        Select row IDs with ``search().with_row_id(True)`` first. Selection and
+        fetching are separate requests: keep the source unchanged between them.
         """
 
     @abstractmethod

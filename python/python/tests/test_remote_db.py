@@ -4958,8 +4958,12 @@ def test_sync_remote_blob_pandas_avoids_storage_access(
             assert "_rowid" not in df.columns
             assert df["image"][0]["size"] == 5
         else:
-            with pytest.raises(NotImplementedError, match="stable table snapshot"):
+            with pytest.raises(
+                NotImplementedError, match="stable table snapshot"
+            ) as exc:
                 query.to_pandas(blob_mode=blob_mode)
+            assert "fetch_blobs(column, row_ids)" in str(exc.value)
+            assert "with_row_id(True)" in str(exc.value)
 
 
 @pytest.mark.asyncio
