@@ -20,6 +20,7 @@ NIL_QUERY_ID = UUID(int=0)
 
 class FakeNativeQuery:
     id = UUID("0198f1b2-c3d4-7e5f-8123-456789abcdef")
+    job_id = None
 
     async def reader(self):
         return pa.table({"value": [1, 2]})
@@ -66,6 +67,15 @@ def test_query_id_is_uuid():
     query = AsyncQuery(FakeNativeQuery())
     assert isinstance(query.id, UUID)
     assert Query(query).id == query.id
+
+
+def test_query_job_id_is_optional_and_separate_from_query_id():
+    native = FakeNativeQuery()
+    native.job_id = "j1-durable"
+    query = AsyncQuery(native)
+    assert query.id != query.job_id
+    assert query.job_id == "j1-durable"
+    assert Query(query).job_id == "j1-durable"
 
 
 def test_connection_serializes_sql_host_override():

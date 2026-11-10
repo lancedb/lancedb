@@ -1515,7 +1515,10 @@ class DBConnection(EnforceOverrides):
 
         This submits through :meth:`execute_query_async` and waits until the
         initial result stream is readable. It does not wait for the full query
-        to finish.
+        to finish. A statement that ran as a server-side SQL job exposes the
+        durable Job Registry id in the reader schema metadata under
+        ``x-lancedb-sql-job-id``. Use :meth:`execute_query_async` when the
+        query handle itself is needed.
         """
         return self.execute_query_async(
             query,
@@ -1554,6 +1557,9 @@ class DBConnection(EnforceOverrides):
         stops a directly streamed query; deferred execution requires explicit
         cancellation. Open ``reader()`` directly: a streamed query needs its
         reader to make progress and reports ``running`` until the stream ends.
+        Once a server-side SQL job exists, ``describe().job_id`` exposes its
+        durable Job Registry id while the query is still running. This is
+        separate from the connection-scoped query ``id``.
 
         LanceDB Embedded connections do not support SQL.
         """
@@ -4128,7 +4134,10 @@ class AsyncConnection(object):
 
         This submits through :meth:`execute_query_async` and waits until the
         initial result stream is readable. It does not wait for the full query
-        to finish.
+        to finish. A statement that ran as a server-side SQL job exposes the
+        durable Job Registry id in the reader schema metadata under
+        ``x-lancedb-sql-job-id``. Use :meth:`execute_query_async` when the
+        query handle itself is needed.
         """
         submitted = await self.execute_query_async(
             query,
