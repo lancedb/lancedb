@@ -143,8 +143,8 @@ import {
 
 A table stores data in rows and columns and keeps a history of committed
 versions. Queries read table data, writes update it, and indexes accelerate
-searches over its columns. Branches let you make changes separately from the
-main table history.
+searches over its columns.{/* Draft until branching reaches early access: restore "Branches let you make changes separately from the
+main table history." */}
 
 This page covers table management, data types, schema changes and version
 history. For loading records, see [Ingestion](/ingestion). For changes to
@@ -161,7 +161,11 @@ In LanceDB Enterprise, tables are also created and dropped in SQL with [`CREATE 
 | **Columns** | including vectors, blobs, and [computed](/feature-engineering/add-computed-column) columns |
 | **Versions** | every write commits one, so reads can [travel back](/management/table#versioning) |
 | **Indexes** | vector, full-text and scalar, built over its columns |
+
+{/*
+Draft until branching reaches early access.
 | **Branches** | isolated lines of change you can [merge or discard](/tables/branching) |
+*/}
 
 ## Create a table {#create}
 
@@ -228,7 +232,8 @@ has no `tableExists`.
 
 ## Rename and clone tables {#rename-clone}
 
-```python
+<CodeGroup>
+```python Python icon="python"
 db.rename_table("documents", "docs")
 
 db.clone_table(
@@ -238,6 +243,7 @@ db.clone_table(
     is_shallow=True,
 )
 ```
+</CodeGroup>
 
 Renaming is not supported on a local directory connection. In LanceDB Enterprise,
 whether a table can be renamed or cloned at all depends on how the deployment
@@ -263,7 +269,7 @@ does not support it refuses every clone.
 the teardown runs as a job: `drop_table`, which fences the table's directory
 with a marker and deletes its content, or `drop_object`, depending on how the
 deployment stores its catalog. See
-[Background jobs](/maintenance/background-jobs#teardown).
+[Object teardown](/basics/jobs#teardown).
 </Note>
 
 ## Drop a table {#drop}
@@ -324,7 +330,7 @@ as it is to the format.
 | String and binary | `utf8`, `large_utf8`, `binary`, `large_binary`, `fixed_size_binary(n)` |
 | Date and time | `date32`, `date64`, `time32`, `time64`, `timestamp`, `duration` |
 | Nested | `struct`, `list`, `large_list`, `fixed_size_list`, `map` |
-| Lance extensions | vectors, [JSON](/sql/data-types#json), [blobs](#multimodal), bfloat16 |
+| Lance extensions | vectors, [blobs](#multimodal), bfloat16{/* Draft until JSON columns reach early access: restore "[JSON](/sql/data-types#json), " after "vectors, " */} |
 
 A vector column is a `fixed_size_list<float32, dim>`, an ordinary Arrow type,
 which is why it is selectable and joinable but why arithmetic over it is list
@@ -343,9 +349,7 @@ file, up to 64 KiB by default, and larger values are stored outside it.
 
 ### Blob columns {#multimodal-blob-v2}
 
-<Warning>
-Blob V2 is in early access.
-</Warning>
+<Badge color="purple">Early access</Badge>
 
 A `blob` column keeps metadata separate from the payload bytes, so queries can
 filter rows without loading the blobs.
@@ -649,8 +653,8 @@ clients cannot safely maintain a table containing Managed blobs.
 This example uses a local connection. The same schema, `add`, query, and
 `fetch_blobs` calls work with an Enterprise database connection:
 
-```python
-import lancedb
+<CodeGroup>
+```python Python icon="python"
 import pyarrow as pa
 
 db = lancedb.connect("./media")
@@ -680,6 +684,7 @@ by_id = dict(zip(hits["id"].to_pylist(), images, strict=True))
 assert by_id[1] == b""
 assert len(by_id[2]) == 102400
 ```
+</CodeGroup>
 
 `fetch_blobs` materializes the selected payloads in memory, so fetch bounded
 batches when blobs are large. Row IDs belong to their table and snapshot. Keep
@@ -694,7 +699,7 @@ LanceDB Embedded tables can also derive blob columns with
 [SQL computed columns](/feature-engineering/add-computed-column).
 
 Deleting a row or replacing its blob does not immediately remove the old
-payload: retained table versions may still reference it. [Cleanup](/maintenance/cleanup#managed-blobs)
+payload: retained table versions may still reference it. [Garbage Collection](/maintenance/cleanup#managed-blobs)
 reclaims objects after those references expire. A packed object remains while
 any of its contained blobs is still referenced.
 
@@ -926,7 +931,10 @@ older version for reads, call `checkout_latest` / `checkoutLatest` before modify
 
 You can add new columns to a table with the [`add_columns`](https://lancedb.github.io/lancedb/python/python/#lancedb.table.Table.add_columns) 
 method in Python, [`addColumns`](https://lancedb.github.io/lancedb/js/classes/Table/#addcolumns) in TypeScript/JavaScript, or `add_columns` in Rust. 
-New columns are populated based on SQL expressions you provide.
+New columns are populated based on SQL expressions you provide. On local tables,
+the Python SDK also accepts precomputed values from DataFrames and Arrow readers;
+see [Create a computed column](/feature-engineering/add-computed-column#computed-vs-transforms)
+for the supported inputs and row-order requirements.
 
 
 #### Set up the example table {#schema-set-up-the-example-table}
@@ -1115,6 +1123,21 @@ For transformations that are not simple casts (for example, converting `"$100"` 
 </CodeGroup>
 
 #### Alter embedding types and dimensions {#schema-alter-embedding-types-and-dimensions}
+
+{/*
+Draft for the embedding schema-evolution protection release.
+
+<Note title="Embedding function bindings on local tables">
+Local tables reject renaming or dropping source and vector columns referenced by
+`embedding_functions` schema metadata or native Rust embedding definitions in
+`lancedb::column_definitions`. The operation fails before changing any columns,
+preserving the configuration used to generate embeddings on later writes.
+
+The add/drop/rename recipe below applies only to vector columns without a registered
+embedding function. To change the dimension of a registered embedding column, create
+a new table with the updated embedding configuration and regenerate its embeddings.
+</Note>
+*/}
 
 It's quite common to need to change an embedding column's schema, in case a new model becomes available with a different embedding dimension.
 - In Python, the example shows an in-place type update when the cast is compatible.
@@ -1469,6 +1492,9 @@ Deleting a tag only removes the label, not the version it points to. After
 deletion, the underlying table version becomes eligible for cleanup again.
 </Note>
 
+{/*
+Draft until branching reaches early access.
+
 ### Branches {#versioning-branches}
 
 Beyond linear history, LanceDB also supports **branches**: isolated, writable
@@ -1478,6 +1504,7 @@ writable history, making it ideal for experiments, backfills, and migrations
 that you want to keep separate from production reads on `main`.
 
 Branches are covered in their own guide: see [Branches](/tables/branching).
+*/}
 
 ### Delete Data From the Table {#versioning-delete-data-from-the-table}
 
@@ -1555,3 +1582,17 @@ one by the time cleanup runs; the error then comes after compacting, and the ind
 update does not run. To let cleanup proceed, [move the tag](#versioning-tag-based-versioning)
 to a version inside the retention window, delete it, or widen the window.
 </Note>
+
+## Privileges {#privileges}
+
+A table's `OWNERSHIP`, `SELECT`, `INSERT`, `UPDATE` and `DELETE` are
+granted through the REST ACL API or SQL `GRANT`/`REVOKE`:
+
+<CodeGroup>
+```sql SQL icon="database"
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE events TO ROLE etl
+```
+</CodeGroup>
+
+See [Privileges](/governance/privileges#sql) for the full statement syntax
+and every target it reaches.

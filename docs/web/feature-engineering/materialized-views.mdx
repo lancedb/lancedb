@@ -19,70 +19,159 @@ In SQL this is [`CREATE MATERIALIZED VIEW`](/sql/ddl/materialized-view#create).
 
 ## Create a view {#create}
 
+A materialized view is defined by a SQL query, so it is created with one.
+From Python, run the statement on an [Enterprise connection](/basics/catalog#enterprise)
+with [`execute_query`](/basics/sql#sql-from-python); the SQL is the same
+either way:
+
 <CodeGroup>
 ```python Python icon="python"
-view = db.create_materialized_view(
-    "frames_captioned",
-    source="frames",
-    select=["frame_id", "video_id", "ts", "caption"],
-    where="selected = true",
-)
+db.execute_query("""
+    CREATE MATERIALIZED VIEW frames_captioned AS
+    SELECT frame_id, video_id, ts, caption
+    FROM frames
+    WHERE selected = true
+""").read_all()
+view = db.open_materialized_view("frames_captioned")
 ```
 
-```typescript TypeScript icon="square-js"
-const view = await db.createMaterializedView("frames_captioned", "frames", {
-  select: ["frame_id", "video_id", "ts", "caption"],
-  where: "selected = true",
-});
+```sql SQL icon="database"
+CREATE MATERIALIZED VIEW frames_captioned AS
+SELECT frame_id, video_id, ts, caption
+FROM frames
+WHERE selected = true
 ```
 </CodeGroup>
 
-`source` names the table the view reads. `select` takes column names,
-`(alias, expression)` pairs, or a dict of the same; omitting it selects every
-source column, expanded against the schema as it was at creation time.
-`where` filters source rows, and `limit` caps the view.
+`execute_query` returns once the result stream is readable, not once the
+statement has finished, so `.read_all()` waits out the full creation before
+the next line opens it.
 
-Creating the view computes its rows, so it is ready to read. Pass
-`with_no_data=True` to create it empty instead; a later
-[refresh](/feature-engineering/refresh-materialized-view) populates it.
+The query defines the view: here, the `frames` table's `frame_id`,
+`video_id`, `ts` and `caption` columns, filtered to the frames selected for
+captioning. There is no separate, more limited form for defining one --
+joins and [Functions](#functions) in the select list work the same way any
+other `SELECT` does, within the query shapes your deployment's LanceDB
+Enterprise version and configuration accept; see the
+[SQL reference](/sql/ddl/materialized-view#create).
+
+Creating the view computes its rows, so it is ready to read immediately.
+[`db.open_materialized_view`](/management/materialized-view#manage) gets a
+handle back for reading, refreshing or inspecting it from Python; the view
+itself is also an ordinary table, queryable by name like any other.
 
 Your administrator manages stable row IDs and other source-table
 requirements for materialized views on the server; confirm support for your
 source table's shape before creating a view over it.
 
+## Selecting a Function's output {#functions}
+
+<Badge color="red">Enterprise</Badge>
+
+A `SELECT` expression is SQL text, so it can call a registered
+[Function](/curation/create-function) the same way a computed column's
+expression can. Continuing the
+[`caption` Function](/curation/create-function#chain) registered in Create a
+Function, against a `frames` table that already has a `jpeg` column:
+
+<CodeGroup>
+```python Python icon="python"
+db.execute_query("""
+    CREATE MATERIALIZED VIEW frames_captioned AS
+    SELECT frame_id, jpeg, caption(jpeg) AS caption
+    FROM frames
+    WHERE selected = true
+""").read_all()
+```
+
+```sql SQL icon="database"
+CREATE MATERIALIZED VIEW frames_captioned AS
+SELECT frame_id, jpeg, caption(jpeg) AS caption
+FROM frames
+WHERE selected = true
+```
+</CodeGroup>
+
+A query that joins tables works the same way, with no separate syntax for
+it. Continuing the join and chained Functions from
+[Create a Function](/curation/create-function#chain), producing `jpeg` from
+a separate `videos` table and captioning it in the same statement:
+
+<CodeGroup>
+```python Python icon="python"
+db.execute_query("""
+    CREATE MATERIALIZED VIEW frames_captioned
+    WITH (auto_refresh_enabled = false, auto_refresh_interval_seconds = 5)
+    AS
+    SELECT
+        f.frame_id,
+        extract_frame(v.video, f.ts) AS jpeg,
+        caption(extract_frame(v.video, f.ts)) AS caption
+    FROM videos v
+    JOIN frames f ON v.id = f.video_id
+    WHERE f.selected = true
+""").read_all()
+```
+
+```sql SQL icon="database"
+CREATE MATERIALIZED VIEW frames_captioned
+WITH (auto_refresh_enabled = false, auto_refresh_interval_seconds = 5)
+AS
+SELECT
+    f.frame_id,
+    extract_frame(v.video, f.ts) AS jpeg,
+    caption(extract_frame(v.video, f.ts)) AS caption
+FROM videos v
+JOIN frames f ON v.id = f.video_id
+WHERE f.selected = true
+```
+</CodeGroup>
+
+See [Joins](/curation/join) for the join itself, and
+[Auto Refresh](/enterprise/auto-refresh) for what `WITH` sets here.
+
 ## Automatic refresh at creation {#auto-refresh}
 
-Pass `auto_refresh_enabled` and `auto_refresh_interval_seconds` to schedule
-refreshes instead of calling
+Set `auto_refresh_enabled` and `auto_refresh_interval_seconds` in the `WITH`
+clause to schedule refreshes instead of calling
 [`refresh`](/feature-engineering/refresh-materialized-view) yourself:
 
-```python
-view = db.create_materialized_view(
-    "frames_captioned",
-    source="frames",
-    select=["frame_id", "video_id", "ts", "caption"],
-    where="selected = true",
-    auto_refresh_enabled=True,
-    auto_refresh_interval_seconds=300,
-)
+<CodeGroup>
+```python Python icon="python"
+db.execute_query("""
+    CREATE MATERIALIZED VIEW frames_captioned
+    WITH (auto_refresh_enabled = true, auto_refresh_interval_seconds = 300)
+    AS
+    SELECT frame_id, video_id, ts, caption
+    FROM frames
+    WHERE selected = true
+""").read_all()
 ```
+
+```sql SQL icon="database"
+CREATE MATERIALIZED VIEW frames_captioned
+WITH (auto_refresh_enabled = true, auto_refresh_interval_seconds = 300)
+AS
+SELECT frame_id, video_id, ts, caption
+FROM frames
+WHERE selected = true
+```
+</CodeGroup>
 
 Omit `auto_refresh_enabled` to let the server decide whether to enable it,
 and omit `auto_refresh_interval_seconds` to let the server decide the
-pacing. See
-[Automatic refresh](/feature-engineering/refresh-materialized-view#auto-refresh)
-for how scheduling behaves once the view exists.
+pacing. See [Auto Refresh](/enterprise/auto-refresh) for how scheduling
+behaves once the view exists.
 
 ## Working with the view {#working-with-the-view}
 
 `view.table` is the underlying table, for querying, indexing, or search.
-`view.definition` is the recorded query: the select list, predicate, and
-limit. Use it to inspect the query without inferring it from the rows. Both
-are properties; on an async view, the definition is read with
-`await view.definition()`.
+`view.definition` has a single field, `query` -- the recorded query, in the
+canonical spelling the server stores. Use it to inspect the query without
+inferring it from the rows. Both are properties; on an async view, the
+definition is read with `await view.definition()`.
 
-An existing view is reopened with `db.open_materialized_view(name)`. Creation,
-refresh and drop also have async, job-returning SDK methods; see
+Creation, refresh and drop also have async, job-returning SDK methods; see
 [Materialized view](/management/materialized-view#manage).
 
 ## Related guides {#next}

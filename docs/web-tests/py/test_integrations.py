@@ -167,46 +167,31 @@ def test_embedding_huggingface_usage() -> None:
 def test_frameworks_lerobot_lancedb_usage() -> None:
     require_flag("RUN_LEROBOT_LANCEDB_SNIPPETS")
 
-    # --8<-- [start:frameworks_lerobot_lancedb_image_dataset]
-    from lerobot_lancedb import LeRobotLanceDataset
+    # --8<-- [start:frameworks_lerobot_lancedb_dataset]
+    from lerobot_lancedb import LanceDBDataset, lance_mp_context
+    from torch.utils.data import DataLoader
 
-    dataset = LeRobotLanceDataset(
-        repo_id="your-org/your-lerobot-lance-images",
-        delta_timestamps={
-            "observation.images.front": [-0.2, -0.1, 0.0],
-        },
-        return_uint8=True,
-    )
-
+    dataset = LanceDBDataset(root="hf://datasets/lance-format/pusht-lance")
     sample = dataset[0]
     print(sample["observation.state"].shape)
     print(sample["action"].shape)
-    # --8<-- [end:frameworks_lerobot_lancedb_image_dataset]
 
-    # --8<-- [start:frameworks_lerobot_lancedb_video_dataset]
-    from lerobot_lancedb import LeRobotLanceVideoDataset
-
-    video_dataset = LeRobotLanceVideoDataset(
-        repo_id="lance-format/lerobot-pusht-lance",
-        delta_timestamps={
-            "observation.images.image": [-0.2, -0.1, 0.0],
-        },
-        return_uint8=True,
+    loader = DataLoader(
+        dataset,
+        batch_size=32,
+        num_workers=8,
+        multiprocessing_context=lance_mp_context(),
     )
-
-    video_sample = video_dataset[0]
-    print(video_sample["observation.images.image"].shape)
-    # --8<-- [end:frameworks_lerobot_lancedb_video_dataset]
+    # --8<-- [end:frameworks_lerobot_lancedb_dataset]
 
     # --8<-- [start:frameworks_lerobot_open_lance_tables]
     import lancedb
 
-    db = lancedb.connect("hf://datasets/lance-format/lerobot-pusht-lance/data")
+    db = lancedb.connect("hf://datasets/lance-format/pusht-lance")
     frames = db.open_table("frames")
-    episodes = db.open_table("episodes")
     videos = db.open_table("videos")
 
-    print(len(frames), len(episodes), len(videos))
+    print(len(frames), len(videos))
     print(frames.schema)
     # --8<-- [end:frameworks_lerobot_open_lance_tables]
 
@@ -723,7 +708,9 @@ def test_embedding_voyageai_multimodal() -> None:
     # Add images using URLs
     tbl.add(
         [
-            {"image_uri": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/PNG_transparency_demonstration_1.png/300px-PNG_transparency_demonstration_1.png"},
+            {
+                "image_uri": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/PNG_transparency_demonstration_1.png/300px-PNG_transparency_demonstration_1.png"
+            },
         ]
     )
 
@@ -1359,6 +1346,8 @@ def test_frameworks_pydantic_examples() -> None:
     # --8<-- [end:frameworks_pydantic_base_model]
 
     # --8<-- [start:frameworks_pydantic_set_url]
+    import lancedb
+
     db = lancedb.connect(str(Path(tempfile.mkdtemp()) / "pydantic-docs"))
     # --8<-- [end:frameworks_pydantic_set_url]
 
@@ -1691,6 +1680,8 @@ def test_platforms_pandas_examples() -> None:
 
     # --8<-- [end:platforms_pandas_imports]
     # --8<-- [start:platforms_pandas_create_table]
+    import lancedb
+
     pandas_df = pd.DataFrame(
         [
             {"id": "1", "text": "dragon", "vector": [0.9, 0.1, 0.3]},
@@ -1713,6 +1704,8 @@ def test_platforms_pandas_examples() -> None:
     # --8<-- [end:platforms_pandas_vector_search]
 
     # --8<-- [start:platforms_pandas_async_example]
+    import lancedb
+
     async def run_pandas_async_example() -> pd.DataFrame:
         async_db = await lancedb.connect_async(
             str(Path(tempfile.mkdtemp()) / "pandas-async")
@@ -1752,6 +1745,8 @@ def test_platforms_polars_examples() -> None:
 
     # --8<-- [end:platforms_polars_imports]
     # --8<-- [start:platforms_polars_create_table]
+    import lancedb
+
     birds = pl.DataFrame(
         {
             "text": ["phoenix", "sparrow"],

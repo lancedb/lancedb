@@ -28,6 +28,42 @@
   "favicon": "/static/favicon.ico",
   "redirects": [
     {
+      "source": "/enterprise/expected-performance",
+      "destination": "/search/vector-search#expected-performance"
+    },
+    {
+      "source": "/enterprise/distributed-sql",
+      "destination": "/enterprise/distributed-search"
+    },
+    {
+      "source": "/deployment/monitoring",
+      "destination": "/deployment/opentelemetry"
+    },
+    {
+      "source": "/enterprise/intelligent-scheduling",
+      "destination": "/enterprise/intelligent-auto-maintenance"
+    },
+    {
+      "source": "/enterprise/intelligent-maintenance",
+      "destination": "/enterprise/intelligent-auto-maintenance"
+    },
+    {
+      "source": "/enterprise/intelligent-planning",
+      "destination": "/enterprise/intelligent-auto-maintenance"
+    },
+    {
+      "source": "/enterprise/automated-cleanup",
+      "destination": "/enterprise/intelligent-auto-maintenance#cleanup"
+    },
+    {
+      "source": "/indexing/reindexing",
+      "destination": "/indexing/incremental-indexing"
+    },
+    {
+      "source": "/maintenance/background-jobs",
+      "destination": "/basics/jobs"
+    },
+    {
       "source": "/architecture",
       "destination": "/#architecture"
     },
@@ -45,11 +81,11 @@
     },
     {
       "source": "/basics/offerings",
-      "destination": "/#embedded-and-enterprise"
+      "destination": "/#architecture"
     },
     {
       "source": "/enterprise/deployment",
-      "destination": "/enterprise#deployment"
+      "destination": "/basics/embedded-vs-enterprise"
     },
     {
       "source": "/feature-engineering/data-evolution",
@@ -72,8 +108,32 @@
       "destination": "/search/full-text-search"
     },
     {
+      "source": "/enterprise/benchmarks",
+      "destination": "/search/vector-search#expected-performance"
+    },
+    {
+      "source": "/curation/huggingface",
+      "destination": "/curation/inspect-datasets"
+    },
+    {
+      "source": "/curation/sunk-integration",
+      "destination": "/deployment/slurm"
+    },
+    {
+      "source": "/curation/slurm-integration",
+      "destination": "/deployment/slurm"
+    },
+    {
+      "source": "/curation/sampling",
+      "destination": "/curation/statistical-sampling"
+    },
+    {
       "source": "/search/optimize-queries",
-      "destination": "/search/explain"
+      "destination": "/basics/sql#query-plans"
+    },
+    {
+      "source": "/search/explain",
+      "destination": "/basics/sql#query-plans"
     },
     {
       "source": "/lance",
@@ -153,7 +213,7 @@
     },
     {
       "source": "/search/explain-analyze",
-      "destination": "/search/explain"
+      "destination": "/basics/sql#query-plans"
     },
     {
       "source": "/indexing/quantization",
@@ -185,15 +245,19 @@
     },
     {
       "source": "/storage",
-      "destination": "/deployment/storage"
+      "destination": "/basics/catalog#object-storage"
     },
     {
       "source": "/storage/configuration",
-      "destination": "/deployment/storage"
+      "destination": "/basics/catalog#object-storage"
+    },
+    {
+      "source": "/deployment/storage",
+      "destination": "/basics/catalog#object-storage"
     },
     {
       "source": "/storage/monitoring",
-      "destination": "/deployment/monitoring"
+      "destination": "/deployment/opentelemetry"
     },
     {
       "source": "/search/sql",
@@ -236,6 +300,26 @@
       "destination": "/sql/dql/explain"
     },
     {
+      "source": "/sql/operators",
+      "destination": "/sql/dql/operators"
+    },
+    {
+      "source": "/sql/functions",
+      "destination": "/sql/dql/functions"
+    },
+    {
+      "source": "/sql/scalar-functions",
+      "destination": "/sql/dql/scalar-functions"
+    },
+    {
+      "source": "/feature-engineering/functions",
+      "destination": "/management/function"
+    },
+    {
+      "source": "/sql/prepared-statements",
+      "destination": "/basics/sql#prepared-statements"
+    },
+    {
       "source": "/sql/ddl",
       "destination": "/sql/ddl/table"
     },
@@ -270,6 +354,18 @@
     {
       "source": "/basics/apis",
       "destination": "/basics/sdk"
+    },
+    {
+      "source": "/enterprise/distributed-column-refresh",
+      "destination": "/enterprise/adaptive-execution"
+    },
+    {
+      "source": "/curation/slurm-scheduling",
+      "destination": "/deployment/slurm"
+    },
+    {
+      "source": "/enterprise/slurm-refresh-scheduling",
+      "destination": "/deployment/slurm"
     }
   ],
   "navigation": {
@@ -278,20 +374,21 @@
         "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting Started",
+            "group": "Introduction",
             "pages": [
               "index",
+              "basics/lancedb-embedded",
+              "basics/embedded-vs-enterprise"
+            ]
+          },
+          {
+            "group": "Getting Started",
+            "pages": [
               "quickstart",
               "basics/sdk",
               "basics/sql",
               "basics/agentic-skills",
               "deployment/support"
-            ]
-          },
-          {
-            "group": "Tools",
-            "pages": [
-              "tools/cli"
             ]
           },
           {
@@ -313,14 +410,18 @@
               "ingestion/index",
               "ingestion/create-table",
               "ingestion/insert",
-              "ingestion/merge-insert",
               "ingestion/update",
               "ingestion/delete",
-              "ingestion/realtime-write"
+              "ingestion/realtime-write",
+              "ingestion/define-storage-integration",
+              "ingestion/migrate-from-embedded",
+              "ingestion/import",
+              "enterprise/distributed-write",
+              "enterprise/distributed-real-time-write"
             ]
           },
           {
-            "group": "Semantic Search",
+            "group": "Search",
             "pages": [
               "search/index",
               "search/vector-search",
@@ -328,23 +429,33 @@
               "search/hybrid-search",
               "search/filtering",
               "reranking/index",
-              "search/explain",
               "search/realtime-read",
-              "enterprise/distributed-search"
+              "enterprise/distributed-real-time-read",
+              "enterprise/distributed-search",
+              "enterprise/data-page-cache",
+              "enterprise/tiered-index-cache",
+              "enterprise/cache-prewarm"
             ]
           },
           {
             "group": "Data Curation",
             "pages": [
               "curation/index",
+              "curation/inspect-datasets",
               "curation/create-function",
               "curation/chunking",
-              "curation/changes",
+              "curation/statistical-sampling",
+              "curation/selective-sampling",
               "curation/aggregate",
-              "curation/sampling",
               "curation/join",
+              "curation/blob-late-materialization",
+              "curation/distributed-shuffle",
               "curation/windowing",
-              "curation/dedupe"
+              "curation/clustering",
+              "curation/dedupe",
+              "curation/changes",
+              "feature-engineering/view",
+              "curation/vend-secret"
             ]
           },
           {
@@ -353,58 +464,57 @@
               "feature-engineering/index",
               "feature-engineering/add-computed-column",
               "feature-engineering/refresh-column",
-              "feature-engineering/view",
               "feature-engineering/materialized-views",
-              "feature-engineering/refresh-materialized-view"
+              "feature-engineering/refresh-materialized-view",
+              "enterprise/incremental-refresh",
+              "enterprise/auto-refresh",
+              "enterprise/checkpointing",
+              "enterprise/adaptive-execution"
             ]
           },
           {
             "group": "Training",
             "pages": [
-              "training/permutation",
               "training/data-loading",
-              "training/distributed-training"
+              "training/training-cache",
+              "training/permutation",
+              "training/observability",
+              "training/distributed-training",
+              "training/checkpointing",
+              "training/resuming"
             ]
           },
           {
             "group": "Management",
             "pages": [
               "management/index",
+              "management/catalog",
               "management/database",
               "management/namespace",
               "management/table",
-              "tables/branching",
               "management/view",
-              "management/materialized-view"
+              "management/materialized-view",
+              "management/secret",
+              "management/function",
+              "management/storage-integration"
             ]
           },
           {
             "group": "Maintenance",
             "pages": [
-              {
-                "group": "Indexing",
-                "icon": "layer-group",
-                "pages": [
-                  "indexing/index",
-                  "indexing/vector-index",
-                  "indexing/fts-index",
-                  "indexing/scalar-index",
-                  "indexing/reindexing"
-                ]
-              },
+              "indexing/index",
+              "enterprise/intelligent-auto-maintenance",
+              "indexing/vector-index",
+              "indexing/fts-index",
+              "indexing/scalar-index",
+              "indexing/incremental-indexing",
+              "enterprise/distributed-indexing",
+              "indexing/gpu-indexing",
               "maintenance/compaction",
-              "maintenance/cleanup",
-              "maintenance/background-jobs"
-            ]
-          },
-          {
-            "group": "Deployment",
-            "pages": [
-              "enterprise/index",
-              "deployment/storage",
-              "deployment/monitoring",
-              "enterprise/deployment/kubernetes",
-              "enterprise/benchmarks"
+              "enterprise/realtime-engine-compaction",
+              "enterprise/distributed-compaction",
+              "enterprise/advanced-conflict-resolution",
+              "maintenance/cleanup"
             ]
           },
           {
@@ -412,7 +522,20 @@
             "pages": [
               "enterprise/authentication",
               "governance/authorization",
+              "governance/principals",
+              "governance/privileges",
+              "governance/audit-log",
               "enterprise/security"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "enterprise/horizontal-scaling",
+              "deployment/opentelemetry",
+              "enterprise/deployment/kubernetes",
+              "deployment/multicloud",
+              "deployment/slurm"
             ]
           },
           {
@@ -428,8 +551,12 @@
                   "sql/ddl/table",
                   "sql/ddl/view",
                   "sql/ddl/materialized-view",
+                  "sql/ddl/secret",
+                  "sql/ddl/function",
+                  "sql/ddl/storage-integration",
                   "sql/ddl/index",
-                  "sql/ddl/job"
+                  "sql/ddl/job",
+                  "sql/ddl/grant"
                 ],
                 "icon": "sitemap"
               },
@@ -451,26 +578,24 @@
                   "sql/dql/select",
                   "sql/dql/subqueries",
                   "sql/dql/join",
+                  "sql/dql/operators",
+                  "sql/dql/functions",
+                  "sql/dql/scalar-functions",
                   "sql/dql/aggregation",
                   "sql/dql/window",
                   "sql/dql/sampling",
                   "sql/dql/changes",
                   "sql/dql/fts",
+                  "sql/dql/contains-tokens",
+                  "sql/dql/ivf-partition",
                   "sql/dql/dedupe",
                   "sql/dql/duplicate-pairs",
+                  "sql/dql/vector-distance",
+                  "sql/dql/blob-descriptor",
+                  "sql/dql/generate-series",
                   "sql/dql/explain"
                 ],
                 "icon": "filter"
-              },
-              {
-                "group": "Expressions",
-                "pages": [
-                  "sql/operators",
-                  "sql/functions",
-                  "sql/scalar-functions",
-                  "sql/prepared-statements"
-                ],
-                "icon": "code"
               }
             ]
           }
@@ -583,8 +708,7 @@
             "group": "Feature Engineering",
             "pages": [
               "tutorials/feature-engineering/feature-engineering-101",
-              "tutorials/feature-engineering/materialized-views",
-              "agent-branch-experiments"
+              "tutorials/feature-engineering/materialized-views"
             ]
           },
           {

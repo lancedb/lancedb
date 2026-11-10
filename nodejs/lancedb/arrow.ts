@@ -1386,7 +1386,9 @@ export async function fromBufferToRecordBatch(
 export async function fromRecordBatchToBuffer(
   batch: RecordBatch,
 ): Promise<Buffer> {
-  const writer = new RecordBatchFileWriter().writeAll([batch]);
+  // Arrow writers require data types from their own library instance.
+  const table = sanitizeTable({ schema: batch.schema, batches: [batch] });
+  const writer = new RecordBatchFileWriter().writeAll(table);
   return Buffer.from(await writer.toUint8Array());
 }
 

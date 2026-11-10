@@ -131,6 +131,14 @@ ignore = [
     { id = "RUSTSEC-2026-0391", reason = "zstd 0.13 via arrow-ipc 58; affected with_context API is unused" },
     { id = "RUSTSEC-2026-0398", reason = "zstd-safe 7 via arrow-ipc 58; affected seekable API is not enabled" },
     { id = "RUSTSEC-2026-0403", reason = "zstd-safe 7 via arrow-ipc 58; affected streaming decoder API is unused" },
+
+    # pin-utils: unmaintained; reviewed 2026-11-05. Transitive via
+    # aws-smithy-http/runtime/types, including aws-config -> lance-io.
+    # No safe upgrade exists; clearing requires AWS Smithy to migrate to
+    # core::pin::pin!, pin-project, or pin-project-lite. Revisit on AWS updates.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0441
+    # https://github.com/rustsec/advisory-db/issues/3314
+    { id = "RUSTSEC-2026-0441", reason = "pin-utils unmaintained via AWS Smithy; no safe upgrade, awaiting upstream migration" },
 ]
 
 

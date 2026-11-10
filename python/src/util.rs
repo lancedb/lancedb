@@ -61,6 +61,23 @@ pub fn validate_table_name(table_name: &str) -> PyResult<()> {
         .map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
+/// Parse field references with the same identifier syntax as Lance writes.
+#[pyfunction(name = "_parse_field_path")]
+pub fn parse_field_path(path: &str) -> PyResult<Vec<String>> {
+    lance_core::datatypes::parse_field_path(path).map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
 /// A wrapper around a LanceDB type to allow it to be used in Python
 #[derive(Debug, Clone)]
 pub struct PyLanceDB<T>(pub T);
+/// Validate the Function retry wire contract using the same rules as Rust APIs.
+#[pyo3::pyfunction]
+pub fn validate_function_retry_policy(json: &str) -> pyo3::PyResult<()> {
+    let policy: lancedb::function::FunctionRetryPolicy =
+        serde_json::from_str(json).map_err(|error| {
+            pyo3::exceptions::PyValueError::new_err(format!("invalid retry_policy: {error}"))
+        })?;
+    policy
+        .validate()
+        .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
+}

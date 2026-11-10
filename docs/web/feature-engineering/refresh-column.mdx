@@ -5,7 +5,7 @@ description: "Populate a computed column and update it when its inputs change."
 icon: arrows-rotate
 keywords: ["refresh_column", "backfill", "job", "idempotent", "REFRESH COLUMN"]
 availability:
-  embedded: available
+  embedded: unavailable
   enterprise: available
 ---
 
@@ -14,41 +14,47 @@ new rows and recompute values whose inputs changed. The example below continues
 with the `doubled` column from the computed-column guide.
 
 <Note>
-In the 0.41 SDK release, declaration and refresh in LanceDB Embedded require a source build
-with the `experimental-functions` Cargo feature. Published Python and TypeScript
-packages leave it disabled. LanceDB Enterprise operations do not require
-this feature; existing computed-column data remains readable in default builds.
+Computed columns require LanceDB Enterprise.
 </Note>
 
 <CodeGroup>
 ```python Python icon="python"
-table.refresh_column("doubled")
-# RefreshColumnResult(rows_filled=2, version=4)
+job = table.refresh_column_async("doubled")
+job.wait()
 
-table.to_arrow().sort_by("x").to_pandas()
+table.search().to_arrow().sort_by("x").to_pandas()
 #    x  doubled
 # 0  1        2
 # 1  2        4
 ```
 
-```sql SQL
+```sql SQL icon="database"
 REFRESH COLUMN doubled ON my_table
 ```
 </CodeGroup>
+
+<Note>
+`table.refresh_column(...)` (sync) is also a local, blocking form, but it
+raises on an Enterprise connection -- use `refresh_column_async`, shown
+above, or the SQL form instead. See
+[Run a refresh on Enterprise](#async) below for what the returned job
+supports.
+</Note>
 
 The refresh commits ordinary table versions (the values, then a
 metadata-only record of the inputs they were computed from), so
 [versioning](/management/table#versioning) applies to it like any other write.
 
 <Note>
-The SQL form is [`REFRESH COLUMN`](/sql/refresh#refresh-column), with the same resource options.
+The SQL form is [`REFRESH COLUMN`](/sql/dml/refresh-column), with the same resource options.
 </Note>
 
 ## What a refresh recomputes {#idempotent}
 
-A refresh fills rows that have no value and recomputes rows whose inputs
-changed since they were computed. Every other row is left alone, so a second
-refresh with nothing changed does nothing. This supports two common workflows.
+Without a `WHERE` predicate, a refresh fills unassigned rows and recomputes
+values whose inputs changed since they were computed. Every other row is left
+alone, so a second refresh with nothing changed does nothing. This supports
+two common workflows.
 
 **Appending is cheap.** Rows added since the last refresh are filled by the
 next one; filled rows whose inputs are unchanged are skipped. Backfilling a
@@ -64,82 +70,57 @@ column is stale between an update and the next refresh.
 
 ## Automatic refresh {#automatic}
 
-Set scheduling options when declaring a computed column:
-
-```python
-table.add_columns(
-    computed={"doubled": "x * 2"},
-    auto_refresh_enabled=True,
-    auto_refresh_interval_seconds=300,
-)
-```
-
-These options apply to every computed output declared in that call. Automatic
-refresh is enabled by default. When the interval is omitted, the server
-determines when to refresh. Local tables store the setting, but automatic
-execution requires a Cloud or Enterprise server with its separate
-`column_refresh.enabled` switch turned on. That server switch is disabled in
-the base configuration.
-
-The interval is a positive minimum delay after the last successful refresh
-of that output. A first refresh is immediately eligible. The scheduler still
-checks input freshness and waits for computed ancestors to settle; the timer
-does not make unchanged inputs require recomputation. Each declared output's
-interval is independent, so refreshing a sibling does not postpone it.
-
-Pacing uses retained live Job Registry history. If completed jobs are archived
-before a configured interval expires, the scheduler can lose the last-success
-timestamp and refresh earlier. Leave archival disabled, or retain live history
-for at least the longest configured column interval. Archival is disabled in
-the base configuration; its default retention threshold is seven days.
-
-Change a stored setting through SQL:
-
-```sql
-ALTER TABLE my_table ALTER COLUMN doubled SET auto_refresh_enabled = false;
-ALTER TABLE my_table ALTER COLUMN doubled SET auto_refresh_interval_seconds = 600;
-ALTER TABLE my_table ALTER COLUMN doubled SET auto_refresh_enabled = true;
-```
-
-<Note>
-The current setting is in the column's own field metadata,
-`computed_column.auto_refresh_enabled`, readable from `table.schema` without
-submitting a job to ask.
-</Note>
-
-Setting the flag is a metadata-only change and always succeeds, independent of
-whether the scheduler can actually refresh the column -- a deployment issue
-that keeps the background job from running (for example, a worker that cannot
-reach object storage) does not stop the `ALTER` from committing. Check the
-column's job history, not just its metadata, if values stop appearing after
-re-enabling.
-
-**Disabling does not skip or drop writes.** Rows written while disabled
-commit with no computed value, the same as a row written before the column
-existed; they do not queue anywhere separate. Inflight jobs may finish, and
-manual refresh remains available throughout.
-
-**Re-enabling catches up the entire backlog in one pass**, not just rows
-written after that point: the next scheduler tick processes every row left
-unfilled since the column was disabled, in a single refresh, with no
-further write required to trigger it. This is "catch up," not "resume
-cadence" -- a column disabled for an hour and re-enabled fills everything
-that accumulated during that hour, immediately, rather than only picking up
-new rows from the moment it is re-enabled.
+A computed column can refresh itself on a schedule instead of waiting for
+an explicit call here. See [Auto Refresh](/enterprise/auto-refresh) for
+enabling it, the SQL and SDK forms for changing the setting, and how
+catch-up works when it's re-enabled after being off.
 
 ## Refreshing part of a table {#partial}
 
-<Badge color="red">Enterprise</Badge> In SQL a refresh can be scoped to a
-predicate, which is useful for filling a slice first and checking it before
-committing to the whole table:
+<Badge color="red">Enterprise</Badge> A refresh can be scoped to a predicate,
+with `where=` in Python or `WHERE` in SQL, which is useful for filling a slice
+first and checking it before committing to the whole table:
 
-```sql
-REFRESH COLUMN embedding ON documents WHERE created_at > '2026-01-01'
+<CodeGroup>
+```python Python icon="python"
+job = table.refresh_column_async(
+    "embedding",
+    where="created_at > date '2026-01-01'",
+)
+job.wait()
 ```
 
+```sql SQL icon="database"
+REFRESH COLUMN embedding ON documents WHERE created_at > date '2026-01-01'
+```
+</CodeGroup>
+
+A filtered refresh recomputes **every matching live row**, including rows
+whose outputs are already current. Repeating the same predicate repeats those
+Function calls and their cost. To select only null outputs within a slice:
+
+<CodeGroup>
+```python Python icon="python"
+job = table.refresh_column_async(
+    "embedding",
+    where="created_at > date '2026-01-01' AND embedding IS NULL",
+)
+job.wait()
+```
+
+```sql SQL icon="database"
+REFRESH COLUMN embedding ON documents
+  WHERE created_at > date '2026-01-01' AND embedding IS NULL
+```
+</CodeGroup>
+
+This skips non-null outputs even when their inputs changed, and can recompute
+outputs that were successfully computed as `NULL`. Use an unfiltered refresh
+to let LanceDB track which outputs need updating.
+
 <Note>
-**Enterprise job type:** `computed_refresh` for a SQL-expression column.
-{/* Draft for the Functions release: `function_refresh` for one filled by a registered [function](/management/function). */}
+**Enterprise job type:** `computed_refresh` for a SQL-expression column,
+`function_refresh` for one filled by a registered [function](/management/function).
 </Note>
 
 ## Run a refresh on Enterprise {#async}
@@ -151,7 +132,8 @@ cluster. `refresh_column` raises
 there; use `refresh_column_async`, which returns a [job](/basics/jobs) you can
 wait on or poll instead of holding a connection open:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 job = table.refresh_column_async("doubled")
 result = job.wait()
 result.rows_assigned
@@ -159,6 +141,7 @@ result.rows_assigned
 job.status()
 # 'finished'
 ```
+</CodeGroup>
 
 Poll with `status()`, resolve with `wait()`. `status()` is a point snapshot and
 does not raise, which is what makes it safe in a loop; `wait()` raises
@@ -172,22 +155,170 @@ process.
 SQL exposes the worker budget directly, which is the lever when a backfill is
 too slow or too expensive:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 REFRESH COLUMN embedding ON documents
   WITH (cpu_millis = 8000, memory_bytes = 17179869184, gpu_count = 2)
 ```
+</CodeGroup>
 
-`num_workers` sets the count instead of a per-worker budget; the two are
-alternatives rather than a pair. `batch_size` controls how many rows a worker
-takes at a time, and `error_policy = 'skip'` continues past rows that fail
-rather than failing the job.
+The resource values cap the Function workers together: this example allows
+up to 8 CPUs, 16 GiB of memory, and 2 GPUs across the fleet. They are not
+per-worker allocations or a guaranteed worker count. `num_workers` is only
+accepted for SQL-expression columns; registered Function columns reject it.
+When setting CPU or memory, supply all three budget fields, using
+`gpu_count = 0` for a CPU-only Function.
+
+`batch_size` caps rows in one Function call; LanceDB adapts actual call and
+work sizes. For Function columns, the refresh defaults to
+`error_policy = 'fail'`. Set `error_policy = 'skip'` to write null outputs for
+failing rows and record them in the error store, subject to failure limits.
+See the [SQL refresh options](/sql/dml/refresh-column#options).
+
+{/*
+Draft for the Function retry policy release.
+
+For registered Function columns, pass `retry_policy` to
+`refresh_column_async` to replace the Function's registered retry policy
+for this refresh. For example,
+`retry_policy=FunctionRetryPolicy(transient=True, max_attempts=3)` allows
+three attempts, including the first call. Import `FunctionRetryPolicy`
+from `lancedb.functions`. Use `FunctionRetryPolicy(max_attempts=1)` to
+disable user-error retries. Omitting the override preserves the registered
+policy.
+
+This requires a supporting LanceDB Enterprise server as well as an SDK
+that exposes these options. An older Function image may need
+re-registration before it accepts a refresh override. Only enable retries
+when repeating a failed call's partial work is safe, including any external
+requests made before the error.
+
+The attempt budget belongs to one failed Function call. With an explicit
+retry policy and `error_policy="skip"`, exhaustion in a batch Function
+writes nulls for the whole failed call and records its errors, subject to
+failure limits. It does not split the batch to restart the retry budget.
+Row Functions isolate failures per row. Infrastructure recovery, framework
+deadlines and cancellation remain separate from this user-error policy.
+See [Function failure handling](/management/function#failures) for the
+retry and replay boundaries.
+*/}
+
+For a column filled by a registered Function, the Python and Rust job APIs can
+override the Function's GPU placement for this refresh:
+
+<CodeGroup>
+```python
+classes = db.list_gpu_classes()
+gpu_class = next(gpu.name for gpu in classes if gpu.gpu_model == "NVIDIA H100")
+
+job = table.refresh_column_async(
+    "embedding",
+    gpu_class=gpu_class,
+    gpu_count=4,
+    batch_size=32,
+)
+```
+
+```rust
+use lancedb::{Connection, Table, table::RefreshColumnOptions};
+
+async fn refresh(
+    conn: &Connection,
+    table: &Table,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let gpu_class = conn
+        .list_gpu_classes()
+        .await?
+        .into_iter()
+        .find(|class| class.gpu_model.as_deref() == Some("NVIDIA H100"))
+        .map(|class| class.name)
+        .ok_or("H100 GPU class is not configured")?;
+    let _job = table
+        .refresh_column_async_with_options(
+            "embedding",
+            RefreshColumnOptions::default()
+                .gpu_class(gpu_class)
+                .gpu_count(4)
+                .batch_size(32),
+        )
+        .await?;
+    Ok(())
+}
+```
+</CodeGroup>
+
+`gpu_count` is the aggregate GPU budget for the refresh's Function workers,
+not a request for that many GPUs per worker. It must be positive.
+`gpu_class` must name a class returned by `list_gpu_classes()`; class names
+are lowercase DNS labels. Omit either option to use the Function's registered
+class or the server's configured budget. `list_gpu_classes()` requires System
+Usage permission, and raises `NotImplementedError` when the server predates
+GPU class discovery.
+
+<Note>
+The Rust GPU discovery and refresh controls are not in the latest Rust
+release. TypeScript does not expose GPU class discovery; pass `gpuClass`
+and `gpuCount` in the `refreshColumnAsync` options.
+</Note>
+
+The job APIs also take the row filter and failure handling of the SQL
+`REFRESH COLUMN ... WHERE ... WITH (...)` form, so a refresh can be narrowed
+to new rows (see [what a filter recomputes](#partial)) and told to skip rows
+whose Function call fails:
+
+<CodeGroup>
+```python
+job = table.refresh_column_async(
+    "embedding",
+    where="created_at > date '2026-01-01'",
+    error_policy="skip",
+    max_failed_fraction=0.01,
+    row_timeout_seconds=30,
+)
+```
+
+```typescript
+const job = await table.refreshColumnAsync("embedding", {
+  where: "created_at > date '2026-01-01'",
+  errorPolicy: "skip",
+  maxFailedFraction: 0.01,
+  rowTimeoutSeconds: 30,
+});
+```
+
+```rust
+use lancedb::{function::FunctionErrorPolicy, table::RefreshColumnOptions};
+
+let _job = table
+    .refresh_column_async_with_options(
+        "embedding",
+        RefreshColumnOptions::default()
+            .where_clause("created_at > date '2026-01-01'")
+            .error_policy(FunctionErrorPolicy::Skip)
+            .max_failed_fraction(0.01)
+            .row_timeout_seconds(30.0),
+    )
+    .await?;
+```
+</CodeGroup>
+
+`max_failed_rows`, `init_timeout_seconds`, `num_workers` and
+`max_executor_processes_per_worker` are accepted the same way; the
+[SQL refresh options](/sql/dml/refresh-column#options) describe each one.
+The SDK rejects a blank `where`, a `max_failed_fraction` outside 0 to 1, a
+timeout that is not a positive number and a zero worker or process count
+before sending the request; the server validates everything else. A LanceDB
+Embedded refresh rejects every option other than `batch_size`, `gpu_class`
+and `gpu_count`.
 
 ## When a refresh fails {#failures}
 
-What a failure keeps depends on where the refresh ran. `refresh_column` in your
-process writes the column in one commit, so a failure leaves the column as it
-was. A refresh job in LanceDB Enterprise commits finished batches as it goes, so some
-values can remain after a failure.
+What a failure keeps depends on where the refresh ran. The local, blocking
+`refresh_column` writes the column in one commit, so a failure leaves the
+column as it was. A refresh job in LanceDB Enterprise -- always
+`refresh_column_async` or `REFRESH COLUMN` there, never the blocking form --
+commits finished batches as it goes, so some values can remain after a
+failure.
 
 Either way, recover by fixing the cause and refreshing again. The new refresh
 fills rows that are still empty or whose inputs changed, and normally skips
@@ -196,22 +327,21 @@ that were already written (for example when the record of the inputs they
 were computed from was not saved), so do not count on a retry costing only the
 rows that did not complete.
 
-{/*
-Draft for the Functions release.
-
 For a column filled by a [function](/management/function), the usual cause is
 the worker environment rather than the data. See
 [environment mismatches](/management/function#mismatch-symptoms) for the
 symptoms, which rarely name their cause.
-*/}
 
 ## Related guides {#next}
 
 <CardGroup cols={2}>
-  <Card title="Jobs" icon="hourglass-half" href="/basics/jobs">
+  <Card title="Job Framework" icon="hourglass-half" href="/basics/jobs">
     Waiting on, inspecting, and cancelling server-side work.
   </Card>
   <Card title="Refresh a materialized view" icon="table" href="/feature-engineering/refresh-materialized-view">
     The same idea, for a whole derived table.
+  </Card>
+  <Card title="Auto Refresh" icon="clock-rotate-left" href="/enterprise/auto-refresh">
+    Refresh on a schedule instead of calling this yourself.
   </Card>
 </CardGroup>

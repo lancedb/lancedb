@@ -1,0 +1,111 @@
+---
+title: "Multicloud"
+sidebarTitle: "Multicloud"
+description: "Keep deployment orchestration in your cloud while dispatching compute-heavy work, like GPU UDF execution, to run in a different cloud."
+icon: "cloud"
+keywords: ["multicloud", "cross-cloud", "gpu", "deployment"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+A LanceDB Enterprise deployment doesn't have to keep all of its compute in
+one cloud. Orchestration -- query nodes, job coordination, the catalog --
+stays with your deployment in its own cloud account and region. Specific,
+compute-heavy work, such as a GPU-bound Function's execution during a
+refresh, can instead dispatch to run in a **different** cloud account,
+region, or provider entirely, and send its results back to complete the job.
+
+## How it fits together {#architecture}
+
+Your deployment's job orchestration plans the work and tracks it to
+completion the same way it would locally. The part that actually needs the
+remote capacity -- a GPU UDF call, for example -- runs across a network
+boundary instead of on a worker in your own cloud, and reports its result
+back the same way a local worker would.
+
+<div className="hidden dark:block">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
+  "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
+  "clusterBkg": "#211d1a", "clusterBorder": "#4c443f", "edgeLabelBackground": "#171513",
+  "fontFamily": "Inter, sans-serif", "fontSize": "18px"
+}}}%%
+flowchart LR
+    subgraph P["Your cloud"]
+        direction TB
+        QN["Query node"]
+        Job["Job orchestration"]
+    end
+
+    subgraph R["Remote cloud"]
+        direction TB
+        Exec["Compute execution<br/>(e.g. GPU UDFs)"]
+    end
+
+    QN --> Job
+    Job -- "dispatches work" --> Exec
+    Exec -- "results" --> Job
+    classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
+    classDef accent fill:#2a1810,stroke:#e8582d,stroke-width:1.5px,color:#f4ebe8
+    class Exec accent
+```
+
+</div>
+
+<div className="block dark:hidden">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
+  "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
+  "clusterBkg": "#f4ebe8", "clusterBorder": "#ad9e95", "edgeLabelBackground": "#ffffff",
+  "fontFamily": "Inter, sans-serif", "fontSize": "18px"
+}}}%%
+flowchart LR
+    subgraph P["Your cloud"]
+        direction TB
+        QN["Query node"]
+        Job["Job orchestration"]
+    end
+
+    subgraph R["Remote cloud"]
+        direction TB
+        Exec["Compute execution<br/>(e.g. GPU UDFs)"]
+    end
+
+    QN --> Job
+    Job -- "dispatches work" --> Exec
+    Exec -- "results" --> Job
+    classDef default fill:#ffffff,stroke:#ad9e95,stroke-width:1px,color:#221d19
+    classDef accent fill:#fff1ec,stroke:#e8582d,stroke-width:1.5px,color:#221d19
+    class Exec accent
+```
+
+</div>
+
+## Why it matters {#why-it-matters}
+
+The cloud that's right for your primary deployment -- where your data and
+other infrastructure already live -- isn't always the cloud with the best
+GPU availability or pricing. Splitting orchestration from execution means
+you don't have to choose: keep your deployment where it already makes
+sense, and reach compute capacity elsewhere only for the work that
+actually needs it, without migrating the deployment or operating that
+remote capacity yourself.
+
+[Contact us](https://www.lancedb.com/contact) to learn more about setting
+up cross-cloud execution for your deployment.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Slurm" icon="server" href="/deployment/slurm">
+    A common way the remote cloud's compute gets scheduled: as Slurm jobs.
+  </Card>
+  <Card title="Adaptive Execution" icon="gauge-high" href="/enterprise/adaptive-execution">
+    How a refresh's resource class, part size and worker count adjust themselves.
+  </Card>
+</CardGroup>

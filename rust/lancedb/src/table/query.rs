@@ -121,7 +121,7 @@ fn requires_local_namespace_execution(query: &AnyQuery) -> bool {
     // The namespace QueryTable request cannot represent approx_mode, search_effort or use_rte.
     // For use_rte that is worse than a tuning miss: RTE read routing lives only
     // in `create_plan`, so a pushed-down query would return stale base-only data.
-    if query.base().use_rte.is_some() || query.base().take_offsets.is_some() {
+    if query.base().use_rte.is_some() || query.base().has_take() {
         return true;
     }
     matches!(
@@ -164,10 +164,9 @@ pub async fn create_plan(
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let query = query.canonicalized()?;
     if let AnyQuery::Query(request) = &query
-        && let Some(offsets) = &request.take_offsets
+        && request.has_take()
     {
-        return crate::query::create_take_offsets_plan(table, request, offsets, options, false)
-            .await;
+        return crate::query::create_take_plan(table, request, options, false).await;
     }
 
     let query = match query {
@@ -460,6 +459,7 @@ fn enrich_lance_field_not_found(
     let Some(field) = find_missing_field(&error) else {
         return error.into();
     };
+    log::info!("Query field rejected: {error}");
     field_not_found_error(field, &Schema::from(schema))
 }
 
@@ -480,7 +480,14 @@ fn field_not_found_error(field: &Column, schema: &Schema) -> Error {
     }
     message.push('.');
 
-    Error::InvalidInput { message }
+    Error::FieldNotFound {
+        name: field.name.clone(),
+        message,
+        source: Box::new(lance::Error::field_not_found(
+            field.name.clone(),
+            valid_fields,
+        )),
+    }
 }
 
 fn find_missing_field<'a>(error: &'a (dyn std::error::Error + 'static)) -> Option<&'a Column> {
@@ -1603,6 +1610,13 @@ mod tests {
             Box::new(None),
         );
         let error = field_not_found_diagnostic(&source, &schema).unwrap();
+        assert!(matches!(&error, Error::FieldNotFound { name, .. } if name == "missing"));
+        assert!(matches!(
+            std::error::Error::source(&error)
+                .unwrap()
+                .downcast_ref::<lance::Error>(),
+            Some(lance::Error::FieldNotFound { .. })
+        ));
         assert!(
             error.to_string().contains(
                 "Valid fields are `a`.`b`.`c`.`d`.`e`, `metadata`.`child.with.dot`, `metadata`.`Title`, `metadata`.`123child`, `metadata`.`child``tick`"

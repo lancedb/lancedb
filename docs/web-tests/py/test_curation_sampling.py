@@ -3,7 +3,6 @@
 
 
 def test_sample_dataset():
-    # --8<-- [start:sample_dataset]
     from tempfile import TemporaryDirectory
 
     import lancedb
@@ -11,6 +10,7 @@ def test_sample_dataset():
 
     with TemporaryDirectory(prefix="lancedb-sampling-") as uri:
         db = lancedb.connect(uri)
+        # --8<-- [start:sample_dataset]
         table = db.create_table("records", [{"id": i} for i in range(10)])
         splits = (
             permutation_builder(table).split_random(counts=[3, 7], seed=42).execute()

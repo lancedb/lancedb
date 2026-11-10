@@ -1,0 +1,39 @@
+---
+title: "CONTAINS_TOKENS"
+sidebarTitle: "CONTAINS_TOKENS"
+description: "The contains_tokens() scalar function: an index-accelerated keyword predicate usable directly in WHERE."
+icon: magnifying-glass
+keywords: ["contains_tokens", "sql", "full text search", "keyword", "predicate", "scalar function"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+<CodeGroup>
+```sql SQL icon="database"
+SELECT * FROM my_docs WHERE contains_tokens(text, 'fox jumps dog')
+```
+</CodeGroup>
+
+`contains_tokens(column, tokens)` is true when `column` contains **all** the
+tokens in `tokens`, split on whitespace and punctuation. It is equivalent to
+an [`fts()`](/sql/dql/fts) match query with fuzziness off, `AND` semantics
+and the simple tokenizer -- reach for it when you need a keyword test in a
+`WHERE` clause and have no use for a relevance score.
+
+**Index-accelerated.** When the column has a full-text index that suits the
+query, the planner uses it instead of scanning, which is the reason to prefer
+it over `LIKE` or `contains` for keyword tests. See
+[`EXPLAIN`](/sql/dql/explain) to confirm the plan uses the index.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Full-Text Search" icon="magnifying-glass" href="/sql/dql/fts">
+    The `fts()` table function, for relevance-ranked results and fuzzy,
+    phrase, boolean, boost and multi-match queries.
+  </Card>
+  <Card title="FTS Index" icon="bolt" href="/indexing/fts-index">
+    Build the full-text index this predicate accelerates against.
+  </Card>
+</CardGroup>

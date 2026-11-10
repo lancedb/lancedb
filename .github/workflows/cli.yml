@@ -14,7 +14,7 @@ jobs:
   test:
     strategy:
       matrix:
-        os: [ubuntu-24.04, macos-14]
+        os: [ubuntu-24.04, macos-15]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
@@ -24,6 +24,11 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          # Restoring compiled targets can exhaust the hosted runner disk.
+          prefix-key: v1-cli-downloads
+          cache-targets: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install Linux prerequisites
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libssl-dev clang

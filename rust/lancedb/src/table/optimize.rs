@@ -184,6 +184,53 @@ async fn validate_sq_index_remapping(
     Ok(plan)
 }
 
+/// Optional compaction tuning. Remote tables inherit omitted values from table
+/// policy, then deployment/built-in defaults. Explicit values, including a zero
+/// I/O budget, take precedence. Local tables use Lance defaults for omissions.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CompactionOverrides {
+    pub target_rows_per_fragment: Option<usize>,
+    pub max_source_rows: Option<usize>,
+    /// Read-ahead budget in bytes; zero disables byte-based I/O backpressure.
+    pub io_buffer_size: Option<u64>,
+    pub batch_size: Option<usize>,
+}
+
+impl CompactionOverrides {
+    pub(crate) fn into_options(self) -> CompactionOptions {
+        let mut options = CompactionOptions::default();
+        if let Some(target) = self.target_rows_per_fragment {
+            options.target_rows_per_fragment = target;
+        }
+        options.max_source_rows = self.max_source_rows;
+        options.io_buffer_size = self.io_buffer_size;
+        options.batch_size = self.batch_size;
+        options
+    }
+}
+
+impl TryFrom<CompactionOptions> for CompactionOverrides {
+    type Error = Error;
+
+    fn try_from(options: CompactionOptions) -> Result<Self> {
+        let mut remaining = options.clone();
+        let defaults = CompactionOptions::default();
+        remaining.target_rows_per_fragment = defaults.target_rows_per_fragment;
+        remaining.max_source_rows = defaults.max_source_rows;
+        remaining.io_buffer_size = defaults.io_buffer_size;
+        remaining.batch_size = defaults.batch_size;
+        if remaining != defaults {
+            return Err(Error::NotSupported { message: "remote CompactionOptions support only target_rows_per_fragment, max_source_rows, io_buffer_size, and batch_size; other options must retain their defaults".into() });
+        }
+        Ok(Self {
+            target_rows_per_fragment: Some(options.target_rows_per_fragment),
+            max_source_rows: options.max_source_rows,
+            io_buffer_size: options.io_buffer_size,
+            batch_size: options.batch_size,
+        })
+    }
+}
+
 /// Optimize the dataset.
 ///
 /// Similar to `VACUUM` in PostgreSQL, it offers different options to
@@ -206,6 +253,55 @@ pub enum OptimizeAction {
     /// new files.  If these operations are run frequently then compaction should run frequently.
     ///
     /// If these operations are never run (search only) then compaction is not necessary.
+    ///
+    /// # LanceDB Enterprise (remote tables)
+    ///
+    /// A remote table supports per-job `target_rows_per_fragment`,
+    /// `max_source_rows`, `io_buffer_size`, and `batch_size`. Other non-default
+    /// options and custom `remap_options` return [`crate::Error::NotSupported`]
+    /// before submission. The server must support these SQL options; errors
+    /// from older servers are returned without dropping the settings.
+    /// The source-row budget admits whole tasks and may perform no work when
+    /// the first task exceeds it. Zero I/O buffer size disables byte-based I/O
+    /// backpressure. Use a positive size to limit I/O read-ahead; this is not a
+    /// total-memory limit. Row targets, source-row budgets, and batch sizes must
+    /// be positive.
+    /// The legacy Lance options type cannot distinguish an omitted fragment target
+    /// from its default value; that default is treated as unspecified remotely.
+    /// Use [`crate::Table::compact`] with [`CompactionOverrides`] to explicitly
+    /// override a table target with the Lance default value.
+    /// Omitted options inherit table tuning, then deployment/built-in defaults; options
+    /// affect only this job, without changing ongoing table policy.
+    ///
+    /// It submits a durable
+    /// compaction job to the server over SQL and waits for that submission to
+    /// be confirmed, not for compaction itself to finish: the job then runs
+    /// asynchronously on the server, so this call can return well before the
+    /// data is actually compacted. Because of that, the returned
+    /// [`OptimizeStats::compaction`] is a zeroed [`CompactionMetrics`]
+    /// placeholder rather than the real counts a local table reports.
+    ///
+    /// ```
+    /// use lancedb::{Table, table::{CompactionOptions, OptimizeAction}};
+    /// # async fn compact(table: &Table) -> lancedb::Result<()> {
+    /// table.optimize(OptimizeAction::Compact {
+    ///     options: CompactionOptions {
+    ///         target_rows_per_fragment: 100_000,
+    ///         max_source_rows: Some(1_000_000),
+    ///         io_buffer_size: Some(64 * 1024 * 1024),
+    ///         batch_size: Some(1024),
+    ///         ..Default::default()
+    ///     },
+    ///     remap_options: None,
+    /// }).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// A branch-scoped table handle compacts that branch. The branch is not
+    /// validated to exist before the job is submitted, so a nonexistent
+    /// branch fails the compaction job asynchronously rather than failing
+    /// this call.
     Compact {
         options: CompactionOptions,
         remap_options: Option<Arc<dyn IndexRemapperOptions>>,
@@ -430,19 +526,27 @@ pub(crate) async fn execute_optimize(
 #[cfg(test)]
 mod tests {
     use super::{oversized_sq_partition, segment_touches_fragments, sq_vector_dimension};
+    use arrow::compute::concat_batches;
     use arrow_array::{
         Array, FixedSizeListArray, Float32Array, Int32Array, RecordBatch, StringArray,
+        cast::AsArray,
+        types::{Float32Type, Int32Type},
     };
     use arrow_schema::{DataType, Field, Schema};
+    use lance::index::DatasetIndexExt;
     use lance_arrow::FixedSizeListArrayExt;
+    use lance_index::frag_reuse::FRAG_REUSE_INDEX_NAME;
     use rstest::rstest;
     use std::{collections::HashSet, sync::Arc};
 
     use crate::connect;
     use crate::database::listing::OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS;
-    use crate::index::vector::IvfRqIndexBuilder;
-    use crate::index::{Index, scalar::BTreeIndexBuilder};
-    use crate::query::ExecutableQuery;
+    use crate::index::{
+        Index,
+        scalar::BTreeIndexBuilder,
+        vector::{IvfHnswSqIndexBuilder, IvfRqIndexBuilder},
+    };
+    use crate::query::{ExecutableQuery, QueryBase};
     use crate::table::{CompactionOptions, OptimizeAction, OptimizeStats};
     use futures::TryStreamExt;
 
@@ -689,6 +793,68 @@ mod tests {
         all_values.sort();
         let expected: Vec<i32> = (0..600).collect();
         assert_eq!(all_values, expected);
+    }
+
+    #[tokio::test]
+    async fn test_parallel_compaction_reserves_fragment_ids_once() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from_iter_values(0..10))])
+                .unwrap();
+
+        let table = conn
+            .create_table("test_parallel_compaction", batch.clone())
+            .execute()
+            .await
+            .unwrap();
+
+        // Create 64 fragments. With a 20-row target, compaction plans 32 tasks,
+        // which is more than the commit retry limit that used to be exhausted
+        // when each parallel task reserved fragment IDs independently.
+        for _ in 1..64 {
+            table.add(batch.clone()).execute().await.unwrap();
+        }
+
+        // Legacy row IDs require fragment IDs before an index can be remapped.
+        assert!(
+            !table
+                .as_native()
+                .unwrap()
+                .manifest()
+                .await
+                .unwrap()
+                .uses_stable_row_ids()
+        );
+        table
+            .create_index(&["i"], Index::BTree(BTreeIndexBuilder::default()))
+            .execute()
+            .await
+            .unwrap();
+
+        let version_before = table.version().await.unwrap();
+        let stats = table
+            .optimize(OptimizeAction::Compact {
+                options: CompactionOptions {
+                    target_rows_per_fragment: 20,
+                    num_threads: Some(64),
+                    ..Default::default()
+                },
+                remap_options: None,
+            })
+            .await
+            .unwrap()
+            .compaction
+            .unwrap();
+
+        assert_eq!(stats.fragments_removed, 64);
+        assert_eq!(stats.fragments_added, 32);
+        assert_eq!(table.count_rows(None).await.unwrap(), 640);
+        assert_eq!(
+            table.version().await.unwrap(),
+            version_before + 2,
+            "parallel compaction should use one fragment reservation commit and one rewrite commit"
+        );
     }
 
     #[tokio::test]
@@ -1117,6 +1283,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_optimize_all_with_hnsw_index() {
+        let conn = connect("memory://").execute().await.unwrap();
+
+        let dimension = 8;
+        let item_field = Arc::new(Field::new("item", DataType::Float32, true));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "vector",
+            DataType::FixedSizeList(item_field.clone(), dimension),
+            false,
+        )]));
+
+        let make_batch = |offset: usize| {
+            let values = Float32Array::from_iter_values(
+                (offset * dimension as usize..(offset + 128) * dimension as usize)
+                    .map(|value| value as f32),
+            );
+            let vectors =
+                FixedSizeListArray::try_new(item_field.clone(), dimension, Arc::new(values), None)
+                    .unwrap();
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(vectors)]).unwrap()
+        };
+
+        let table = conn
+            .create_table("test_hnsw_optimize", make_batch(0))
+            .execute()
+            .await
+            .unwrap();
+        for offset in [128, 256, 384] {
+            table.add(make_batch(offset)).execute().await.unwrap();
+        }
+
+        table
+            .create_index(
+                &["vector"],
+                Index::IvfHnswSq(IvfHnswSqIndexBuilder::default()),
+            )
+            .execute()
+            .await
+            .unwrap();
+
+        let stats = table.optimize(OptimizeAction::All).await.unwrap();
+        assert!(stats.compaction.unwrap().fragments_removed > 0);
+
+        let indices = table.list_indices().await.unwrap();
+        assert_eq!(indices.len(), 1);
+        assert_eq!(indices[0].index_type, crate::index::IndexType::IvfHnswSq);
+
+        let index_stats = table.index_stats(&indices[0].name).await.unwrap().unwrap();
+        assert_eq!(index_stats.num_indexed_rows, 512);
+        assert_eq!(index_stats.num_unindexed_rows, 0);
+        assert_eq!(table.count_rows(None).await.unwrap(), 512);
+    }
+
+    #[tokio::test]
     async fn test_optimize_default_action() {
         // Verify that default action is All
         let action: OptimizeAction = Default::default();
@@ -1202,6 +1422,138 @@ mod tests {
         let mut expected: Vec<i32> = (0..100).chain(0..100).collect();
         expected.sort();
         assert_eq!(all_values, expected);
+    }
+
+    #[tokio::test]
+    async fn test_refined_rq_query_after_deferred_compaction() {
+        const ROWS: i32 = 128;
+        const DIMENSION: i32 = 32;
+        let conn = connect("memory://").execute().await.unwrap();
+        let vectors = FixedSizeListArray::try_new_from_values(
+            Float32Array::from_iter_values((0..ROWS).flat_map(|id| {
+                (0..DIMENSION).map(move |offset| (id as f32 * 0.1 + offset as f32 * 0.3).sin())
+            })),
+            DIMENSION,
+        )
+        .unwrap();
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int32, false),
+                Field::new("vector", vectors.data_type().clone(), false),
+            ])),
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..ROWS)),
+                Arc::new(vectors),
+            ],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("refined_rq_compaction", batch.slice(0, 64))
+            .storage_option(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS, "false")
+            .execute()
+            .await
+            .unwrap();
+        table.add(batch.slice(64, 64)).execute().await.unwrap();
+        table
+            .create_index(
+                &["vector"],
+                Index::IvfRq(
+                    IvfRqIndexBuilder::default()
+                        .num_partitions(4)
+                        .num_bits(7)
+                        .max_iterations(5),
+                ),
+            )
+            .name("rq".to_string())
+            .execute()
+            .await
+            .unwrap();
+        table.delete("id % 7 = 0").await.unwrap();
+        let dataset = table.dataset().unwrap().get().await.unwrap();
+        assert_eq!(dataset.fragments().len(), 2);
+        let original_index = dataset.load_indices_by_name("rq").await.unwrap()[0].uuid;
+
+        let key = (0..DIMENSION)
+            .map(|offset| (0.5 + offset as f32 * 0.3).sin())
+            .collect::<Vec<_>>();
+        let query = || {
+            table
+                .query()
+                .only_if("id % 3 != 0")
+                .nearest_to(key.as_slice())
+                .unwrap()
+                .nprobes(4)
+                .unwrap()
+                .limit(8)
+        };
+        let before = query()
+            .fast_search()
+            .refine_factor(4)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let before = concat_batches(&before[0].schema(), &before).unwrap();
+
+        let stats = table
+            .optimize(OptimizeAction::Compact {
+                options: CompactionOptions {
+                    target_rows_per_fragment: 256,
+                    defer_index_remap: true,
+                    ..Default::default()
+                },
+                remap_options: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(stats.compaction.unwrap().fragments_removed, 2);
+        let dataset = table.dataset().unwrap().get().await.unwrap();
+        assert_eq!(dataset.fragments().len(), 1);
+        assert_eq!(
+            dataset.load_indices_by_name("rq").await.unwrap()[0].uuid,
+            original_index
+        );
+        assert!(
+            dataset
+                .load_indices()
+                .await
+                .unwrap()
+                .iter()
+                .any(|index| index.name == FRAG_REUSE_INDEX_NAME)
+        );
+
+        let refined = query().fast_search().refine_factor(4);
+        let plan = refined.explain_plan(false).await.unwrap();
+        assert!(plan.contains("ANNIvf"), "{plan}");
+        let after = refined
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let after = concat_batches(&after[0].schema(), &after).unwrap();
+        assert_eq!(after.num_rows(), 8);
+        assert_eq!(after["id"].as_ref(), before["id"].as_ref());
+        assert_eq!(after["_distance"].as_ref(), before["_distance"].as_ref());
+        let found = after["id"].as_primitive::<Int32Type>().values();
+        assert!(found.iter().all(|id| id % 7 != 0 && id % 3 != 0));
+        assert!(after["_distance"].as_primitive::<Float32Type>().values()[0] < 1e-5);
+
+        let exact = query()
+            .bypass_vector_index()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let exact = concat_batches(&exact[0].schema(), &exact).unwrap();
+        let truth = exact["id"].as_primitive::<Int32Type>().values();
+        let recall = found.iter().filter(|id| truth.contains(id)).count() as f64 / 8.0;
+        assert!(recall >= 0.5, "recall={recall}");
     }
 
     #[tokio::test]

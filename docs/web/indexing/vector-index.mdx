@@ -1,6 +1,6 @@
 ---
-title: "Vector Indexes"
-sidebarTitle: "Vector Index"
+title: "Vector Indexing"
+sidebarTitle: "Vector Indexing"
 description: "Build and manage LanceDB vector indexes."
 icon: "arrow-up-right-dots"
 availability:
@@ -55,7 +55,7 @@ Lance with `index_type`.
 | :--- | :--- | :--- | :--- | :--- |
 | Maximum compression | `IVF_RQ` | IVF indexing with RaBitQ quantization | Around `1/32` of raw size with `num_bits=1` | `IvfRq` |
 | Higher accuracy at small dimensions (`dimension <= 256`) | `IVF_PQ` | IVF indexing with product quantization | Usually `1/64` to `1/16` of raw size (depends on `num_sub_vectors`) | `IvfPq` |
-| Best recall/latency trade-off | `IVF_HNSW_SQ` | IVF-HNSW indexing with scalar | Typically a little larger than `1/4` of raw size | `IvfHnswSq` |
+| Best recall/latency trade-off | `IVF_HNSW_SQ` | IVF-HNSW indexing with scalar quantization | Typically a little larger than `1/4` of raw size | `IvfHnswSq` |
 | Highest recall / no quantization | `IVF_HNSW_FLAT` | IVF-HNSW indexing with no quantization; embedded library only | Around raw vector size plus HNSW graph overhead | `IvfHnswFlat` |
 
 <Warning>
@@ -84,7 +84,8 @@ giving an approximate ANN result.
 
 However, observe that a queried vector may lie near the boundary of $2$ or more partitions; thus, the true nearest neighbors are scattered across several different partitions.
  To address this, LanceDB exposes the `nprobes` parameter, which specifies the number of partitions searched. 
-A high `nprobes` parameter will yield more accurate results at slightly higher runtime.
+A higher probe budget searches more partitions, which can improve recall at
+higher CPU and I/O cost.
 
 <Frame caption="Edge case for single-partition brute force.">
   <img src="/static/assets/images/indexing/ivfpq_query_vector.webp" alt="IVF vector-space partitioning" />
@@ -142,11 +143,12 @@ Learn how to configure, build, and search LanceDB vector indexes, including buil
 | Parameter | Description |
 | :--- | :--- |
 | `limit` | Number of results to return (the `k` in `k-ANN`). |
-| `nprobes` | Sets both `minimum_nprobes` and `maximum_nprobes` to the same value in Lance. Leave unset to use Lance's adaptive defaults. At very high scales you will likely need to experiment to find your preferred recall / latency balance. |
-| `minimum_nprobes` | Minimum number of partitions scanned. Leave unset to use Lance's default. |
-| `maximum_nprobes` | Maximum number of partitions scanned. Only scans more than `minimum_nprobes` if an initial pass does not return enough results, which is useful for narrow filters. Leave unset, or set to `0`, to remove the cap. |
+| `nprobes` | Search a fixed number of partitions per index segment. Leave unset to use Auto. |
+| `search_effort` | A value from `0` to `1` for tuning recall and latency. `0.5` uses Auto; higher values search more partitions. This is not a recall percentage. |
+| `minimum_nprobes` | Minimum number of partitions to search per segment. Auto may search more from the start. |
+| `maximum_nprobes` | Maximum number of partitions to search per segment. Leave unset to allow further searching when needed. A low cap can reduce recall or return fewer results than requested. |
 | `ef` | HNSW search-time exploration factor. Start around `1.5 * k` and increase up to `10 * k` for higher recall. |
-| `refine_factor` | Reads and reranks additional candidates in memory to recover recall lost to quantization. Start between `5` and `50` (a factor of `25` reads and reranks the top `25 * k` candidates) and measure the latency cost, typically a few milliseconds, against the recall gained. |
+| `refine_factor` | Rerank candidates using full vectors to improve accuracy. A factor of `25` requests up to `25 * k` candidates. Higher values read more data; measure the recall gain and latency cost. |
 | `distance_range(lower_bound, upper_bound)` | Return only rows whose distance falls within `[lower_bound, upper_bound)`. Either bound is optional. Useful for near-duplicate detection or "close-enough" matching. |
 | `bypass_vector_index()` | Ignore the ANN index entirely and perform an exact (flat) scan. Can be used to measure ANN `recall@k`, or to query with a metric the index was not built for (e.g., a non-cosine query on a multivector column). |
 
@@ -173,14 +175,17 @@ older client.
 
 
 <Note>
-**Filtered queries and adaptive `nprobes`.** When a `where(...)` filter is active, LanceDB initially scans `minimum_nprobes` 
-partitions and uses a wider scan if too few rows are found. 
-Set `minimum_nprobes == maximum_nprobes` or call `nprobes(n)` to instead fix the partition count.
-Whether a deployment widens the scan this way depends on its version; one that does not scans exactly
-`minimum_nprobes` partitions.
+Start with Auto, then measure recall and latency before changing probe settings.
+If you set both `search_effort` and `nprobes`, effort takes precedence. Explicit
+min/max bounds still apply; equal bounds fix the count. See
+[tuning vector search](/search/vector-search#tuning-nprobes) for examples and
+guidance on choosing these controls.
 </Note>
 
-Here is an example of a vector search exercising several of the above parameters.
+<span id="probe-limits-example"></span>
+
+For a filtered search, you can let Auto choose within a range. The maximum also
+limits further searching if too few matches are found:
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -198,6 +203,8 @@ LanceDB also supports advanced search-time controls for thresholded retrieval, r
     {VectorIndexDistanceRange}
     </CodeBlock>
 </CodeGroup>
+
+<span id="measuring-vector-recall"></span>
 
 **Using `bypass_vector_index`:**
 

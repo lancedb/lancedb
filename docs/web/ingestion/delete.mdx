@@ -34,7 +34,7 @@ database is removed when the program finishes.
   `python delete_rows.py`.
 - **TypeScript:** install `@lancedb/lancedb`, save the code as `delete_rows.mts`,
   and run `node delete_rows.mts` with Node.js 22.18 or later.
-- **Rust:** download the [Rust examples](/static/code/ingestion-feedback-rust.zip),
+- **Rust:** download the [Rust examples](https://raw.githubusercontent.com/lancedb/lancedb/2af85bea8999c8cd23ec01ff62ba110c54652c10/docs/web/static/code/ingestion-feedback-rust.zip),
   extract the project, and run `cargo run --locked --bin delete`.
 
 <CodeGroup>
@@ -72,7 +72,7 @@ In LanceDB Embedded, `optimize()` provides maintenance operations. In Enterprise
 maintenance and retention follow the service configuration. Choose retention
 according to the history you need, rather than shortening it as part of a
 routine delete example. See [Compaction](/maintenance/compaction) and
-[Cleanup](/maintenance/cleanup) for the separate maintenance workflow.
+[Garbage Collection](/maintenance/cleanup) for the separate maintenance workflow.
 
 ## Complete write workflow {#complete-example}
 
@@ -85,7 +85,7 @@ prints the result, and removes its temporary data when finished.
   `python ingestion.py`.
 - **TypeScript:** install `@lancedb/lancedb`, save the code as `ingestion.mts`,
   and run `node ingestion.mts` with Node.js 22.18 or later.
-- **Rust:** download the [complete Rust project](/static/code/ingestion-rust.zip),
+- **Rust:** download the [complete Rust project](https://raw.githubusercontent.com/lancedb/lancedb/2af85bea8999c8cd23ec01ff62ba110c54652c10/docs/web/static/code/ingestion-rust.zip),
   extract it, and run `cargo run --locked`. It includes `src/main.rs`, the Cargo
   manifest and a lockfile for the example's dependencies. The code is shown below.
 

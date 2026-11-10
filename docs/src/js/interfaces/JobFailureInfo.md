@@ -31,3 +31,13 @@ optional phase: string;
 ```ts
 optional retryable: boolean;
 ```
+
+***
+
+### traceback?
+
+```ts
+optional traceback: string;
+```
+
+User-code traceback, possibly truncated by the server.

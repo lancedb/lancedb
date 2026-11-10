@@ -1,0 +1,217 @@
+---
+title: "Horizontal Scaling"
+sidebarTitle: "Horizontal Scaling"
+description: "How LanceDB Enterprise spreads serving capacity for a table across replica groups, and replicates it within each one."
+icon: "arrows-left-right"
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+LanceDB Enterprise scales serving capacity by assigning a table to one or
+more **replica groups** -- numbered subsets of the plan-executor fleet --
+and, within each group, by **replication factor** (RF): how many copies of
+the table's data that group holds. A table is served only from the groups
+it is explicitly assigned to; adding plan executors to the fleet, or adding
+a new group, never auto-includes existing tables. A pristine table that was
+never explicitly placed stays on one default group at the cluster's default
+RF. See [Architecture](/index#architecture).
+
+Placement is stored in the table's own manifest, not a separate
+configuration store, and takes effect for a table within its readers'
+read-consistency refresh interval after a change. An index can carry its
+own RF override within each of the table's groups instead of inheriting
+the table's RF. Reassigning a table's groups or RF is an operator action
+(through the admin API, not SQL); [contact support](https://www.lancedb.com/contact)
+to change a table's placement.
+
+Replica groups are numbered subsets of the fleet, not per-table resources --
+different tables can share a group, use entirely different groups, or
+overlap partially, and each picks its own RF independently within every
+group it uses:
+
+<div className="hidden dark:block">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
+  "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
+  "clusterBkg": "#211d1a", "clusterBorder": "#4c443f",
+  "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "18px"
+}}}%%
+flowchart TB
+    subgraph G0["Replica group 0"]
+        direction LR
+        G0A["Plan executor"]
+        G0B["Plan executor"]
+    end
+
+    subgraph G1["Replica group 1"]
+        direction LR
+        G1A["Plan executor"]
+    end
+
+    subgraph G2["Replica group 2"]
+        direction LR
+        G2A["Plan executor"]
+        G2B["Plan executor"]
+        G2C["Plan executor"]
+    end
+
+    TA["Table A<br/>groups 0, 1 · RF 2 in group 0, RF 1 in group 1"] -.-> G0
+    TA -.-> G1
+    TB["Table B<br/>group 2 only · RF 3"] -.-> G2
+    classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
+    classDef accent fill:#2a1810,stroke:#e8582d,stroke-width:1.5px,color:#f4ebe8
+    class TA,TB accent
+```
+
+</div>
+
+<div className="block dark:hidden">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
+  "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
+  "clusterBkg": "#f4ebe8", "clusterBorder": "#ad9e95",
+  "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "18px"
+}}}%%
+flowchart TB
+    subgraph G0["Replica group 0"]
+        direction LR
+        G0A["Plan executor"]
+        G0B["Plan executor"]
+    end
+
+    subgraph G1["Replica group 1"]
+        direction LR
+        G1A["Plan executor"]
+    end
+
+    subgraph G2["Replica group 2"]
+        direction LR
+        G2A["Plan executor"]
+        G2B["Plan executor"]
+        G2C["Plan executor"]
+    end
+
+    TA["Table A<br/>groups 0, 1 · RF 2 in group 0, RF 1 in group 1"] -.-> G0
+    TA -.-> G1
+    TB["Table B<br/>group 2 only · RF 3"] -.-> G2
+    classDef default fill:#ffffff,stroke:#ad9e95,stroke-width:1px,color:#221d19
+    classDef accent fill:#fff1ec,stroke:#e8582d,stroke-width:1.5px,color:#221d19
+    class TA,TB accent
+```
+
+</div>
+
+Table A is assigned to groups 0 and 1, at RF 2 and RF 1 respectively --
+three plan executors total hold a copy of Table A. Table B never touches
+groups 0 or 1 at all; it is assigned only to group 2, at RF 3. Group 2's
+plan executors serve no part of Table A, and group 0's plan executors
+serve no part of Table B. Raising Table B's RF to 3 did not add a single
+plan executor to Table A's serving path, and vice versa -- each table's
+placement decision only changes which plan executors hold *that* table's
+data.
+
+## Why this scales serving {#why}
+
+More replicas of a hot table's data, across more plan executors, means
+more of the fleet can serve that table's queries in parallel -- the same
+reasoning as adding query-serving capacity generally (see
+[Architecture](/index#architecture)), applied per table rather than
+cluster-wide. Replication also gives a table fault tolerance: losing one
+plan executor does not take its data offline if another replica still
+holds it.
+
+A single query that reads several tables routes every read to the same
+replica group -- the intersection of the tables' assigned groups, trying a
+lead group first and falling back through the rest of the order if it has
+no healthy plan executor. Keeping one query's reads co-located protects the
+locality of whichever group's cache is already warm for it, rather than
+letting each table's read drift to a different group.
+
+<div className="hidden dark:block">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
+  "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
+  "clusterBkg": "#211d1a", "clusterBorder": "#4c443f",
+  "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "18px"
+}}}%%
+flowchart LR
+    Q["Query node<br/>routes to the lead group"]
+
+    subgraph G0["Replica group 0 (lead)"]
+        direction LR
+        A0["Plan executor<br/>copy 1"]
+        A1["Plan executor<br/>copy 2"]
+    end
+
+    subgraph G1["Replica group 1 (fallback)"]
+        direction LR
+        B0["Plan executor<br/>copy 1"]
+        B1["Plan executor<br/>copy 2"]
+    end
+
+    Q --> A0
+    Q --> A1
+    Q -. "only if group 0 has no healthy PE" .-> B0
+    Q -. "only if group 0 has no healthy PE" .-> B1
+    classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
+    classDef accent fill:#2a1810,stroke:#e8582d,stroke-width:1.5px,color:#f4ebe8
+    class Q accent
+```
+
+</div>
+
+<div className="block dark:hidden">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
+  "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
+  "clusterBkg": "#f4ebe8", "clusterBorder": "#ad9e95",
+  "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "18px"
+}}}%%
+flowchart LR
+    Q["Query node<br/>routes to the lead group"]
+
+    subgraph G0["Replica group 0 (lead)"]
+        direction LR
+        A0["Plan executor<br/>copy 1"]
+        A1["Plan executor<br/>copy 2"]
+    end
+
+    subgraph G1["Replica group 1 (fallback)"]
+        direction LR
+        B0["Plan executor<br/>copy 1"]
+        B1["Plan executor<br/>copy 2"]
+    end
+
+    Q --> A0
+    Q --> A1
+    Q -. "only if group 0 has no healthy PE" .-> B0
+    Q -. "only if group 0 has no healthy PE" .-> B1
+    classDef default fill:#ffffff,stroke:#ad9e95,stroke-width:1px,color:#221d19
+    classDef accent fill:#fff1ec,stroke:#e8582d,stroke-width:1.5px,color:#221d19
+    class Q accent
+```
+
+</div>
+
+This table is assigned to two replica groups, each at replication factor
+2: four plan executors in total, each holding a full copy of the table's
+data. Adding a third group, or raising RF within a group, adds more
+plan executors that can serve this table's reads in parallel -- scaling
+throughput for this one table without touching any other table's
+placement.
+
+## Scaling interfaces {#scaling-interfaces}
+
+- [Distributed Search](/enterprise/distributed-search) for how a query
+  divides across query nodes and plan executors generally.
+- [Architecture](/index#architecture) for the components a replica group
+  is made of.

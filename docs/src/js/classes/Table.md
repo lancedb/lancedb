@@ -71,7 +71,7 @@ Add new columns with defined values.
 
 LanceDB Embedded computed-column declaration and refresh require a source
 build with the `experimental-functions` Cargo feature. Published packages
-disable it; LanceDB Distributed operations remain available.
+disable it; LanceDB Enterprise operations remain available.
 
 The `{ computed }` form stores the expression rather than evaluating it
 now: the column is committed with no values, and rows get them from
@@ -83,7 +83,7 @@ computed, so a mutated input is reflected by the next refresh. While a
 declaration reads a column, that column cannot be renamed, retyped or
 dropped.
 
-In LanceDB Distributed the expression is planned by the
+In LanceDB Enterprise the expression is planned by the
 server, and the refresh runs as a server job -- see
 [Table#refreshColumnAsync](Table.md#refreshcolumnasync).
 
@@ -125,6 +125,9 @@ abstract alterColumns(columnAlterations): Promise<AlterColumnsResult>
 ```
 
 Alter the name or nullability of columns.
+
+Local tables reject renaming source or vector columns referenced by
+`embedding_functions` schema metadata, preserving the embedding binding.
 
 #### Parameters
 
@@ -354,6 +357,24 @@ vector and non-vector searches)
 We currently don't support custom named indexes.
 The index name will always be `${column}_idx`.
 
+On LanceDB Embedded tables the index is built before the returned promise
+resolves. On LanceDB Enterprise tables it resolves once the build is
+scheduled. Until the build finishes, a vector index may be missing from
+[Table.listIndices](Table.md#listindices), a scalar or FTS index may be listed with 0
+indexed rows, and queries won't use the index. To wait until the index is
+ready, set [IndexOptions.waitTimeoutSeconds](../interfaces/IndexOptions.md#waittimeoutseconds), call
+[Table.waitForIndex](Table.md#waitforindex), or use [Table.createIndexAsync](Table.md#createindexasync) and wait
+on its job when the server returned a job ID.
+
+`waitTimeoutSeconds` waits for the submitted build when the server returns
+a job ID. On older servers that don't return one, it falls back to polling
+the index by name. [Table.waitForIndex](Table.md#waitforindex) always waits by name. When
+replacing an existing index, those name-based waits may return before the
+new build finishes because the old index can still match.
+`createIndexAsync` can track a specific build only when the server returned
+a job ID; otherwise it returns an already-complete job and callers must
+use [Table.waitForIndex](Table.md#waitforindex) for that build.
+
 #### Parameters
 
 * **column**: `string`
@@ -409,6 +430,11 @@ Create an index, returning a handle to the indexing job.
 
 The job may already be complete when returned; callers must not assume
 the index exists until [Job.wait](Job.md#wait) resolves.
+
+In LanceDB Enterprise, the returned job tracks this submission only if the
+server returns a job ID. If it does not, the job is already complete and
+does not wait for the background build; use [Table.waitForIndex](Table.md#waitforindex) and
+account for the replacement caveat described in [Table.createIndex](Table.md#createindex).
 
 #### Parameters
 
@@ -503,6 +529,9 @@ This is a metadata-only operation and does not remove the data from the
 underlying storage. In order to remove the data, you must subsequently
 call ``compact_files`` to rewrite the data without the removed columns and
 then call ``cleanup_files`` to remove the old files.
+
+Local tables reject dropping source or vector columns referenced by
+`embedding_functions` schema metadata, preserving the embedding binding.
 
 #### Parameters
 
@@ -686,7 +715,7 @@ The per-row errors Function refreshes recorded on this table.
 A refresh running under a skip policy records each row it skipped with
 the input that failed and the error. This lists those records, newest
 job first, plus a summary for any fragment whose per-row detail was
-capped. LanceDB Distributed only; reading errors needs read
+capped. LanceDB Enterprise only; reading errors needs read
 access to the table, since a message carries the value that failed.
 
 #### Parameters
@@ -843,6 +872,11 @@ abstract listIndices(): Promise<IndexConfig[]>
 
 List all indices that have been created with [Table.createIndex](Table.md#createindex)
 
+On LanceDB Enterprise tables, an index whose build hasn't finished may be
+missing (vector indices) or listed with 0 indexed rows (scalar and FTS
+indices), and `numUnindexedRows` may be undefined. Use
+[Table.waitForIndex](Table.md#waitforindex) to wait until an index is ready.
+
 #### Returns
 
 `Promise`&lt;[`IndexConfig`](../interfaces/IndexConfig.md)[]&gt;
@@ -909,6 +943,15 @@ Modeled after ``VACUUM`` in PostgreSQL.
  you have added or modified 100,000 or more records or run more than 20 data
  modification operations.
 
+On a LanceDB Enterprise (remote) table, only compaction is currently
+supported. Pruning old versions and index optimization are silently
+skipped there instead of being attempted, so this call resolves
+successfully, with zeroed pruning statistics, once the compaction job
+has been submitted; it does not wait for that job to finish.
+`compactionOptions` can tune the four per-job settings documented in
+[CompactionOptions](../interfaces/CompactionOptions.md). Older-server errors are propagated without
+retrying with the settings removed.
+
 #### Parameters
 
 * **options?**: `Partial`&lt;[`OptimizeOptions`](../interfaces/OptimizeOptions.md)&gt;
@@ -939,7 +982,7 @@ Prewarm one or more columns of data in the table.
     Prewarming is generally useful for columns used in filters or projections.
     Large columns (e.g. high-dimensional vectors or binary data) may not be
     practical to prewarm.
-    This feature is currently only supported in LanceDB Distributed.
+    This feature is currently only supported in LanceDB Enterprise.
 
 #### Returns
 
@@ -1042,7 +1085,7 @@ for await (const batch of table.query()) {
 ### refreshColumn()
 
 ```ts
-abstract refreshColumn(column): Promise<RefreshColumnResult>
+abstract refreshColumn(column, options?): Promise<RefreshColumnResult>
 ```
 
 Fill the rows of a computed column that hold no value yet.
@@ -1051,12 +1094,16 @@ Local refresh requires a source build with `experimental-functions`.
 Rows appended since the last refresh are filled by the next one, and
 rows whose inputs changed since they were computed are recomputed;
 everything else is left as it is. LanceDB Embedded only: in LanceDB
-Distributed a refresh runs as a server job, through [Table#refreshColumnAsync](Table.md#refreshcolumnasync).
+Enterprise a refresh runs as a server job, through [Table#refreshColumnAsync](Table.md#refreshcolumnasync).
 
 #### Parameters
 
 * **column**: `string`
     The name of the computed column to fill.
+
+* **options?**: [`RefreshColumnOptions`](../interfaces/RefreshColumnOptions.md)
+    Refresh options, all LanceDB
+    Enterprise only; see [Table#refreshColumnAsync](Table.md#refreshcolumnasync).
 
 #### Returns
 
@@ -1070,25 +1117,35 @@ number of rows filled and the new version number of the table.
 ### refreshColumnAsync()
 
 ```ts
-abstract refreshColumnAsync(column): Promise<Job>
+abstract refreshColumnAsync(column, options?): Promise<Job>
 ```
 
 Like [Table#refreshColumn](Table.md#refreshcolumn), but returns a handle to the refresh
 job instead of blocking until it completes.
 LanceDB Embedded refresh requires a source build with
-`experimental-functions`. LanceDB Distributed jobs do not require this
+`experimental-functions`. LanceDB Enterprise jobs do not require this
 feature.
 
 The job may already be complete when returned; callers must not assume
 the column is filled until [Job.wait](Job.md#wait) resolves. Invalid input --
 an unknown column, or one that is not computed -- rejects here rather
 than failing the job. In LanceDB Embedded the job runs in-process; in
-LanceDB Distributed it is the server's backfill job.
+LanceDB Enterprise it is the server's backfill job.
 
 #### Parameters
 
 * **column**: `string`
     The name of the computed column to fill.
+
+* **options?**: [`RefreshColumnOptions`](../interfaces/RefreshColumnOptions.md)
+    Refresh options, mirroring the SQL
+    `REFRESH COLUMN ... WHERE ... WITH (...)` form: `where` narrows the rows,
+    `errorPolicy`, `maxFailedFraction`, `maxFailedRows`, `rowTimeoutSeconds`
+    and `initTimeoutSeconds` govern failing rows, and `batchSize`,
+    `gpuClass`, `gpuCount`, `numWorkers` and `maxExecutorProcessesPerWorker`
+    size the workers. All are LanceDB Enterprise only; a LanceDB Embedded
+    refresh rejects every option other than `batchSize`, `gpuClass` and
+    `gpuCount`.
 
 #### Returns
 
@@ -1097,7 +1154,12 @@ LanceDB Distributed it is the server's backfill job.
 #### Example
 
 ```ts
-const job = await table.refreshColumnAsync("doubled");
+const job = await table.refreshColumnAsync("embedding", {
+  where: "published_at > '2026-01-01'",
+  errorPolicy: "skip",
+  maxFailedFraction: 0.01,
+  rowTimeoutSeconds: 30,
+});
 await job.wait();
 console.log(await job.status()); // "finished"
 ```
@@ -1312,7 +1374,7 @@ Tokenize a full-text search query using the tokenizer configured on an FTS index
 Specify exactly one of `column` or `indexName`.
 
 Model-backed tokenizers such as `jieba/*` and `lindera/*` are rebuilt in
-the client process from index metadata. In LanceDB Distributed, this means the
+the client process from index metadata. In LanceDB Enterprise, this means the
 same tokenizer model files must also exist locally (under
 `LANCE_LANGUAGE_MODEL_HOME`) and must match the files the server uses. A
 mismatch cannot be detected: the returned tokens may differ from what the

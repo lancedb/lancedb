@@ -38,6 +38,9 @@ const MAX_SECRET_NAME_CHARS: usize = 128;
 /// The maximum length of a function name.
 const MAX_FUNCTION_NAME_CHARS: usize = 128;
 
+/// The maximum length of a property graph name.
+const MAX_PROPERTY_GRAPH_NAME_CHARS: usize = 128;
+
 /// The maximum length of a database name.
 const MAX_DB_NAME_CHARS: usize = 64;
 
@@ -125,7 +128,7 @@ pub fn validate_table_name(name: &str) -> Result<()> {
     {
         return Err(Error::InvalidTableName {
             name: sanitize(name),
-            reason: "Only alphanumeric characters, dashes, underscores, and\
+            reason: "Only alphanumeric characters, dashes, underscores, and \
                 periods are allowed in table names."
                 .to_string(),
         });
@@ -212,6 +215,18 @@ pub fn validate_view_name(name: &str) -> Result<()> {
 pub fn validate_view_reference(name: &str, namespace_path: &[String]) -> Result<()> {
     validate_namespace(namespace_path)?;
     validate_view_name(name)
+}
+
+/// Validate a property graph name.
+pub fn validate_property_graph_name(name: &str) -> Result<()> {
+    validate_view_or_namespace_or_secret(name, "property graph name", MAX_PROPERTY_GRAPH_NAME_CHARS)
+}
+
+/// Validate a property graph name and every segment of the namespace path
+/// holding it.
+pub fn validate_property_graph_reference(name: &str, namespace_path: &[String]) -> Result<()> {
+    validate_namespace(namespace_path)?;
+    validate_property_graph_name(name)
 }
 
 /// Validate a function name. These do not allow dashes or periods.
@@ -665,6 +680,22 @@ impl TimeoutStream {
         Box::pin(Self::new(inner, timeout))
     }
 
+    /// Like [`Self::new`], but the stream expires at `deadline` rather than
+    /// `timeout` after its first poll. `timeout` is only used in the error.
+    pub fn with_deadline(
+        inner: SendableRecordBatchStream,
+        timeout: std::time::Duration,
+        deadline: tokio::time::Instant,
+    ) -> Self {
+        Self {
+            inner,
+            state: TimeoutState::Started {
+                deadline: Box::pin(tokio::time::sleep_until(deadline)),
+                timeout,
+            },
+        }
+    }
+
     fn timeout_error(timeout: &std::time::Duration) -> DataFusionError {
         DataFusionError::Execution(format!("Query timeout after {} ms", timeout.as_millis()))
     }
@@ -1050,6 +1081,15 @@ mod tests {
         assert!(validate_table_name("my/table").is_err());
         assert!(validate_table_name("my@table").is_err());
         assert!(validate_table_name("name with space").is_err());
+    }
+
+    #[test]
+    fn test_validate_table_name_invalid_character_message() {
+        let err = validate_table_name("my/table").unwrap_err().to_string();
+        assert!(
+            err.contains("underscores, and periods are allowed"),
+            "unexpected message: {err}"
+        );
     }
 
     #[test]

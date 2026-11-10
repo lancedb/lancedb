@@ -72,7 +72,7 @@ are wrappers around the Rust library.
 * `node`: **Deprecated** Typescript package source code
 * `java`: Java package source code
 * `docs/src`: SDK reference, built with mkdocs
-* `docs/web`: website guides for LanceDB Embedded and the APIs used by both Embedded and Distributed
+* `docs/web`: website guides for LanceDB Embedded and the APIs used by both Embedded and Enterprise
 * `docs/web-tests`: the tests the documentation's code examples are extracted from
 
 ## Documentation
@@ -84,13 +84,13 @@ it is ready for readers.
 ### Choose the right place
 
 - `docs/web/` holds website guides for LanceDB Embedded and the APIs used by both
-  Embedded and Distributed.
+  Embedded and Enterprise.
 - `docs/src/` holds the SDK reference. See [docs/README.md](docs/README.md) for
   its build and API-generation instructions.
 - `docs/web-tests/` and `rust/lancedb/tests/` hold tests used to generate the
   website's code examples.
 
-Document SDK APIs here, and explain which operations work in Embedded and Distributed.
+Document SDK APIs here, and explain which operations work in Embedded and Enterprise.
 Put Enterprise-specific deployment and operating instructions in the Enterprise
 documentation.
 
@@ -150,18 +150,15 @@ example.
 ### Say where a feature works
 
 Use `availability` in a page's frontmatter to describe the support covered by
-that page. Each product (`oss` for LanceDB Embedded, `enterprise` for LanceDB
-Enterprise) is either `available` or `unavailable`; use the summary
-and body for setup requirements, SDK differences and unsupported operations.
-For example, a page about signing in to Enterprise could declare:
+that page. Each product (`embedded` for LanceDB Embedded, `enterprise` for
+LanceDB Enterprise) is `available` or `unavailable`. Use the body for setup
+requirements, SDK differences and unsupported operations. For example, a page
+about signing in to Enterprise could declare:
 
 ```yaml
 availability:
-  oss: unavailable
+  embedded: unavailable
   enterprise: available
-  summary: >-
-    These sign-in instructions apply to LanceDB Enterprise. LanceDB
-    Embedded has no server to sign in to.
 ```
 
 Check these claims with the feature owner. Don't use `varies`, treat an API

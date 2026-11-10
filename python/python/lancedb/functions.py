@@ -16,7 +16,7 @@ import builtins
 import base64
 import functools
 import hashlib
-import importlib
+import importlib.util
 import inspect
 import symtable
 import json
@@ -35,6 +35,7 @@ from typing import (
     Callable,
     Literal,
     Optional,
+    TYPE_CHECKING,
     Union,
     get_args,
     get_origin,
@@ -61,6 +62,11 @@ from .secrets import EnvVarSecret
 _Int32 = conint(strict=True, ge=-(2**31), le=2**31 - 1)
 _UInt32 = conint(strict=True, ge=0, le=2**32 - 1)
 _UInt64 = conint(strict=True, ge=0, le=2**64 - 1)
+_GPU_CLASS_NAME = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+_GPU_CLASS_ERROR = (
+    "gpu_class must be a lowercase name of at most 63 letters, digits, or "
+    "hyphens, and cannot start or end with a hyphen"
+)
 
 
 def _validate_gpu_wire_marker(value: Any) -> bool:
@@ -73,6 +79,33 @@ def _normalize_gpu_marker(value: bool) -> Optional[bool]:
     if not isinstance(value, bool):
         raise ValueError("gpu must be a boolean")
     return True if value else None
+
+
+def _validate_gpu_class_name(value: Any) -> str:
+    if not isinstance(value, str) or not _GPU_CLASS_NAME.fullmatch(value):
+        raise ValueError(_GPU_CLASS_ERROR)
+    return value
+
+
+def _validate_batch_size(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("batch_size must be an integer")
+    if not 1 <= value <= 2**32 - 1:
+        raise ValueError("batch_size must be between 1 and 4294967295")
+    return value
+
+
+def _validate_row_timeout(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("row_timeout_seconds must be a number")
+    value = float(value)
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError("row_timeout_seconds must be positive and finite")
+    return value
 
 
 class _FrozenDict(dict):
@@ -178,6 +211,45 @@ class _OpenRemoteValue(_RemoteValue):
 
     def _unknown_field_names(self) -> set[str]:
         return set((self.__pydantic_extra__ or {}).keys())
+
+
+class FunctionRetryPolicy(_RemoteValue):
+    """Bound retries of selected errors inside one Enterprise Function call.
+
+    ``max_attempts`` includes the first call. Matchers are alternatives;
+    ``transient=True`` selects connection/timeouts, HTTP 429/503 and the
+    provider codes ``SlowDown`` and ``ServiceUnavailable``. Exception names
+    may be qualified, and subclasses and wrapped causes also match.
+
+    Backoff doubles with full jitter, bounded by ``max_backoff_seconds``.
+    Retry-After above that bound ends retries. A failed batch is retried as
+    one call: under ``skip``, exhaustion nulls every row in that call.
+    Completed calls are never repeated. Only opt in when repeating partial
+    work is safe; this does not make external side effects exactly once.
+
+    >>> policy = FunctionRetryPolicy(transient=True, max_attempts=3)
+    >>> policy.max_attempts
+    3
+    >>> disabled = FunctionRetryPolicy(max_attempts=1)
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    max_attempts: Annotated[int, Field(strict=True)] = 3
+    initial_backoff_seconds: Annotated[float, Field(strict=True)] = 0.2
+    max_backoff_seconds: Annotated[float, Field(strict=True)] = 30.0
+    exception_types: tuple[str, ...] = ()
+    message_pattern: Optional[str] = None
+    error_codes: tuple[str, ...] = ()
+    transient: Annotated[bool, Field(strict=True)] = False
+    honor_retry_after: Annotated[bool, Field(strict=True)] = True
+
+    @model_validator(mode="after")
+    def _validate_policy(self):
+        from ._lancedb import validate_function_retry_policy
+
+        validate_function_retry_policy(self.model_dump_json())
+        return self
 
 
 class FunctionArtifact(_RemoteValue):
@@ -286,11 +358,71 @@ class PythonEnvironmentSpec(_RemoteValue):
     system_packages: tuple[str, ...] = ()
 
 
+_HUGGING_FACE_MODEL_REPO = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$"
+)
+_HUGGING_FACE_REVISION = re.compile(r"^[0-9a-f]{40}$")
+
+
+class HuggingFaceModel(_RemoteValue):
+    """One immutable Hugging Face model snapshot required by a Function.
+
+    ``revision`` is a full 40-character lowercase commit SHA, not a branch or
+    tag. A Function may declare each repository once; separate versions of the
+    same repository use separate Function versions. The service prepares the
+    snapshot before initialization, so the model can load without a revision
+    argument or a Hugging Face Hub request::
+
+        @function(
+            pip=["sentence-transformers==3.3.1"],
+            models=[HuggingFaceModel(
+                repo="sentence-transformers/all-MiniLM-L6-v2",
+                revision="1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+            )],
+        )
+        class Embed:
+            def __init__(self):
+                from sentence_transformers import SentenceTransformer
+
+                self.model = SentenceTransformer(
+                    "sentence-transformers/all-MiniLM-L6-v2", device="cpu"
+                )
+
+            def __call__(self, text: str) -> list[float]:
+                return self.model.encode(text).tolist()
+    """
+
+    repo: str = Field(
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$"
+    )
+    revision: str
+
+    @field_validator("repo")
+    @classmethod
+    def _validate_repo(cls, value: str) -> str:
+        if not _HUGGING_FACE_MODEL_REPO.fullmatch(value) or any(
+            part in {".", ".."} for part in value.split("/")
+        ):
+            raise ValueError("model repo must be a Hugging Face owner/name")
+        return value
+
+    @field_validator("revision", mode="before")
+    @classmethod
+    def _validate_revision(cls, value: Any) -> str:
+        if not isinstance(value, str) or not _HUGGING_FACE_REVISION.fullmatch(value):
+            raise ValueError(
+                "model revision must be a full 40-character lowercase commit SHA"
+            )
+        return value
+
+
 class PythonRuntimeSpec(_RemoteValue):
     """Remote runtime definition with environment values.
 
     V1 supports ``kind="python"``. Newer runtime kinds remain readable, while
     their unknown payload fields are intentionally not retained by the client.
+    ``kind="python_v2"`` requires ``gpu=True`` and may name an operator-defined
+    ``gpu_class``.
     """
 
     kind: str
@@ -298,6 +430,7 @@ class PythonRuntimeSpec(_RemoteValue):
     environment: Optional[PythonEnvironmentSpec] = None
     env: Optional[Mapping[str, str]] = None
     gpu: Optional[bool] = None
+    gpu_class: Optional[str] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -315,6 +448,13 @@ class PythonRuntimeSpec(_RemoteValue):
             return None
         return _validate_gpu_wire_marker(value)
 
+    @field_validator("gpu_class", mode="before")
+    @classmethod
+    def _validate_gpu_class(cls, value):
+        if value is None:
+            return None
+        return _validate_gpu_class_name(value)
+
     @model_validator(mode="after")
     def _validate_runtime_kind(self):
         if self.kind == "python":
@@ -324,6 +464,10 @@ class PythonRuntimeSpec(_RemoteValue):
                 raise ValueError("python runtime requires environment")
             if self.gpu is not None:
                 raise ValueError("python runtime with gpu requires kind='python_v2'")
+            if self.gpu_class is not None:
+                raise ValueError(
+                    "python runtime with gpu_class requires kind='python_v2'"
+                )
         elif self.kind == "python_v2":
             if self.python_version is None:
                 raise ValueError("python_v2 runtime requires python_version")
@@ -336,6 +480,7 @@ class PythonRuntimeSpec(_RemoteValue):
             object.__setattr__(self, "environment", None)
             object.__setattr__(self, "env", None)
             object.__setattr__(self, "gpu", None)
+            object.__setattr__(self, "gpu_class", None)
         return self
 
 
@@ -345,6 +490,7 @@ class FunctionImage(_RemoteValue):
     manifest_digest: str
     descriptor: Mapping[str, Any]
     source: bool
+    models: tuple[HuggingFaceModel, ...] = ()
 
 
 def _validate_object_version(value: str) -> str:
@@ -363,6 +509,12 @@ _ObjectVersion = Annotated[
 class FunctionVersion(_RemoteValue):
     """A pinned object revision, independent of its executable image digest.
 
+    Unknown top-level fields from newer servers are accepted for forward
+    decoding, but they are not exposed on this value and are omitted from
+    ``to_canonical_json()``. Known fields retain their complete values, while
+    unknown fields inside the open ``image.descriptor`` mapping remain
+    available.
+
     ``name`` and ``namespace_path`` are the Function's parts, as a
     [SecretReference][lancedb.functions.SecretReference] carries a Secret's;
     they are what [get_function][lancedb.db.DBConnection.get_function] takes.
@@ -370,9 +522,16 @@ class FunctionVersion(_RemoteValue):
 
     ``source_digest`` identifies the registered source artifact, independently
     of the built ``image``. Compare it with
-    ``udf_def.registration_request.artifact.digest`` to check whether a local
-    [UdfDefinition][lancedb.functions.UdfDefinition] has the same source.
+    ``definition.registration_request.artifact.digest`` to check whether a local
+    [FunctionDefinition][lancedb.functions.FunctionDefinition] has the same source.
     It is ``None`` when the server does not provide a source digest.
+
+    ``gpu_class`` is the operator-defined GPU pool fixed into this Function
+    version, or ``None`` when registration used the deployment default.
+
+    ``batch_size``, ``row_timeout_seconds``, and ``result_stability`` retain
+    the execution controls reported by the catalog. They are ``None`` for
+    versions registered before the corresponding declaration.
     """
 
     name: str
@@ -387,6 +546,20 @@ class FunctionVersion(_RemoteValue):
     created_at_millis: int
     metadata: Mapping[str, str]
     disabled: bool
+    gpu_class: Optional[str] = None
+    batch_size: Optional[int] = None
+    row_timeout_seconds: Optional[float] = None
+    result_stability: Optional[str] = None
+
+    @field_validator("batch_size", mode="before")
+    @classmethod
+    def _validate_batch_size(cls, value):
+        return _validate_batch_size(value)
+
+    @field_validator("row_timeout_seconds", mode="before")
+    @classmethod
+    def _validate_row_timeout(cls, value):
+        return _validate_row_timeout(value)
 
     def __call__(self, **arguments: Any) -> FunctionApplication:
         """Bind this exact version to named table columns.
@@ -506,7 +679,7 @@ def _initialization_value(name: str, value: Any) -> Any:
 
 
 class FunctionRegistrationRequest(_RemoteValue):
-    """Stable remote registration envelope produced by :func:`udf`.
+    """Stable remote registration envelope produced by :func:`function`.
 
     Credential values deliberately have no field here. The only secret-shaped
     thing a client sends is ``secret_bindings``: the name of a Secret the
@@ -517,7 +690,21 @@ class FunctionRegistrationRequest(_RemoteValue):
     artifact: FunctionArtifactRequest
     signature: FunctionSignature
     runtime: PythonRuntimeSpec
+    batch_size: Optional[int] = None
+    row_timeout_seconds: Optional[float] = None
+    retry_policy: Optional[FunctionRetryPolicy] = None
     secret_bindings: tuple[SecretBinding, ...] = ()
+    models: tuple[HuggingFaceModel, ...] = ()
+
+    @field_validator("batch_size", mode="before")
+    @classmethod
+    def _validate_batch_size(cls, value):
+        return _validate_batch_size(value)
+
+    @field_validator("row_timeout_seconds", mode="before")
+    @classmethod
+    def _validate_row_timeout(cls, value):
+        return _validate_row_timeout(value)
 
 
 class FunctionVersionRef(_OpenRemoteValue):
@@ -661,7 +848,7 @@ class FunctionBinding(_RemoteValue):
 class RefreshColumnResult(_RemoteValue):
     """Terminal result of an expression-backed or Function-backed refresh Job.
 
-    LanceDB Embedded jobs produce this value in process. LanceDB Distributed
+    LanceDB Embedded jobs produce this value in process. LanceDB Enterprise
     decodes the same value from the durable server-job terminal payload.
     """
 
@@ -683,6 +870,8 @@ class RefreshColumnResult(_RemoteValue):
 
 
 _FUNCTION_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# Digest-pinned only; the server checks the host and repository grammar.
+_IMAGE_REFERENCE = re.compile(r"^[^/@\s]+/[^@\s]+@sha256:[0-9a-f]{64}$")
 
 _FUNCTION_BLOB_V2_TYPE = "blob_v2"
 _ARROW_EXTENSION_NAME_KEY = "ARROW:extension:name"
@@ -715,12 +904,14 @@ _GRAMMAR_PRIMITIVES = (
 )
 
 
-def _canonical_arrow_type(data_type: pa.DataType) -> str:
+def _canonical_arrow_type(
+    data_type: pa.DataType, *, collection_blobs: bool = False
+) -> str:
     """The compact Function grammar, or canonical exact JSON for nested types."""
     grammar = _grammar_arrow_type(data_type)
     if grammar is not None:
         return grammar
-    exact = _exact_arrow_type(data_type)
+    exact = _exact_arrow_type(data_type, collection_blobs=collection_blobs)
     return json.dumps(exact, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
@@ -832,11 +1023,12 @@ def _has_supported_blob_v2_layout(field: pa.Field) -> bool:
     )
 
 
-def _canonical_arrow_field(field: pa.Field) -> str:
+def _canonical_arrow_field(field: pa.Field, *, collection_blobs: bool = False) -> str:
+    """``collection_blobs`` admits Blob v2 under a list, which only outputs support."""
     _validate_exact_arrow_field(field)
     if _is_blob_v2_field(field):
         return _FUNCTION_BLOB_V2_TYPE
-    return _canonical_arrow_type(field.type)
+    return _canonical_arrow_type(field.type, collection_blobs=collection_blobs)
 
 
 def _blob_storage_type(field: pa.Field) -> pa.DataType:
@@ -888,11 +1080,14 @@ def _data_type_has_blob_v2(data_type: pa.DataType) -> bool:
 
 
 def _exact_arrow_field(
-    field: pa.Field, *, inside_collection: bool = False
+    field: pa.Field,
+    *,
+    inside_collection: bool = False,
+    collection_blobs: bool = False,
 ) -> dict[str, Any]:
     _validate_exact_arrow_field(field)
     if _is_blob_v2_field(field):
-        if inside_collection:
+        if inside_collection and not collection_blobs:
             raise TypeError(_NESTED_BLOB_COLLECTION_ERROR)
         return {
             "name": field.name,
@@ -905,13 +1100,20 @@ def _exact_arrow_field(
     value = {
         "name": field.name,
         "nullable": field.nullable,
-        "type": _exact_arrow_type(field.type, inside_collection=inside_collection),
+        "type": _exact_arrow_type(
+            field.type,
+            inside_collection=inside_collection,
+            collection_blobs=collection_blobs,
+        ),
     }
     return value
 
 
 def _exact_arrow_type(
-    data_type: pa.DataType, *, inside_collection: bool = False
+    data_type: pa.DataType,
+    *,
+    inside_collection: bool = False,
+    collection_blobs: bool = False,
 ) -> dict[str, Any]:
     for candidate, name in _GRAMMAR_PRIMITIVES:
         if data_type == candidate:
@@ -927,7 +1129,11 @@ def _exact_arrow_type(
         return {
             "type": "struct",
             "fields": [
-                _exact_arrow_field(field, inside_collection=inside_collection)
+                _exact_arrow_field(
+                    field,
+                    inside_collection=inside_collection,
+                    collection_blobs=collection_blobs,
+                )
                 for field in fields
             ],
         }
@@ -955,7 +1161,13 @@ def _exact_arrow_type(
                 else "fixed_size_list"
             ),
             "fields": [
-                _exact_arrow_field(data_type.value_field, inside_collection=True)
+                _exact_arrow_field(
+                    data_type.value_field,
+                    inside_collection=True,
+                    # Lance stores Blob v2 under list and large_list only.
+                    collection_blobs=collection_blobs
+                    and not pa.types.is_fixed_size_list(data_type),
+                )
             ],
         }
         if pa.types.is_fixed_size_list(data_type):
@@ -1076,7 +1288,7 @@ def _function_output(output: pa.DataType | pa.Field | pa.Schema) -> FunctionOutp
             raise ValueError("Function output must be non-nullable")
         return FunctionOutput(
             kind="scalar",
-            arrow_type=_canonical_arrow_field(field),
+            arrow_type=_canonical_arrow_field(field, collection_blobs=True),
             nullable=False,
         )
 
@@ -1092,7 +1304,7 @@ def _function_output(output: pa.DataType | pa.Field | pa.Schema) -> FunctionOutp
         fields=tuple(
             FunctionResultField(
                 name=field.name,
-                arrow_type=_canonical_arrow_field(field),
+                arrow_type=_canonical_arrow_field(field, collection_blobs=True),
                 nullable=field.nullable,
             )
             for field in fields
@@ -1204,11 +1416,15 @@ def _infer_signature(
     return FunctionSignature(inputs=tuple(inputs), output=output)
 
 
-def _is_udf_decorator(node: ast.expr) -> bool:
+# Both spellings strip from packaged source; `udf` is the deprecated alias.
+_DECORATOR_NAMES = frozenset({"function", "udf"})
+
+
+def _is_function_decorator(node: ast.expr) -> bool:
     if isinstance(node, ast.Call):
         node = node.func
-    return (isinstance(node, ast.Name) and node.id == "udf") or (
-        isinstance(node, ast.Attribute) and node.attr == "udf"
+    return (isinstance(node, ast.Name) and node.id in _DECORATOR_NAMES) or (
+        isinstance(node, ast.Attribute) and node.attr in _DECORATOR_NAMES
     )
 
 
@@ -1273,7 +1489,7 @@ def _module_references(module_source: str) -> set[str]:
             visit(child, found)
 
     found: set[str] = set()
-    module = symtable.symtable(module_source, "<udf>", "exec")
+    module = symtable.symtable(module_source, "<function>", "exec")
     for symbol in module.get_symbols():
         if (
             symbol.is_referenced()
@@ -1346,7 +1562,7 @@ def _definition_node(
         )
     except (OSError, TypeError) as error:
         raise ValueError(
-            f"@udf requires inspectable Python source for {target.__qualname__!r}"
+            f"@function requires inspectable Python source for {target.__qualname__!r}"
         ) from error
     module = ast.parse(source)
     is_class = inspect.isclass(target)
@@ -1361,15 +1577,16 @@ def _definition_node(
     ]
     if len(definitions) != 1 or isinstance(definitions[0], ast.AsyncFunctionDef):
         raise ValueError(
-            "@udf source must contain exactly one "
+            "@function source must contain exactly one "
             + ("class" if is_class else "synchronous function")
         )
     definition = definitions[0]
     if entry:
         if any(
-            not _is_udf_decorator(decorator) for decorator in definition.decorator_list
+            not _is_function_decorator(decorator)
+            for decorator in definition.decorator_list
         ):
-            raise ValueError("@udf cannot package additional Python decorators")
+            raise ValueError("@function cannot package additional Python decorators")
         definition.decorator_list = []
     return definition
 
@@ -1380,7 +1597,7 @@ def _definition_namespace(target: Any) -> Mapping[str, Any]:
         module = sys.modules.get(target.__module__)
         if module is None:
             raise ValueError(
-                f"@udf cannot resolve the module of {target.__qualname__!r}"
+                f"@function cannot resolve the module of {target.__qualname__!r}"
             )
         namespace = vars(module)
         environment = namespace.get("__builtins__", builtins)
@@ -1395,7 +1612,7 @@ def _definition_namespace(target: Any) -> Mapping[str, Any]:
     # The artifact runs under the standard builtins; only the exact mapping is
     # provably equivalent (a subclass or copy can change lookups and hooks).
     if environment is not vars(builtins):
-        raise ValueError("@udf cannot package a non-standard builtins environment")
+        raise ValueError("@function cannot package a non-standard builtins environment")
     return namespace
 
 
@@ -1409,7 +1626,7 @@ def _is_self_reference(target: Any, namespace: Mapping[str, Any], name: str) -> 
         return True
     # The decorator's own result is the one wrapper known to behave like
     # `target`; any other binding may differ from the packaged definition.
-    return type(bound) is UdfDefinition and bound._function is target
+    return type(bound) is FunctionDefinition and bound._function is target
 
 
 def _packaged_by_source(value: Any) -> bool:
@@ -1422,7 +1639,7 @@ def _packaged_by_source(value: Any) -> bool:
     qualname = value.__qualname__
     if "<" in qualname or "." in qualname:
         raise ValueError(
-            f"@udf cannot package {qualname!r}: only module-level functions and "
+            f"@function cannot package {qualname!r}: only module-level functions and "
             "classes travel with a Function, not lambdas, closures, or nested "
             "definitions"
         )
@@ -1462,6 +1679,28 @@ def _module_locations(module: types.ModuleType) -> tuple[str, ...]:
     return tuple(os.path.realpath(path) for path in getattr(module, "__path__", ()))
 
 
+def _module_locations_for_name(module_name: str) -> tuple[str, ...]:
+    """Where a top-level module would be imported from, without importing it
+    when it is not already loaded."""
+    import os
+
+    top = module_name.partition(".")[0]
+    module = sys.modules.get(top)
+    if module is not None:
+        return _module_locations(module)
+    try:
+        spec = importlib.util.find_spec(top)
+    except (AttributeError, ImportError, ValueError):
+        return ()
+    if spec is None:
+        return ()
+    if spec.submodule_search_locations:
+        return tuple(os.path.realpath(path) for path in spec.submodule_search_locations)
+    if spec.origin and spec.origin not in {"built-in", "frozen"}:
+        return (os.path.realpath(spec.origin),)
+    return ()
+
+
 class _SourcePackager:
     """Builds the entry module of a Function artifact.
 
@@ -1478,6 +1717,7 @@ class _SourcePackager:
         self._definitions: list[str] = []
         self._packaged: set[int] = set()
         self._names: dict[str, Any] = {}
+        self._warned_imports: set[str] = set()
 
     def package(self, target: Any, signature: FunctionSignature) -> str:
         entry = self._definition(target, entry=True, signature=signature)
@@ -1495,7 +1735,7 @@ class _SourcePackager:
         definition = _definition_node(target, entry=entry)
         if not inspect.isclass(target) and inspect.getclosurevars(target).nonlocals:
             raise ValueError(
-                "@udf cannot package functions that capture closure values"
+                "@function cannot package functions that capture closure values"
             )
         namespace = _definition_namespace(target)
         reader_name = (
@@ -1508,8 +1748,9 @@ class _SourcePackager:
         dynamic = _namespace_acquisition(definition, references)
         if dynamic:
             raise ValueError(
-                f"@udf cannot package dynamic namespace access: {dynamic!r}"
+                f"@function cannot package dynamic namespace access: {dynamic!r}"
             )
+        self._warn_unshipped_direct_imports(definition)
         self._packaged.add(id(target))
         self._claim(target.__name__, ("definition", id(target)))
         if reader_name is not None:
@@ -1519,9 +1760,9 @@ class _SourcePackager:
             if name == target.__name__:
                 if not _is_self_reference(target, namespace, name):
                     raise ValueError(
-                        f"@udf cannot package {name!r}: the module binds that name "
-                        "to another value, which the artifact's own definition "
-                        "would shadow"
+                        f"@function cannot package {name!r}: the module binds that "
+                        "name to another value, which the artifact's own "
+                        "definition would shadow"
                     )
                 continue
             if name in namespace:
@@ -1530,7 +1771,7 @@ class _SourcePackager:
                 unresolved.append(name)
         if unresolved:
             raise ValueError(
-                f"@udf source contains unresolved global names: {unresolved!r}"
+                f"@function source contains unresolved global names: {unresolved!r}"
             )
         return source
 
@@ -1576,7 +1817,7 @@ class _SourcePackager:
         claimed = self._names.setdefault(name, meaning)
         if claimed != meaning:
             raise ValueError(
-                f"@udf cannot package {name!r}: packaged definitions bind that "
+                f"@function cannot package {name!r}: packaged definitions bind that "
                 "name to different values"
             )
 
@@ -1584,8 +1825,8 @@ class _SourcePackager:
         if _packaged_by_source(value):
             if value.__name__ != name:
                 raise ValueError(
-                    f"@udf packages {value.__qualname__!r} by source, so it must be "
-                    f"referenced by its own name, not {name!r}"
+                    f"@function packages {value.__qualname__!r} by source, so it "
+                    f"must be referenced by its own name, not {name!r}"
                 )
             if id(value) not in self._packaged:
                 self._definitions.append(self._definition(value, entry=False))
@@ -1604,7 +1845,8 @@ class _SourcePackager:
         if isinstance(value, types.ModuleType):
             if value.__name__.split(".")[0] in _NAMESPACE_MODULES:
                 raise ValueError(
-                    f"@udf cannot package dynamic namespace access: {value.__name__!r}"
+                    "@function cannot package dynamic namespace access: "
+                    f"{value.__name__!r}"
                 )
             try:
                 imported = importlib.import_module(value.__name__)
@@ -1636,9 +1878,12 @@ class _SourcePackager:
         return f"{name} = {_literal_source(value)}"
 
     def _require_importable(self, module_name: str) -> None:
-        """Warn about an import the Function's environment likely cannot
-        satisfy: a module that lives in a local source tree, is not shipped
-        with ``code=``, and names no declared package.
+        """Warn about an import the Function's environment may not be able to
+        satisfy.
+
+        An unresolved module warns only when the Function declares no package
+        dependencies. A local source module warns unless ``code=`` ships it or
+        a declared requirement matches its top-level name.
 
         A warning rather than an error: a distribution name need not match
         the module it installs, so a declared package can still provide the
@@ -1650,25 +1895,58 @@ class _SourcePackager:
             or top in sys.stdlib_module_names
             or top in sys.builtin_module_names
             or _normalized_distribution(top) in self._requirements
+            or top in self._warned_imports
         ):
             return
-        module = sys.modules.get(top)
-        locations = () if module is None else _module_locations(module)
-        roots = _installed_roots()
-        if not locations or any(location.startswith(roots) for location in locations):
+        locations = _module_locations_for_name(top)
+        if not locations:
+            if not self._requirements:
+                self._warned_imports.add(top)
+                warnings.warn(
+                    f"@function source imports {top!r}, which is unavailable in the "
+                    "client environment and has no declared pip/conda dependencies. "
+                    "Remote availability cannot be verified; declare the required "
+                    "package or confirm that the base image provides it.",
+                    UserWarning,
+                )
             return
+        roots = _installed_roots()
+        if any(location.startswith(roots) for location in locations):
+            return
+        self._warned_imports.add(top)
         warnings.warn(
-            f"@udf source imports {module_name!r} from {locations[0]}, a local "
+            f"@function source imports {module_name!r} from {locations[0]}, a local "
             "module the Function's environment may not be able to import; ship "
             f"it with code=[{top}] or declare the package that provides it in "
             "pip/conda",
             UserWarning,
         )
 
+    def _warn_unshipped_direct_imports(
+        self, definition: Union[ast.FunctionDef, ast.ClassDef]
+    ) -> None:
+        """Warn for body imports that resolve to local, undeclared source.
+
+        Imports from site-packages are deliberately not guessed about: the
+        declared distribution name need not match the imported module, and the
+        client cannot inspect the remote base image.
+        """
+        for node in ast.walk(definition):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    self._require_importable(alias.name)
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                self._require_importable(node.module)
+
 
 def _code_files(modules: Sequence[Any]) -> tuple[dict[str, str], frozenset[str]]:
     """The Python source files of the modules and packages in ``code=``,
-    keyed by their path on the Function's import path."""
+    keyed by their path on the Function's import path.
+
+    Package resources are not part of the source artifact. Warn about files
+    and excluded directories that the walk leaves behind instead of silently
+    producing a Function that will fail later on the worker.
+    """
     import os
     from pathlib import Path
 
@@ -1704,19 +1982,39 @@ def _code_files(modules: Sequence[Any]) -> tuple[dict[str, str], frozenset[str]]
                 )
             root = Path(paths[0])
             sources = []
+            skipped = set()
             for directory, subdirectories, filenames in os.walk(root):
                 # Only importable modules travel: data files, caches, and
                 # directories that are not identifiers cannot be imported.
-                subdirectories[:] = sorted(
-                    child
-                    for child in subdirectories
-                    if _SOURCE_PATH_COMPONENT.fullmatch(child)
-                    and child != "__pycache__"
-                )
-                for filename in filenames:
+                kept = []
+                for child in sorted(subdirectories):
+                    if child == "__pycache__":
+                        continue
+                    if _SOURCE_PATH_COMPONENT.fullmatch(child):
+                        kept.append(child)
+                    else:
+                        relative = (Path(directory) / child).relative_to(root)
+                        skipped.add(f"{name}/{relative.as_posix()}/")
+                subdirectories[:] = kept
+                for filename in sorted(filenames):
                     stem, suffix = os.path.splitext(filename)
+                    if suffix in {".pyc", ".pyo"}:
+                        continue
                     if suffix == ".py" and _SOURCE_PATH_COMPONENT.fullmatch(stem):
                         sources.append(Path(directory) / filename)
+                    else:
+                        relative = (Path(directory) / filename).relative_to(root)
+                        skipped.add(f"{name}/{relative.as_posix()}")
+            if skipped:
+                skipped_paths = ", ".join(sorted(skipped))
+                warnings.warn(
+                    f"code= ships Python .py modules only; package {name!r} "
+                    f"will not include: {skipped_paths}. Install a package that "
+                    "includes the required resources with pip= or conda=, and "
+                    f"remove {name!r} from code= so the copied package cannot "
+                    "shadow the installed distribution.",
+                    UserWarning,
+                )
             for path in sources:
                 relative = path.relative_to(root).as_posix()
                 files[f"{name}/{relative}"] = _source_text(path)
@@ -1833,13 +2131,23 @@ def _class_call(cls: type) -> Callable[..., Any]:
     return call
 
 
-class UdfDefinition:
+class FunctionDefinition:
     """A Python callable prepared for remote Function registration.
 
-    Instances are created with :func:`udf`. Calling an instance executes the
-    original Python function, or constructs the original class, which keeps
-    local unit testing ordinary. Remote execution adapts the callable to the
-    internal Arrow batch ABI described by the registration artifact.
+    Instances are created with :func:`function`. Calling an instance is ordinary
+    local Python: a decorated function is called directly, while a decorated
+    class is constructed using its initialization fields and the returned
+    instance is called with each input. Reuse the instance and call its
+    ``close`` method when it defines one. This public call does not create a
+    remote application or build the declared remote runtime, and it does not
+    need the private implementation attribute.
+
+    Remote execution adapts the callable to the internal Arrow batch ABI
+    described by the registration artifact. By default it invokes the callable
+    once per row. A callable whose parameters are all annotated as
+    ``pyarrow.Array`` receives whole Arrow arrays and returns a
+    ``pyarrow.Array`` instead. This authoring choice is independent of the
+    internal artifact adapter in the registration request.
     """
 
     def __init__(
@@ -1852,17 +2160,25 @@ class UdfDefinition:
         pip: tuple[str, ...],
         env: Mapping[str, str],
         python_version: Optional[str],
+        batch_size: Optional[int] = None,
+        row_timeout_seconds: Optional[float] = None,
+        retry_policy: Optional[FunctionRetryPolicy] = None,
         gpu: bool = False,
+        gpu_class: Optional[str] = None,
         conda: tuple[str, ...] = (),
         conda_channels: tuple[str, ...] = (),
         apt: tuple[str, ...] = (),
+        image: Optional[str] = None,
         code: tuple[types.ModuleType, ...] = (),
+        models: tuple[HuggingFaceModel, ...] = (),
     ):
         is_class = inspect.isclass(function)
         if not is_class and (
             not inspect.isfunction(function) or inspect.iscoroutinefunction(function)
         ):
-            raise TypeError("@udf requires a synchronous Python function or a class")
+            raise TypeError(
+                "@function requires a synchronous Python function or a class"
+            )
         function_name = name or function.__name__
         if not _FUNCTION_NAME.fullmatch(function_name):
             raise ValueError(f"invalid Function name: {function_name!r}")
@@ -1870,6 +2186,11 @@ class UdfDefinition:
             raise ValueError("a Function environment is pip or conda, not both")
         if conda_channels and not conda:
             raise ValueError("conda_channels requires conda packages")
+        gpu_marker = _normalize_gpu_marker(gpu)
+        if gpu_class is not None:
+            _validate_gpu_class_name(gpu_class)
+            if gpu_marker is None:
+                raise ValueError("gpu_class requires gpu=True")
         packages = tuple(sorted(set(conda if conda else pip)))
         system_packages = tuple(sorted(set(apt)))
         if any(
@@ -1877,16 +2198,33 @@ class UdfDefinition:
             for package in packages + system_packages
         ):
             raise ValueError("package requirements must be non-empty and trimmed")
+        if image is not None and not _IMAGE_REFERENCE.fullmatch(image):
+            raise ValueError(
+                f"Function image {image!r} must be host/repository@sha256:<digest>"
+            )
+        if any(not isinstance(model, HuggingFaceModel) for model in models):
+            raise TypeError("models must contain HuggingFaceModel values")
+        repos = [model.repo for model in models]
+        duplicates = sorted({repo for repo in repos if repos.count(repo) > 1})
+        if duplicates:
+            raise ValueError(
+                "a Function declares each Hugging Face repository once; "
+                f"duplicated: {duplicates!r}"
+            )
         if conda:
             environment_spec = PythonEnvironmentSpec(
                 kind="conda",
                 packages=packages,
                 channels=tuple(conda_channels),
+                image=image,
                 system_packages=system_packages,
             )
         else:
             environment_spec = PythonEnvironmentSpec(
-                kind="pip", packages=packages, system_packages=system_packages
+                kind="pip",
+                packages=packages,
+                image=image,
+                system_packages=system_packages,
             )
         environment = dict(env)
         if any(
@@ -1894,10 +2232,20 @@ class UdfDefinition:
             for key, value in environment.items()
         ):
             raise TypeError("Function env keys and values must be strings")
+        reserved = sorted(
+            set(environment).intersection(
+                {"HF_HOME", "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"}
+            )
+        )
+        if models and reserved:
+            raise ValueError(
+                "model Functions reserve environment variables "
+                f"{reserved!r}; the worker sets them for the private snapshot"
+            )
         if is_class:
             if "<" in function.__qualname__ or "." in function.__qualname__:
                 raise ValueError(
-                    "@udf classes must be defined at module level; nested classes "
+                    "@function classes must be defined at module level; nested classes "
                     "would capture their enclosing scope"
                 )
             signature = _infer_signature(
@@ -1932,7 +2280,6 @@ class UdfDefinition:
             kind = _PYTHON_CALLABLE_ARTIFACT
             source = entry_source.encode("utf-8")
         digest = f"sha256:{hashlib.sha256(source).hexdigest()}"
-        gpu_marker = _normalize_gpu_marker(gpu)
         runtime = PythonRuntimeSpec(
             kind="python_v2" if gpu_marker is not None else "python",
             python_version=python_version
@@ -1940,6 +2287,7 @@ class UdfDefinition:
             environment=environment_spec,
             env=environment,
             gpu=gpu_marker,
+            gpu_class=gpu_class,
         )
         self._function = function
         self._request = FunctionRegistrationRequest(
@@ -1959,6 +2307,10 @@ class UdfDefinition:
             ),
             signature=signature,
             runtime=runtime,
+            batch_size=batch_size,
+            row_timeout_seconds=row_timeout_seconds,
+            retry_policy=retry_policy,
+            models=models,
         )
         # A class's own __dict__ holds its methods; copying it would shadow
         # this wrapper's attributes.
@@ -2040,12 +2392,12 @@ class UdfDefinition:
 
 
 @overload
-def udf(function: Callable[..., Any]) -> UdfDefinition: ...
+def function(target: Callable[..., Any]) -> FunctionDefinition: ...
 
 
 @overload
-def udf(
-    function: None = None,
+def function(
+    target: None = None,
     *,
     name: Optional[str] = None,
     input_schema: Optional[pa.Schema] = None,
@@ -2053,16 +2405,22 @@ def udf(
     pip: tuple[str, ...] | list[str] = (),
     env: Optional[Mapping[str, str]] = None,
     python_version: Optional[str] = None,
+    batch_size: Optional[int] = None,
+    row_timeout_seconds: Optional[float] = None,
+    retry_policy: Optional[FunctionRetryPolicy] = None,
     gpu: bool = False,
+    gpu_class: Optional[str] = None,
     conda: tuple[str, ...] | list[str] = (),
     conda_channels: tuple[str, ...] | list[str] = (),
     apt: tuple[str, ...] | list[str] = (),
+    image: Optional[str] = None,
     code: Sequence[types.ModuleType] = (),
-) -> Callable[[Callable[..., Any]], UdfDefinition]: ...
+    models: Sequence[HuggingFaceModel] = (),
+) -> Callable[[Callable[..., Any]], FunctionDefinition]: ...
 
 
-def udf(
-    function: Optional[Callable[..., Any]] = None,
+def function(
+    target: Optional[Callable[..., Any]] = None,
     *,
     name: Optional[str] = None,
     input_schema: Optional[pa.Schema] = None,
@@ -2070,11 +2428,17 @@ def udf(
     pip: tuple[str, ...] | list[str] = (),
     env: Optional[Mapping[str, str]] = None,
     python_version: Optional[str] = None,
+    batch_size: Optional[int] = None,
+    row_timeout_seconds: Optional[float] = None,
+    retry_policy: Optional[FunctionRetryPolicy] = None,
     gpu: bool = False,
+    gpu_class: Optional[str] = None,
     conda: tuple[str, ...] | list[str] = (),
     conda_channels: tuple[str, ...] | list[str] = (),
     apt: tuple[str, ...] | list[str] = (),
+    image: Optional[str] = None,
     code: Sequence[types.ModuleType] = (),
+    models: Sequence[HuggingFaceModel] = (),
 ):
     """Prepare a Python function or class for remote Function registration.
 
@@ -2130,9 +2494,17 @@ def udf(
       imported normally, so helpers shared by several Functions live in one
       place.
 
-    A reference to a module in a local source tree that is neither shipped
-    with ``code`` nor named by a declared package draws a warning at
-    registration, because the worker will most likely fail to import it.
+    A module imported by the packaged source -- including a direct ``import``
+    inside a function or method body -- draws a warning at registration when
+    the client cannot resolve its top-level module and declares no package
+    dependencies, or when it resolves to local source outside ``code`` and
+    no declared requirement matches the imported module name. The warning
+    does not assert that the remote environment lacks the module:
+    ``pip``/``conda`` distribution names need not match the modules they
+    install, and the client cannot inspect the contents of a base or custom
+    image. Warnings follow normal Python warning filters and may be promoted
+    to errors. Declare every third-party import in ``pip`` or ``conda`` even
+    when it happens to be installed on the registration host.
     Closures, lambdas, nested definitions, mutable module-level
     objects, code that reaches the module namespace another way
     (``globals()``/``eval``, ``sys.modules``, ``builtins``), and a
@@ -2144,7 +2516,10 @@ def udf(
     Parameters
     ----------
     function : function or class, optional
-        The synchronous callable, or the class whose instances are called.
+        The synchronous callable, or the class whose instances are called. For
+        a function, annotate every parameter as ``pyarrow.Array`` to opt into
+        vectorized execution; a matching return annotation documents that the
+        callable returns an Arrow array.
     name : str, optional
         The remote Function name. Defaults to the callable name.
         Must start with an ASCII letter or underscore and contain only ASCII
@@ -2169,6 +2544,10 @@ def udf(
         conda cannot provide, such as FFmpeg's for ``torchcodec``. Packages
         are unpacked without running their maintainer scripts. Works with
         ``pip`` or ``conda``; requires image execution.
+    image : str, optional
+        A digest-pinned registry image (``"host/repository@sha256:<digest>"``)
+        the remote environment is built on instead of the default base. Pip
+        requirements install only what the image lacks.
     env : mapping of str to str, optional
         Environment variables included in the Function definition. Not for
         credentials -- these are ordinary configuration, stored with the
@@ -2176,17 +2555,49 @@ def udf(
         values that differ between bindings.
     python_version : str, optional
         Remote Python major/minor version. Defaults to the client version.
+    batch_size : int, optional
+        Maximum number of input rows supplied in one execution batch. Must be
+        between 1 and 4294967295. Remote execution may use smaller batches.
+        When omitted, the service chooses the batch size adaptively.
+    row_timeout_seconds : float, optional
+        Positive, finite deadline in seconds for each Python call: one row for
+        scalar Functions and one batch for vectorized Functions. This does not
+        govern class initialization. When omitted, the service applies its
+        default per-call budget.
+    retry_policy : FunctionRetryPolicy, optional
+        Retry selected failed calls inside the Function, with bounded attempts
+        and backoff. A refresh may override this default. Retrying a partial
+        call must be safe; completed calls are not repeated. For batch Functions,
+        skip after exhaustion applies to the whole failed call.
     gpu : bool, default False
         Whether every remote execution requires a GPU. The execution platform
         selects one compatible GPU for each worker. The requirement is part of
         the immutable Function version.
+    gpu_class : str, optional
+        Operator-defined GPU class for every execution of this Function, such
+        as ``"a10g"`` or ``"h100"``. Requires ``gpu=True`` and follows the
+        lowercase 63-character DNS-label rule. The class is part of the
+        immutable Function version; per-refresh aggregate GPU budgets are
+        selected through ``refresh_column`` instead of registration.
     code : sequence of module, optional
         Top-level modules or packages whose importable ``.py`` files ship
-        with the Function and are importable by their own names.
+        with the Function and are importable by their own names. Package data
+        files are not copied. To use a package that includes required data
+        resources, install it with ``pip=`` or ``conda=`` and remove that
+        package from ``code=`` so the copied Python package cannot shadow the
+        installed distribution. ``@function`` warns when it skips files from a
+        package in ``code=``.
+    models : sequence of HuggingFaceModel, optional
+        Immutable Hugging Face repository snapshots prepared in the worker
+        node cache before user code starts. A Function may declare a
+        repository once. Different revisions of one repository use different
+        Function versions. Model Functions run offline with a private
+        ``HF_HOME``; bind ``HF_TOKEN`` through Secrets when the repository
+        requires authentication.
 
     Returns
     -------
-    UdfDefinition
+    FunctionDefinition
         A callable definition accepted by
         :meth:`lancedb.db.DBConnection.create_function`,
         :meth:`lancedb.db.AsyncConnection.create_function_async` and
@@ -2194,14 +2605,14 @@ def udf(
 
     Examples
     --------
-    >>> from lancedb import udf
-    >>> @udf(pip=["numpy==2.2.0"])
+    >>> from lancedb import function
+    >>> @function(pip=["numpy==2.2.0"])
     ... def score(value: float) -> float:
     ...     return value * 2
     >>> score(1.5)
     3.0
     >>> import pyarrow as pa
-    >>> @udf(
+    >>> @function(
     ...     input_schema=pa.schema([pa.field("value", pa.int64(), nullable=False)]),
     ...     output_schema=pa.int64(),
     ... )
@@ -2209,25 +2620,73 @@ def udf(
     ...     return value
     >>> batch_identity(pa.array([1, 2, 3])).to_pylist()
     [1, 2, 3]
-    >>> @udf(pip=["cupy-cuda12x"], gpu=True)
+    >>> @function(pip=["cupy-cuda12x"], gpu=True, gpu_class="a10g")
     ... def gpu_score(value: int) -> int:
     ...     return value * 2
     >>> gpu_score.registration_request.runtime.gpu
     True
-    >>> @udf
+    >>> gpu_score.registration_request.runtime.gpu_class
+    'a10g'
+    >>> @function
     ... class scale:
     ...     def __init__(self, factor: float, offset: float = 0.0):
     ...         self.factor, self.offset = factor, offset
     ...     def __call__(self, value: float) -> float:
     ...         return value * self.factor + self.offset
-    >>> scale(factor=2.0)(1.5)
+    ...     def close(self):
+    ...         self.factor = 0.0
+    >>> scale_fn = scale(factor=2.0)
+    >>> scale_fn(1.5)
     3.0
+    >>> scale_fn(2.0)
+    4.0
+    >>> scale_fn.close()
     >>> [field.name for field in scale.registration_request.signature.initialization]
     ['factor', 'offset']
+    >>> import lancedb
+    >>> @function(
+    ...     input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
+    ...     output_schema=lancedb.blob("copy", nullable=False),
+    ... )
+    ... def copy_blobs(image: pa.Array) -> pa.Array:
+    ...     return image
+
+    **Local execution.** A function definition is callable with its decorated
+    input signature and runs the original function in the current Python
+    environment. A class definition is called with its initialization
+    arguments and constructs one instance; call that instance for row inputs,
+    reuse it as needed, and call ``close`` if it defines that method. This path
+    does not create a registered
+    [FunctionVersion][lancedb.functions.FunctionVersion], build the declared
+    remote environment, resolve Secrets, or run the remote Arrow adapter or
+    sandbox. A registered ``FunctionVersion`` call is different: it binds
+    ``col(...)`` inputs and returns a remote
+    [FunctionApplication][lancedb.functions.FunctionApplication].
+
+    ```python
+    scaled = scale(factor=2.0)
+    try:
+        assert scaled(1.5) == 3.0
+        assert scaled(2.0) == 4.0
+    finally:
+        scaled.close()
+    ```
+
+    Blob v2 input is exposed as ``pyarrow.LargeBinaryArray`` in vectorized
+    mode (and as ``bytes`` in row mode). Return a ``LargeBinaryArray`` with the
+    declared nullability. Use :func:`lancedb.blob` in the explicit schemas;
+    plain ``pyarrow.large_binary()`` does not carry Blob v2 semantics.
+
+    A Blob v2 field may sit at the top level or inside a struct in inputs and
+    outputs. Only outputs may nest it in a list or large list (for example
+    ``pa.list_(lancedb.blob("item"))``, returned as a list of ``bytes``);
+    fixed-size lists and maps are not supported. List-nested Blob v2 values
+    are queryable as Blob descriptors, but the row-id blob fetch APIs and
+    ``blob_mode="bytes"`` cannot fetch payloads inside lists.
     """
 
-    def decorate(target: Any) -> UdfDefinition:
-        return UdfDefinition(
+    def decorate(target: Any) -> FunctionDefinition:
+        return FunctionDefinition(
             target,
             name=name,
             input_schema=input_schema,
@@ -2235,16 +2694,22 @@ def udf(
             pip=tuple(pip),
             env={} if env is None else env,
             python_version=python_version,
+            batch_size=batch_size,
+            row_timeout_seconds=row_timeout_seconds,
+            retry_policy=retry_policy,
             gpu=gpu,
+            gpu_class=gpu_class,
             conda=tuple(conda),
             conda_channels=tuple(conda_channels),
             apt=tuple(apt),
+            image=image,
             code=tuple(code),
+            models=tuple(models),
         )
 
-    if function is None:
+    if target is None:
         return decorate
-    return decorate(function)
+    return decorate(target)
 
 
 __all__ = [
@@ -2258,17 +2723,44 @@ __all__ = [
     "FunctionOutput",
     "FunctionParameter",
     "FunctionRegistrationRequest",
+    "FunctionRetryPolicy",
     "FunctionResultField",
     "FunctionSignature",
     "FunctionImage",
     "FunctionVersion",
     "FunctionVersionRef",
+    "HuggingFaceModel",
     "InputBinding",
     "OutputMapping",
     "PythonEnvironmentSpec",
     "PythonAdapterSpec",
     "PythonRuntimeSpec",
     "RefreshColumnResult",
-    "UdfDefinition",
-    "udf",
+    "FunctionDefinition",
 ]
+
+
+def udf(*args: Any, **kwargs: Any) -> Any:
+    """Deprecated alias of :func:`function`."""
+    warnings.warn(
+        "lancedb.udf is deprecated; use lancedb.function",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return function(*args, **kwargs)
+
+
+UDF_DEFINITION_DEPRECATION = (
+    "lancedb.UdfDefinition is deprecated; use lancedb.FunctionDefinition"
+)
+
+
+def __getattr__(name: str) -> Any:
+    if name == "UdfDefinition":
+        warnings.warn(UDF_DEFINITION_DEPRECATION, DeprecationWarning, stacklevel=2)
+        return FunctionDefinition
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+if TYPE_CHECKING:
+    UdfDefinition = FunctionDefinition

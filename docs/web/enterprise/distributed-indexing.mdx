@@ -1,0 +1,88 @@
+---
+title: "Distributed Indexing"
+sidebarTitle: "Distributed Indexing"
+description: "How LanceDB Enterprise distributes a vector index build across a fleet of workers, stage by stage."
+icon: "layer-group"
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+A vector index build splits into stages, and the data in scope narrows at
+each one: training works from a small sample, shuffling touches every row
+once, and merging works entirely within one partition at a time. Full-text
+and scalar index builds skip training and shuffling -- they bin-pack
+directly into independent tasks workers claim and build in parallel,
+closer to how [distributed compaction](/enterprise/distributed-compaction)
+splits work. See [Architecture](/index#architecture).
+
+## Stages of a vector index build {#stages}
+
+1. **Train.** A sample of the table's vectors -- not the full dataset --
+   trains the shared model every worker will use: IVF partition centroids,
+   and for IVF-PQ, a PQ codebook on top of them.
+2. **Shuffle.** Every row in the table gets assigned to its nearest
+   trained partition and regrouped so that all of one partition's rows end
+   up together, wherever in the table they originally lived.
+3. **Merge.** Each partition is now self-contained, so workers build and
+   merge partitions in parallel with no cross-partition coordination --
+   one worker's output never depends on another's.
+4. **Commit.** The finished index is committed to the table.
+
+<div className="hidden dark:block">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
+  "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
+  "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "18px"
+}}}%%
+flowchart LR
+    S["Sample"] --> T["Train IVF centroids<br/>+ PQ codebook"]
+    T --> Sh["Shuffle: assign every row<br/>to its nearest partition"]
+    Sh --> M1["Merge<br/>partition A"]
+    Sh --> M2["Merge<br/>partition B"]
+    Sh --> M3["Merge<br/>partition C"]
+    M1 --> C["Commit the<br/>finished index"]
+    M2 --> C
+    M3 --> C
+    classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
+    classDef accent fill:#2a1810,stroke:#e8582d,stroke-width:1.5px,color:#f4ebe8
+    class Sh accent
+```
+
+</div>
+
+<div className="block dark:hidden">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
+  "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
+  "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "18px"
+}}}%%
+flowchart LR
+    S["Sample"] --> T["Train IVF centroids<br/>+ PQ codebook"]
+    T --> Sh["Shuffle: assign every row<br/>to its nearest partition"]
+    Sh --> M1["Merge<br/>partition A"]
+    Sh --> M2["Merge<br/>partition B"]
+    Sh --> M3["Merge<br/>partition C"]
+    M1 --> C["Commit the<br/>finished index"]
+    M2 --> C
+    M3 --> C
+    classDef default fill:#ffffff,stroke:#ad9e95,stroke-width:1px,color:#221d19
+    classDef accent fill:#fff1ec,stroke:#e8582d,stroke-width:1.5px,color:#221d19
+    class Sh accent
+```
+
+</div>
+
+## Indexing interfaces {#indexing-interfaces}
+
+The shared indexing guides describe how to build and maintain each index
+type:
+
+- [Vector indexes](/indexing/vector-index) and [vector search](/search/vector-search).
+- [Full-text indexes](/indexing/fts-index) and [full-text search](/search/full-text-search).
+- [Scalar indexes](/indexing/scalar-index) and [filtering](/search/filtering).
+- [Incremental Indexing](/indexing/incremental-indexing) for triggering and tracking a build.

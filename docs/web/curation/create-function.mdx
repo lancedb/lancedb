@@ -1,5 +1,6 @@
 ---
 title: "Create a Function"
+tag: "Early access"
 sidebarTitle: "Create Function"
 description: "Register Python as a column: CPU, GPU, and remote-service Functions, called once per row or once per batch."
 icon: code
@@ -9,12 +10,17 @@ availability:
   enterprise: available
 ---
 
+<Badge color="purple">Early access</Badge>
+
 Some curation steps cannot be written as a SQL expression: an embedding
 model, an image decode, a call to an external service. A Function is a
 Python callable registered with the database, versioned, and then applied as
 a column or called in a query -- the code runs where the data is, not pulled
 into your process first. This page covers how to shape one; later curation
-tasks such as [Chunking](/curation/chunking) assume you have read it.
+tasks such as [Chunking](/curation/chunking) assume you have read it. The
+full registration, listing, refresh and drop lifecycle is covered on the
+[Function management reference](/management/function); the examples below
+focus on shaping a Function for common curation tasks.
 
 ## Scalar: once per row {#scalar}
 
@@ -23,9 +29,9 @@ inferred from the annotations:
 
 <CodeGroup>
 ```python Python icon="python"
-from lancedb import udf
+from lancedb import function
 
-@udf(pip=["numpy==2.2.0"])
+@function(pip=["numpy==2.2.0"])
 def score(value: float) -> float:
     return value * 2
 
@@ -49,9 +55,13 @@ same doubling logic, vectorized over a whole batch at once:
 ```python Python icon="python"
 import pyarrow as pa
 import pyarrow.compute as pc
-from lancedb import udf
+from lancedb import function
 
-@udf(pip=["numpy==2.2.0"])
+@function(
+    pip=["numpy==2.2.0"],
+    batch_size=32,
+    row_timeout_seconds=90,
+)
 def score_batch(value: pa.Array) -> pa.Array:
     return pc.multiply(value, 2)
 ```
@@ -61,17 +71,25 @@ Batching amortizes per-call overhead across many rows, which matters most
 once a function also does something with real fixed cost per call -- loading
 a model, opening a connection, making a network round trip.
 
+`batch_size` caps the number of input rows in each execution batch; actual
+batches may be smaller. `row_timeout_seconds` bounds each Python call: one
+row for scalar Functions or the entire batch for vectorized Functions. It
+does not include the instance's `__init__`. Both settings are fixed into the
+registered version and apply to direct calls, computed columns, and
+materialized-view refreshes alike. Omit them to use adaptive batching and the
+service's default per-call deadline.
+
 ## Stateful Functions: load once, call many times {#stateful}
 
-A `@udf`-decorated **class** is the same callable with state. Each remote
+A `@function`-decorated **class** is the same callable with state. Each remote
 instance calls `__init__` once, calls `__call__` for every row or batch it
 processes, and calls `close()`, if defined, once when it retires:
 
 <CodeGroup>
 ```python Python icon="python"
-from lancedb import udf
+from lancedb import function
 
-@udf
+@function
 class scale:
     def __init__(self, factor: float, offset: float = 0.0):
         self.factor = factor
@@ -92,16 +110,26 @@ and remote-API Functions both build on below.
 
 ## GPU: batch inference, loaded once {#gpu}
 
-`gpu=True` requires a GPU-capable worker for every execution. Combined with
-the batch and stateful forms above, a realistic embedding model loads once
-in `__init__` and runs one forward pass per batch, not one per row:
+`db.list_gpu_classes()` lists the GPU classes configured for the deployment.
+Each record reports the operator's hardware description and limits; it does
+not mean a GPU is currently free. Listing requires the System Usage
+permission. Pass a returned class name to `gpu_class` to fix that placement
+in the Function version. `gpu=True` remains required:
 
 <CodeGroup>
 ```python Python icon="python"
 import pyarrow as pa
-from lancedb import udf
+from lancedb import function
 
-@udf(gpu=True, pip=["torch==2.12.0", "sentence-transformers==5.7.0"])
+gpu_class = next(
+    gpu.name for gpu in db.list_gpu_classes() if gpu.gpu_model == "NVIDIA A10G"
+)
+
+@function(
+    gpu=True,
+    gpu_class=gpu_class,
+    pip=["torch==2.12.0", "sentence-transformers==5.7.0"],
+)
 class embed_text:
     def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
         import torch
@@ -120,6 +148,12 @@ table.add_columns({"embedding": version(text=col("caption"))})
 ```
 </CodeGroup>
 
+Older servers that do not implement `GET /v1/gpu/classes` raise
+`NotImplementedError`. Without `gpu_class`, the deployment's default GPU
+class is used. The class is immutable with the Function version; set a
+per-refresh class or aggregate GPU budget through
+[`refresh_column_async`](/feature-engineering/refresh-column#resources).
+
 The model loads once per worker instance, in `__init__`; `__call__` only
 encodes the batch it was handed. Registering the same logic as a plain
 function instead would reload the model on every single row.
@@ -132,56 +166,59 @@ in the function's source. A Secret is a database-scoped named credential:
 puts it in the environment variable the function reads, without ever
 returning it from any API or recording it in the function's own definition.
 Combine it with the stateful form so the HTTP client -- and any rate limiter
-around it -- is built once, not reopened on every row:
+around it -- is built once, not reopened on every row. There is no built-in
+retry or per-row error-skip policy -- a function that calls a flaky service
+should handle timeouts and retries itself, inside `__call__`.
 
-<CodeGroup>
-```python Python icon="python"
-import os
-from lancedb import EnvVarSecret, udf
+See [Vend a Secret to a Function](/curation/vend-secret#specify) for the
+full worked example, how the bound value actually reaches a running
+evaluation, and how that differs from rotating or revoking it later.
 
-db.create_secret("openai-prod", os.environ["OPENAI_API_KEY"])
-
-@udf
-class embed_remote:
-    def __init__(self, model: str = "text-embedding-3-small"):
-        import os
-        from openai import OpenAI
-
-        self.client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-        self.model = model
-
-    def __call__(self, text: str) -> list[float]:
-        response = self.client.embeddings.create(input=text, model=self.model)
-        return response.data[0].embedding
-
-version = db.create_function_async(
-    embed_remote,
-    secrets=[EnvVarSecret(secret_name="openai-prod", env_variable="OPENAI_API_KEY")],
-).wait()
-```
-</CodeGroup>
-
-A mistyped Secret name is caught at registration; a mistyped environment
-variable name only surfaces on the first rows, since nothing records which
-variables a function reads. There is no built-in retry or per-row
-error-skip policy -- a function that calls a flaky service should handle
-timeouts and retries itself, inside `__call__`.
-
-## Blob v2 input and output {#blob}
+## Read and produce blobs {#blobs}
 
 A Function can bind a [Blob v2 column](/management/table#managed-blobs) and
-return another one, including a blob nested inside a struct field, not only
-at the top level. In row mode, a blob parameter arrives as Python `bytes`
-(or a `BlobReader` for incremental, seekable access, so a function never
-has to materialize a payload it only partially needs):
+return another blob, including a blob nested inside a struct field, not only
+at the top level. In row mode, a top-level blob parameter arrives as Python
+`bytes`, or `None` for a nullable input, after the worker has read the
+payload. Return bytes and let the destination table store the Managed
+payload and descriptor.
+
+This section extracts a frame from a stored video and captions it,
+continuing as one example across chaining, persisting and incremental reads
+below. `videos` holds raw clips in a `video` Blob v2 column; `frames` names
+one timestamp per clip to extract, with a `selected` flag to skip some:
 
 <CodeGroup>
 ```python Python icon="python"
 import pyarrow as pa
-import lancedb
-from lancedb import BlobReader, udf
 
-@udf(
+videos = db.create_table("videos", schema=pa.schema([
+    pa.field("id", pa.utf8(), nullable=False),
+    lancedb.blob("video", nullable=False),
+]))
+frames = db.create_table("frames", [
+    {"frame_id": 1, "video_id": "clip-1", "ts": 0.5, "selected": True},
+    {"frame_id": 2, "video_id": "clip-1", "ts": 1.5, "selected": True},
+])
+```
+</CodeGroup>
+
+### Produce a blob {#produce-blobs}
+
+Declare blob inputs and outputs explicitly. `extract_frame` reads one frame
+out of a video at a timestamp and returns it as a JPEG, without loading the
+whole clip first -- see [Read a blob incrementally](#incremental) below for
+how the `video: BlobReader` parameter does that:
+
+<CodeGroup>
+```python Python icon="python"
+from datetime import timedelta
+
+from lancedb import BlobReader, col
+from lancedb.functions import function
+
+@function(
+    name="extract_frame",
     gpu=True,
     pip=["av==13.1.0", "pillow==11.0.0"],
     input_schema=pa.schema([
@@ -192,18 +229,153 @@ from lancedb import BlobReader, udf
 )
 def extract_frame(video: BlobReader, ts: float) -> bytes:
     ...  # decode the frame at ts, encode as JPEG, return its bytes
+
+extract_frame_version = db.create_function_async(extract_frame).wait(
+    timeout=timedelta(minutes=15)
+)
 ```
 </CodeGroup>
 
-`output_schema=lancedb.blob(...)` is what makes the result Blob v2 rather
-than plain Arrow `binary` -- returning `bytes` with no explicit blob output
-schema still holds the right bytes, but skips the Managed storage path and
-`fetch_blobs`. Declare it explicitly on every function whose output should
-be a blob.
+An empty byte string is a filled result. A scalar output cannot be nullable,
+because a physical NULL marks an unfilled computed row. To return a nullable
+blob as a value, use a named-struct output schema with a nullable blob field;
+the struct itself records whether the result has been filled. Read a nested
+blob with `table.fetch_blobs("payload.image", hits)`.
+
+A list or large-list output may also contain Blob v2 elements; inputs and
+fixed-size lists do not support this layout. List-nested values are queryable
+as descriptors, but `fetch_blobs` and `blob_mode="bytes"` cannot fetch their
+payloads.
+
+<Warning>
+`output_schema=lancedb.blob(...)` is what makes a persisted result Blob v2
+rather than plain Arrow `binary`. Returning `bytes` from a function whose
+output type is inferred from a bare annotation, with no explicit
+`lancedb.blob(...)` output schema, persists as ordinary `binary`: the column
+still holds the right bytes, but it skips the Managed storage path, descriptor
+reads, and `fetch_blobs`. Declare it explicitly on every function whose output
+should be a blob, not just the first one in a chain.
+</Warning>
+
+### Chain a Function on its output {#chain}
+
+A second Function can bind a blob another Function produced. Register
+`caption` the same way, consuming a blob instead of producing one:
+
+<CodeGroup>
+```python Python icon="python"
+@function(gpu=True, pip=["transformers==4.47.0"])
+def caption(jpeg: bytes) -> str:
+    ...  # run a vision-language model over the JPEG, return one sentence
+
+caption_version = db.create_function_async(caption).wait(timeout=timedelta(minutes=15))
+```
+</CodeGroup>
+
+Compose both in one SQL statement over a join, instead of applying each as
+its own column. The join supplies `video` and `ts` from two different
+tables, and `caption` reads `extract_frame`'s result as it is computed,
+before anything is written:
+
+<CodeGroup>
+```sql SQL
+SELECT f.frame_id, extract_frame(v.video, f.ts) AS jpeg,
+       caption(extract_frame(v.video, f.ts)) AS caption
+FROM videos v JOIN frames f ON v.id = f.video_id
+WHERE f.selected = true
+```
+</CodeGroup>
+
+[`EXPLAIN`](/sql/dql/explain) on a query like this shows `RemoteTake`: the
+blob is read once, where the worker runs, and never pulled into the query
+node first.
+
+### Persist it as a column, or a materialized view {#persist}
+
+Apply the same registered version with `add_columns` to persist its output as
+an ordinary table column, on a table that already has both of its inputs --
+here, a single-clip table with its own `video` and `ts`, rather than the two
+tables the join above reads from:
+
+<CodeGroup>
+```python Python icon="python"
+clips = db.create_table("clips", schema=pa.schema([
+    pa.field("frame_id", pa.int64(), nullable=False),
+    lancedb.blob("video", nullable=False),
+    pa.field("ts", pa.float64(), nullable=False),
+]))
+
+clips.add_columns({"jpeg": extract_frame_version(video=col("video"), ts=col("ts"))})
+result = clips.refresh_column_async("jpeg").wait(timeout=timedelta(minutes=15))
+assert result.rows_failed == 0
+
+hits = clips.search().select(["frame_id", "jpeg"]).with_row_id(True).to_arrow()
+values = clips.fetch_blobs("jpeg", hits).to_pylist()
+```
+</CodeGroup>
+
+Or wrap the join and both Functions in a
+[materialized view](/sql/ddl/materialized-view) instead, so the extracted
+frame and its caption stay current as new videos and frames arrive. See
+[Auto Refresh](/enterprise/auto-refresh) for
+keeping either one fresh without calling refresh yourself.
+
+On deployments that support computed-column inputs, another Function can
+bind to `col("jpeg")` directly, the same as the SQL join above does through
+its own expression. Refresh the producer first, then the consumer. Once
+outputs are current, a later refresh fills appended rows. A filtered
+refresh preserves payload references for unselected Managed outputs. An
+unfiltered refresh can recompute a whole fragment when it cannot establish
+that the fragment's outputs are current.
+
+Function output blobs follow the same compaction and cleanup lifecycle as
+ingested Managed blobs. Retained versions continue to own their payloads;
+cleanup reclaims an object only after its retained references are gone.
+
+### Read a blob incrementally {#incremental}
+
+Annotate a row Function parameter with `BlobReader` to read a Blob v2 input
+incrementally, the way `extract_frame` above does, instead of materializing
+the whole payload first. The signature selects the access mode without
+another registration option. A minimal example, reading only the first MP4
+box type without loading the rest of the video:
+
+<CodeGroup>
+```python Python icon="python"
+from lancedb import BlobReader, function
+
+
+@function
+def first_box_type(video: BlobReader) -> bytes:
+    video.seek(4)
+    return video.read(4)
+```
+</CodeGroup>
+
+The worker passes a seekable reader backed by the stored blob --
+`video.seekable()` is `True`. `read(size)` reads from the current cursor;
+`read_range(offset, length)` reads a byte range without moving it, the same
+bytes a `seek(offset)` followed by `read(length)` would read. `size()`
+returns the payload size without reading it. Each row call receives its own
+reader, which closes when the call returns or raises. Do not retain it for
+another invocation.
+
+Use `video: bytes` when the Function needs the complete payload. Bytes inputs
+materialize before invocation and remain subject to eager input limits.
+Reader inputs keep the unread payload out of the input batch, but calling
+`video.read()` without a size loads all remaining bytes in Python. Reader
+inputs are supported in row mode. Return values remain ordinary values such
+as `bytes`; this feature does not add streamed outputs.
 
 ## What to read next {#next}
 
 <CardGroup cols={2}>
+  <Card title="Function" icon="code" href="/management/function">
+    List, describe and drop registered Function versions.
+  </Card>
+  <Card title="Vend a Secret to a Function" icon="key" href="/curation/vend-secret">
+    Bind a credential by reference instead of putting it in the function's source.
+  </Card>
   <Card title="Chunk records into multiple rows" icon="diagram-subtask" href="/curation/chunking">
     A Function whose output is a list, exploded into one row per element.
   </Card>

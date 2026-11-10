@@ -76,7 +76,7 @@ pub trait DuplicatePairsResolver: std::fmt::Debug + Send + Sync {
     ) -> Result<Arc<dyn TableProvider>>;
 }
 
-/// `vector_duplicate_pairs('table', version, 'column', threshold)`.
+/// `duplicate_pairs('table', version, 'column', threshold)`.
 /// Registration is explicit so the host controls catalog access and execution.
 #[derive(Debug)]
 pub struct DuplicatePairsTableFunction {
@@ -108,7 +108,7 @@ impl TableFunctionImpl for DuplicatePairsTableFunction {
     fn call(&self, args: &[Expr]) -> Result<Arc<dyn TableProvider>> {
         if args.len() != 4 {
             return plan_err!(
-                "vector_duplicate_pairs requires (table, dataset_version, column, distance_threshold)"
+                "duplicate_pairs requires (table, dataset_version, column, distance_threshold)"
             );
         }
         let string = |expr: &Expr| match expr {

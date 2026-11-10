@@ -816,7 +816,7 @@ export class Index {
    * Create a label list index.
    *
    * LabelList index is a scalar index that can be used on `List<T>` columns to
-   * support queries with `array_contains_all` and `array_contains_any`
+   * support queries with `array_has_all` and `array_has_any`
    * using an underlying bitmap index.
    */
   static labelList() {
@@ -939,7 +939,10 @@ export interface IndexOptions {
   /**
    * Timeout in seconds to wait for index creation to complete.
    *
-   * If not specified, the method will return immediately after starting the index creation.
+   * Only applies to LanceDB Enterprise tables, which build the index in the
+   * background.
+   * If not specified, `createIndex` returns once the build is scheduled.
+   * LanceDB Embedded tables always build the index before `createIndex` returns.
    */
   waitTimeoutSeconds?: number;
 

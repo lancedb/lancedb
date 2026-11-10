@@ -62,9 +62,9 @@ tests = [
     "duckdb>=0.9.0",
     "pytz>=2023.3",
     "polars>=0.19, <=1.32.3",
-    "pyarrow<25",
+    "pyarrow>=16",
     "pyarrow-stubs>=16.0",
-    "pylance==15.0.0b6",
+    "pylance==15.0.0b15",
     "requests>=2.31.0",
     "datafusion>=54,<55",
     "opentelemetry-sdk>=1.30.0",
@@ -95,6 +95,7 @@ embeddings = [
     "awscli>=1.44.38",
     "botocore>=1.31.57",
     'ibm-watsonx-ai>=1.1.2; python_version >= "3.10"',
+    "oci>=2.165.1",
     "ollama>=0.3.0",
     "sentencepiece>=0.1.99"
 ]

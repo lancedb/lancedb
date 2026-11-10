@@ -52,7 +52,8 @@ runs:
           Linux/X64) platform="linux-x86_64"; sha256="$LINUX_X86_64_SHA256" ;;
           Linux/ARM64) platform="linux-aarch_64"; sha256="$LINUX_AARCH_64_SHA256" ;;
           macOS/*) platform="osx-universal_binary"; sha256="$OSX_SHA256" ;;
-          Windows/X64) platform="win64"; sha256="$WIN64_SHA256" ;;
+          # Windows 11 Arm runners can execute the upstream x64 protoc binary.
+          Windows/X64|Windows/ARM64) platform="win64"; sha256="$WIN64_SHA256" ;;
           *) echo "Unsupported runner: $RUNNER_OS_NAME/$RUNNER_ARCH_NAME" >&2; exit 1 ;;
         esac
         zip="$RUNNER_TEMP/protoc.zip"

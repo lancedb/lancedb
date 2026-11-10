@@ -39,7 +39,6 @@ from lancedb.query import (
 )
 import numpy as np
 import pyarrow as pa
-import pandas as pd
 import pytest
 import pytest_asyncio
 from utils import exception_output
@@ -154,7 +153,7 @@ def table(tmp_path) -> ldb.table.LanceTable:
     count = [local_random.randint(1, 10000) for _ in range(100)]
     table = db.create_table(
         "test",
-        data=pd.DataFrame(
+        data=pa.table(
             {
                 "vector": vectors,
                 "id": [i % 2 for i in range(100)],
@@ -239,7 +238,7 @@ async def async_table(tmp_path) -> ldb.table.AsyncTable:
     count = [local_random.randint(1, 10000) for _ in range(100)]
     table = await db.create_table(
         "test",
-        data=pd.DataFrame(
+        data=pa.table(
             {
                 "vector": vectors,
                 "id": [i % 2 for i in range(100)],
@@ -760,9 +759,9 @@ def test_search_order_by_ascending(table):
 
 def test_create_index_from_table(tmp_path, table):
     table.create_fts_index("text")
-    df = table.search("puppy").limit(5).select(["text"]).to_pandas()
-    assert len(df) <= 5
-    assert "text" in df.columns
+    result = table.search("puppy").limit(5).select(["text"]).to_arrow()
+    assert len(result) <= 5
+    assert "text" in result.column_names
 
     # Check whether it can be updated
     table.add(
@@ -782,7 +781,7 @@ def test_create_index_from_table(tmp_path, table):
         table.create_fts_index("text")
 
     table.create_fts_index("text", replace=True)
-    assert len(table.search("gorilla").limit(1).to_pandas()) == 1
+    assert len(table.search("gorilla").limit(1).to_arrow()) == 1
 
 
 def test_create_index_multiple_columns(tmp_path, table):
@@ -1832,3 +1831,120 @@ async def test_fts_fast_search_async(async_table):
         .to_list()
     )
     assert len(results) > 0
+
+
+CODE_TEXT = "parseHTTPRequest user_id utf8"
+
+
+def _token_texts(tokens):
+    return [token.text for token in tokens]
+
+
+def test_tokenize_code_analyzer_flags():
+    default = _token_texts(ldb.tokenize(CODE_TEXT, analyzer="code"))
+    assert default == _token_texts(ldb.tokenize(CODE_TEXT, base_tokenizer="code"))
+
+    no_split = _token_texts(
+        ldb.tokenize(CODE_TEXT, analyzer="code", split_identifiers=False)
+    )
+    split = _token_texts(
+        ldb.tokenize(CODE_TEXT, analyzer="code", split_identifiers=True)
+    )
+    assert "parsehttprequest" in no_split
+    assert "parse" not in no_split
+    assert {"parse", "http", "request", "user", "id"} <= set(split)
+
+    numerics = _token_texts(
+        ldb.tokenize(
+            CODE_TEXT,
+            analyzer="code",
+            split_identifiers=True,
+            split_on_numerics=True,
+        )
+    )
+    no_numerics = _token_texts(
+        ldb.tokenize(
+            CODE_TEXT,
+            analyzer="code",
+            split_identifiers=True,
+            split_on_numerics=False,
+        )
+    )
+    assert "utf" in numerics and "8" in numerics
+    assert "utf8" in no_numerics
+
+    operators = _token_texts(
+        ldb.tokenize("a::b -> c != d", analyzer="code", index_operators=True)
+    )
+    plain = _token_texts(
+        ldb.tokenize("a::b -> c != d", analyzer="code", index_operators=False)
+    )
+    assert {"::", "->", "!="} <= set(operators)
+    assert not {"::", "->", "!="} & set(plain)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"analyzer": "code", "base_tokenizer": "ngram"}, "requires base_tokenizer"),
+        ({"analyzer": "text", "base_tokenizer": "code"}, "requires analyzer='code'"),
+        ({"analyzer": "java"}, "analyzer must be"),
+        ({"split_identifiers": True}, "require analyzer='code'"),
+        ({"base_tokenizer": "raw", "index_operators": True}, "require analyzer='code'"),
+    ],
+)
+def test_code_analyzer_options_are_validated(mem_db, kwargs, message):
+    with pytest.raises(ValueError, match=message):
+        ldb.tokenize(CODE_TEXT, **kwargs)
+
+    table = mem_db.create_table("t", data=[{"text": CODE_TEXT}])
+    with pytest.raises(ValueError, match=message):
+        table.create_index("text", config=FTS(**kwargs))
+
+
+def test_code_analyzer_flags_false_are_allowed_for_text(mem_db):
+    tokens = ldb.tokenize("Running in cafés", split_identifiers=False)
+    assert _token_texts(tokens) == ["run", "cafe"]
+
+
+def test_fts_code_analyzer_index_matches_subwords(mem_db):
+    table = mem_db.create_table(
+        "code",
+        data=[{"text": "def parseHTTPRequest(user_id): pass"}, {"text": "unrelated"}],
+    )
+    table.create_index(
+        "text",
+        config=FTS(analyzer="code", split_identifiers=True, preserve_original=True),
+    )
+
+    details = table.list_indices()[0].index_details
+    assert details["base_tokenizer"] == "code"
+    assert details["split_identifiers"] is True
+    assert details["preserve_original"] is True
+
+    for query in ["http", "request", "parseHTTPRequest"]:
+        rows = table.search(query, query_type="fts").to_list()
+        assert [row["text"] for row in rows] == ["def parseHTTPRequest(user_id): pass"]
+
+
+def test_fts_code_analyzer_without_splitting_does_not_match_subwords(mem_db):
+    table = mem_db.create_table(
+        "code", data=[{"text": "def parseHTTPRequest(user_id): pass"}]
+    )
+    table.create_index("text", config=FTS(analyzer="code", split_identifiers=False))
+
+    assert table.search("request", query_type="fts").to_list() == []
+    assert len(table.search("parseHTTPRequest", query_type="fts").to_list()) == 1
+
+
+@pytest.mark.asyncio
+async def test_async_fts_code_analyzer(mem_db_async):
+    table = await mem_db_async.create_table(
+        "code", data=[{"text": "def parseHTTPRequest(user_id): pass"}]
+    )
+    await table.create_index(
+        "text", config=FTS(analyzer="code", split_identifiers=True)
+    )
+
+    rows = await table.query().nearest_to_text("http").to_list()
+    assert len(rows) == 1

@@ -93,6 +93,12 @@ async function connectObjectStorageExample() {
 
 async function namespaceTableOpsExample() {
   // --8<-- [start:namespace_table_ops]
+  async function collectNames(items: AsyncIterable<string>): Promise<string[]> {
+    const names: string[] = [];
+    for await (const name of items) names.push(name);
+    return names;
+  }
+
   const db = await lancedb.connectNamespace("dir", { root: "./local_lancedb" });
 
   // Create namespace tree: prod/search and prod/recommendations
@@ -124,6 +130,12 @@ async function namespaceTableOpsExample() {
 
 async function namespaceAdminOpsExample() {
   // --8<-- [start:namespace_admin_ops]
+  async function collectNames(items: AsyncIterable<string>): Promise<string[]> {
+    const names: string[] = [];
+    for await (const name of items) names.push(name);
+    return names;
+  }
+
   const db = await lancedb.connectNamespace("dir", { root: "./local_lancedb" });
   const namespace = ["prod", "search"];
 
@@ -131,7 +143,10 @@ async function namespaceAdminOpsExample() {
   await db.createNamespace(["prod", "search"]);
 
   const childNamespaces = await collectNames(db.listNamespaces(["prod"]));
-  console.log(`Child namespaces under ${JSON.stringify(namespace)}:`, childNamespaces);
+  console.log(
+    `Child namespaces under ${JSON.stringify(namespace)}:`,
+    childNamespaces,
+  );
   // Child namespaces under ["prod","search"]: [ 'search' ]
 
   const metadata = await db.describeNamespace(["prod", "search"]);

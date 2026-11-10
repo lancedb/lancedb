@@ -16,17 +16,26 @@ without a full pairwise scan or a shuffle. See
 [`duplicate_pairs`](/sql/dql/duplicate-pairs) to inspect the pairs themselves
 before committing to this resolution.
 
-```sql
-SELECT * FROM dedupe(<table>, <vector_column>,
-  distance_threshold => <float>
-  [, resolution => 'connected_components' | 'direct_representative']
-  [, selection => 'all' | 'first' | 'random', count => <int>, seed => <int>]
+<CodeGroup>
+```sql SQL icon="database"
+SELECT * FROM dedupe(
+    <table>,
+    <vector_column>,
+    distance_threshold => <float>
+    [, resolution => 'connected_components' | 'direct_representative']
 )
 ```
+</CodeGroup>
 
-```sql
-SELECT * FROM dedupe('frames', 'vec', distance_threshold => 0.02)
+<CodeGroup>
+```sql SQL icon="database"
+SELECT * FROM dedupe(
+    'frames',
+    'vec',
+    distance_threshold => 0.02
+)
 ```
+</CodeGroup>
 
 <Note>
 Earlier releases spelled this `vector_dedup`; that name is rejected on
@@ -41,13 +50,10 @@ current deployments.
 | vector column | string literal | yes | the indexed vector column to compare |
 | `distance_threshold` | float | yes | maximum distance for a pair to count as close |
 | `resolution` | `'connected_components'` (default) \| `'direct_representative'` | no | how overlapping pairs group together -- see [Resolution](#resolution) |
-| `selection` | `'all'` (default) \| `'first'` \| `'random'` | no | which index partitions to scan |
-| `count` | int | no | number of partitions to sample when `selection => 'random'` |
-| `seed` | int | no | random seed when `selection => 'random'` |
 
-`id_column` is refused on `dedupe`: it has no separate pair-identifier output
-to project onto, only [`duplicate_pairs`](/sql/dql/duplicate-pairs#input)
-accepts it.
+`dedupe` always scans every partition and returns original rows -- sampling
+a subset of partitions and `id_column` are pair-query-only options, accepted
+by [`duplicate_pairs`](/sql/dql/duplicate-pairs#input) but refused here.
 
 ## Output {#output}
 
@@ -61,31 +67,32 @@ table's schema.
 Because the result is already shaped like the table, it composes directly
 into a new table or a materialized view:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 CREATE MATERIALIZED VIEW frames_deduped AS
-SELECT * FROM dedupe('frames', 'vec', distance_threshold => 0.02)
+SELECT * FROM dedupe(
+    'frames',
+    'vec',
+    distance_threshold => 0.02
+)
 ```
+</CodeGroup>
 
 ## Resolution {#resolution}
 
 `resolution` chooses how overlapping pairs group together:
 
-| `resolution` | |
+| `resolution` value | How pairs group |
 | --- | --- |
 | `connected_components` (default) | groups transitively: if a~b and b~c are both close, all three resolve together |
 | `direct_representative` | only pairs within the threshold of each other resolve together |
 
-## Sampling partitions {#sampling}
+## Estimating on a sample first {#sampling}
 
-`selection` scopes the scan to a sample of partitions instead of all of them,
-the same `all` (default) / `first` / `random` choice as
-[`ivf_partition`](/sql/scalar-functions#ivf-partition). Use it to estimate a
-duplicate rate on a large table before scanning it in full:
-
-```sql
-SELECT * FROM dedupe('frames', 'vec',
-  distance_threshold => 0.02, selection => 'random', count => 100, seed => 42)
-```
+`dedupe` itself always scans every partition. To estimate a duplicate rate
+on a large table before committing to a full scan, sample partitions with
+[`duplicate_pairs`](/sql/dql/duplicate-pairs#sampling) instead, which
+accepts `selection`, `count` and `seed` for exactly this.
 
 ## What to read next {#next}
 

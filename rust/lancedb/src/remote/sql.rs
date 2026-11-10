@@ -29,14 +29,18 @@ use uuid::Uuid;
 
 use crate::arrow::{SendableRecordBatchStream, SimpleRecordBatchStream};
 use crate::database::ExecuteQueryRequest;
-use crate::error::{Error, Result};
+use crate::error::{Error, JobFailure, Result};
 use crate::job::Job;
 use crate::remote::client::{ClientConfig, TlsConfig};
 use crate::remote::retry::ResolvedRetryConfig;
 use crate::sql::{Query, QueryDescription, QueryHandle, QueryStatus};
 
+mod function;
 pub(super) mod materialized_view;
+mod objects;
+mod secret;
 mod stream;
+mod view;
 
 use stream::{StreamingQuery, StreamingQueryHandle, Submission};
 
@@ -47,6 +51,7 @@ const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(300);
 const STATUS_POLL_TIMEOUT: Duration = Duration::from_secs(1);
 const MIN_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const MAX_SQL_MESSAGE_SIZE: usize = 1024 * 1024 * 1024;
+const SQL_JOB_ID_METADATA_KEY: &str = "x-lancedb-sql-job-id";
 const TERMINAL_QUERY_RETENTION: Duration = Duration::from_secs(300);
 const ABANDONED_QUERY_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -54,6 +59,11 @@ const ABANDONED_QUERY_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
 pub(super) struct SqlClient {
     inner: Arc<SqlClientInner>,
     queries: Arc<QueryRegistry>,
+}
+
+pub(super) struct SubmittedQuery {
+    pub(super) query: Query,
+    pub(super) materialized_view_job_handle_supported: bool,
 }
 
 struct SqlClientInner {
@@ -91,7 +101,7 @@ impl ResultEndpointStream {
         tokio::time::timeout(self.read_timeout, self.stream.try_next())
             .await
             .map_err(|_| sql_error(&self.request_id, "SQL result read timed out"))?
-            .map_err(|err| sql_error(&self.request_id, err))
+            .map_err(|err| sql_flight_error(&self.request_id, &err))
     }
 }
 
@@ -200,24 +210,36 @@ impl SqlClient {
     }
 
     pub(super) async fn execute(&self, request: ExecuteQueryRequest) -> Result<Query> {
+        Ok(self
+            .execute_with_materialized_view_job_handle(request, false)
+            .await?
+            .query)
+    }
+
+    pub(super) async fn execute_with_materialized_view_job_handle(
+        &self,
+        request: ExecuteQueryRequest,
+        materialized_view_job_handle: bool,
+    ) -> Result<SubmittedQuery> {
         let timeout = self.inner.overall_timeout()?;
         with_overall_timeout(timeout, "SQL query submission", async {
             validate_namespace_path(&request.default_namespace_path)?;
             let query_id = Uuid::now_v7();
-            let submission = StreamingQuery::open(
+            let opened = StreamingQuery::open(
                 self.inner.clone(),
                 &request.query,
                 request.parameters,
                 &request.default_namespace_path,
+                materialized_view_job_handle,
             )
             .await?;
-            match submission {
+            let query = match opened.submission {
                 Submission::Stream(response) => {
                     let query =
                         Arc::new(StreamingQuery::new(query_id, self.inner.clone(), response));
                     self.queries
                         .insert(query_id, RegisteredQuery::Streamed(query.clone()));
-                    Ok(Query::new(Arc::new(StreamingQueryHandle::new(query))))
+                    Query::new(Arc::new(StreamingQueryHandle::new(query)))
                 }
                 Submission::Deferred(poll_info) => {
                     let query = Arc::new(RemoteQuery::new(
@@ -228,9 +250,14 @@ impl SqlClient {
                     )?);
                     self.queries
                         .insert(query_id, RegisteredQuery::Polled(query.clone()));
-                    Ok(Query::new(Arc::new(RemoteQueryHandle::new(query))))
+                    Query::new(Arc::new(RemoteQueryHandle::new(query)))
                 }
-            }
+            };
+            Ok(SubmittedQuery {
+                query,
+                materialized_view_job_handle_supported: opened
+                    .materialized_view_job_handle_supported,
+            })
         })
         .await
     }
@@ -283,6 +310,15 @@ impl SqlClient {
             })
             .await?,
         );
+        Ok(self.query_job(query, finish))
+    }
+
+    pub(super) fn query_job<T, F, Fut>(&self, query: Arc<Query>, finish: F) -> Job<T>
+    where
+        T: Clone + Serialize + DeserializeOwned + Send + Sync + 'static,
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T>> + Send + 'static,
+    {
         let query_id = query.id();
         let execution = query.clone();
         let task = tokio::spawn(async move {
@@ -290,10 +326,10 @@ impl SqlClient {
             while reader.try_next().await?.is_some() {}
             finish().await
         });
-        Ok(Job::from_query_task(query_id, task, move || {
+        Job::from_query_task(query_id, task, move || {
             let query = query.clone();
             async move { query.cancel().await }
-        }))
+        })
     }
 
     pub(super) async fn describe(&self, query_id: Uuid) -> Result<QueryDescription> {
@@ -340,7 +376,7 @@ impl SqlClientInner {
         tokio::time::timeout(read_timeout, client.poll_flight_info(descriptor))
             .await
             .map_err(|_| sql_error(&request_id, "SQL query poll timed out"))?
-            .map_err(|err| sql_error(&request_id, err))
+            .map_err(|err| sql_flight_error(&request_id, &err))
     }
 
     async fn poll_status(
@@ -354,7 +390,9 @@ impl SqlClientInner {
             .await
             .map_err(|err| sql_error(&request_id, err))?;
         match tokio::time::timeout(STATUS_POLL_TIMEOUT, client.poll_flight_info(descriptor)).await {
-            Ok(result) => result.map(Some).map_err(|err| sql_error(&request_id, err)),
+            Ok(result) => result
+                .map(Some)
+                .map_err(|err| sql_flight_error(&request_id, &err)),
             Err(_) => Ok(None),
         }
     }
@@ -398,7 +436,7 @@ impl SqlClientInner {
                     tokio::time::sleep(poll_retry_delay(&retry_config, retry_count)).await;
                     continue;
                 }
-                Ok(Err(error)) => return Err(sql_error(&request_id, error)),
+                Ok(Err(error)) => return Err(sql_flight_error(&request_id, &error)),
                 Ok(Ok(poll_info)) => poll_info,
             };
             if let Some(delay) = MIN_POLL_INTERVAL.checked_sub(started.elapsed()) {
@@ -429,7 +467,7 @@ impl SqlClientInner {
         let stream = tokio::time::timeout(read_timeout, endpoint_client.do_get(ticket))
             .await
             .map_err(|_| sql_error(&request_id, "SQL result fetch timed out"))?
-            .map_err(|err| sql_error(&request_id, err))?;
+            .map_err(|err| sql_flight_error(&request_id, &err))?;
         Ok(ResultEndpointStream {
             stream,
             request_id,
@@ -497,9 +535,9 @@ impl SqlClientInner {
             }
             Err(FlightError::Tonic(status)) if !cancellation_status_is_ambiguous(status.code()) => {
                 attempt.resolve();
-                return Err(sql_error(&request_id, status));
+                return Err(sql_status_error(&request_id, &status));
             }
-            Err(error) => return Err(sql_error(&request_id, error)),
+            Err(error) => return Err(sql_flight_error(&request_id, &error)),
         };
         let status = CancelStatus::try_from(result.status)
             .map_err(|_| sql_error(&request_id, "SQL query returned an invalid cancel status"))?;
@@ -1595,6 +1633,53 @@ fn sql_error(request_id: &str, error: impl std::fmt::Display) -> Error {
     Error::Runtime {
         message: format!("SQL error (request_id={request_id}): {error}"),
     }
+}
+
+pub(super) fn sql_flight_error(request_id: &str, error: &FlightError) -> Error {
+    match error {
+        FlightError::Tonic(status) => sql_status_error(request_id, status),
+        _ => sql_error(request_id, error),
+    }
+}
+
+pub(super) fn sql_status_error(request_id: &str, status: &tonic::Status) -> Error {
+    let header = |name| {
+        status
+            .metadata()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    };
+    let metadata = crate::error::RemoteErrorMetadata {
+        error_code: header("x-lancedb-error-code"),
+        job_id: header(SQL_JOB_ID_METADATA_KEY),
+        job_request_id: header("x-job-request-id"),
+        resource: header("x-lancedb-resource")
+            .as_deref()
+            .and_then(crate::error::parse_flight_resource_identity),
+    };
+    let sql_job_id = metadata.job_id.clone();
+    let error = Error::Sql {
+        message: status.message().into(),
+        request_id: request_id.into(),
+        grpc_code: status.code() as i32,
+        metadata: Box::new(metadata),
+    };
+    if let Some(sql_job_id) = sql_job_id {
+        return Error::JobFailed {
+            job_id: Some(sql_job_id.clone()),
+            failure: Box::new(JobFailure {
+                phase: None,
+                message: Some(status.message().into()),
+                traceback: None,
+                retryable: None,
+                sql_job_id: Some(sql_job_id),
+                source: Some(Arc::new(error)),
+            }),
+        };
+    }
+    error
 }
 
 #[cfg(test)]

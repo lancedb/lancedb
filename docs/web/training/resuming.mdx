@@ -1,0 +1,96 @@
+---
+title: "Resuming"
+sidebarTitle: "Resuming"
+description: "Load a saved StreamingDataset checkpoint back, on the same topology or a different one."
+icon: rotate-left
+availability:
+  embedded: available
+  enterprise: available
+---
+
+Resuming loads a `StreamingDataset` checkpoint saved by [Checkpointing](/training/checkpointing) back into a fresh dataset and `DataLoader`, so a failed or restarted run picks up where it left off rather than rereading from the start.
+
+This page assumes the `rank`, `world_size`, `num_splits` and `shuffle_seed`
+terminology from [Distributed Training](/training/distributed-training#parallelism-and-elasticity).
+
+## Resuming on the same topology {#same-topology}
+
+<CodeGroup>
+```py Python icon=Python
+import torch
+from lancedb.streaming import StreamingDataset
+
+checkpoint = torch.load("checkpoint_100.pt")
+model.load_state_dict(checkpoint["model"])
+
+dataset_state = checkpoint["dataset"]
+dataset = StreamingDataset(
+    table,
+    num_splits=dataset_state["num_splits"],
+    shuffle_seed=dataset_state["shuffle_seed"],
+    epoch=dataset_state["epoch"],
+    rank=rank,
+    world_size=world_size,  # same as the run that saved the checkpoint
+)
+dataset.load_state_dict(dataset_state)
+
+# The combined batch size across every rank, the same value used when the
+# checkpoint was saved; each rank's DataLoader gets its world_size share of it.
+global_batch_size = 48
+dataloader = torch.utils.data.DataLoader(
+    dataset,
+    batch_size=global_batch_size // world_size,
+    num_workers=0,
+)
+
+for batch in dataloader:
+    train_step(batch)
+```
+</CodeGroup>
+
+`load_state_dict()` rejects a checkpoint whose `num_splits` or `shuffle_seed` differs from the new dataset. For an
+exact resume, also use the same table snapshot, `epoch`, `shuffle`, `filter`, and other data-selection settings, and
+keep `world_size` the same -- changing it is a topology change, covered next. The number of DataLoader workers may
+still change as long as the batch-size divisibility constraints from
+[Distributed Training](/training/distributed-training#parallelism-and-elasticity) hold.
+
+## Resuming Across Different Topologies {#resuming-across-different-topologies}
+
+When training across ranks, each rank owns its own subset of splits and only its own splits have exact progress. To
+resume on a different `world_size`, collect the `state_dict()` from every rank of the previous run and merge them with
+`StreamingDataset.merge_state_dicts` before calling `load_state_dict()` on the new run. The merge is topology-agnostic:
+pass the full list of per-rank states in, and hand the identical merged dict to every rank of the resumed job,
+regardless of whether the topology grew, shrank, or stayed the same.
+
+<CodeGroup>
+```py Python icon=Python
+# On each rank of the previous run:
+state = dataset.state_dict()
+# ...gather `state` from every rank into a single list `states` (for example
+# via torch.distributed all-gather or by saving one file per rank).
+
+merged = StreamingDataset.merge_state_dicts(states)
+
+# On each rank of the resumed run (world_size may differ):
+dataset = StreamingDataset(
+    table,
+    num_splits=merged["num_splits"],
+    shuffle_seed=merged["shuffle_seed"],
+    epoch=merged["epoch"],
+    rank=rank,
+    world_size=new_world_size,
+)
+dataset.load_state_dict(merged)
+```
+</CodeGroup>
+
+## Next steps {#next}
+
+<CardGroup cols={2}>
+  <Card title="Checkpointing" icon="floppy-disk" href="/training/checkpointing">
+    Save progress, including with multiple DataLoader workers.
+  </Card>
+  <Card title="Distributed Training" icon="server" href="/training/distributed-training">
+    The rank, world size and split terminology resuming builds on.
+  </Card>
+</CardGroup>

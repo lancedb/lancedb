@@ -1,6 +1,6 @@
 ---
-title: "Merge insert"
-sidebarTitle: "Merge Insert"
+title: "Merge"
+sidebarTitle: "Merge"
 description: "Match incoming records by key and choose which rows to update, insert or remove."
 icon: code-merge
 availability:
@@ -29,6 +29,8 @@ import {
 } from '/snippets/ingestion_examples.mdx';
 
 import { PyWriteWorkflow, TsWriteWorkflowBody, TsWriteWorkflowTail, RsWriteWorkflow } from '/snippets/ingestion_examples.mdx';
+
+<Badge color="purple">Early access in Enterprise</Badge>
 
 Use merge insert when incoming records should be compared with existing rows.
 Combine update and insert policies for an **upsert**. Use [append](/ingestion/insert)
@@ -241,7 +243,7 @@ prints the result, and removes its temporary data when finished.
   `python ingestion.py`.
 - **TypeScript:** install `@lancedb/lancedb`, save the code as `ingestion.mts`,
   and run `node ingestion.mts` with Node.js 22.18 or later.
-- **Rust:** download the [complete Rust project](/static/code/ingestion-rust.zip),
+- **Rust:** download the [complete Rust project](https://raw.githubusercontent.com/lancedb/lancedb/2af85bea8999c8cd23ec01ff62ba110c54652c10/docs/web/static/code/ingestion-rust.zip),
   extract it, and run `cargo run --locked`. It includes `src/main.rs`, the Cargo
   manifest and a lockfile for the example's dependencies. The code is shown below.
 
