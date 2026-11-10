@@ -1428,19 +1428,21 @@ def _is_function_decorator(node: ast.expr) -> bool:
     )
 
 
-def _literal_source(value: Any) -> str:
+def _literal_source(value: Any, name: str) -> str:
     if value is None or type(value) in (bool, int, str, bytes):
         return repr(value)
     if type(value) is float and math.isfinite(value):
         return repr(value)
     if type(value) is tuple:
-        children = ", ".join(_literal_source(child) for child in value)
+        children = ", ".join(_literal_source(child, name) for child in value)
         if len(value) == 1:
             children += ","
         return f"({children})"
     raise TypeError(
         "Function source references an unsupported global value of type "
-        f"{type(value).__name__}"
+        f"{type(value).__name__} in {name!r}. Only None, bool, int, str, bytes, "
+        "finite float, and tuples of these literals can be captured. "
+        "Define this value inside the function or class body instead."
     )
 
 
@@ -1875,7 +1877,7 @@ class _SourcePackager:
             if imported is value:
                 self._require_importable(module_name)
                 return f"from {module_name} import {qualname} as {name}"
-        return f"{name} = {_literal_source(value)}"
+        return f"{name} = {_literal_source(value, name)}"
 
     def _require_importable(self, module_name: str) -> None:
         """Warn about an import the Function's environment may not be able to
@@ -2486,8 +2488,8 @@ def function(
     - modules, and classes and functions importable from an installed
       package, become imports; the package must be declared in ``pip`` or
       ``conda``;
-    - literals (``None``, booleans, numbers, strings, bytes, tuples of them)
-      are inlined;
+    - literals (``None``, ``bool``, ``int``, ``str``, ``bytes``, finite
+      ``float``, and tuples containing only these literals) are inlined;
     - functions and classes defined in ``__main__``, such as notebook cells,
       are packaged by source, together with what they reference;
     - modules and packages listed in ``code`` are shipped as Python source and
@@ -2505,6 +2507,9 @@ def function(
     image. Warnings follow normal Python warning filters and may be promoted
     to errors. Declare every third-party import in ``pip`` or ``conda`` even
     when it happens to be installed on the registration host.
+    Other global values, including Arrow types and schemas, lists, dictionaries,
+    sets, and NumPy arrays, cannot be captured as literals. Define them inside
+    the function or class body instead.
     Closures, lambdas, nested definitions, mutable module-level
     objects, code that reaches the module namespace another way
     (``globals()``/``eval``, ``sys.modules``, ``builtins``), and a
