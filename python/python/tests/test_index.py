@@ -22,6 +22,7 @@ from lancedb.index import (
     LabelList,
     Fm,
     NGram,
+    ZoneMap,
     HnswPq,
     HnswSq,
     HnswFlat,
@@ -277,6 +278,28 @@ async def test_create_ngram_index(db_async):
 
     plan = await table.query().where("contains(text, 'cat')").explain_plan()
     assert "ScalarIndexQuery" in plan
+
+
+@pytest.mark.asyncio
+async def test_create_zonemap_index(db_async):
+    # ZoneMap indexes accelerate range and equality filters on ordered columns.
+    data = pa.table(
+        {
+            "id": list(range(100)),
+            "value": list(range(100)),
+        }
+    )
+    table = await db_async.create_table("zonemap_table", data)
+    await table.create_index("value", config=ZoneMap())
+
+    indices = await table.list_indices()
+    assert len(indices) == 1
+    assert indices[0].index_type == "ZoneMap"
+    assert indices[0].columns == ["value"]
+
+    # The index narrows a range scan without changing its results.
+    result = await table.query().where("value >= 90").to_arrow()
+    assert sorted(result["id"].to_pylist()) == list(range(90, 100))
 
 
 @pytest.mark.asyncio
@@ -591,6 +614,7 @@ def test_index_statistics_index_type_lists_all_supported_values():
         "BITMAP",
         "LABEL_LIST",
         "NGRAM",
+        "ZONEMAP",
     }
 
     assert (
