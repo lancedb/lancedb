@@ -4499,8 +4499,11 @@ class AsyncFTSQuery(AsyncStandardQuery):
         *,
         max_batch_length: Optional[int] = None,
         timeout: Optional[timedelta] = None,
+        blob_sources: Optional[dict[str, str]] = None,
     ) -> AsyncRecordBatchReader:
-        reader = await super()._execute_batches(timeout=timeout)
+        reader = await super()._execute_batches(
+            timeout=timeout, blob_sources=blob_sources
+        )
         results = pa.Table.from_batches(await reader.read_all(), reader.schema)
         if self._reranker:
             results = self._reranker.rerank_fts(self.get_query(), results)
@@ -4823,8 +4826,11 @@ class AsyncVectorQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         *,
         max_batch_length: Optional[int] = None,
         timeout: Optional[timedelta] = None,
+        blob_sources: Optional[dict[str, str]] = None,
     ) -> AsyncRecordBatchReader:
-        reader = await super()._execute_batches(timeout=timeout)
+        reader = await super()._execute_batches(
+            timeout=timeout, blob_sources=blob_sources
+        )
         results = pa.Table.from_batches(await reader.read_all(), reader.schema)
         if self._reranker:
             results = self._reranker.rerank_vector(self._query_string, results)
@@ -4952,11 +4958,14 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         *,
         max_batch_length: Optional[int] = None,
         timeout: Optional[timedelta] = None,
+        blob_sources: Optional[dict[str, str]] = None,
     ) -> AsyncRecordBatchReader:
         # WAL-PK-FUSION: without the fallback, this body is `_run_hybrid`'s.
         return await _wal_hybrid.with_pk_fallback_async(
             lambda: self._run_hybrid(
-                max_batch_length=max_batch_length, timeout=timeout
+                max_batch_length=max_batch_length,
+                timeout=timeout,
+                blob_sources=blob_sources,
             ),
             self._table,
             fused=lambda: self._pk_fusion is not None,
@@ -4968,19 +4977,18 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         *,
         max_batch_length: Optional[int] = None,
         timeout: Optional[timedelta] = None,
+        blob_sources: Optional[dict[str, str]] = None,
     ) -> AsyncRecordBatchReader:
         fts_query, vec_query, limit, offset = await self._create_child_queries()
 
         req = fts_query._inner.to_query_request()
-        blob_auto_row_id = False
+        blob_auto_row_id = bool(blob_sources)
         blob_paths: tuple[str, ...] = ()
         if self._table is not None:
             schema = await self._table.schema()
             projection = _query_request_projection(req)
-            blob_auto_row_id = blob_auto_row_id_for_scan(
-                schema,
-                projection,
-                with_row_id=self._with_row_id,
+            blob_auto_row_id = blob_auto_row_id or blob_auto_row_id_for_scan(
+                schema, projection, with_row_id=self._with_row_id
             )
             if blob_auto_row_id:
                 blob_paths = tuple(

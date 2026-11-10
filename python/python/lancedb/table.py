@@ -7436,7 +7436,10 @@ class AsyncTable:
         if query.offset is not None:
             async_query = async_query.offset(query.offset)
         if query.columns:
-            async_query = async_query.select(query.columns)
+            columns = query.columns
+            if isinstance(columns, list) and columns and isinstance(columns[0], tuple):
+                columns = dict(columns)
+            async_query = async_query.select(columns)
         if query.filter is not None:
             async_query = async_query.where(query.filter)
         if query.fast_search:
