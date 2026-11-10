@@ -4,6 +4,7 @@
 import asyncio
 import time
 from datetime import timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -11,6 +12,50 @@ import pytest
 from lancedb.exceptions import JobCancelledError, JobFailedError
 from lancedb.job import AsyncJob, Job, _progress_eta
 from lancedb.remote.errors import HttpError, RetryError
+
+
+@pytest.mark.parametrize("sync", [False, True])
+def test_job_repr_bounds_large_payloads_without_fetching(sync):
+    spec = {"initialization": list(range(100000)), "source": "x" * 100000}
+    result = {"rows_computed": 7, "details": [{"data": b"x" * 10000}] * 1000}
+    inner = SimpleNamespace(
+        id="job-repr",
+        _state="failed",
+        job_type="function_refresh",
+        _description=SimpleNamespace(
+            creation_ms=2000,
+            spec=spec,
+            result=result,
+            failure="worker failed " + "x" * 10000,
+        ),
+    )
+    job = AsyncJob(inner)
+    if sync:
+        job = Job(job)
+    rendered = repr(job)
+    assert len(rendered) < 1600
+    assert len(rendered.splitlines()) <= 10
+    assert "id='job-repr'" in rendered
+    assert "state='failed'" in rendered
+    assert "job_type='function_refresh'" in rendered
+    assert "rows_computed" in rendered
+    assert "worker failed" in rendered
+    assert "..." in rendered
+    assert len(repr(job.status)) < 1700
+    assert job.spec is spec
+    assert job.result is result
+    assert len(job.spec["initialization"]) == 100000
+
+
+@pytest.mark.parametrize("sync", [False, True])
+def test_job_repr_handles_unobserved_and_local_jobs(sync):
+    unobserved = AsyncJob(SimpleNamespace(id="job-pending", _state=None))
+    local = AsyncJob(None)
+    if sync:
+        unobserved, local = Job(unobserved), Job(local)
+    assert "id='job-pending', not refreshed" in repr(unobserved)
+    assert "state='finished'" in repr(local)
+    assert "failure=" not in repr(local)
 
 
 @pytest.fixture(params=["async", "sync"])
