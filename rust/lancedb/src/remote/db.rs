@@ -887,7 +887,20 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         validate_function_name(name)?;
         validate_namespace(namespace_path)?;
         self.sql_client()?
-            .describe_function(name, version, namespace_path)
+            .describe_function(name, Some(version), namespace_path)
+            .await
+            .map_err(direct_catalog_resource_error)
+    }
+
+    async fn get_function_latest(
+        &self,
+        name: &str,
+        namespace_path: &[String],
+    ) -> Result<FunctionVersion> {
+        validate_function_name(name)?;
+        validate_namespace(namespace_path)?;
+        self.sql_client()?
+            .describe_function(name, None, namespace_path)
             .await
             .map_err(direct_catalog_resource_error)
     }

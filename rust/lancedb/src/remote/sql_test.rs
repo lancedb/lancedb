@@ -3049,6 +3049,13 @@ async fn function_creation_and_description_use_sql_query_handles() {
         assert_eq!(described_json["batch_size"], 12);
         assert_eq!(described_json["row_timeout_seconds"], 8.0);
         assert_eq!(described_json["result_stability"], "input_and_context");
+        let latest = db
+            .get_function_latest("embed", &["team".into()])
+            .await
+            .unwrap();
+        assert_eq!(latest.name(), "embed");
+        assert_eq!(latest.version(), "1");
+        assert_eq!(latest.batch_size(), Some(12));
         let listed = db
             .list_functions(&["team".into()], Default::default())
             .await
@@ -3068,6 +3075,7 @@ async fn function_creation_and_description_use_sql_query_handles() {
         assert_eq!(listed_json["result_stability"], "input_and_context");
         let seen = statements.lock().unwrap();
         assert_eq!(seen[1], "DESCRIBE FUNCTION \"embed\" WITH (version = '1')");
+        assert_eq!(seen[2], "DESCRIBE FUNCTION \"embed\"");
         shutdown.send(()).unwrap();
     }
 }

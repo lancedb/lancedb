@@ -140,6 +140,18 @@ def _view_description(
     )
 
 
+def _normalize_function_version(version: Optional[Union[int, str]]) -> Optional[str]:
+    if version is None:
+        return None
+    if isinstance(version, bool):
+        raise TypeError("version must be an int, str, or None")
+    if isinstance(version, int):
+        return str(version)
+    if isinstance(version, str):
+        return version
+    raise TypeError("version must be an int, str, or None")
+
+
 class DBConnection(EnforceOverrides):
     """An active LanceDB connection interface.
 
@@ -1027,10 +1039,15 @@ class DBConnection(EnforceOverrides):
         self,
         name: str,
         *,
-        version: str,
+        version: Optional[Union[int, str]] = None,
         namespace_path: Optional[List[str]] = None,
     ) -> FunctionVersion:
-        """Open one exact immutable Function version from the remote catalog."""
+        """Open an immutable Function version from the remote catalog.
+
+        ``version`` may be an integer or string. When omitted, the server
+        resolves the latest currently visible revision and returns that exact
+        immutable version.
+        """
         raise NotImplementedError(
             _append_doc_url(
                 "Function catalog operations are not supported "
@@ -2310,9 +2327,10 @@ class LanceDBConnection(DBConnection):
         self,
         name: str,
         *,
-        version: str,
+        version: Optional[Union[int, str]] = None,
         namespace_path: Optional[List[str]] = None,
     ) -> FunctionVersion:
+        version = _normalize_function_version(version)
         return LOOP.run(
             self._conn.get_function(
                 name, version=version, namespace_path=namespace_path
@@ -3610,10 +3628,16 @@ class AsyncConnection(object):
         self,
         name: str,
         *,
-        version: str,
+        version: Optional[Union[int, str]] = None,
         namespace_path: Optional[List[str]] = None,
     ) -> FunctionVersion:
-        """Open one exact immutable Function version from the remote catalog."""
+        """Open an immutable Function version from the remote catalog.
+
+        ``version`` may be an integer or string. When omitted, the server
+        resolves the latest currently visible revision and returns that exact
+        immutable version.
+        """
+        version = _normalize_function_version(version)
         return FunctionVersion.from_json(
             await self._inner.get_function(name, version, namespace_path)
         )
