@@ -12,28 +12,34 @@ open-source columnar format for multimodal AI data.
 
 LanceDB depends only on object storage for its primary state, and NVME/memory for caching in the serving
 layer, giving it the latency profile of an in-memory database with the petabyte scalability and cost profile
-of S3. LanceDB is intended for use as a single solution in your org for all of the following, giving your
-team one system to become expert in and removing the need for multiple database systems and
-synchronization pipelines between them:
+of S3. LanceDB is intended for use as a single solution in your org, giving your team one system to
+become expert in and removing the need for multiple database systems and synchronization pipelines
+between them. Core features include:
 
-- [**Multimodal tables**](/management/table#multimodal) that hold images, video, audio, text, embeddings, and
-  metadata in schema-enforced tables
-- [**Vector search**](/search/vector-search), combined with [filters](/search/filtering) and
-  [reranking](/reranking)
-- [**Full-text search**](/search/full-text-search) with BM25 ranking, and
-  [**hybrid search**](/search/hybrid-search) that fuses it with vector results
-- [**Versioning**](/management/table#versioning) to pin and revisit training datasets
-- [**Training data loading**](/training/data-loading) that streams shuffled, deterministic batches into PyTorch
-- [**Curation**](/curation) with sampling, deduplication, chunking, and joins (Enterprise)
-- [**Computed columns**](/feature-engineering/add-computed-column) and
-  [**materialized views**](/feature-engineering/materialized-views) with on-demand or scheduled refresh (Enterprise)
-- [**SQL**](/basics/sql) over the same tables (Enterprise)
-- [**SDKs**](/basics/sdk) for Python, TypeScript, and Rust
+- [**SQL**](/basics/sql) powered by Apache DataFusion (Enterprise)
+- [**Secondary indexes**](/indexing) for vector search, full-text search, and scalar filters
+- [**Computed columns**](/feature-engineering/add-computed-column) with on-demand or scheduled refresh (Enterprise)
+- [**Materialized views**](/feature-engineering/materialized-views) with on-demand or scheduled refresh (Enterprise)
+- [**Time travel and versioning**](/management/table#versioning) to pin and revisit datasets
+- **Search**: [vector](/search/vector-search), [full-text](/search/full-text-search), and
+  [hybrid](/search/hybrid-search), with [filters](/search/filtering) and [reranking](/reranking)
+- [**Python UDFs**](/curation/create-function) for custom transformations and model inference (Enterprise, early access)
+- [**Row-level random access**](/basics/lance#capabilities) for retrieval and training
+- [**Column additions**](/management/table#schema-add-new-columns) without rewriting existing columns
 
 {/*
-Draft until branching reaches early access. Add this item to the list above, after Versioning:
-- [**Branching**](/tables/branching) that gives each experiment or agent a writable fork of a table to review before it reaches `main`
+Draft until branching reaches early access. Add this item to the list above, after Time travel and versioning:
+- [**Copy-on-write branching**](/tables/branching) that gives each experiment or agent a writable fork of a table to review before it reaches `main`
 */}
+
+LanceDB stores images, video, audio, text, embeddings, and metadata in
+[schema-enforced tables](/management/table#multimodal). In LanceDB Enterprise, these features let you build
+declarative ML data pipelines: ingest raw data and metadata, enrich it incrementally with computed columns and
+Python UDFs, and organize it into [curated datasets](/curation) with materialized views. Add features without
+rewriting existing columns, then train from those datasets using row-level random access and sampling.
+
+LanceDB provides [SDKs](/basics/sdk) for Python, TypeScript, and Rust, plus a
+[PyTorch data loader](/training/data-loading) for reproducible shuffling and streaming batches.
 
 ## Architecture {#architecture}
 
