@@ -1127,8 +1127,8 @@ def test_copy_blob_subset_preserves_payloads_nulls_and_empty_values(tmp_path):
     subset = db.create_table("subset", schema=schema)
     subset.add(
         [
-            {"id": row_id, "image": payload}
-            for row_id, payload in zip(hits["id"].to_pylist(), payloads, strict=True)
+            {"id": image_id, "image": payload}
+            for image_id, payload in zip(hits["id"].to_pylist(), payloads, strict=True)
         ]
     )
     copied = subset.search().to_list(blob_mode="bytes")

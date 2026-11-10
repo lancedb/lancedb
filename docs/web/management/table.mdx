@@ -513,8 +513,8 @@ subset = db.create_table(
 )
 if hits.num_rows:
     subset.add([
-        {"id": row_id, "image": payload}
-        for row_id, payload in zip(hits["id"].to_pylist(), payloads, strict=True)
+        {"id": image_id, "image": payload}
+        for image_id, payload in zip(hits["id"].to_pylist(), payloads, strict=True)
     ])
 ```
 
