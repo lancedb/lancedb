@@ -26,6 +26,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use arrow_schema::{DataType, Field as ArrowField, Fields, Schema as ArrowSchema, SchemaRef};
+use datafusion::execution::context::SessionContext;
 use datafusion_common::{ScalarValue, tree_node::TreeNode};
 use datafusion_expr::Expr;
 use datafusion_physical_plan::PhysicalExpr;
@@ -40,6 +41,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::function::{FUNCTION_BLOB_V2_TYPE, FunctionApplication, FunctionBinding};
+use crate::materialized_view::without_declarations;
 use crate::utils::resolve_arrow_field_path;
 use crate::{Error, Result};
 
@@ -1640,8 +1642,12 @@ pub(crate) fn plan_function_application(
 ///
 /// Paths are compared at their root: a declaration reading `metadata` is
 /// invalidated by a change to `metadata.age` just as surely.
-pub(crate) fn ensure_not_an_input(schema: &SchemaRef, paths: &[&str]) -> Result<()> {
-    ensure_not_an_input_of(schema, paths, &[])
+pub(crate) fn ensure_not_an_input(
+    schema: &SchemaRef,
+    paths: &[&str],
+    session: Option<&SessionContext>,
+) -> Result<()> {
+    ensure_not_an_input_of(schema, paths, &[], session)
 }
 
 /// [`ensure_not_an_input`] where `removed` names columns whose own
@@ -1651,6 +1657,7 @@ pub(crate) fn ensure_not_an_input_of(
     schema: &SchemaRef,
     paths: &[&str],
     removed: &[&str],
+    session: Option<&SessionContext>,
 ) -> Result<()> {
     // By identity, not spelling: a quoted path names the same column, while
     // a path *into* one removes no declaration at all.
@@ -1668,7 +1675,7 @@ pub(crate) fn ensure_not_an_input_of(
         // The expression, not stored inputs, is the source of truth; an
         // expression that no longer parses proves nothing, so refuse.
         let inputs = match &declaration.kind {
-            ComputedColumnKind::Sql { expression } => Planner::new(schema.clone())
+            ComputedColumnKind::Sql { expression } => session_planner(schema.clone(), session)
                 .parse_expr(expression)
                 .map(|parsed| Planner::column_names_in_expr(&parsed))
                 .map_err(|e| Error::InvalidInput {
@@ -1760,7 +1767,10 @@ pub(crate) fn ensure_batch_writes_no_computed_values(
 /// Function declaration satisfies the binding contract, and no SQL
 /// declaration reads another computed column. What passes here is what
 /// `refresh_column` can execute.
-pub(crate) fn ensure_declarations_are_planned(schema: &ArrowSchema) -> Result<()> {
+pub(crate) fn ensure_declarations_are_planned(
+    schema: &ArrowSchema,
+    session: Option<&SessionContext>,
+) -> Result<()> {
     let invalid = |message: String| Error::InvalidInput { message };
     // A field with any declaration key is a declaration; a partial one is
     // not "no declaration", it is a broken one.
@@ -1794,7 +1804,12 @@ pub(crate) fn ensure_declarations_are_planned(schema: &ArrowSchema) -> Result<()
                     .filter(|f| f.name() != &column.name)
                     .map(|f| f.as_ref().clone())
                     .collect();
-                let bound = bind(Arc::new(ArrowSchema::new(others)), &column.name, expression)?;
+                let bound = bind(
+                    Arc::new(ArrowSchema::new(others)),
+                    &column.name,
+                    expression,
+                    session,
+                )?;
                 if let Some(input) = bound.roots.iter().find(|r| declared.contains(*r)) {
                     return Err(invalid(format!(
                         "computed column '{}' reads computed column '{input}'",
@@ -1944,6 +1959,17 @@ pub(crate) struct BoundExpression {
     pub blob_paths: Vec<String>,
     /// A directly projected Blob v2 field whose semantics the output inherits.
     projected_blob_field: Option<ArrowField>,
+    /// Field metadata of the expression's return field, e.g. a function's
+    /// logical type.
+    return_metadata: HashMap<String, String>,
+}
+
+/// Plans against `session`'s functions when given, else Lance's defaults.
+fn session_planner(schema: SchemaRef, session: Option<&SessionContext>) -> Planner {
+    match session {
+        Some(session) => Planner::new_with_session(schema, session.clone()),
+        None => Planner::new(schema),
+    }
 }
 
 fn is_direct_field_projection(expr: &Expr) -> bool {
@@ -2089,7 +2115,12 @@ fn referenced_blob_paths(schema: &ArrowSchema, inputs: &[String]) -> Result<Vec<
 /// simplifier can fold a referenced column out entirely (`true OR x > 0`),
 /// and the guard protecting the stored SQL has to see every column the text
 /// names, not just the ones the simplified form still reads.
-pub(crate) fn bind(schema: SchemaRef, column: &str, expression: &str) -> Result<BoundExpression> {
+pub(crate) fn bind(
+    schema: SchemaRef,
+    column: &str,
+    expression: &str,
+    session: Option<&SessionContext>,
+) -> Result<BoundExpression> {
     let invalid = |message: String| Error::InvalidExpression {
         column: column.to_string(),
         message,
@@ -2102,7 +2133,7 @@ pub(crate) fn bind(schema: SchemaRef, column: &str, expression: &str) -> Result<
         .into_iter()
         .collect::<HashSet<_>>();
     let parsing_schema = blob_runtime_schema(schema.as_ref(), &all_blob_paths);
-    let planner = Planner::new(parsing_schema);
+    let planner = session_planner(parsing_schema, session);
     let parsed = planner
         .parse_expr(expression)
         .map_err(|e| invalid(e.to_string()))?;
@@ -2171,22 +2202,22 @@ pub(crate) fn bind(schema: SchemaRef, column: &str, expression: &str) -> Result<
         .map(|field| field.name().clone())
         .collect();
 
-    let runtime_planner = Planner::new(runtime_schema);
+    let runtime_planner = session_planner(runtime_schema, session);
     let optimized = runtime_planner
         .optimize_expr(parsed)
         .map_err(|e| invalid(e.to_string()))?;
-    let physical = Planner::new(read_schema.clone())
+    let physical = session_planner(read_schema.clone(), session)
         .create_physical_expr(&optimized)
         .map_err(|e| invalid(e.to_string()))?;
-    let data_type = physical
-        .data_type(read_schema.as_ref())
+    let return_field = physical
+        .return_field(read_schema.as_ref())
         .map_err(|e| invalid(e.to_string()))?;
 
     Ok(BoundExpression {
         inputs,
         roots,
         physical,
-        data_type,
+        data_type: return_field.data_type().clone(),
         blob_paths: blob_paths
             .iter()
             .map(|path| {
@@ -2195,6 +2226,7 @@ pub(crate) fn bind(schema: SchemaRef, column: &str, expression: &str) -> Result<
             })
             .collect(),
         projected_blob_field,
+        return_metadata: return_field.metadata().clone(),
     })
 }
 
@@ -2210,7 +2242,11 @@ pub(crate) fn bind(schema: SchemaRef, column: &str, expression: &str) -> Result<
 /// batch may declare `a` and then `b = a + 1` in one commit. Refresh order
 /// then matters, and refresh enforces it: `b` is refused while `a` still has
 /// unfilled rows.
-fn plan_declarations(schema: SchemaRef, columns: &[(String, String)]) -> Result<Vec<ArrowField>> {
+fn plan_declarations(
+    schema: SchemaRef,
+    columns: &[(String, String)],
+    session: Option<&SessionContext>,
+) -> Result<Vec<ArrowField>> {
     if columns.is_empty() {
         return Err(Error::InvalidInput {
             message: "at least one computed column is required".into(),
@@ -2225,23 +2261,22 @@ fn plan_declarations(schema: SchemaRef, columns: &[(String, String)]) -> Result<
             return Err(Error::ColumnAlreadyExists { name: name.clone() });
         }
 
-        let bound = bind(schema.clone(), name, expression)?;
+        let bound = bind(schema.clone(), name, expression, session)?;
 
         // Declared columns start entirely null, so nullability is a property
         // of the declaration rather than of what the expression yields.
         let computed_metadata = computed_column_metadata(expression, &bound.inputs);
-        let field = match bound.projected_blob_field {
-            Some(source) => {
-                let mut metadata = source.metadata().clone();
-                metadata.retain(|key, _| !is_declaration_key(key));
-                metadata.extend(computed_metadata);
-                source
-                    .with_name(name)
-                    .with_nullable(true)
-                    .with_metadata(metadata)
+        let projected = match bound.projected_blob_field {
+            Some(source) => source.with_name(name),
+            None => {
+                ArrowField::new(name, bound.data_type, true).with_metadata(bound.return_metadata)
             }
-            None => ArrowField::new(name, bound.data_type, true).with_metadata(computed_metadata),
         };
+        // Keep the source's descriptive metadata, not its schema declarations.
+        let projected = without_declarations(&projected);
+        let mut metadata = projected.metadata().clone();
+        metadata.extend(computed_metadata);
+        let field = projected.with_nullable(true).with_metadata(metadata);
         schema = Arc::new(ArrowSchema::new_with_metadata(
             schema
                 .fields()
@@ -2257,8 +2292,12 @@ fn plan_declarations(schema: SchemaRef, columns: &[(String, String)]) -> Result<
     Ok(fields)
 }
 
-pub(crate) fn plan(schema: SchemaRef, columns: &[(String, String)]) -> Result<Vec<ArrowField>> {
-    plan_declarations(schema, columns)
+pub(crate) fn plan(
+    schema: SchemaRef,
+    columns: &[(String, String)],
+    session: Option<&SessionContext>,
+) -> Result<Vec<ArrowField>> {
+    plan_declarations(schema, columns, session)
 }
 
 /// Run the schema-level checks of
@@ -2266,6 +2305,11 @@ pub(crate) fn plan(schema: SchemaRef, columns: &[(String, String)]) -> Result<Ve
 /// `schema` without committing: the Function-binding guard and the planning of
 /// every declaration. For callers that stage declarations behind other work
 /// and need those rejections before any of it lands.
+///
+/// Expressions may call the functions of `session`, the DataFusion session
+/// the table's lance session carries (see
+/// [`lance::session::Session::with_datafusion_session`]); `None` allows Lance's
+/// defaults only.
 ///
 /// Only the schema is consulted. Declaring also refuses a table with an RTE
 /// write spec or retained SSTables; that is table state, checked at commit.
@@ -2280,16 +2324,20 @@ pub(crate) fn plan(schema: SchemaRef, columns: &[(String, String)]) -> Result<Ve
 ///     ("a".to_string(), "x + 1".to_string()),
 ///     ("b".to_string(), "a * 2".to_string()),
 /// ];
-/// assert!(validate_declarations(schema.clone(), &declarations).is_ok());
-/// assert!(validate_declarations(schema, &[("c".into(), "random()".into())]).is_err());
+/// assert!(validate_declarations(schema.clone(), &declarations, None).is_ok());
+/// assert!(validate_declarations(schema, &[("c".into(), "random()".into())], None).is_err());
 /// ```
-pub fn validate_declarations(schema: SchemaRef, columns: &[(String, String)]) -> Result<()> {
+pub fn validate_declarations(
+    schema: SchemaRef,
+    columns: &[(String, String)],
+    session: Option<&SessionContext>,
+) -> Result<()> {
     ensure_not_function_bound(
         schema.as_ref(),
         "schema evolution",
         columns.iter().map(|(name, _)| name),
     )?;
-    plan(schema, columns).map(drop)
+    plan(schema, columns, session).map(drop)
 }
 
 /// Build the transform that declares `columns` against `schema`.
@@ -2302,8 +2350,9 @@ pub fn validate_declarations(schema: SchemaRef, columns: &[(String, String)]) ->
 pub(crate) fn declare(
     schema: SchemaRef,
     columns: &[(String, String)],
+    session: Option<&SessionContext>,
 ) -> Result<NewColumnTransform> {
-    let fields = plan_declarations(schema, columns)?;
+    let fields = plan_declarations(schema, columns, session)?;
     Ok(NewColumnTransform::AllNulls(Arc::new(ArrowSchema::new(
         fields,
     ))))
@@ -2334,9 +2383,10 @@ pub(super) async fn add_foreign_kind(table: &crate::Table, name: &str, kind: &st
 /// created.
 pub(crate) fn admit_create_source<S: lance_datafusion::utils::StreamingWriteSource>(
     batches: S,
+    session: Option<&SessionContext>,
 ) -> Result<UnfilledDeclarations<S>> {
     let schema = batches.arrow_schema();
-    ensure_declarations_are_planned(&schema)?;
+    ensure_declarations_are_planned(&schema, session)?;
     let declared = computed_columns(&schema)
         .into_iter()
         .map(|c| c.name)
@@ -2496,7 +2546,7 @@ mod tests {
             )]),
         ));
         let declarations = vec![("a".to_string(), "x + 1".to_string())];
-        assert!(super::validate_declarations(schema, &declarations).is_err());
+        assert!(super::validate_declarations(schema, &declarations, None).is_err());
     }
 
     #[test]
@@ -2588,7 +2638,7 @@ mod tests {
         }
     }
 
-    use arrow_array::record_batch;
+    use arrow_array::{RecordBatch, record_batch};
     use arrow_schema::{DataType, TimeUnit};
     use futures::TryStreamExt;
     use lance::dataset::ColumnAlteration;
@@ -2616,6 +2666,137 @@ mod tests {
 
     async fn declared(table: &Table) -> Vec<ComputedColumn> {
         computed_columns(table.schema().await.unwrap().as_ref())
+    }
+
+    /// Echoes an Int32 and tags its return field, like a function with a
+    /// logical type.
+    #[derive(Debug, PartialEq, Eq, Hash)]
+    struct Tagged(datafusion_expr::Signature);
+
+    impl datafusion_expr::ScalarUDFImpl for Tagged {
+        fn name(&self) -> &str {
+            "tagged"
+        }
+
+        fn signature(&self) -> &datafusion_expr::Signature {
+            &self.0
+        }
+
+        fn return_type(&self, _: &[DataType]) -> datafusion_common::Result<DataType> {
+            Ok(DataType::Int32)
+        }
+
+        fn return_field_from_args(
+            &self,
+            _: datafusion_expr::ReturnFieldArgs,
+        ) -> datafusion_common::Result<arrow_schema::FieldRef> {
+            Ok(Arc::new(
+                ArrowField::new("tagged", DataType::Int32, true)
+                    .with_metadata(HashMap::from([("tag".into(), "yes".into())])),
+            ))
+        }
+
+        fn invoke_with_args(
+            &self,
+            args: datafusion_expr::ScalarFunctionArgs,
+        ) -> datafusion_common::Result<datafusion_expr::ColumnarValue> {
+            Ok(args.args[0].clone())
+        }
+    }
+
+    #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
+    async fn test_declarations_plan_against_the_session_functions() {
+        let functions = SessionContext::new();
+        functions.register_udf(datafusion_expr::ScalarUDF::new_from_impl(Tagged(
+            datafusion_expr::Signature::exact(
+                vec![DataType::Int32],
+                datafusion_expr::Volatility::Immutable,
+            ),
+        )));
+        let session =
+            Arc::new(lance::session::Session::default().with_datafusion_session(functions));
+        let conn = connect("memory://")
+            .session(session)
+            .execute()
+            .await
+            .unwrap();
+        let batch = record_batch!(("x", Int32, [1, 2, 3]), ("y", Int32, [4, 5, 6])).unwrap();
+        let table = conn
+            .create_table("session_functions", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        add_computed(&table, &[("t".into(), "tagged(x)".into())])
+            .await
+            .unwrap();
+        let schema = table.schema().await.unwrap();
+        assert_eq!(
+            schema.field_with_name("t").unwrap().metadata().get("tag"),
+            Some(&"yes".to_string())
+        );
+        table.refresh_column("t").await.unwrap();
+        // Dropping a column re-plans every declaration on the table.
+        table.drop_columns(&["y"]).await.unwrap();
+
+        let batches = table
+            .query()
+            .select(Select::columns(&["t"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let expected = record_batch!(("t", Int32, [1, 2, 3])).unwrap();
+        assert_eq!(batches[0].column(0).as_ref(), expected.column(0).as_ref());
+
+        let plain = table_with_ints("no_session").await;
+        let err = add_computed(&plain, &[("t".into(), "tagged(x)".into())])
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("tagged"), "{err}");
+    }
+
+    /// A projection keeps its source's descriptive metadata, not its schema
+    /// declarations: a copy of the primary key is not a primary key.
+    #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
+    async fn test_projecting_the_primary_key_drops_its_declaration() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let ints = record_batch!(("x", Int32, [1, 2, 3])).unwrap();
+        let schema = ArrowSchema::new(vec![
+            ArrowField::new("x", DataType::Int32, false)
+                .with_metadata(HashMap::from([("note".into(), "kept".into())])),
+        ]);
+        let batch = RecordBatch::try_new(Arc::new(schema), ints.columns().to_vec()).unwrap();
+        let table = conn
+            .create_table("key_projection", batch)
+            .execute()
+            .await
+            .unwrap();
+        table.set_unenforced_primary_key(["x"]).await.unwrap();
+
+        add_computed(&table, &[("copy".into(), "x".into())])
+            .await
+            .unwrap();
+        let schema = table.schema().await.unwrap();
+        let copy = schema.field_with_name("copy").unwrap();
+        assert!(
+            !copy
+                .metadata()
+                .keys()
+                .any(|key| key.starts_with("lance-schema:")),
+            "{copy:?}"
+        );
+        assert_eq!(copy.metadata().get("note"), Some(&"kept".to_string()));
     }
 
     #[tokio::test]
@@ -2658,6 +2839,7 @@ mod tests {
                 ("first".to_string(), "image".to_string()),
                 ("second".to_string(), "first".to_string()),
             ],
+            None,
         )
         .unwrap();
 
@@ -2680,6 +2862,7 @@ mod tests {
         let fields = plan(
             schema,
             &[("payload".to_string(), "coalesce(image, image)".to_string())],
+            None,
         )
         .unwrap();
 
@@ -2914,7 +3097,8 @@ mod tests {
         assert!(
             validate_declarations(
                 table.schema().await.unwrap(),
-                &[("e".into(), "random()".into())]
+                &[("e".into(), "random()".into())],
+                None,
             )
             .is_err()
         );
@@ -4803,7 +4987,7 @@ mod tests {
 
         let schema = declare_plan(&schema, &downstream, "fb_downstream");
         ensure_supported_function_metadata(&schema).unwrap();
-        ensure_declarations_are_planned(&schema).unwrap();
+        ensure_declarations_are_planned(&schema, None).unwrap();
         let bindings = function_bindings(&schema).unwrap();
         assert!(
             computed_function_inputs(&schema, &bindings[0])
@@ -4868,7 +5052,7 @@ mod tests {
         let base = ArrowSchema::new(vec![ArrowField::new("x", DataType::Int32, true)]);
         let mut fields = base.fields().to_vec();
         fields.extend(
-            plan(Arc::new(base), &[("doubled".into(), "x * 2".into())])
+            plan(Arc::new(base), &[("doubled".into(), "x * 2".into())], None)
                 .unwrap()
                 .into_iter()
                 .map(Arc::new),
@@ -4887,7 +5071,7 @@ mod tests {
                 .is_none_or(|metadata| !metadata.keys().any(|key| is_declaration_key(key)))
         );
         let schema = Arc::new(declare_plan(&schema, &downstream, "fb_downstream"));
-        ensure_declarations_are_planned(&schema).unwrap();
+        ensure_declarations_are_planned(&schema, None).unwrap();
         let batch = RecordBatch::try_new(
             schema,
             vec![
