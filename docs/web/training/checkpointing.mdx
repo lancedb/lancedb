@@ -15,6 +15,8 @@ terminology from [Distributed Training](/training/distributed-training#paralleli
 
 A stored `StreamingDataset` state reflects only round-robin cycles that have been completed across all splits; samples completed partway through a cycle at the time of saving can be replayed. To ensure efficient saving, make sure `global_batch_size` is a multiple of `num_splits`, as in the example below.
 
+Each rank saves its own dataset state to a separate file. Keep the files from every rank at the same checkpoint step to resume across different topologies.
+
 <CodeGroup>
 ```py Python icon=Python
 import torch
@@ -43,7 +45,7 @@ for step, batch in enumerate(dataloader):
     if (step + 1) % checkpoint_interval == 0:
         torch.save(
             {"model": model.state_dict(), "dataset": dataset.state_dict()},
-            f"checkpoint_{step + 1}.pt",
+            f"checkpoint_{step + 1}_rank_{rank}.pt",
         )
 ```
 </CodeGroup>
@@ -78,7 +80,7 @@ for step, batch in enumerate(dataloader):
     if (step + 1) % checkpoint_interval == 0:
         torch.save(
             {"model": model.state_dict(), "dataset": dataset.state_dict()},
-            f"checkpoint_{step + 1}.pt",
+            f"checkpoint_{step + 1}_rank_{rank}.pt",
         )
 ```
 </CodeGroup>
