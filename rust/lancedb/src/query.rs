@@ -661,6 +661,10 @@ pub struct QueryExecutionOptions {
     /// By default, this is 1024
     pub max_batch_length: u32,
     /// Max duration to wait for the query to execute before timing out.
+    ///
+    /// The timeout also covers reading the results, so a caller that consumes
+    /// the stream slowly can exceed it. For a remote table it counts from when
+    /// the query is sent, and the server is given the same timeout.
     pub timeout: Option<Duration>,
     /// How distributed worker metrics should be displayed by
     /// [`ExecutableQuery::analyze_plan`].
@@ -746,6 +750,11 @@ pub trait ExecutableQuery {
     /// This readahead is limited however and backpressure will be applied if this
     /// stream is consumed slowly (this constrains the maximum memory used by a
     /// single query.
+    ///
+    /// A remote table decodes batches as they arrive when the server streams
+    /// query results. If the response stops partway, the stream ends with
+    /// `Error::ResponseInterrupted`. The batches already returned are valid but
+    /// incomplete, and the query is not retried.
     ///
     /// For simpler access or row-based access we recommend creating extension traits
     /// to convert Arrow data into your internal data model.

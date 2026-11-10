@@ -237,6 +237,9 @@ export interface QueryExecutionOptions {
 
   /**
    * Timeout for query execution in milliseconds
+   *
+   * The timeout also covers reading the results, so consuming them slowly can
+   * exceed it.
    */
   timeoutMs?: number;
 
