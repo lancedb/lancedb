@@ -308,6 +308,7 @@ async fn execute_refresh_column_with_source(
         schema.clone(),
         column,
         &expression,
+        dataset.session().datafusion_session(),
     )?);
     ensure_inputs_filled(&dataset, &schema, column, &bound).await?;
     let field = dataset
@@ -490,7 +491,12 @@ async fn ensure_inputs_filled(
                 ),
             });
         };
-        let input_bound = super::computed_columns::bind(schema.clone(), input, expression)?;
+        let input_bound = super::computed_columns::bind(
+            schema.clone(),
+            input,
+            expression,
+            dataset.session().datafusion_session(),
+        )?;
         let mut unfilled = 0u64;
         for fragment in dataset.get_fragments() {
             unfilled += count_fragment_gains(dataset, &fragment, &input_bound, input)

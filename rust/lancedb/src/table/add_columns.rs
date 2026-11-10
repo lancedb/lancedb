@@ -89,6 +89,30 @@ impl AddColumnsBuilder {
     /// # Ok(())
     /// # }
     /// ```
+    ///
+    /// In LanceDB Embedded, an expression can also call functions registered
+    /// on a DataFusion `SessionContext` attached to the connection's Lance
+    /// session. They are not stored with the table, so attach them on every
+    /// connection that opens it.
+    ///
+    /// ```no_run
+    /// # use std::sync::Arc;
+    /// # use datafusion::execution::context::SessionContext;
+    /// # use datafusion::logical_expr::ScalarUDF;
+    /// # async fn declare(my_udf: ScalarUDF) -> Result<(), Box<dyn std::error::Error>> {
+    /// let functions = SessionContext::new();
+    /// functions.register_udf(my_udf);
+    /// let session = lance::session::Session::default().with_datafusion_session(functions);
+    /// let db = lancedb::connect("data/db")
+    ///     .session(Arc::new(session))
+    ///     .execute()
+    ///     .await?;
+    /// let table = db.open_table("t").execute().await?;
+    /// table.add_columns().computed("y", "my_udf(x)").execute().await?;
+    /// table.refresh_column("y").await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn computed(mut self, name: impl Into<String>, expression: impl Into<String>) -> Self {
         self.computed.push((name.into(), expression.into()));
         self
