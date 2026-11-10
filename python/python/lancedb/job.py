@@ -7,6 +7,8 @@ import asyncio
 import reprlib
 import time
 from datetime import timedelta
+from os import PathLike
+from pathlib import Path
 from typing import Any, Callable, Generic, Optional, TypeVar, cast
 
 import pyarrow as pa
@@ -422,6 +424,31 @@ class AsyncJob(Generic[T]):
         description = self._inner._description if self._inner is not None else None
         return getattr(description, name) if description is not None else None
 
+    async def timeline(self, path: str | PathLike[str]) -> None:
+        """Write a fresh recorded Function job timeline as Chrome trace JSON.
+
+        Open the file in Perfetto or Chrome tracing. The recording contains
+        retained split spans grouped by worker and timestamped job phases.
+        Batch counts and latency statistics are included as details; individual
+        batch timestamps are not recorded. Running jobs export a partial snapshot
+        without waiting or cancelling. Download again to include later work.
+
+        Requires a server-side Function job and a server supporting timeline
+        export. Unsupported operations raise ``NotImplementedError`` or a server
+        error. The destination is overwritten only after the trace is fetched.
+        Filesystem errors propagate to the caller.
+
+        Examples
+        --------
+        >>> await job.timeline("refresh.trace.json")  # doctest: +SKIP
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "job timeline export requires a server-side Function job"
+            )
+        trace = await self._inner.timeline()
+        await asyncio.to_thread(Path(path).write_text, trace, encoding="utf-8")
+
     async def events(
         self,
         *,
@@ -620,6 +647,21 @@ class Job(Generic[T]):
 
     def _field(self, name: str) -> Optional[Any]:
         return getattr(self._inner, name) if self._inner is not None else None
+
+    def timeline(self, path: str | PathLike[str]) -> None:
+        """Write Chrome trace JSON for this Function job.
+
+        See :meth:`AsyncJob.timeline`. Open the file in Perfetto or Chrome tracing.
+
+        Examples
+        --------
+        >>> job.timeline("refresh.trace.json")  # doctest: +SKIP
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "job timeline export requires a server-side Function job"
+            )
+        return LOOP.run(self._inner.timeline(path))
 
     def events(
         self,

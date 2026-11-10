@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import asyncio
+import json
 import time
 from datetime import timedelta
 from types import SimpleNamespace
@@ -751,3 +752,54 @@ async def test_query_wait_timeout_requires_keeping_original_handle():
     assert "continues on the server" in message
     assert "keep this handle to continue waiting" in message
     assert "db.open_job" not in message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync", [False, True])
+async def test_timeline_writes_fresh_recording_without_waiting(sync, tmp_path):
+    trace = {
+        "traceEvents": [{"ph": "X", "ts": 0, "dur": 1000}],
+        "metadata": {"partial": True},
+    }
+    inner = SimpleNamespace(
+        timeline=AsyncMock(return_value=json.dumps(trace)),
+        wait=AsyncMock(),
+        cancel=AsyncMock(),
+    )
+    job = AsyncJob(inner)
+    path = tmp_path / "job.trace.json"
+    if sync:
+        await asyncio.to_thread(Job(job).timeline, str(path))
+    else:
+        await job.timeline(path)
+    assert json.loads(path.read_text()) == trace
+    inner.timeline.assert_awaited_once_with()
+    inner.wait.assert_not_awaited()
+    inner.cancel.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_timeline_failure_preserves_existing_file(tmp_path):
+    path = tmp_path / "job.trace.json"
+    path.write_text("previous recording")
+    job = AsyncJob(
+        SimpleNamespace(
+            timeline=AsyncMock(side_effect=RuntimeError("unsupported server"))
+        )
+    )
+    with pytest.raises(RuntimeError, match="unsupported server"):
+        await job.timeline(path)
+    assert path.read_text() == "previous recording"
+    with pytest.raises(NotImplementedError, match="server-side Function job"):
+        await AsyncJob(None).timeline(path)
+    with pytest.raises(NotImplementedError, match="server-side Function job"):
+        Job(None).timeline(path)
+
+
+@pytest.mark.asyncio
+async def test_timeline_reports_filesystem_errors(tmp_path):
+    job = AsyncJob(
+        SimpleNamespace(timeline=AsyncMock(return_value='{"traceEvents":[]}'))
+    )
+    with pytest.raises(FileNotFoundError):
+        await job.timeline(tmp_path / "missing" / "trace.json")

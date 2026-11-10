@@ -85,6 +85,11 @@ pub(crate) trait JobHandle: Send + Sync {
     async fn describe(&self) -> Result<JobDescription> {
         job_detail_not_supported("describing a job")
     }
+    /// Chrome Trace Event JSON for a server-side Function job.
+    async fn timeline(&self) -> Result<Value> {
+        job_detail_not_supported("job timeline export")
+    }
+
     /// The job's recorded lifecycle events.
     async fn events(&self, _request: JobEventsRequest) -> Result<Vec<RecordBatch>> {
         job_detail_not_supported("job event history")
@@ -465,6 +470,20 @@ where
                           carries no job id to query events with"
                     .to_string(),
             }),
+        }
+    }
+
+    /// Fetch a recorded Function job timeline as Chrome Trace Event JSON.
+    ///
+    /// The snapshot opens in Perfetto or Chrome tracing. It contains retained
+    /// split and positioned phase spans; batch statistics remain arguments,
+    /// because individual batch timestamps are not recorded. Running jobs return
+    /// a partial recording without waiting for completion. Requires server support;
+    /// in-process operations and SQL query handles do not support this operation.
+    pub async fn timeline(&self) -> Result<Value> {
+        match &self.inner {
+            JobInner::Handle { handle, .. } => handle.timeline().await,
+            JobInner::Completed(_) => job_detail_not_supported("job timeline export"),
         }
     }
 
