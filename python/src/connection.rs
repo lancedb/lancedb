@@ -929,6 +929,23 @@ impl Connection {
     }
 
     #[pyo3(signature = (name, version, namespace_path=None))]
+    pub fn _drop_function_with_warnings(
+        self_: PyRef<'_, Self>,
+        name: String,
+        version: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner
+                .drop_function_with_warnings(name, version, &namespace_path)
+                .await
+                .infer_error()
+        })
+    }
+
+    #[pyo3(signature = (name, version, namespace_path=None))]
     pub fn drop_function_async(
         self_: PyRef<'_, Self>,
         name: String,

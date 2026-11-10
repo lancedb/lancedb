@@ -738,6 +738,21 @@ impl Connection {
             .await
     }
 
+    /// Internal bridge for the Python binding to preserve the public bool API
+    /// while forwarding advisory SQL warnings to Python's existing warning
+    /// mechanism.
+    #[doc(hidden)]
+    pub async fn drop_function_with_warnings(
+        &self,
+        name: impl AsRef<str>,
+        version: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<(bool, Vec<String>)> {
+        self.internal
+            .drop_function_with_warnings(name.as_ref(), version.as_ref(), namespace_path)
+            .await
+    }
+
     /// Drop one Function revision and return its SQL query handle.
     ///
     /// The boolean reports removal of the requested revision from the catalog.

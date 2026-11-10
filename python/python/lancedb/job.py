@@ -4,7 +4,7 @@
 """Handles to asynchronous registry jobs, SQL queries, and local operations."""
 
 import asyncio
-import json
+import reprlib
 import time
 from datetime import timedelta
 from typing import Any, Callable, Generic, Optional, TypeVar, cast
@@ -461,43 +461,49 @@ class AsyncJob(Generic[T]):
 
 
 _REPR_INDENT = " " * 4
+_REPR_MAX_FIELD_LENGTH = 240
+_PAYLOAD_REPR = reprlib.Repr()
+_PAYLOAD_REPR.maxlevel = 2
+_PAYLOAD_REPR.maxdict = 4
+_PAYLOAD_REPR.maxlist = 4
+_PAYLOAD_REPR.maxtuple = 4
+_PAYLOAD_REPR.maxstring = 120
+_PAYLOAD_REPR.maxother = 120
 
 
 def _repr_payload(value: Any) -> str:
-    """Render a job payload as indented JSON, aligned under its field."""
-    try:
-        rendered = json.dumps(value, indent=4)
-    except TypeError:
-        return repr(value)
-    return rendered.replace("\n", "\n" + _REPR_INDENT)
+    """Bound nested payload previews without changing the stored values."""
+    rendered = _PAYLOAD_REPR.repr(value).replace("\n", "\\n")
+    if len(rendered) > _REPR_MAX_FIELD_LENGTH:
+        return rendered[: _REPR_MAX_FIELD_LENGTH - 3] + "..."
+    return rendered
 
 
 def _job_repr(kind: str, job: Any) -> str:
-    """Render every field the handle currently knows, omitting the rest.
+    """Show cached job identity and bounded previews without backend calls.
 
-    One field per line, with the JSON payloads indented, because a refresh
-    job's spec and result are the point of printing it.
+    The complete payloads remain available through ``spec`` and ``result``.
     """
     state = job.state
     if state is None:
         # Nothing has been fetched yet, so there is nothing to lay out.
-        known = f"id={job.id!r}, " if job.id is not None else ""
+        known = f"id={_repr_payload(job.id)}, " if job.id is not None else ""
         return f"{kind}({known}not refreshed)"
 
     fields = []
     if job.id is not None:
-        fields.append(f"id={job.id!r}")
-    fields.append(f"state={state!r}")
+        fields.append(f"id={_repr_payload(job.id)}")
+    fields.append(f"state={_repr_payload(state)}")
     for name in ("job_type", "creation_ms"):
         value = getattr(job, name)
         if value is not None:
-            fields.append(f"{name}={value!r}")
+            fields.append(f"{name}={_repr_payload(value)}")
     for name in ("spec", "result"):
         value = getattr(job, name)
         if value is not None:
             fields.append(f"{name}={_repr_payload(value)}")
     if job.failure is not None:
-        fields.append(f"failure={job.failure!r}")
+        fields.append(f"failure={_repr_payload(job.failure)}")
     body = "".join(f"\n{_REPR_INDENT}{field}," for field in fields)
     return f"{kind}({body}\n)"
 

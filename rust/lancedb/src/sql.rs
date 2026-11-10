@@ -44,6 +44,10 @@ impl fmt::Display for QueryStatus {
 pub struct QueryDescription {
     /// The stable, connection-scoped identifier assigned when the query was submitted.
     pub id: Uuid,
+    /// The durable Job Registry identifier for a server-side SQL job, when the
+    /// submitted statement ran as one. This identifier can be passed to
+    /// `open_job`; `id` remains connection-scoped.
+    pub job_id: Option<String>,
     /// The server-visible lifecycle state.
     pub status: QueryStatus,
     /// Server-reported completion progress, when known. Values are in `[0.0, 1.0]`,
@@ -56,6 +60,9 @@ pub struct QueryDescription {
 #[async_trait]
 pub(crate) trait QueryHandle: Send + Sync {
     fn id(&self) -> Uuid;
+    fn job_id(&self) -> Option<String> {
+        None
+    }
     async fn describe(&self) -> Result<QueryDescription>;
     async fn reader(&self) -> Result<SendableRecordBatchStream>;
     async fn cancel(&self) -> Result<()>;
@@ -68,8 +75,9 @@ pub(crate) trait QueryHandle: Send + Sync {
 /// return result tickets. Dropping an unread handle or its reader stops a
 /// directly streamed query; deferred execution continues until explicitly
 /// cancelled. This applies equally with and without parameters.
-/// Identifier lookup is scoped to the connection that submitted the query and
-/// is not a durable resume mechanism.
+/// [`Self::id`] is scoped to the connection that submitted the query. When the
+/// server runs the statement as a SQL job, [`Self::job_id`] exposes the durable
+/// Job Registry identifier accepted by `open_job`.
 pub struct Query {
     handle: Arc<dyn QueryHandle>,
 }
@@ -79,6 +87,7 @@ impl std::fmt::Debug for Query {
         formatter
             .debug_struct("Query")
             .field("id", &self.id())
+            .field("job_id", &self.job_id())
             .finish()
     }
 }
@@ -92,6 +101,16 @@ impl Query {
     /// Return the stable, connection-scoped identifier for this query.
     pub fn id(&self) -> Uuid {
         self.handle.id()
+    }
+
+    /// Return the durable Job Registry identifier when the server has reported
+    /// one for this query.
+    ///
+    /// A running query may report it after [`Self::describe`] observes the
+    /// server's latest status. The connection-scoped [`Self::id`] remains a
+    /// separate identifier.
+    pub fn job_id(&self) -> Option<String> {
+        self.handle.job_id()
     }
 
     /// Get a point-in-time description of the query.
@@ -115,7 +134,12 @@ impl Query {
         self.handle.reader().await
     }
 
-    /// Request cancellation of the query.
+    /// Request cancellation of this query's Flight execution.
+    ///
+    /// For a durable server-side SQL job, the operation may return
+    /// [`Error::NotSupported`] because the Flight waiter cannot cancel the
+    /// registry job. Use [`Connection::cancel_job`](crate::Connection::cancel_job)
+    /// with [`Self::job_id`] to cancel that job.
     pub async fn cancel(&self) -> Result<()> {
         self.handle.cancel().await
     }

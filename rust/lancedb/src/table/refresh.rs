@@ -56,30 +56,136 @@ use crate::job::Job;
 use crate::{Error, Result};
 
 /// Options for refreshing a computed column.
-#[derive(Debug, Clone, Default)]
+///
+/// Serializes to the Enterprise backfill request body, one key per set
+/// option; the SQL `REFRESH COLUMN ... WHERE ... WITH (...)` form takes the
+/// same names.
+#[derive(Debug, Clone, Default, Serialize)]
 #[non_exhaustive]
 pub struct RefreshColumnOptions {
+    /// Only refresh the rows matching this SQL filter. Enterprise only.
+    #[serde(rename = "where", skip_serializing_if = "Option::is_none")]
+    pub where_clause: Option<String>,
+    /// Override the Function's default user-code retry policy. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_policy: Option<crate::function::FunctionRetryPolicy>,
+    /// Action after user-code failure or retry exhaustion. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_policy: Option<crate::function::FunctionErrorPolicy>,
+    /// Under a skip policy, fail the job once more than this share of rows
+    /// has failed, 0 to 1. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_failed_fraction: Option<f64>,
+    /// Under a skip policy, fail the job once more than this many rows have
+    /// failed. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_failed_rows: Option<u64>,
+    /// Deadline for one Function call, in seconds. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub row_timeout_seconds: Option<f64>,
+    /// Deadline for Function initialization, in seconds. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub init_timeout_seconds: Option<f64>,
+    /// Worker count for an expression column in LanceDB Enterprise;
+    /// registered Function columns reject it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub num_workers: Option<usize>,
+    /// At most this many executor processes per Function worker. Enterprise
+    /// only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_executor_processes_per_worker: Option<u32>,
     /// Maximum rows per Function call in LanceDB Enterprise.
     ///
     /// Must be greater than zero. `None` uses the server default. This has no
     /// effect on expression-backed columns in LanceDB Embedded.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub batch_size: Option<usize>,
+    /// Opt-in row-count threshold for publishing completed Function outputs.
+    ///
+    /// Must be greater than zero. `None` keeps whole-fragment publication.
+    /// Actual publication boundaries can be larger than this threshold because
+    /// they also depend on completed work and Function batching. LanceDB Embedded
+    /// rejects this option.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub publication_interval_rows: Option<u64>,
     /// GPU class for Function workers in LanceDB Enterprise.
     ///
     /// `None` keeps the Function's registered class, or the deployment default
     /// when the Function does not declare one.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub gpu_class: Option<String>,
     /// Positive aggregate GPU budget for Function workers in LanceDB
     /// Enterprise.
     ///
     /// `None` leaves the server's configured budget unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub gpu_count: Option<u32>,
 }
 
 impl RefreshColumnOptions {
+    /// Only refresh the rows matching `filter`.
+    pub fn where_clause(mut self, filter: impl Into<String>) -> Self {
+        self.where_clause = Some(filter.into());
+        self
+    }
+
+    /// Fail the job once more than `fraction` of its rows has failed.
+    pub fn max_failed_fraction(mut self, fraction: f64) -> Self {
+        self.max_failed_fraction = Some(fraction);
+        self
+    }
+
+    /// Fail the job once more than `rows` rows have failed.
+    pub fn max_failed_rows(mut self, rows: u64) -> Self {
+        self.max_failed_rows = Some(rows);
+        self
+    }
+
+    /// Give each Function call at most `seconds` to return.
+    pub fn row_timeout_seconds(mut self, seconds: f64) -> Self {
+        self.row_timeout_seconds = Some(seconds);
+        self
+    }
+
+    /// Give Function initialization at most `seconds` to complete.
+    pub fn init_timeout_seconds(mut self, seconds: f64) -> Self {
+        self.init_timeout_seconds = Some(seconds);
+        self
+    }
+
+    /// Request `num_workers` workers for an expression column refresh.
+    pub fn num_workers(mut self, num_workers: usize) -> Self {
+        self.num_workers = Some(num_workers);
+        self
+    }
+
+    /// Cap executor processes per Function worker at `processes`.
+    pub fn max_executor_processes_per_worker(mut self, processes: u32) -> Self {
+        self.max_executor_processes_per_worker = Some(processes);
+        self
+    }
+
+    /// Override retries of failed Function calls for this refresh.
+    pub fn retry_policy(mut self, policy: crate::function::FunctionRetryPolicy) -> Self {
+        self.retry_policy = Some(policy);
+        self
+    }
+
+    /// Select fail or skip after the retry policy is exhausted.
+    pub fn error_policy(mut self, policy: crate::function::FunctionErrorPolicy) -> Self {
+        self.error_policy = Some(policy);
+        self
+    }
     /// Limit each Function call to at most `batch_size` rows.
     pub fn batch_size(mut self, batch_size: usize) -> Self {
         self.batch_size = Some(batch_size);
+        self
+    }
+
+    /// Use `rows` as the opt-in publication threshold for completed Function
+    /// outputs. The actual publication boundary can be larger than this value.
+    pub fn publication_interval_rows(mut self, rows: u64) -> Self {
+        self.publication_interval_rows = Some(rows);
         self
     }
 
@@ -95,11 +201,80 @@ impl RefreshColumnOptions {
         self
     }
 
+    /// The first set option a LanceDB Embedded refresh cannot honor, if any.
+    pub fn enterprise_only_option(&self) -> Option<&'static str> {
+        [
+            ("where", self.where_clause.is_some()),
+            ("retry_policy", self.retry_policy.is_some()),
+            ("error_policy", self.error_policy.is_some()),
+            ("max_failed_fraction", self.max_failed_fraction.is_some()),
+            ("max_failed_rows", self.max_failed_rows.is_some()),
+            ("row_timeout_seconds", self.row_timeout_seconds.is_some()),
+            ("init_timeout_seconds", self.init_timeout_seconds.is_some()),
+            ("num_workers", self.num_workers.is_some()),
+            (
+                "max_executor_processes_per_worker",
+                self.max_executor_processes_per_worker.is_some(),
+            ),
+            (
+                "publication_interval_rows",
+                self.publication_interval_rows.is_some(),
+            ),
+        ]
+        .into_iter()
+        .find_map(|(name, set)| set.then_some(name))
+    }
+
     /// Validate client-side constraints before any request is sent.
     pub fn validate(&self) -> Result<()> {
+        if self
+            .where_clause
+            .as_deref()
+            .is_some_and(|f| f.trim().is_empty())
+        {
+            return Err(Error::InvalidInput {
+                message: "where must not be empty".into(),
+            });
+        }
+        if let Some(policy) = &self.retry_policy {
+            policy.validate()?;
+        }
+        if self
+            .max_failed_fraction
+            .is_some_and(|f| !f.is_finite() || !(0.0..=1.0).contains(&f))
+        {
+            return Err(Error::InvalidInput {
+                message: "max_failed_fraction must be a finite number between 0 and 1".into(),
+            });
+        }
+        for (name, seconds) in [
+            ("row_timeout_seconds", self.row_timeout_seconds),
+            ("init_timeout_seconds", self.init_timeout_seconds),
+        ] {
+            if seconds.is_some_and(|s| !s.is_finite() || s <= 0.0) {
+                return Err(Error::InvalidInput {
+                    message: format!("{name} must be a positive finite number"),
+                });
+            }
+        }
+        if self.num_workers == Some(0) {
+            return Err(Error::InvalidInput {
+                message: "num_workers must be greater than zero".into(),
+            });
+        }
+        if self.max_executor_processes_per_worker == Some(0) {
+            return Err(Error::InvalidInput {
+                message: "max_executor_processes_per_worker must be greater than zero".into(),
+            });
+        }
         if self.batch_size == Some(0) {
             return Err(Error::InvalidInput {
                 message: "batch_size must be greater than zero".into(),
+            });
+        }
+        if self.publication_interval_rows == Some(0) {
+            return Err(Error::InvalidInput {
+                message: "publication_interval_rows must be greater than zero".into(),
             });
         }
         if let Some(gpu_class) = &self.gpu_class {
@@ -157,6 +332,7 @@ async fn execute_refresh_column_with_source(
         schema.clone(),
         column,
         &expression,
+        dataset.session().datafusion_session(),
     )?);
     ensure_inputs_filled(&dataset, &schema, column, &bound).await?;
     let field = dataset
@@ -339,7 +515,12 @@ async fn ensure_inputs_filled(
                 ),
             });
         };
-        let input_bound = super::computed_columns::bind(schema.clone(), input, expression)?;
+        let input_bound = super::computed_columns::bind(
+            schema.clone(),
+            input,
+            expression,
+            dataset.session().datafusion_session(),
+        )?;
         let mut unfilled = 0u64;
         for fragment in dataset.get_fragments() {
             unfilled += count_fragment_gains(dataset, &fragment, &input_bound, input)

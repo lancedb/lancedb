@@ -23,6 +23,63 @@ use crate::merge::NativeMergeInsertBuilder;
 use crate::query::{Query, TakeQuery, VectorQuery};
 use crate::util::schema_to_buffer;
 
+/// Per-invocation file-compaction settings. All numbers must be safe integers.
+#[napi(object)]
+pub struct CompactionOptions {
+    pub target_rows_per_fragment: Option<f64>,
+    pub max_source_rows: Option<f64>,
+    pub io_buffer_size: Option<f64>,
+    pub batch_size: Option<f64>,
+}
+
+impl CompactionOptions {
+    fn into_overrides(self) -> napi::Result<lancedb::table::optimize::CompactionOverrides> {
+        const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+        fn integer(
+            value: Option<f64>,
+            name: &str,
+            max: u64,
+            allow_zero: bool,
+        ) -> napi::Result<Option<u64>> {
+            let Some(value) = value else {
+                return Ok(None);
+            };
+            let min = if allow_zero { 0 } else { 1 };
+            let max = max.min(MAX_SAFE_INTEGER);
+            if !value.is_finite()
+                || value.fract() != 0.0
+                || value < min as f64
+                || value > max as f64
+            {
+                return Err(napi::Error::from_reason(format!(
+                    "{name} must be a safe integer between {min} and {max}"
+                )));
+            }
+            Ok(Some(value as u64))
+        }
+        let mut options = lancedb::table::optimize::CompactionOverrides::default();
+        if let Some(target) = integer(
+            self.target_rows_per_fragment,
+            "targetRowsPerFragment",
+            u32::MAX as u64,
+            false,
+        )? {
+            options.target_rows_per_fragment = Some(target as usize);
+        }
+        options.max_source_rows = integer(
+            self.max_source_rows,
+            "maxSourceRows",
+            usize::MAX as u64,
+            false,
+        )?
+        .map(|v| v as usize);
+        options.io_buffer_size = integer(self.io_buffer_size, "ioBufferSize", u64::MAX, true)?;
+        options.batch_size =
+            integer(self.batch_size, "batchSize", u32::MAX as u64, false)?.map(|v| v as usize);
+        Ok(options)
+    }
+}
+
 #[napi]
 pub struct Table {
     // We keep a duplicate of the table name so we can use it for error
@@ -421,20 +478,30 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
-    pub async fn refresh_column(&self, column: String) -> napi::Result<RefreshColumnResult> {
+    pub async fn refresh_column(
+        &self,
+        column: String,
+        options: Option<RefreshColumnOptions>,
+    ) -> napi::Result<RefreshColumnResult> {
+        let options = options.unwrap_or_default().try_into()?;
         let res = self
             .inner_ref()?
-            .refresh_column(column)
+            .refresh_column_with_options(column, options)
             .await
             .default_error()?;
         Ok(res.into())
     }
 
     #[napi(catch_unwind)]
-    pub async fn refresh_column_async(&self, column: String) -> napi::Result<crate::job::Job> {
+    pub async fn refresh_column_async(
+        &self,
+        column: String,
+        options: Option<RefreshColumnOptions>,
+    ) -> napi::Result<crate::job::Job> {
+        let options = options.unwrap_or_default().try_into()?;
         let job = self
             .inner_ref()?
-            .refresh_column_async(column)
+            .refresh_column_async_with_options(column, options)
             .await
             .default_error()?;
         Ok(crate::job::Job::new(job))
@@ -722,6 +789,7 @@ impl Table {
         &self,
         before_timestamp_ms: Option<i64>,
         delete_unverified: Option<bool>,
+        compaction_options: Option<CompactionOptions>,
     ) -> napi::Result<OptimizeStats> {
         let inner = self.inner_ref()?;
 
@@ -736,8 +804,11 @@ impl Table {
             .transpose()?;
 
         let stats = inner
-            .optimize_full(
-                lancedb::table::CompactionOptions::default(),
+            .optimize_full_with_overrides(
+                compaction_options
+                    .map(CompactionOptions::into_overrides)
+                    .transpose()?
+                    .unwrap_or_default(),
                 None,
                 before_timestamp,
                 delete_unverified,
@@ -1513,6 +1584,76 @@ pub struct FunctionErrorsOptions {
     pub column: Option<String>,
     /// At most this many records (server default 10000, cap 100000).
     pub limit: Option<i64>,
+}
+
+/// Options for `Table.refreshColumn` and `Table.refreshColumnAsync`. Every
+/// option is LanceDB Enterprise only; a LanceDB Embedded refresh ignores
+/// `batchSize`, `gpuClass` and `gpuCount` and rejects the rest.
+#[napi(object)]
+#[derive(Clone, Debug, Default)]
+pub struct RefreshColumnOptions {
+    /// Only refresh the rows matching this SQL filter.
+    #[napi(js_name = "where")]
+    pub where_clause: Option<String>,
+    /// Maximum rows per Function call; must be greater than zero.
+    pub batch_size: Option<u32>,
+    /// GPU class for Function workers.
+    pub gpu_class: Option<String>,
+    /// Positive aggregate GPU budget for Function workers.
+    pub gpu_count: Option<u32>,
+    /// `"fail"` (default) stops on a row error; `"skip"` writes null and
+    /// records the error, subject to the failure limits.
+    pub error_policy: Option<String>,
+    /// Under a skip policy, fail the job once more than this share of rows
+    /// (0 to 1) has failed.
+    pub max_failed_fraction: Option<f64>,
+    /// Under a skip policy, fail the job once more than this many rows have
+    /// failed.
+    pub max_failed_rows: Option<i64>,
+    /// Deadline for one Function call, in seconds.
+    pub row_timeout_seconds: Option<f64>,
+    /// Deadline for Function initialization, in seconds.
+    pub init_timeout_seconds: Option<f64>,
+    /// Worker count for an expression column; Function columns reject it.
+    pub num_workers: Option<u32>,
+    /// Cap on executor processes per Function worker.
+    pub max_executor_processes_per_worker: Option<u32>,
+}
+
+impl TryFrom<RefreshColumnOptions> for lancedb::table::RefreshColumnOptions {
+    type Error = napi::Error;
+
+    fn try_from(value: RefreshColumnOptions) -> napi::Result<Self> {
+        let mut options = Self::default();
+        options.where_clause = value.where_clause;
+        options.batch_size = value.batch_size.map(|size| size as usize);
+        options.gpu_class = value.gpu_class;
+        options.gpu_count = value.gpu_count;
+        options.error_policy = match value.error_policy.as_deref() {
+            None => None,
+            Some("fail") => Some(lancedb::function::FunctionErrorPolicy::Fail),
+            Some("skip") => Some(lancedb::function::FunctionErrorPolicy::Skip),
+            Some(other) => {
+                return Err(napi::Error::from_reason(format!(
+                    "errorPolicy must be \"fail\" or \"skip\", got \"{other}\""
+                )));
+            }
+        };
+        options.max_failed_fraction = value.max_failed_fraction;
+        options.max_failed_rows = value
+            .max_failed_rows
+            .map(|rows| {
+                u64::try_from(rows).map_err(|_| {
+                    napi::Error::from_reason("maxFailedRows must be a non-negative integer")
+                })
+            })
+            .transpose()?;
+        options.row_timeout_seconds = value.row_timeout_seconds;
+        options.init_timeout_seconds = value.init_timeout_seconds;
+        options.num_workers = value.num_workers.map(|workers| workers as usize);
+        options.max_executor_processes_per_worker = value.max_executor_processes_per_worker;
+        Ok(options)
+    }
 }
 
 /// One row a Function refresh skipped, as the server recorded it.

@@ -11,6 +11,7 @@ from pathlib import Path
 from dataclasses import asdict
 import json
 import sys
+import warnings
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -985,12 +986,12 @@ class DBConnection(EnforceOverrides):
         Examples
         --------
         ```python
-        db.create_secret("openai-prod", os.environ["OPENAI_API_KEY"])
+        db.create_secret("model-api-key", os.environ["MODEL_API_KEY"])
         db.create_function(
             analyze_caption,
             secrets=[
                 EnvVarSecret(
-                    secret_name="openai-prod", env_variable="OPENAI_API_KEY"
+                    secret_name="model-api-key", env_variable="MODEL_API_KEY"
                 )
             ],
         )
@@ -1085,7 +1086,9 @@ class DBConnection(EnforceOverrides):
         Returns True when the revision was removed and False for a repeated drop
         or a missing name. A revision never published under an existing name is
         an error. Dropping the last visible revision releases the name and
-        schedules physical cleanup in the background. Use
+        schedules physical cleanup in the background. When the remote server
+        reports dependent warnings, they are emitted as ``UserWarning`` before
+        this method returns. Use
         :meth:`drop_function_async` to
         access the query job, whose completion confirms catalog removal of the
         revision. Local connections raise NotImplementedError.
@@ -1512,7 +1515,10 @@ class DBConnection(EnforceOverrides):
 
         This submits through :meth:`execute_query_async` and waits until the
         initial result stream is readable. It does not wait for the full query
-        to finish.
+        to finish. A statement that ran as a server-side SQL job exposes the
+        durable Job Registry id in the reader schema metadata under
+        ``x-lancedb-sql-job-id``. Use :meth:`execute_query_async` when the
+        query handle itself is needed.
         """
         return self.execute_query_async(
             query,
@@ -1551,6 +1557,9 @@ class DBConnection(EnforceOverrides):
         stops a directly streamed query; deferred execution requires explicit
         cancellation. Open ``reader()`` directly: a streamed query needs its
         reader to make progress and reports ``running`` until the stream ends.
+        Once a server-side SQL job exists, ``describe().job_id`` exposes its
+        durable Job Registry id while the query is still running. This is
+        separate from the connection-scoped query ``id``.
 
         LanceDB Embedded connections do not support SQL.
         """
@@ -3647,9 +3656,29 @@ class AsyncConnection(object):
         Returns True when the requested revision was removed and False for a
         repeated drop or a missing name. A revision never published under an
         existing name is an error. Only the last visible revision's removal
-        releases the name and schedules background object cleanup.
+        releases the name and schedules background object cleanup. When the
+        remote server reports a warning, it is emitted as ``UserWarning``
+        before this method returns, subject to the standard ``warnings``
+        filters. A warnings-as-errors setting can therefore raise after the
+        catalog removal; it does not roll back the drop. Older servers that
+        omit the warning field remain silent.
         """
-        return await self._inner.drop_function(name, version, namespace_path)
+        dropped, drop_warnings = await self._drop_function_with_warnings(
+            name, version, namespace_path
+        )
+        for warning in drop_warnings:
+            warnings.warn(warning, UserWarning, stacklevel=2)
+        return dropped
+
+    async def _drop_function_with_warnings(
+        self,
+        name: str,
+        version: str,
+        namespace_path: Optional[List[str]] = None,
+    ) -> Tuple[bool, List[str]]:
+        return await self._inner._drop_function_with_warnings(
+            name, version, namespace_path
+        )
 
     async def drop_function_async(
         self,
@@ -4105,7 +4134,10 @@ class AsyncConnection(object):
 
         This submits through :meth:`execute_query_async` and waits until the
         initial result stream is readable. It does not wait for the full query
-        to finish.
+        to finish. A statement that ran as a server-side SQL job exposes the
+        durable Job Registry id in the reader schema metadata under
+        ``x-lancedb-sql-job-id``. Use :meth:`execute_query_async` when the
+        query handle itself is needed.
         """
         submitted = await self.execute_query_async(
             query,

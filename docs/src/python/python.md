@@ -352,9 +352,27 @@ accept the LanceDB Embedded options: cleanup and compaction warn that they are n
 `optimize` submits a durable compaction job and returns once that submission is
 accepted, not once compaction itself finishes. Pruning and index optimization
 are not yet supported remotely, so it silently skips them and returns with
-zeroed pruning statistics rather than attempting and failing. A non-default
-`compaction_options` raises `NotImplementedError` before anything is
-submitted, since there is no way yet to forward those settings to the server.
+zeroed pruning statistics. Remote `compaction_options` support per-job
+`target_rows_per_fragment`, `max_source_rows`, `io_buffer_size`, and `batch_size`
+on compatible servers. Other non-default settings raise `NotImplementedError`
+before submission; older-server errors are returned without dropping options.
+The source-row budget selects whole tasks and can produce no work if the first
+task exceeds it. An I/O buffer size of zero disables byte-based I/O backpressure.
+Use a positive size to limit I/O read-ahead; this is not a total-memory limit.
+Each field resolves as invocation option → table tuning → deployment/built-in
+default. These options apply only to the submitted job and leave table policy
+unchanged. Table `enabled` controls automatic scheduling; explicit manual runs
+remain allowed.
+
+```python
+table.optimize(compaction_options={
+    "target_rows_per_fragment": 100_000,
+    "max_source_rows": 1_000_000,
+    "io_buffer_size": 64 * 1024 * 1024,
+    "batch_size": 1024,
+})
+```
+
 Removed Tantivy options produce the same explanatory errors on both backends.
 
 The old LanceDB Enterprise keyword names `predicate` for `delete`, `index_name` for
@@ -464,6 +482,8 @@ with BlobReader(read_range, len(payload)) as reader:
 ::: lancedb.secrets.SecretInfo
 
 ::: lancedb.functions.FunctionRegistrationRequest
+
+::: lancedb.functions.FunctionRetryPolicy
 
 ::: lancedb.functions.FunctionArtifactRequest
 
@@ -811,8 +831,8 @@ so the fetch APIs cannot read their bytes yet.
 ## Exceptions
 
 Remote HTTP responses with structured resource details raise a subclass of
-`HttpError`. Older servers that omit those details raise plain `HttpError`, so
-`except HttpError` remains a compatible catch-all:
+`HttpError`. Older servers that omit those details generally raise plain
+`HttpError`, so `except HttpError` remains a compatible catch-all:
 
 ```python
 from lancedb.remote.errors import (
@@ -832,6 +852,19 @@ except AlreadyExistsError as error:
 except HttpError as error:
     print("request failed:", error.request_id, error.status_code)
 ```
+
+Remote branch deletion sends a single request. If the server rejects it with
+HTTP 409, it raises `ConflictError` with the server's reason, including when an
+older server omits structured resource details. A structured `already_exists`
+response keeps its more specific `AlreadyExistsError` type. Both are subclasses
+of `HttpError`.
+
+A remote query whose streamed response stops partway raises
+`ResponseInterruptedError`, also a subclass of `HttpError`. It carries the number
+of batches and rows already returned and, when the server reports it, the table
+version the response reflected, so the query can be run again against that
+version. It is never retried automatically, because the batches already returned
+would be returned again.
 
 SQL response failures raise `SqlError`, retaining the numeric `grpc_code` and
 `request_id`. Servers that report a recognized `x-lancedb-error-code` select a
@@ -897,6 +930,10 @@ generic HTTP/SQL exceptions with their transport status and current request ID.
 ::: lancedb.remote.errors.NamespaceNotFoundError
 
 ::: lancedb.remote.errors.AlreadyExistsError
+
+::: lancedb.remote.errors.ConflictError
+
+::: lancedb.remote.errors.ResponseInterruptedError
 
 ::: lancedb.exceptions.MissingValueError
 

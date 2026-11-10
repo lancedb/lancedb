@@ -932,6 +932,23 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             .await
     }
 
+    #[doc(hidden)]
+    async fn drop_function_with_warnings(
+        &self,
+        name: &str,
+        version: &str,
+        namespace_path: &[String],
+    ) -> Result<(bool, Vec<String>)> {
+        validate_function_name(name)?;
+        validate_namespace(namespace_path)?;
+        let (outcome, job) = self
+            .sql_client()?
+            .drop_function_outcome(name, version, namespace_path)
+            .await?;
+        job.wait().await?;
+        Ok((outcome.dropped, outcome.warnings))
+    }
+
     async fn create_storage_integration(
         &self,
         name: &str,

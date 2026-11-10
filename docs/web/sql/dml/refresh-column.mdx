@@ -24,7 +24,7 @@ REFRESH COLUMN <column> ON [TABLE] <table>
 <CodeGroup>
 ```sql SQL icon="database"
 REFRESH COLUMN doubled ON my_table
-REFRESH COLUMN embedding ON documents WHERE created_at > '2026-01-01'
+REFRESH COLUMN embedding ON documents WHERE created_at > date '2026-01-01'
 ```
 </CodeGroup>
 
@@ -39,7 +39,7 @@ calls and their cost. To select only null outputs within a slice:
 <CodeGroup>
 ```sql SQL icon="database"
 REFRESH COLUMN embedding ON documents
-  WHERE created_at > '2026-01-01' AND embedding IS NULL
+  WHERE created_at > date '2026-01-01' AND embedding IS NULL
 ```
 </CodeGroup>
 

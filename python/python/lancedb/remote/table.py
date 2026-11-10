@@ -48,7 +48,11 @@ from lancedb.index import (
     LabelList,
 )
 from lancedb.job import Job
-from lancedb.functions import FunctionApplication, RefreshColumnResult
+from lancedb.functions import (
+    FunctionApplication,
+    FunctionRetryPolicy,
+    RefreshColumnResult,
+)
 from lancedb.remote.db import LOOP
 from lancedb.table import IndexConfigType, _maybe_add_fts_error_note
 import pyarrow as pa
@@ -1087,10 +1091,13 @@ class RemoteTable(Table):
         Enterprise job. Pruning old versions and index optimization are not
         yet supported remotely, so this call skips them and returns
         successfully with zeroed pruning statistics once the compaction job
-        has been submitted; it does not wait for that job to finish. Passing
-        a non-default ``compaction_options`` raises ``NotImplementedError``
-        before anything is submitted, since there is no way yet to forward
-        those settings to the server.
+        has been submitted; it does not wait for that job to finish. The
+        per-job options ``target_rows_per_fragment``, ``max_source_rows``,
+        ``io_buffer_size``, and ``batch_size`` are supported on compatible
+        servers. Omitted fields inherit table tuning, then deployment/built-in
+        defaults. Other non-default settings raise ``NotImplementedError``
+        before submission. Errors from older servers are propagated without
+        retrying with the settings removed.
         """
         return LOOP.run(
             self._table.optimize(
@@ -1134,16 +1141,36 @@ class RemoteTable(Table):
         self,
         column: str,
         *,
+        where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        publication_interval_rows: Optional[int] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
+        retry_policy: Optional[FunctionRetryPolicy] = None,
+        error_policy: Optional[Literal["fail", "skip"]] = None,
+        max_failed_fraction: Optional[float] = None,
+        max_failed_rows: Optional[int] = None,
+        row_timeout_seconds: Optional[float] = None,
+        init_timeout_seconds: Optional[float] = None,
+        num_workers: Optional[int] = None,
+        max_executor_processes_per_worker: Optional[int] = None,
     ):
         return LOOP.run(
             self._table.refresh_column(
                 column,
+                where=where,
                 batch_size=batch_size,
+                publication_interval_rows=publication_interval_rows,
                 gpu_class=gpu_class,
                 gpu_count=gpu_count,
+                retry_policy=retry_policy,
+                error_policy=error_policy,
+                max_failed_fraction=max_failed_fraction,
+                max_failed_rows=max_failed_rows,
+                row_timeout_seconds=row_timeout_seconds,
+                init_timeout_seconds=init_timeout_seconds,
+                num_workers=num_workers,
+                max_executor_processes_per_worker=max_executor_processes_per_worker,
             )
         )
 
@@ -1151,17 +1178,37 @@ class RemoteTable(Table):
         self,
         column: str,
         *,
+        where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        publication_interval_rows: Optional[int] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
+        retry_policy: Optional[FunctionRetryPolicy] = None,
+        error_policy: Optional[Literal["fail", "skip"]] = None,
+        max_failed_fraction: Optional[float] = None,
+        max_failed_rows: Optional[int] = None,
+        row_timeout_seconds: Optional[float] = None,
+        init_timeout_seconds: Optional[float] = None,
+        num_workers: Optional[int] = None,
+        max_executor_processes_per_worker: Optional[int] = None,
     ) -> Job[RefreshColumnResult]:
         return Job(
             LOOP.run(
                 self._table.refresh_column_async(
                     column,
+                    where=where,
                     batch_size=batch_size,
+                    publication_interval_rows=publication_interval_rows,
                     gpu_class=gpu_class,
                     gpu_count=gpu_count,
+                    retry_policy=retry_policy,
+                    error_policy=error_policy,
+                    max_failed_fraction=max_failed_fraction,
+                    max_failed_rows=max_failed_rows,
+                    row_timeout_seconds=row_timeout_seconds,
+                    init_timeout_seconds=init_timeout_seconds,
+                    num_workers=num_workers,
+                    max_executor_processes_per_worker=max_executor_processes_per_worker,
                 )
             )
         )

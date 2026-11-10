@@ -75,6 +75,7 @@ from .index import (
     LabelList,
     Fm,
     NGram,
+    ZoneMap,
     BloomFilter,
     HnswPq,
     HnswSq,
@@ -83,6 +84,7 @@ from .index import (
 )
 from .expr import Expr
 from .functions import (
+    FunctionRetryPolicy,
     FunctionApplication,
     RefreshColumnResult as RefreshColumnJobResult,
 )
@@ -300,6 +302,7 @@ IndexConfigType = Union[
     LabelList,
     Fm,
     NGram,
+    ZoneMap,
     BloomFilter,
     FTS,
 ]
@@ -308,7 +311,12 @@ IndexConfigType = Union[
 class CompactionOptions(TypedDict, total=False):
     """Options that control file compaction during table optimization.
 
-    Unspecified options use Lance's defaults.
+    Unspecified options use Lance's defaults for local tables. Remote tables
+    forward ``target_rows_per_fragment``, ``max_source_rows``, ``io_buffer_size``,
+    and ``batch_size`` as per-job SQL options; other non-default settings are
+    unsupported. Omitted remote options inherit table tuning, then deployment/built-in
+    defaults. The server must support these SQL options. These settings do not
+    change table policy.
 
     Compaction planning is row based. Lowering ``target_rows_per_fragment``
     based on the expected row size can bound later compaction passes once
@@ -354,7 +362,10 @@ class CompactionOptions(TypedDict, total=False):
     """Number of rows per input scan batch."""
 
     io_buffer_size: Optional[int]
-    """Maximum number of bytes queued in the input scan I/O buffer."""
+    """Input scan I/O read-ahead budget in bytes.
+
+    Zero disables byte-based I/O backpressure.
+    """
 
     defer_index_remap: bool
     """Whether to defer index remapping during compaction (default: False)."""
@@ -1900,7 +1911,7 @@ class Table(ABC):
         config : IndexConfigType, optional
             The index configuration object. If provided, uses the new unified API.
             Can be one of: IvfFlat, IvfPq, IvfSq, IvfRq, HnswPq, HnswSq,
-            BTree, Bitmap, LabelList, Fm, NGram, BloomFilter, FTS.
+            BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, BloomFilter, FTS.
         replace : bool, default True
             Whether to replace an existing index on this column.
         wait_timeout : timedelta, optional
@@ -2617,6 +2628,12 @@ class Table(ABC):
         bytes. The client splits requests automatically and reads an individual
         larger blob through the Range route. This method still materializes all
         bytes in memory; for large values use :meth:`fetch_blob_files`.
+
+        The returned Arrow ``large_binary`` array contains payload bytes, not
+        SQL/query descriptor dictionaries. Use ``.to_pylist()`` to obtain
+        Python ``bytes`` or ``None`` values for copying into a blob column.
+        Select row IDs with ``search().with_row_id(True)`` first. Selection and
+        fetching are separate requests: keep the source unchanged between them.
         """
 
     @abstractmethod
@@ -2944,9 +2961,13 @@ class Table(ABC):
             are silently skipped there instead of being attempted, so this
             call returns successfully, with zeroed pruning statistics, once
             the compaction job has been submitted; it does not wait for that
-            job to finish. A non-default ``compaction_options`` raises
-            ``NotImplementedError`` before anything is submitted, since
-            there is no way yet to forward those settings to the server.
+            job to finish. Remote compaction supports per-job
+            ``target_rows_per_fragment``, ``max_source_rows``, ``io_buffer_size``,
+            and ``batch_size``. Omitted fields inherit table tuning, then
+            deployment/built-in defaults. Other non-default compaction settings raise
+            ``NotImplementedError`` before submission. The server must support
+            these SQL options; older-server errors are propagated without
+            dropping the requested settings.
 
         Modeled after ``VACUUM`` in PostgreSQL.
 
@@ -3165,9 +3186,19 @@ class Table(ABC):
         self,
         column: str,
         *,
+        where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        publication_interval_rows: Optional[int] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
+        retry_policy: Optional[FunctionRetryPolicy] = None,
+        error_policy: Optional[Literal["fail", "skip"]] = None,
+        max_failed_fraction: Optional[float] = None,
+        max_failed_rows: Optional[int] = None,
+        row_timeout_seconds: Optional[float] = None,
+        init_timeout_seconds: Optional[float] = None,
+        num_workers: Optional[int] = None,
+        max_executor_processes_per_worker: Optional[int] = None,
     ) -> "RefreshColumnResult":
         """
         Fill the rows of a computed column that hold no value yet.
@@ -3188,10 +3219,20 @@ class Table(ABC):
         ----------
         column: str
             The name of the computed column to fill.
+        where: str, optional
+            SQL filter selecting the rows to refresh, as in ``REFRESH COLUMN
+            ... WHERE``. Unfilled rows outside it stay unfilled. LanceDB
+            Enterprise only; local refreshes reject this option.
         batch_size: int, optional
             Maximum rows per Function call on the remote server. Must be
             greater than zero. None uses the server default. Has no effect on
             local expression-backed columns.
+        publication_interval_rows: int, optional
+            Opt-in publication threshold for completed Function outputs. Must
+            be greater than zero. None keeps whole-fragment publication. The
+            actual publication boundary can be larger than this threshold
+            because it also depends on completed work and Function batching.
+            LanceDB Enterprise only; local refreshes reject this option.
         gpu_class: str, optional
             GPU class for Function workers. Must be a lowercase name of 1-63
             letters, digits, or hyphens, without a leading or trailing hyphen.
@@ -3201,6 +3242,29 @@ class Table(ABC):
             Positive aggregate GPU budget for Function workers. None leaves
             the server's configured budget unchanged. LanceDB Enterprise
             only.
+        retry_policy: FunctionRetryPolicy, optional
+            Override retries of failed user-code calls. Only use when repeating
+            partial work is safe. Set max_attempts=1 to disable retries.
+            Enterprise Functions only; local refreshes reject this option.
+        error_policy: {"fail", "skip"}, optional
+            Action after failure or retry exhaustion. Skip records the error
+            and attempt count, subject to the server's failure limits.
+        max_failed_fraction: float, optional
+            Under a skip policy, fail the job once more than this share of
+            rows (0 to 1) has failed. LanceDB Enterprise only.
+        max_failed_rows: int, optional
+            Under a skip policy, fail the job once more than this many rows
+            have failed. LanceDB Enterprise only.
+        row_timeout_seconds: float, optional
+            Deadline for one Function call. LanceDB Enterprise only.
+        init_timeout_seconds: float, optional
+            Deadline for Function initialization. LanceDB Enterprise only.
+        num_workers: int, optional
+            Worker count for an expression column; registered Function
+            columns reject it. LanceDB Enterprise only.
+        max_executor_processes_per_worker: int, optional
+            Cap on executor processes per Function worker. LanceDB
+            Enterprise only.
 
         Returns
         -------
@@ -3214,9 +3278,19 @@ class Table(ABC):
         self,
         column: str,
         *,
+        where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        publication_interval_rows: Optional[int] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
+        retry_policy: Optional[FunctionRetryPolicy] = None,
+        error_policy: Optional[Literal["fail", "skip"]] = None,
+        max_failed_fraction: Optional[float] = None,
+        max_failed_rows: Optional[int] = None,
+        row_timeout_seconds: Optional[float] = None,
+        init_timeout_seconds: Optional[float] = None,
+        num_workers: Optional[int] = None,
+        max_executor_processes_per_worker: Optional[int] = None,
     ) -> Job[RefreshColumnJobResult]:
         """
         Like :meth:`refresh_column`, but returns a handle to the refresh job
@@ -3235,11 +3309,21 @@ class Table(ABC):
         ----------
         column: str
             The name of the computed column to fill.
+        where: str, optional
+            SQL filter selecting the rows to refresh, as in ``REFRESH COLUMN
+            ... WHERE``. Unfilled rows outside it stay unfilled. LanceDB
+            Enterprise only; local refreshes reject this option.
         batch_size: int, optional
             Maximum rows per Function call on the remote server. Must be
             greater than zero. None uses the server default. Lower this for
             slow Functions to stay within the executor's per-call deadline.
             Has no effect on local expression-backed columns.
+        publication_interval_rows: int, optional
+            Opt-in publication threshold for completed Function outputs. Must
+            be greater than zero. None keeps whole-fragment publication. The
+            actual publication boundary can be larger than this threshold
+            because it also depends on completed work and Function batching.
+            LanceDB Enterprise only; local refreshes reject this option.
         gpu_class: str, optional
             GPU class for Function workers. Must be a lowercase name of 1-63
             letters, digits, or hyphens, without a leading or trailing hyphen.
@@ -3249,6 +3333,29 @@ class Table(ABC):
             Positive aggregate GPU budget for Function workers. None leaves
             the server's configured budget unchanged. LanceDB Enterprise
             only.
+        retry_policy: FunctionRetryPolicy, optional
+            Override retries of failed user-code calls. Only use when repeating
+            partial work is safe. Set max_attempts=1 to disable retries.
+            Enterprise Functions only; local refreshes reject this option.
+        error_policy: {"fail", "skip"}, optional
+            Action after failure or retry exhaustion. Skip records the error
+            and attempt count, subject to the server's failure limits.
+        max_failed_fraction: float, optional
+            Under a skip policy, fail the job once more than this share of
+            rows (0 to 1) has failed. LanceDB Enterprise only.
+        max_failed_rows: int, optional
+            Under a skip policy, fail the job once more than this many rows
+            have failed. LanceDB Enterprise only.
+        row_timeout_seconds: float, optional
+            Deadline for one Function call. LanceDB Enterprise only.
+        init_timeout_seconds: float, optional
+            Deadline for Function initialization. LanceDB Enterprise only.
+        num_workers: int, optional
+            Worker count for an expression column; registered Function
+            columns reject it. LanceDB Enterprise only.
+        max_executor_processes_per_worker: int, optional
+            Cap on executor processes per Function worker. LanceDB
+            Enterprise only.
 
         Returns
         -------
@@ -4188,7 +4295,7 @@ class LanceTable(Table):
         config : IndexConfigType, optional
             The index configuration object. If provided, uses the new unified API.
             Can be one of: IvfFlat, IvfPq, IvfSq, IvfRq, HnswPq, HnswSq,
-            BTree, Bitmap, LabelList, Fm, NGram, BloomFilter, FTS.
+            BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, BloomFilter, FTS.
         replace : bool, default True
             Whether to replace an existing index on this column.
         wait_timeout : timedelta, optional
@@ -5357,9 +5464,19 @@ class LanceTable(Table):
         self,
         column: str,
         *,
+        where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        publication_interval_rows: Optional[int] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
+        retry_policy: Optional[FunctionRetryPolicy] = None,
+        error_policy: Optional[Literal["fail", "skip"]] = None,
+        max_failed_fraction: Optional[float] = None,
+        max_failed_rows: Optional[int] = None,
+        row_timeout_seconds: Optional[float] = None,
+        init_timeout_seconds: Optional[float] = None,
+        num_workers: Optional[int] = None,
+        max_executor_processes_per_worker: Optional[int] = None,
     ) -> "RefreshColumnResult":
         """Fill a computed column's unfilled rows and recompute those whose
         inputs changed. See
@@ -5367,9 +5484,19 @@ class LanceTable(Table):
         return LOOP.run(
             self._table.refresh_column(
                 column,
+                where=where,
                 batch_size=batch_size,
+                publication_interval_rows=publication_interval_rows,
                 gpu_class=gpu_class,
                 gpu_count=gpu_count,
+                retry_policy=retry_policy,
+                error_policy=error_policy,
+                max_failed_fraction=max_failed_fraction,
+                max_failed_rows=max_failed_rows,
+                row_timeout_seconds=row_timeout_seconds,
+                init_timeout_seconds=init_timeout_seconds,
+                num_workers=num_workers,
+                max_executor_processes_per_worker=max_executor_processes_per_worker,
             )
         )
 
@@ -5377,9 +5504,19 @@ class LanceTable(Table):
         self,
         column: str,
         *,
+        where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        publication_interval_rows: Optional[int] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
+        retry_policy: Optional[FunctionRetryPolicy] = None,
+        error_policy: Optional[Literal["fail", "skip"]] = None,
+        max_failed_fraction: Optional[float] = None,
+        max_failed_rows: Optional[int] = None,
+        row_timeout_seconds: Optional[float] = None,
+        init_timeout_seconds: Optional[float] = None,
+        num_workers: Optional[int] = None,
+        max_executor_processes_per_worker: Optional[int] = None,
     ) -> Job[RefreshColumnJobResult]:
         """Fill a computed column's unfilled rows and recompute those whose
         inputs changed, returning a handle to the refresh job. See
@@ -5389,9 +5526,19 @@ class LanceTable(Table):
             LOOP.run(
                 self._table.refresh_column_async(
                     column,
+                    where=where,
                     batch_size=batch_size,
+                    publication_interval_rows=publication_interval_rows,
                     gpu_class=gpu_class,
                     gpu_count=gpu_count,
+                    retry_policy=retry_policy,
+                    error_policy=error_policy,
+                    max_failed_fraction=max_failed_fraction,
+                    max_failed_rows=max_failed_rows,
+                    row_timeout_seconds=row_timeout_seconds,
+                    init_timeout_seconds=init_timeout_seconds,
+                    num_workers=num_workers,
+                    max_executor_processes_per_worker=max_executor_processes_per_worker,
                 )
             )
         )
@@ -6525,6 +6672,7 @@ class AsyncTable:
                 LabelList,
                 Fm,
                 NGram,
+                ZoneMap,
                 BloomFilter,
                 FTS,
             ]
@@ -6602,14 +6750,15 @@ class AsyncTable:
                     LabelList,
                     Fm,
                     NGram,
+                    ZoneMap,
                     BloomFilter,
                     FTS,
                 ),
             ):
                 raise TypeError(
                     "config must be an instance of IvfSq, IvfPq, IvfRq, HnswPq, HnswSq,"
-                    " BTree, Bitmap, LabelList, Fm, NGram, BloomFilter, or FTS,"
-                    " but got " + str(type(config))
+                    " BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, BloomFilter,"
+                    " or FTS, but got " + str(type(config))
                 )
         try:
             await self._inner.create_index(
@@ -6647,6 +6796,7 @@ class AsyncTable:
                 LabelList,
                 Fm,
                 NGram,
+                ZoneMap,
                 BloomFilter,
                 FTS,
             ]
@@ -7747,9 +7897,19 @@ class AsyncTable:
         self,
         column: str,
         *,
+        where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        publication_interval_rows: Optional[int] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
+        retry_policy: Optional[FunctionRetryPolicy] = None,
+        error_policy: Optional[Literal["fail", "skip"]] = None,
+        max_failed_fraction: Optional[float] = None,
+        max_failed_rows: Optional[int] = None,
+        row_timeout_seconds: Optional[float] = None,
+        init_timeout_seconds: Optional[float] = None,
+        num_workers: Optional[int] = None,
+        max_executor_processes_per_worker: Optional[int] = None,
     ) -> RefreshColumnResult:
         """
         Fill the rows of a computed column that hold no value yet.
@@ -7770,10 +7930,20 @@ class AsyncTable:
         ----------
         column: str
             The name of the computed column to fill.
+        where: str, optional
+            SQL filter selecting the rows to refresh, as in ``REFRESH COLUMN
+            ... WHERE``. Unfilled rows outside it stay unfilled. LanceDB
+            Enterprise only; local refreshes reject this option.
         batch_size: int, optional
             Maximum rows per Function call on the remote server. Must be
             greater than zero. None uses the server default. Has no effect on
             local expression-backed columns.
+        publication_interval_rows: int, optional
+            Opt-in publication threshold for completed Function outputs. Must
+            be greater than zero. None keeps whole-fragment publication. The
+            actual publication boundary can be larger than this threshold
+            because it also depends on completed work and Function batching.
+            LanceDB Enterprise only; local refreshes reject this option.
         gpu_class: str, optional
             GPU class for Function workers. Must be a lowercase name of 1-63
             letters, digits, or hyphens, without a leading or trailing hyphen.
@@ -7783,6 +7953,29 @@ class AsyncTable:
             Positive aggregate GPU budget for Function workers. None leaves
             the server's configured budget unchanged. LanceDB Enterprise
             only.
+        retry_policy: FunctionRetryPolicy, optional
+            Override retries of failed user-code calls. Only use when repeating
+            partial work is safe. Set max_attempts=1 to disable retries.
+            Enterprise Functions only; local refreshes reject this option.
+        error_policy: {"fail", "skip"}, optional
+            Action after failure or retry exhaustion. Skip records the error
+            and attempt count, subject to the server's failure limits.
+        max_failed_fraction: float, optional
+            Under a skip policy, fail the job once more than this share of
+            rows (0 to 1) has failed. LanceDB Enterprise only.
+        max_failed_rows: int, optional
+            Under a skip policy, fail the job once more than this many rows
+            have failed. LanceDB Enterprise only.
+        row_timeout_seconds: float, optional
+            Deadline for one Function call. LanceDB Enterprise only.
+        init_timeout_seconds: float, optional
+            Deadline for Function initialization. LanceDB Enterprise only.
+        num_workers: int, optional
+            Worker count for an expression column; registered Function
+            columns reject it. LanceDB Enterprise only.
+        max_executor_processes_per_worker: int, optional
+            Cap on executor processes per Function worker. LanceDB
+            Enterprise only.
 
         Returns
         -------
@@ -7791,9 +7984,21 @@ class AsyncTable:
         """
         return await self._inner.refresh_column(
             column,
+            where=where,
             batch_size=batch_size,
+            publication_interval_rows=publication_interval_rows,
             gpu_class=gpu_class,
             gpu_count=gpu_count,
+            retry_policy=None
+            if retry_policy is None
+            else FunctionRetryPolicy.model_validate(retry_policy).model_dump_json(),
+            error_policy=error_policy,
+            max_failed_fraction=max_failed_fraction,
+            max_failed_rows=max_failed_rows,
+            row_timeout_seconds=row_timeout_seconds,
+            init_timeout_seconds=init_timeout_seconds,
+            num_workers=num_workers,
+            max_executor_processes_per_worker=max_executor_processes_per_worker,
         )
 
     async def function_errors(
@@ -7889,9 +8094,19 @@ class AsyncTable:
         self,
         column: str,
         *,
+        where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        publication_interval_rows: Optional[int] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
+        retry_policy: Optional[FunctionRetryPolicy] = None,
+        error_policy: Optional[Literal["fail", "skip"]] = None,
+        max_failed_fraction: Optional[float] = None,
+        max_failed_rows: Optional[int] = None,
+        row_timeout_seconds: Optional[float] = None,
+        init_timeout_seconds: Optional[float] = None,
+        num_workers: Optional[int] = None,
+        max_executor_processes_per_worker: Optional[int] = None,
     ) -> AsyncJob[RefreshColumnJobResult]:
         """
         Like :meth:`refresh_column`, but returns a handle to the refresh job
@@ -7910,11 +8125,21 @@ class AsyncTable:
         ----------
         column: str
             The name of the computed column to fill.
+        where: str, optional
+            SQL filter selecting the rows to refresh, as in ``REFRESH COLUMN
+            ... WHERE``. Unfilled rows outside it stay unfilled. LanceDB
+            Enterprise only; local refreshes reject this option.
         batch_size: int, optional
             Maximum rows per Function call on the remote server. Must be
             greater than zero. None uses the server default. Lower this for
             slow Functions to stay within the executor's per-call deadline.
             Has no effect on local expression-backed columns.
+        publication_interval_rows: int, optional
+            Opt-in publication threshold for completed Function outputs. Must
+            be greater than zero. None keeps whole-fragment publication. The
+            actual publication boundary can be larger than this threshold
+            because it also depends on completed work and Function batching.
+            LanceDB Enterprise only; local refreshes reject this option.
         gpu_class: str, optional
             GPU class for Function workers. Must be a lowercase name of 1-63
             letters, digits, or hyphens, without a leading or trailing hyphen.
@@ -7924,6 +8149,29 @@ class AsyncTable:
             Positive aggregate GPU budget for Function workers. None leaves
             the server's configured budget unchanged. LanceDB Enterprise
             only.
+        retry_policy: FunctionRetryPolicy, optional
+            Override retries of failed user-code calls. Only use when repeating
+            partial work is safe. Set max_attempts=1 to disable retries.
+            Enterprise Functions only; local refreshes reject this option.
+        error_policy: {"fail", "skip"}, optional
+            Action after failure or retry exhaustion. Skip records the error
+            and attempt count, subject to the server's failure limits.
+        max_failed_fraction: float, optional
+            Under a skip policy, fail the job once more than this share of
+            rows (0 to 1) has failed. LanceDB Enterprise only.
+        max_failed_rows: int, optional
+            Under a skip policy, fail the job once more than this many rows
+            have failed. LanceDB Enterprise only.
+        row_timeout_seconds: float, optional
+            Deadline for one Function call. LanceDB Enterprise only.
+        init_timeout_seconds: float, optional
+            Deadline for Function initialization. LanceDB Enterprise only.
+        num_workers: int, optional
+            Worker count for an expression column; registered Function
+            columns reject it. LanceDB Enterprise only.
+        max_executor_processes_per_worker: int, optional
+            Cap on executor processes per Function worker. LanceDB
+            Enterprise only.
 
         Returns
         -------
@@ -7949,9 +8197,21 @@ class AsyncTable:
         return _typed_job(
             await self._inner.refresh_column_async(
                 column,
+                where=where,
                 batch_size=batch_size,
+                publication_interval_rows=publication_interval_rows,
                 gpu_class=gpu_class,
                 gpu_count=gpu_count,
+                retry_policy=None
+                if retry_policy is None
+                else FunctionRetryPolicy.model_validate(retry_policy).model_dump_json(),
+                error_policy=error_policy,
+                max_failed_fraction=max_failed_fraction,
+                max_failed_rows=max_failed_rows,
+                row_timeout_seconds=row_timeout_seconds,
+                init_timeout_seconds=init_timeout_seconds,
+                num_workers=num_workers,
+                max_executor_processes_per_worker=max_executor_processes_per_worker,
             ),
             RefreshColumnJobResult.from_json,
         )
@@ -8279,9 +8539,13 @@ class AsyncTable:
             are silently skipped there instead of being attempted, so this
             call returns successfully, with zeroed pruning statistics, once
             the compaction job has been submitted; it does not wait for that
-            job to finish. A non-default ``compaction_options`` raises
-            ``NotImplementedError`` before anything is submitted, since
-            there is no way yet to forward those settings to the server.
+            job to finish. Remote compaction supports per-job
+            ``target_rows_per_fragment``, ``max_source_rows``, ``io_buffer_size``,
+            and ``batch_size``. Omitted fields inherit table tuning, then
+            deployment/built-in defaults. Other non-default compaction settings raise
+            ``NotImplementedError`` before submission. The server must support
+            these SQL options; older-server errors are propagated without
+            dropping the requested settings.
 
         Modeled after ``VACUUM`` in PostgreSQL.
 
@@ -8493,6 +8757,7 @@ class IndexStatistics:
         "BITMAP",
         "LABEL_LIST",
         "NGRAM",
+        "ZONEMAP",
         "BLOOM_FILTER",
     ]
     distance_type: Optional[Literal["l2", "cosine", "dot"]] = None

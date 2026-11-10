@@ -25,6 +25,7 @@ from .index import (
     LabelList,
     Fm,
     NGram,
+    ZoneMap,
     BloomFilter,
     HnswPq,
     HnswSq,
@@ -202,6 +203,9 @@ class Connection(object):
     async def drop_function(
         self, name: str, version: str, namespace_path: Optional[List[str]] = None
     ) -> bool: ...
+    async def _drop_function_with_warnings(
+        self, name: str, version: str, namespace_path: Optional[List[str]] = None
+    ) -> Tuple[bool, list[str]]: ...
     async def drop_function_async(
         self, name: str, version: str, namespace_path: Optional[List[str]] = None
     ) -> Tuple[bool, Job]: ...
@@ -499,6 +503,8 @@ class JobDescription:
 class SqlQuery:
     @property
     def id(self) -> UUID: ...
+    @property
+    def job_id(self) -> Optional[str]: ...
     async def describe(self) -> QueryDescription: ...
     async def reader(self) -> RecordBatchStream: ...
     async def cancel(self) -> None: ...
@@ -506,6 +512,8 @@ class SqlQuery:
 class QueryDescription:
     @property
     def id(self) -> UUID: ...
+    @property
+    def job_id(self) -> Optional[str]: ...
     @property
     def status(self) -> str: ...
     @property
@@ -547,6 +555,7 @@ class Table:
             LabelList,
             Fm,
             NGram,
+            ZoneMap,
             BloomFilter,
             FTS,
         ],
@@ -571,6 +580,7 @@ class Table:
             LabelList,
             Fm,
             NGram,
+            ZoneMap,
             BloomFilter,
             FTS,
         ],
@@ -617,17 +627,37 @@ class Table:
         self,
         column: str,
         *,
+        where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        publication_interval_rows: Optional[int] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
+        retry_policy: Optional[str] = None,
+        error_policy: Optional[str] = None,
+        max_failed_fraction: Optional[float] = None,
+        max_failed_rows: Optional[int] = None,
+        row_timeout_seconds: Optional[float] = None,
+        init_timeout_seconds: Optional[float] = None,
+        num_workers: Optional[int] = None,
+        max_executor_processes_per_worker: Optional[int] = None,
     ) -> RefreshColumnResult: ...
     async def refresh_column_async(
         self,
         column: str,
         *,
+        where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        publication_interval_rows: Optional[int] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
+        retry_policy: Optional[str] = None,
+        error_policy: Optional[str] = None,
+        max_failed_fraction: Optional[float] = None,
+        max_failed_rows: Optional[int] = None,
+        row_timeout_seconds: Optional[float] = None,
+        init_timeout_seconds: Optional[float] = None,
+        num_workers: Optional[int] = None,
+        max_executor_processes_per_worker: Optional[int] = None,
     ) -> Job: ...
     async def function_errors(
         self,
@@ -636,10 +666,24 @@ class Table:
         limit: Optional[int] = None,
     ) -> FunctionErrors: ...
     async def refresh_materialized_view(
-        self, source_version: Optional[int] = None, *, full: bool = False
+        self,
+        source_version: Optional[int] = None,
+        *,
+        full: bool = False,
+        cpu_millis: Optional[int] = None,
+        memory_bytes: Optional[int] = None,
+        gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
     ) -> RefreshMaterializedViewResult: ...
     async def refresh_materialized_view_async(
-        self, source_version: Optional[int] = None, *, full: bool = False
+        self,
+        source_version: Optional[int] = None,
+        *,
+        full: bool = False,
+        cpu_millis: Optional[int] = None,
+        memory_bytes: Optional[int] = None,
+        gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
     ) -> Job: ...
     async def materialized_view_definition(self) -> str: ...
     async def add_columns_with_schema(self, schema: pa.Schema) -> AddColumnsResult: ...
@@ -1011,6 +1055,7 @@ class RefreshColumnResult:
     version: int
 
 class FunctionErrorRecord:
+    attempts: Optional[int]
     job_id: str
     fragment_id: int
     row_offset: Optional[int]
@@ -1209,3 +1254,5 @@ class AuthzObject:
     ) -> AuthzObject: ...
     def __str__(self) -> str: ...
     def __repr__(self) -> str: ...
+
+def validate_function_retry_policy(json: str) -> None: ...

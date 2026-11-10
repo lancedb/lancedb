@@ -104,6 +104,15 @@ class AsyncQuery:
         """The stable identifier scoped to the connection that submitted it."""
         return self._inner.id
 
+    @property
+    def job_id(self) -> Optional[str]:
+        """The durable Job Registry id once the server reports this query as a job.
+
+        A running query reports it after :meth:`describe` observes the latest
+        server status. This is separate from the connection-scoped ``id``.
+        """
+        return self._inner.job_id
+
     async def describe(self) -> QueryDescription:
         """Get a point-in-time description of the query."""
         return await self._inner.describe()
@@ -118,7 +127,12 @@ class AsyncQuery:
         return AsyncRecordBatchReader(await self._inner.reader())
 
     async def cancel(self) -> None:
-        """Request cancellation of the query."""
+        """Request cancellation of this query's Flight execution.
+
+        A durable server-side job may reject this operation because its Flight
+        waiter cannot cancel the registry job. Use ``connection.cancel_job()``
+        with ``job_id`` to cancel that job.
+        """
         await self._inner.cancel()
 
 
@@ -132,6 +146,15 @@ class Query:
     def id(self) -> UUID:
         """The stable identifier scoped to the connection that submitted it."""
         return self._inner.id
+
+    @property
+    def job_id(self) -> Optional[str]:
+        """The durable Job Registry id once the server reports this query as a job.
+
+        A running query reports it after :meth:`describe` observes the latest
+        server status. This is separate from the connection-scoped ``id``.
+        """
+        return self._inner.job_id
 
     def describe(self) -> QueryDescription:
         """Get a point-in-time description of the query."""
@@ -159,7 +182,12 @@ class Query:
         return pa.RecordBatchReader.from_batches(reader.schema, batches())
 
     def cancel(self) -> None:
-        """Request cancellation of the query."""
+        """Request cancellation of this query's Flight execution.
+
+        A durable server-side job may reject this operation because its Flight
+        waiter cannot cancel the registry job. Use ``connection.cancel_job()``
+        with ``job_id`` to cancel that job.
+        """
         LOOP.run(self._inner.cancel())
 
 

@@ -3,6 +3,8 @@
 
 pub mod blobs;
 pub mod insert;
+mod ipc_stream;
+mod optimize;
 
 use self::insert::{RemoteWriteExec, WriteOp};
 use super::client::RequestResultExt;
@@ -60,15 +62,15 @@ use crate::{
     },
 };
 use arrow_array::{LargeBinaryArray, RecordBatch, RecordBatchReader};
-use arrow_ipc::reader::{FileReader, StreamReader};
-use arrow_schema::{ArrowError, DataType, SchemaRef};
+use arrow_ipc::reader::FileReader;
+use arrow_schema::{DataType, SchemaRef};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use datafusion_common::DataFusionError;
 use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion_physical_plan::{ExecutionPlan, RecordBatchStream, SendableRecordBatchStream};
 use futures::{StreamExt, TryStreamExt};
-use http::header::CONTENT_TYPE;
+use http::header::{ACCEPT, CONTENT_TYPE};
 use http::{HeaderName, StatusCode};
 use lance::arrow::json::{JsonDataType, JsonSchema};
 use lance::dataset::refs::TagContents;
@@ -90,6 +92,10 @@ const MIN_VERSION_HEADER: HeaderName = HeaderName::from_static("x-lancedb-min-ve
 const MIN_TIMESTAMP_HEADER: HeaderName = HeaderName::from_static("x-lancedb-min-timestamp");
 const MIN_READ_VERSION_HEADER: HeaderName = HeaderName::from_static("x-lancedb-min-read-version");
 const VERSION_HEADER: HeaderName = HeaderName::from_static("x-lancedb-version");
+/// Asks for stream framing, which is decoded as it arrives. Servers that do not
+/// stream query results ignore this and answer with file framing.
+const QUERY_ACCEPT: &str =
+    "application/vnd.apache.arrow.stream, application/vnd.apache.arrow.file;q=0.9";
 const METRIC_TYPE_KEY: &str = "metric_type";
 const INDEX_TYPE_KEY: &str = "index_type";
 const SCHEMA_CACHE_TTL: Duration = Duration::from_secs(30);
@@ -1154,25 +1160,30 @@ impl<S: HttpSend> RemoteTable<S> {
             .map(str::to_owned);
         let framing = resolve_arrow_ipc_framing(content_type.as_deref(), request_id)?;
 
-        // Buffer the whole body. File framing keeps its footer at the end, so /query
-        // cannot decode incrementally. Stream framing could, via
-        // arrow_ipc::reader::StreamDecoder, but fetch_blobs concatenates every batch
-        // before returning, so no caller would see data sooner.
-        let body = response.bytes().await.err_to_http(request_id.into())?;
-        type IpcBatchIterator =
-            Box<dyn Iterator<Item = std::result::Result<RecordBatch, ArrowError>> + Send>;
-        let (schema, batches): (SchemaRef, IpcBatchIterator) = match framing {
+        match framing {
             ArrowIpcFraming::Stream => {
-                let reader = StreamReader::try_new(Cursor::new(body), None)?;
-                (reader.schema(), Box::new(reader))
+                let table_version = response
+                    .headers()
+                    .get(&VERSION_HEADER)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse().ok());
+                ipc_stream::read_ipc_stream(
+                    response.bytes_stream(),
+                    request_id.to_string(),
+                    table_version,
+                )
+                .await
             }
             ArrowIpcFraming::File => {
+                // File framing keeps its footer at the end, so the whole body is
+                // needed before anything can be decoded.
+                let body = response.bytes().await.err_to_http(request_id.into())?;
                 let reader = FileReader::try_new(Cursor::new(body), None)?;
-                (reader.schema(), Box::new(reader))
+                let schema = reader.schema();
+                let stream = futures::stream::iter(reader).map_err(DataFusionError::from);
+                Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
             }
-        };
-        let stream = futures::stream::iter(batches).map_err(DataFusionError::from);
-        Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
+        }
     }
 
     fn apply_query_params(
@@ -1543,8 +1554,15 @@ impl<S: HttpSend> RemoteTable<S> {
     ) -> Result<Vec<Pin<Box<dyn RecordBatchStream + Send>>>> {
         let mut request = self
             .client
-            .post(&format!("/v1/table/{}/query/", self.identifier));
+            .post(&format!("/v1/table/{}/query/", self.identifier))
+            .header(ACCEPT, QUERY_ACCEPT);
 
+        // The timeout bounds the whole query, including reading the response, as
+        // the server's own deadline for this request does. A deadline too far
+        // away to represent is never reached.
+        let deadline = options
+            .timeout
+            .and_then(|timeout| Some((tokio::time::Instant::now().checked_add(timeout)?, timeout)));
         if let Some(timeout) = options.timeout {
             // Also send to server, so it can abort the query if it takes too long.
             // (If it doesn't fit into u64, it's not worth sending anyways.)
@@ -1568,28 +1586,28 @@ impl<S: HttpSend> RemoteTable<S> {
         });
         let streams = futures::future::try_join_all(futures);
 
-        let streams = if let Some(timeout) = options.timeout {
-            let timeout_future = tokio::time::sleep(timeout);
-            tokio::pin!(timeout_future);
-            tokio::pin!(streams);
-            tokio::select! {
-                _ = &mut timeout_future => {
-                    return Err(Error::Other {
-                        message: format!("Query timeout after {} ms", timeout.as_millis()),
-                        source: None,
-                    })
-                }
-                result = &mut streams => {
-                    result?
-                }
-            }
+        let streams = if let Some((deadline, timeout)) = deadline {
+            tokio::time::timeout_at(deadline, streams)
+                .await
+                .map_err(|_| Error::Other {
+                    message: format!("Query timeout after {} ms", timeout.as_millis()),
+                    source: None,
+                })??
         } else {
             streams.await?
         };
 
         Ok(streams
             .into_iter()
-            .map(|stream| restore_projection_order(stream, &query.base().select))
+            .map(|stream| {
+                let stream = restore_projection_order(stream, &query.base().select);
+                match deadline {
+                    Some((deadline, timeout)) => {
+                        Box::pin(TimeoutStream::with_deadline(stream, timeout, deadline))
+                    }
+                    None => stream,
+                }
+            })
             .collect())
     }
 
@@ -1713,8 +1731,9 @@ fn schema_from_description(schema: JsonSchema) -> Result<SchemaRef> {
     )))
 }
 
-/// How a response body frames its Arrow IPC payload. `/query` answers with file framing
-/// and `fetch_blobs` with stream framing, so the reader is picked per response.
+/// How a response body frames its Arrow IPC payload. `fetch_blobs` answers with stream
+/// framing, and `/query` with stream framing only on servers that stream query results,
+/// so the reader is picked per response.
 enum ArrowIpcFraming {
     File,
     Stream,
@@ -2378,6 +2397,17 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         source_version: Option<u64>,
         full: bool,
     ) -> Result<Job<RefreshMaterializedViewResult>> {
+        self.refresh_materialized_view_async_with_options(source_version, full, Default::default())
+            .await
+    }
+
+    async fn refresh_materialized_view_async_with_options(
+        &self,
+        source_version: Option<u64>,
+        full: bool,
+        options: crate::materialized_view::RefreshMaterializedViewOptions,
+    ) -> Result<Job<RefreshMaterializedViewResult>> {
+        let with_clause = options.sql_clause(full)?;
         self.check_mutable().await?;
         if source_version.is_some() {
             return Err(Error::NotSupported {
@@ -2391,7 +2421,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let statement = format!(
             "REFRESH MATERIALIZED VIEW {}{}",
             quote_sql_identifier(&self.name),
-            if full { " WITH (full = true)" } else { "" },
+            with_clause,
         );
         let namespace = self.namespace.clone();
         let client = self.client.clone();
@@ -2796,7 +2826,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .client
             .post(&format!("/v1/table/{}/branches/delete/", self.identifier))
             .json(&serde_json::json!({ "name": name }));
-        let (request_id, response) = self.send(request, true).await?;
+        // Deletion is not idempotent: preserve conflicts and partial failures
+        // instead of replaying a request that may already have removed the ref.
+        let (request_id, response) = self.send(request, false).await?;
         if response.status() == StatusCode::NOT_FOUND {
             return Err(Error::TableNotFound {
                 name: format!("{} (branch: {})", self.name, name),
@@ -3660,9 +3692,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         Ok(())
     }
-    /// Only `OptimizeAction::Compact` with default `options` and no custom
+    /// Only `OptimizeAction::Compact` with supported `options` and no custom
     /// `remap_options` is supported remotely: it submits a durable
-    /// compaction job through the server's `OPTIMIZE TABLE ... REWRITE DATA`
+    /// compaction job through the server's `OPTIMIZE ... REWRITE DATA`
     /// SQL statement, the same atomic, single-worker, index-safe path the
     /// server uses for its own automatic compaction. `.wait()` below waits
     /// for that SQL statement's own execution to finish, which only confirms
@@ -3678,11 +3710,12 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     /// optimization. A branch-scoped table handle submits a
     /// `WITH (branch = '<branch>')` clause; the statement does not itself
     /// validate the branch exists, so a nonexistent branch surfaces as an
-    /// async job failure rather than an error from this call. A non-default
-    /// `CompactionOptions` (for example `target_rows_per_fragment` or
-    /// `max_source_bytes`) is rejected: the SQL statement has no `WITH`
-    /// clause to carry it yet, so accepting it would silently ignore
-    /// settings a caller may be relying on to bound the job.
+    /// async job failure rather than an error from this call. Per-job
+    /// `target_rows_per_fragment`, `max_source_rows`, `io_buffer_size`, and
+    /// `batch_size` are forwarded in the SQL `WITH` clause. Other non-default
+    /// options are rejected before submission. Servers must support these
+    /// SQL options; an older server's error is returned without retrying
+    /// with the settings removed.
     async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats> {
         self.check_mutable().await?;
         let OptimizeAction::Compact {
@@ -3705,26 +3738,34 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                     .into(),
             });
         }
-        if *options != lance::dataset::optimize::CompactionOptions::default() {
-            return Err(Error::NotSupported {
-                message: "custom CompactionOptions are not supported in LanceDB \
-                          Enterprise; the OPTIMIZE TABLE ... REWRITE DATA SQL \
-                          statement has no WITH clause to carry them yet, so a \
-                          non-default value would be silently ignored rather than \
-                          applied. Omit options to use the server's managed \
-                          compaction settings."
-                    .into(),
-            });
+        let mut overrides = crate::table::optimize::CompactionOverrides::try_from(options.clone())?;
+        // The legacy Lance options type has no presence bit for this field.
+        // Use Table::compact to explicitly send a target equal to Lance's default.
+        if options.target_rows_per_fragment
+            == crate::table::CompactionOptions::default().target_rows_per_fragment
+        {
+            overrides.target_rows_per_fragment = None;
         }
+        self.compact(overrides).await
+    }
+
+    async fn compact(
+        &self,
+        options: crate::table::optimize::CompactionOverrides,
+    ) -> Result<OptimizeStats> {
+        self.check_mutable().await?;
+        let compaction_options = optimize::compaction_sql_options(&options)?;
         let sql_client = self.sql_client.clone().ok_or_else(|| Error::NotSupported {
             message: "SQL is unavailable for this remote table client".to_string(),
         })?;
-        let mut statement = format!(
-            "OPTIMIZE TABLE {} REWRITE DATA",
-            quote_sql_identifier(&self.name)
-        );
+        let mut statement = format!("OPTIMIZE {} REWRITE DATA", quote_sql_identifier(&self.name));
+        let mut sql_options = Vec::new();
         if let Some(branch) = &self.branch {
-            statement.push_str(&format!(" WITH (branch = {})", quote_sql_string(branch)));
+            sql_options.push(format!("branch = {}", quote_sql_string(branch)));
+        }
+        sql_options.extend(compaction_options);
+        if !sql_options.is_empty() {
+            statement.push_str(&format!(" WITH ({})", sql_options.join(", ")));
         }
         // `OptimizeStats` carries `lance::dataset::optimize` metric types that
         // are not `Serialize`/`Deserialize`/`Clone`, which `Job<T>` requires,
@@ -3967,16 +4008,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     ) -> Result<Job<crate::function::RefreshColumnResult>> {
         options.validate()?;
         self.check_mutable().await?;
-        let mut body = serde_json::json!({ "column": column });
-        if let Some(batch_size) = options.batch_size {
-            body["batch_size"] = serde_json::json!(batch_size);
-        }
-        if let Some(gpu_class) = options.gpu_class {
-            body["gpu_class"] = serde_json::json!(gpu_class);
-        }
-        if let Some(gpu_count) = options.gpu_count {
-            body["gpu_count"] = serde_json::json!(gpu_count);
-        }
+        let mut body = serde_json::to_value(&options).map_err(|e| Error::Runtime {
+            message: format!("failed to serialize refresh options: {e}"),
+        })?;
+        body["column"] = serde_json::json!(column);
         self.apply_branch_body(&mut body);
         let request = self
             .client
@@ -4422,6 +4457,7 @@ mod tests {
         BinaryArray, Int32Array, Int64Array, RecordBatch, RecordBatchIterator, StringArray,
         StructArray, record_batch,
     };
+    use arrow_ipc::reader::StreamReader;
     use arrow_schema::{DataType, Field, Schema};
     use chrono::{DateTime, Utc};
     use futures::{StreamExt, TryFutureExt, TryStreamExt, future::BoxFuture};
@@ -7076,25 +7112,36 @@ mod tests {
         assert_eq!(blobs.value(0), b"alpha");
     }
 
+    // Read as a stream, a file's leading magic declares a message longer than the
+    // whole body, so the body ends before the stream does.
     #[rstest]
-    #[case(ARROW_STREAM_CONTENT_TYPE, write_ipc_file(&one_row_blob_batch("image")))]
+    #[case(ARROW_STREAM_CONTENT_TYPE, write_ipc_file(&one_row_blob_batch("image")), true)]
     #[case(
         ARROW_FILE_CONTENT_TYPE,
-        write_ipc_stream_uncompressed(&one_row_blob_batch("image"))
+        write_ipc_stream_uncompressed(&one_row_blob_batch("image")),
+        false
     )]
     #[tokio::test]
     async fn test_fetch_blobs_fails_when_the_body_contradicts_the_content_type(
         #[case] content_type: &'static str,
         #[case] body: Vec<u8>,
+        #[case] ends_early: bool,
     ) {
         let table = table_with_fetch_blobs_content_type(Some(content_type), body);
 
         let error = table.fetch_blobs("image", &[10]).await.unwrap_err();
 
-        assert!(
-            matches!(error, Error::Arrow { .. }),
-            "expected an Arrow decode failure, got {error}"
-        );
+        if ends_early {
+            assert!(
+                matches!(error, Error::ResponseInterrupted { batches: 0, .. }),
+                "expected an incomplete stream, got {error}"
+            );
+        } else {
+            assert!(
+                matches!(error, Error::Arrow { .. }),
+                "expected an Arrow decode failure, got {error}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -7366,7 +7413,8 @@ mod tests {
     #[rstest]
     #[case::unset(None)]
     #[case::minimum(Some(0.0))]
-    #[case::low(Some(0.25))]
+    #[case::recall80(Some(0.1))]
+    #[case::recall90(Some(0.25))]
     #[case::auto(Some(0.5))]
     #[case::high(Some(0.75))]
     #[case::maximum(Some(1.0))]
@@ -10981,6 +11029,131 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_refresh_column_async_retry_policy() {
+        use crate::function::{FunctionErrorPolicy, FunctionRetryPolicy};
+        use crate::table::RefreshColumnOptions;
+        let policy = FunctionRetryPolicy::transient();
+        let expected_policy = serde_json::to_value(&policy).unwrap();
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/backfill_column");
+            assert_eq!(
+                request_body_json(&request),
+                serde_json::json!({
+                    "column":"quality", "retry_policy": expected_policy, "error_policy":"skip",
+                })
+            );
+            http::Response::builder()
+                .status(202)
+                .body(r#"{"job_id":"j-retry"}"#.to_string())
+                .unwrap()
+        });
+        let options = RefreshColumnOptions::default()
+            .retry_policy(policy)
+            .error_policy(FunctionErrorPolicy::Skip);
+        assert_eq!(
+            table
+                .refresh_column_async_with_options("quality", options)
+                .await
+                .unwrap()
+                .id(),
+            Some("j-retry")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_refresh_column_async_filter_and_failure_options() {
+        use crate::function::FunctionErrorPolicy;
+        use crate::table::RefreshColumnOptions;
+
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/backfill_column");
+            assert_eq!(
+                request_body_json(&request),
+                serde_json::json!({
+                    "column": "quality",
+                    "where": "id % 2 = 0",
+                    "publication_interval_rows": 60,
+                    "error_policy": "skip",
+                    "max_failed_fraction": 0.01,
+                    "max_failed_rows": 50,
+                    "row_timeout_seconds": 30.0,
+                    "init_timeout_seconds": 120.0,
+                    "num_workers": 4,
+                    "max_executor_processes_per_worker": 2,
+                })
+            );
+            http::Response::builder()
+                .status(202)
+                .body(r#"{"job_id": "j-filtered"}"#)
+                .unwrap()
+        });
+        let options = RefreshColumnOptions::default()
+            .where_clause("id % 2 = 0")
+            .publication_interval_rows(60)
+            .error_policy(FunctionErrorPolicy::Skip)
+            .max_failed_fraction(0.01)
+            .max_failed_rows(50)
+            .row_timeout_seconds(30.0)
+            .init_timeout_seconds(120.0)
+            .num_workers(4)
+            .max_executor_processes_per_worker(2);
+        let job = table
+            .refresh_column_async_with_options("quality", options)
+            .await
+            .unwrap();
+        assert_eq!(job.id(), Some("j-filtered"));
+    }
+
+    #[tokio::test]
+    async fn test_refresh_column_rejects_invalid_filter_and_limit_options_before_request() {
+        use crate::table::RefreshColumnOptions;
+
+        let table = Table::new_with_handler("my_table", |_| -> http::Response<String> {
+            panic!("invalid refresh options must not send a request")
+        });
+        for (options, expected) in [
+            (RefreshColumnOptions::default().where_clause("  "), "where"),
+            (
+                RefreshColumnOptions::default().max_failed_fraction(1.5),
+                "max_failed_fraction",
+            ),
+            (
+                RefreshColumnOptions::default().max_failed_fraction(f64::NAN),
+                "max_failed_fraction",
+            ),
+            (
+                RefreshColumnOptions::default().row_timeout_seconds(0.0),
+                "row_timeout_seconds",
+            ),
+            (
+                RefreshColumnOptions::default().init_timeout_seconds(f64::INFINITY),
+                "init_timeout_seconds",
+            ),
+            (
+                RefreshColumnOptions::default().num_workers(0),
+                "num_workers",
+            ),
+            (
+                RefreshColumnOptions::default().max_executor_processes_per_worker(0),
+                "max_executor_processes_per_worker",
+            ),
+            (
+                RefreshColumnOptions::default().publication_interval_rows(0),
+                "publication_interval_rows",
+            ),
+        ] {
+            let error = table
+                .refresh_column_async_with_options("quality", options)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(&error, Error::InvalidInput { message } if message.contains(expected)),
+                "{error:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn test_refresh_column_rejects_invalid_gpu_options_before_request() {
         use crate::table::RefreshColumnOptions;
 
@@ -11120,7 +11293,7 @@ mod tests {
                         "column": "embedding", "function": "embed", "function_version": "2",
                         "table_version": 11, "error_type": "ValueError",
                         "error_message": "bad input 'x'", "traceback": "Traceback (most recent call last):\nValueError: bad input 'x'",
-                        "created_at_millis": 1700000000000}],
+                        "created_at_millis": 1700000000000, "attempts": 3}],
                         "fragments": [{"job_id": "j-7", "fragment_id": 4, "rows_skipped": 500,
                         "rows_recorded": 100}],
                         "truncated": true}"#,
@@ -11140,6 +11313,7 @@ mod tests {
         assert_eq!(
             errors.records,
             [FunctionErrorRecord {
+                attempts: Some(3),
                 job_id: "j-7".into(),
                 fragment_id: 3,
                 row_offset: Some(9),
@@ -15746,7 +15920,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_optimize_rejects_non_default_compaction_options() {
+    async fn test_optimize_rejects_unsupported_compaction_options() {
         let table = Table::new_with_handler("my_table", move |_| -> http::Response<String> {
             panic!("custom compaction options must be rejected before any request is sent")
         });
@@ -15966,6 +16140,73 @@ mod tests {
         });
         let err = table.delete_branch("ghost").await.unwrap_err();
         assert!(matches!(err, Error::TableNotFound { .. }), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn test_delete_branch_conflict_is_not_retried() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let captured = requests.clone();
+        let reason = "Conflict: branch 'exp' cannot be deleted, main depends on its files";
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/branches/delete/");
+            captured.fetch_add(1, Ordering::SeqCst);
+            http::Response::builder()
+                .status(409)
+                .body(json!({ "code": 14, "error": reason }).to_string())
+                .unwrap()
+        });
+
+        let err = table.delete_branch("exp").await.unwrap_err();
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        assert!(err.to_string().contains(reason), "got {err:?}");
+        assert!(
+            matches!(
+                err,
+                Error::Http {
+                    status_code: Some(StatusCode::CONFLICT),
+                    ..
+                }
+            ),
+            "expected the original conflict, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delete_branch_partial_failure_is_not_retried() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let captured = requests.clone();
+        let table = Table::new_with_handler("my_table", move |_| {
+            // The ref was removed before the first response failed. Replaying
+            // the deletion would hide that failure behind a missing-branch error.
+            if captured.fetch_add(1, Ordering::SeqCst) == 0 {
+                http::Response::builder()
+                    .status(500)
+                    .body("failed after removing branch ref")
+                    .unwrap()
+            } else {
+                http::Response::builder()
+                    .status(404)
+                    .body("no such branch")
+                    .unwrap()
+            }
+        });
+
+        let err = table.delete_branch("exp").await.unwrap_err();
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        assert!(
+            err.to_string().contains("failed after removing branch ref"),
+            "got {err:?}"
+        );
+        assert!(
+            matches!(
+                err,
+                Error::Http {
+                    status_code: Some(StatusCode::INTERNAL_SERVER_ERROR),
+                    ..
+                }
+            ),
+            "expected the original server error, got {err:?}"
+        );
     }
 
     fn sample_branch_diff_json() -> &'static str {

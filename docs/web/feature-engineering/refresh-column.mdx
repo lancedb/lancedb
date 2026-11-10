@@ -22,7 +22,7 @@ Computed columns require LanceDB Enterprise.
 job = table.refresh_column_async("doubled")
 job.wait()
 
-table.to_arrow().sort_by("x").to_pandas()
+table.search().to_arrow().sort_by("x").to_pandas()
 #    x  doubled
 # 0  1        2
 # 1  2        4
@@ -77,13 +77,21 @@ catch-up works when it's re-enabled after being off.
 
 ## Refreshing part of a table {#partial}
 
-<Badge color="red">Enterprise</Badge> In SQL a refresh can be scoped to a
-predicate, which is useful for filling a slice first and checking it before
-committing to the whole table:
+<Badge color="red">Enterprise</Badge> A refresh can be scoped to a predicate,
+with `where=` in Python or `WHERE` in SQL, which is useful for filling a slice
+first and checking it before committing to the whole table:
 
 <CodeGroup>
+```python Python icon="python"
+job = table.refresh_column_async(
+    "embedding",
+    where="created_at > date '2026-01-01'",
+)
+job.wait()
+```
+
 ```sql SQL icon="database"
-REFRESH COLUMN embedding ON documents WHERE created_at > '2026-01-01'
+REFRESH COLUMN embedding ON documents WHERE created_at > date '2026-01-01'
 ```
 </CodeGroup>
 
@@ -92,9 +100,17 @@ whose outputs are already current. Repeating the same predicate repeats those
 Function calls and their cost. To select only null outputs within a slice:
 
 <CodeGroup>
+```python Python icon="python"
+job = table.refresh_column_async(
+    "embedding",
+    where="created_at > date '2026-01-01' AND embedding IS NULL",
+)
+job.wait()
+```
+
 ```sql SQL icon="database"
 REFRESH COLUMN embedding ON documents
-  WHERE created_at > '2026-01-01' AND embedding IS NULL
+  WHERE created_at > date '2026-01-01' AND embedding IS NULL
 ```
 </CodeGroup>
 
@@ -159,6 +175,34 @@ work sizes. For Function columns, the refresh defaults to
 failing rows and record them in the error store, subject to failure limits.
 See the [SQL refresh options](/sql/dml/refresh-column#options).
 
+{/*
+Draft for the Function retry policy release.
+
+For registered Function columns, pass `retry_policy` to
+`refresh_column_async` to replace the Function's registered retry policy
+for this refresh. For example,
+`retry_policy=FunctionRetryPolicy(transient=True, max_attempts=3)` allows
+three attempts, including the first call. Import `FunctionRetryPolicy`
+from `lancedb.functions`. Use `FunctionRetryPolicy(max_attempts=1)` to
+disable user-error retries. Omitting the override preserves the registered
+policy.
+
+This requires a supporting LanceDB Enterprise server as well as an SDK
+that exposes these options. An older Function image may need
+re-registration before it accepts a refresh override. Only enable retries
+when repeating a failed call's partial work is safe, including any external
+requests made before the error.
+
+The attempt budget belongs to one failed Function call. With an explicit
+retry policy and `error_policy="skip"`, exhaustion in a batch Function
+writes nulls for the whole failed call and records its errors, subject to
+failure limits. It does not split the batch to restart the retry budget.
+Row Functions isolate failures per row. Infrastructure recovery, framework
+deadlines and cancellation remain separate from this user-error policy.
+See [Function failure handling](/management/function#failures) for the
+retry and replay boundaries.
+*/}
+
 For a column filled by a registered Function, the Python and Rust job APIs can
 override the Function's GPU placement for this refresh:
 
@@ -213,9 +257,91 @@ GPU class discovery.
 
 <Note>
 The Rust GPU discovery and refresh controls are not in the latest Rust
-release. TypeScript does not expose GPU class discovery or placement; a
-tracking issue is needed before adding equivalent controls.
+release. TypeScript does not expose GPU class discovery; pass `gpuClass`
+and `gpuCount` in the `refreshColumnAsync` options.
 </Note>
+
+Completed Function outputs publish with their fragment by default. To opt into
+a row-count publication threshold, set `publication_interval_rows` in Python or
+`publication_interval_rows()` in Rust:
+
+<CodeGroup>
+```python Python icon="python"
+job = table.refresh_column_async(
+    "embedding",
+    publication_interval_rows=60,
+)
+job.wait()
+```
+
+```rust Rust icon="rust"
+use lancedb::table::RefreshColumnOptions;
+
+let _job = table
+    .refresh_column_async_with_options(
+        "embedding",
+        RefreshColumnOptions::default().publication_interval_rows(60),
+    )
+    .await?;
+```
+</CodeGroup>
+
+The threshold is opt-in and must be greater than zero. The number of rows in an
+individual publication can differ from this value depending on completed work
+and Function batching; this is not an exact-N contract. Omit it to keep
+whole-fragment publication.
+
+The TypeScript SDK does not expose the publication threshold option yet.
+
+The job APIs also take the row filter and failure handling of the SQL
+`REFRESH COLUMN ... WHERE ... WITH (...)` form, so a refresh can be narrowed
+to new rows (see [what a filter recomputes](#partial)) and told to skip rows
+whose Function call fails:
+
+<CodeGroup>
+```python
+job = table.refresh_column_async(
+    "embedding",
+    where="created_at > date '2026-01-01'",
+    error_policy="skip",
+    max_failed_fraction=0.01,
+    row_timeout_seconds=30,
+)
+```
+
+```typescript
+const job = await table.refreshColumnAsync("embedding", {
+  where: "created_at > date '2026-01-01'",
+  errorPolicy: "skip",
+  maxFailedFraction: 0.01,
+  rowTimeoutSeconds: 30,
+});
+```
+
+```rust
+use lancedb::{function::FunctionErrorPolicy, table::RefreshColumnOptions};
+
+let _job = table
+    .refresh_column_async_with_options(
+        "embedding",
+        RefreshColumnOptions::default()
+            .where_clause("created_at > date '2026-01-01'")
+            .error_policy(FunctionErrorPolicy::Skip)
+            .max_failed_fraction(0.01)
+            .row_timeout_seconds(30.0),
+    )
+    .await?;
+```
+</CodeGroup>
+
+`max_failed_rows`, `init_timeout_seconds`, `num_workers` and
+`max_executor_processes_per_worker` are accepted the same way; the
+[SQL refresh options](/sql/dml/refresh-column#options) describe each one.
+The SDK rejects a blank `where`, a `max_failed_fraction` outside 0 to 1, a
+timeout that is not a positive number and a zero worker or process count
+before sending the request; the server validates everything else. A LanceDB
+Embedded refresh rejects every option other than `batch_size`, `gpu_class`
+and `gpu_count`.
 
 ## When a refresh fails {#failures}
 

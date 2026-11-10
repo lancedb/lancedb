@@ -3,7 +3,7 @@
 
 use std::sync::atomic::AtomicUsize;
 
-use arrow_array::builder::StringDictionaryBuilder;
+use arrow_array::builder::{ListBuilder, StringBuilder, StringDictionaryBuilder};
 use arrow_array::types::{Float32Type, Int32Type};
 use arrow_array::{Array, ArrayRef, FixedSizeListArray, Float32Array, Int64Array, StringArray};
 use arrow_flight::encode::FlightDataEncoderBuilder;
@@ -160,8 +160,17 @@ impl TestSqlService {
             return Response::new(rows);
         }
         let poll_info = self.defer.then(|| {
-            let mut info = FlightInfo::new()
-                .with_endpoint(FlightEndpoint::new().with_ticket(Ticket::new(query.to_string())));
+            let mut info = FlightInfo::new();
+            if !query.starts_with("SELECT durable job") {
+                info = info.with_endpoint(
+                    FlightEndpoint::new().with_ticket(Ticket::new(query.to_string())),
+                );
+            }
+            if query.starts_with("SELECT durable job") {
+                info = info
+                    .try_with_schema(&self.result_for_query(query).schema())
+                    .unwrap();
+            }
             if self.materialized_view_job_handle_supported {
                 info.app_metadata = b"early-v1".to_vec().into();
             }
@@ -198,6 +207,13 @@ impl TestSqlService {
         response
             .metadata_mut()
             .insert(PROTOCOL_HEADER, PROTOCOL_VERSION.parse().unwrap());
+        if query.starts_with("SELECT direct durable job") {
+            let job_id = query.rsplit(' ').next().unwrap();
+            response.metadata_mut().insert(
+                SQL_JOB_ID_METADATA_KEY,
+                format!("job-{job_id}").parse().unwrap(),
+            );
+        }
         response
     }
 }
@@ -351,7 +367,14 @@ impl FlightService for TestSqlService {
                 .insert("x-lancedb-sql-job-id", "job-1".parse().unwrap());
             return Err(status);
         }
-        let complete = if query == "SELECT no info" {
+        if query == "SELECT durable job failure" && stage == 1 {
+            let mut status = Status::internal("durable SQL job failed");
+            status
+                .metadata_mut()
+                .insert("x-lancedb-sql-job-id", "job-1".parse().unwrap());
+            return Err(status);
+        }
+        let complete = if query == "SELECT no info" || query.starts_with("SELECT durable job") {
             stage >= 2
         } else {
             stage >= 1
@@ -362,11 +385,14 @@ impl FlightService for TestSqlService {
         } else {
             query.clone()
         };
-        let mut info = FlightInfo::new().with_endpoint(
-            FlightEndpoint::new()
-                .with_ticket(Ticket::new(first_ticket))
-                .with_location("grpc://127.0.0.1:1"),
-        );
+        let mut info = FlightInfo::new();
+        if !(query.starts_with("SELECT durable job") && !complete) {
+            info = info.with_endpoint(
+                FlightEndpoint::new()
+                    .with_ticket(Ticket::new(first_ticket))
+                    .with_location("grpc://127.0.0.1:1"),
+            );
+        }
         if query == "SELECT incremental" && stage > 0 {
             info = info.with_endpoint(
                 FlightEndpoint::new()
@@ -378,13 +404,21 @@ impl FlightService for TestSqlService {
             let schema = self.result_for_query(&query).schema();
             info = info.try_with_schema(&schema).unwrap();
         }
-        Ok(Response::new(PollInfo {
+        let mut response = Response::new(PollInfo {
             info: (query != "SELECT no info" || stage > 0).then_some(info),
             flight_descriptor: (!complete)
                 .then(|| FlightDescriptor::new_cmd(format!("poll:{}:{query}", stage + 1))),
             progress: Some(if complete { 1.0 } else { 0.25 }),
             expiration_time: None,
-        }))
+        });
+        if query.starts_with("SELECT durable job") && stage > 0 {
+            let job_id = query.rsplit(' ').next().unwrap();
+            response.metadata_mut().insert(
+                SQL_JOB_ID_METADATA_KEY,
+                format!("job-{job_id}").parse().unwrap(),
+            );
+        }
+        Ok(response)
     }
 
     async fn get_schema(
@@ -728,6 +762,106 @@ async fn parameters_travel_on_one_exchange() {
     assert_eq!(headers[0].database, "analytics");
     assert_eq!(headers[0].namespace_path, "events$raw");
     assert_eq!(headers[0].api_key, "test-key");
+}
+
+#[tokio::test]
+async fn running_job_backed_queries_expose_their_own_durable_job_id() {
+    let service = TestSqlService {
+        adaptive: true,
+        defer: true,
+        ..Default::default()
+    };
+    let (client, _shutdown) = start_sql_service(service, ClientConfig::default()).await;
+
+    let first = client
+        .execute(ExecuteQueryRequest::new("SELECT durable job first"))
+        .await
+        .unwrap();
+    let second = client
+        .execute(ExecuteQueryRequest::new("SELECT durable job second"))
+        .await
+        .unwrap();
+    assert_eq!(first.job_id(), None);
+    assert_eq!(second.job_id(), None);
+
+    let first_description = first.describe().await.unwrap();
+    let second_description = second.describe().await.unwrap();
+    assert_eq!(first_description.status, QueryStatus::Running);
+    assert_eq!(first_description.job_id.as_deref(), Some("job-first"));
+    assert_eq!(second_description.status, QueryStatus::Running);
+    assert_eq!(second_description.job_id.as_deref(), Some("job-second"));
+    assert_ne!(first.id(), second.id());
+    assert_ne!(first_description.job_id, second_description.job_id);
+
+    let reader = first.reader().await.unwrap();
+    assert_eq!(
+        reader
+            .schema()
+            .metadata()
+            .get(SQL_JOB_ID_METADATA_KEY)
+            .map(String::as_str),
+        Some("job-first")
+    );
+    assert_eq!(first.job_id().as_deref(), Some("job-first"));
+    assert_eq!(second.job_id().as_deref(), Some("job-second"));
+
+    let reader_only = client
+        .execute(ExecuteQueryRequest::new("SELECT durable job reader-only"))
+        .await
+        .unwrap();
+    let reader_only_result = reader_only.reader().await.unwrap();
+    assert_eq!(
+        reader_only_result
+            .schema()
+            .metadata()
+            .get(SQL_JOB_ID_METADATA_KEY)
+            .map(String::as_str),
+        Some("job-reader-only")
+    );
+
+    let ordinary = client
+        .execute(ExecuteQueryRequest::new("SELECT ordinary"))
+        .await
+        .unwrap();
+    assert_eq!(ordinary.describe().await.unwrap().job_id, None);
+}
+
+#[tokio::test]
+async fn direct_job_backed_queries_expose_the_initial_response_job_id() {
+    let service = TestSqlService {
+        adaptive: true,
+        ..Default::default()
+    };
+    let (client, _shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let query = client
+        .execute(ExecuteQueryRequest::new("SELECT direct durable job direct"))
+        .await
+        .unwrap();
+
+    assert_eq!(query.job_id().as_deref(), Some("job-direct"));
+    assert_eq!(
+        query.describe().await.unwrap().job_id.as_deref(),
+        Some("job-direct")
+    );
+    let reader = query.reader().await.unwrap();
+    assert_eq!(
+        reader
+            .schema()
+            .metadata()
+            .get(SQL_JOB_ID_METADATA_KEY)
+            .map(String::as_str),
+        Some("job-direct")
+    );
+    let batches = reader.try_collect::<Vec<_>>().await.unwrap();
+    assert_eq!(batches.len(), 1);
+    assert_eq!(
+        batches[0]
+            .schema()
+            .metadata()
+            .get(SQL_JOB_ID_METADATA_KEY)
+            .map(String::as_str),
+        Some("job-direct")
+    );
 }
 
 /// The server plans before it answers, so a refusal is the submission's.
@@ -1214,6 +1348,35 @@ async fn function_failure_preserves_the_isolated_sql_job_id() {
 }
 
 #[tokio::test]
+async fn fast_durable_job_failure_exposes_the_same_job_id_on_the_query_handle() {
+    let (client, shutdown) = start_sql_service(
+        TestSqlService {
+            adaptive: true,
+            defer: true,
+            ..Default::default()
+        },
+        ClientConfig::default(),
+    )
+    .await;
+    let query = client
+        .execute(ExecuteQueryRequest {
+            query: "SELECT durable job failure".into(),
+            default_namespace_path: vec![],
+            parameters: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(query.job_id(), None);
+
+    let Err(Error::JobFailed { job_id, .. }) = collect_result(&query).await else {
+        panic!("a failed durable query must remain a structured JobFailed error");
+    };
+    assert_eq!(job_id.as_deref(), Some("job-1"));
+    assert_eq!(query.job_id().as_deref(), Some("job-1"));
+    shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
 async fn rejected_job_cancellation_does_not_abort_sql_completion() {
     let service = TestSqlService {
         adaptive: true,
@@ -1329,7 +1492,30 @@ async fn remote_refresh_omits_unknown_metrics_and_forwards_full() {
         .await
         .unwrap();
 
-    for result in [first, second] {
+    let third = view
+        .refresh()
+        .full(true)
+        .cpu_millis(8000)
+        .memory_bytes(16 << 30)
+        .gpu_count(2)
+        .gpu_class("h100")
+        .execute_async()
+        .await
+        .unwrap()
+        .wait()
+        .await
+        .unwrap();
+    for invalid in [
+        view.refresh().cpu_millis(1),
+        view.refresh().gpu_class("H200:8"),
+        view.refresh().gpu_count(0).gpu_class("h100"),
+    ] {
+        assert!(matches!(
+            invalid.execute_async().await,
+            Err(Error::InvalidInput { .. })
+        ));
+    }
+    for result in [first, second, third] {
         assert_eq!(result.mode, None);
         assert_eq!(result.rows_written, None);
         assert_eq!(result.source_version, None);
@@ -1350,6 +1536,7 @@ async fn remote_refresh_omits_unknown_metrics_and_forwards_full() {
             "DESCRIBE MATERIALIZED VIEW \"view\"",
             "REFRESH MATERIALIZED VIEW \"view\"",
             "REFRESH MATERIALIZED VIEW \"view\" WITH (full = true)",
+            "REFRESH MATERIALIZED VIEW \"view\" WITH (full = true, cpu_millis = 8000, memory_bytes = 17179869184, gpu_count = 2, gpu_class = 'h100')",
         ]
     );
     assert!(
@@ -1819,6 +2006,7 @@ async fn submits_polls_fetches_cancels_and_reuses_client() {
                 flight_descriptor: Some(FlightDescriptor::new_cmd("restored")),
                 ..Default::default()
             },
+            None,
         )
         .unwrap(),
     );
@@ -1951,6 +2139,7 @@ async fn submits_polls_fetches_cancels_and_reuses_client() {
                     flight_descriptor: Some(FlightDescriptor::new_cmd(descriptor)),
                     ..Default::default()
                 },
+                None,
             )
             .unwrap(),
         );
@@ -1972,6 +2161,7 @@ async fn submits_polls_fetches_cancels_and_reuses_client() {
                 expiration_time: Some(Default::default()),
                 ..Default::default()
             },
+            None,
         )
         .unwrap(),
     );
@@ -1988,6 +2178,7 @@ async fn submits_polls_fetches_cancels_and_reuses_client() {
                 flight_descriptor: Some(FlightDescriptor::new_cmd("stale")),
                 ..Default::default()
             },
+            None,
         )
         .unwrap(),
     );
@@ -2318,7 +2509,7 @@ async fn remote_optimize_submits_a_compaction_job_over_sql() {
     assert!(stats.prune.is_none());
     assert_eq!(
         *statements.lock().unwrap(),
-        ["OPTIMIZE TABLE \"events\" REWRITE DATA"]
+        ["OPTIMIZE \"events\" REWRITE DATA"]
     );
     assert!(
         headers
@@ -2362,7 +2553,7 @@ async fn remote_optimize_on_a_branch_submits_a_with_clause_over_sql() {
 
     assert_eq!(
         *statements.lock().unwrap(),
-        ["OPTIMIZE TABLE \"events\" REWRITE DATA WITH (branch = 'o''brien')"]
+        ["OPTIMIZE \"events\" REWRITE DATA WITH (branch = 'o''brien')"]
     );
     shutdown.send(()).unwrap();
 }
@@ -2426,7 +2617,7 @@ async fn remote_optimize_full_skips_prune_and_index() {
     );
     assert_eq!(
         *statements.lock().unwrap(),
-        ["OPTIMIZE TABLE \"events\" REWRITE DATA"]
+        ["OPTIMIZE \"events\" REWRITE DATA"]
     );
     shutdown.send(()).unwrap();
 }
@@ -2942,6 +3133,45 @@ async fn function_drop_keeps_the_query_id_and_reports_catalog_removal() {
         );
         shutdown.send(()).unwrap();
     }
+}
+
+#[tokio::test]
+async fn function_drop_decodes_server_warnings_for_the_binding_bridge() {
+    let mut warning_values = ListBuilder::new(StringBuilder::new());
+    warning_values
+        .values()
+        .append_value("materialized view \"pinned\" references Function \"embed\" version \"1\"");
+    warning_values.append(true);
+    let result = RecordBatch::try_from_iter(vec![
+        (
+            "status",
+            Arc::new(StringArray::from(vec!["dropped"])) as ArrayRef,
+        ),
+        ("warnings", Arc::new(warning_values.finish()) as ArrayRef),
+    ])
+    .unwrap();
+    let service = TestSqlService {
+        adaptive: true,
+        defer: true,
+        result,
+        ..Default::default()
+    };
+    let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
+        panic!("unexpected REST request");
+    })
+    .with_sql_client(client);
+
+    let (dropped, warnings) = db
+        .drop_function_with_warnings("embed", "1", &[])
+        .await
+        .unwrap();
+    assert!(dropped);
+    assert_eq!(
+        warnings,
+        ["materialized view \"pinned\" references Function \"embed\" version \"1\""]
+    );
+    shutdown.send(()).unwrap();
 }
 
 #[tokio::test]
@@ -3572,4 +3802,110 @@ fn sql_status_reports_structured_resource_identity() {
     assert_eq!(resource.kind, "function");
     assert_eq!(resource.name, "missing");
     assert_eq!(resource.namespace_path, ["ns"]);
+}
+
+#[tokio::test]
+async fn remote_optimize_forwards_per_job_options_on_main_and_branch() {
+    for branch in [None, Some("o'brien")] {
+        let service = TestSqlService {
+            adaptive: true,
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let headers = service.headers.clone();
+        let (sql_client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let client = client_with_handler(|request| -> http::Response<String> {
+            panic!("unexpected REST request: {}", request.url().path());
+        });
+        let table = RemoteTable::new_with_sql_client(
+            client,
+            "analytics".into(),
+            "events".into(),
+            vec!["team".into()],
+            "team$events".into(),
+            Default::default(),
+            Some(sql_client),
+        )
+        .with_branch(branch.map(str::to_string));
+        table
+            .optimize(crate::table::optimize::OptimizeAction::Compact {
+                options: crate::table::optimize::CompactionOptions {
+                    target_rows_per_fragment: 100,
+                    max_source_rows: Some(500),
+                    io_buffer_size: Some(0),
+                    batch_size: Some(16),
+                    ..Default::default()
+                },
+                remap_options: None,
+            })
+            .await
+            .unwrap();
+        let prefix = if branch.is_some() {
+            "branch = 'o''brien', "
+        } else {
+            ""
+        };
+        assert_eq!(
+            *statements.lock().unwrap(),
+            [format!(
+                "OPTIMIZE \"events\" REWRITE DATA WITH ({prefix}target_rows_per_fragment = 100, max_source_rows = 500, io_buffer_size = 0, batch_size = 16)"
+            )]
+        );
+        assert!(
+            headers
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|h| h.namespace_path == "team")
+        );
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn remote_compact_preserves_omissions_and_explicit_default_values() {
+    use crate::table::{CompactionOptions, CompactionOverrides};
+    let target = CompactionOptions::default().target_rows_per_fragment;
+    for (options, suffix) in [
+        (CompactionOverrides::default(), String::new()),
+        (
+            CompactionOverrides {
+                target_rows_per_fragment: Some(target),
+                ..Default::default()
+            },
+            format!(" WITH (target_rows_per_fragment = {target})"),
+        ),
+        (
+            CompactionOverrides {
+                io_buffer_size: Some(0),
+                ..Default::default()
+            },
+            " WITH (io_buffer_size = 0)".into(),
+        ),
+    ] {
+        let service = TestSqlService {
+            adaptive: true,
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let (sql_client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let client = client_with_handler(|request| -> http::Response<String> {
+            panic!("unexpected REST request: {}", request.url().path());
+        });
+        let table = RemoteTable::new_with_sql_client(
+            client,
+            "analytics".into(),
+            "events".into(),
+            vec![],
+            "events".into(),
+            Default::default(),
+            Some(sql_client),
+        );
+        table.compact(options).await.unwrap();
+        assert_eq!(
+            *statements.lock().unwrap(),
+            [format!("OPTIMIZE \"events\" REWRITE DATA{suffix}")]
+        );
+        shutdown.send(()).unwrap();
+    }
 }

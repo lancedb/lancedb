@@ -42,6 +42,7 @@ from .functions import (
     FunctionBinding as FunctionBinding,
     FunctionDefinition as FunctionDefinition,
     FunctionRegistrationRequest as FunctionRegistrationRequest,
+    FunctionRetryPolicy as FunctionRetryPolicy,
     FunctionVersion as FunctionVersion,
     HuggingFaceModel as HuggingFaceModel,
     PythonRuntimeSpec as PythonRuntimeSpec,

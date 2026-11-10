@@ -111,7 +111,8 @@ pub use lance::dataset::refs::{BranchContents, Ref, TagContents, Tags as LanceTa
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
 pub use lance_index::optimize::OptimizeOptions;
 pub use optimize::{
-    CompactionMode, CompactionOptions, IndexRemapMode, OptimizeAction, OptimizeStats,
+    CompactionMode, CompactionOptions, CompactionOverrides, IndexRemapMode, OptimizeAction,
+    OptimizeStats,
 };
 pub use refresh::{RefreshColumnOptions, RefreshColumnResult};
 pub use rte_stats::{MemtableStats, RTEStats, SsTableStats, TableShardStats};
@@ -595,6 +596,25 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
                 .append_to("remote materialized-view refresh is not supported on this table type"),
         })
     }
+    /// Submit an Enterprise refresh with aggregate resource caps and GPU placement.
+    #[doc(hidden)]
+    async fn refresh_materialized_view_async_with_options(
+        &self,
+        source_version: Option<u64>,
+        full: bool,
+        options: crate::materialized_view::RefreshMaterializedViewOptions,
+    ) -> Result<Job<crate::materialized_view::RefreshMaterializedViewResult>> {
+        options.validate()?;
+        if !options.is_empty() {
+            return Err(Error::NotSupported {
+                message:
+                    "this table cannot enforce materialized-view resource budgets or GPU placement"
+                        .into(),
+            });
+        }
+        self.refresh_materialized_view_async(source_version, full)
+            .await
+    }
     /// Create a read-only handle pinned to the table's current active revision.
     ///
     /// The returned handle is independent from later refreshes or checkouts on
@@ -842,6 +862,14 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn tags(&self) -> Result<Box<dyn Tags + '_>>;
     /// Optimize the dataset.
     async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats>;
+    /// Compact with optional fields, preserving remote policy inheritance.
+    async fn compact(&self, options: optimize::CompactionOverrides) -> Result<OptimizeStats> {
+        self.optimize(OptimizeAction::Compact {
+            options: options.into_options(),
+            remap_options: None,
+        })
+        .await
+    }
     /// Add columns to the table.
     async fn add_columns(
         &self,
@@ -883,14 +911,19 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "this operation is only supported on LanceDB Embedded".into(),
         })
     }
-    /// Refresh with options; expression-backed local refreshes ignore the
-    /// Function batch size.
+    /// Refresh with options. A local refresh ignores the Function batch size
+    /// and GPU placement and rejects every other option.
     async fn refresh_column_with_options(
         &self,
         column: &str,
         options: RefreshColumnOptions,
     ) -> Result<RefreshColumnResult> {
         options.validate()?;
+        if let Some(name) = options.enterprise_only_option() {
+            return Err(Error::NotSupported {
+                message: format!("{name} requires a LanceDB Enterprise refresh"),
+            });
+        }
         self.refresh_column(column).await
     }
     /// Fill a computed column's unfilled rows and recompute those whose
@@ -910,6 +943,11 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         options: RefreshColumnOptions,
     ) -> Result<Job<crate::function::RefreshColumnResult>> {
         options.validate()?;
+        if let Some(name) = options.enterprise_only_option() {
+            return Err(Error::NotSupported {
+                message: format!("{name} requires a LanceDB Enterprise refresh"),
+            });
+        }
         self.refresh_column_async(column).await
     }
     /// The per-row errors Function refreshes recorded on this table; see
@@ -1915,12 +1953,60 @@ impl Table {
     ///
     /// # LanceDB Enterprise (remote tables)
     ///
-    /// Only [`OptimizeAction::Compact`] with default `options` and no custom
-    /// `remap_options` is supported; `All`, `Prune`, and `Index` return
+    /// [`OptimizeAction::Compact`] supports per-job `target_rows_per_fragment`,
+    /// `max_source_rows`, `io_buffer_size`, and `batch_size`, with no custom
+    /// `remap_options`. Other non-default options, `All`, `Prune`, and `Index` return
     /// [`crate::Error::NotSupported`]. See [`OptimizeAction::Compact`] for
     /// what a remote call submits and what it does and does not wait for.
     pub async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats> {
         self.inner.optimize(action).await
+    }
+
+    /// Compact data files with optional tuning fields. On remote tables,
+    /// omitted fields inherit table tuning, then deployment/built-in defaults.
+    /// Returns after job submission; remote statistics are placeholders.
+    ///
+    /// ```
+    /// use lancedb::{Table, table::optimize::CompactionOverrides};
+    /// # async fn compact(table: &Table) -> lancedb::Result<()> {
+    /// table.compact(CompactionOverrides {
+    ///     io_buffer_size: Some(64 * 1024 * 1024),
+    ///     ..Default::default()
+    /// }).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn compact(&self, options: optimize::CompactionOverrides) -> Result<OptimizeStats> {
+        self.inner.compact(options).await
+    }
+
+    /// Language-binding entry point retaining optional compaction fields.
+    #[doc(hidden)]
+    pub async fn optimize_full_with_overrides(
+        &self,
+        options: optimize::CompactionOverrides,
+        older_than: Option<chrono::Duration>,
+        before_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+        delete_unverified: Option<bool>,
+    ) -> Result<OptimizeStats> {
+        if self.as_native().is_some() {
+            return self
+                .optimize_full(
+                    options.into_options(),
+                    older_than,
+                    before_timestamp,
+                    delete_unverified,
+                )
+                .await;
+        }
+        if older_than.is_some() || before_timestamp.is_some() || delete_unverified == Some(true) {
+            return Err(Error::NotSupported { message: "pruning is not supported in LanceDB Enterprise; omit pruning options to run compaction only".into() });
+        }
+        let stats = self.compact(options).await?;
+        Ok(OptimizeStats {
+            compaction: stats.compaction,
+            prune: Some(RemovalStats::default()),
+        })
     }
 
     /// Prune versions committed before an absolute timestamp.
@@ -1956,10 +2042,10 @@ impl Table {
     ///
     /// This is an internal entry point for language bindings. On a remote
     /// table (LanceDB Enterprise) only [`OptimizeAction::Compact`] with its
-    /// defaults is supported. A caller asking for anything pruning-related
+    /// supported per-job options is supported. A caller asking for anything pruning-related
     /// (`older_than`, `before_timestamp`, or `delete_unverified: Some(true)`)
-    /// gets `NotSupported` before anything is submitted, the same way a
-    /// non-default `CompactionOptions` is already rejected -- rather than a
+    /// gets `NotSupported` before anything is submitted, the same way
+    /// unsupported `CompactionOptions` are rejected -- rather than a
     /// success that silently reports zero bytes pruned when nothing was
     /// pruned at all. A plain call with none of those set only compacts:
     /// `Prune` and `Index` are skipped here rather than attempted and
@@ -2055,10 +2141,14 @@ impl Table {
     ///
     /// [`RefreshColumnOptions::batch_size()`] caps rows per Function call in
     /// LanceDB Enterprise and must be greater than zero when set.
+    /// [`RefreshColumnOptions::publication_interval_rows()`] sets an opt-in
+    /// row-count publication threshold for completed Function outputs; unset
+    /// keeps whole-fragment publication.
     /// [`RefreshColumnOptions::gpu_class()`] selects a GPU pool and
     /// [`RefreshColumnOptions::gpu_count()`] sets the aggregate GPU budget.
-    /// These options have no effect on expression-backed columns in LanceDB
-    /// Embedded. Remote refreshes require
+    /// Batch-size and GPU options have no effect on expression-backed columns
+    /// in LanceDB Embedded; a publication threshold is rejected there.
+    /// Remote refreshes require
     /// [`Table::refresh_column_async_with_options`].
     ///
     /// ```
@@ -2115,12 +2205,16 @@ impl Table {
     /// Set [`RefreshColumnOptions::batch_size()`] to cap the rows each remote
     /// Function call receives, for example to keep slow Functions within the
     /// executor's per-call deadline. Set
+    /// [`RefreshColumnOptions::publication_interval_rows()`] to publish
+    /// completed Function outputs at a row-count threshold; unset keeps
+    /// whole-fragment publication. Set
     /// [`RefreshColumnOptions::gpu_class()`] and
     /// [`RefreshColumnOptions::gpu_count()`] to override the registered GPU
     /// class or set an aggregate GPU budget for Function workers. Unset values
     /// use the Function and server defaults; zero counts and malformed class
     /// names are rejected before submitting a job. Embedded expression
-    /// refreshes ignore all three options.
+    /// refreshes ignore the batch-size and GPU options, and reject publication
+    /// thresholds and other Enterprise-only options.
     ///
     /// ```
     /// # use lancedb::{Table, table::RefreshColumnOptions};
@@ -3321,7 +3415,11 @@ impl NativeTable {
         namespace_client: Option<Arc<dyn LanceNamespace>>,
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
     ) -> Result<Self> {
-        let batches = computed_columns::admit_create_source(batches)?;
+        let session = params.as_ref().and_then(|p| p.session.as_deref());
+        let batches = computed_columns::admit_create_source(
+            batches,
+            session.and_then(lance::session::Session::datafusion_session),
+        )?;
         // Default params uses format v1.
         let params = params.unwrap_or(WriteParams {
             ..Default::default()
@@ -3422,7 +3520,12 @@ impl NativeTable {
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
         session: Option<Arc<lance::session::Session>>,
     ) -> Result<Self> {
-        let batches = computed_columns::admit_create_source(batches)?;
+        let batches = computed_columns::admit_create_source(
+            batches,
+            session
+                .as_deref()
+                .and_then(lance::session::Session::datafusion_session),
+        )?;
         // Build table_id from namespace + name for the storage options provider
         let mut table_id = namespace.clone();
         table_id.push(name.to_string());

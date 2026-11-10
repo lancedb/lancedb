@@ -680,6 +680,22 @@ impl TimeoutStream {
         Box::pin(Self::new(inner, timeout))
     }
 
+    /// Like [`Self::new`], but the stream expires at `deadline` rather than
+    /// `timeout` after its first poll. `timeout` is only used in the error.
+    pub fn with_deadline(
+        inner: SendableRecordBatchStream,
+        timeout: std::time::Duration,
+        deadline: tokio::time::Instant,
+    ) -> Self {
+        Self {
+            inner,
+            state: TimeoutState::Started {
+                deadline: Box::pin(tokio::time::sleep_until(deadline)),
+                timeout,
+            },
+        }
+    }
+
     fn timeout_error(timeout: &std::time::Duration) -> DataFusionError {
         DataFusionError::Execution(format!("Query timeout after {} ms", timeout.as_millis()))
     }

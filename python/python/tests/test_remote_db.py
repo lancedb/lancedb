@@ -45,8 +45,10 @@ from lancedb.query import (
 from lancedb.remote import ClientConfig
 from lancedb.remote.errors import (
     AlreadyExistsError,
+    ConflictError,
     HttpError,
     NamespaceNotFoundError,
+    ResponseInterruptedError,
     RetryError,
 )
 import pytest
@@ -731,6 +733,43 @@ def test_remote_table_branches_sync():
         assert checked.current_branch() == "exp"
 
         table.branches.delete("exp")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
+@pytest.mark.parametrize("json_response", [False, True])
+async def test_remote_branch_delete_conflict_is_not_retried(use_async, json_response):
+    request_ids = []
+    reason = "Conflict: branch 'exp' cannot be deleted, main depends on its files"
+
+    def handler(request):
+        if request.path == "/v1/table/test/describe/":
+            _branch_open_handler(request)
+            return
+
+        assert request.path == "/v1/table/test/branches/delete/"
+        content_len = int(request.headers["Content-Length"])
+        assert json.loads(request.rfile.read(content_len)) == {"name": "exp"}
+        request_ids.append(request.headers["x-request-id"])
+        request.send_response(409)
+        request.end_headers()
+        body = json.dumps({"code": 14, "error": reason}) if json_response else reason
+        request.wfile.write(body.encode())
+
+    if use_async:
+        async with mock_lancedb_connection_async(handler) as db:
+            table = await db.open_table("test")
+            with pytest.raises(ConflictError, match=re.escape(reason)) as exc_info:
+                await table.branches.delete("exp")
+    else:
+        with mock_lancedb_connection(handler) as db:
+            table = db.open_table("test")
+            with pytest.raises(ConflictError, match=re.escape(reason)) as exc_info:
+                table.branches.delete("exp")
+
+    assert request_ids == [exc_info.value.request_id]
+    assert exc_info.value.status_code == 409
+    assert isinstance(exc_info.value, HttpError)
 
 
 def test_remote_table_cherry_pick_defaults_to_execute():
@@ -1824,7 +1863,23 @@ def test_remote_create_index_async_returns_job():
         {"batch_size": None},
         {"batch_size": 1},
         {"batch_size": 8},
+        {"publication_interval_rows": 60},
         {"gpu_class": "a10g", "gpu_count": 2},
+        {
+            "retry_policy": {"transient": True, "max_attempts": 3},
+            "error_policy": "skip",
+        },
+        {"retry_policy": {"max_attempts": 1}, "error_policy": "fail"},
+        {
+            "where": "id % 2 = 0",
+            "error_policy": "skip",
+            "max_failed_fraction": 0.01,
+            "max_failed_rows": 50,
+            "row_timeout_seconds": 30,
+            "init_timeout_seconds": 120,
+            "num_workers": 4,
+            "max_executor_processes_per_worker": 2,
+        },
     ],
 )
 async def test_remote_refresh_async_returns_typed_terminal_result(
@@ -1849,6 +1904,24 @@ async def test_remote_refresh_async_returns_typed_terminal_result(
                 expected["gpu_class"] = refresh_kwargs["gpu_class"]
             if refresh_kwargs.get("gpu_count") is not None:
                 expected["gpu_count"] = refresh_kwargs["gpu_count"]
+            if refresh_kwargs.get("retry_policy") is not None:
+                expected["retry_policy"] = lancedb.FunctionRetryPolicy.model_validate(
+                    refresh_kwargs["retry_policy"]
+                ).model_dump(mode="json")
+            if refresh_kwargs.get("error_policy") is not None:
+                expected["error_policy"] = refresh_kwargs["error_policy"]
+            for key in (
+                "where",
+                "publication_interval_rows",
+                "max_failed_fraction",
+                "max_failed_rows",
+                "row_timeout_seconds",
+                "init_timeout_seconds",
+                "num_workers",
+                "max_executor_processes_per_worker",
+            ):
+                if refresh_kwargs.get(key) is not None:
+                    expected[key] = refresh_kwargs[key]
             assert json.loads(body) == expected
             request.send_response(202)
             request.send_header("Content-Type", "application/json")
@@ -2010,10 +2083,24 @@ def test_remote_refresh_async_forwards_progress_from_submitted_handle():
         ({"gpu_class": "a_b"}, "gpu_class"),
         ({"gpu_count": 0}, "gpu_count"),
         ({"gpu_count": -1}, "gpu_count"),
+        ({"retry_policy": {"transient": True, "max_attempts": 0}}, "retry_policy"),
+        ({"error_policy": "retry"}, "error_policy"),
+        ({"where": "  "}, "where"),
+        ({"max_failed_fraction": 1.5}, "max_failed_fraction"),
+        ({"max_failed_rows": -1}, "max_failed_rows"),
+        ({"row_timeout_seconds": 0}, "row_timeout_seconds"),
+        ({"init_timeout_seconds": -5}, "init_timeout_seconds"),
+        ({"publication_interval_rows": 0}, "publication_interval_rows"),
+        ({"publication_interval_rows": -1}, "publication_interval_rows"),
+        ({"num_workers": 0}, "num_workers"),
+        (
+            {"max_executor_processes_per_worker": -2},
+            "max_executor_processes_per_worker",
+        ),
     ],
 )
 @pytest.mark.asyncio
-async def test_remote_refresh_rejects_invalid_gpu_options_before_request(
+async def test_remote_refresh_rejects_invalid_options_before_request(
     refresh_kwargs, message
 ):
     backfill_requests = []
@@ -2062,7 +2149,8 @@ async def test_remote_refresh_rejects_invalid_gpu_options_before_request(
     assert backfill_requests == []
 
 
-def test_remote_function_errors_lists_the_rows_a_refresh_skipped():
+@pytest.mark.parametrize("attempts", [None, 3])
+def test_remote_function_errors_lists_the_rows_a_refresh_skipped(attempts):
     listing = {
         "records": [
             {
@@ -2077,6 +2165,7 @@ def test_remote_function_errors_lists_the_rows_a_refresh_skipped():
                 "table_version": 11,
                 "error_type": "ValueError",
                 "error_message": "bad input 'x'",
+                "attempts": attempts,
                 "traceback": (
                     "Traceback (most recent call last):\nValueError: bad input 'x'"
                 ),
@@ -2127,6 +2216,7 @@ def test_remote_function_errors_lists_the_rows_a_refresh_skipped():
     assert errors.records[0].row_id == 42
     assert errors.records[0].row_address == 12884901897
     assert errors.records[0].function_version == "2"
+    assert errors.records[0].attempts == attempts
     assert errors.records[0].traceback == (
         "Traceback (most recent call last):\nValueError: bad input 'x'"
     )
@@ -3311,6 +3401,100 @@ def test_query_sync_minimal():
         data = table.search([1, 2, 3]).to_list()
         expected = [{"id": 1}, {"id": 2}, {"id": 3}]
         assert data == expected
+
+
+def _arrow_stream(batches):
+    sink = pa.BufferOutputStream()
+    with pa.ipc.new_stream(sink, batches[0].schema) as writer:
+        for batch in batches:
+            writer.write_batch(batch)
+    return sink.getvalue().to_pybytes()
+
+
+@contextlib.contextmanager
+def streamed_query_table(write_body):
+    """Yield a remote table and the headers of each query request it sends.
+
+    Queries get a 200 response with stream framing, whose body ``write_body``
+    writes after the other headers.
+    """
+    queries = []
+
+    def handler(request):
+        if request.path == "/v1/table/test/describe/":
+            id_field = {"name": "id", "type": {"type": "int32"}, "nullable": True}
+            schema = {"fields": [id_field]}
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(json.dumps({"version": 7, "schema": schema}).encode())
+        elif request.path == "/v1/table/test/query/":
+            queries.append(request.headers)
+            request.rfile.read(int(request.headers["Content-Length"]))
+            request.send_response(200)
+            request.send_header("Content-Type", "application/vnd.apache.arrow.stream")
+            request.send_header("x-lancedb-version", "7")
+            write_body(request)
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        yield db.open_table("test"), queries
+
+
+def test_query_sync_to_batches_yields_before_the_body_is_complete():
+    batches = [pa.record_batch({"id": pa.array([i], pa.int32())}) for i in range(3)]
+    body = _arrow_stream(batches)
+    # The schema and first batch, without the 8-byte end-of-stream marker.
+    head = _arrow_stream(batches[:1])[:-8]
+    first_batch_read = threading.Event()
+    waited_for_client = []
+
+    def write_body(request):
+        request.end_headers()
+        request.wfile.write(head)
+        waited_for_client.append(first_batch_read.wait(10))
+        request.wfile.write(body[len(head) :])
+
+    with streamed_query_table(write_body) as (table, queries):
+        reader = table.search().to_batches()
+        assert reader.read_next_batch()["id"].to_pylist() == [0]
+        first_batch_read.set()
+        assert reader.read_all()["id"].to_pylist() == [1, 2]
+
+    # The wait times out if the client needs the whole body for the first batch.
+    assert waited_for_client == [True]
+    assert queries[0]["Accept"] == (
+        "application/vnd.apache.arrow.stream, application/vnd.apache.arrow.file;q=0.9"
+    )
+
+
+@pytest.mark.parametrize("abort", [False, True], ids=["clean_end", "abort"])
+def test_query_sync_interrupted_response_raises(abort):
+    batches = [pa.record_batch({"id": pa.array([i], pa.int32())}) for i in range(3)]
+    head = _arrow_stream(batches[:1])[:-8]
+
+    def write_body(request):
+        if abort:
+            # Closing before the promised length is a transport error. Otherwise
+            # the body ends cleanly, but without the end-of-stream marker.
+            request.send_header("Content-Length", str(len(head) + 100))
+        request.end_headers()
+        request.wfile.write(head)
+
+    with streamed_query_table(write_body) as (table, queries):
+        reader = table.search().to_batches()
+        assert reader.read_next_batch()["id"].to_pylist() == [0]
+        with pytest.raises(ResponseInterruptedError) as exc_info:
+            reader.read_next_batch()
+
+    error = exc_info.value
+    assert isinstance(error, HttpError)
+    assert (error.batches, error.rows, error.table_version) == (1, 1, 7)
+    assert error.request_id == queries[0]["x-request-id"]
+    assert error.is_transport_error is abort
+    assert len(queries) == 1
 
 
 @pytest.mark.parametrize("query_type", ["auto", "vector", "hybrid"])
@@ -4774,8 +4958,12 @@ def test_sync_remote_blob_pandas_avoids_storage_access(
             assert "_rowid" not in df.columns
             assert df["image"][0]["size"] == 5
         else:
-            with pytest.raises(NotImplementedError, match="stable table snapshot"):
+            with pytest.raises(
+                NotImplementedError, match="stable table snapshot"
+            ) as exc:
                 query.to_pandas(blob_mode=blob_mode)
+            assert "fetch_blobs(column, row_ids)" in str(exc.value)
+            assert "with_row_id(True)" in str(exc.value)
 
 
 @pytest.mark.asyncio
@@ -5355,9 +5543,6 @@ def test_remote_job_handle_reports_its_own_detail():
         assert json.loads(job._spec_json) == {"column": "vec"}
         assert json.loads(job._result_json) == {"rows_assigned": 1000000}
 
-        # print() shows everything the handle knows and nothing it does not.
-        # print() lays every known field out on its own line, with the JSON
-        # payloads indented rather than crammed onto one line.
         assert repr(job) == "\n".join(
             [
                 "Job(",
@@ -5365,12 +5550,8 @@ def test_remote_job_handle_reports_its_own_detail():
                 "    state='finished',",
                 "    job_type='refresh_column',",
                 "    creation_ms=2000,",
-                "    spec={",
-                '        "column": "vec"',
-                "    },",
-                "    result={",
-                '        "rows_assigned": 1000000',
-                "    },",
+                "    spec={'column': 'vec'},",
+                "    result={'rows_assigned': 1000000},",
                 ")",
             ]
         )
@@ -5752,10 +5933,8 @@ def _create_table_handler(request):
 
 
 @contextlib.contextmanager
-def _mock_remote_table_with_sql(flight_server):
-    """A remote table backed by a mock REST server (for create/open) and the
-    given mock Flight SQL server (for the SQL statements `optimize()` submits
-    as jobs)."""
+def _mock_remote_sql_connection(flight_server):
+    """Connection arguments for mock REST and Flight SQL servers."""
     with http.server.ThreadingHTTPServer(
         ("127.0.0.1", 0), make_mock_http_handler(_create_table_handler)
     ) as rest_server:
@@ -5763,16 +5942,104 @@ def _mock_remote_table_with_sql(flight_server):
         handle = start_server_thread(rest_server)
         try:
             with flight_server:
-                db = lancedb.connect(
-                    "db://dev",
-                    api_key="fake",
-                    host_override=f"http://127.0.0.1:{rest_port}",
-                    sql_host_override=f"grpc://127.0.0.1:{flight_server.port}",
-                )
-                yield db.create_table("test", [{"id": 1}])
+                yield {
+                    "uri": "db://dev",
+                    "api_key": "fake",
+                    "host_override": f"http://127.0.0.1:{rest_port}",
+                    "sql_host_override": f"grpc://127.0.0.1:{flight_server.port}",
+                }
         finally:
             rest_server.shutdown()
             handle.join()
+
+
+@contextlib.contextmanager
+def _mock_remote_table_with_sql(flight_server):
+    with _mock_remote_sql_connection(flight_server) as kwargs:
+        yield lancedb.connect(**kwargs).create_table("test", [{"id": 1}])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize(
+    "options,sql_options",
+    [
+        ({"target_rows_per_fragment": 100}, [b"target_rows_per_fragment = 100"]),
+        (
+            {"target_rows_per_fragment": 1_048_576},
+            [b"target_rows_per_fragment = 1048576"],
+        ),
+        ({"max_source_rows": 500}, [b"max_source_rows = 500"]),
+        ({"io_buffer_size": 0}, [b"io_buffer_size = 0"]),
+        ({"batch_size": 16}, [b"batch_size = 16"]),
+        (
+            {
+                "target_rows_per_fragment": 100,
+                "max_source_rows": 500,
+                "io_buffer_size": 65536,
+                "batch_size": 16,
+            },
+            [
+                b"target_rows_per_fragment = 100",
+                b"max_source_rows = 500",
+                b"io_buffer_size = 65536",
+                b"batch_size = 16",
+            ],
+        ),
+        ({}, []),
+    ],
+)
+async def test_remote_optimize_forwards_per_job_compaction_options(
+    asynchronous, options, sql_options
+):
+    flight = pytest.importorskip("pyarrow.flight")
+
+    class AckServer(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.tickets = []
+
+        def do_get(self, context, ticket):
+            self.tickets.append(ticket.ticket)
+            return flight.RecordBatchStream(
+                pa.table({"ok": pa.array([], type=pa.bool_())})
+            )
+
+    server = AckServer()
+    with _mock_remote_sql_connection(server) as kwargs:
+        if asynchronous:
+            db = await lancedb.connect_async(**kwargs)
+            table = await db.create_table("test", [{"id": 1}])
+            stats = await table.optimize(compaction_options=options)
+        else:
+            table = lancedb.connect(**kwargs).create_table("test", [{"id": 1}])
+            stats = table.optimize(compaction_options=options)
+    assert len(server.tickets) == 1
+    assert b"OPTIMIZE" in server.tickets[0]
+    assert all(option in server.tickets[0] for option in sql_options)
+    if not sql_options:
+        assert b"WITH (" not in server.tickets[0]
+    assert stats.prune.bytes_removed == 0
+
+
+def test_remote_optimize_does_not_drop_options_after_server_rejection():
+    flight = pytest.importorskip("pyarrow.flight")
+
+    class OldServer(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.tickets = []
+
+        def do_get(self, context, ticket):
+            self.tickets.append(ticket.ticket)
+            raise flight.FlightServerError("Unknown OPTIMIZE option 'max_source_rows'")
+
+    server = OldServer()
+    with _mock_remote_table_with_sql(server) as table:
+        with pytest.raises(Exception, match="max_source_rows"):
+            table.optimize(compaction_options={"max_source_rows": 500})
+    assert server.tickets
+    assert all(b"max_source_rows = 500" in ticket for ticket in server.tickets)
 
 
 def test_remote_optimize_skips_prune_and_index():
@@ -5783,7 +6050,7 @@ def test_remote_optimize_skips_prune_and_index():
     zeroed pruning statistics, once compaction is submitted.
 
     The SQL job submission for a query without parameters (like
-    `OPTIMIZE TABLE ... REWRITE DATA`) goes over plain Flight `do_get`, not
+    `OPTIMIZE ... REWRITE DATA`) goes over plain Flight `do_get`, not
     `do_exchange`: the client sends a ticket wrapping the statement and reads
     back whatever the server returns as the job's result stream.
     """
@@ -5805,12 +6072,12 @@ def test_remote_optimize_skips_prune_and_index():
         stats = table.optimize()
 
     assert len(server.tickets) == 1
-    assert b"OPTIMIZE TABLE" in server.tickets[0]
+    assert b"OPTIMIZE" in server.tickets[0]
     assert stats.prune.bytes_removed == 0
     assert stats.prune.old_versions_removed == 0
 
 
-def test_remote_optimize_rejects_non_default_compaction_options_before_submitting():
+def test_remote_optimize_rejects_unsupported_compaction_options_before_submitting():
     """Regression test: `RemoteTable.optimize()` used to drop
     `compaction_options` instead of forwarding it to the Rust layer, so a
     non-default value was silently ignored -- the server-side guard against
@@ -5832,7 +6099,7 @@ def test_remote_optimize_rejects_non_default_compaction_options_before_submittin
             )
 
     server = UnreachableServer()
-    options: CompactionOptions = {"target_rows_per_fragment": 5}
+    options: CompactionOptions = {"max_source_bytes": 1024}
     with _mock_remote_table_with_sql(server) as table:
         with pytest.raises(NotImplementedError, match="CompactionOptions"):
             table.optimize(compaction_options=options)

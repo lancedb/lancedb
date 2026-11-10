@@ -206,7 +206,10 @@ def _blob_bytes_without_snapshot_error() -> NotImplementedError:
         "blob_mode='bytes' cannot safely materialize blob columns without a "
         "stable table snapshot. LanceDB Enterprise and namespace QueryTable pushdown "
         "run the query on a server, so the blob fetch could read another table "
-        "version. Use blob_mode='descriptions'."
+        "version. Use blob_mode='descriptions' to inspect descriptors. To read "
+        "payloads, select row IDs with with_row_id(True), then call "
+        "table.fetch_blobs(column, row_ids) or table.fetch_blob_files(column, "
+        "row_ids). Keep the source unchanged between selection and fetching."
     )
 
 
@@ -453,7 +456,10 @@ def _finish_remote_pandas(
     raise NotImplementedError(
         f"remote to_pandas(blob_mode={blob_mode!r}) cannot safely materialize "
         "blob columns without a stable table snapshot; "
-        "use blob_mode='descriptions'"
+        "use blob_mode='descriptions' to inspect descriptors. To read payloads, "
+        "select row IDs with with_row_id(True), then call "
+        "table.fetch_blobs(column, row_ids) or table.fetch_blob_files(column, "
+        "row_ids). Keep the source unchanged between selection and fetching."
     )
 
 
@@ -1335,6 +1341,9 @@ class LanceQueryBuilder(ABC):
         and also the "_distance" column which is the distance between the query
         vector and the returned vectors.
 
+        This collects all results in memory. To process a large result a batch
+        at a time, use [to_batches][lancedb.query.LanceQueryBuilder.to_batches].
+
         Parameters
         ----------
         timeout: Optional[timedelta]
@@ -1366,6 +1375,11 @@ class LanceQueryBuilder(ABC):
         ``fetch_blobs``. The ``"bytes"`` and ``"descriptions"`` modes hide
         automatic row ids.
 
+        A remote table decodes batches as they arrive when the server streams
+        query results. If the response stops partway, reading raises
+        [ResponseInterruptedError][lancedb.remote.errors.ResponseInterruptedError]
+        after the batches already returned, which are valid but incomplete.
+
         Parameters
         ----------
         batch_size: int
@@ -1373,6 +1387,8 @@ class LanceQueryBuilder(ABC):
         timeout: Optional[timedelta]
             The maximum time to wait for the query to complete.
             If None, wait indefinitely.
+            The timeout also covers reading the batches, so consuming them
+            slowly can exceed it.
         blob_mode: str, default "lazy"
             ``"lazy"`` keeps blob descriptors and auto row ids for manual fetches.
             ``"descriptions"`` omits auto row ids. ``"bytes"`` fetches blob v2
@@ -2060,6 +2076,11 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
     def search_effort(self, search_effort: Optional[float]) -> LanceVectorQueryBuilder:
         """Set the initial IVF search effort to a finite value in [0, 1].
 
+        Efforts 0.1 and 0.25 target empirical mean partition-routing recall of
+        80% and 90% for L2, cosine and dot through k=100000. The probe budget
+        adapts to the metric and k. Hamming and larger k remain uncalibrated;
+        100000 is not an API limit. Remote queries also require server support.
+
         None (the default) uses Auto, internally 0.5. Zero starts at the caller
         minimum; one searches all partitions within the caller maximum. Later
         probing may continue when too few candidates are found. Any explicit
@@ -2298,6 +2319,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         timeout: timedelta, default None
             The maximum time to wait for the query to complete.
             If None, wait indefinitely.
+            The timeout also covers reading the batches, so consuming them
+            slowly can exceed it.
         blob_mode: str, default "lazy"
             Controls blob conversion as described in
             :meth:`LanceQueryBuilder.to_batches`.
@@ -3019,6 +3042,11 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
     def search_effort(self, search_effort: Optional[float]) -> LanceHybridQueryBuilder:
         """Set the initial IVF search effort to a finite value in [0, 1].
 
+        Efforts 0.1 and 0.25 target empirical mean partition-routing recall of
+        80% and 90% for L2, cosine and dot through k=100000. The probe budget
+        adapts to the metric and k. Hamming and larger k remain uncalibrated;
+        100000 is not an API limit. Remote queries also require server support.
+
         None (the default) uses Auto, internally 0.5. Zero starts at the caller
         minimum; one searches all partitions within the caller maximum. Later
         probing may continue when too few candidates are found. Any explicit
@@ -3560,6 +3588,11 @@ class AsyncQueryBase(object):
         """
         Execute the query and return the results as an Apache Arrow RecordBatchReader.
 
+        A remote table decodes batches as they arrive when the server streams
+        query results. If the response stops partway, reading raises
+        [ResponseInterruptedError][lancedb.remote.errors.ResponseInterruptedError]
+        after the batches already returned, which are valid but incomplete.
+
         Parameters
         ----------
 
@@ -3572,6 +3605,8 @@ class AsyncQueryBase(object):
             The maximum time to wait for the query to complete.
             If not specified, no timeout is applied. If the query does not
             complete within the specified time, an error will be raised.
+            The timeout also covers reading the batches, so consuming them
+            slowly can exceed it.
         blob_mode: str, default "lazy"
             ``"lazy"`` keeps blob descriptors and auto row ids for manual fetches.
             ``"descriptions"`` omits auto row ids. ``"bytes"`` fetches blob v2
@@ -4426,6 +4461,11 @@ class AsyncVectorQueryBase:
     def search_effort(self, search_effort: Optional[float]) -> Self:
         """Set the initial IVF search effort to a finite value in [0, 1].
 
+        Efforts 0.1 and 0.25 target empirical mean partition-routing recall of
+        80% and 90% for L2, cosine and dot through k=100000. The probe budget
+        adapts to the metric and k. Hamming and larger k remain uncalibrated;
+        100000 is not an API limit. Remote queries also require server support.
+
         None preserves Auto (internally 0.5) and fixed nprobes. Any explicit
         effort, including 0.5, overrides nprobes in either call order; explicit
         minimum and maximum bounds remain effective. Zero starts at the caller
@@ -5099,6 +5139,8 @@ class BaseQueryBuilder(object):
             The maximum time to wait for the query to complete.
             If not specified, no timeout is applied. If the query does not
             complete within the specified time, an error will be raised.
+            The timeout also covers reading the batches, so consuming them
+            slowly can exceed it.
         blob_mode: str, default "lazy"
             Controls blob conversion as described in
             :meth:`AsyncQueryBase.to_batches`.

@@ -213,6 +213,45 @@ class _OpenRemoteValue(_RemoteValue):
         return set((self.__pydantic_extra__ or {}).keys())
 
 
+class FunctionRetryPolicy(_RemoteValue):
+    """Bound retries of selected errors inside one Enterprise Function call.
+
+    ``max_attempts`` includes the first call. Matchers are alternatives;
+    ``transient=True`` selects connection/timeouts, HTTP 429/503 and the
+    provider codes ``SlowDown`` and ``ServiceUnavailable``. Exception names
+    may be qualified, and subclasses and wrapped causes also match.
+
+    Backoff doubles with full jitter, bounded by ``max_backoff_seconds``.
+    Retry-After above that bound ends retries. A failed batch is retried as
+    one call: under ``skip``, exhaustion nulls every row in that call.
+    Completed calls are never repeated. Only opt in when repeating partial
+    work is safe; this does not make external side effects exactly once.
+
+    >>> policy = FunctionRetryPolicy(transient=True, max_attempts=3)
+    >>> policy.max_attempts
+    3
+    >>> disabled = FunctionRetryPolicy(max_attempts=1)
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    max_attempts: Annotated[int, Field(strict=True)] = 3
+    initial_backoff_seconds: Annotated[float, Field(strict=True)] = 0.2
+    max_backoff_seconds: Annotated[float, Field(strict=True)] = 30.0
+    exception_types: tuple[str, ...] = ()
+    message_pattern: Optional[str] = None
+    error_codes: tuple[str, ...] = ()
+    transient: Annotated[bool, Field(strict=True)] = False
+    honor_retry_after: Annotated[bool, Field(strict=True)] = True
+
+    @model_validator(mode="after")
+    def _validate_policy(self):
+        from ._lancedb import validate_function_retry_policy
+
+        validate_function_retry_policy(self.model_dump_json())
+        return self
+
+
 class FunctionArtifact(_RemoteValue):
     """Content-addressed Python artifact identity."""
 
@@ -653,6 +692,7 @@ class FunctionRegistrationRequest(_RemoteValue):
     runtime: PythonRuntimeSpec
     batch_size: Optional[int] = None
     row_timeout_seconds: Optional[float] = None
+    retry_policy: Optional[FunctionRetryPolicy] = None
     secret_bindings: tuple[SecretBinding, ...] = ()
     models: tuple[HuggingFaceModel, ...] = ()
 
@@ -1388,19 +1428,21 @@ def _is_function_decorator(node: ast.expr) -> bool:
     )
 
 
-def _literal_source(value: Any) -> str:
+def _literal_source(value: Any, name: str) -> str:
     if value is None or type(value) in (bool, int, str, bytes):
         return repr(value)
     if type(value) is float and math.isfinite(value):
         return repr(value)
     if type(value) is tuple:
-        children = ", ".join(_literal_source(child) for child in value)
+        children = ", ".join(_literal_source(child, name) for child in value)
         if len(value) == 1:
             children += ","
         return f"({children})"
     raise TypeError(
         "Function source references an unsupported global value of type "
-        f"{type(value).__name__}"
+        f"{type(value).__name__} in {name!r}. Only None, bool, int, str, bytes, "
+        "finite float, and tuples of these literals can be captured. "
+        "Define this value inside the function or class body instead."
     )
 
 
@@ -1835,12 +1877,15 @@ class _SourcePackager:
             if imported is value:
                 self._require_importable(module_name)
                 return f"from {module_name} import {qualname} as {name}"
-        return f"{name} = {_literal_source(value)}"
+        return f"{name} = {_literal_source(value, name)}"
 
     def _require_importable(self, module_name: str) -> None:
-        """Warn about an import the Function's environment likely cannot
-        satisfy: a module that lives in a local source tree, is not shipped
-        with ``code=``, and names no declared package.
+        """Warn about an import the Function's environment may not be able to
+        satisfy.
+
+        An unresolved module warns only when the Function declares no package
+        dependencies. A local source module warns unless ``code=`` ships it or
+        a declared requirement matches its top-level name.
 
         A warning rather than an error: a distribution name need not match
         the module it installs, so a declared package can still provide the
@@ -1856,8 +1901,19 @@ class _SourcePackager:
         ):
             return
         locations = _module_locations_for_name(top)
+        if not locations:
+            if not self._requirements:
+                self._warned_imports.add(top)
+                warnings.warn(
+                    f"@function source imports {top!r}, which is unavailable in the "
+                    "client environment and has no declared pip/conda dependencies. "
+                    "Remote availability cannot be verified; declare the required "
+                    "package or confirm that the base image provides it.",
+                    UserWarning,
+                )
+            return
         roots = _installed_roots()
-        if not locations or any(location.startswith(roots) for location in locations):
+        if any(location.startswith(roots) for location in locations):
             return
         self._warned_imports.add(top)
         warnings.warn(
@@ -2108,6 +2164,7 @@ class FunctionDefinition:
         python_version: Optional[str],
         batch_size: Optional[int] = None,
         row_timeout_seconds: Optional[float] = None,
+        retry_policy: Optional[FunctionRetryPolicy] = None,
         gpu: bool = False,
         gpu_class: Optional[str] = None,
         conda: tuple[str, ...] = (),
@@ -2254,6 +2311,7 @@ class FunctionDefinition:
             runtime=runtime,
             batch_size=batch_size,
             row_timeout_seconds=row_timeout_seconds,
+            retry_policy=retry_policy,
             models=models,
         )
         # A class's own __dict__ holds its methods; copying it would shadow
@@ -2351,6 +2409,7 @@ def function(
     python_version: Optional[str] = None,
     batch_size: Optional[int] = None,
     row_timeout_seconds: Optional[float] = None,
+    retry_policy: Optional[FunctionRetryPolicy] = None,
     gpu: bool = False,
     gpu_class: Optional[str] = None,
     conda: tuple[str, ...] | list[str] = (),
@@ -2373,6 +2432,7 @@ def function(
     python_version: Optional[str] = None,
     batch_size: Optional[int] = None,
     row_timeout_seconds: Optional[float] = None,
+    retry_policy: Optional[FunctionRetryPolicy] = None,
     gpu: bool = False,
     gpu_class: Optional[str] = None,
     conda: tuple[str, ...] | list[str] = (),
@@ -2428,8 +2488,8 @@ def function(
     - modules, and classes and functions importable from an installed
       package, become imports; the package must be declared in ``pip`` or
       ``conda``;
-    - literals (``None``, booleans, numbers, strings, bytes, tuples of them)
-      are inlined;
+    - literals (``None``, ``bool``, ``int``, ``str``, ``bytes``, finite
+      ``float``, and tuples containing only these literals) are inlined;
     - functions and classes defined in ``__main__``, such as notebook cells,
       are packaged by source, together with what they reference;
     - modules and packages listed in ``code`` are shipped as Python source and
@@ -2438,13 +2498,18 @@ def function(
 
     A module imported by the packaged source -- including a direct ``import``
     inside a function or method body -- draws a warning at registration when
-    it resolves to local source outside ``code`` and no declared requirement
-    matches the imported module name. The client cannot reliably validate
-    imports provided only by the base image: ``pip``/``conda`` distribution
-    names need not match the modules they install, and the client does not
-    know the contents of a built or custom image. Declare every third-party
-    import in ``pip`` or ``conda`` even when it happens to be installed on the
-    registration host.
+    the client cannot resolve its top-level module and declares no package
+    dependencies, or when it resolves to local source outside ``code`` and
+    no declared requirement matches the imported module name. The warning
+    does not assert that the remote environment lacks the module:
+    ``pip``/``conda`` distribution names need not match the modules they
+    install, and the client cannot inspect the contents of a base or custom
+    image. Warnings follow normal Python warning filters and may be promoted
+    to errors. Declare every third-party import in ``pip`` or ``conda`` even
+    when it happens to be installed on the registration host.
+    Other global values, including Arrow types and schemas, lists, dictionaries,
+    sets, and NumPy arrays, cannot be captured as literals. Define them inside
+    the function or class body instead.
     Closures, lambdas, nested definitions, mutable module-level
     objects, code that reaches the module namespace another way
     (``globals()``/``eval``, ``sys.modules``, ``builtins``), and a
@@ -2504,6 +2569,11 @@ def function(
         scalar Functions and one batch for vectorized Functions. This does not
         govern class initialization. When omitted, the service applies its
         default per-call budget.
+    retry_policy : FunctionRetryPolicy, optional
+        Retry selected failed calls inside the Function, with bounded attempts
+        and backoff. A refresh may override this default. Retrying a partial
+        call must be safe; completed calls are not repeated. For batch Functions,
+        skip after exhaustion applies to the whole failed call.
     gpu : bool, default False
         Whether every remote execution requires a GPU. The execution platform
         selects one compatible GPU for each worker. The requirement is part of
@@ -2631,6 +2701,7 @@ def function(
             python_version=python_version,
             batch_size=batch_size,
             row_timeout_seconds=row_timeout_seconds,
+            retry_policy=retry_policy,
             gpu=gpu,
             gpu_class=gpu_class,
             conda=tuple(conda),
@@ -2657,6 +2728,7 @@ __all__ = [
     "FunctionOutput",
     "FunctionParameter",
     "FunctionRegistrationRequest",
+    "FunctionRetryPolicy",
     "FunctionResultField",
     "FunctionSignature",
     "FunctionImage",

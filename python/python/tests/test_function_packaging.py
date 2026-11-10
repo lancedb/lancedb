@@ -127,6 +127,60 @@ def test_function_without_initialization_keeps_its_wire_form():
     assert request["artifact"]["kind"] == "python_callable"
 
 
+@pytest.mark.parametrize("kind", ["function", "class"])
+@pytest.mark.parametrize(
+    ("global_value", "value_type"),
+    [
+        ("pa.struct([('label', pa.string())])", "StructType"),
+        ("(1, (pa.int64(),))", "DataType"),
+        ("{'label': 1}", "dict"),
+        ("float('inf')", "float"),
+    ],
+)
+def test_unsupported_global_names_value_and_remedy(
+    helper_package, kind, global_value, value_type
+):
+    definition = (
+        "class uses_global:\n"
+        "    def __call__(self, value: int) -> int:\n"
+        "        return value if CAPTURED_VALUE else 0\n"
+        if kind == "class"
+        else "def uses_global(value: int) -> int:\n"
+        "    return value if CAPTURED_VALUE else 0\n"
+    )
+    module = helper_package(
+        "fx_unsupported_global",
+        {
+            "__init__.py": f"import pyarrow as pa\nCAPTURED_VALUE = {global_value}\n"
+            + definition
+        },
+    )
+    with pytest.raises(TypeError) as error:
+        function(module.uses_global)
+    message = str(error.value)
+    assert "CAPTURED_VALUE" in message
+    assert value_type in message
+    assert "finite float" in message
+    assert "inside the function or class body" in message
+
+
+def test_supported_nested_literal_global_still_packages(helper_package):
+    module = helper_package(
+        "fx_literal_global",
+        {
+            "__init__.py": "CAPTURED_VALUE = (None, True, 1, 'label', "
+            "b'bytes', (1.5,))\n"
+            "def uses_global(value: int) -> int:\n"
+            "    return value + CAPTURED_VALUE[2]\n"
+        },
+    )
+    definition = function(module.uses_global)
+    namespace = {}
+    exec(compile(artifact(definition), "user_function.py", "exec"), namespace)
+    assert namespace["uses_global"](3) == 4
+    assert namespace["CAPTURED_VALUE"] == module.CAPTURED_VALUE
+
+
 @pytest.mark.parametrize("annotation", ["Array", "RecordBatch"])
 @pytest.mark.parametrize("kind", ["function", "class"])
 def test_batch_annotations_require_explicit_schemas(annotation, kind, helper_package):
@@ -573,6 +627,94 @@ def test_local_module_imported_in_function_body_warns_at_registration(
         warnings.simplefilter("error")
         installed = define("fx_body_uses_installed", "pip=['fx-body-local==1.0']")
     assert "import fx_body_local" in artifact(installed).decode()
+
+
+def test_missing_module_without_declared_package_warns_at_registration(
+    tmp_path, monkeypatch
+):
+    package = "fx_missing_remote_package_ent3448"
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    def define(name):
+        (tmp_path / f"{name}.py").write_text(
+            textwrap.dedent(
+                f"""
+                from lancedb import function
+
+
+                @function(pip=())
+                def {name}(value: int) -> int:
+                    import {package}.plugin
+
+                    return value
+                """
+            )
+        )
+        importlib.invalidate_caches()
+        return getattr(importlib.import_module(name), name)
+
+    with pytest.warns(UserWarning) as caught:
+        definition = define("fx_uses_missing_package")
+
+    message = str(caught[0].message)
+    assert f"imports {package!r}" in message
+    assert "unavailable in the client environment" in message
+    assert "no declared pip/conda dependencies" in message
+    assert "Remote availability cannot be verified" in message
+    assert "confirm that the base image provides it" in message
+    assert "cannot import" not in message
+    assert f"import {package}.plugin" in artifact(definition).decode()
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        with pytest.raises(UserWarning, match="Remote availability cannot be verified"):
+            define("fx_missing_package_as_error")
+
+
+def test_resolved_or_declared_module_imports_do_not_warn(tmp_path, helper_package):
+    package = "fx_missing_remote_package_ent3448"
+    helper_package("fx_declared_code_package", {"__init__.py": ""})
+
+    def define(name, body, options, imports=""):
+        (tmp_path / f"{name}.py").write_text(
+            textwrap.dedent(
+                f"""
+                {imports}
+                from lancedb import function
+
+
+                @function({options})
+                def {name}(value: int) -> int:
+                    {body}
+                    return value
+                """
+            )
+        )
+        importlib.invalidate_caches()
+        return getattr(importlib.import_module(name), name)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        define("fx_imports_stdlib", "import os.path", "")
+        # Distribution names need not match the imported top-level module.
+        define(
+            "fx_imports_declared_pip",
+            f"import {package}.plugin",
+            "pip=['Pillow>=10']",
+        )
+        define(
+            "fx_imports_declared_conda",
+            f"import {package}.plugin",
+            "conda=['numpy']",
+        )
+        define(
+            "fx_imports_shipped_code",
+            "import fx_declared_code_package",
+            "code=[fx_declared_code_package]",
+            "import fx_declared_code_package",
+        )
+
+    assert not caught
 
 
 MMLB_HELPERS = {

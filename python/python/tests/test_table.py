@@ -5984,6 +5984,32 @@ def test_refresh_column_rejects_invalid_batch_size(tmp_path, method, batch_size)
         getattr(table, method)("x", batch_size=batch_size)
 
 
+@pytest.mark.parametrize("method", ["refresh_column", "refresh_column_async"])
+@pytest.mark.parametrize(
+    "refresh_kwargs,option",
+    [
+        ({"retry_policy": lancedb.FunctionRetryPolicy(transient=True)}, "retry_policy"),
+        ({"where": "x > 0"}, "where"),
+        ({"error_policy": "skip"}, "error_policy"),
+        ({"max_failed_fraction": 0.5}, "max_failed_fraction"),
+        ({"max_failed_rows": 10}, "max_failed_rows"),
+        ({"row_timeout_seconds": 30}, "row_timeout_seconds"),
+        ({"init_timeout_seconds": 60}, "init_timeout_seconds"),
+        ({"publication_interval_rows": 60}, "publication_interval_rows"),
+        ({"num_workers": 2}, "num_workers"),
+        ({"max_executor_processes_per_worker": 2}, "max_executor_processes_per_worker"),
+    ],
+)
+def test_local_refresh_rejects_enterprise_options(
+    tmp_path, method, refresh_kwargs, option
+):
+    table = lancedb.connect(tmp_path).create_table("rows", [{"x": 1}])
+    with pytest.raises(
+        NotImplementedError, match=f"{option} requires a LanceDB Enterprise refresh"
+    ):
+        getattr(table, method)("x", **refresh_kwargs)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("method", ["refresh_column", "refresh_column_async"])
 @pytest.mark.parametrize("batch_size", [0, -1])

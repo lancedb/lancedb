@@ -240,11 +240,11 @@ jobs:
           sudo mkswap "$swapfile"
           sudo swapon "$swapfile"
       - name: Build
-        run: cargo build --profile ci --all-features --tests --locked --examples
+        run: cargo build --profile ci -p lancedb --all-features --tests --locked --examples
       - name: Run feature tests
         run: CARGO_ARGS="--profile ci" make -C ./lancedb feature-tests
       - name: Run examples
-        run: cargo run --profile ci --all-features --example simple --locked
+        run: cargo run --profile ci -p lancedb --all-features --example simple --locked
       - name: Run blob v2 docs example
         # Python and TypeScript blob docs tests install preview packages.
         # Those builds are not guaranteed to remain available for more than

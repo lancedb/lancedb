@@ -38,6 +38,7 @@ import {
   Branches as NativeBranches,
   OptimizeStats,
   RTEStats,
+  RefreshColumnOptions,
   RefreshColumnResult,
   RefreshMaterializedViewResult,
   TableStatistics,
@@ -151,7 +152,31 @@ export interface UpdateOptions {
   where: string;
 }
 
+/** Per-invocation compaction settings. Values must be safe integers. */
+export interface CompactionOptions {
+  /** Positive target rows per output fragment; also affects candidate selection. */
+  targetRowsPerFragment?: number;
+  /** Positive live-source-row budget across whole tasks; an oversized first task can produce no work. */
+  maxSourceRows?: number;
+  /** Scanner I/O read-ahead budget in bytes; zero disables byte-based I/O backpressure. */
+  ioBufferSize?: number;
+  /** Positive scanner batch size in rows. */
+  batchSize?: number;
+}
+
 export interface OptimizeOptions {
+  /**
+   * Compaction settings for this invocation. Omitted remote values inherit table
+   * tuning, then deployment/built-in defaults.
+   * Remote tables require a server supporting these SQL options; settings do
+   * not change table policy. This is not a runtime or total-memory limit.
+   * @example
+   * await tbl.optimize({ compactionOptions: {
+   *   targetRowsPerFragment: 1000, maxSourceRows: 5000,
+   *   ioBufferSize: 64 * 1024 * 1024, batchSize: 128,
+   * } });
+   */
+  compactionOptions?: CompactionOptions;
   /**
    * If set then all versions older than the given date
    * be removed.  The current version will never be removed.
@@ -671,10 +696,15 @@ export abstract class Table {
    * everything else is left as it is. LanceDB Embedded only: in LanceDB
    * Enterprise a refresh runs as a server job, through {@link Table#refreshColumnAsync}.
    * @param {string} column The name of the computed column to fill.
+   * @param {RefreshColumnOptions} options Refresh options, all LanceDB
+   * Enterprise only; see {@link Table#refreshColumnAsync}.
    * @returns {Promise<RefreshColumnResult>} A promise that resolves to the
    * number of rows filled and the new version number of the table.
    */
-  abstract refreshColumn(column: string): Promise<RefreshColumnResult>;
+  abstract refreshColumn(
+    column: string,
+    options?: RefreshColumnOptions,
+  ): Promise<RefreshColumnResult>;
 
   /**
    * Like {@link Table#refreshColumn}, but returns a handle to the refresh
@@ -689,14 +719,30 @@ export abstract class Table {
    * than failing the job. In LanceDB Embedded the job runs in-process; in
    * LanceDB Enterprise it is the server's backfill job.
    * @param {string} column The name of the computed column to fill.
+   * @param {RefreshColumnOptions} options Refresh options, mirroring the SQL
+   * `REFRESH COLUMN ... WHERE ... WITH (...)` form: `where` narrows the rows,
+   * `errorPolicy`, `maxFailedFraction`, `maxFailedRows`, `rowTimeoutSeconds`
+   * and `initTimeoutSeconds` govern failing rows, and `batchSize`,
+   * `gpuClass`, `gpuCount`, `numWorkers` and `maxExecutorProcessesPerWorker`
+   * size the workers. All are LanceDB Enterprise only; a LanceDB Embedded
+   * refresh rejects every option other than `batchSize`, `gpuClass` and
+   * `gpuCount`.
    * @example
    * ```ts
-   * const job = await table.refreshColumnAsync("doubled");
+   * const job = await table.refreshColumnAsync("embedding", {
+   *   where: "published_at > '2026-01-01'",
+   *   errorPolicy: "skip",
+   *   maxFailedFraction: 0.01,
+   *   rowTimeoutSeconds: 30,
+   * });
    * await job.wait();
    * console.log(await job.status()); // "finished"
    * ```
    */
-  abstract refreshColumnAsync(column: string): Promise<Job>;
+  abstract refreshColumnAsync(
+    column: string,
+    options?: RefreshColumnOptions,
+  ): Promise<Job>;
 
   /**
    * The per-row errors Function refreshes recorded on this table.
@@ -1025,6 +1071,9 @@ export abstract class Table {
    * skipped there instead of being attempted, so this call resolves
    * successfully, with zeroed pruning statistics, once the compaction job
    * has been submitted; it does not wait for that job to finish.
+   * `compactionOptions` can tune the four per-job settings documented in
+   * {@link CompactionOptions}. Older-server errors are propagated without
+   * retrying with the settings removed.
    */
   abstract optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats>;
   /**
@@ -1472,12 +1521,18 @@ export class LocalTable extends Table {
     throw new Error("Invalid input type for addColumns");
   }
 
-  async refreshColumn(column: string): Promise<RefreshColumnResult> {
-    return await this.inner.refreshColumn(column);
+  async refreshColumn(
+    column: string,
+    options?: RefreshColumnOptions,
+  ): Promise<RefreshColumnResult> {
+    return await this.inner.refreshColumn(column, options);
   }
 
-  async refreshColumnAsync(column: string): Promise<Job> {
-    return new Job(await this.inner.refreshColumnAsync(column));
+  async refreshColumnAsync(
+    column: string,
+    options?: RefreshColumnOptions,
+  ): Promise<Job> {
+    return new Job(await this.inner.refreshColumnAsync(column, options));
   }
 
   async functionErrors(
@@ -1618,9 +1673,23 @@ export class LocalTable extends Table {
   }
 
   async optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats> {
+    // JavaScript callers can supply extra keys that TypeScript would reject.
+    // Refuse them before the native binding can silently discard a work limit.
+    const supported = new Set([
+      "targetRowsPerFragment",
+      "maxSourceRows",
+      "ioBufferSize",
+      "batchSize",
+    ]);
+    for (const key of Object.keys(options?.compactionOptions ?? {})) {
+      if (!supported.has(key)) {
+        throw new Error(`Unsupported compaction option: ${key}`);
+      }
+    }
     return await this.inner.optimize(
       options?.cleanupOlderThan?.getTime(),
       options?.deleteUnverified,
+      options?.compactionOptions,
     );
   }
 

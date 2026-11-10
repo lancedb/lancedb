@@ -42,16 +42,82 @@ use pyo3::{
 
 mod scannable;
 
-fn refresh_column_options(
+/// Keyword arguments shared by `refresh_column` and `refresh_column_async`.
+struct RefreshColumnArgs {
+    where_clause: Option<String>,
     batch_size: Option<i64>,
+    publication_interval_rows: Option<i64>,
     gpu_class: Option<String>,
     gpu_count: Option<i64>,
-) -> PyResult<RefreshColumnOptions> {
+    retry_policy: Option<String>,
+    error_policy: Option<String>,
+    max_failed_fraction: Option<f64>,
+    max_failed_rows: Option<i64>,
+    row_timeout_seconds: Option<f64>,
+    init_timeout_seconds: Option<f64>,
+    num_workers: Option<i64>,
+    max_executor_processes_per_worker: Option<i64>,
+}
+
+fn positive_count<T: TryFrom<i64>>(value: Option<i64>, name: &str) -> PyResult<Option<T>> {
+    value
+        .map(|v| {
+            T::try_from(v)
+                .ok()
+                .filter(|_| v > 0)
+                .ok_or_else(|| PyValueError::new_err(format!("{name} must be greater than zero")))
+        })
+        .transpose()
+}
+
+fn refresh_column_options(args: RefreshColumnArgs) -> PyResult<RefreshColumnOptions> {
+    let RefreshColumnArgs {
+        where_clause,
+        batch_size,
+        publication_interval_rows,
+        gpu_class,
+        gpu_count,
+        retry_policy,
+        error_policy,
+        max_failed_fraction,
+        max_failed_rows,
+        row_timeout_seconds,
+        init_timeout_seconds,
+        num_workers,
+        max_executor_processes_per_worker,
+    } = args;
     let mut options = RefreshColumnOptions::default();
+    options.where_clause = where_clause;
+    options.max_failed_fraction = max_failed_fraction;
+    options.max_failed_rows = max_failed_rows
+        .map(u64::try_from)
+        .transpose()
+        .map_err(|_| PyValueError::new_err("max_failed_rows must be a non-negative integer"))?;
+    options.row_timeout_seconds = row_timeout_seconds;
+    options.init_timeout_seconds = init_timeout_seconds;
+    options.num_workers = positive_count(num_workers, "num_workers")?;
+    options.max_executor_processes_per_worker = positive_count(
+        max_executor_processes_per_worker,
+        "max_executor_processes_per_worker",
+    )?;
+    options.retry_policy = retry_policy
+        .map(|json| {
+            serde_json::from_str(&json)
+                .map_err(|error| PyValueError::new_err(format!("invalid retry_policy: {error}")))
+        })
+        .transpose()?;
+    options.error_policy = error_policy
+        .map(|value| {
+            serde_json::from_value(serde_json::Value::String(value))
+                .map_err(|error| PyValueError::new_err(format!("invalid error_policy: {error}")))
+        })
+        .transpose()?;
     options.batch_size = batch_size
         .map(usize::try_from)
         .transpose()
         .map_err(|_| PyValueError::new_err("batch_size must be greater than zero"))?;
+    options.publication_interval_rows =
+        positive_count(publication_interval_rows, "publication_interval_rows")?;
     options.gpu_class = gpu_class;
     options.gpu_count = gpu_count
         .map(|count| {
@@ -611,6 +677,7 @@ impl From<lancedb::table::RefreshColumnResult> for RefreshColumnResult {
 #[pyclass(module = "lancedb._lancedb", get_all, from_py_object)]
 #[derive(Clone, Debug)]
 pub struct FunctionErrorRecord {
+    pub attempts: Option<u32>,
     pub job_id: String,
     pub fragment_id: u64,
     pub row_offset: Option<u32>,
@@ -653,6 +720,7 @@ impl FunctionErrorRecord {
 impl From<lancedb::function::FunctionErrorRecord> for FunctionErrorRecord {
     fn from(record: lancedb::function::FunctionErrorRecord) -> Self {
         Self {
+            attempts: record.attempts,
             job_id: record.job_id,
             fragment_id: record.fragment_id,
             row_offset: record.row_offset,
@@ -1774,6 +1842,10 @@ impl Table {
         compaction_options: Option<&Bound<'py, PyDict>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self_.inner_ref()?.clone();
+        let target_specified = compaction_options
+            .map(|options| options.contains("target_rows_per_fragment"))
+            .transpose()?
+            .unwrap_or(false);
         let compaction_options = parse_compaction_options(compaction_options)?;
         let older_than = if let Some(ms) = cleanup_since_ms {
             if ms > i64::MAX as u64 {
@@ -1788,10 +1860,22 @@ impl Table {
             None
         };
         future_into_py(self_.py(), async move {
-            let stats = inner
-                .optimize_full(compaction_options, older_than, None, delete_unverified)
-                .await
-                .infer_error()?;
+            let stats = if inner.as_native().is_some() {
+                inner
+                    .optimize_full(compaction_options, older_than, None, delete_unverified)
+                    .await
+            } else {
+                let mut overrides =
+                    lancedb::table::optimize::CompactionOverrides::try_from(compaction_options)
+                        .infer_error()?;
+                if !target_specified {
+                    overrides.target_rows_per_fragment = None;
+                }
+                inner
+                    .optimize_full_with_overrides(overrides, older_than, None, delete_unverified)
+                    .await
+            }
+            .infer_error()?;
             let compaction_stats = stats.compaction.unwrap();
             let prune_stats = stats.prune.unwrap();
             Ok(OptimizeStats {
@@ -2126,15 +2210,40 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, *, batch_size=None, gpu_class=None, gpu_count=None))]
+    #[pyo3(signature = (column, *, r#where=None, batch_size=None, publication_interval_rows=None, gpu_class=None, gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None))]
+    #[allow(clippy::too_many_arguments)]
     pub fn refresh_column(
         self_: PyRef<'_, Self>,
         column: String,
+        r#where: Option<String>,
         batch_size: Option<i64>,
+        publication_interval_rows: Option<i64>,
         gpu_class: Option<String>,
         gpu_count: Option<i64>,
+        retry_policy: Option<String>,
+        error_policy: Option<String>,
+        max_failed_fraction: Option<f64>,
+        max_failed_rows: Option<i64>,
+        row_timeout_seconds: Option<f64>,
+        init_timeout_seconds: Option<f64>,
+        num_workers: Option<i64>,
+        max_executor_processes_per_worker: Option<i64>,
     ) -> PyResult<Bound<'_, PyAny>> {
-        let options = refresh_column_options(batch_size, gpu_class, gpu_count)?;
+        let options = refresh_column_options(RefreshColumnArgs {
+            where_clause: r#where,
+            batch_size,
+            publication_interval_rows,
+            gpu_class,
+            gpu_count,
+            retry_policy,
+            error_policy,
+            max_failed_fraction,
+            max_failed_rows,
+            row_timeout_seconds,
+            init_timeout_seconds,
+            num_workers,
+            max_executor_processes_per_worker,
+        })?;
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let result = inner
@@ -2145,15 +2254,40 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, *, batch_size=None, gpu_class=None, gpu_count=None))]
+    #[pyo3(signature = (column, *, r#where=None, batch_size=None, publication_interval_rows=None, gpu_class=None, gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None))]
+    #[allow(clippy::too_many_arguments)]
     pub fn refresh_column_async(
         self_: PyRef<'_, Self>,
         column: String,
+        r#where: Option<String>,
         batch_size: Option<i64>,
+        publication_interval_rows: Option<i64>,
         gpu_class: Option<String>,
         gpu_count: Option<i64>,
+        retry_policy: Option<String>,
+        error_policy: Option<String>,
+        max_failed_fraction: Option<f64>,
+        max_failed_rows: Option<i64>,
+        row_timeout_seconds: Option<f64>,
+        init_timeout_seconds: Option<f64>,
+        num_workers: Option<i64>,
+        max_executor_processes_per_worker: Option<i64>,
     ) -> PyResult<Bound<'_, PyAny>> {
-        let options = refresh_column_options(batch_size, gpu_class, gpu_count)?;
+        let options = refresh_column_options(RefreshColumnArgs {
+            where_clause: r#where,
+            batch_size,
+            publication_interval_rows,
+            gpu_class,
+            gpu_count,
+            retry_policy,
+            error_policy,
+            max_failed_fraction,
+            max_failed_rows,
+            row_timeout_seconds,
+            init_timeout_seconds,
+            num_workers,
+            max_executor_processes_per_worker,
+        })?;
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let job = inner
@@ -2183,11 +2317,16 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (source_version=None, *, full=false))]
+    #[pyo3(signature = (source_version=None, *, full=false, cpu_millis=None, memory_bytes=None, gpu_count=None, gpu_class=None))]
+    #[allow(clippy::too_many_arguments)]
     pub fn refresh_materialized_view(
         self_: PyRef<'_, Self>,
         source_version: Option<u64>,
         full: bool,
+        cpu_millis: Option<u64>,
+        memory_bytes: Option<u64>,
+        gpu_count: Option<u32>,
+        gpu_class: Option<String>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
@@ -2195,6 +2334,18 @@ impl Table {
                 .await
                 .infer_error()?;
             let mut builder = view.refresh().full(full);
+            if let Some(value) = cpu_millis {
+                builder = builder.cpu_millis(value);
+            }
+            if let Some(value) = memory_bytes {
+                builder = builder.memory_bytes(value);
+            }
+            if let Some(value) = gpu_count {
+                builder = builder.gpu_count(value);
+            }
+            if let Some(value) = gpu_class {
+                builder = builder.gpu_class(value);
+            }
             if let Some(version) = source_version {
                 builder = builder.source_version(version);
             }
@@ -2203,11 +2354,16 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (source_version=None, *, full=false))]
+    #[pyo3(signature = (source_version=None, *, full=false, cpu_millis=None, memory_bytes=None, gpu_count=None, gpu_class=None))]
+    #[allow(clippy::too_many_arguments)]
     pub fn refresh_materialized_view_async(
         self_: PyRef<'_, Self>,
         source_version: Option<u64>,
         full: bool,
+        cpu_millis: Option<u64>,
+        memory_bytes: Option<u64>,
+        gpu_count: Option<u32>,
+        gpu_class: Option<String>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
@@ -2215,6 +2371,18 @@ impl Table {
                 .await
                 .infer_error()?;
             let mut builder = view.refresh().full(full);
+            if let Some(value) = cpu_millis {
+                builder = builder.cpu_millis(value);
+            }
+            if let Some(value) = memory_bytes {
+                builder = builder.memory_bytes(value);
+            }
+            if let Some(value) = gpu_count {
+                builder = builder.gpu_count(value);
+            }
+            if let Some(value) = gpu_class {
+                builder = builder.gpu_class(value);
+            }
             if let Some(version) = source_version {
                 builder = builder.source_version(version);
             }

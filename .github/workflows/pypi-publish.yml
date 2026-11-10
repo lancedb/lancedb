@@ -36,14 +36,15 @@ concurrency:
 jobs:
   linux:
     name: Python ${{ matrix.config.package_name }} ${{ matrix.config.platform }} manylinux${{ matrix.config.manylinux }}
-    timeout-minutes: 60
+    # The ARM64 release build can exceed an hour with fat LTO on a cold runner.
+    timeout-minutes: ${{ matrix.config.platform == 'aarch64' && 120 || 60 }}
     strategy:
       matrix:
         config:
           - platform: x86_64
             manylinux: "2_28"
             extra_args: "--features fp16kernels"
-            runner: ubuntu-22.04
+            runner: ubuntu-2404-8x-x64
             package_name: "lancedb"
             rustflags: ""
           # For successful fat LTO builds, we need a large runner to avoid OOM errors.
