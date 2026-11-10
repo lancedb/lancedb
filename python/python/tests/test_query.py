@@ -541,12 +541,14 @@ def test_vector_query_to_pandas_legacy_blob_descriptions_and_bytes(tmp_db):
     df = query.to_pandas(blob_mode="descriptions")
     assert df["blob"].tolist() == [{"position": 0, "size": 3}]
 
-    with pytest.raises(ValueError, match="legacy blob columns"):
+    with pytest.raises(ValueError, match=r"\['blob'\].*local plain scans"):
         query.to_pandas(blob_mode="bytes")
-    with pytest.raises(ValueError, match="legacy blob columns"):
+    with pytest.raises(ValueError, match=r"\['blob'\].*local plain scans"):
         query.to_arrow(blob_mode="bytes")
-    with pytest.raises(ValueError, match="legacy blob columns"):
-        table.to_arrow(blob_mode="bytes")
+    table_arrow = table.to_arrow(blob_mode="bytes")
+    assert table_arrow.schema.field("blob").type == pa.large_binary()
+    assert "_rowid" not in table_arrow.column_names
+    assert table_arrow["blob"].to_pylist() == [b"one", b"two", b"three", b"four"]
     assert table.to_pandas(blob_mode="bytes")["blob"].tolist() == [
         b"one",
         b"two",

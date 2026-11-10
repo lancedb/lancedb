@@ -2395,7 +2395,7 @@ def test_bytes_mode_rejects_legacy_blob_after_reranker_drops_metadata(tmp_path):
         .rerank(_KeepAllScoresReranker())
     )
 
-    with pytest.raises(ValueError, match=r"\['blob'\].*legacy blob columns"):
+    with pytest.raises(ValueError, match=r"\['blob'\].*local plain scans"):
         query.to_arrow(blob_mode="bytes")
 
 
