@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 import { expect, jest, test } from "@jest/globals";
-import * as arrow from "apache-arrow";
+// --8<-- [start:schema_field_metadata_imports]
 import * as lancedb from "@lancedb/lancedb";
+// --8<-- [end:schema_field_metadata_imports]
+import * as arrow from "apache-arrow";
 import { withTempDirectory } from "./util.ts";
 
 async function updateConnectEnterpriseExample() {
@@ -481,7 +483,14 @@ test("schema evolution snippets (async)", async () => {
     await vectorTable.alterColumns([{ path: "embedding_v2", rename: "embedding" }]);
     // --8<-- [end:alter_vector_column]
     expect(await vectorTable.countRows()).toBe(1);
+  });
+});
 
+test("field metadata snippets (async)", async () => {
+  await withTempDirectory(async (databaseDir) => {
+    const db = await lancedb.connect(databaseDir);
+
+    // --8<-- [start:schema_field_metadata_setup]
     const fieldMetadataTable = await db.createTable(
       "schema_field_metadata_example",
       [
@@ -490,6 +499,8 @@ test("schema evolution snippets (async)", async () => {
       ],
       { mode: "overwrite" },
     );
+
+    // --8<-- [end:schema_field_metadata_setup]
 
     // --8<-- [start:schema_field_metadata_merge]
     // Set two metadata keys on the `category` field.
@@ -513,6 +524,10 @@ test("schema evolution snippets (async)", async () => {
       },
     ]);
     // --8<-- [end:schema_field_metadata_replace]
+    const category = (await fieldMetadataTable.schema()).fields.find(
+      (field) => field.name === "category",
+    );
+    expect(category?.metadata).toEqual(new Map([["owner", "search-team"]]));
   });
 });
 
@@ -820,6 +835,37 @@ test("versioning snippets (async)", async () => {
     expect(versionCountAfterRollback).toBe(versionCountAfterMod + 1);
     expect(await table.countRows()).toBe(5);
 
+    // --8<-- [start:versioning_tags]
+    const tags = await table.tags();
+
+    // Create a tag pointing at a specific version
+    await tags.create("baseline", 1);
+    await tags.create("with-edits", await table.version());
+
+    // List all tags on this table
+    console.log(await tags.list());
+
+    // Look up the version a tag points at
+    console.log(await tags.getVersion("baseline"));
+
+    // Move an existing tag to a different version
+    await tags.update("baseline", 2);
+
+    // Check out a version by tag name
+    await table.checkout("baseline");
+    console.log(await table.version());
+
+    // Delete a tag (does not delete the underlying version)
+    await tags.delete("with-edits");
+
+    // Return to the latest version
+    await table.checkoutLatest();
+    // --8<-- [end:versioning_tags]
+    expect(await table.version()).toBe(versionAfterMod + 1);
+    const remainingTags = await tags.list();
+    expect(remainingTags).toHaveProperty("baseline");
+    expect(remainingTags).not.toHaveProperty("with-edits");
+
     // --8<-- [start:versioning_checkout_latest]
     await table.checkoutLatest();
     // --8<-- [end:versioning_checkout_latest]
@@ -835,49 +881,6 @@ test("versioning snippets (async)", async () => {
     console.log(`Number of rows after deletion: ${rowsAfterDeletion}`);
     // --8<-- [end:versioning_delete_data]
     expect(rowsAfterDeletion).toBe(3);
-
-    const tagsTable = await db.createTable(
-      "quotes_tags_example",
-      [{ id: 1, author: "Richard", quote: "Wubba Lubba Dub Dub!" }],
-      { mode: "overwrite" },
-    ); // v1
-    await tagsTable.add([
-      { id: 2, author: "Morty", quote: "Aww geez, Rick!" },
-    ]); // v2
-    await tagsTable.add([
-      { id: 3, author: "Summer", quote: "Whatever, Grandpa" },
-    ]); // v3
-
-    // --8<-- [start:versioning_tags]
-    const tags = await tagsTable.tags();
-
-    // Create a tag pointing at a specific version
-    await tags.create("baseline", 1);
-    await tags.create("with-edits", await tagsTable.version());
-
-    // List all tags on this table
-    console.log(await tags.list());
-
-    // Look up the version a tag points at
-    console.log(await tags.getVersion("baseline"));
-
-    // Move an existing tag to a different version
-    await tags.update("baseline", 2);
-
-    // Check out a version by tag name
-    await tagsTable.checkout("baseline");
-    console.log(await tagsTable.version());
-
-    // Delete a tag (does not delete the underlying version)
-    await tags.delete("with-edits");
-
-    // Return to the latest version
-    await tagsTable.checkoutLatest();
-    // --8<-- [end:versioning_tags]
-    expect(await tagsTable.version()).toBe(3);
-    const remainingTags = await tags.list();
-    expect(remainingTags).toHaveProperty("baseline");
-    expect(remainingTags).not.toHaveProperty("with-edits");
   });
 });
 

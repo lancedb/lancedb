@@ -63,7 +63,7 @@ flowchart LR
 </div>
 
 This covers the ordinary tabular columns a query reads -- the data page
-cache's unit is a fixed-size page of table data. A [Blob v2](/management/table#managed-blobs)
+cache's unit is a fixed-size page of table data. A [Blob v2](/management/table/managed-blobs)
 column's payload is fetched through a separate range-request path keyed
 to its own descriptor, not through this cache, so a training table mixing
 plain feature columns with Blob v2 images or video gets this benefit only

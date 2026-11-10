@@ -1133,11 +1133,16 @@ def test_alter_vector_column(tmp_db):
 
 
 def test_schema_field_metadata(tmp_db):
-    table = tmp_db.create_table(
+    db = tmp_db
+    # --8<-- [start:schema_field_metadata_setup]
+    import pyarrow as pa
+
+    table = db.create_table(
         "schema_field_metadata_example",
         pa.table({"id": [0, 1], "category": ["a", "b"]}),
         mode="overwrite",
     )
+    # --8<-- [end:schema_field_metadata_setup]
 
     # --8<-- [start:schema_field_metadata_merge]
     # Set two metadata keys on the `category` field.
