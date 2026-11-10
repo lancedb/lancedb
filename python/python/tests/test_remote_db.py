@@ -5539,9 +5539,6 @@ def test_remote_job_handle_reports_its_own_detail():
         assert json.loads(job._spec_json) == {"column": "vec"}
         assert json.loads(job._result_json) == {"rows_assigned": 1000000}
 
-        # print() shows everything the handle knows and nothing it does not.
-        # print() lays every known field out on its own line, with the JSON
-        # payloads indented rather than crammed onto one line.
         assert repr(job) == "\n".join(
             [
                 "Job(",
@@ -5549,12 +5546,8 @@ def test_remote_job_handle_reports_its_own_detail():
                 "    state='finished',",
                 "    job_type='refresh_column',",
                 "    creation_ms=2000,",
-                "    spec={",
-                '        "column": "vec"',
-                "    },",
-                "    result={",
-                '        "rows_assigned": 1000000',
-                "    },",
+                "    spec={'column': 'vec'},",
+                "    result={'rows_assigned': 1000000},",
                 ")",
             ]
         )
