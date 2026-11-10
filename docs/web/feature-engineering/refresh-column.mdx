@@ -166,8 +166,55 @@ The resource values cap the Function workers together: this example allows
 up to 8 CPUs, 16 GiB of memory, and 2 GPUs across the fleet. They are not
 per-worker allocations or a guaranteed worker count. `num_workers` is only
 accepted for SQL-expression columns; registered Function columns reject it.
-When setting CPU or memory, supply all three budget fields, using
+In SQL, setting CPU or memory requires all three budget fields, using
 `gpu_count = 0` for a CPU-only Function.
+
+The SDKs accept the same nested budget. CPU and memory are required; the GPU
+count inside the budget defaults to zero, so a CPU-only Function can omit it:
+
+<CodeGroup>
+```python Python icon="python"
+job = table.refresh_column_async(
+    "embedding",
+    resource_budget={
+        "cpu_millis": 8000,
+        "memory_bytes": 16 * 1024**3,
+    },
+)
+job.wait()
+```
+
+```rust Rust icon="rust"
+use lancedb::table::{
+    FunctionWorkerResourceBudget,
+    RefreshColumnOptions,
+};
+
+let _job = table
+    .refresh_column_async_with_options(
+        "embedding",
+        RefreshColumnOptions::default().resource_budget(
+            FunctionWorkerResourceBudget::new(8000, 17_179_869_184),
+        ),
+    )
+    .await?;
+```
+
+```typescript TypeScript icon="typescript"
+const job = await table.refreshColumnAsync("embedding", {
+  resourceBudget: {
+    cpuMillis: 8000,
+    memoryBytes: 16 * 1024 ** 3,
+  },
+});
+await job.wait();
+```
+</CodeGroup>
+
+The existing top-level `gpu_count` / `gpuCount` option remains the shorthand
+for changing only the aggregate GPU budget. It cannot be combined with the
+complete resource budget. Omitting both preserves the server's existing
+defaults.
 
 `batch_size` caps rows in one Function call; LanceDB adapts actual call and
 work sizes. For Function columns, the refresh defaults to
@@ -248,7 +295,8 @@ async fn refresh(
 </CodeGroup>
 
 `gpu_count` is the aggregate GPU budget for the refresh's Function workers,
-not a request for that many GPUs per worker. It must be positive.
+not a request for that many GPUs per worker. It must be positive and preserves
+the deployment's CPU and memory defaults.
 `gpu_class` must name a class returned by `list_gpu_classes()`; class names
 are lowercase DNS labels. Omit either option to use the Function's registered
 class or the server's configured budget. `list_gpu_classes()` requires System
@@ -341,7 +389,8 @@ The SDK rejects a blank `where`, a `max_failed_fraction` outside 0 to 1, a
 timeout that is not a positive number and a zero worker or process count
 before sending the request; the server validates everything else. A LanceDB
 Embedded refresh rejects every option other than `batch_size`, `gpu_class`
-and `gpu_count`.
+and `gpu_count`; in particular, it rejects `resource_budget` rather than
+silently ignoring it.
 
 ## When a refresh fails {#failures}
 

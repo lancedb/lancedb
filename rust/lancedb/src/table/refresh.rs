@@ -55,6 +55,38 @@ use crate::function::validate_gpu_class_name;
 use crate::job::Job;
 use crate::{Error, Result};
 
+/// Aggregate worker resources for one Enterprise Function refresh.
+///
+/// CPU is in millicores (1000 = one core) and memory is in bytes. These
+/// values cap the Function workers together; they are not per-worker
+/// allocations. The default GPU budget is zero, which describes a CPU-only
+/// Function. This option is rejected by LanceDB Embedded refreshes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[non_exhaustive]
+pub struct FunctionWorkerResourceBudget {
+    pub cpu_millis: u64,
+    pub memory_bytes: u64,
+    /// Aggregate GPU budget across the refresh. Zero is CPU-only.
+    pub gpu_count: u32,
+}
+
+impl FunctionWorkerResourceBudget {
+    /// Create a CPU-only aggregate budget.
+    pub fn new(cpu_millis: u64, memory_bytes: u64) -> Self {
+        Self {
+            cpu_millis,
+            memory_bytes,
+            gpu_count: 0,
+        }
+    }
+
+    /// Set the aggregate GPU budget.
+    pub fn with_gpu_count(mut self, gpu_count: u32) -> Self {
+        self.gpu_count = gpu_count;
+        self
+    }
+}
+
 /// Options for refreshing a computed column.
 ///
 /// Serializes to the Enterprise backfill request body, one key per set
@@ -108,6 +140,10 @@ pub struct RefreshColumnOptions {
     /// rejects this option.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub publication_interval_rows: Option<u64>,
+    /// Complete aggregate CPU, memory, and GPU budget for a registered
+    /// Function refresh. Cannot be combined with `gpu_count`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_budget: Option<FunctionWorkerResourceBudget>,
     /// GPU class for Function workers in LanceDB Enterprise.
     ///
     /// `None` keeps the Function's registered class, or the deployment default
@@ -189,6 +225,15 @@ impl RefreshColumnOptions {
         self
     }
 
+    /// Set the aggregate worker resource budget for a Function refresh.
+    ///
+    /// Use [`FunctionWorkerResourceBudget::new`] for a CPU-only budget, or
+    /// [`FunctionWorkerResourceBudget::with_gpu_count`] to include GPUs.
+    pub fn resource_budget(mut self, budget: FunctionWorkerResourceBudget) -> Self {
+        self.resource_budget = Some(budget);
+        self
+    }
+
     /// Request Function workers from `gpu_class`.
     pub fn gpu_class(mut self, gpu_class: impl Into<String>) -> Self {
         self.gpu_class = Some(gpu_class.into());
@@ -220,6 +265,7 @@ impl RefreshColumnOptions {
                 "publication_interval_rows",
                 self.publication_interval_rows.is_some(),
             ),
+            ("resource_budget", self.resource_budget.is_some()),
         ]
         .into_iter()
         .find_map(|(name, set)| set.then_some(name))
@@ -276,6 +322,23 @@ impl RefreshColumnOptions {
             return Err(Error::InvalidInput {
                 message: "publication_interval_rows must be greater than zero".into(),
             });
+        }
+        if self.resource_budget.is_some() && self.gpu_count.is_some() {
+            return Err(Error::InvalidInput {
+                message: "gpu_count cannot be combined with resource_budget".into(),
+            });
+        }
+        if let Some(budget) = &self.resource_budget {
+            if budget.cpu_millis == 0 {
+                return Err(Error::InvalidInput {
+                    message: "resource_budget.cpu_millis must be greater than zero".into(),
+                });
+            }
+            if budget.memory_bytes == 0 {
+                return Err(Error::InvalidInput {
+                    message: "resource_budget.memory_bytes must be greater than zero".into(),
+                });
+            }
         }
         if let Some(gpu_class) = &self.gpu_class {
             validate_gpu_class_name(gpu_class)?;

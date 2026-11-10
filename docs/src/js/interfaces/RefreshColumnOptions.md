@@ -8,7 +8,8 @@
 
 Options for `Table.refreshColumn` and `Table.refreshColumnAsync`. Every
 option is LanceDB Enterprise only; a LanceDB Embedded refresh ignores
-`batchSize`, `gpuClass` and `gpuCount` and rejects the rest.
+`batchSize`, `gpuClass` and `gpuCount` and rejects the rest, including
+`resourceBudget`.
 
 ## Properties
 
@@ -102,6 +103,17 @@ optional numWorkers: number;
 ```
 
 Worker count for an expression column; Function columns reject it.
+
+***
+
+### resourceBudget?
+
+```ts
+optional resourceBudget: FunctionWorkerResourceBudget;
+```
+
+Complete aggregate CPU and memory budget for a registered Function
+refresh. `gpuCount` inside the budget defaults to zero.
 
 ***
 

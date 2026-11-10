@@ -693,6 +693,12 @@ describe("remote connection", () => {
         });
         expect(job.id).toBe("j-9");
         await table.refreshColumnAsync("embedding");
+        await table.refreshColumnAsync("embedding", {
+          resourceBudget: {
+            cpuMillis: 8_000,
+            memoryBytes: 16 * 1024 ** 3,
+          },
+        });
         // Invalid options reject before any request is sent.
         for (const [options, message] of [
           [{ maxFailedRows: -1 }, "maxFailedRows"],
@@ -702,6 +708,25 @@ describe("remote connection", () => {
           [{ rowTimeoutSeconds: 0 }, "row_timeout_seconds"],
           [{ numWorkers: 0 }, "num_workers"],
           [{ gpuCount: 0 }, "gpu_count"],
+          [
+            {
+              resourceBudget: {
+                cpuMillis: 1_000,
+                memoryBytes: 1_024,
+              },
+              gpuCount: 1,
+            },
+            "gpu_count cannot be combined with resource_budget",
+          ],
+          [
+            {
+              resourceBudget: {
+                cpuMillis: 0,
+                memoryBytes: 1_024,
+              },
+            },
+            "resourceBudget.cpuMillis",
+          ],
         ] as const) {
           await expect(
             table.refreshColumnAsync("embedding", options),
@@ -718,6 +743,14 @@ describe("remote connection", () => {
           "max_executor_processes_per_worker": 2}`,
       ),
       { column: "embedding" },
+      {
+        column: "embedding",
+        resource_budget: {
+          cpu_millis: 8_000,
+          memory_bytes: 16 * 1024 ** 3,
+          gpu_count: 0,
+        },
+      },
     ]);
   });
 

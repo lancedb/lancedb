@@ -9,7 +9,8 @@ use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
 use lancedb::table::{
     AddDataMode, ColumnAlteration as LanceColumnAlteration,
     FieldMetadataUpdate as LanceFieldMetadataUpdate, FtsToken as LanceDbFtsToken,
-    NewColumnTransform, Ref, Table as LanceDbTable,
+    FunctionWorkerResourceBudget as LanceFunctionWorkerResourceBudget, NewColumnTransform, Ref,
+    Table as LanceDbTable,
 };
 use napi::Env;
 use napi::bindgen_prelude::*;
@@ -1586,9 +1587,32 @@ pub struct FunctionErrorsOptions {
     pub limit: Option<i64>,
 }
 
+/// Aggregate worker resources for one Enterprise Function refresh.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct FunctionWorkerResourceBudget {
+    /// Aggregate CPU budget in millicores; 1000 is one CPU.
+    pub cpu_millis: f64,
+    /// Aggregate memory budget in bytes.
+    pub memory_bytes: f64,
+    /// Aggregate GPU budget. Omitted means zero, a CPU-only refresh.
+    pub gpu_count: Option<u32>,
+}
+
+fn resource_budget_integer(value: f64, name: &str) -> napi::Result<u64> {
+    const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+    if !value.is_finite() || value.fract() != 0.0 || value < 1.0 || value > MAX_SAFE_INTEGER {
+        return Err(napi::Error::from_reason(format!(
+            "{name} must be a positive safe integer"
+        )));
+    }
+    Ok(value as u64)
+}
+
 /// Options for `Table.refreshColumn` and `Table.refreshColumnAsync`. Every
 /// option is LanceDB Enterprise only; a LanceDB Embedded refresh ignores
-/// `batchSize`, `gpuClass` and `gpuCount` and rejects the rest.
+/// `batchSize`, `gpuClass` and `gpuCount` and rejects the rest, including
+/// `resourceBudget`.
 #[napi(object)]
 #[derive(Clone, Debug, Default)]
 pub struct RefreshColumnOptions {
@@ -1599,6 +1623,9 @@ pub struct RefreshColumnOptions {
     pub batch_size: Option<u32>,
     /// GPU class for Function workers.
     pub gpu_class: Option<String>,
+    /// Complete aggregate CPU and memory budget for a registered Function
+    /// refresh. `gpuCount` inside the budget defaults to zero.
+    pub resource_budget: Option<FunctionWorkerResourceBudget>,
     /// Positive aggregate GPU budget for Function workers.
     pub gpu_count: Option<u32>,
     /// `"fail"` (default) stops on a row error; `"skip"` writes null and
@@ -1628,6 +1655,16 @@ impl TryFrom<RefreshColumnOptions> for lancedb::table::RefreshColumnOptions {
         options.where_clause = value.where_clause;
         options.batch_size = value.batch_size.map(|size| size as usize);
         options.gpu_class = value.gpu_class;
+        options.resource_budget = value
+            .resource_budget
+            .map(|budget| {
+                Ok(LanceFunctionWorkerResourceBudget::new(
+                    resource_budget_integer(budget.cpu_millis, "resourceBudget.cpuMillis")?,
+                    resource_budget_integer(budget.memory_bytes, "resourceBudget.memoryBytes")?,
+                )
+                .with_gpu_count(budget.gpu_count.unwrap_or(0)))
+            })
+            .transpose()?;
         options.gpu_count = value.gpu_count;
         options.error_policy = match value.error_policy.as_deref() {
             None => None,
