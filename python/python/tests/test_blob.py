@@ -2350,6 +2350,8 @@ async def test_async_to_batches_blob_modes(shape, blob_mode, monkeypatch):
     if blob_mode != "lazy":
         assert "_rowid" not in reader.schema.names
         assert "_lance_row_id" not in str(reader.schema)
+    else:
+        assert "_rowid" in reader.schema.names
 
 
 class _KeepAllScoresReranker(Reranker):

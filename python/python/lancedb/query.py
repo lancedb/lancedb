@@ -53,8 +53,8 @@ from ._blob import (
     finalize_blob_query_table,
     reject_unfetchable_blob_columns,
     reject_unmatched_blob_outputs,
-    replace_v2_blob_columns_with_bytes,
-    replace_v2_blob_columns_with_bytes_sync,
+    replace_blob_columns_with_bytes,
+    replace_blob_columns_with_bytes_sync,
     strip_auto_row_ids,
     validate_blob_mode,
 )
@@ -433,7 +433,7 @@ def _finish_plain_scan_pandas(
 ) -> pd.DataFrame:
     if blob_sources:
         tbl = _scanner_to_table(scanner)
-        tbl = replace_v2_blob_columns_with_bytes_sync(tbl, blob_sources, fetch_blobs)
+        tbl = replace_blob_columns_with_bytes_sync(tbl, blob_sources, fetch_blobs)
         if strip_auto_row_id and "_rowid" in tbl.column_names:
             tbl = tbl.drop_columns(["_rowid"])
         if flatten is not None:
@@ -487,7 +487,7 @@ async def _finish_plain_scan_pandas_async(
 ) -> pd.DataFrame:
     if blob_sources:
         tbl = _scanner_to_table(scanner)
-        tbl = await replace_v2_blob_columns_with_bytes(tbl, blob_sources, fetch_blobs)
+        tbl = await replace_blob_columns_with_bytes(tbl, blob_sources, fetch_blobs)
         if strip_auto_row_id and "_rowid" in tbl.column_names:
             tbl = tbl.drop_columns(["_rowid"])
         if flatten is not None:
@@ -1382,8 +1382,8 @@ class LanceQueryBuilder(ABC):
         Execute the query and return the results as a pyarrow
         [RecordBatchReader](https://arrow.apache.org/docs/python/generated/pyarrow.RecordBatchReader.html)
 
-        For v2 blob projections, the default ``blob_mode="lazy"`` keeps the
-        auto ``_rowid`` column visible so batch consumers can call
+        For row-addressable blob projections, the default ``blob_mode="lazy"``
+        keeps the auto ``_rowid`` column visible so batch consumers can call
         ``fetch_blobs``. The ``"bytes"`` and ``"descriptions"`` modes hide
         automatic row ids.
 
@@ -1403,9 +1403,9 @@ class LanceQueryBuilder(ABC):
             slowly can exceed it.
         blob_mode: str, default "lazy"
             ``"lazy"`` keeps blob descriptors and auto row ids for manual fetches.
-            ``"descriptions"`` omits auto row ids. ``"bytes"`` fetches blob v2
-            payloads one batch at a time, without requiring pylance. Bytes mode
-            has the same restrictions as :meth:`to_arrow`.
+            ``"descriptions"`` omits auto row ids. ``"bytes"`` fetches supported
+            row-addressable blob payloads one batch at a time, without requiring
+            pylance. Bytes mode has the same restrictions as :meth:`to_arrow`.
 
         Examples
         --------
@@ -1666,7 +1666,7 @@ class LanceQueryBuilder(ABC):
             return tbl
         if blob_mode == "descriptions":
             return strip_auto_row_ids(tbl, blob_sources)
-        return replace_v2_blob_columns_with_bytes_sync(
+        return replace_blob_columns_with_bytes_sync(
             tbl, blob_sources, self._table.fetch_blobs
         )
 
@@ -3671,9 +3671,9 @@ class AsyncQueryBase(object):
             slowly can exceed it.
         blob_mode: str, default "lazy"
             ``"lazy"`` keeps blob descriptors and auto row ids for manual fetches.
-            ``"descriptions"`` omits auto row ids. ``"bytes"`` fetches blob v2
-            payloads one batch at a time, without requiring pylance. Bytes mode
-            has the same restrictions as :meth:`to_arrow`.
+            ``"descriptions"`` omits auto row ids. ``"bytes"`` fetches supported
+            row-addressable blob payloads one batch at a time, without requiring
+            pylance. Bytes mode has the same restrictions as :meth:`to_arrow`.
 
         Examples
         --------
@@ -3714,9 +3714,23 @@ class AsyncQueryBase(object):
         timeout: Optional[timedelta] = None,
         blob_sources: Optional[dict[str, str]] = None,
     ) -> AsyncRecordBatchReader:
+        if (
+            blob_sources
+            and not self._user_requested_row_id()
+            and await self._can_fetch_plain_legacy_blobs("bytes")
+        ):
+            # Build a separate query so the hidden row id needed for byte
+            # conversion cannot leak into later executions of this builder.
+            query = self.to_query_object()
+            query.with_row_id = True
+            if self._table is None:
+                raise RuntimeError("blob query is not bound to a table")
+            row_id_query = self._table._sync_query_to_async(query)
+            return await row_id_query._execute_batches(
+                max_batch_length=max_batch_length,
+                timeout=timeout,
+            )
         await self._maybe_add_blob_row_id()
-        if blob_sources and not self._user_requested_row_id():
-            self._inner.with_row_id()
         return AsyncRecordBatchReader(
             await self._inner.execute(
                 max_batch_length=max_batch_length, timeout=timeout
@@ -3767,7 +3781,7 @@ class AsyncQueryBase(object):
             return tbl
         if blob_mode == "descriptions":
             return strip_auto_row_ids(tbl, blob_sources)
-        return await replace_v2_blob_columns_with_bytes(
+        return await replace_blob_columns_with_bytes(
             tbl, blob_sources, self._table.fetch_blobs
         )
 

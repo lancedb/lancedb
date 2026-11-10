@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-"""Blob fetch API and v2 projection helpers."""
+"""Blob fetch API and projection helpers."""
 
 from __future__ import annotations
 
@@ -293,7 +293,7 @@ def finalize_blob_query_table(
     return stash_auto_row_ids(tbl, blob_paths)
 
 
-async def replace_v2_blob_columns_with_bytes(
+async def replace_blob_columns_with_bytes(
     tbl: pa.Table,
     blob_sources: dict[str, str],
     fetch_blobs: FetchBlobsAsync,
@@ -313,7 +313,7 @@ async def replace_v2_blob_columns_with_bytes(
     return tbl
 
 
-def replace_v2_blob_columns_with_bytes_sync(
+def replace_blob_columns_with_bytes_sync(
     tbl: pa.Table,
     blob_sources: dict[str, str],
     fetch_blobs: FetchBlobsSync,

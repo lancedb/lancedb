@@ -185,6 +185,20 @@ def test_plain_legacy_blob_query_without_pylance(tmp_path, api, result):
                         batch_size=1, blob_mode="bytes"
                     )
 
+            if sys.argv[2] == "async":
+                reused = table.query().select(
+                    {"filename": "filename", "payload": "video_blob"}
+                ).limit(3)
+                byte_reader = await reused.to_batches(blob_mode="bytes")
+                await byte_reader.read_all()
+                lazy_reader = await reused.to_batches(blob_mode="lazy")
+                assert "_rowid" not in lazy_reader.schema.names
+                await lazy_reader.read_all()
+                reused.select(["filename"])
+                nonblob_reader = await reused.to_batches(blob_mode="lazy")
+                assert nonblob_reader.schema.names == ["filename"]
+                await nonblob_reader.read_all()
+
             if sys.argv[3] == "pandas":
                 frame = query().to_pandas(blob_mode="bytes")
                 if sys.argv[2] == "async":
