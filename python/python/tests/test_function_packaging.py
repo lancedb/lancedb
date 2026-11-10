@@ -127,6 +127,59 @@ def test_function_without_initialization_keeps_its_wire_form():
     assert request["artifact"]["kind"] == "python_callable"
 
 
+@pytest.mark.parametrize("kind", ["function", "class"])
+@pytest.mark.parametrize(
+    ("global_value", "value_type"),
+    [
+        ("pa.struct([('label', pa.string())])", "StructType"),
+        ("(1, (pa.int64(),))", "DataType"),
+        ("{'label': 1}", "dict"),
+        ("float('inf')", "float"),
+    ],
+)
+def test_unsupported_global_names_value_and_remedy(
+    helper_package, kind, global_value, value_type
+):
+    definition = (
+        "class uses_global:\n"
+        "    def __call__(self, value: int) -> int:\n"
+        "        return value if CAPTURED_VALUE else 0\n"
+        if kind == "class"
+        else "def uses_global(value: int) -> int:\n"
+        "    return value if CAPTURED_VALUE else 0\n"
+    )
+    module = helper_package(
+        "fx_unsupported_global",
+        {
+            "__init__.py": f"import pyarrow as pa\nCAPTURED_VALUE = {global_value}\n"
+            + definition
+        },
+    )
+    with pytest.raises(TypeError) as error:
+        function(module.uses_global)
+    message = str(error.value)
+    assert "CAPTURED_VALUE" in message
+    assert value_type in message
+    assert "finite float" in message
+    assert "inside the function or class body" in message
+
+
+def test_supported_nested_literal_global_still_packages(helper_package):
+    module = helper_package(
+        "fx_literal_global",
+        {
+            "__init__.py": "CAPTURED_VALUE = (None, True, 1, 'label', b'bytes', (1.5,))\n"
+            "def uses_global(value: int) -> int:\n"
+            "    return value + CAPTURED_VALUE[2]\n"
+        },
+    )
+    definition = function(module.uses_global)
+    namespace = {}
+    exec(compile(artifact(definition), "user_function.py", "exec"), namespace)
+    assert namespace["uses_global"](3) == 4
+    assert namespace["CAPTURED_VALUE"] == module.CAPTURED_VALUE
+
+
 @pytest.mark.parametrize("annotation", ["Array", "RecordBatch"])
 @pytest.mark.parametrize("kind", ["function", "class"])
 def test_batch_annotations_require_explicit_schemas(annotation, kind, helper_package):
