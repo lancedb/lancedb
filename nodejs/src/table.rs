@@ -1596,7 +1596,7 @@ pub struct FunctionWorkerResourceBudget {
     /// Aggregate memory budget in bytes.
     pub memory_bytes: f64,
     /// Aggregate GPU budget. Omitted means zero, a CPU-only refresh.
-    pub gpu_count: Option<u32>,
+    pub gpu_count: Option<f64>,
 }
 
 fn resource_budget_integer(value: f64, name: &str) -> napi::Result<u64> {
@@ -1607,6 +1607,18 @@ fn resource_budget_integer(value: f64, name: &str) -> napi::Result<u64> {
         )));
     }
     Ok(value as u64)
+}
+
+fn resource_budget_gpu_count(value: Option<f64>) -> napi::Result<u32> {
+    let Some(value) = value else {
+        return Ok(0);
+    };
+    if !value.is_finite() || value.fract() != 0.0 || value < 0.0 || value > u32::MAX as f64 {
+        return Err(napi::Error::from_reason(
+            "resourceBudget.gpuCount must be an integer between 0 and 4294967295",
+        ));
+    }
+    Ok(value as u32)
 }
 
 /// Options for `Table.refreshColumn` and `Table.refreshColumnAsync`. Every
@@ -1662,7 +1674,7 @@ impl TryFrom<RefreshColumnOptions> for lancedb::table::RefreshColumnOptions {
                     resource_budget_integer(budget.cpu_millis, "resourceBudget.cpuMillis")?,
                     resource_budget_integer(budget.memory_bytes, "resourceBudget.memoryBytes")?,
                 )
-                .with_gpu_count(budget.gpu_count.unwrap_or(0)))
+                .with_gpu_count(resource_budget_gpu_count(budget.gpu_count)?))
             })
             .transpose()?;
         options.gpu_count = value.gpu_count;

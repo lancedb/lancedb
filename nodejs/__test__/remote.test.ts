@@ -727,6 +727,56 @@ describe("remote connection", () => {
             },
             "resourceBudget.cpuMillis",
           ],
+          [
+            {
+              resourceBudget: {
+                cpuMillis: 1_000,
+                memoryBytes: 1_024,
+                gpuCount: 1.5,
+              },
+            },
+            "resourceBudget.gpuCount",
+          ],
+          [
+            {
+              resourceBudget: {
+                cpuMillis: 1_000,
+                memoryBytes: 1_024,
+                gpuCount: -1,
+              },
+            },
+            "resourceBudget.gpuCount",
+          ],
+          [
+            {
+              resourceBudget: {
+                cpuMillis: 1_000,
+                memoryBytes: 1_024,
+                gpuCount: 2 ** 32,
+              },
+            },
+            "resourceBudget.gpuCount",
+          ],
+          [
+            {
+              resourceBudget: {
+                cpuMillis: 1_000,
+                memoryBytes: 1_024,
+                gpuCount: Number.NaN,
+              },
+            },
+            "resourceBudget.gpuCount",
+          ],
+          [
+            {
+              resourceBudget: {
+                cpuMillis: 1_000,
+                memoryBytes: 1_024,
+                gpuCount: Number.POSITIVE_INFINITY,
+              },
+            },
+            "resourceBudget.gpuCount",
+          ],
         ] as const) {
           await expect(
             table.refreshColumnAsync("embedding", options),
