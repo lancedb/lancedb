@@ -921,7 +921,14 @@ class Permutation:
         Rename the given columns in the permutation
 
         If any of the columns do not exist then an error will be raised
-        If any of the new names already exist then an error will be raised
+        If any of the new names already exist then an error will be raised, unless
+        that name is itself renamed by the same call
+
+        The map is applied as one rename, so a name freed by the same call can be
+        reused: ``rename_columns({"a": "b", "b": "c"})`` yields ``b`` and ``c``
+        rather than failing because ``b`` still exists part-way through.
+
+        An empty map returns this permutation unchanged.
 
         Note: this does not actually modify the underlying dataset.  It only changes
         the name of the column that is visible from this permutation.  This is a
@@ -929,11 +936,30 @@ class Permutation:
         No data will be copied.
         """
         assert column_map is not None, "column_map is required"
+        if not column_map:
+            # Rebuilding the selection would copy the permutation and drop the
+            # version it is pinned to, so a map that renames nothing is a no-op.
+            return self
 
-        new_permutation = self
+        new_selection = {}
+        occupied = {name for name in self.selection if name not in column_map}
         for old_name, new_name in column_map.items():
-            new_permutation = new_permutation.rename_column(old_name, new_name)
-        return new_permutation
+            if old_name is None or new_name is None:
+                raise ValueError("Cannot rename a column to or from `None`")
+            if old_name not in self.selection:
+                raise ValueError(
+                    f"Cannot rename column `{old_name}` because it does not exist"
+                )
+            if new_name in occupied:
+                raise ValueError(
+                    f"Cannot rename column `{old_name}` to `{new_name}` because a "
+                    "column with that name already exists"
+                )
+            occupied.add(new_name)
+
+        for name, value in self.selection.items():
+            new_selection[column_map.get(name, name)] = value
+        return self._with_selection(new_selection)
 
     def select_columns(self, columns: list[str]) -> "Permutation":
         """

@@ -829,6 +829,45 @@ def test_rename_columns(some_permutation: Permutation):
         some_permutation.rename_columns({"value": "id"})
 
 
+def test_rename_columns_frees_names_for_the_same_call(some_permutation: Permutation):
+    # `value` is still present when `id` is renamed, but the map is one rename,
+    # so the name is free by the time the whole map has been applied.
+    renamed = some_permutation.rename_columns({"id": "value", "value": "data"})
+    assert renamed.schema == pa.schema([("value", pa.int64()), ("data", pa.int64())])
+    assert some_permutation.schema.names == ["id", "value"]
+
+    swapped = some_permutation.rename_columns({"id": "value", "value": "id"})
+    assert swapped.schema == pa.schema([("value", pa.int64()), ("id", pa.int64())])
+
+    # A target repeated within the map is still a collision.
+    with pytest.raises(ValueError, match="a column with that name already exists"):
+        some_permutation.rename_columns({"id": "x", "value": "x"})
+    assert some_permutation.schema.names == ["id", "value"]
+
+    # None is rejected here instead of failing later on a name that cannot exist.
+    with pytest.raises(ValueError, match="to or from `None`"):
+        some_permutation.rename_columns({"id": None})
+    with pytest.raises(ValueError, match="to or from `None`"):
+        some_permutation.rename_columns({None: "x"})
+
+    # An empty map must stay a no-op so the permutation keeps its pinned version.
+    assert some_permutation.rename_columns({}) is some_permutation
+
+
+def test_rename_columns_empty_map_keeps_pinned_version(tmp_path):
+    db = connect(tmp_path)
+    tbl = db.create_table("base", pa.table({"id": [1, 2], "value": [10, 20]}))
+    permutation_tbl = permutation_builder(tbl).execute()
+    perm = Permutation.from_tables(tbl, permutation_tbl)
+    expected = perm.__getitems__([0, 1])
+
+    # Rebuilding the selection would copy the permutation, which materializes the
+    # base table at its current version and loses the pin.
+    tbl.update(where="id = 1", values={"value": 999})
+    assert perm.__getitems__([0, 1]) == expected
+    assert perm.rename_columns({}).__getitems__([0, 1]) == expected
+
+
 def test_select_columns(some_permutation: Permutation):
     assert some_permutation.select_columns(["id"]).schema == pa.schema(
         [("id", pa.int64())]
