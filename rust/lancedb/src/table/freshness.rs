@@ -25,10 +25,11 @@ use std::io::{Cursor, Read};
 use std::ops::Range;
 
 use arrow_array::{Array, UInt64Array};
+use arrow_schema::{DataType, Schema as ArrowSchema};
 use futures::TryStreamExt;
 use lance::Dataset;
 use lance::dataset::refs::Ref;
-use lance::dataset::transaction::Operation;
+use lance::dataset::transaction::{Operation, UpdateMode};
 use lance_core::ROW_ADDR;
 use lance_core::datatypes::{Field as LanceField, Schema as LanceSchema};
 use lance_io::object_store::{ObjectStore, uri_to_url};
@@ -40,7 +41,8 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::table::computed_columns::{
-    DEFINITION_VERSION_META_KEY, RECORDED_AT_VERSION_META_KEY, SOURCE_SIGNATURE_META_KEY,
+    DEFINITION_VERSION_META_KEY, FUNCTION_BINDINGS_META_KEY, PENDING_FILL_SIGNATURE_META_KEY,
+    RECORDED_AT_VERSION_META_KEY, SOURCE_SIGNATURE_META_KEY, field_root, function_bindings,
 };
 use crate::{Error, Result};
 
@@ -738,12 +740,14 @@ async fn referenced_digests(dataset: &Dataset, into: &mut HashSet<String>) -> Re
     for version in dataset.versions().await? {
         let at = dataset.checkout_version(version.version).await?;
         for field in at.schema().fields_pre_order() {
-            if let Some(digest) = field
-                .metadata
-                .get(SOURCE_SIGNATURE_META_KEY)
-                .and_then(|value| value.strip_prefix(SIDECAR_REF))
-            {
-                into.insert(digest.to_string());
+            for key in [SOURCE_SIGNATURE_META_KEY, PENDING_FILL_SIGNATURE_META_KEY] {
+                if let Some(digest) = field
+                    .metadata
+                    .get(key)
+                    .and_then(|value| value.strip_prefix(SIDECAR_REF))
+                {
+                    into.insert(digest.to_string());
+                }
             }
         }
     }
@@ -820,6 +824,10 @@ pub struct StalenessPlan {
     pub dirty: HashSet<u32>,
     /// Current-signature fragments with only some rows dirty.
     pub row_dirty: RowStateMap,
+    /// Retained values are current, but unassigned inserted rows need filling.
+    /// These signatures become completed stamps only after a full null-fill.
+    #[serde(default)]
+    pub pending_fill: SignatureMap,
     /// Fragments a compaction produced from fresh ones, at their current
     /// signature: not dirty, and for the seal to record.
     pub inherited: SignatureMap,
@@ -1174,13 +1182,29 @@ pub async fn staleness_against(
     let mut inherited = carried.inherited;
     let mut dirty = carried.dirty_products;
     let mut row_dirty = RowStateMap::new();
+    let pending = match field_meta(dataset, column, PENDING_FILL_SIGNATURE_META_KEY) {
+        Some(reference) if unrecorded => {
+            let state = match reference.strip_prefix(SIDECAR_REF) {
+                Some(digest) => read_sidecar(dataset, digest).await.ok(),
+                None => None,
+            };
+            state
+                .filter(|state| state.row_state.is_empty() && state.basis.is_empty())
+                .map(|state| state.signatures)
+                .unwrap_or_default()
+        }
+        _ => SignatureMap::new(),
+    };
+    let mut pending_fill = SignatureMap::new();
     let mut live = HashSet::new();
     let bases = Bases::of(dataset)?;
     for fragment in dataset.get_fragments() {
         let id = fragment.id() as u32;
         live.insert(id);
         let current = fragment_input_signature(&bases, fragment.metadata(), inputs)?;
-        if stored.get(&id).or_else(|| inherited.get(&id)) != Some(&current) {
+        if !stored.contains_key(&id) && !dirty.contains(&id) && pending.get(&id) == Some(&current) {
+            pending_fill.insert(id, current);
+        } else if stored.get(&id).or_else(|| inherited.get(&id)) != Some(&current) {
             dirty.insert(id);
         } else if let Some(rows) = row_state.get(&id) {
             row_dirty.insert(id, rows.clone());
@@ -1192,6 +1216,7 @@ pub async fn staleness_against(
         recompute_all: false,
         dirty,
         row_dirty,
+        pending_fill,
         inherited,
     })
 }
@@ -1263,18 +1288,302 @@ pub async fn record_freshness(
     })
 }
 
+/// The source of a just-committed write whose retained Function values may
+/// still be fresh. The fields must describe the actual write, including its
+/// join keys; they must not be inferred from a later table snapshot.
+pub enum FunctionWrite<'a> {
+    /// Assignments executed by Lance's update builder.
+    Update { columns: &'a [String] },
+    /// The source schema and join columns executed by Lance's merge builder.
+    Merge {
+        source_schema: &'a ArrowSchema,
+        on: &'a [String],
+        /// The insertion count from the same committed merge result.
+        num_inserted_rows: u64,
+    },
+}
+
+impl FunctionWrite<'_> {
+    fn writes_root(&self, root: &str) -> Result<bool> {
+        match self {
+            Self::Update { columns } => columns.iter().try_fold(false, |found, column| {
+                Ok(found || field_root(column)? == root)
+            }),
+            Self::Merge { source_schema, .. } => Ok(source_schema.field_with_name(root).is_ok()),
+        }
+    }
+
+    fn preserves_input(&self, path: &str, schema: &ArrowSchema) -> Result<bool> {
+        let parts = lance_core::datatypes::parse_field_path(path)?;
+        let root = field_root(path)?;
+        if !self.writes_root(&root)? {
+            return Ok(true);
+        }
+        let Self::Merge {
+            source_schema, on, ..
+        } = self
+        else {
+            return Ok(false);
+        };
+        if parts.len() != 1 || !on.contains(&root) {
+            return Ok(false);
+        }
+        let target = schema.field_with_name(&root)?;
+        let source = source_schema.field_with_name(&root)?;
+        // Join equality must preserve the Function's exact input. In particular,
+        // floating-point joins can equate different signed zeros or NaN payloads.
+        // Extension types can also define equality over a decoded representation.
+        Ok(source.data_type() == target.data_type()
+            && !source
+                .metadata()
+                .contains_key(lance_arrow::ARROW_EXT_NAME_KEY)
+            && !target
+                .metadata()
+                .contains_key(lance_arrow::ARROW_EXT_NAME_KEY)
+            && matches!(
+                target.data_type(),
+                DataType::Boolean
+                    | DataType::Int8
+                    | DataType::Int16
+                    | DataType::Int32
+                    | DataType::Int64
+                    | DataType::UInt8
+                    | DataType::UInt16
+                    | DataType::UInt32
+                    | DataType::UInt64
+                    | DataType::Utf8
+                    | DataType::LargeUtf8
+                    | DataType::Binary
+                    | DataType::LargeBinary
+                    | DataType::FixedSizeBinary(_)
+            ))
+    }
+}
+
+/// Preserve Function freshness after an input-preserving update or merge.
+///
+/// Call this on the exact dataset returned by the write, before any subsequent
+/// operation. `write` must describe that write's real assignments or source.
+/// The successful transaction's read version supplies the source freshness,
+/// including when the write retried. Only fresh source fragments are carried;
+/// partial repairs and unknown input equality remain stale. Inserted rows keep
+/// NULL outputs and carry a pending-fill signature instead of a completed stamp.
+///
+/// All siblings are stamped in one version-fenced metadata commit. Failure is
+/// an optimization miss: callers must retain the successful data-write result,
+/// rather than report a failed write that a client might repeat.
+///
+/// ```
+/// use lance::Dataset;
+/// use lancedb::table::freshness::{FunctionWrite, preserve_function_freshness};
+/// # async fn after_label_update(dataset: &mut Dataset) {
+/// let columns = vec!["label".to_string()];
+/// if let Err(error) = preserve_function_freshness(
+///     dataset, FunctionWrite::Update { columns: &columns },
+/// ).await {
+///     log::warn!("freshness preservation skipped: {error}");
+/// }
+/// # }
+/// ```
+pub async fn preserve_function_freshness(
+    dataset: &mut Dataset,
+    write: FunctionWrite<'_>,
+) -> Result<()> {
+    let schema = ArrowSchema::from(dataset.schema());
+    let bindings = function_bindings(&schema)?;
+    if bindings.is_empty() {
+        return Ok(());
+    }
+    let committed_version = dataset.version().version;
+    let Some(transaction) = dataset
+        .read_transaction_by_version(committed_version)
+        .await?
+    else {
+        return Ok(());
+    };
+    let Operation::Update {
+        removed_fragment_ids,
+        updated_fragments,
+        new_fragments,
+        update_mode: Some(UpdateMode::RewriteRows),
+        ..
+    } = &transaction.operation
+    else {
+        return Ok(());
+    };
+    if new_fragments.is_empty() {
+        return Ok(());
+    }
+    let before = dataset.checkout_version(transaction.read_version).await?;
+    if before.schema().metadata.get(FUNCTION_BINDINGS_META_KEY)
+        != dataset.schema().metadata.get(FUNCTION_BINDINGS_META_KEY)
+    {
+        return Ok(());
+    }
+    let before_schema = ArrowSchema::from(before.schema());
+    let sources = removed_fragment_ids
+        .iter()
+        .copied()
+        .chain(updated_fragments.iter().map(|fragment| fragment.id))
+        .collect::<HashSet<_>>();
+    // Commit assigns fragment IDs. Match only this transaction's files, not
+    // unrelated appends that may have committed while it was being written.
+    let live_fragments = dataset.get_fragments();
+    let produced = new_fragments
+        .iter()
+        .map(|fragment| {
+            live_fragments
+                .iter()
+                .find(|live| live.metadata().files == fragment.files)
+                .map(|live| live.id() as u32)
+                .ok_or_else(|| {
+                    invalid("written Function fragment is missing from its commit".into())
+                })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let live = live_fragments
+        .iter()
+        .map(|fragment| fragment.id() as u32)
+        .collect::<HashSet<_>>();
+    let mut pending = Vec::new();
+    for binding in bindings {
+        let paths = binding
+            .inputs()
+            .iter()
+            .map(|input| input.field_path.clone())
+            .collect::<Vec<_>>();
+        let mut preserved = true;
+        for path in &paths {
+            preserved &= write.preserves_input(path, &before_schema)?;
+        }
+        // Even a join-key output can supply a non-NULL value to an insert.
+        // Those values were not computed under this binding.
+        for name in binding
+            .outputs()
+            .iter()
+            .map(|output| output.output_name.as_str())
+            .chain(
+                binding
+                    .assignment()
+                    .map(|assignment| assignment.output_name.as_str()),
+            )
+        {
+            preserved &= !write.writes_root(name)?;
+        }
+        if !preserved {
+            continue;
+        }
+        let old_inputs = fields_for_paths(before.schema(), &paths)?;
+        let new_inputs = fields_for_paths(dataset.schema(), &paths)?;
+        for output in binding.outputs() {
+            let column = &output.output_name;
+            let (Some(old_field), Some(new_field)) = (
+                before.schema().field(column),
+                dataset.schema().field(column),
+            ) else {
+                continue;
+            };
+            if old_field.metadata != new_field.metadata {
+                continue;
+            }
+            let StoredFreshnessState::Present { mut state, .. } =
+                stored_freshness_state(&before, column).await
+            else {
+                continue;
+            };
+            let stale =
+                staleness_against(&before, column, binding.binding_id(), &old_inputs).await?;
+            if stale.recompute_all
+                || sources.iter().any(|id| {
+                    before.get_fragment(*id as usize).is_none() || stale.needs_recompute(*id as u32)
+                })
+            {
+                continue;
+            }
+            // Advancing recorded_at must also carry unrelated compactions
+            // already proven fresh at the write's source version.
+            for (id, signature) in stale.inherited {
+                if signature_of(dataset, id, &new_inputs)?.as_ref() == Some(&signature) {
+                    state.signatures.insert(id, signature);
+                }
+            }
+            let needs_fill = matches!(write, FunctionWrite::Merge { num_inserted_rows, .. } if num_inserted_rows > 0)
+                || sources
+                    .iter()
+                    .any(|id| stale.pending_fill.contains_key(&(*id as u32)));
+            let mut pending_fill = stale.pending_fill;
+            let produced_signatures = signatures_for(dataset, &produced, &new_inputs)?;
+            if needs_fill {
+                pending_fill.extend(produced_signatures);
+            } else {
+                state.signatures.extend(produced_signatures);
+            }
+            pending_fill.retain(|id, _| live.contains(id));
+            state.signatures.retain(|id, _| live.contains(id));
+            state.row_state.retain(|id, _| live.contains(id));
+            state.basis.clear();
+            let reference = write_sidecar(dataset, &state.normalize()?).await?;
+            let fill_reference = if pending_fill.is_empty() {
+                None
+            } else {
+                Some(
+                    write_sidecar(
+                        dataset,
+                        &FreshnessState {
+                            signatures: pending_fill,
+                            ..Default::default()
+                        },
+                    )
+                    .await?,
+                )
+            };
+            pending.push((
+                column.clone(),
+                binding.binding_id().to_string(),
+                reference,
+                fill_reference,
+            ));
+        }
+    }
+    if pending.is_empty() {
+        return Ok(());
+    }
+    let mut metadata = dataset.update_field_metadata();
+    for (column, definition, reference, fill_reference) in pending {
+        metadata = metadata.update(
+            &column,
+            [
+                (SOURCE_SIGNATURE_META_KEY.to_string(), Some(reference)),
+                (PENDING_FILL_SIGNATURE_META_KEY.to_string(), fill_reference),
+                (DEFINITION_VERSION_META_KEY.to_string(), Some(definition)),
+                (
+                    RECORDED_AT_VERSION_META_KEY.to_string(),
+                    Some(committed_version.to_string()),
+                ),
+            ],
+        )?;
+    }
+    metadata
+        .with_expected_latest_version(committed_version)
+        .await?;
+    Ok(())
+}
+
 /// Merge `entries` into the column's stored map and stamp the definition and
 /// the version the map now describes. Merges rather than replaces: the
 /// entries cover only the fragments this refresh wrote, and every fragment it
 /// skipped keeps the entry an earlier one left. Entries for fragments no
 /// longer in the manifest are dropped, so compaction cannot grow the map
-/// without bound. Returns the version the stamp landed at.
+/// without bound. When the definition changes, only the newly computed entries
+/// are trusted. Returns the version the stamp landed at.
 pub async fn write_signatures(
     dataset: &mut Dataset,
     column: &str,
     definition_version: &str,
     entries: SignatureMap,
 ) -> Result<u64> {
+    let definition_changed = field_meta(dataset, column, DEFINITION_VERSION_META_KEY)
+        .is_some_and(|version| version != definition_version);
     let live: HashSet<u32> = dataset
         .get_fragments()
         .iter()
@@ -1291,6 +1600,9 @@ pub async fn write_signatures(
             FreshnessState::default()
         }
     };
+    if definition_changed {
+        state = FreshnessState::default();
+    }
     let recomputed: HashSet<u32> = entries.keys().copied().collect();
     let signatures_changed = entries
         .iter()
@@ -1359,7 +1671,7 @@ async fn write_freshness_state(
         (reference, Some(digest))
     };
     let describes = dataset.version().version;
-    let updates = vec![
+    let mut updates = vec![
         (SOURCE_SIGNATURE_META_KEY.to_string(), Some(signature_ref)),
         (
             DEFINITION_VERSION_META_KEY.to_string(),
@@ -1370,6 +1682,13 @@ async fn write_freshness_state(
             Some(describes.to_string()),
         ),
     ];
+    // Pending-fill proofs vouch for retained outputs under the old definition.
+    // A partial publication must not make them valid under its new stamp.
+    if field_meta(dataset, column, DEFINITION_VERSION_META_KEY)
+        .is_some_and(|version| version != definition_version)
+    {
+        updates.push((PENDING_FILL_SIGNATURE_META_KEY.to_string(), None));
+    }
     let builder = dataset.update_field_metadata().update(column, updates)?;
     match expected_latest_version {
         Some(expected) => builder.with_expected_latest_version(expected).await?,
@@ -1740,6 +2059,742 @@ mod tests {
 
     const COLUMN: &str = "doubled";
     const EXPRESSION: &str = "value * 2";
+
+    async fn fresh_function_table() -> crate::Table {
+        use crate::table::computed_columns::test_support::{stamp_bindings, text_features_binding};
+
+        let batch = arrow_array::record_batch!(
+            ("title", Utf8, ["a", "b", "c", "d"]),
+            ("body", Utf8, [Some("x"), None, Some("z"), Some("w")]),
+            ("search_text", Utf8, ["a x", "b", "c z", "d w"]),
+            ("search_token_count", Int64, [2, 1, 2, 2]),
+            ("spare", Int32, [0, 0, 0, 0])
+        )
+        .unwrap();
+        let table = crate::connect("memory://")
+            .execute()
+            .await
+            .unwrap()
+            .create_table("fresh_functions", batch)
+            .write_options(crate::table::WriteOptions {
+                lance_write_params: Some(WriteParams {
+                    max_rows_per_file: 2,
+                    ..Default::default()
+                }),
+            })
+            .execute()
+            .await
+            .unwrap();
+        let binding = text_features_binding("");
+        stamp_bindings(&table, std::slice::from_ref(&binding)).await;
+        let native = table.as_native().unwrap();
+        let mut dataset = native.dataset.get().await.unwrap().as_ref().clone();
+        let inputs = fields_for_paths(dataset.schema(), &["title".into(), "body".into()]).unwrap();
+        let signatures = signatures_for(&dataset, &[0, 1], &inputs).unwrap();
+        for output in binding.outputs() {
+            write_signatures(
+                &mut dataset,
+                &output.output_name,
+                binding.binding_id(),
+                signatures.clone(),
+            )
+            .await
+            .unwrap();
+        }
+        native.dataset.update(dataset);
+        table
+    }
+
+    async fn function_plan(dataset: &Dataset, column: &str) -> StalenessPlan {
+        staleness_against(
+            dataset,
+            column,
+            "fb_01K3TEXT",
+            &fields_for_paths(dataset.schema(), &["title".into(), "body".into()]).unwrap(),
+        )
+        .await
+        .unwrap()
+    }
+
+    #[rstest::rstest]
+    #[case::nullable_text("text")]
+    #[case::nested_text("nested")]
+    #[case::blob("blob")]
+    #[tokio::test]
+    async fn function_write_preserves_complex_omitted_inputs(
+        #[case] kind: &str,
+        #[values(false, true)] merge: bool,
+    ) {
+        use arrow_array::{
+            ArrayRef, Int32Array, Int64Array, RecordBatch, StringArray, StructArray,
+        };
+
+        use crate::table::computed_columns::test_support::{stamp_bindings, text_features_binding};
+
+        let texts = Arc::new(StringArray::from(vec![
+            Some("alpha"),
+            None,
+            Some(""),
+            Some("delta"),
+        ]));
+        let (body_field, body): (ArrowField, ArrayRef) = match kind {
+            "text" => (ArrowField::new("body", DataType::Utf8, true), texts),
+            "nested" => {
+                let fields = vec![ArrowField::new("text", DataType::Utf8, true)].into();
+                let body = StructArray::new(
+                    fields,
+                    vec![texts],
+                    Some(arrow_buffer::NullBuffer::from(vec![
+                        true, false, true, true,
+                    ])),
+                );
+                (
+                    ArrowField::new("body", body.data_type().clone(), true),
+                    Arc::new(body),
+                )
+            }
+            "blob" => {
+                let mut builder = lance::blob::BlobArrayBuilder::new(4);
+                builder.push_bytes(b"alpha").unwrap();
+                builder.push_null().unwrap();
+                builder.push_bytes(b"").unwrap();
+                builder.push_bytes(b"delta").unwrap();
+                (
+                    lance::blob::blob_field("body", true),
+                    builder.finish().unwrap(),
+                )
+            }
+            _ => unreachable!(),
+        };
+        let batch = RecordBatch::try_new(
+            Arc::new(ArrowSchema::new(vec![
+                ArrowField::new("title", DataType::Utf8, false),
+                body_field.clone(),
+                ArrowField::new("search_text", DataType::Utf8, true),
+                ArrowField::new("search_token_count", DataType::Int64, true),
+                ArrowField::new("spare", DataType::Int32, false),
+            ])),
+            vec![
+                Arc::new(StringArray::from(vec!["a", "b", "c", "d"])),
+                body,
+                Arc::new(StringArray::from(vec!["alpha", "null", "empty", "delta"])),
+                Arc::new(Int64Array::from(vec![5, 0, 0, 5])),
+                Arc::new(Int32Array::from(vec![0; 4])),
+            ],
+        )
+        .unwrap();
+        let table = crate::connect("memory://")
+            .execute()
+            .await
+            .unwrap()
+            .create_table("complex_function_inputs", batch)
+            .write_options(crate::table::WriteOptions {
+                lance_write_params: Some(WriteParams {
+                    max_rows_per_file: 2,
+                    data_storage_version: Some(lance_file::version::LanceFileVersion::V2_2),
+                    ..Default::default()
+                }),
+            })
+            .execute()
+            .await
+            .unwrap();
+        let mut raw = serde_json::to_value(text_features_binding("")).unwrap();
+        let json_field =
+            lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(vec![body_field]))
+                .unwrap()
+                .fields
+                .remove(0);
+        raw["input_schema"]["fields"][1] = serde_json::to_value(&json_field).unwrap();
+        raw["inputs"][1]["arrow_type"] = serde_json::Value::String(match kind {
+            "text" => "utf8".into(),
+            "blob" => crate::function::FUNCTION_BLOB_V2_TYPE.into(),
+            _ => serde_json::to_string(&json_field.r#type).unwrap(),
+        });
+        let binding = serde_json::from_value(raw).unwrap();
+        stamp_bindings(&table, std::slice::from_ref(&binding)).await;
+        let native = table.as_native().unwrap();
+        let mut dataset = native.dataset.get().await.unwrap().as_ref().clone();
+        let inputs = fields_for_paths(dataset.schema(), &["title".into(), "body".into()]).unwrap();
+        let signatures = signatures_for(&dataset, &[0, 1], &inputs).unwrap();
+        for output in binding.outputs() {
+            write_signatures(
+                &mut dataset,
+                &output.output_name,
+                binding.binding_id(),
+                signatures.clone(),
+            )
+            .await
+            .unwrap();
+        }
+        native.dataset.update(dataset);
+        if merge {
+            let source = arrow_array::record_batch!(
+                ("title", Utf8, ["a", "b", "c", "d"]),
+                ("spare", Int32, [1, 1, 1, 1])
+            )
+            .unwrap();
+            let mut merge = table.merge_insert(&["title"]);
+            merge.when_matched_update_all(None);
+            merge
+                .execute(Box::new(RecordBatchIterator::new(
+                    [Ok(source.clone())],
+                    source.schema(),
+                )))
+                .await
+                .unwrap();
+        } else {
+            table.update().column("spare", "1").execute().await.unwrap();
+        }
+        let dataset = native.dataset.get().await.unwrap();
+        for column in ["search_text", "search_token_count"] {
+            let plan = function_plan(&dataset, column).await;
+            assert!(
+                !plan.recompute_all && plan.dirty.is_empty() && plan.pending_fill.is_empty(),
+                "{plan:?}"
+            );
+        }
+        let mut scan = dataset.scan();
+        scan.with_row_address();
+        scan.project(&["title", "search_text", "search_token_count", "body"])
+            .unwrap();
+        let mut actual = BTreeMap::new();
+        for batch in scan
+            .try_into_stream()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap()
+        {
+            let titles = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let text = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let lengths = batch
+                .column(2)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            for row in 0..batch.num_rows() {
+                assert!(!text.is_null(row) && !lengths.is_null(row));
+                let body = batch.column_by_name("body").unwrap();
+                let input = if kind == "blob" {
+                    let addresses = batch
+                        .column_by_name(ROW_ADDR)
+                        .unwrap()
+                        .as_any()
+                        .downcast_ref::<UInt64Array>()
+                        .unwrap();
+                    match dataset
+                        .take_blobs_by_addresses(&[addresses.value(row)], "body")
+                        .await
+                        .unwrap()
+                        .pop()
+                        .unwrap()
+                    {
+                        Some(file) => Some(file.read().await.unwrap().to_vec()),
+                        None => None,
+                    }
+                } else {
+                    let leaf = if kind == "nested" {
+                        body.as_any()
+                            .downcast_ref::<StructArray>()
+                            .unwrap()
+                            .column(0)
+                    } else {
+                        body
+                    };
+                    let leaf = leaf.as_any().downcast_ref::<StringArray>().unwrap();
+                    (!body.is_null(row) && !leaf.is_null(row))
+                        .then(|| leaf.value(row).as_bytes().to_vec())
+                };
+                let expected_input = match titles.value(row) {
+                    "a" => Some(b"alpha".to_vec()),
+                    "b" => None,
+                    "c" => Some(vec![]),
+                    "d" => Some(b"delta".to_vec()),
+                    _ => unreachable!(),
+                };
+                assert_eq!(input, expected_input);
+                actual.insert(
+                    titles.value(row).to_string(),
+                    (text.value(row).to_string(), lengths.value(row)),
+                );
+            }
+        }
+        assert_eq!(
+            actual,
+            BTreeMap::from([
+                ("a".into(), ("alpha".into(), 5)),
+                ("b".into(), ("null".into(), 0)),
+                ("c".into(), ("empty".into(), 0)),
+                ("d".into(), ("delta".into(), 5)),
+            ])
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::label_update(false, 1, false)]
+    #[case::label_merge(true, 1, false)]
+    #[case::identical_merge(true, 0, false)]
+    #[case::mixed_update_insert(true, 1, true)]
+    #[tokio::test]
+    async fn function_write_preserves_unchanged_inputs(
+        #[case] merge: bool,
+        #[case] spare: i32,
+        #[case] insert: bool,
+    ) {
+        use crate::query::ExecutableQuery;
+
+        let table = fresh_function_table().await;
+        let version = if merge {
+            let titles = if insert {
+                vec!["a", "c", "e"]
+            } else {
+                vec!["a", "c"]
+            };
+            let batch = arrow_array::record_batch!(
+                ("title", Utf8, titles.clone()),
+                ("spare", Int32, vec![spare; titles.len()])
+            )
+            .unwrap();
+            let mut merge = table.merge_insert(&["title"]);
+            merge.when_matched_update_all(None);
+            if insert {
+                merge.when_not_matched_insert_all();
+            }
+            merge
+                .execute(Box::new(RecordBatchIterator::new(
+                    [Ok(batch.clone())],
+                    batch.schema(),
+                )))
+                .await
+                .unwrap()
+                .version
+        } else {
+            table
+                .update()
+                .only_if("title IN ('a', 'c')")
+                .column("spare", spare.to_string())
+                .execute()
+                .await
+                .unwrap()
+                .version
+        };
+        assert_eq!(version, table.version().await.unwrap());
+        let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
+        for column in ["search_text", "search_token_count"] {
+            let stale = function_plan(&dataset, column).await;
+            assert!(
+                !stale.recompute_all && stale.dirty.is_empty() && stale.row_dirty.is_empty(),
+                "{stale:?}"
+            );
+            assert_eq!(stale.pending_fill.is_empty(), !insert, "{stale:?}");
+        }
+        let batches = table
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let mut values = BTreeMap::new();
+        for batch in batches {
+            let titles = batch
+                .column_by_name("title")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<arrow_array::StringArray>()
+                .unwrap();
+            let outputs = batch
+                .column_by_name("search_text")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<arrow_array::StringArray>()
+                .unwrap();
+            for i in 0..batch.num_rows() {
+                values.insert(
+                    titles.value(i).to_string(),
+                    (!outputs.is_null(i)).then(|| outputs.value(i).to_string()),
+                );
+            }
+        }
+        for (title, output) in [("a", "a x"), ("b", "b"), ("c", "c z"), ("d", "d w")] {
+            assert_eq!(values[title].as_deref(), Some(output));
+        }
+        assert_eq!(values.len(), if insert { 5 } else { 4 });
+        if insert {
+            assert_eq!(values["e"], None, "new rows still need Function evaluation");
+            prune_sidecars(&dataset, true).await.unwrap();
+            assert!(
+                !function_plan(&dataset, "search_text")
+                    .await
+                    .pending_fill
+                    .is_empty()
+            );
+        }
+    }
+
+    #[rstest::rstest]
+    #[case::same_definition(false)]
+    #[case::changed_definition(true)]
+    #[tokio::test]
+    async fn partial_refresh_preserves_only_current_definition(#[case] changed: bool) {
+        let table = fresh_function_table().await;
+        let batch =
+            arrow_array::record_batch!(("title", Utf8, ["a", "e"]), ("spare", Int32, [1, 1]))
+                .unwrap();
+        let mut merge = table.merge_insert(&["title"]);
+        merge.when_matched_update_all(None);
+        merge.when_not_matched_insert_all();
+        merge
+            .execute(Box::new(RecordBatchIterator::new(
+                [Ok(batch.clone())],
+                batch.schema(),
+            )))
+            .await
+            .unwrap();
+        let mut dataset = table
+            .as_native()
+            .unwrap()
+            .dataset
+            .get()
+            .await
+            .unwrap()
+            .as_ref()
+            .clone();
+        let inputs = fields_for_paths(dataset.schema(), &["title".into(), "body".into()]).unwrap();
+        let before = function_plan(&dataset, "search_text").await;
+        assert!(!before.pending_fill.is_empty());
+        assert!(before.dirty.is_empty());
+        // Refresh only the untouched fragment. Retained values elsewhere
+        // still belong to the old definition, even though their inputs match.
+        let definition = if changed {
+            "new-function-version"
+        } else {
+            "fb_01K3TEXT"
+        };
+        let pinned = dataset.clone();
+        let stale = staleness_against(&pinned, "search_text", definition, &inputs)
+            .await
+            .unwrap();
+        let computed = signatures_for(&dataset, &[1], &inputs).unwrap();
+        assert_eq!(computed.len(), 1);
+        record_freshness(
+            &mut dataset,
+            Some((&pinned, &stale)),
+            "search_text",
+            definition,
+            &inputs,
+            computed,
+        )
+        .await
+        .unwrap();
+        let after = staleness_against(&dataset, "search_text", definition, &inputs)
+            .await
+            .unwrap();
+        assert!(!after.is_dirty(1), "{after:?}");
+        if changed {
+            for fragment in dataset.get_fragments().iter().filter(|f| f.id() != 1) {
+                assert!(after.is_dirty(fragment.id() as u32), "{after:?}");
+            }
+            assert!(after.pending_fill.is_empty(), "{after:?}");
+        } else {
+            assert_eq!(after.pending_fill, before.pending_fill);
+            assert!(after.dirty.is_empty(), "{after:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn function_write_retains_pending_fill_across_another_update() {
+        let table = fresh_function_table().await;
+        let batch =
+            arrow_array::record_batch!(("title", Utf8, ["e"]), ("spare", Int32, [1])).unwrap();
+        let mut merge = table.merge_insert(&["title"]);
+        merge.when_not_matched_insert_all();
+        merge
+            .execute(Box::new(RecordBatchIterator::new(
+                [Ok(batch.clone())],
+                batch.schema(),
+            )))
+            .await
+            .unwrap();
+        table
+            .update()
+            .only_if("title = 'e'")
+            .column("spare", "2")
+            .execute()
+            .await
+            .unwrap();
+        let native = table.as_native().unwrap();
+        let mut dataset = native.dataset.get().await.unwrap().as_ref().clone();
+        let stale = function_plan(&dataset, "search_text").await;
+        assert!(stale.dirty.is_empty(), "{stale:?}");
+        assert_eq!(
+            stale.pending_fill.keys().copied().collect::<Vec<_>>(),
+            vec![3]
+        );
+
+        write_signatures(
+            &mut dataset,
+            "search_text",
+            "fb_01K3TEXT",
+            stale.pending_fill,
+        )
+        .await
+        .unwrap();
+        assert!(
+            function_plan(&dataset, "search_text")
+                .await
+                .pending_fill
+                .is_empty()
+        );
+        // An older pending-fill reference must not override a later completed
+        // stamp or make a genuinely changed input fresh.
+        let changed = lance::dataset::UpdateBuilder::new(Arc::new(dataset))
+            .update_where("title = 'e'")
+            .unwrap()
+            .set("body", "'changed'")
+            .unwrap()
+            .build()
+            .unwrap()
+            .execute()
+            .await
+            .unwrap();
+        assert!(
+            function_plan(&changed.new_dataset, "search_text")
+                .await
+                .is_dirty(4)
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::dirty_source("a", true)]
+    #[case::unrelated_dirty_fragment("c", false)]
+    #[tokio::test]
+    async fn function_write_preserves_pending_repairs(
+        #[case] title: &str,
+        #[case] dirty_product: bool,
+    ) {
+        let table = fresh_function_table().await;
+        let native = table.as_native().unwrap();
+        let mut dataset = native.dataset.get().await.unwrap().as_ref().clone();
+        let inputs = fields_for_paths(dataset.schema(), &["title".into(), "body".into()]).unwrap();
+        let signature = signatures_for(&dataset, &[0], &inputs).unwrap()[&0].clone();
+        begin_row_repair(
+            &mut dataset,
+            "search_text",
+            "fb_01K3TEXT",
+            &inputs,
+            "pending-refresh",
+            &BTreeMap::from([(
+                0,
+                RowRepair {
+                    signature,
+                    rows: RoaringBitmap::from_iter([0]),
+                },
+            )]),
+        )
+        .await
+        .unwrap();
+        let prior = stored_row_states(&dataset, "search_text").await;
+        native.dataset.update(dataset);
+        table
+            .update()
+            .only_if(format!("title = '{title}'"))
+            .column("spare", "1")
+            .execute()
+            .await
+            .unwrap();
+        let dataset = native.dataset.get().await.unwrap();
+        let stale = function_plan(&dataset, "search_text").await;
+        assert_eq!(stale.is_dirty(2), dirty_product, "{stale:?}");
+        assert_eq!(stored_row_states(&dataset, "search_text").await, prior);
+    }
+
+    #[rstest::rstest]
+    #[case::input("body", "'changed'")]
+    #[case::output("search_text", "'uncomputed'")]
+    #[tokio::test]
+    async fn function_write_does_not_certify_changed_values(
+        #[case] column: &str,
+        #[case] value: &str,
+    ) {
+        let table = fresh_function_table().await;
+        let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
+        let result = lance::dataset::UpdateBuilder::new(dataset)
+            .update_where("title = 'a'")
+            .unwrap()
+            .set(column, value)
+            .unwrap()
+            .build()
+            .unwrap()
+            .execute()
+            .await
+            .unwrap();
+        let mut after = result.new_dataset.as_ref().clone();
+        let version = after.version().version;
+        preserve_function_freshness(
+            &mut after,
+            FunctionWrite::Update {
+                columns: &[column.into()],
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(after.version().version, version);
+        assert!(function_plan(&after, "search_text").await.is_dirty(2));
+    }
+
+    #[rstest::rstest]
+    #[case::input_same_rows("body", "a", true)]
+    #[case::input_other_rows("body", "c", false)]
+    #[case::output_same_rows("search_text", "a", true)]
+    #[case::output_other_rows("search_text", "c", false)]
+    #[tokio::test]
+    async fn function_write_preserves_prior_invalidation(
+        #[case] changed_column: &str,
+        #[case] title: &str,
+        #[case] dirty_product: bool,
+    ) {
+        let table = fresh_function_table().await;
+        let native = table.as_native().unwrap();
+        let result = lance::dataset::UpdateBuilder::new(native.dataset.get().await.unwrap())
+            .update_where("title = 'a'")
+            .unwrap()
+            .set(changed_column, "'changed'")
+            .unwrap()
+            .build()
+            .unwrap()
+            .execute()
+            .await
+            .unwrap();
+        assert!(
+            function_plan(&result.new_dataset, "search_text")
+                .await
+                .is_dirty(2)
+        );
+        native.dataset.update(result.new_dataset.as_ref().clone());
+
+        table
+            .update()
+            .only_if(format!("title = '{title}'"))
+            .column("spare", "1")
+            .execute()
+            .await
+            .unwrap();
+        let dataset = native.dataset.get().await.unwrap();
+        let stale = function_plan(&dataset, "search_text").await;
+        assert_eq!(stale.is_dirty(3), dirty_product, "{stale:?}");
+        if !dirty_product {
+            assert!(
+                stale.is_dirty(2),
+                "the earlier invalidation was lost: {stale:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn function_write_keeps_a_changed_definition_stale() {
+        let table = fresh_function_table().await;
+        let native = table.as_native().unwrap();
+        let mut dataset = native.dataset.get().await.unwrap().as_ref().clone();
+        dataset
+            .update_field_metadata()
+            .update(
+                "search_text",
+                [(DEFINITION_VERSION_META_KEY, Some("old-function-version"))],
+            )
+            .unwrap()
+            .await
+            .unwrap();
+        native.dataset.update(dataset);
+        table.update().column("spare", "1").execute().await.unwrap();
+        assert!(
+            function_plan(native.dataset.get().await.unwrap().as_ref(), "search_text")
+                .await
+                .recompute_all
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::delete(false)]
+    #[case::restore(true)]
+    #[tokio::test]
+    async fn function_write_cannot_stamp_over_a_concurrent_commit(#[case] restore: bool) {
+        let table = fresh_function_table().await;
+        let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
+        let before_version = dataset.version().version;
+        let result = lance::dataset::UpdateBuilder::new(dataset)
+            .update_where("title = 'a'")
+            .unwrap()
+            .set("spare", "1")
+            .unwrap()
+            .build()
+            .unwrap()
+            .execute()
+            .await
+            .unwrap();
+        let mut staged = result.new_dataset.as_ref().clone();
+        let mut concurrent = staged.clone();
+        if restore {
+            concurrent = concurrent.checkout_version(before_version).await.unwrap();
+            concurrent.restore().await.unwrap();
+        } else {
+            concurrent.delete("title = 'd'").await.unwrap();
+        }
+        let current_version = concurrent.version().version;
+        let before = field_meta(&concurrent, "search_text", SOURCE_SIGNATURE_META_KEY);
+        assert!(
+            preserve_function_freshness(
+                &mut staged,
+                FunctionWrite::Update {
+                    columns: &["spare".into()]
+                }
+            )
+            .await
+            .is_err()
+        );
+        concurrent.checkout_latest().await.unwrap();
+        assert_eq!(concurrent.version().version, current_version);
+        assert_eq!(
+            field_meta(&concurrent, "search_text", SOURCE_SIGNATURE_META_KEY),
+            before
+        );
+    }
+
+    #[tokio::test]
+    async fn function_write_retains_inherited_compaction_freshness() {
+        let table = fresh_function_table().await;
+        let native = table.as_native().unwrap();
+        let mut dataset = native.dataset.get().await.unwrap().as_ref().clone();
+        compact(&mut dataset).await;
+        assert!(
+            !function_plan(&dataset, "search_text")
+                .await
+                .inherited
+                .is_empty()
+        );
+        native.dataset.update(dataset);
+        table
+            .update()
+            .only_if("title = 'a'")
+            .column("spare", "1")
+            .execute()
+            .await
+            .unwrap();
+        let dataset = native.dataset.get().await.unwrap();
+        let stale = function_plan(&dataset, "search_text").await;
+        assert!(stale.dirty.is_empty(), "{stale:?}");
+        assert_eq!(dataset.get_fragments().len(), 2);
+    }
 
     /// Two fragments of 50 rows, `id` and `value`, with `doubled` declared
     /// all-null against `value`, tracked from birth.
