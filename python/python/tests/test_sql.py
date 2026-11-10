@@ -259,7 +259,34 @@ async def test_async_query_preserves_arrow_scalar_values(raw, named):
     assert sent.column(0).cast(pa.int64()).to_pylist() == [raw]
 
 
-def test_parameters_reach_the_server_as_the_values_that_were_sent():
+@pytest.mark.asyncio
+@pytest.mark.parametrize("named", [False, True])
+@pytest.mark.parametrize(
+    "value",
+    [
+        pa.scalar(None, pa.list_(pa.float32(), 2)),
+        pa.scalar(None, pa.list_(pa.int64())),
+        pa.scalar(None, pa.map_(pa.string(), pa.int64())),
+        pa.scalar([[1, None], None], pa.list_(pa.list_(pa.int64()))),
+    ],
+    ids=["null-vector", "null-list", "null-map", "nested-null-list"],
+)
+async def test_async_query_preserves_arrow_scalars_with_nulls(value, named):
+    native = FakeNativeConnection()
+    connection = AsyncConnection(native)
+    await connection.execute_query_async(
+        "SELECT $value" if named else "SELECT $1",
+        parameters={"value": value} if named else [value],
+    )
+    (sent,) = native.parameters
+    assert sent.num_rows == 1
+    assert sent.schema.names == ["value" if named else "1"]
+    assert sent.column(0).type == value.type
+    assert sent.column(0)[0].equals(value)
+
+
+@pytest.mark.parametrize("named", [False, True])
+def test_parameters_reach_the_server_as_the_values_that_were_sent(named):
     """A round trip through the bindings against a Flight server that answers
     each exchange with the parameter row it received."""
     flight = pytest.importorskip("pyarrow.flight")
@@ -279,6 +306,15 @@ def test_parameters_reach_the_server_as_the_values_that_were_sent():
             writer.close()
 
     vector = np.array([0.1, 1e-45, -0.0], dtype=np.float32)
+    parameters = {
+        "vector": vector,
+        "k": 10,
+        "time": pa.scalar(1001, pa.time64("ns")),
+        "null_vector": pa.scalar(None, pa.list_(pa.float32(), 2)),
+        "null_list": pa.scalar(None, pa.list_(pa.int64())),
+        "null_map": pa.scalar(None, pa.map_(pa.string(), pa.int64())),
+        "nested_list": pa.scalar([[1, None], None], pa.list_(pa.list_(pa.int64()))),
+    }
     with EchoServer() as server:
         db = lancedb.connect(
             "db://analytics",
@@ -288,22 +324,26 @@ def test_parameters_reach_the_server_as_the_values_that_were_sent():
         )
         echoed = db.execute_query(
             "SELECT echo",
-            parameters={
-                "vector": vector,
-                "k": 10,
-                "time": pa.scalar(1001, pa.time64("ns")),
-            },
+            parameters=parameters if named else list(parameters.values()),
         ).read_all()
         (command,) = server.commands
 
     assert b"CommandStatementQuery" in command
     assert b"SELECT echo" in command
+    assert echoed.schema.names == (
+        list(parameters) if named else [str(i + 1) for i in range(len(parameters))]
+    )
+    echoed = echoed.rename_columns(list(parameters))
     assert echoed.schema.field("vector").type == pa.list_(pa.float32(), 3)
     received = echoed.column("vector").combine_chunks().flatten().to_numpy()
     assert received.view(np.uint32).tolist() == vector.view(np.uint32).tolist()
     assert echoed.column("k").to_pylist() == [10]
     assert echoed.schema.field("time").type == pa.time64("ns")
     assert echoed.column("time").cast(pa.int64()).to_pylist() == [1001]
+    for name in ["null_vector", "null_list", "null_map", "nested_list"]:
+        value = parameters[name]
+        assert echoed.schema.field(name).type == value.type
+        assert echoed.column(name)[0].equals(value)
 
 
 @pytest.mark.parametrize("job_id", [None, "sql-job-1"])
