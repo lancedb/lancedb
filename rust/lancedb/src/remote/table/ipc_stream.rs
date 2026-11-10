@@ -108,7 +108,7 @@ impl IpcStreamBody {
             batches: self.batches,
             rows: self.rows,
             table_version: self.table_version,
-            source,
+            source: source.into(),
         }
     }
 }
@@ -596,6 +596,50 @@ mod tests {
             matches!(error, Error::ResponseInterrupted { batches: 1, .. }),
             "{error:?}"
         );
+    }
+
+    /// A server without multi-vector support gets a request per vector, and the
+    /// plan merging the responses shares an error between its partitions.
+    #[tokio::test]
+    async fn multi_vector_query_keeps_the_interruption() {
+        let server = serve().await;
+        let messages = id_messages();
+        // Which vector gets which response does not matter.
+        server.reply([
+            Reply::Head(Some(ARROW_STREAM_CONTENT_TYPE)),
+            Reply::Chunk(messages.concat()),
+            Reply::End,
+            Reply::Head(Some(ARROW_STREAM_CONTENT_TYPE)),
+            Reply::Chunk(messages[..2].concat()),
+            Reply::Abort,
+        ]);
+
+        let results = server
+            .table
+            .query()
+            .nearest_to(&[0.0f32, 0.0])
+            .unwrap()
+            .add_query_vector(&[1.0f32, 1.0])
+            .unwrap()
+            .execute()
+            .await
+            .unwrap();
+        let error = results.try_collect::<Vec<_>>().await.unwrap_err();
+
+        let Error::ResponseInterrupted {
+            request_id,
+            batches,
+            rows,
+            table_version,
+            source,
+        } = error
+        else {
+            panic!("expected an interrupted response, got {error:?}");
+        };
+        assert!(!request_id.is_empty());
+        assert_eq!((batches, rows, table_version), (1, 1, Some(7)));
+        assert!(source.is::<reqwest::Error>(), "{source}");
+        assert_eq!(server.queries.lock().unwrap().len(), 2);
     }
 
     #[tokio::test]

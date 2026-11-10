@@ -184,9 +184,9 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
                             *batches,
                             *rows,
                             *table_version,
-                            is_transport_error(source.as_ref()),
+                            is_transport_error(&**source),
                         ))?;
-                    let cause = http_from_rust_error(py, source.as_ref(), request_id, None)?;
+                    let cause = http_from_rust_error(py, &**source, request_id, None)?;
                     error.setattr(intern!(py, "__cause__"), cause)?;
                     Err(PyErr::from_value(error))
                 }),
