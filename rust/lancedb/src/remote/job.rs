@@ -13,7 +13,7 @@ use serde::Deserialize;
 
 use crate::database::JobDescription;
 use crate::error::{Error, JobFailure, Result};
-use crate::job::{JobEventsRequest, JobHandle, TerminalResult};
+use crate::job::{JobEventsRequest, JobHandle, JobProgressCallback, TerminalResult};
 use crate::remote::client::{HttpSend, RequestResultExt, RestfulLanceDbClient};
 
 /// Delay before the second job-state poll; doubles up to [`MAX_POLL_INTERVAL`].
@@ -67,14 +67,18 @@ pub(super) fn job_state_to_client(state: &str) -> String {
 
 /// The server's account of why a job failed. Absent from older servers, which
 /// report only the terminal state.
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub(super) struct ReportedFailure {
     #[serde(default)]
     phase: Option<String>,
     #[serde(default)]
     message: Option<String>,
     #[serde(default)]
+    traceback: Option<String>,
+    #[serde(default)]
     retryable: Option<bool>,
+    #[serde(default)]
+    sql_job_id: Option<String>,
 }
 
 /// Forward-compatible `/v1/jobs/pause` wire envelope.
@@ -100,7 +104,7 @@ pub(super) struct ResumeJobResponse {
 }
 
 /// Forward-compatible `/v1/jobs/describe` wire envelope.
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub(super) struct DescribeJobResponse {
     #[serde(default)]
     pub(super) job_id: String,
@@ -109,6 +113,16 @@ pub(super) struct DescribeJobResponse {
     pub(super) job_state: String,
     #[serde(default)]
     pub(super) creation_ms: i64,
+    #[serde(default)]
+    pub(super) progress: Option<serde_json::Value>,
+    #[serde(default)]
+    pub(super) phase: Option<String>,
+    #[serde(default)]
+    pub(super) queue_reason: Option<String>,
+    #[serde(default)]
+    pub(super) waiting_for_job_id: Option<String>,
+    #[serde(default)]
+    pub(super) paused_at_millis: Option<i64>,
     #[serde(default)]
     pub(super) spec: serde_json::Value,
     #[serde(default)]
@@ -122,7 +136,9 @@ impl ReportedFailure {
         JobFailure {
             phase: self.phase,
             message: self.message,
+            traceback: self.traceback,
             retryable: self.retryable,
+            sql_job_id: self.sql_job_id,
             source: None,
         }
     }
@@ -144,6 +160,11 @@ impl DescribeJobResponse {
             job_type: self.job_type,
             state: JobState::from(self.job_state.as_str()).client_label(),
             creation_ms: self.creation_ms,
+            progress: self.progress,
+            phase: self.phase,
+            queue_reason: self.queue_reason,
+            waiting_for_job_id: self.waiting_for_job_id,
+            paused_at_millis: self.paused_at_millis,
             spec: self.spec,
             result: self.result,
             failure: self.failure.map(ReportedFailure::into_job_failure),
@@ -226,18 +247,34 @@ impl<S: HttpSend> JobHandle for RemoteJob<S> {
     }
 
     async fn wait(&self) -> Result<TerminalResult> {
+        self.wait_with_progress(None).await
+    }
+
+    async fn wait_with_progress(
+        &self,
+        progress: Option<JobProgressCallback>,
+    ) -> Result<TerminalResult> {
         let mut interval = INITIAL_POLL_INTERVAL;
         loop {
             let (request_id, description) = self.fetch_description().await?;
+            if let Some(progress) = &progress {
+                if let Ok(mut callback) = progress.lock() {
+                    callback(&description.clone().into_description());
+                } else {
+                    log::warn!("job {} progress callback lock was poisoned", self.job_id);
+                }
+            }
             match description.state() {
                 JobState::Done => return Ok(description.into_terminal_result(request_id)),
                 JobState::Failed => {
                     return Err(Error::JobFailed {
                         job_id: Some(self.job_id.clone()),
-                        failure: description
-                            .failure
-                            .map(ReportedFailure::into_job_failure)
-                            .unwrap_or_default(),
+                        failure: Box::new(
+                            description
+                                .failure
+                                .map(ReportedFailure::into_job_failure)
+                                .unwrap_or_default(),
+                        ),
                     });
                 }
                 JobState::Cancelled => {
@@ -270,15 +307,15 @@ impl<S: HttpSend> JobHandle for RemoteJob<S> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use async_trait::async_trait;
 
     use crate::Result;
     use crate::function::{FunctionVersion, RefreshColumnResult};
-    use crate::job::{Job, JobHandle, TerminalResult};
+    use crate::job::{Job, JobHandle, JobProgressCallback, TerminalResult};
     use crate::remote::client::test_utils::client_with_handler;
 
     use super::{DescribeJobResponse, RemoteJob};
@@ -370,5 +407,113 @@ mod tests {
         let response: DescribeJobResponse =
             serde_json::from_str(FUNCTION_JOB).expect("function job fixture");
         assert_eq!(response.job_state, "DONE");
+    }
+
+    #[test]
+    fn describe_decodes_progress_queue_and_pause_fields() {
+        let response: DescribeJobResponse = serde_json::from_str(
+            r#"{
+                "job_id":"job-1",
+                "job_type":"refresh_column",
+                "job_state":"IN_PROGRESS",
+                "creation_ms":10,
+                "progress":{"rows_planned":10,"rows_computed":4},
+                "phase":"initializing",
+                "queue_reason":"waiting for capacity",
+                "waiting_for_job_id":"job-0",
+                "paused_at_millis":20
+            }"#,
+        )
+        .expect("progress fields");
+        let description = response.into_description();
+        let snapshot = description.progress_snapshot();
+        assert_eq!(snapshot["state"], "running");
+        assert_eq!(snapshot["phase"], "initializing");
+        assert_eq!(snapshot["rows_planned"], 10);
+        assert_eq!(snapshot["rows_computed"], 4);
+        assert_eq!(snapshot["queue_reason"], "waiting for capacity");
+        assert_eq!(snapshot["waiting_for_job_id"], "job-0");
+        assert_eq!(snapshot["paused"], true);
+        assert_eq!(snapshot["paused_at_millis"], 20);
+    }
+
+    #[test]
+    fn describe_progress_reports_stable_unpaused_state() {
+        let response: DescribeJobResponse = serde_json::from_str(
+            r#"{
+                "job_id":"job-1",
+                "job_type":"refresh_column",
+                "job_state":"IN_PROGRESS",
+                "creation_ms":10
+            }"#,
+        )
+        .expect("job description");
+        let snapshot = response.into_description().progress_snapshot();
+        assert_eq!(snapshot["paused"], false);
+        assert!(snapshot.get("paused_at_millis").is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_progress_observes_the_existing_poll_loop() {
+        let describes = Arc::new(AtomicUsize::new(0));
+        let seen = describes.clone();
+        let client = client_with_handler(move |request| {
+            assert_eq!(request.url().path(), "/v1/jobs/describe");
+            let n = seen.fetch_add(1, Ordering::SeqCst);
+            let body = if n == 0 {
+                r#"{"job_state":"IN_PROGRESS","job_type":"refresh_column","progress":{"rows_planned":10,"rows_computed":4}}"#
+            } else {
+                r#"{"job_state":"DONE","job_type":"refresh_column","progress":{"rows_planned":10,"rows_computed":10},"result":null}"#
+            };
+            http::Response::builder().status(200).body(body).unwrap()
+        });
+        let snapshots = Arc::new(Mutex::new(Vec::new()));
+        let observed = snapshots.clone();
+        let progress: JobProgressCallback = Arc::new(Mutex::new(
+            move |description: &crate::database::JobDescription| {
+                observed
+                    .lock()
+                    .expect("snapshot lock")
+                    .push(description.progress_snapshot());
+            },
+        ));
+
+        RemoteJob::new(client, "job-1".to_string())
+            .wait_with_progress(Some(progress))
+            .await
+            .expect("unit job completes");
+
+        let snapshots = snapshots.lock().expect("snapshot lock");
+        assert_eq!(snapshots.len(), 2);
+        assert_eq!(snapshots[0]["rows_computed"], 4);
+        assert_eq!(snapshots[1]["state"], "finished");
+        assert_eq!(snapshots[1]["rows_computed"], 10);
+    }
+
+    #[test]
+    fn reported_failure_fields_are_passed_through() {
+        let response: DescribeJobResponse = serde_json::from_str(
+            r#"{
+                "job_state":"FAILED",
+                "failure":{
+                    "phase":"initialize",
+                    "message":"worker initialization timed out",
+                    "retryable":true,
+                    "sql_job_id":"job-1"
+                }
+            }"#,
+        )
+        .expect("failure description");
+        let failure = response
+            .failure
+            .expect("the wire response has a failure")
+            .into_job_failure();
+        assert_eq!(failure.phase.as_deref(), Some("initialize"));
+        assert_eq!(
+            failure.message.as_deref(),
+            Some("worker initialization timed out")
+        );
+        assert_eq!(failure.retryable, Some(true));
+        assert_eq!(failure.sql_job_id.as_deref(), Some("job-1"));
     }
 }

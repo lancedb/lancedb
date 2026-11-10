@@ -1,8 +1,9 @@
 # Release process
 
-We release four `lancedb` packages: Python, Rust, Java, and Node.js.
+We release four `lancedb` SDK packages (Python, Rust, Java, and Node.js) and
+standalone `lancedb` command-line binaries.
 
-All four share a single version number, defined by `current_version` in
+All SDKs and the CLI share a single version number, defined by `current_version` in
 `.bumpversion.toml`. One `vX.Y.Z` tag releases all of them, so a breaking change
 in any SDK bumps the minor version for every SDK.
 
@@ -84,7 +85,10 @@ The workflow creates a new version commit and tag. Compare that tag with the
 validated candidate and check that only the expected mechanical version and
 lockfile updates were introduced. Code or dependency changes require renewed
 validation. Verify all four SDK publishing workflows and the exact registry
-artifacts before reporting the stable release as complete.
+artifacts, plus the three CLI archives and their `SHA256SUMS` on the GitHub
+release, before reporting the stable release as complete. Download the CLI
+archives, verify their checksums, and confirm their reported versions on the
+corresponding platforms.
 
 ## Making releases
 
@@ -95,7 +99,7 @@ The release process uses a handful of GitHub actions to automate the process.
   │Create Release Commit│
   └─┬───────────────────┘
     │                    ┌──────────────┐
-    └──►(tag) vX.Y.Z ─┬─►│GitHub Release├───►GH Release
+    └──►(tag) vX.Y.Z ─┬─►│GitHub Release├───►CLI packages + GH Release
                       │  └──────────────┘
                       │  ┌────────────┐
                       ├─►│PyPI Publish├─────►Python Wheels
@@ -133,6 +137,38 @@ Select `bump-minor` according to the version and breaking-change check below.
 > done so yet, we should increment the minor version. The CI will detect if this
 > is needed and fail the `Create Release Commit` job. To fix, select the
 > "bump minor version" option.
+
+### CLI release packages
+
+The GitHub Release workflow calls **CLI release packages** before creating the
+release. Both stable and beta tags produce these archives:
+
+* `lancedb-v<VERSION>-x86_64-unknown-linux-gnu.tar.gz`
+* `lancedb-v<VERSION>-aarch64-unknown-linux-gnu.tar.gz`
+* `lancedb-v<VERSION>-aarch64-apple-darwin.tar.gz`
+
+Each archive contains a matching top-level directory with the `lancedb`
+executable, `LICENSE`, and `RUST_THIRD_PARTY_LICENSES.html`. Linux builds target
+glibc 2.28; x86_64 retains the repository's Haswell/AVX2 CPU requirements. macOS
+builds target Apple Silicon on macOS 14 or newer.
+
+Packaging runs on relevant PRs without publishing. To dry-run packaging on a
+candidate branch before merging or tagging, run:
+
+```bash
+gh workflow run cli-release.yml --repo lancedb/lancedb --ref <candidate-branch>
+```
+
+Inspect the `cli-release` workflow artifact: it must contain all three archives
+and a matching `SHA256SUMS`. The workflow checks runtime library compatibility
+and runs the extracted executables; Linux also runs on a clean AlmaLinux 8
+system. A tag must match both the CLI and SDK manifests before any build starts.
+
+A CLI packaging failure blocks GitHub release creation. SDK registry workflows
+run independently. Fix the failure and rerun the failed GitHub Release jobs;
+the publishing job replaces assets with matching names on an existing release.
+Verify beta releases remain marked as prereleases and do not take the latest
+release designation.
 
 ## Breaking changes
 

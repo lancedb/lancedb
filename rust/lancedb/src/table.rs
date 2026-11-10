@@ -19,6 +19,7 @@ pub use lance::dataset::ReadParams;
 pub use lance::dataset::Version;
 use lance::dataset::WriteMode;
 use lance::dataset::builder::DatasetBuilder;
+use lance::dataset::cleanup::RemovalStats;
 pub use lance::dataset::mem_wal::MemIndexRegistry;
 /// The traits a memtable index plugin implements; see [`MemIndexRegistry`].
 pub use lance::dataset::mem_wal::index as mem_index;
@@ -42,6 +43,7 @@ use lance_table::io::commit::CommitHandler;
 use lance_table::io::commit::ManifestNamingScheme;
 use lance_table::io::commit::external_manifest::ExternalManifestCommitHandler;
 use serde::{Deserialize, Serialize};
+pub type TableOverrides = serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::format;
 use std::path::Path;
@@ -54,6 +56,7 @@ use crate::blob::BlobRangeRequest;
 use crate::data::scannable::{PeekedScannable, Scannable, estimate_write_partitions};
 use crate::database::Database;
 use crate::database::read_freshness::TableFreshness;
+use crate::docs::DocLink;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
 use crate::function::FunctionErrorsRequest;
@@ -108,9 +111,10 @@ pub use lance::dataset::refs::{BranchContents, Ref, TagContents, Tags as LanceTa
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
 pub use lance_index::optimize::OptimizeOptions;
 pub use optimize::{
-    CompactionMode, CompactionOptions, IndexRemapMode, OptimizeAction, OptimizeStats,
+    CompactionMode, CompactionOptions, CompactionOverrides, IndexRemapMode, OptimizeAction,
+    OptimizeStats,
 };
-pub use refresh::RefreshColumnResult;
+pub use refresh::{RefreshColumnOptions, RefreshColumnResult};
 pub use rte_stats::{MemtableStats, RTEStats, SsTableStats, TableShardStats};
 pub use schema_evolution::{
     AddColumnsResult, AlterColumnsResult, DropColumnsResult, FieldMetadataUpdate,
@@ -588,8 +592,28 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         _full: bool,
     ) -> Result<Job<crate::materialized_view::RefreshMaterializedViewResult>> {
         Err(Error::NotSupported {
-            message: "remote materialized-view refresh is not supported on this table type".into(),
+            message: DocLink::MaterializedViews
+                .append_to("remote materialized-view refresh is not supported on this table type"),
         })
+    }
+    /// Submit an Enterprise refresh with aggregate resource caps and GPU placement.
+    #[doc(hidden)]
+    async fn refresh_materialized_view_async_with_options(
+        &self,
+        source_version: Option<u64>,
+        full: bool,
+        options: crate::materialized_view::RefreshMaterializedViewOptions,
+    ) -> Result<Job<crate::materialized_view::RefreshMaterializedViewResult>> {
+        options.validate()?;
+        if !options.is_empty() {
+            return Err(Error::NotSupported {
+                message:
+                    "this table cannot enforce materialized-view resource budgets or GPU placement"
+                        .into(),
+            });
+        }
+        self.refresh_materialized_view_async(source_version, full)
+            .await
     }
     /// Create a read-only handle pinned to the table's current active revision.
     ///
@@ -652,7 +676,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn prewarm_index(&self, name: &str) -> Result<()>;
     /// Prewarm data for the table.
     ///
-    /// Currently only supported in LanceDB Distributed.
+    /// Currently only supported in LanceDB Enterprise.
     /// If `columns` is `None`, all columns are prewarmed.
     async fn prewarm_data(&self, columns: Option<Vec<String>>) -> Result<()>;
     /// Get statistics about the index.
@@ -710,6 +734,34 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "get_rte_spec is not supported on this table type".into(),
         })
     }
+    /// Read Enterprise table overrides.
+    ///
+    /// The default implementation returns `NotSupported`; Enterprise remote
+    /// tables override it.
+    async fn get_table_overrides(&self) -> Result<TableOverrides> {
+        Err(Error::NotSupported {
+            message: "get_table_overrides is supported only on remote Enterprise tables".into(),
+        })
+    }
+    /// Merge Enterprise table overrides into the currently stored object.
+    ///
+    /// The default implementation returns `NotSupported`; Enterprise remote
+    /// tables override it.
+    async fn update_table_overrides(&self, _overrides: TableOverrides) -> Result<TableOverrides> {
+        Err(Error::NotSupported {
+            message: "update_table_overrides is supported only on remote Enterprise tables".into(),
+        })
+    }
+    /// Clear Enterprise table overrides.
+    ///
+    /// The default implementation returns `NotSupported`; Enterprise remote
+    /// tables override it.
+    async fn reset_table_overrides(&self) -> Result<TableOverrides> {
+        Err(Error::NotSupported {
+            message: "reset_table_overrides is supported only on remote Enterprise tables".into(),
+        })
+    }
+
     /// Whether a hybrid query on this table has already been told it cannot
     /// join its legs on `_rowid`.
     ///
@@ -735,6 +787,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// the only cost of being late to notice is a base-only read that is still
     /// correct.
     fn note_hybrid_pk_fusion(&self) {}
+
     /// Freeze every table shard's active memtable into an SSTable.
     ///
     /// The default implementation returns `NotSupported`.
@@ -809,6 +862,14 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn tags(&self) -> Result<Box<dyn Tags + '_>>;
     /// Optimize the dataset.
     async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats>;
+    /// Compact with optional fields, preserving remote policy inheritance.
+    async fn compact(&self, options: optimize::CompactionOverrides) -> Result<OptimizeStats> {
+        self.optimize(OptimizeAction::Compact {
+            options: options.into_options(),
+            remap_options: None,
+        })
+        .await
+    }
     /// Add columns to the table.
     async fn add_columns(
         &self,
@@ -818,7 +879,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// Declare computed columns, each defined by a SQL expression.
     ///
     /// Where the declaration is planned depends on the backend: a LanceDB Embedded
-    /// table validates and types the expression itself, while a LanceDB Distributed
+    /// table validates and types the expression itself, while a LanceDB Enterprise
     /// table sends the expression for the server to plan.
     async fn add_computed_columns(
         &self,
@@ -837,7 +898,8 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         _options: computed_columns::ComputedColumnOptions,
     ) -> Result<AddColumnsResult> {
         Err(Error::NotSupported {
-            message: "Function columns are supported only in LanceDB Distributed".into(),
+            message: DocLink::Functions
+                .append_to("Function columns are supported only in LanceDB Enterprise"),
         })
     }
     /// Fill a computed column's unfilled rows and recompute those whose
@@ -849,6 +911,21 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "this operation is only supported on LanceDB Embedded".into(),
         })
     }
+    /// Refresh with options. A local refresh ignores the Function batch size
+    /// and GPU placement and rejects every other option.
+    async fn refresh_column_with_options(
+        &self,
+        column: &str,
+        options: RefreshColumnOptions,
+    ) -> Result<RefreshColumnResult> {
+        options.validate()?;
+        if let Some(name) = options.enterprise_only_option() {
+            return Err(Error::NotSupported {
+                message: format!("{name} requires a LanceDB Enterprise refresh"),
+            });
+        }
+        self.refresh_column(column).await
+    }
     /// Fill a computed column's unfilled rows and recompute those whose
     /// inputs changed, returning a [`Job`] tracking the operation.
     async fn refresh_column_async(
@@ -859,6 +936,20 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "this operation is only supported on LanceDB Embedded".into(),
         })
     }
+    /// Start a refresh job with options.
+    async fn refresh_column_async_with_options(
+        &self,
+        column: &str,
+        options: RefreshColumnOptions,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
+        options.validate()?;
+        if let Some(name) = options.enterprise_only_option() {
+            return Err(Error::NotSupported {
+                message: format!("{name} requires a LanceDB Enterprise refresh"),
+            });
+        }
+        self.refresh_column_async(column).await
+    }
     /// The per-row errors Function refreshes recorded on this table; see
     /// [`Table::function_errors`]. The default returns `NotSupported`.
     async fn function_errors(
@@ -866,7 +957,8 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         _request: &crate::function::FunctionErrorsRequest,
     ) -> Result<crate::function::FunctionErrors> {
         Err(Error::NotSupported {
-            message: "per-row Function errors are recorded only in LanceDB Distributed".into(),
+            message: DocLink::FunctionErrors
+                .append_to("per-row Function errors are recorded only in LanceDB Enterprise"),
         })
     }
     /// Alter columns in the table.
@@ -939,14 +1031,16 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// Diff a branch against main. Remote only.
     async fn diff_branch(&self, _from_branch: &str) -> Result<BranchDiff> {
         Err(Error::NotSupported {
-            message: "Branch diffs are only supported on Enterprise tables.".into(),
+            message: DocLink::BranchDiff
+                .append_to("Branch diffs are only supported on Enterprise tables."),
         })
     }
     /// Cherry-pick a branch onto main, or dry-run. Remote only.
     /// HTTP 409 still returns [`Ok`] with [`CherryPickStatus::Failed`].
     async fn cherry_pick(&self, _from_branch: &str, _dry_run: bool) -> Result<CherryPickResult> {
         Err(Error::NotSupported {
-            message: "Cherry-picking branches is only supported on Enterprise tables.".into(),
+            message: DocLink::BranchCherryPick
+                .append_to("Cherry-picking branches is only supported on Enterprise tables."),
         })
     }
     /// The branch this handle is scoped to, or `None` for `main`.
@@ -993,7 +1087,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// [`FieldMetadataUpdate::remove`] deletes a key and
     /// [`FieldMetadataUpdate::replace`] swaps the field's whole map.
     ///
-    /// The default returns `NotSupported`; Lance-backed and LanceDB Distributed tables override it.
+    /// The default returns `NotSupported`; Lance-backed and LanceDB Enterprise tables override it.
     async fn update_field_metadata(
         &self,
         _updates: &[FieldMetadataUpdate],
@@ -1284,7 +1378,7 @@ impl Table {
     ///
     /// Native tables support both legacy blob v1 and blob v2 columns.
     /// Output matches `row_ids` in length and order. Null blobs are null;
-    /// valid empty blobs contain empty byte strings. LanceDB Distributed limits individual
+    /// valid empty blobs contain empty byte strings. LanceDB Enterprise limits individual
     /// requests to 1024 row ids and 64 MiB of blob bytes; the client
     /// splits requests and reads a single larger blob through the Range route.
     /// This method still materializes all bytes in memory, so prefer
@@ -1336,7 +1430,7 @@ impl Table {
     /// ranges for the same blob. The output has the same length and order as
     /// the requests. Null blobs produce null output slots; empty ranges on
     /// non-null blobs produce empty byte strings.
-    /// LanceDB Distributed tables read through version-pinned [`BlobFile`] handles using
+    /// LanceDB Enterprise tables read through version-pinned [`BlobFile`] handles using
     /// HTTP byte-range requests.
     ///
     /// `_rowid` values stay valid after compaction when the table has stable
@@ -1595,7 +1689,7 @@ impl Table {
     }
 
     /// See [Table::create_index]
-    /// In LanceDB Distributed, this allows an optional wait_timeout to poll until asynchronous indexing is complete
+    /// In LanceDB Enterprise, this allows an optional wait_timeout to poll until asynchronous indexing is complete
     pub fn create_index_with_timeout(
         &self,
         columns: &[impl AsRef<str>],
@@ -1823,9 +1917,20 @@ impl Table {
     /// There is an ongoing effort to make row ids stable which is tracked at
     /// https://github.com/lancedb/lancedb/issues/1120
     ///
-    /// No guarantees are made regarding the order in which results are returned.  If you
-    /// desire an output order that matches the order of the given ids, you will need
-    /// to add the row id column to the output and align it yourself.
+    /// Results follow the requested row-id order, including repeated IDs. Missing or
+    /// deleted IDs are omitted. An explicit nonempty [`QueryBase::order_by`] overrides
+    /// the requested order. Limits and offsets apply after restoring occurrences.
+    /// These guarantees also apply to remote tables.
+    ///
+    /// ```rust
+    /// use lancedb::query::ExecutableQuery;
+    /// # async fn example(table: &lancedb::Table, first: u64, second: u64) -> lancedb::Result<()> {
+    /// // If both IDs exist, return second, first, then second again.
+    /// let rows = table.take_row_ids(vec![second, first, second]).execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
     /// Parameters
     /// ----------
     /// row_ids: list[int]
@@ -1860,8 +1965,63 @@ impl Table {
     /// optimize should be run frequently.  A good rule of thumb is to run optimize if
     /// you have added or modified 100,000 or more records or run more than 20 data
     /// modification operations.
+    ///
+    /// # LanceDB Enterprise (remote tables)
+    ///
+    /// [`OptimizeAction::Compact`] supports per-job `target_rows_per_fragment`,
+    /// `max_source_rows`, `io_buffer_size`, and `batch_size`, with no custom
+    /// `remap_options`. Other non-default options, `All`, `Prune`, and `Index` return
+    /// [`crate::Error::NotSupported`]. See [`OptimizeAction::Compact`] for
+    /// what a remote call submits and what it does and does not wait for.
     pub async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats> {
         self.inner.optimize(action).await
+    }
+
+    /// Compact data files with optional tuning fields. On remote tables,
+    /// omitted fields inherit table tuning, then deployment/built-in defaults.
+    /// Returns after job submission; remote statistics are placeholders.
+    ///
+    /// ```
+    /// use lancedb::{Table, table::optimize::CompactionOverrides};
+    /// # async fn compact(table: &Table) -> lancedb::Result<()> {
+    /// table.compact(CompactionOverrides {
+    ///     io_buffer_size: Some(64 * 1024 * 1024),
+    ///     ..Default::default()
+    /// }).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn compact(&self, options: optimize::CompactionOverrides) -> Result<OptimizeStats> {
+        self.inner.compact(options).await
+    }
+
+    /// Language-binding entry point retaining optional compaction fields.
+    #[doc(hidden)]
+    pub async fn optimize_full_with_overrides(
+        &self,
+        options: optimize::CompactionOverrides,
+        older_than: Option<chrono::Duration>,
+        before_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+        delete_unverified: Option<bool>,
+    ) -> Result<OptimizeStats> {
+        if self.as_native().is_some() {
+            return self
+                .optimize_full(
+                    options.into_options(),
+                    older_than,
+                    before_timestamp,
+                    delete_unverified,
+                )
+                .await;
+        }
+        if older_than.is_some() || before_timestamp.is_some() || delete_unverified == Some(true) {
+            return Err(Error::NotSupported { message: "pruning is not supported in LanceDB Enterprise; omit pruning options to run compaction only".into() });
+        }
+        let stats = self.compact(options).await?;
+        Ok(OptimizeStats {
+            compaction: stats.compaction,
+            prune: Some(RemovalStats::default()),
+        })
     }
 
     /// Prune versions committed before an absolute timestamp.
@@ -1876,7 +2036,7 @@ impl Table {
         error_if_tagged_old_versions: Option<bool>,
     ) -> Result<OptimizeStats> {
         let native = self.as_native().ok_or_else(|| Error::NotSupported {
-            message: "optimize is not supported in LanceDB Distributed.".into(),
+            message: "optimize is not supported in LanceDB Enterprise.".into(),
         })?;
         let prune = optimize::cleanup_old_versions_before(
             native,
@@ -1889,6 +2049,77 @@ impl Table {
             compaction: None,
             prune: Some(prune),
         })
+    }
+
+    /// Run the maintenance cycle used by language bindings' `optimize()`
+    /// convenience method: compact, then -- on a local table -- prune and
+    /// optimize indices.
+    ///
+    /// This is an internal entry point for language bindings. On a remote
+    /// table (LanceDB Enterprise) only [`OptimizeAction::Compact`] with its
+    /// supported per-job options is supported. A caller asking for anything pruning-related
+    /// (`older_than`, `before_timestamp`, or `delete_unverified: Some(true)`)
+    /// gets `NotSupported` before anything is submitted, the same way
+    /// unsupported `CompactionOptions` are rejected -- rather than a
+    /// success that silently reports zero bytes pruned when nothing was
+    /// pruned at all. A plain call with none of those set only compacts:
+    /// `Prune` and `Index` are skipped here rather than attempted and
+    /// failed, since by this point the compaction job has already been
+    /// durably submitted and a caller retrying on that failure would
+    /// resubmit it. The returned prune stats are zeroed in that case. See
+    /// [`OptimizeAction::Compact`] for what the submission does and does not
+    /// wait for.
+    #[doc(hidden)]
+    pub async fn optimize_full(
+        &self,
+        compaction_options: CompactionOptions,
+        older_than: Option<chrono::Duration>,
+        before_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+        delete_unverified: Option<bool>,
+    ) -> Result<OptimizeStats> {
+        let is_remote = self.as_native().is_none();
+        if is_remote
+            && (older_than.is_some()
+                || before_timestamp.is_some()
+                || delete_unverified == Some(true))
+        {
+            return Err(Error::NotSupported {
+                message: "pruning (older_than, before_timestamp, or \
+                          delete_unverified) is not supported in LanceDB \
+                          Enterprise; omit those options to run compaction \
+                          only."
+                    .into(),
+            });
+        }
+        let compaction = self
+            .optimize(OptimizeAction::Compact {
+                options: compaction_options,
+                remap_options: None,
+            })
+            .await?
+            .compaction;
+        if is_remote {
+            return Ok(OptimizeStats {
+                compaction,
+                prune: Some(RemovalStats::default()),
+            });
+        }
+        let prune = if let Some(before_timestamp) = before_timestamp {
+            self.optimize_prune_before(before_timestamp, delete_unverified, None)
+                .await?
+                .prune
+        } else {
+            self.optimize(OptimizeAction::Prune {
+                older_than,
+                delete_unverified,
+                error_if_tagged_old_versions: None,
+            })
+            .await?
+            .prune
+        };
+        self.optimize(OptimizeAction::Index(OptimizeOptions::default()))
+            .await?;
+        Ok(OptimizeStats { compaction, prune })
     }
 
     /// Add new columns to the table, providing values to fill in.
@@ -1906,7 +2137,7 @@ impl Table {
     /// [`freshness`](crate::table::freshness)); everything else is left as
     /// it is.
     ///
-    /// LanceDB Embedded only: in LanceDB Distributed a refresh runs as a server job, through
+    /// LanceDB Embedded only: in LanceDB Enterprise a refresh runs as a server job, through
     /// [`Table::refresh_column_async`].
     ///
     /// ```
@@ -1921,6 +2152,36 @@ impl Table {
         self.inner.refresh_column(column.as_ref()).await
     }
 
+    /// Like [`Table::refresh_column`], with explicit refresh options.
+    ///
+    /// [`RefreshColumnOptions::batch_size()`] caps rows per Function call in
+    /// LanceDB Enterprise and must be greater than zero when set.
+    /// [`RefreshColumnOptions::gpu_class()`] selects a GPU pool and
+    /// [`RefreshColumnOptions::gpu_count()`] sets the aggregate GPU budget.
+    /// These options have no effect on expression-backed columns in LanceDB
+    /// Embedded. Remote refreshes require
+    /// [`Table::refresh_column_async_with_options`].
+    ///
+    /// ```
+    /// # use lancedb::{Table, table::RefreshColumnOptions};
+    /// # async fn refresh(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let result = table.refresh_column_with_options(
+    ///     "doubled", RefreshColumnOptions::default(),
+    /// ).await?;
+    /// println!("filled {} rows", result.rows_filled);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn refresh_column_with_options(
+        &self,
+        column: impl AsRef<str>,
+        options: RefreshColumnOptions,
+    ) -> Result<RefreshColumnResult> {
+        self.inner
+            .refresh_column_with_options(column.as_ref(), options)
+            .await
+    }
+
     /// Like [`Table::refresh_column`], but returns a [`Job`] tracking the
     /// operation instead of blocking until it completes.
     ///
@@ -1930,7 +2191,7 @@ impl Table {
     /// both expression-backed and Function-backed columns. Invalid input
     /// -- an unknown column, or one that is not computed -- is reported by
     /// this call rather than by the job. In LanceDB Embedded the job runs as an
-    /// in-process task; in LanceDB Distributed it is the server's
+    /// in-process task; in LanceDB Enterprise it is the server's
     /// backfill job.
     ///
     /// ```
@@ -1950,13 +2211,53 @@ impl Table {
         self.inner.refresh_column_async(column.as_ref()).await
     }
 
+    /// Like [`Table::refresh_column_async`], with explicit refresh options.
+    ///
+    /// Set [`RefreshColumnOptions::batch_size()`] to cap the rows each remote
+    /// Function call receives, for example to keep slow Functions within the
+    /// executor's per-call deadline. Set
+    /// [`RefreshColumnOptions::gpu_class()`] and
+    /// [`RefreshColumnOptions::gpu_count()`] to override the registered GPU
+    /// class or set an aggregate GPU budget for Function workers. Unset values
+    /// use the Function and server defaults; zero counts and malformed class
+    /// names are rejected before submitting a job. Embedded expression
+    /// refreshes ignore all three options.
+    ///
+    /// ```
+    /// # use lancedb::{Table, table::RefreshColumnOptions};
+    /// # async fn refresh(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let job = table.refresh_column_async_with_options(
+    ///     "quality",
+    ///     RefreshColumnOptions::default()
+    ///         .batch_size(8)
+    ///         .gpu_class("a10g")
+    ///         .gpu_count(2),
+    /// ).await?;
+    /// let result = job.wait().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn refresh_column_async_with_options(
+        &self,
+        column: impl AsRef<str>,
+        options: RefreshColumnOptions,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
+        self.inner
+            .refresh_column_async_with_options(column.as_ref(), options)
+            .await
+    }
+
     /// The per-row errors Function refreshes recorded on this table: the
     /// rows a refresh skipped under its skip policy, with the failing input
     /// and the error, plus a summary for any fragment whose detail was
     /// capped. Filter by job or column through the request; a listing that
     /// hit its limit reports [`FunctionErrors::truncated`].
     ///
-    /// LanceDB Distributed only, and the caller needs read access
+    /// A record carries a stable `row_id` when the refresh source used stable
+    /// row IDs. Prefer it over the physical `row_address` for retries:
+    /// compaction and rewrite can change the address.
+    ///
+    /// LanceDB Enterprise only, and the caller needs read access
     /// to the table, since a message carries the value that failed.
     ///
     /// ```
@@ -1985,6 +2286,10 @@ impl Table {
     /// Each alteration must specify at least one of `rename`, `data_type`, or
     /// `nullable`. Returns [`Error::InvalidInput`] before applying any changes
     /// if an alteration does not specify any of these fields.
+    ///
+    /// Local tables reject renaming source or vector columns referenced by
+    /// [`EmbeddingDefinition`] or `embedding_functions` schema metadata to
+    /// preserve the embedding binding.
     pub async fn alter_columns(
         &self,
         alterations: &[ColumnAlteration],
@@ -2028,6 +2333,10 @@ impl Table {
     }
 
     /// Remove columns from the table.
+    ///
+    /// Local tables reject dropping source or vector columns referenced by
+    /// [`EmbeddingDefinition`] or `embedding_functions` schema metadata to
+    /// preserve the embedding binding.
     pub async fn drop_columns(&self, columns: &[&str]) -> Result<DropColumnsResult> {
         self.inner.drop_columns(columns).await
     }
@@ -2123,6 +2432,33 @@ impl Table {
     /// ```
     pub async fn get_rte_spec(&self) -> Result<Option<RTEWriteSpec>> {
         self.inner.get_rte_spec().await
+    }
+
+    /// Read Enterprise table overrides for this table.
+    ///
+    /// Table overrides configure Enterprise-managed background behavior such as
+    /// automatic compaction, cleanup, and reindex execution. Local tables return
+    /// `NotSupported` because they do not have an Enterprise background planner
+    /// consuming these overrides.
+    pub async fn get_table_overrides(&self) -> Result<TableOverrides> {
+        self.inner.get_table_overrides().await
+    }
+
+    /// Merge Enterprise table overrides into the current stored overrides.
+    ///
+    /// This method uses patch semantics: fields present in `overrides` are
+    /// recursively merged into the existing table overrides and unrelated fields
+    /// are preserved.
+    pub async fn update_table_overrides(
+        &self,
+        overrides: TableOverrides,
+    ) -> Result<TableOverrides> {
+        self.inner.update_table_overrides(overrides).await
+    }
+
+    /// Clear Enterprise table overrides for this table.
+    pub async fn reset_table_overrides(&self) -> Result<TableOverrides> {
+        self.inner.reset_table_overrides().await
     }
 
     /// Converge this table's RTE write path into its base table.
@@ -2311,7 +2647,7 @@ impl Table {
     /// Tokenize a full-text search query using the tokenizer configured on an FTS index.
     ///
     /// Model-backed tokenizers such as `jieba/*` and `lindera/*` are rebuilt in
-    /// the client process from index metadata. In LanceDB Distributed, this means the
+    /// the client process from index metadata. In LanceDB Enterprise, this means the
     /// same tokenizer model files must also exist locally, and must match the
     /// files the server uses: the client cannot detect a mismatch, so it may
     /// return tokens the server's index never produces. If the model files are
@@ -2349,7 +2685,7 @@ impl Table {
     ///
     /// The column must have exactly one FTS index. Model-backed tokenizers such
     /// as `jieba/*` and `lindera/*` are rebuilt in the client process from
-    /// index metadata. In LanceDB Distributed, this means the same tokenizer model
+    /// index metadata. In LanceDB Enterprise, this means the same tokenizer model
     /// files must also exist locally, and must match the files the server uses
     /// (see [`Self::tokenize`]).
     pub async fn tokenize_with_column(&self, query: &str, column: &str) -> Result<Vec<FtsToken>> {
@@ -2438,7 +2774,7 @@ impl Table {
     /// Get the table URI (storage location)
     ///
     /// Returns the full storage location of the table (e.g., S3/GCS path).
-    /// In LanceDB Distributed, this fetches the location from the server via describe.
+    /// In LanceDB Enterprise, this fetches the location from the server via describe.
     pub async fn uri(&self) -> Result<String> {
         self.inner.uri().await
     }
@@ -2483,7 +2819,7 @@ impl Table {
 
     /// Drop an index from the table.
     ///
-    /// Note: This is not yet available in LanceDB Distributed.
+    /// Note: This is not yet available in LanceDB Enterprise.
     ///
     /// This does not delete the index from disk, it just removes it from the table.
     /// To delete the index, run [`Self::optimize()`] after dropping the index.
@@ -2516,7 +2852,7 @@ impl Table {
     /// This is a hint to the database that the given columns will be accessed in
     /// the future and the database should prefetch the data if possible.  This
     /// can reduce cold-start latency for subsequent queries.  Currently only
-    /// supported in LanceDB Distributed.
+    /// supported in LanceDB Enterprise.
     ///
     /// This call initiates prewarming and returns once the request is accepted.
     /// It is idempotent and safe to call from multiple clients concurrently —
@@ -2838,6 +3174,8 @@ impl NativeTable {
             }
             Err(e) => return Err(e.into()),
         };
+
+        crate::docs::check_table_maintenance_warnings(&dataset, uri).await;
 
         let dataset = DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval);
         let id = Self::build_id(&namespace, name);
@@ -3717,7 +4055,8 @@ impl BaseTable for NativeTable {
 
     async fn prewarm_data(&self, _columns: Option<Vec<String>>) -> Result<()> {
         Err(Error::NotSupported {
-            message: "prewarm_data is currently only supported in LanceDB Distributed.".into(),
+            message: DocLink::PrewarmData
+                .append_to("prewarm_data is currently only supported in LanceDB Enterprise."),
         })
     }
 
@@ -4143,7 +4482,7 @@ impl BaseTable for NativeTable {
         .await;
         sorted_sizes.sort();
 
-        let small_frag_threshold = 100000;
+        let small_frag_threshold = crate::docs::SMALL_FRAGMENT_ROW_THRESHOLD;
         let num_fragments = sorted_sizes.len();
         let num_small_fragments = sorted_sizes
             .iter()
@@ -4288,9 +4627,10 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use lance_io::assert_io_lt;
+
     use crate::connect;
     use crate::connection::ConnectBuilder;
-    use crate::io::object_store::io_tracking::IoTrackingStore;
     use crate::query::Select;
     use crate::query::{ExecutableQuery, QueryBase};
     use crate::test_utils::connection::new_test_connection;
@@ -4354,7 +4694,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            matches!(&err, Error::NotSupported { message } if message.contains("LanceDB Distributed")),
+            matches!(&err, Error::NotSupported { message } if message.contains("LanceDB Enterprise")),
             "{err:?}"
         );
     }
@@ -6322,34 +6662,31 @@ mod tests {
             table.add(batch.clone()).execute().await.unwrap();
         }
 
-        // Reopen through a tracking store so the counters cover `stats()` alone and
-        // not the writes above.
-        let (wrapper, io_stats) = IoTrackingStore::new_wrapper();
-        let table = conn
-            .open_table("test_stats_io")
-            .lance_read_params(ReadParams {
-                store_options: Some(ObjectStoreParams {
-                    object_store_wrapper: Some(wrapper),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            })
-            .execute()
-            .await
-            .unwrap();
-        io_stats.lock().unwrap().read_iops = 0;
+        // Reopen, then count against the store's own tracker so the counters cover
+        // `stats()` alone and not the writes above.
+        let table = conn.open_table("test_stats_io").execute().await.unwrap();
+        let io_tracker = {
+            let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
+            dataset
+                .object_store(None)
+                .await
+                .unwrap()
+                .io_tracker()
+                .clone()
+        };
+        io_tracker.incremental_stats();
 
         let stats = table.stats().await.unwrap();
-        let read_iops = io_stats.lock().unwrap().read_iops;
+        let io_stats = io_tracker.incremental_stats();
 
         assert_eq!(stats.fragment_stats.num_fragments, NUM_APPENDS + 1);
         assert!(stats.total_bytes > 0);
         // Reading the fragments' data files would take at least one IOP each.
-        assert!(
-            read_iops < stats.fragment_stats.num_fragments as u64,
-            "stats() issued {} read IOPs across {} fragments",
+        assert_io_lt!(
+            io_stats,
             read_iops,
-            stats.fragment_stats.num_fragments
+            stats.fragment_stats.num_fragments as u64,
+            "stats() should not read the fragments' data files"
         );
     }
 

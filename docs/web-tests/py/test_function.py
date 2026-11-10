@@ -6,14 +6,15 @@
 Registering a Function and filling its column need a LanceDB Enterprise
 deployment, so `test_function_enterprise` runs only when
 LANCEDB_DOCS_TEST_DEPLOYMENT=1 asks for one, with the connection variables the
-Enterprise examples already use: LANCEDB_URI, LANCEDB_API_KEY and
-LANCEDB_HOST_OVERRIDE, plus LANCEDB_REGION if the deployment needs one. The
+Enterprise examples already use: LANCEDB_URI, LANCEDB_API_KEY,
+LANCEDB_HOST_OVERRIDE and LANCEDB_SQL_HOST_OVERRIDE, plus LANCEDB_REGION if the
+deployment needs one. The
 walkthrough calls its table `function_demo` and its Function `double`; the test
 creates both under names unique to its run, never replaces an existing object,
 and drops only what it created.
 
 The other tests run locally and check the client side of the same code: what
-`@udf` sends for registration, how a registered version binds a column, where a
+`@function` sends for registration, how a registered version binds a column, where a
 local connection stops, and when the Enterprise test connects. They do not run
 a Function remotely.
 """
@@ -31,18 +32,18 @@ from lancedb import col
 from lancedb.functions import FunctionApplication, FunctionVersion
 
 # --8<-- [start:function_define]
-from lancedb import udf
+from lancedb import function
 
 
-@udf
+@function
 def double(value: float) -> float:
     return value * 2
 
 
 # --8<-- [end:function_define]
 
-# The definition the walkthrough registers. The Enterprise test registers a copy
-# of it under a name that only its run uses.
+# The definitions the walkthrough registers. The Enterprise test registers a
+# copy of each under a name that only its run uses.
 WALKTHROUGH_DOUBLE = double
 
 
@@ -51,7 +52,7 @@ def describe(value: float):
 
 
 # --8<-- [start:function_class_define]
-@udf(pip=["sentence-transformers"])
+@function(pip=["sentence-transformers"])
 class embed:
     def __init__(self, model: str = "all-MiniLM-L6-v2"):
         # Runs on the worker, once per instance: only the worker needs the package.
@@ -67,6 +68,8 @@ class embed:
 
 
 # --8<-- [end:function_class_define]
+
+WALKTHROUGH_EMBED = embed
 
 
 # A Function version as the service returns it after registration: the SDK's
@@ -91,7 +94,12 @@ def registered_version(definition) -> FunctionVersion:
     return FunctionVersion.from_json(json.dumps(reply))
 
 
-DEPLOYMENT = ("LANCEDB_URI", "LANCEDB_HOST_OVERRIDE", "LANCEDB_API_KEY")
+DEPLOYMENT = (
+    "LANCEDB_URI",
+    "LANCEDB_HOST_OVERRIDE",
+    "LANCEDB_SQL_HOST_OVERRIDE",
+    "LANCEDB_API_KEY",
+)
 # The connection settings alone never send this test to a deployment.
 OPT_IN = "LANCEDB_DOCS_TEST_DEPLOYMENT"
 
@@ -138,7 +146,7 @@ def test_function_output_nullability():
         pa.field("half", pa.float64(), nullable=False),
         pa.field("note", pa.string(), nullable=True),
     ]
-    struct = udf(input_schema=inputs, output_schema=pa.schema(fields))(describe)
+    struct = function(input_schema=inputs, output_schema=pa.schema(fields))(describe)
     output = struct.registration_request.signature.output
     assert output.kind == "named_struct"
     assert [(field.name, field.nullable) for field in output.fields] == [
@@ -152,7 +160,7 @@ def test_function_output_nullability():
         pa.field("result", pa.struct(fields), nullable=True),
     ):
         with pytest.raises(ValueError, match="non-nullable"):
-            udf(input_schema=inputs, output_schema=nullable)(describe)
+            function(input_schema=inputs, output_schema=nullable)(describe)
 
 
 def test_function_registration_is_remote(tmp_path):
@@ -181,7 +189,10 @@ def test_function_version_binds_a_column(tmp_path):
     # The binding is accepted by add_columns, which a local table refuses:
     # a Function column needs LanceDB Cloud or Enterprise.
     table = lancedb.connect(tmp_path).create_table("t", [{"value": 1.0}])
-    with pytest.raises(NotImplementedError, match="Cloud and Enterprise"):
+    with pytest.raises(
+        NotImplementedError,
+        match="Function columns are supported only in LanceDB Enterprise",
+    ):
         table.add_columns({"doubled": application})
 
 
@@ -223,6 +234,7 @@ def test_function_enterprise(monkeypatch):
         api_key=os.environ["LANCEDB_API_KEY"],
         region=os.environ.get("LANCEDB_REGION", "us-east-1"),
         host_override=os.environ["LANCEDB_HOST_OVERRIDE"],
+        sql_host_override=os.environ["LANCEDB_SQL_HOST_OVERRIDE"],
     )
     # --8<-- [end:function_connect]
 
@@ -230,7 +242,10 @@ def test_function_enterprise(monkeypatch):
     # this run creates both under names only it uses, and drops only those.
     run = uuid.uuid4().hex[:12]
     table_name = f"function_demo_{run}"
-    double = udf(name=f"double_{run}")(WALKTHROUGH_DOUBLE.__wrapped__)
+    double = function(name=f"double_{run}")(WALKTHROUGH_DOUBLE.__wrapped__)
+    embed = function(name=f"embed_{run}", pip=["sentence-transformers"])(
+        WALKTHROUGH_EMBED.__wrapped__
+    )
     create_table = db.create_table
 
     def create_run_table(name, *args, **kwargs):
@@ -241,6 +256,7 @@ def test_function_enterprise(monkeypatch):
 
     table = None
     version = None
+    embedder = None
     try:
         # --8<-- [start:function_create_table]
         import pyarrow as pa
@@ -284,11 +300,18 @@ def test_function_enterprise(monkeypatch):
             (2.0, 4.0),
             (3.0, 6.0),
         ]
+
+        # --8<-- [start:function_class_register]
+        embedder = db.create_function_async(embed).wait()
+        # --8<-- [end:function_class_register]
+        assert embedder.name == f"embed_{run}"
     finally:
         if table is not None:
             db.drop_table(table_name)
         if version is not None:
             db.drop_function(version.name, version=version.version)
+        if embedder is not None:
+            db.drop_function(embedder.name, version=embedder.version)
 
 
 class ReachedConnection(Exception):
@@ -298,6 +321,7 @@ class ReachedConnection(Exception):
 SETTINGS = {
     "LANCEDB_URI": "db://docs-test",
     "LANCEDB_HOST_OVERRIDE": "https://deployment.invalid",
+    "LANCEDB_SQL_HOST_OVERRIDE": "grpc+tls://sql.deployment.invalid:10026",
     "LANCEDB_API_KEY": "docs-test-key",
 }
 
@@ -375,5 +399,6 @@ def test_function_enterprise_connects_when_asked(monkeypatch, connect_attempts, 
             "api_key": "docs-test-key",
             "region": region or "us-east-1",
             "host_override": "https://deployment.invalid",
+            "sql_host_override": "grpc+tls://sql.deployment.invalid:10026",
         }
     ]

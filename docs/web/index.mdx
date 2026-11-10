@@ -23,7 +23,7 @@ time stitching infrastructure together and more time improving datasets, testing
 
 ## Accelerate the data flywheel for model research {#accelerate-the-data-flywheel-for-model-research}
 
-Keep your AI data in one table, and give each agent-driven experiment its own isolated branch.
+Keep your AI data in one table.{/* Draft until branching reaches early access: restore ", and give each agent-driven experiment its own isolated branch" before the period. */}
 Find the failure, fix the data, and retrain.
 
 <Steps>
@@ -31,11 +31,15 @@ Find the failure, fix the data, and retrain.
     Start from one failed grasp or evaluation example. [Search](/search/) multimodal data, metadata, and embeddings
     together, retrieve similar examples, and [curate](/curation) them into a targeted training subset.
   </Step>
+  {/*
+  Draft until branching reaches early access.
+
   <Step title="Data sandboxes for safe agentic experimentation">
     Don't let an agent silently corrupt your data and ruin a training run. Give each agent its own
     [branch](/tables/branching), a writable fork of the table, to experiment on, and review the changes before
     they reach `main`. See [Run experiments on branches](/agent-branch-experiments).
   </Step>
+  */}
   <Step title="A single dataset for every modality">
     Keep episodes, frames, metadata, features, and embeddings together in one schema-enforced table, without
     pipelines to keep them in sync. Table [versions](/management/table#versioning) let you trace each training
@@ -59,99 +63,27 @@ GPU-ready batches from a tagged dataset version. Training pipelines need curatio
 splits, fast random access, and a clean path into frameworks such as PyTorch -- LanceDB keeps all of it connected
 through the same table model, whether a workflow uses one table or several related ones.
 
-## Architecture {#architecture}
+## Architecture: Embedded and Enterprise {#architecture}
 
-LanceDB Embedded and Enterprise are both built on [Lance](/basics/lance), which stores table data, versions, and
-indexes in open, columnar files. The format and table model are the same across both offerings -- what changes is
-how storage and compute are organized around them.
+LanceDB ships as two offerings on the same [Lance](/basics/lance) format and table model, which stores table data,
+versions, and indexes in open, columnar files. What changes between them is how storage and compute are organized
+around that format: start locally with Embedded, then move to Enterprise when your team needs distributed scale,
+managed infrastructure, private deployment, or higher-throughput curation, feature engineering, search and
+retrieval, and training workflows.
 
-![LanceDB suite: LanceDB Embedded for search, and LanceDB Enterprise for search, data exploration and curation, feature engineering, and training, both on the Lance format](/static/assets/images/overview/lancedb-suite.svg)
+<CardGroup cols={2}>
+  <Card title="LanceDB Embedded" icon="cube" href="/basics/lancedb-embedded">
+    An open-source, embedded retrieval library that runs inside your application process, with no separate
+    database server to deploy.
+  </Card>
+  <Card title="LanceDB Enterprise" icon="server" href="/enterprise/index">
+    A distributed multimodal lakehouse service for production workloads that need managed infrastructure and
+    higher-throughput workflows.
+  </Card>
+</CardGroup>
 
-Embedded reads and writes tables on local disk or in object storage from inside your application process.
-Enterprise keeps durable table data and index artifacts in object storage, independently of the machines serving
-requests, and separates query serving, read execution and caching, and indexing and background work into their
-own independently sized components. Caches accelerate reads; they are never the durable source of truth. With
-multiple serving replicas, Enterprise routes traffic to surviving nodes when one fails; losing a cache node
-temporarily raises latency while its replacement warms, rather than causing an outage.
-
-Sharing a format does not mean an Enterprise deployment automatically opens an existing Embedded database --
-plan how to move or connect your data and configure access for your deployment.
-
-## Embedded and Enterprise {#embedded-and-enterprise}
-
-LanceDB ships as two offerings on the same Lance format and table model. Start locally with Embedded, then move to
-Enterprise when your team needs distributed scale, managed infrastructure, private deployment, or higher-throughput
-curation, feature engineering, search and retrieval, and training workflows.
-
-### 1\. LanceDB Embedded {#1-lancedb-oss}
-
-**LanceDB Embedded** is an open-source, embedded retrieval library, with client SDKs in Python, TypeScript and
-Rust -- the application itself plans queries, builds indexes, and runs background work, with no separate database
-server to deploy. This fits local retrieval applications, notebooks, development, and single-node data pipelines,
-where your application controls its own compute resources and [table maintenance](/maintenance/compaction).
-
-![LanceDB Embedded: the LanceDB SDK and the Lance format run in your application, reading and writing tables on local disk or in object storage.](/static/assets/images/overview/lancedb-embedded.png)
-
-### 2\. LanceDB Enterprise {#2-lancedb-enterprise}
-
-[LanceDB Enterprise](/enterprise) is a petabyte-scale (and beyond), distributed **multimodal lakehouse** platform
-built for search, curation, feature engineering, and high-throughput training data access workflows on top of the
-same core table abstraction, without building bespoke infrastructure. Applications connect through a LanceDB SDK
-while the service handles requests across a fleet, with query serving, read execution and caching, and indexing
-and background work sized and scaled as separate components. A control plane governs configuration, identity
-and cluster lifecycle, separately from the data-plane components in the diagram below. See
-[Distributed search](/enterprise/distributed-search) for how query nodes and plan executors divide a request.
-
-![LanceDB Distributed: the LanceDB SDK connects to LanceDB Enterprise, where a query fleet, executor and cache fleets, the realtime engine, and a jobs fleet run on top of the Lance format and object storage.](/static/assets/images/overview/lancedb-distributed.png)
-
-Teams choose Enterprise to:
-
-- **Serve growing workloads** -- add query-serving capacity and let Enterprise cache frequently read table data near
-  compute as traffic grows.
-- **Reduce operational work** -- let the service handle background [compaction](/maintenance/compaction) and
-  [cleanup](/maintenance/cleanup) instead of scheduling them in application code.
-- **Fit deployment requirements** -- run a managed deployment or bring LanceDB into your own cloud account, with
-  OpenTelemetry metrics and traces.
-- **Connect data workflows** -- use the same tables for retrieval, curation, and training data access, with
-  [SQL](/basics/sql), [feature engineering](/feature-engineering), and [Geneva](/geneva) feature backfills.
-
-To set up LanceDB Enterprise in your organization, [reach out to us](https://www.lancedb.com/contact).
-
-### Compare features {#compare}
-
-| Area | Feature | Embedded | Enterprise |
-| --- | --- | :-: | :-: |
-| **Search** | [Vector search](/search/vector-search) | ✅ | ✅ |
-|  | [Full-text search](/search/full-text-search) | ✅ | ✅ |
-|  | [Hybrid search](/search/hybrid-search) | ✅ | ✅ |
-|  | [Filtering](/search/filtering) | ✅ | ✅ |
-|  | [Reranking](/reranking) | ✅ | ✅ |
-|  | [Query plans](/search/explain) | ✅ | ✅ |
-|  | [Distributed search](/enterprise/distributed-search) | ❌ | ✅ |
-| **Indexing** | [Vector indexes](/indexing/vector-index) | ✅ | ✅ |
-|  | [Full-text indexes](/indexing/fts-index) | ✅ | ✅ |
-|  | [Scalar indexes](/indexing/scalar-index) | ✅ | ✅ |
-| **SQL and curation** | [SQL (Arrow Flight SQL)](/basics/sql) | ❌ | ✅ |
-|  | [Aggregation and profiling](/curation/aggregate) | ❌ | ✅ |
-|  | [Sampling](/curation/sampling) | ❌ | ✅ |
-|  | [Joins](/curation/join) | ❌ | ✅ |
-|  | [Ranking and deduplication](/curation/windowing) | ❌ | ✅ |
-|  | [Near-duplicate detection](/curation/dedupe) | ❌ | ✅ |
-|  | [Chunking](/curation/chunking) | ❌ | ✅ |
-|  | [Changes since a version](/curation/changes) | ❌ | ✅ |
-|  | [Views](/management/view) | ❌ | ✅ |
-| **Feature engineering** | [Computed columns, with refresh](/feature-engineering/add-computed-column) | ✅ | ✅ |
-|  | [Materialized views](/management/materialized-view) | ❌ | ✅ |
-|  | [Embedding registry](/embedding) | ✅ | ✅ |
-| **Training** | [PyTorch data loader](/training/data-loading) | ✅ | ✅ |
-|  | [Permutations](/training/permutation) | ✅ | ✅ |
-|  | [Distributed training](/training/distributed-training) | ✅ | ✅ |
-| **Data management** | [Branches](/tables/branching) | ✅ | ✅ |
-|  | [Compaction and cleanup](/maintenance/compaction) | ✅ | ✅ |
-|  | [Background jobs (managed indexing and maintenance)](/maintenance/background-jobs) | ❌ | ✅ |
-|  | [Real Time engine (streaming writes and reads)](/tables/realtime-engine) | ❌ | ✅ |
-| **Security** | [Authentication](/enterprise/authentication) | ❌ | ✅ |
-|  | [Authorization](/governance/authorization) | ❌ | ✅ |
+See [Embedded vs Enterprise](/basics/embedded-vs-enterprise) for a feature-by-feature comparison, including
+architecture, latency, throughput, and day-to-day usage differences.
 
 ## Projects using LanceDB {#projects-using-lancedb}
 
@@ -162,7 +94,7 @@ To set up LanceDB Enterprise in your organization, [reach out to us](https://www
   fraction of the disk footprint.
 - [le-wm](https://github.com/lucas-maes/le-wm) -- a joint-embedding predictive world model from pixels, trained on
   the stable-worldmodel platform and its LanceDB data layer.
-- [lerobot-lancedb](https://github.com/lancedb/lerobot-lancedb) -- a drop-in LanceDB backend for Hugging Face
+- [lerobot-lancedb](https://github.com/lancedb/lerobot-lancedb) -- a drop-in LanceDB backend for HuggingFace
   LeRobot datasets with faster loading across robotics datasets.
 
 ### Agentic applications {#agentic-applications}

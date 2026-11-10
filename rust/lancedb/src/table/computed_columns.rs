@@ -61,7 +61,7 @@ pub const AUTO_REFRESH_ENABLED_META_KEY: &str = "computed_column.auto_refresh_en
 pub const AUTO_REFRESH_INTERVAL_META_KEY: &str = "computed_column.auto_refresh_interval_seconds";
 
 /// Scheduling settings persisted on each computed output. LanceDB Embedded
-/// stores these settings; automatic scheduling requires LanceDB Distributed.
+/// stores these settings; automatic scheduling requires LanceDB Enterprise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ComputedColumnOptions {
@@ -407,12 +407,23 @@ pub(crate) fn ensure_supported_function_metadata(schema: &ArrowSchema) -> Result
         .iter()
         .map(|binding| (binding.binding_id(), binding))
         .collect::<HashMap<_, _>>();
+    let assignment_columns = bindings
+        .iter()
+        .filter_map(|binding| {
+            binding
+                .assignment()
+                .map(|assignment| assignment.output_name.as_str())
+        })
+        .collect::<HashSet<_>>();
     for field in schema.fields() {
-        if field
-            .metadata()
-            .get(COMPUTED_COLUMN_META_KEY)
-            .map(String::as_str)
-            != Some("true")
+        // Assignment columns are server-owned bookkeeping, even when describe
+        // includes them. Only user-visible outputs require reciprocal metadata.
+        if assignment_columns.contains(field.name().as_str())
+            || field
+                .metadata()
+                .get(COMPUTED_COLUMN_META_KEY)
+                .map(String::as_str)
+                != Some("true")
         {
             continue;
         }
@@ -1028,7 +1039,7 @@ fn canonical_input_arrow_type(field: &JsonArrowField) -> Result<String> {
     if is_blob_v2 || field.r#type.fields.is_some() {
         let arrow_field = lance_namespace::schema::convert_json_arrow_field(field)
             .map_err(|e| invalid_function(format!("invalid Function input field: {e}")))?;
-        validate_function_blob_nesting(&arrow_field, false)?;
+        validate_function_blob_nesting(&arrow_field, false, false)?;
         if is_blob_v2 {
             return Ok(FUNCTION_BLOB_V2_TYPE.to_string());
         }
@@ -1050,11 +1061,16 @@ fn has_supported_blob_v2_layout(field: &ArrowField) -> bool {
         )
 }
 
-fn validate_function_blob_nesting(field: &ArrowField, inside_collection: bool) -> Result<()> {
+/// Blob v2 under a collection is accepted only where `collection_blobs` is set (outputs).
+fn validate_function_blob_nesting(
+    field: &ArrowField,
+    inside_collection: bool,
+    collection_blobs: bool,
+) -> Result<()> {
     if field.is_blob_v2() {
-        if inside_collection {
+        if inside_collection && !collection_blobs {
             return Err(invalid_function(format!(
-                "Function field '{}' nests Blob v2 under a collection, which Function signatures do not support",
+                "Function field '{}' nests Blob v2 under a collection; only a Function output may, under a list or large_list",
                 field.name()
             )));
         }
@@ -1067,13 +1083,16 @@ fn validate_function_blob_nesting(field: &ArrowField, inside_collection: bool) -
         return Ok(());
     }
     match field.data_type() {
-        DataType::Struct(fields) => fields
-            .iter()
-            .try_for_each(|field| validate_function_blob_nesting(field, inside_collection)),
-        DataType::List(field)
-        | DataType::LargeList(field)
-        | DataType::FixedSizeList(field, _)
-        | DataType::Map(field, _) => validate_function_blob_nesting(field, true),
+        DataType::Struct(fields) => fields.iter().try_for_each(|field| {
+            validate_function_blob_nesting(field, inside_collection, collection_blobs)
+        }),
+        DataType::List(field) | DataType::LargeList(field) => {
+            validate_function_blob_nesting(field, true, collection_blobs)
+        }
+        // Lance stores Blob v2 under List and LargeList only.
+        DataType::FixedSizeList(field, _) | DataType::Map(field, _) => {
+            validate_function_blob_nesting(field, true, false)
+        }
         _ => Ok(()),
     }
 }
@@ -1172,7 +1191,7 @@ fn function_output_field(name: &str, nullable: bool, raw: &str) -> Result<JsonAr
     };
     let arrow_field = lance_namespace::schema::convert_json_arrow_field(&field)
         .map_err(|e| invalid_function(format!("invalid Function output field: {e}")))?;
-    validate_function_blob_nesting(&arrow_field, false)?;
+    validate_function_blob_nesting(&arrow_field, false, true)?;
     Ok(field)
 }
 
@@ -1361,6 +1380,7 @@ fn ensure_binding_matches_schema(schema: &ArrowSchema, binding: &FunctionBinding
             &output.arrow_type,
         )?);
     }
+    let mut declared_output_schema = binding.output_schema().cloned();
     if let Some(assignment) = binding.assignment() {
         if binding
             .outputs()
@@ -1372,49 +1392,17 @@ fn ensure_binding_matches_schema(schema: &ArrowSchema, binding: &FunctionBinding
                 binding.binding_id()
             )));
         }
-        let field = schema
-            .field_with_name(&assignment.output_name)
-            .map_err(|_| {
-                invalid_function(format!(
-                    "Function binding '{}' assignment column '{}' is missing",
-                    binding.binding_id(),
-                    assignment.output_name
-                ))
-            })?;
-        let metadata = field.metadata();
-        if field.data_type() != &DataType::Boolean
-            || !field.is_nullable()
-            || metadata.get(COMPUTED_COLUMN_META_KEY).map(String::as_str) != Some("true")
-            || metadata.get(KIND_META_KEY).map(String::as_str) != Some(FUNCTION_KIND)
-            || metadata
-                .get(FUNCTION_BINDING_ID_META_KEY)
-                .map(String::as_str)
-                != Some(binding.binding_id())
-            || metadata
-                .get(FUNCTION_OUTPUT_ORDINAL_META_KEY)
-                .and_then(|value| value.parse::<u32>().ok())
-                != Some(FUNCTION_ASSIGNMENT_OUTPUT_ORDINAL)
+        // Servers may include the internal assignment in the persisted output
+        // schema while omitting it from describe. Compare only user outputs.
+        if let Some(fields) = declared_output_schema
+            .as_mut()
+            .and_then(|schema| schema.get_mut("fields"))
+            .and_then(Value::as_array_mut)
         {
-            return Err(invalid_function(format!(
-                "Function binding '{}' assignment column no longer matches its declaration",
-                binding.binding_id()
-            )));
+            fields.retain(|field| {
+                field.get("name").and_then(Value::as_str) != Some(assignment.output_name.as_str())
+            });
         }
-        let json = lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(vec![
-            ArrowField::new(assignment.output_name.clone(), DataType::Boolean, true),
-        ]))
-        .map_err(|e| invalid_function(format!("invalid Function assignment schema: {e}")))?;
-        output_fields.push(json.fields.into_iter().next().unwrap());
-    } else if binding.outputs().iter().all(|output| output.nullable)
-        && binding
-            .outputs()
-            .iter()
-            .all(|output| output.result_field != WHOLE_RESULT_FIELD)
-    {
-        return Err(invalid_function(format!(
-            "Function binding '{}' has no flattened-result assignment column",
-            binding.binding_id()
-        )));
     }
     let output_schema = JsonArrowSchema::new(output_fields);
     let output_schema = serde_json::to_value(output_schema).map_err(|e| {
@@ -1422,7 +1410,7 @@ fn ensure_binding_matches_schema(schema: &ArrowSchema, binding: &FunctionBinding
             "could not encode exact Function output schema: {e}"
         ))
     })?;
-    if binding.output_schema() != Some(&output_schema) {
+    if declared_output_schema.as_ref() != Some(&output_schema) {
         return Err(invalid_function(format!(
             "Function binding '{}' output schema does not match physical siblings",
             binding.binding_id()
@@ -3886,7 +3874,7 @@ mod tests {
     }
 
     #[test]
-    fn test_binding_preserves_all_nullable_outputs_with_an_assignment_column() {
+    fn test_binding_accepts_server_owned_assignment_columns() {
         let mut raw_binding: Value = serde_json::from_str(include_str!(
             "../../tests/fixtures/first_class_functions/v1/remote_function_binding.json"
         ))
@@ -3895,16 +3883,11 @@ mod tests {
         raw_binding["outputs"][1]["nullable"] = Value::Bool(true);
         let without_assignment: FunctionBinding =
             serde_json::from_value(raw_binding.clone()).unwrap();
-        let error = ensure_binding_matches_schema(
+        ensure_binding_matches_schema(
             &valid_function_binding_schema(true, true, &without_assignment),
             &without_assignment,
         )
-        .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("flattened-result assignment column")
-        );
+        .unwrap();
 
         raw_binding["assignment"] = serde_json::json!({
             "output_name": "__function_assignment_fb_01K3TEXT",
@@ -3935,6 +3918,36 @@ mod tests {
             )]),
         );
         ensure_supported_function_metadata(&schema).unwrap();
+
+        let assignment_name = &binding.assignment().unwrap().output_name;
+        let fields = schema
+            .fields()
+            .iter()
+            .filter(|field| field.name() != assignment_name)
+            .cloned()
+            .collect::<Vec<_>>();
+        let hidden = ArrowSchema::new_with_metadata(fields.clone(), schema.metadata().clone());
+        ensure_supported_function_metadata(&hidden).unwrap();
+
+        // The assignment field's type and metadata belong to the server.
+        let mut fields = fields;
+        fields.push(Arc::new(
+            ArrowField::new(assignment_name, DataType::Int32, false).with_metadata(HashMap::from(
+                [
+                    (COMPUTED_COLUMN_META_KEY.into(), "true".into()),
+                    (KIND_META_KEY.into(), "server_owned".into()),
+                ],
+            )),
+        ));
+        let changed = ArrowSchema::new_with_metadata(fields, schema.metadata().clone());
+        ensure_supported_function_metadata(&changed).unwrap();
+
+        // Describe metadata may also omit the internal output-schema field.
+        let mut raw = serde_json::to_value(&binding).unwrap();
+        raw["output_schema"]["fields"].as_array_mut().unwrap().pop();
+        let binding_without_assignment_field: FunctionBinding =
+            serde_json::from_value(raw).unwrap();
+        ensure_binding_matches_schema(&hidden, &binding_without_assignment_field).unwrap();
 
         let mut metadata: Value =
             serde_json::from_str(schema.metadata().get(FUNCTION_BINDINGS_META_KEY).unwrap())
@@ -4484,6 +4497,72 @@ mod tests {
         };
         assert!(details[0].is_blob_v2());
         assert!(!fields.iter().any(|field| field.name() == "payload"));
+    }
+
+    #[test]
+    fn test_blob_children_under_lists_are_output_only() {
+        let input = crate::blob("image", false);
+        let accepted = [
+            DataType::List(Arc::new(crate::blob("item", true))),
+            DataType::LargeList(Arc::new(crate::blob("item", true))),
+        ];
+        for data_type in accepted {
+            let output_type = exact_arrow_type(ArrowField::new("frames", data_type, false));
+            let output = serde_json::json!({
+                "kind": "scalar",
+                "arrow_type": output_type,
+                "nullable": false
+            });
+            let application = blob_application(&output.to_string());
+            let plan = plan_function_application(
+                &ArrowSchema::new(vec![input.clone()]),
+                &application,
+                Some("frames"),
+            )
+            .unwrap();
+
+            assert_eq!(plan.outputs.len(), 1);
+            assert_eq!(plan.outputs[0].output_name, "frames");
+            assert!(plan.output_schema.fields[0].nullable);
+            let schema =
+                lance_namespace::schema::convert_json_arrow_schema(&plan.output_schema).unwrap();
+            let item = match schema.field(0).data_type() {
+                DataType::List(item) | DataType::LargeList(item) => item,
+                other => panic!("expected a list output, got {other}"),
+            };
+            assert!(item.is_blob_v2());
+        }
+
+        let rejected = [
+            DataType::FixedSizeList(Arc::new(crate::blob("item", true)), 2),
+            DataType::Map(
+                Arc::new(ArrowField::new(
+                    "entries",
+                    DataType::Struct(Fields::from(vec![
+                        ArrowField::new("key", DataType::Utf8, false),
+                        crate::blob("value", true),
+                    ])),
+                    false,
+                )),
+                false,
+            ),
+        ];
+        for data_type in rejected {
+            let output_type = exact_arrow_type(ArrowField::new("frames", data_type, false));
+            let output = serde_json::json!({
+                "kind": "scalar",
+                "arrow_type": output_type,
+                "nullable": false
+            });
+            let application = blob_application(&output.to_string());
+            let error = plan_function_application(
+                &ArrowSchema::new(vec![input.clone()]),
+                &application,
+                Some("frames"),
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("nests Blob v2"), "{error}");
+        }
     }
 
     #[test]

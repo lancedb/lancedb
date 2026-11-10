@@ -24,6 +24,8 @@ use lancedb::{
     connection::NamespaceClientPushdownOperation,
     database::namespace::LanceNamespaceDatabase,
     database::{CreateTableMode, Database, ReadConsistency},
+    function::GpuClass as LanceGpuClass,
+    graph::PropertyGraphDefinition,
 };
 use pyo3::{
     Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
@@ -35,6 +37,62 @@ use pyo3::{
 #[pyclass]
 pub struct Connection {
     inner: Option<LanceConnection>,
+}
+
+/// Configured hardware and worker limits of a Function GPU class.
+#[pyclass(module = "lancedb._lancedb", get_all, from_py_object)]
+#[derive(Clone, Debug)]
+pub struct GpuClass {
+    pub name: String,
+    pub resource_name: String,
+    pub gpu_model: Option<String>,
+    pub gpu_memory_bytes: Option<u64>,
+    pub max_gpu_count_per_worker: Option<u32>,
+    pub cpu_millis: Option<u64>,
+    pub memory_bytes: Option<u64>,
+    pub ephemeral_storage_bytes: Option<u64>,
+}
+
+impl From<LanceGpuClass> for GpuClass {
+    fn from(class: LanceGpuClass) -> Self {
+        Self {
+            name: class.name,
+            resource_name: class.resource_name,
+            gpu_model: class.gpu_model,
+            gpu_memory_bytes: class.gpu_memory_bytes,
+            max_gpu_count_per_worker: class.max_gpu_count_per_worker,
+            cpu_millis: class.cpu_millis,
+            memory_bytes: class.memory_bytes,
+            ephemeral_storage_bytes: class.ephemeral_storage_bytes,
+        }
+    }
+}
+
+#[pymethods]
+impl GpuClass {
+    fn __repr__(&self) -> String {
+        let gpu_model = self
+            .gpu_model
+            .as_ref()
+            .map_or_else(|| "None".to_string(), |value| format!("{value:?}"));
+        let optional = |value: Option<u64>| {
+            value.map_or_else(|| "None".to_string(), |value| value.to_string())
+        };
+        let max_gpu_count = self
+            .max_gpu_count_per_worker
+            .map_or_else(|| "None".to_string(), |value| value.to_string());
+        format!(
+            "GpuClass(name={:?}, resource_name={:?}, gpu_model={gpu_model}, \
+             gpu_memory_bytes={}, max_gpu_count_per_worker={max_gpu_count}, \
+             cpu_millis={}, memory_bytes={}, ephemeral_storage_bytes={})",
+            self.name,
+            self.resource_name,
+            optional(self.gpu_memory_bytes),
+            optional(self.cpu_millis),
+            optional(self.memory_bytes),
+            optional(self.ephemeral_storage_bytes),
+        )
+    }
 }
 
 impl Connection {
@@ -871,6 +929,23 @@ impl Connection {
     }
 
     #[pyo3(signature = (name, version, namespace_path=None))]
+    pub fn _drop_function_with_warnings(
+        self_: PyRef<'_, Self>,
+        name: String,
+        version: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner
+                .drop_function_with_warnings(name, version, &namespace_path)
+                .await
+                .infer_error()
+        })
+    }
+
+    #[pyo3(signature = (name, version, namespace_path=None))]
     pub fn drop_function_async(
         self_: PyRef<'_, Self>,
         name: String,
@@ -885,6 +960,72 @@ impl Connection {
                 .await
                 .infer_error()
                 .map(|(dropped, job)| (dropped, crate::job::Job::new(job)))
+        })
+    }
+
+    #[pyo3(signature = (name, request, namespace_path=None))]
+    pub fn create_storage_integration<'py>(
+        &self,
+        py: Python<'py>,
+        name: String,
+        request: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self.get_inner()?.clone();
+        let request: lancedb::storage_integration::CreateStorageIntegrationRequest =
+            serde_json::from_str(&request)
+                .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        future_into_py(py, async move {
+            let info = inner
+                .create_storage_integration(name, request, &namespace_path.unwrap_or_default())
+                .await
+                .infer_error()?;
+            serde_json::to_string(&info).map_err(|error| PyValueError::new_err(error.to_string()))
+        })
+    }
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn describe_storage_integration<'py>(
+        &self,
+        py: Python<'py>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self.get_inner()?.clone();
+        future_into_py(py, async move {
+            let info = inner
+                .describe_storage_integration(name, &namespace_path.unwrap_or_default())
+                .await
+                .infer_error()?;
+            serde_json::to_string(&info).map_err(|error| PyValueError::new_err(error.to_string()))
+        })
+    }
+    #[pyo3(signature = (*, namespace_path=None, page_token=None, page_limit=None))]
+    pub fn list_storage_integrations(
+        &self,
+        namespace_path: Option<Vec<String>>,
+        page_token: Option<String>,
+        page_limit: Option<u32>,
+    ) -> PyResult<crate::listing::NameListing> {
+        Ok(crate::listing::NameListing::new(
+            self.get_inner()?.list_storage_integrations(
+                &namespace_path.unwrap_or_default(),
+                crate::listing::options(page_token, page_limit),
+            ),
+        ))
+    }
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn drop_storage_integration<'py>(
+        &self,
+        py: Python<'py>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self.get_inner()?.clone();
+        future_into_py(py, async move {
+            inner
+                .drop_storage_integration(name, &namespace_path.unwrap_or_default())
+                .await
+                .infer_error()
         })
     }
 
@@ -1050,6 +1191,79 @@ impl Connection {
         ))
     }
 
+    /// Create a property graph from its definition's JSON, and return its
+    /// description's JSON. The Python layer names the fields; the JSON keeps
+    /// the binding free of classes kept in step with the Rust structs.
+    #[pyo3(signature = (name, definition_json, namespace_path=None))]
+    pub fn create_property_graph(
+        self_: PyRef<'_, Self>,
+        name: String,
+        definition_json: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            let definition = PropertyGraphDefinition::from_json(&definition_json).infer_error()?;
+            inner
+                .create_property_graph(name, &definition, &namespace_path)
+                .await
+                .infer_error()?
+                .to_json()
+                .infer_error()
+        })
+    }
+
+    /// The JSON description of the property graph named `name`.
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn describe_property_graph(
+        self_: PyRef<'_, Self>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner
+                .describe_property_graph(name, &namespace_path)
+                .await
+                .infer_error()?
+                .to_json()
+                .infer_error()
+        })
+    }
+
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn drop_property_graph(
+        self_: PyRef<'_, Self>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner
+                .drop_property_graph(name, &namespace_path)
+                .await
+                .infer_error()
+        })
+    }
+
+    #[pyo3(signature = (namespace_path=None, *, page_token=None, page_limit=None))]
+    pub fn list_property_graphs(
+        &self,
+        namespace_path: Option<Vec<String>>,
+        page_token: Option<String>,
+        page_limit: Option<u32>,
+    ) -> PyResult<crate::listing::NameListing> {
+        Ok(crate::listing::NameListing::new(
+            self.get_inner()?.list_property_graphs(
+                &namespace_path.unwrap_or_default(),
+                crate::listing::options(page_token, page_limit),
+            ),
+        ))
+    }
+
     #[pyo3(signature = (*, page_token=None, page_limit=None))]
     pub fn list_jobs(
         &self,
@@ -1060,6 +1274,14 @@ impl Connection {
             self.get_inner()?
                 .list_jobs(crate::listing::options(page_token, page_limit)),
         ))
+    }
+
+    pub fn list_gpu_classes(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let classes = inner.list_gpu_classes().await.infer_error()?;
+            Ok(classes.into_iter().map(GpuClass::from).collect::<Vec<_>>())
+        })
     }
 
     pub fn cancel_job(self_: PyRef<'_, Self>, job_id: String) -> PyResult<Bound<'_, PyAny>> {

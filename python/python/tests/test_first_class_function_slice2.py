@@ -7,6 +7,7 @@ import base64
 import contextlib
 import functools
 import importlib.util
+import inspect
 import types
 from datetime import date
 import http.server
@@ -15,6 +16,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import typing
 import urllib.parse
 from typing import Optional
 
@@ -23,16 +25,21 @@ import pytest
 
 import lancedb
 from lancedb import BlobReader
+from lancedb.db import AsyncConnection
 from lancedb.functions import (
+    FunctionVersion,
+    HuggingFaceModel,
     PythonRuntimeSpec,
     SecretBinding,
     SecretReference,
-    UdfDefinition,
+    FunctionDefinition,
     _canonical_arrow_type,
+    _exact_arrow_type,
     _GRAMMAR_PRIMITIVES,
-    udf,
+    function,
 )
 from lancedb.secrets import EnvVarSecret
+from lancedb.remote.db import RemoteDBConnection
 from utils import start_server_thread
 
 THRESHOLD = 20
@@ -55,7 +62,7 @@ FUNCTION_VERSION = json.loads(
 )["version"]
 
 
-@udf(
+@function(
     pip=["numpy>=2"],
     env={"MODE": "test"},
     python_version="3.12",
@@ -64,7 +71,7 @@ def normalize_score(value: float) -> float:
     return value / 100.0
 
 
-@udf(
+@function(
     pip=["openai==3.7.0"],
     env={"MODE": "test"},
     python_version="3.12",
@@ -73,8 +80,8 @@ def analyze_caption(caption: str) -> str:
     return caption.strip()
 
 
-def test_scalar_udf_matches_shared_registration_golden_and_remains_callable():
-    assert isinstance(normalize_score, UdfDefinition)
+def test_scalar_function_matches_shared_registration_golden_and_remains_callable():
+    assert isinstance(normalize_score, FunctionDefinition)
     assert normalize_score(25.0) == 0.25
     assert (
         normalize_score.registration_request.to_canonical_json()
@@ -89,20 +96,131 @@ def test_scalar_udf_matches_shared_registration_golden_and_remains_callable():
     }
 
 
+def test_function_declares_pinned_hugging_face_models():
+    model = HuggingFaceModel(
+        repo="sentence-transformers/all-MiniLM-L6-v2",
+        revision="1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+    )
+
+    @function(pip=["sentence-transformers==3.3.1"], models=[model])
+    def embed_text(value: str) -> list[float]:
+        return [1.0]
+
+    request = json.loads(embed_text.registration_request.to_canonical_json())
+    assert request["models"] == [
+        {
+            "repo": "sentence-transformers/all-MiniLM-L6-v2",
+            "revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+        }
+    ]
+    undeclared = json.loads(normalize_score.registration_request.to_canonical_json())
+    assert "models" not in undeclared
+
+    with pytest.raises(ValueError, match="once"):
+        function(name="duplicate_model", models=[model, model])(lambda value: value)
+    with pytest.raises(ValueError, match="40-character"):
+        HuggingFaceModel(repo="owner/model", revision="main")
+    with pytest.raises(ValueError, match="reserve"):
+        function(
+            name="reserved_model_env",
+            models=[model],
+            env={"HF_HOME": "/tmp/model"},
+        )(lambda value: value)
+
+
+def test_function_execution_controls_match_shared_registration_golden():
+    controlled = function(
+        pip=["numpy>=2"],
+        env={"MODE": "test"},
+        python_version="3.12",
+        batch_size=2,
+        row_timeout_seconds=0.75,
+    )(normalize_score.__wrapped__)
+    assert (
+        controlled.registration_request.to_canonical_json()
+        == (FIXTURES / "remote_function_controlled_registration_request.canonical.json")
+        .read_text()
+        .strip()
+    )
+
+
+def test_function_execution_controls_apply_to_vectorized_functions():
+    @function(
+        input_schema=pa.schema([pa.field("value", pa.int64(), nullable=False)]),
+        output_schema=pa.int64(),
+        batch_size=3,
+        row_timeout_seconds=1.25,
+    )
+    def identity(value: pa.Array) -> pa.Array:
+        return value
+
+    request = json.loads(identity.registration_request.to_canonical_json())
+    assert request["batch_size"] == 3
+    assert request["row_timeout_seconds"] == 1.25
+
+
+def test_function_retry_policy_is_part_of_registration():
+    policy = lancedb.FunctionRetryPolicy(transient=True, max_attempts=4)
+    definition = function(retry_policy=policy)(normalize_score.__wrapped__)
+    request = json.loads(definition.registration_request.to_canonical_json())
+    assert request["retry_policy"] == {"max_attempts": 4, "transient": True}
+    assert lancedb.FunctionRetryPolicy(max_attempts=1).max_attempts == 1
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"max_attempts": 0, "transient": True},
+        {"max_attempts": 101, "transient": True},
+        {"max_attempts": True},
+        {"max_attempts": 3},
+        {"transient": True, "initial_backoff_seconds": -1},
+        {"transient": True, "max_backoff_seconds": float("inf")},
+        {"transient": True, "max_backoff_seconds": 0},
+        {"message_pattern": "["},
+        {"exception_types": [""]},
+        {"transient": True, "typo": 1},
+    ],
+)
+def test_function_retry_policy_rejects_invalid_options(options):
+    with pytest.raises(ValueError):
+        lancedb.FunctionRetryPolicy(**options)
+
+
+@pytest.mark.parametrize(
+    ("options", "field"),
+    [
+        ({"batch_size": 0}, "batch_size"),
+        ({"batch_size": 2**32}, "batch_size"),
+        ({"batch_size": True}, "batch_size"),
+        ({"row_timeout_seconds": 0}, "row_timeout_seconds"),
+        ({"row_timeout_seconds": -0.25}, "row_timeout_seconds"),
+        ({"row_timeout_seconds": float("inf")}, "row_timeout_seconds"),
+        ({"row_timeout_seconds": True}, "row_timeout_seconds"),
+    ],
+)
+def test_function_execution_controls_require_their_positive_ranges(options, field):
+    def identity(value: int) -> int:
+        return value
+
+    with pytest.raises(ValueError, match=field):
+        function(**options)(identity)
+
+
 @pytest.mark.parametrize(
     "name", ["examples.image_info", "image-info", "image_info.", "image_info-"]
 )
-def test_udf_rejects_function_names_with_periods_or_hyphens(name):
+def test_function_rejects_function_names_with_periods_or_hyphens(name):
     with pytest.raises(ValueError, match="invalid Function name"):
 
-        @udf(name=name)
+        @function(name=name)
         def image_info(value: int) -> int:
             return value
 
 
 @pytest.mark.parametrize("name", ["image_info", "ImageInfo123", "_image_info", "f"])
-def test_udf_accepts_function_names_with_letters_digits_and_underscores(name):
-    @udf(name=name)
+def test_function_accepts_function_names_with_letters_digits_and_underscores(name):
+    @function(name=name)
     def image_info(value: int) -> int:
         return value
 
@@ -110,7 +228,7 @@ def test_udf_accepts_function_names_with_letters_digits_and_underscores(name):
     assert image_info(1) == 1
 
 
-def test_secret_bound_udf_matches_its_shared_registration_golden():
+def test_secret_bound_function_matches_its_shared_registration_golden():
     assert analyze_caption("  hello  ") == "hello"
     bound = analyze_caption.bind_secrets(
         [EnvVarSecret(secret_name="openai-prod", env_variable="OPENAI_API_KEY")]
@@ -243,81 +361,45 @@ def test_bindings_may_not_collide_with_plain_configuration():
         )
 
 
-def test_a_binding_envelope_reaches_the_service_for_it_to_judge():
-    """Binding rules are the service's: it owns the runtime the names land in.
-
-    The client sends what it was given, so a rule it duplicated could disagree
-    with the service's without either side noticing. What is checked here is
-    that the envelope arrives intact -- the shape the service judges is the
-    shape the caller wrote.
-    """
-    with _mock_remote_function_catalog() as (host, state):
-        db = lancedb.connect(
-            "db://dev",
-            api_key="fake",
-            host_override=host,
-            client_config={"retry_config": {"retries": 0}},
-        )
-        bindings = [
-            EnvVarSecret(secret_name=f"secret-{index}", env_variable=f"TOKEN_{index}")
-            for index in range(17)
-        ]
-        db.create_function(normalize_score, secrets=bindings)
-
-    sent = state["requests"][0][1]
-    assert len(sent["secret_bindings"]) == 17
-    assert {
-        "kind": "env",
-        "variable": "TOKEN_0",
-        "secret_ref": {"name": "secret-0"},
-    } in sent["secret_bindings"]
-
-
 _SECRET_DEBUG_LOG_SOURCE = """
-import http.server
-import json
-import threading
+import pyarrow as pa
+import pyarrow.flight as flight
 
 import lancedb
 
 
-class Handler(http.server.BaseHTTPRequestHandler):
-    def log_message(self, *args):
-        pass
+class SecretServer(flight.FlightServerBase):
+    def __init__(self):
+        super().__init__("grpc://127.0.0.1:0")
 
-    def do_POST(self):
-        self.rfile.read(int(self.headers.get("Content-Length", "0")))
-        payload = json.dumps({}).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
+    def do_exchange(self, context, descriptor, reader, writer):
+        assert b"SECRET_VALUE_SENTINEL" not in descriptor.command
+        parameters = reader.read_all()
+        assert parameters.column(0).to_pylist() == ["SECRET_VALUE_SENTINEL"]
+        result = pa.table({"status": ["created"]})
+        writer.begin(result.schema)
+        writer.write_table(result)
+        writer.close()
 
 
-server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-threading.Thread(
-    target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
-).start()
-try:
+with SecretServer() as server:
     db = lancedb.connect(
         "db://dev",
         api_key="API_KEY_SENTINEL",
-        host_override="http://127.0.0.1:%d" % server.server_address[1],
-        client_config={"retry_config": {"retries": 0}},
+        host_override="http://localhost:10024",
+        sql_host_override=f"grpc://127.0.0.1:{server.port}",
     )
     db.create_secret("openai-prod", "SECRET_VALUE_SENTINEL")
-finally:
-    server.shutdown()
 """
 
 
 def test_a_credential_never_reaches_a_debug_log(tmp_path):
-    """The logger sees the serialized body, so no value-side redaction reaches it.
+    """Credential parameters and authentication stay out of Flight debug logs.
 
     Runs in a subprocess because the Rust logger reads ``LANCEDB_LOG`` once, at
     import.
     """
+    pytest.importorskip("pyarrow.flight")
     script = tmp_path / "write_secret.py"
     script.write_text(_SECRET_DEBUG_LOG_SOURCE)
 
@@ -331,7 +413,7 @@ def test_a_credential_never_reaches_a_debug_log(tmp_path):
     output = result.stdout + result.stderr
 
     # Without this the test passes when debug logging is simply off.
-    assert "Sending request_id=" in output, output
+    assert "Created client for host:" in output, output
     assert "SECRET_VALUE_SENTINEL" not in output
     assert "API_KEY_SENTINEL" not in output
 
@@ -392,15 +474,15 @@ def test_a_secret_name_admits_what_a_namespace_name_does():
             )
 
 
-def _main_udf_source(
+def _main_function_source(
     *, threshold: int = 20, input_annotation: str = "int", comparison: str = ">="
 ) -> str:
     return (
         "from __future__ import annotations\n"
-        "from lancedb.functions import udf\n"
+        "from lancedb.functions import function\n"
         f"THRESHOLD = {threshold}\n"
         "\n"
-        "@udf\n"
+        "@function\n"
         f"def label(value: {input_annotation}) -> str:\n"
         f"    return 'big' if value {comparison} THRESHOLD else 'small'\n"
         "\n"
@@ -409,7 +491,7 @@ def _main_udf_source(
     )
 
 
-def _run_main_udf(path: Path, source: str) -> dict:
+def _run_main_function(path: Path, source: str) -> dict:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(source)
     result = subprocess.run(
@@ -421,15 +503,15 @@ def _run_main_udf(path: Path, source: str) -> dict:
     return json.loads(result.stdout)
 
 
-def test_main_udf_registration_identity_is_stable_across_processes_and_paths(
+def test_main_function_registration_identity_is_stable_across_processes_and_paths(
     tmp_path,
 ):
-    source = _main_udf_source()
+    source = _main_function_source()
     original_path = tmp_path / "original" / "job.py"
     moved_path = tmp_path / "moved" / "renamed_job.py"
 
-    original_runs = [_run_main_udf(original_path, source) for _ in range(2)]
-    moved_run = _run_main_udf(moved_path, source)
+    original_runs = [_run_main_function(original_path, source) for _ in range(2)]
+    moved_run = _run_main_function(moved_path, source)
 
     assert len({run["artifact"]["digest"] for run in [*original_runs, moved_run]}) == 1
     assert all(
@@ -438,15 +520,15 @@ def test_main_udf_registration_identity_is_stable_across_processes_and_paths(
     )
     assert original_runs[0] == original_runs[1] == moved_run
 
-    body_change = _run_main_udf(
-        tmp_path / "changes" / "body.py", _main_udf_source(comparison=">")
+    body_change = _run_main_function(
+        tmp_path / "changes" / "body.py", _main_function_source(comparison=">")
     )
-    global_change = _run_main_udf(
-        tmp_path / "changes" / "global.py", _main_udf_source(threshold=21)
+    global_change = _run_main_function(
+        tmp_path / "changes" / "global.py", _main_function_source(threshold=21)
     )
-    annotation_change = _run_main_udf(
+    annotation_change = _run_main_function(
         tmp_path / "changes" / "annotation.py",
-        _main_udf_source(input_annotation="float"),
+        _main_function_source(input_annotation="float"),
     )
 
     baseline = original_runs[0]
@@ -470,12 +552,41 @@ def _run_packaged(definition, *args):
     """Execute the shipped artifact in a fresh namespace, as a worker would."""
     source = base64.b64decode(definition.registration_request.artifact.content.data)
     namespace: dict = {}
-    exec(compile(source, "<udf>", "exec"), namespace)
+    exec(compile(source, "<function>", "exec"), namespace)
     return namespace[definition.registration_request.artifact.entrypoint](*args)
 
 
-def test_udf_conda_environment():
-    @udf(conda=["scipy", "numpy"], conda_channels=["conda-forge", "defaults"])
+def _execute_registered_array_function_v1(
+    request: dict, batch: pa.RecordBatch
+) -> pa.Array:
+    """Exercise adapter-v1 annotation dispatch over a registered artifact."""
+    assert request["artifact"]["adapter"] == {
+        "kind": "scalar_to_arrow_batch",
+        "version": 1,
+    }
+    source = base64.b64decode(request["artifact"]["content"]["data"])
+    namespace = {
+        "pa": pa,
+        "pyarrow": pa,
+        "Array": pa.Array,
+        "RecordBatch": pa.RecordBatch,
+        "typing": typing,
+    }
+    exec(compile(source, "<registered-function>", "exec"), namespace)
+    function = namespace[request["artifact"]["entrypoint"]]
+    parameters = tuple(inspect.signature(function).parameters.values())
+    annotations = typing.get_type_hints(function)
+    assert parameters and all(
+        annotations.get(parameter.name) is pa.Array for parameter in parameters
+    )
+    assert annotations.get("return") is pa.Array
+    result = function(*(batch.column(parameter.name) for parameter in parameters))
+    assert isinstance(result, pa.Array)
+    return result
+
+
+def test_function_conda_environment():
+    @function(conda=["scipy", "numpy"], conda_channels=["conda-forge", "defaults"])
     def halve(value: float) -> float:
         return value / 2
 
@@ -489,13 +600,13 @@ def test_udf_conda_environment():
     assert "channels" not in pip_request["runtime"]["environment"]
 
     with pytest.raises(ValueError, match="not both"):
-        udf(name="both", pip=["numpy"], conda=["numpy"])(lambda value: value)
+        function(name="both", pip=["numpy"], conda=["numpy"])(lambda value: value)
     with pytest.raises(ValueError, match="requires conda"):
-        udf(name="channels", conda_channels=["conda-forge"])(lambda value: value)
+        function(name="channels", conda_channels=["conda-forge"])(lambda value: value)
 
 
-def test_udf_apt_system_packages():
-    @udf(pip=["torchcodec"], apt=["libavutil58", "libavcodec60", "libavutil58"])
+def test_function_apt_system_packages():
+    @function(pip=["torchcodec"], apt=["libavutil58", "libavcodec60", "libavutil58"])
     def decode(value: float) -> float:
         return value
 
@@ -506,7 +617,7 @@ def test_udf_apt_system_packages():
         "system_packages": ["libavcodec60", "libavutil58"],
     }
 
-    @udf(conda=["numpy"], apt=["libsndfile1"])
+    @function(conda=["numpy"], apt=["libsndfile1"])
     def conda_decode(value: float) -> float:
         return value
 
@@ -515,19 +626,42 @@ def test_udf_apt_system_packages():
     pip_request = json.loads(normalize_score.registration_request.to_canonical_json())
     assert "system_packages" not in pip_request["runtime"]["environment"]
     with pytest.raises(ValueError, match="trimmed"):
-        udf(name="padded", apt=[" libsndfile1"])(lambda value: value)
+        function(name="padded", apt=[" libsndfile1"])(lambda value: value)
 
 
-def test_udf_gpu_marker_uses_gpu_runtime():
-    @udf(pip=["cupy-cuda12x"], gpu=True)
+@pytest.mark.parametrize("packages", [{"pip": ["numpy"]}, {"conda": ["numpy"]}])
+def test_function_image(packages):
+    image = "ghcr.io/acme/embedder@sha256:" + "a" * 64
+
+    @function(image=image, **packages)
+    def embed(value: float) -> float:
+        return value
+
+    request = json.loads(embed.registration_request.to_canonical_json())
+    assert request["runtime"]["environment"]["image"] == image
+    pip_request = json.loads(normalize_score.registration_request.to_canonical_json())
+    assert "image" not in pip_request["runtime"]["environment"]
+
+
+@pytest.mark.parametrize(
+    "image", ["ghcr.io/acme/embedder:latest", "embedder@sha256:" + "a" * 64, ""]
+)
+def test_function_image_requires_digest_reference(image):
+    with pytest.raises(ValueError, match="sha256"):
+        function(name="pinned", image=image)(lambda value: value)
+
+
+def test_function_gpu_marker_uses_gpu_runtime():
+    @function(pip=["cupy-cuda12x"], gpu=True, gpu_class="a10g")
     def double_on_gpu(value: int) -> int:
         return value * 2
 
     request = json.loads(double_on_gpu.registration_request.to_canonical_json())
     assert request["runtime"]["kind"] == "python_v2"
     assert request["runtime"]["gpu"] is True
+    assert request["runtime"]["gpu_class"] == "a10g"
 
-    @udf(pip=["pyarrow"])
+    @function(pip=["pyarrow"])
     def cpu_function(value: int) -> int:
         return value
 
@@ -536,13 +670,19 @@ def test_udf_gpu_marker_uses_gpu_runtime():
     ]
     assert cpu_runtime["kind"] == "python"
     assert "gpu" not in cpu_runtime
+    assert "gpu_class" not in cpu_runtime
 
     def identity(value: int) -> int:
         return value
 
     for invalid in [None, 0, 1, -1, 1.5, "", "true", "1", "H100"]:
         with pytest.raises(ValueError, match="gpu must be a boolean"):
-            udf(name="invalid_gpu", gpu=invalid)(identity)
+            function(name="invalid_gpu", gpu=invalid)(identity)
+    for invalid in ["H100", "a_b", "-a10g", "a10g-", "a" * 64]:
+        with pytest.raises(ValueError, match="gpu_class"):
+            function(name="invalid_gpu_class", gpu=True, gpu_class=invalid)(identity)
+    with pytest.raises(ValueError, match="requires gpu=True"):
+        function(name="gpu_class_without_gpu", gpu_class="a10g")(identity)
 
     base_runtime = {
         "kind": "python_v2",
@@ -551,14 +691,26 @@ def test_udf_gpu_marker_uses_gpu_runtime():
     }
     runtime = PythonRuntimeSpec.model_validate({**base_runtime, "gpu": True})
     assert runtime.gpu is True
+    runtime = PythonRuntimeSpec.model_validate(
+        {**base_runtime, "gpu": True, "gpu_class": "a10g"}
+    )
+    assert runtime.gpu_class == "a10g"
     for invalid in [False, 1, 0, "", "true", "1", "H100"]:
         with pytest.raises(ValueError, match="runtime.gpu must be true"):
             PythonRuntimeSpec.model_validate({**base_runtime, "gpu": invalid})
+    with pytest.raises(ValueError, match="gpu_class"):
+        PythonRuntimeSpec.model_validate(
+            {**base_runtime, "gpu": True, "gpu_class": "H100"}
+        )
 
 
 def test_unknown_runtime_discards_payload_before_known_field_validation():
     for payload in [
-        {"kind": "python_v3", "gpu": {"model": "H100"}},
+        {
+            "kind": "python_v3",
+            "gpu": {"model": "H100"},
+            "gpu_class": "a10g",
+        },
         {"kind": "python_v3", "resources": []},
         {
             "kind": "python_v3",
@@ -570,8 +722,8 @@ def test_unknown_runtime_discards_payload_before_known_field_validation():
         assert runtime.to_canonical_json() == '{"kind":"python_v3"}'
 
 
-def test_udf_packages_attribute_access_and_body_imports():
-    @udf
+def test_function_packages_attribute_access_and_body_imports():
+    @function
     def word_norm(body: str) -> float:
         import numpy as np
 
@@ -584,14 +736,14 @@ def test_udf_packages_attribute_access_and_body_imports():
     assert _run_packaged(word_norm, "aa bb") == pytest.approx(8**0.5)
 
 
-def test_udf_packages_module_globals_and_global_caches():
-    @udf
+def test_function_packages_module_globals_and_global_caches():
+    @function
     def label(value: int) -> str:
         return "big" if value >= THRESHOLD else "small"
 
     assert _run_packaged(label, 21) == "big"
 
-    @udf
+    @function
     def cached(value: int) -> int:
         global _CACHE
         if _CACHE is None:
@@ -601,16 +753,16 @@ def test_udf_packages_module_globals_and_global_caches():
     assert _run_packaged(cached, 2) == 42
 
 
-def test_udf_annotations_are_not_runtime_names():
-    @udf
+def test_function_annotations_are_not_runtime_names():
+    @function
     def identity(value: date) -> date:
         return value
 
     assert _run_packaged(identity, date(2026, 8, 25)) == date(2026, 8, 25)
 
 
-def test_udf_nested_scopes_resolve_lexically():
-    @udf
+def test_function_nested_scopes_resolve_lexically():
+    @function
     def score(value: int) -> int:
         offset = 2
 
@@ -622,7 +774,7 @@ def test_udf_nested_scopes_resolve_lexically():
     assert _run_packaged(score, 3) == 5
 
 
-def test_udf_resolves_module_globals_before_builtins(tmp_path):
+def test_function_resolves_module_globals_before_builtins(tmp_path):
     module_path = tmp_path / "shadowing_udfs.py"
     module_path.write_text(
         "max = 7\n"
@@ -643,10 +795,10 @@ def test_udf_resolves_module_globals_before_builtins(tmp_path):
     spec.loader.exec_module(module)
 
     # The module's `max = 7` is what the interpreter would use, so it ships.
-    assert _run_packaged(udf(module.uses_literal_shadow), 1) == 8
+    assert _run_packaged(function(module.uses_literal_shadow), 1) == 8
     # A callable global cannot ship; it must not be silently swapped for the builtin.
     with pytest.raises(TypeError, match="unsupported global value of type function"):
-        udf(module.uses_callable_shadow)
+        function(module.uses_callable_shadow)
 
 
 def test_canonical_arrow_type_prefers_the_compact_grammar():
@@ -679,8 +831,8 @@ def test_canonical_arrow_type_prefers_the_compact_grammar():
             _canonical_arrow_type(outside)
 
 
-def test_udf_nested_annotations_are_postponed_in_the_artifact():
-    @udf
+def test_function_nested_annotations_are_postponed_in_the_artifact():
+    @function
     def score(value: int) -> int:
         def identity(item: date) -> date:
             return item
@@ -691,8 +843,8 @@ def test_udf_nested_annotations_are_postponed_in_the_artifact():
     assert _run_packaged(score, 3) == 3
 
 
-def test_udf_ships_globals_the_body_deletes():
-    @udf
+def test_function_ships_globals_the_body_deletes():
+    @function
     def clear(value: int) -> int:
         global _CACHE
         del _CACHE
@@ -701,7 +853,7 @@ def test_udf_ships_globals_the_body_deletes():
     assert _run_packaged(clear, 3) == 3
 
 
-def test_udf_rejects_a_module_global_that_does_not_import_as_itself(tmp_path):
+def test_function_rejects_a_module_global_that_does_not_import_as_itself(tmp_path):
     module_path = tmp_path / "fake_module_udfs.py"
     module_path.write_text(
         "import types\n"
@@ -715,10 +867,10 @@ def test_udf_rejects_a_module_global_that_does_not_import_as_itself(tmp_path):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     with pytest.raises(TypeError, match="does not import as 'numpy'"):
-        udf(module.score)
+        function(module.score)
 
 
-def test_udf_rejects_a_module_level_namespace_alias(tmp_path):
+def test_function_rejects_a_module_level_namespace_alias(tmp_path):
     module_path = tmp_path / "aliasing_udfs.py"
     module_path.write_text(
         "import builtins as b\n"
@@ -731,7 +883,7 @@ def test_udf_rejects_a_module_level_namespace_alias(tmp_path):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     with pytest.raises(ValueError, match="dynamic namespace access"):
-        udf(module.score)
+        function(module.score)
 
 
 @pytest.mark.parametrize(
@@ -744,7 +896,7 @@ def test_udf_rejects_a_module_level_namespace_alias(tmp_path):
         "sys.modules[__name__].THRESHOLD",
     ],
 )
-def test_udf_rejects_dynamic_namespace_access(access):
+def test_function_rejects_dynamic_namespace_access(access):
     namespace: dict = {}
     exec(
         f"def score(value: int) -> int:\n    return value + {access}\n",
@@ -764,9 +916,11 @@ def _package_from_text(source: str, module_globals: dict | None = None):
     import tempfile
 
     directory = tempfile.mkdtemp()
-    path = Path(directory) / "generated_udf_module.py"
+    path = Path(directory) / "generated_function_module.py"
     path.write_text(source)
-    spec = importlib.util.spec_from_file_location(f"generated_udf_{id(source)}", path)
+    spec = importlib.util.spec_from_file_location(
+        f"generated_function_{id(source)}", path
+    )
     module = importlib.util.module_from_spec(spec)
     if module_globals:
         module.__dict__.update(module_globals)
@@ -776,10 +930,10 @@ def _package_from_text(source: str, module_globals: dict | None = None):
         for value in vars(module).values()
         if callable(value) and getattr(value, "__module__", None) == module.__name__
     ]
-    return udf(functions[0])
+    return function(functions[0])
 
 
-def test_udf_rejects_a_non_standard_builtins_environment():
+def test_function_rejects_a_non_standard_builtins_environment():
     def score(value: int) -> int:
         return len([1]) + value
 
@@ -794,7 +948,7 @@ def test_udf_rejects_a_non_standard_builtins_environment():
     patched.__annotations__ = score.__annotations__
     assert patched(3) == 102
     with pytest.raises(ValueError, match="non-standard builtins environment"):
-        udf(patched)
+        function(patched)
 
     class ReportingDict(dict):  # reports standard entries, resolves differently
         def __missing__(self, key):
@@ -806,7 +960,7 @@ def test_udf_rejects_a_non_standard_builtins_environment():
     disguised.__annotations__ = score.__annotations__
     assert disguised(3) == 102
     with pytest.raises(ValueError, match="non-standard builtins environment"):
-        udf(disguised)
+        function(disguised)
 
     hooked = types.FunctionType(
         score.__code__,
@@ -815,10 +969,10 @@ def test_udf_rejects_a_non_standard_builtins_environment():
     )
     hooked.__annotations__ = score.__annotations__
     with pytest.raises(ValueError, match="non-standard builtins environment"):
-        udf(hooked)
+        function(hooked)
 
 
-def test_udf_recursion_versus_a_rebound_module_name(tmp_path):
+def test_function_recursion_versus_a_rebound_module_name(tmp_path):
     module_path = tmp_path / "rebound_udfs.py"
     module_path.write_text(
         "def fact(value: int) -> int:\n"
@@ -830,20 +984,20 @@ def test_udf_recursion_versus_a_rebound_module_name(tmp_path):
     spec = importlib.util.spec_from_file_location("rebound_udfs", module_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    assert _run_packaged(udf(module.fact), 5) == 120
+    assert _run_packaged(function(module.fact), 5) == 120
     raw = module.score
     module.score = 10
     with pytest.raises(ValueError, match="binds that name to another value"):
-        udf(raw)
+        function(raw)
     # A wrapper that merely exposes __wrapped__ is not the function.
     module.score = functools.wraps(raw)(lambda value: 41)
     with pytest.raises(ValueError, match="binds that name to another value"):
-        udf(raw)
+        function(raw)
     # The decorator's own result is; a subclass of it is not.
-    module.fact = udf(module.fact)
+    module.fact = function(module.fact)
     assert _run_packaged(module.fact, 4) == 24
 
-    class Twisted(UdfDefinition):
+    class Twisted(FunctionDefinition):
         def __call__(self, *args, **kwargs):
             return 41
 
@@ -858,7 +1012,7 @@ def test_udf_recursion_versus_a_rebound_module_name(tmp_path):
         python_version=None,
     )
     with pytest.raises(ValueError, match="binds that name to another value"):
-        udf(raw_fact)
+        function(raw_fact)
 
 
 def test_canonical_arrow_type_uses_exact_json_for_list_child_properties():
@@ -929,12 +1083,12 @@ def _shadows_missing_in_a_lambda(value: int) -> int:
 
 
 @pytest.mark.parametrize(
-    "function",
+    "target",
     [_calls_missing, _shadows_missing_in_a_comprehension, _shadows_missing_in_a_lambda],
 )
-def test_udf_rejects_a_truly_unresolved_global(function):
+def test_function_rejects_a_truly_unresolved_global(target):
     with pytest.raises(ValueError, match=r"unresolved global names: \['missing'\]"):
-        udf(function)
+        function(target)
 
 
 def _arrow_type_from_golden(spec: dict) -> pa.DataType:
@@ -989,7 +1143,7 @@ def test_explicit_arrow_schema_is_deterministic():
         nullable=False,
     )
 
-    @udf(input_schema=input_schema, output_schema=output_schema)
+    @function(input_schema=input_schema, output_schema=output_schema)
     def explicit(value):
         return [value, value, value]
 
@@ -1001,7 +1155,7 @@ def test_explicit_arrow_schema_is_deterministic():
 
 
 def test_blob_fields_use_the_scalar_function_semantic_type():
-    @udf(
+    @function(
         input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
         output_schema=lancedb.blob("result", nullable=False),
     )
@@ -1015,12 +1169,12 @@ def test_blob_fields_use_the_scalar_function_semantic_type():
 
 
 def test_blob_input_access_is_inferred_from_annotations():
-    @udf
+    @function
     def read_blob(video: BlobReader, timestamp_s: float) -> bytes:
         video.seek(int(timestamp_s))
         return video.read(4)
 
-    @udf
+    @function
     def read_bytes(video: bytes) -> int:
         return len(video)
 
@@ -1037,11 +1191,11 @@ def test_blob_input_access_is_inferred_from_annotations():
 
 
 def test_nullable_blob_reader_and_explicit_blob_bytes():
-    @udf
+    @function
     def nullable(video: Optional[BlobReader]) -> int:
         return 0 if video is None else video.size()
 
-    @udf(
+    @function(
         input_schema=pa.schema([lancedb.blob("video", nullable=False)]),
         output_schema=pa.field("size", pa.int64(), nullable=False),
     )
@@ -1061,7 +1215,7 @@ def test_blob_reader_rejects_an_incompatible_explicit_schema():
         return video.size()
 
     with pytest.raises(TypeError, match="requires a Blob V2 field"):
-        udf(
+        function(
             read,
             input_schema=pa.schema([pa.field("video", pa.int64(), nullable=False)]),
             output_schema=pa.field("size", pa.int64(), nullable=False),
@@ -1069,7 +1223,7 @@ def test_blob_reader_rejects_an_incompatible_explicit_schema():
 
 
 def test_whole_named_struct_function_can_include_a_blob_result_field():
-    @udf(
+    @function(
         input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
         output_schema=pa.field(
             "payload",
@@ -1123,7 +1277,7 @@ def test_struct_blob_signature_fields_preserve_exact_metadata_and_nullability():
         nullable=False,
     )
 
-    @udf(input_schema=pa.schema([nested_input]), output_schema=nested_output)
+    @function(input_schema=pa.schema([nested_input]), output_schema=nested_output)
     def copy_payload(payload):
         return payload
 
@@ -1167,7 +1321,7 @@ def test_struct_blob_signature_supports_multiple_struct_levels():
         nullable=False,
     )
 
-    @udf(
+    @function(
         input_schema=pa.schema([recursive]),
         output_schema=pa.field("size", pa.int64(), nullable=False),
     )
@@ -1177,6 +1331,74 @@ def test_struct_blob_signature_supports_multiple_struct_levels():
     encoded = json.loads(blob_size.registration_request.signature.inputs[0].arrow_type)
     blob = encoded["fields"][0]["type"]["fields"][0]["type"]["fields"][0]
     assert blob["metadata"]["ARROW:extension:name"] == "lance.blob.v2"
+
+
+@pytest.mark.parametrize(
+    "data_type",
+    [
+        pa.list_(lancedb.blob("item", nullable=False)),
+        pa.large_list(lancedb.blob("item", nullable=False)),
+        pa.list_(pa.struct([lancedb.blob("image", nullable=False)])),
+    ],
+)
+def test_blob_output_accepts_list_ancestors(data_type):
+    @function(
+        input_schema=pa.schema([lancedb.blob("video", nullable=False)]),
+        output_schema=pa.field("frames", data_type, nullable=False),
+    )
+    def extract_frames(video: bytes) -> list:
+        return [video]
+
+    output = extract_frames.registration_request.signature.output
+    assert json.loads(output.arrow_type) == _exact_arrow_type(
+        data_type, collection_blobs=True
+    )
+    assert "lance.blob.v2" in output.arrow_type
+
+
+@pytest.mark.parametrize(
+    "data_type",
+    [
+        pa.map_(pa.string(), lancedb.blob("value", nullable=False).type),
+        pa.list_(lancedb.blob("item", nullable=False), 2),
+        pa.list_(pa.list_(lancedb.blob("item", nullable=False), 2)),
+    ],
+)
+def test_blob_output_rejects_map_and_fixed_size_list_ancestors(data_type):
+    with pytest.raises(TypeError, match="nested under collection types"):
+
+        @function(
+            input_schema=pa.schema([pa.field("id", pa.int64(), nullable=False)]),
+            output_schema=pa.field("frames", data_type, nullable=False),
+        )
+        def frames(id: int) -> dict:
+            return {}
+
+
+def test_blob_output_named_struct_accepts_list_ancestor():
+    frames_type = pa.list_(lancedb.blob("item", nullable=False))
+
+    @function(
+        input_schema=pa.schema([pa.field("id", pa.int64(), nullable=False)]),
+        output_schema=pa.schema(
+            [
+                pa.field("frames", frames_type, nullable=False),
+                pa.field("count", pa.int64(), nullable=False),
+            ]
+        ),
+    )
+    def extract_frames(id: int) -> dict:
+        return {"frames": [], "count": 0}
+
+    output = extract_frames.registration_request.signature.output
+    assert output.kind == "named_struct"
+    assert [field.name for field in output.fields] == ["frames", "count"]
+    assert json.loads(output.fields[0].arrow_type) == _exact_arrow_type(
+        frames_type, collection_blobs=True
+    )
+    assert "lance.blob.v2" in output.fields[0].arrow_type
+    assert output.fields[1].arrow_type == "int64"
+    assert output.fields[1].nullable is False
 
 
 @pytest.mark.parametrize(
@@ -1194,7 +1416,7 @@ def test_blob_signature_rejects_collection_ancestors(data_type):
         match="Blob v2 fields nested under collection types are not supported",
     ):
 
-        @udf(
+        @function(
             input_schema=pa.schema([pa.field("value", data_type, nullable=False)]),
             output_schema=pa.field("size", pa.int64(), nullable=False),
         )
@@ -1221,7 +1443,7 @@ def test_blob_signature_rejects_collection_below_a_struct():
         match="Blob v2 fields nested under collection types are not supported",
     ):
 
-        @udf(
+        @function(
             input_schema=pa.schema([nested]),
             output_schema=pa.field("size", pa.int64(), nullable=False),
         )
@@ -1229,8 +1451,59 @@ def test_blob_signature_rejects_collection_below_a_struct():
             return len(value["images"])
 
 
+def test_blob_fields_support_vectorized_pyarrow_arrays():
+    @function(
+        input_schema=pa.schema([lancedb.blob("image", nullable=True)]),
+        output_schema=lancedb.blob("result", nullable=False),
+    )
+    def copy_blobs(image: pa.Array) -> pa.Array:
+        return pa.array(
+            [value.as_py() if value.is_valid else b"" for value in image],
+            type=pa.large_binary(),
+        )
+
+    values = pa.array([b"large blob", b"", None], type=pa.large_binary())
+    request = json.loads(copy_blobs.registration_request.to_canonical_json())
+    batch = pa.RecordBatch.from_arrays([values], names=["image"])
+    result = _execute_registered_array_function_v1(request, batch)
+    assert isinstance(result, pa.LargeBinaryArray)
+    assert result.to_pylist() == [b"large blob", b"", b""]
+
+    signature = copy_blobs.registration_request.signature
+    assert signature.inputs[0].arrow_type == "blob_v2"
+    assert signature.inputs[0].nullable is True
+    assert signature.output.arrow_type == "blob_v2"
+    assert signature.output.nullable is False
+    assert copy_blobs.registration_request.artifact.adapter.kind == (
+        "scalar_to_arrow_batch"
+    )
+    assert copy_blobs.registration_request.artifact.adapter.version == 1
+
+    source = base64.b64decode(
+        copy_blobs.registration_request.artifact.content.data
+    ).decode("utf-8")
+    assert "def copy_blobs(image: pa.Array) -> pa.Array:" in source
+
+
+def test_documented_blob_array_identity_executes_packaged_artifact():
+    @function(
+        input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
+        output_schema=lancedb.blob("copy", nullable=False),
+    )
+    def copy_blobs(image: pa.Array) -> pa.Array:
+        return image
+
+    values = pa.array([b"large blob", b""], type=pa.large_binary())
+    request = json.loads(copy_blobs.registration_request.to_canonical_json())
+    result = _execute_registered_array_function_v1(
+        request,
+        pa.RecordBatch.from_arrays([values], names=["image"]),
+    )
+    assert result.equals(values)
+
+
 def test_named_struct_function_can_include_a_blob_result_field():
-    @udf(
+    @function(
         input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
         output_schema=pa.schema(
             [
@@ -1251,7 +1524,7 @@ def test_named_struct_function_can_include_a_blob_result_field():
 
 
 def test_named_struct_function_preserves_nullable_result_fields():
-    @udf(
+    @function(
         input_schema=pa.schema([pa.field("value", pa.int64(), nullable=False)]),
         output_schema=pa.schema(
             [
@@ -1269,7 +1542,7 @@ def test_named_struct_function_preserves_nullable_result_fields():
         ("failure_code", False),
     ]
 
-    @udf(
+    @function(
         input_schema=pa.schema([pa.field("value", pa.int64(), nullable=False)]),
         output_schema=pa.schema(
             [
@@ -1299,7 +1572,7 @@ def test_metadata_marked_blob_field_uses_the_semantic_type():
         metadata={"ARROW:extension:name": "lance.blob.v2"},
     )
 
-    @udf(
+    @function(
         input_schema=pa.schema([metadata_blob]),
         output_schema=pa.field("size", pa.int64(), nullable=False),
     )
@@ -1319,7 +1592,7 @@ def test_blob_marker_rejects_invalid_storage_layout():
 
     with pytest.raises(TypeError, match="requires a supported Blob storage layout"):
 
-        @udf(
+        @function(
             input_schema=pa.schema([malformed]),
             output_schema=pa.field("size", pa.int64(), nullable=False),
         )
@@ -1346,7 +1619,7 @@ def test_nested_non_blob_extension_is_not_silently_unwrapped():
     )
     with pytest.raises(TypeError, match="unsupported Arrow type"):
 
-        @udf(
+        @function(
             input_schema=pa.schema([nested]),
             output_schema=pa.field("result", pa.int64(), nullable=False),
         )
@@ -1358,7 +1631,7 @@ def test_explicit_large_utf8_schemas_use_the_canonical_function_name():
     input_schema = pa.schema([pa.field("text", pa.large_string(), nullable=True)])
     output_schema = pa.field("result", pa.large_string(), nullable=False)
 
-    @udf(input_schema=input_schema, output_schema=output_schema)
+    @function(input_schema=input_schema, output_schema=output_schema)
     def preserve(text):
         return text
 
@@ -1384,7 +1657,7 @@ def test_explicit_large_utf8_schemas_use_the_canonical_function_name():
 def test_large_binary_schemas_use_the_canonical_function_name():
     payload = pa.field("data", pa.large_binary(), nullable=True)
 
-    @udf(
+    @function(
         input_schema=pa.schema([payload]),
         output_schema=pa.field("result", pa.large_binary(), nullable=False),
     )
@@ -1455,7 +1728,7 @@ def test_nested_struct_output_uses_canonical_exact_json():
         ]
     )
 
-    @udf(
+    @function(
         input_schema=pa.schema([pa.field("text", pa.string(), nullable=False)]),
         output_schema=pa.field("analysis", analysis, nullable=False),
     )
@@ -1505,31 +1778,31 @@ def test_nested_struct_output_uses_canonical_exact_json():
 def test_annotation_and_explicit_schema_validation_fail_closed():
     with pytest.raises(TypeError, match="missing Function annotations"):
 
-        @udf
+        @function
         def missing(value):
             return value
 
     with pytest.raises(TypeError, match="unsupported Function annotation"):
 
-        @udf
+        @function
         def unsupported(value: set[str]) -> str:
             return ""
 
     with pytest.raises(ValueError, match="output must be non-nullable"):
 
-        @udf
+        @function
         def nullable_output(value: int) -> Optional[int]:
             return value
 
     with pytest.raises(TypeError, match=r"missing Function annotations: \['return'\]"):
 
-        @udf(input_schema=pa.schema([pa.field("value", pa.int64())]))
+        @function(input_schema=pa.schema([pa.field("value", pa.int64())]))
         def partial_schema(value):
             return value
 
     with pytest.raises(ValueError, match="exactly match callable parameters"):
 
-        @udf(
+        @function(
             input_schema=pa.schema([pa.field("other", pa.int64())]),
             output_schema=pa.int64(),
         )
@@ -1538,7 +1811,7 @@ def test_annotation_and_explicit_schema_validation_fail_closed():
 
     with pytest.raises(ValueError, match="output must be non-nullable"):
 
-        @udf(
+        @function(
             input_schema=pa.schema([pa.field("value", pa.int64())]),
             output_schema=pa.field("result", pa.int64(), nullable=True),
         )
@@ -1551,7 +1824,7 @@ def test_annotation_and_explicit_schema_validation_fail_closed():
     ]:
         with pytest.raises(TypeError, match="unsupported Arrow type"):
 
-            @udf(
+            @function(
                 input_schema=pa.schema([pa.field("value", pa.int64())]),
                 output_schema=pa.schema([invalid_field]),
             )
@@ -1560,7 +1833,7 @@ def test_annotation_and_explicit_schema_validation_fail_closed():
 
     with pytest.raises(TypeError, match="unsupported Arrow type"):
 
-        @udf(
+        @function(
             input_schema=pa.schema(
                 [pa.field("value", pa.int64(), metadata={"k": "v"})]
             ),
@@ -1571,7 +1844,7 @@ def test_annotation_and_explicit_schema_validation_fail_closed():
 
     with pytest.raises(TypeError, match="unsupported Arrow type"):
 
-        @udf(
+        @function(
             input_schema=pa.schema([pa.field("value", pa.int64())]),
             output_schema=pa.field(
                 "result", pa.int64(), nullable=False, metadata={"k": "v"}
@@ -1583,7 +1856,7 @@ def test_annotation_and_explicit_schema_validation_fail_closed():
     struct_type = pa.struct([pa.field("value", pa.int64(), nullable=False)])
     with pytest.raises(TypeError, match="unsupported Arrow type"):
 
-        @udf(
+        @function(
             input_schema=pa.schema([pa.field("value", pa.int64())]),
             output_schema=pa.field(
                 "result", struct_type, nullable=False, metadata={"k": "v"}
@@ -1607,7 +1880,7 @@ def test_annotation_and_explicit_schema_validation_fail_closed():
     ]:
         with pytest.raises(TypeError, match="schema metadata"):
 
-            @udf(input_schema=input_schema, output_schema=output_schema)
+            @function(input_schema=input_schema, output_schema=output_schema)
             def schema_metadata(value):
                 return value
 
@@ -1625,6 +1898,117 @@ def test_local_function_catalog_operations_are_not_supported(tmp_path):
         list(db.list_functions())
     with pytest.raises(NotImplementedError, match=message):
         db.drop_function("normalize_score", version=FUNCTION_VERSION)
+
+
+class _RawFunctionCatalog:
+    def __init__(self, definition, *, encode=False):
+        self.definition = json.dumps(definition) if encode else definition
+
+    async def get_function(self, _name, version, namespace_path):
+        return self.definition
+
+    def list_functions(self, *, namespace_path=None, page_token=None, page_limit=None):
+        return self
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self.definition is None:
+            raise StopAsyncIteration
+        definition, self.definition = self.definition, None
+        return definition
+
+    def num_page_results(self):
+        return int(self.definition is not None)
+
+    def page_token(self):
+        return None
+
+
+def _assert_execution_control_encoding(version):
+    encoded = json.loads(version.to_canonical_json())
+    assert type(encoded["batch_size"]) is int
+    assert type(encoded["row_timeout_seconds"]) is float
+    assert type(encoded["result_stability"]) is str
+    return encoded
+
+
+@pytest.mark.asyncio
+async def test_async_catalog_path_preserves_execution_controls():
+    definition = json.loads(
+        (FIXTURES / "remote_function_version.canonical.json").read_text()
+    )
+    definition.update(
+        batch_size=12,
+        row_timeout_seconds=8.0,
+        result_stability="input_and_context",
+    )
+    connection = AsyncConnection(_RawFunctionCatalog(definition, encode=True))
+
+    exact = await connection.get_function("embed", version="1")
+    listed = [item async for item in connection.list_functions(page_limit=32)]
+    assert len(listed) == 1
+    for version in [exact, *listed]:
+        assert _assert_execution_control_encoding(version) == definition
+
+
+def test_sync_catalog_path_preserves_execution_controls():
+    definition = json.loads(
+        (FIXTURES / "remote_function_version.canonical.json").read_text()
+    )
+    definition.update(
+        batch_size=12,
+        row_timeout_seconds=8.0,
+        result_stability="input_and_context",
+    )
+    connection = object.__new__(RemoteDBConnection)
+    connection._conn = _RawFunctionCatalog(FunctionVersion(**definition))
+
+    exact = connection.get_function("embed", version="1")
+    listed = list(connection.list_functions(page_limit=32))
+    assert len(listed) == 1
+    for version in [exact, *listed]:
+        assert _assert_execution_control_encoding(version) == definition
+
+
+def test_sync_drop_function_emits_server_warnings_without_changing_bool_api():
+    class _DropConnection:
+        async def drop_function(self, name, *, version, namespace_path=None):
+            return True
+
+        async def _drop_function_with_warnings(
+            self, name, *, version, namespace_path=None
+        ):
+            return True, [
+                'materialized view "pinned" references Function "embed" version "1"'
+            ]
+
+    connection = object.__new__(RemoteDBConnection)
+    connection._conn = _DropConnection()
+
+    with pytest.warns(UserWarning, match="references Function"):
+        assert connection.drop_function("embed", version="1") is True
+
+
+@pytest.mark.asyncio
+async def test_async_drop_function_emits_server_warnings_without_changing_bool_api():
+    class _Inner:
+        async def _drop_function_with_warnings(
+            self, name, version, namespace_path=None
+        ):
+            return True, [
+                'materialized view "pinned" references Function "embed" version "1"'
+            ]
+
+        async def drop_function(self, name, version, namespace_path=None):
+            return True
+
+    connection = object.__new__(AsyncConnection)
+    connection._inner = _Inner()
+
+    with pytest.warns(UserWarning, match="references Function"):
+        assert await connection.drop_function("embed", version="1") is True
 
 
 @contextlib.contextmanager
@@ -1766,109 +2150,6 @@ def _mock_remote_function_catalog():
             thread.join()
 
 
-def test_remote_registration_job_and_exact_version_reopen_round_trip():
-    with _mock_remote_function_catalog() as (host, state):
-        db = lancedb.connect(
-            "db://dev",
-            api_key="fake",
-            host_override=host,
-            client_config={"retry_config": {"retries": 0}},
-        )
-        registration = db.create_function_async(normalize_score)
-        assert registration.id == "job-register"
-        assert registration.job_type is None
-        assert registration.status() == "finished"
-        assert registration.job_type == "create_function"
-        created = registration.wait()
-        assert registration.job_type == "create_function"
-        reopened = db.get_function("normalize_score", version=created.version)
-
-    assert created == reopened
-    assert reopened.name == "normalize_score"
-    assert reopened.version == FUNCTION_VERSION
-    assert (
-        reopened.source_digest == normalize_score.registration_request.artifact.digest
-    )
-    create_request = state["requests"][0][1]
-    expected_request = json.loads(
-        normalize_score.registration_request.to_canonical_json()
-    )
-    expected_request.pop("name")
-    assert create_request == expected_request
-
-
-def test_remote_registration_sends_bindings_and_never_a_credential():
-    with _mock_remote_function_catalog() as (host, state):
-        db = lancedb.connect(
-            "db://dev",
-            api_key="fake",
-            host_override=host,
-            client_config={"retry_config": {"retries": 0}},
-        )
-        created = db.create_function(
-            analyze_caption,
-            secrets=[
-                EnvVarSecret(secret_name="openai-prod", env_variable="OPENAI_API_KEY")
-            ],
-        )
-
-    assert list(created.secret_bindings) == [
-        SecretBinding(
-            kind="env",
-            variable="OPENAI_API_KEY",
-            secret_ref=SecretReference(name="openai-prod"),
-        )
-    ]
-    path, create_request = state["requests"][0]
-    assert path == "/v1/function/analyze_caption/create"
-    assert create_request["secret_bindings"] == [
-        {
-            "kind": "env",
-            "variable": "OPENAI_API_KEY",
-            "secret_ref": {"name": "openai-prod"},
-        }
-    ]
-    # The request names a Secret and carries nothing that could be one. The
-    # Function's own name is the path identifier rather than a body field, so
-    # it is the one key the body does not repeat.
-    expected = json.loads(
-        analyze_caption.bind_secrets(
-            [EnvVarSecret(secret_name="openai-prod", env_variable="OPENAI_API_KEY")]
-        ).to_canonical_json()
-    )
-    assert expected.pop("name") == "analyze_caption"
-    assert create_request == expected
-
-
-def test_remote_secret_verbs_round_trip():
-    with _mock_remote_function_catalog() as (host, state):
-        db = lancedb.connect(
-            "db://dev",
-            api_key="fake",
-            host_override=host,
-            client_config={"retry_config": {"retries": 0}},
-        )
-        assert db.create_secret("openai-prod", "sk-live-0001") is None
-        assert db.alter_secret("openai-prod", "sk-live-0002") is None
-        assert list(db.list_secrets()) == ["openai-prod", "hf-prod"]
-        assert db.drop_secret("openai-prod") is None
-
-    routes = [path for path, _ in state["requests"]]
-    assert routes == [
-        "/v1/secret/openai-prod/create",
-        "/v1/secret/openai-prod/alter",
-        "/v1/namespace/$/secret/list",
-        "/v1/namespace/$/secret/list",
-        "/v1/secret/openai-prod/drop",
-    ]
-    # The Secret is the path identifier, so the body is the value alone.
-    assert state["requests"][0][1] == {"value": "sk-live-0001"}
-    # Listing is a GET: the first page asks for nothing, the second resumes on
-    # the token the server handed back, and neither carries a body.
-    assert state["requests"][2][1] == {}
-    assert state["requests"][3][1] == {"page_token": "next"}
-
-
 def test_building_a_binding_contacts_no_server():
     """A binding is a local value: it says nothing about whether the Secret exists.
 
@@ -1883,193 +2164,157 @@ def test_building_a_binding_contacts_no_server():
     assert state["requests"] == []
 
 
-def test_blocking_remote_registration_returns_function_version():
-    with _mock_remote_function_catalog() as (host, state):
-        db = lancedb.connect(
-            "db://dev",
-            api_key="fake",
-            host_override=host,
-            client_config={"retry_config": {"retries": 0}},
-        )
-        created = db.create_function(normalize_score)
-
-    assert created.name == "normalize_score"
-    assert created.version == FUNCTION_VERSION
-    assert created.source_digest == normalize_score.registration_request.artifact.digest
-    assert [path for path, _ in state["requests"]] == [
-        "/v1/function/normalize_score/create",
-        "/v1/jobs/describe",
-    ]
-
-
-def test_remote_list_functions_paginates_and_returns_typed_versions():
-    with _mock_remote_function_catalog() as (host, state):
-        db = lancedb.connect(
-            "db://dev",
-            api_key="fake",
-            host_override=host,
-            client_config={"retry_config": {"retries": 0}},
-        )
-        created = db.create_function(normalize_score)
-        state["requests"].clear()
-        functions = list(db.list_functions())
-
-    assert functions == [created]
-    assert functions[0].source_digest == (
-        normalize_score.registration_request.artifact.digest
+def test_vectorized_blob_function_executes_packaged_artifact_and_publishes(tmp_path):
+    @function(
+        input_schema=pa.schema([lancedb.blob("image", nullable=True)]),
+        output_schema=lancedb.blob("copy", nullable=False),
     )
-    assert state["requests"] == [
-        ("/v1/namespace/$/function/list", {"include_definition": "true"}),
-        (
-            "/v1/namespace/$/function/list",
-            {"include_definition": "true", "page_token": "next"},
+    def copy_blobs(image: pa.Array) -> pa.Array:
+        assert isinstance(image, pa.LargeBinaryArray)
+        return pa.array(
+            [
+                b"missing" if value.as_py() is None else b"copy:" + value.as_py()
+                for value in image
+            ],
+            type=pa.large_binary(),
+        )
+
+    registration = json.loads(copy_blobs.registration_request.to_canonical_json())
+
+    local = lancedb.connect(tmp_path)
+    source = local.create_table(
+        "blob_input",
+        schema=pa.schema(
+            [pa.field("id", pa.int64()), lancedb.blob("image", nullable=True)]
         ),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_async_remote_list_functions_returns_typed_versions():
-    with _mock_remote_function_catalog() as (host, state):
-        db = await lancedb.connect_async(
-            "db://dev",
-            api_key="fake",
-            host_override=host,
-            client_config={"retry_config": {"retries": 0}},
-        )
-        registration = await db.create_function_async(normalize_score)
-        created = await registration.wait()
-        state["requests"].clear()
-        functions = [item async for item in db.list_functions()]
-
-    assert functions == [created]
-    assert functions[0].source_digest == (
-        normalize_score.registration_request.artifact.digest
     )
-    assert [path for path, _ in state["requests"]] == [
-        "/v1/namespace/$/function/list",
-        "/v1/namespace/$/function/list",
+    source.add(
+        pa.Table.from_arrays(
+            [
+                pa.array([0, 1, 2], type=pa.int64()),
+                pa.array([b"large blob", b"", None], type=pa.large_binary()),
+            ],
+            names=["id", "image"],
+        )
+    )
+    input_hits = (
+        source.search()
+        .with_row_id(True)
+        .limit(3)
+        .to_arrow()
+        .sort_by([("id", "ascending")])
+    )
+    hydrated = source.fetch_blobs("image", input_hits)
+    assert isinstance(hydrated, pa.LargeBinaryArray)
+    result = _execute_registered_array_function_v1(
+        registration,
+        pa.RecordBatch.from_arrays([hydrated], names=["image"]),
+    )
+    assert result.to_pylist() == [b"copy:large blob", b"copy:", b"missing"]
+
+    published = local.create_table(
+        "blob_output",
+        schema=pa.schema(
+            [pa.field("id", pa.int64()), lancedb.blob("copy", nullable=False)]
+        ),
+    )
+    published.add(
+        pa.Table.from_arrays(
+            [pa.array(range(len(result)), type=pa.int64()), result],
+            names=["id", "copy"],
+        )
+    )
+    output_hits = (
+        published.search()
+        .with_row_id(True)
+        .limit(3)
+        .to_arrow()
+        .sort_by([("id", "ascending")])
+    )
+    assert published.fetch_blobs("copy", output_hits).to_pylist() == [
+        b"copy:large blob",
+        b"copy:",
+        b"missing",
     ]
 
 
-def test_remote_drop_function_sends_exact_version():
-    with _mock_remote_function_catalog() as (host, state):
-        db = lancedb.connect(
-            "db://dev",
-            api_key="fake",
-            host_override=host,
-            client_config={"retry_config": {"retries": 0}},
-        )
-        assert db.drop_function("normalize_score", version=FUNCTION_VERSION) is True
+@pytest.mark.parametrize(
+    ("declared_list", "physical_list", "array_type", "declared_name"),
+    [
+        (pa.list_, pa.list_, pa.ListArray, "list"),
+        (pa.large_list, pa.large_list, pa.LargeListArray, "large_list"),
+    ],
+    ids=["list", "large_list"],
+)
+def test_blob_list_output_fresh_artifact_survives_local_reopen(
+    tmp_path, declared_list, physical_list, array_type, declared_name
+):
+    input_type = physical_list(pa.int64())
+    item = lancedb.blob("item", nullable=True)
 
-    assert state["requests"] == [
-        (
-            "/v1/function/normalize_score/drop",
-            {"version": FUNCTION_VERSION},
+    @function(
+        input_schema=pa.schema([pa.field("frames", input_type, nullable=False)]),
+        output_schema=pa.field("frames", declared_list(item), nullable=False),
+    )
+    def extract_frames(frames: pa.Array) -> pa.Array:
+        output_type = (
+            pa.large_list(pa.large_binary())
+            if isinstance(frames, pa.LargeListArray)
+            else pa.list_(pa.large_binary())
         )
-    ]
+        return pa.array([[b"abc", None, b""], []], type=output_type)
 
+    request = json.loads(extract_frames.registration_request.to_canonical_json())
+    declared = json.loads(request["signature"]["output"]["arrow_type"])
+    assert declared["type"] == declared_name
+    item_field = declared["fields"][0]
+    assert item_field["metadata"]["ARROW:extension:name"] == "lance.blob.v2"
 
-@pytest.mark.asyncio
-async def test_async_remote_drop_function_sends_exact_version():
-    with _mock_remote_function_catalog() as (host, state):
-        db = await lancedb.connect_async(
-            "db://dev",
-            api_key="fake",
-            host_override=host,
-            client_config={"retry_config": {"retries": 0}},
-        )
-        assert (
-            await db.drop_function("normalize_score", version=FUNCTION_VERSION) is True
-        )
+    result = _execute_registered_array_function_v1(
+        request,
+        pa.RecordBatch.from_arrays(
+            [pa.array([[0], [1]], type=input_type)],
+            names=["frames"],
+        ),
+    )
+    assert isinstance(result, array_type)
+    assert result.type == physical_list(pa.large_binary())
+    assert result.offsets.to_pylist() == [0, 3, 3]
+    assert result.values.to_pylist() == [b"abc", None, b""]
+    assert result.to_pylist() == [[b"abc", None, b""], []]
 
-    assert state["requests"] == [
-        (
-            "/v1/function/normalize_score/drop",
-            {"version": FUNCTION_VERSION},
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "fresh_artifact_frames",
+        schema=pa.schema(
+            [
+                pa.field("id", pa.int64(), nullable=False),
+                pa.field("frames", declared_list(item), nullable=False),
+            ]
+        ),
+    )
+    table.add(
+        pa.Table.from_arrays(
+            [pa.array([1, 2], type=pa.int64()), result],
+            names=["id", "frames"],
         )
-    ]
+    )
 
+    reopened = lancedb.connect(tmp_path).open_table("fresh_artifact_frames")
+    reopened_item = reopened.schema.field("frames").type.value_field
+    assert reopened_item.type.extension_name == "lance.blob.v2"
+    assert reopened.blob_columns() == []
+    hits = reopened.search().limit(2).to_arrow().sort_by([("id", "ascending")])
+    lists = hits["frames"].combine_chunks()
+    assert isinstance(lists, array_type)
+    assert lists.offsets.to_pylist() == [0, 3, 3]
 
-def test_remote_function_verbs_address_a_namespace_in_the_path():
-    """A Function's namespace is part of the identifier each route addresses;
-    no body carries it, so a namespaced request differs only in its path."""
-    namespace = ["analytics", "features"]
-    with _mock_remote_function_catalog() as (host, state):
-        db = lancedb.connect(
-            "db://dev",
-            api_key="fake",
-            host_override=host,
-            client_config={"retry_config": {"retries": 0}},
-        )
-        created = db.create_function(normalize_score, namespace_path=namespace)
-        # The returned parts are what the other verbs take, so a created
-        # Function reopens from its own fields.
-        assert created.name == "normalize_score"
-        assert created.namespace_path == tuple(namespace)
-        reopened = db.get_function(
-            created.name,
-            version=created.version,
-            namespace_path=list(created.namespace_path),
-        )
-        assert reopened == created
-        assert reopened(value=lancedb.col("score")).function.namespace_path == tuple(
-            namespace
-        )
-        list(db.list_functions(namespace_path=namespace))
-        assert (
-            db.drop_function(
-                "normalize_score", version=FUNCTION_VERSION, namespace_path=namespace
-            )
-            is True
-        )
-        dropped, _ = db.drop_function_async(
-            "normalize_score", version=FUNCTION_VERSION, namespace_path=namespace
-        )
-        assert dropped is True
-
-    assert [path for path, _ in state["requests"]] == [
-        "/v1/function/analytics$features$normalize_score/create",
-        "/v1/jobs/describe",
-        "/v1/function/analytics$features$normalize_score/describe",
-        "/v1/namespace/analytics$features/function/list",
-        "/v1/namespace/analytics$features/function/list",
-        "/v1/function/analytics$features$normalize_score/drop",
-        "/v1/function/analytics$features$normalize_score/drop",
-    ]
-
-
-@pytest.mark.asyncio
-async def test_async_remote_function_verbs_address_a_namespace_in_the_path():
-    namespace = ["analytics", "features"]
-    with _mock_remote_function_catalog() as (host, state):
-        db = await lancedb.connect_async(
-            "db://dev",
-            api_key="fake",
-            host_override=host,
-            client_config={"retry_config": {"retries": 0}},
-        )
-        registration = await db.create_function_async(
-            normalize_score, namespace_path=namespace
-        )
-        await registration.wait()
-        await db.get_function(
-            "normalize_score", version=FUNCTION_VERSION, namespace_path=namespace
-        )
-        [item async for item in db.list_functions(namespace_path=namespace)]
-        assert (
-            await db.drop_function(
-                "normalize_score", version=FUNCTION_VERSION, namespace_path=namespace
-            )
-            is True
-        )
-
-    assert [path for path, _ in state["requests"]] == [
-        "/v1/function/analytics$features$normalize_score/create",
-        "/v1/jobs/describe",
-        "/v1/function/analytics$features$normalize_score/describe",
-        "/v1/namespace/analytics$features/function/list",
-        "/v1/namespace/analytics$features/function/list",
-        "/v1/function/analytics$features$normalize_score/drop",
+    rows = lists.to_pylist()
+    assert rows[1] == []
+    assert [None if value is None else value["size"] for value in rows[0]] == [
+        3,
+        None,
+        0,
     ]
 
 
@@ -2090,11 +2335,11 @@ def test_a_function_namespace_path_must_be_a_list_of_segments():
 
 
 def test_one_explicit_schema_infers_the_other_from_annotations():
-    @udf(input_schema=pa.schema([pa.field("value", pa.int64())]))
+    @function(input_schema=pa.schema([pa.field("value", pa.int64())]))
     def explicit_input(value) -> float:
         return float(value or 0)
 
-    @udf(output_schema=pa.field("result", pa.float32(), nullable=False))
+    @function(output_schema=pa.field("result", pa.float32(), nullable=False))
     def explicit_output(value: Optional[int]):
         return float(value or 0)
 

@@ -155,6 +155,9 @@ def update_cargo_toml(line_updater):
         lines = core_manifest.read_text().splitlines(keepends=True)
         for index, line in enumerate(lines):
             if line.startswith("lance-arrow ="):
+                dependency = tomllib.loads(line)["lance-arrow"]
+                if isinstance(dependency, dict) and dependency.get("workspace"):
+                    continue
                 updated = tomllib.loads(line_updater(line))["lance-arrow"]
                 config = {"version": updated} if isinstance(updated, str) else updated
                 if "path" in config:

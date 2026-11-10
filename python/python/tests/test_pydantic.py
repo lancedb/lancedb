@@ -2,9 +2,9 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta, timezone
 from enum import Enum
-from typing import List, Optional, Tuple
+from typing import List, Literal, Optional, Tuple
 
 import pyarrow as pa
 import pydantic
@@ -16,6 +16,7 @@ from lancedb.pydantic import (
     Vector,
     pydantic_to_schema,
 )
+from packaging.version import Version
 from pydantic import BaseModel
 from pydantic import Field
 
@@ -791,6 +792,305 @@ async def test_aliases_in_lance_model_async(mem_db_async):
     assert model.distance < 0.01
 
 
+def test_aliased_lance_model_reads_back_its_own_table(mem_db):
+    # The schema and add() use field names, so to_pydantic() must accept rows
+    # keyed by field name even though pydantic validates by alias.
+    class Item(LanceModel):
+        user_id: int = Field(alias="userId")
+        vector: Vector(2)
+
+    tbl = mem_db.create_table("aliased_items", schema=Item)
+    tbl.add([Item(userId=1, vector=[0.1, 0.2])])
+    assert tbl.schema.names == ["user_id", "vector"]
+
+    [item] = tbl.search([0.1, 0.2]).limit(1).to_pydantic(Item)
+    assert item.user_id == 1
+    [item] = tbl.search().to_pydantic(Item)
+    assert item.user_id == 1
+
+
+@pytest.mark.parametrize(
+    "validation_alias",
+    [
+        pydantic.AliasChoices("userId"),
+        pydantic.AliasPath("userId"),
+    ],
+    ids=["alias-choices", "alias-path"],
+)
+def test_aliased_lance_model_with_complex_validation_alias_reads_back_its_own_table(
+    mem_db, validation_alias
+):
+    class Item(LanceModel):
+        user_id: int = Field(validation_alias=validation_alias)
+        vector: Vector(2)
+
+    tbl = mem_db.create_table("aliased_items", schema=Item)
+    tbl.add([Item(userId=1, vector=[0.1, 0.2])])
+    assert tbl.schema.names == ["user_id", "vector"]
+
+    [item] = tbl.search().to_pydantic(Item)
+    assert item.user_id == 1
+
+
+def test_lower_priority_alias_takes_precedence_over_field_name(mem_db):
+    class Item(LanceModel):
+        user_id: int = Field(
+            validation_alias=pydantic.AliasChoices("primaryId", "secondaryId")
+        )
+
+    row = {"user_id": 1, "secondaryId": 2}
+    tbl = mem_db.create_table("aliased_items", data=[row])
+
+    [arrow_row] = tbl.search().to_arrow().to_pylist()
+    assert Item(**arrow_row).user_id == 2
+    [item] = tbl.search().to_pydantic(Item)
+    assert item.user_id == 2
+
+
+@pytest.mark.skipif(
+    Version(pydantic.VERSION) < Version("2.11"),
+    reason="validate_by_alias/validate_by_name require pydantic>=2.11",
+)
+def test_aliased_lance_model_with_name_only_validation(mem_db):
+    class Item(LanceModel):
+        model_config = pydantic.ConfigDict(
+            validate_by_alias=False, validate_by_name=True
+        )
+        user_id: int = Field(default=0, alias="userId")
+
+    tbl = mem_db.create_table("name_only_items", schema=Item)
+    item = Item(user_id=42)
+    assert item.user_id == 42
+    tbl.add([item])
+    [item] = tbl.search().to_pydantic(Item)
+    assert item.user_id == 42
+
+
+def test_aliased_lance_model_with_populate_by_name(mem_db):
+    class Item(LanceModel):
+        model_config = pydantic.ConfigDict(populate_by_name=True)
+        user_id: int = Field(default=0, alias="userId")
+
+    tbl = mem_db.create_table("populate_by_name_items", schema=Item)
+    item = Item(user_id=42)
+    assert item.user_id == 42
+    tbl.add([item])
+    [item] = tbl.search().to_pydantic(Item)
+    assert item.user_id == 42
+
+
+@pytest.mark.skipif(
+    Version(pydantic.VERSION) < Version("2.11"),
+    reason="validate_by_name requires pydantic>=2.11",
+)
+def test_explicit_validate_by_name_false_overrides_populate_by_name(mem_db):
+    class Item(LanceModel):
+        model_config = pydantic.ConfigDict(
+            populate_by_name=True,
+            validate_by_name=False,
+        )
+        user_id: int = Field(default=0, alias="userId")
+
+    tbl = mem_db.create_table("validate_by_name_precedence_items", schema=Item)
+    item = Item(userId=42)
+    assert item.user_id == 42
+    tbl.add([item])
+    assert tbl.schema.names == ["user_id"]
+    assert tbl.search().to_arrow().to_pylist() == [{"user_id": 42}]
+
+    [item] = tbl.search().to_pydantic(Item)
+    assert item.user_id == 42
+
+
+def test_field_name_fallback_preserves_populate_by_name_reader(mem_db):
+    class Item(LanceModel):
+        model_config = pydantic.ConfigDict(populate_by_name=True)
+        value: int = Field(default=0, validation_alias="id")
+        id: int = Field(default=-1, alias="recordId")
+
+    row = {"value": 1}
+    assert Item(**row).model_dump() == {"value": 1, "id": -1}
+    tbl = mem_db.create_table("populate_by_name_readers", data=[row])
+
+    [arrow_row] = tbl.search().to_arrow().to_pylist()
+    assert arrow_row == row
+    [item] = tbl.search().to_pydantic(Item)
+    assert item.model_dump() == {"value": 1, "id": -1}
+
+
+def test_field_name_that_is_another_fields_alias_keeps_its_meaning(mem_db):
+    class Item(LanceModel):
+        record_id: int = Field(default=0, alias="id")
+        id: int = Field(default=-1, alias="legacy_id")
+
+    tbl = mem_db.create_table("alias_collision_items", data=[{"id": 42}])
+    [item] = tbl.search().to_pydantic(Item)
+    assert item.model_dump() == {"record_id": 42, "id": -1}
+
+
+@pytest.mark.parametrize(
+    "validation_alias",
+    [
+        pydantic.AliasChoices("id", "recordId"),
+        pydantic.AliasPath("id"),
+        pydantic.AliasChoices(pydantic.AliasPath("id"), "recordId"),
+    ],
+)
+def test_field_name_read_by_another_fields_alias_choices_or_path(
+    mem_db, validation_alias
+):
+    class Item(LanceModel):
+        record_id: int = Field(default=0, validation_alias=validation_alias)
+        id: int = Field(default=-1, alias="legacy_id")
+
+    tbl = mem_db.create_table("alias_choices_items", data=[{"id": 42}])
+    [item] = tbl.search().to_pydantic(Item)
+    assert item.model_dump() == {"record_id": 42, "id": -1}
+
+
+def test_field_name_fallback_does_not_change_another_fields_alias_choice(mem_db):
+    class Item(LanceModel):
+        value: int = Field(
+            default=0, validation_alias=pydantic.AliasChoices("id", "valueId")
+        )
+        record_id: int = Field(
+            default=-1, validation_alias=pydantic.AliasChoices("id", "recordId")
+        )
+
+    row = {"value": 1, "recordId": 42}
+    assert Item(**row).model_dump() == {"value": 0, "record_id": 42}
+    tbl = mem_db.create_table("shared_alias_items", data=[row])
+
+    [arrow_row] = tbl.search().to_arrow().to_pylist()
+    assert arrow_row == row
+    [item] = tbl.search().to_pydantic(Item)
+    assert item.model_dump() == {"value": 0, "record_id": 42}
+
+
+@pytest.mark.asyncio
+async def test_aliased_lance_model_reads_back_its_own_table_async(mem_db_async):
+    class Item(LanceModel):
+        user_id: int = Field(alias="userId")
+        vector: Vector(2)
+
+    tbl = await mem_db_async.create_table("aliased_items", schema=Item)
+    await tbl.add([Item(userId=1, vector=[0.1, 0.2])])
+
+    [item] = await tbl.vector_search([0.1, 0.2]).limit(1).to_pydantic(Item)
+    assert item.user_id == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "validation_alias",
+    [
+        pydantic.AliasChoices("userId"),
+        pydantic.AliasPath("userId"),
+    ],
+    ids=["alias-choices", "alias-path"],
+)
+async def test_aliased_lance_model_with_complex_validation_alias_reads_back_async(
+    mem_db_async, validation_alias
+):
+    class Item(LanceModel):
+        user_id: int = Field(validation_alias=validation_alias)
+        vector: Vector(2)
+
+    tbl = await mem_db_async.create_table("aliased_items", schema=Item)
+    await tbl.add([Item(userId=1, vector=[0.1, 0.2])])
+    assert (await tbl.schema()).names == ["user_id", "vector"]
+
+    [item] = await tbl.vector_search([0.1, 0.2]).limit(1).to_pydantic(Item)
+    assert item.user_id == 1
+
+
+@pytest.mark.asyncio
+async def test_lower_priority_alias_takes_precedence_over_field_name_async(
+    mem_db_async,
+):
+    class Item(LanceModel):
+        user_id: int = Field(
+            validation_alias=pydantic.AliasChoices("primaryId", "secondaryId")
+        )
+
+    row = {"user_id": 1, "secondaryId": 2}
+    tbl = await mem_db_async.create_table("aliased_items", data=[row])
+
+    [arrow_row] = (await (await tbl.search()).to_arrow()).to_pylist()
+    assert Item(**arrow_row).user_id == 2
+    [item] = await (await tbl.search()).to_pydantic(Item)
+    assert item.user_id == 2
+
+
+@pytest.mark.asyncio
+async def test_field_name_fallback_does_not_change_another_fields_alias_choice_async(
+    mem_db_async,
+):
+    class Item(LanceModel):
+        value: int = Field(
+            default=0, validation_alias=pydantic.AliasChoices("id", "valueId")
+        )
+        record_id: int = Field(
+            default=-1, validation_alias=pydantic.AliasChoices("id", "recordId")
+        )
+
+    row = {"value": 1, "recordId": 42}
+    assert Item(**row).model_dump() == {"value": 0, "record_id": 42}
+    tbl = await mem_db_async.create_table("shared_alias_items", data=[row])
+
+    [arrow_row] = (await (await tbl.search()).to_arrow()).to_pylist()
+    assert arrow_row == row
+    [item] = await (await tbl.search()).to_pydantic(Item)
+    assert item.model_dump() == {"value": 0, "record_id": 42}
+
+
+@pytest.mark.asyncio
+async def test_field_name_fallback_preserves_populate_by_name_reader_async(
+    mem_db_async,
+):
+    class Item(LanceModel):
+        model_config = pydantic.ConfigDict(populate_by_name=True)
+        value: int = Field(default=0, validation_alias="id")
+        id: int = Field(default=-1, alias="recordId")
+
+    row = {"value": 1}
+    assert Item(**row).model_dump() == {"value": 1, "id": -1}
+    tbl = await mem_db_async.create_table("populate_by_name_readers", data=[row])
+
+    [arrow_row] = (await (await tbl.search()).to_arrow()).to_pylist()
+    assert arrow_row == row
+    [item] = await (await tbl.search()).to_pydantic(Item)
+    assert item.model_dump() == {"value": 1, "id": -1}
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    Version(pydantic.VERSION) < Version("2.11"),
+    reason="validate_by_name requires pydantic>=2.11",
+)
+async def test_explicit_validate_by_name_false_overrides_populate_by_name_async(
+    mem_db_async,
+):
+    class Item(LanceModel):
+        model_config = pydantic.ConfigDict(
+            populate_by_name=True,
+            validate_by_name=False,
+        )
+        user_id: int = Field(default=0, alias="userId")
+
+    tbl = await mem_db_async.create_table(
+        "validate_by_name_precedence_items", schema=Item
+    )
+    item = Item(userId=42)
+    assert item.user_id == 42
+    await tbl.add([item])
+    assert (await tbl.schema()).names == ["user_id"]
+    assert (await (await tbl.search()).to_arrow()).to_pylist() == [{"user_id": 42}]
+
+    [item] = await (await tbl.search()).to_pydantic(Item)
+    assert item.user_id == 42
+
+
 def test_enum_types():
     """Enum fields should map to the Arrow type of their value (issue #1846)."""
 
@@ -815,6 +1115,36 @@ def test_enum_types():
     assert schema.field("priority").type == pa.int64()
     assert schema.field("opt_status").type == pa.dictionary(pa.int32(), pa.utf8())
     assert schema.field("opt_status").nullable
+
+
+@pytest.mark.parametrize("container", ["field", "optional", "list", "nested"])
+@pytest.mark.parametrize("values", [("text", 7), (1, 2.5), (False, "no")])
+def test_mixed_enum_values_are_rejected(container, values):
+    Mixed = Enum("Mixed", {"FIRST": values[0], "SECOND": values[1]})
+
+    class Nested(pydantic.BaseModel):
+        value: Mixed
+
+    annotation = {
+        "field": Mixed,
+        "optional": Optional[Mixed],
+        "list": List[Mixed],
+        "nested": Nested,
+    }[container]
+    model = pydantic.create_model("Model", value=(annotation, ...))
+
+    with pytest.raises(TypeError, match="Enum.*Mixed.*same type"):
+        pydantic_to_schema(model)
+
+
+def test_empty_enum_schema_is_unchanged():
+    class Empty(Enum):
+        pass
+
+    class Model(pydantic.BaseModel):
+        value: Empty
+
+    assert pydantic_to_schema(Model).field("value").type == pa.utf8()
 
 
 def test_plain_enum_values_are_written(mem_db):
@@ -864,3 +1194,111 @@ def test_plain_enum_values_are_written(mem_db):
         {"color": "blue", "priority": 1, "opt_color": None},
     ]
     assert tbl.search().to_pydantic(TestModel) == rows
+
+
+def test_literal_time_and_timedelta_types():
+    class TestModel(pydantic.BaseModel):
+        status: Literal["todo", "done"]
+        priority: Literal[1, 2, 3]
+        flag: Literal[True]
+        tags: List[Literal["a", "b"]]
+        opt_status: Optional[Literal["todo", "done"]] = None
+        starts: time
+        starts_list: List[time]
+        opt_starts: Optional[time] = None
+        duration: timedelta
+        durations: List[timedelta]
+
+    schema = pydantic_to_schema(TestModel)
+
+    assert schema.field("status").type == pa.utf8()
+    assert schema.field("priority").type == pa.int64()
+    assert schema.field("flag").type == pa.bool_()
+    assert schema.field("tags").type == pa.list_(pa.utf8())
+    assert schema.field("opt_status").type == pa.utf8()
+    assert schema.field("opt_status").nullable
+    assert schema.field("starts").type == pa.time64("us")
+    assert schema.field("starts_list").type == pa.list_(pa.time64("us"))
+    assert schema.field("opt_starts").type == pa.time64("us")
+    assert schema.field("opt_starts").nullable
+    assert schema.field("duration").type == pa.duration("us")
+    assert schema.field("durations").type == pa.list_(pa.duration("us"))
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        Literal["a", 1],
+        Optional[Literal["a", 1]],
+        List[Literal["a", 1]],
+    ],
+    ids=["field", "optional", "list"],
+)
+def test_literal_with_mixed_value_types_raises_type_error(annotation):
+    TestModel = pydantic.create_model("TestModel", value=(annotation, ...))
+
+    with pytest.raises(TypeError, match="same type"):
+        pydantic_to_schema(TestModel)
+
+
+def test_literal_time_and_timedelta_round_trip(mem_db):
+    class TestModel(LanceModel):
+        status: Literal["todo", "done"]
+        starts: time
+        duration: timedelta
+        vector: Vector(2)
+
+    rows = [
+        TestModel(
+            status="done",
+            starts=time(9, 30),
+            duration=timedelta(minutes=45),
+            vector=[1.0, 2.0],
+        ),
+        TestModel(
+            status="todo",
+            starts=time(17, 0, 0, 250),
+            duration=timedelta(days=1, microseconds=5),
+            vector=[3.0, 4.0],
+        ),
+    ]
+    tbl = mem_db.create_table("test", schema=TestModel)
+    tbl.add(rows)
+
+    assert tbl.search().to_pydantic(TestModel) == rows
+
+
+@pytest.mark.parametrize("container", ["field", "list", "nested", "enum"])
+def test_tz_aware_time_is_rejected_before_write(mem_db, container):
+    class Nested(LanceModel):
+        starts: time
+
+    aware = time(9, 30, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+    AwareTime = Enum("AwareTime", {"MORNING": aware})
+    Model = pydantic.create_model(
+        "TestModel",
+        __base__=LanceModel,
+        **{
+            container: {
+                "field": (time, ...),
+                "list": (List[time], ...),
+                "nested": (Nested, ...),
+                "enum": (AwareTime, ...),
+            }[container]
+        },
+    )
+    row = Model(
+        **{
+            container: {
+                "field": aware,
+                "list": [aware],
+                "nested": Nested(starts=aware),
+                "enum": AwareTime.MORNING,
+            }[container]
+        }
+    )
+
+    table_name = f"timezone_aware_{container}"
+    with pytest.raises(ValueError, match="timezone-naive wall-clock.*tzinfo"):
+        mem_db.create_table(table_name, data=[row])
+    assert table_name not in mem_db.table_names()

@@ -1,0 +1,90 @@
+---
+title: "Tiered Index Cache"
+sidebarTitle: "Tiered Index Cache"
+description: "How LanceDB Enterprise caches deserialized index structures across memory and local disk."
+icon: "layer-group"
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+The tiered index cache holds deserialized vector, full-text and scalar
+index structures in memory, backed by a local-disk tier beneath it. When
+memory fills, the cache serializes evicted entries and spills them to disk
+instead of dropping them; a later hit on a spilled entry promotes it back
+into memory. This lets a plan executor serve an index larger than its
+available memory without re-reading and re-deserializing it from object
+storage on every eviction. See [Architecture](/index#architecture).
+
+<div className="hidden dark:block">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
+  "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
+  "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "18px"
+}}}%%
+flowchart LR
+    R["Index lookup"] --> M{"In memory?"}
+    M -->|hit| Return["Served from memory"]
+    M -->|miss| D{"Spilled to disk?"}
+    D -->|hit| Promote["Deserialized,<br/>promoted into memory,<br/>served"]
+    D -->|miss| O[("Object storage")]
+    O --> Fill["Deserialized,<br/>loads into memory,<br/>served"]
+
+    Evict["Memory eviction"] -.->|serialize, don't drop| D
+    classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
+```
+
+</div>
+
+<div className="block dark:hidden">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
+  "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
+  "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "18px"
+}}}%%
+flowchart LR
+    R["Index lookup"] --> M{"In memory?"}
+    M -->|hit| Return["Served from memory"]
+    M -->|miss| D{"Spilled to disk?"}
+    D -->|hit| Promote["Deserialized,<br/>promoted into memory,<br/>served"]
+    D -->|miss| O[("Object storage")]
+    O --> Fill["Deserialized,<br/>loads into memory,<br/>served"]
+
+    Evict["Memory eviction"] -.->|serialize, don't drop| D
+    classDef default fill:#ffffff,stroke:#ad9e95,stroke-width:1px,color:#221d19
+```
+
+</div>
+
+## Sharing the disk budget {#disk-budget}
+
+Where enabled, the index disk tier and the
+[data page cache](/enterprise/data-page-cache)'s disk tier draw from one
+combined, configurable disk allocation per executor, split between the two
+tiers so neither one needs its own dedicated volume.
+
+## Why it matters {#why-it-matters}
+
+Vector, full-text, and scalar indexes can easily outgrow available memory
+on large tables. Without this cache, an eviction means re-reading and
+re-deserializing that index from object storage on the next request --
+slow, and repeated on every eviction. Spilling to local disk instead keeps
+index lookups fast even when the working set is larger than memory, without
+giving every executor enough memory to hold every index at once.
+
+[Contact us](https://www.lancedb.com/contact) to learn more about how
+caching is sized and tuned for your workload.
+
+## Index cache interfaces {#interfaces}
+
+- [Cache Prewarm](/enterprise/cache-prewarm) for warming this cache ahead
+  of the first request.
+- [Data Page Cache](/enterprise/data-page-cache) for the related cache
+  that holds raw table data pages instead of deserialized index structures.
+- [Vector indexes](/indexing/vector-index), [full-text indexes](/indexing/fts-index),
+  and [scalar indexes](/indexing/scalar-index) for the index types this
+  cache serves.

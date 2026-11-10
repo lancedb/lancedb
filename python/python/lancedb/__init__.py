@@ -3,16 +3,24 @@
 
 
 import os
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
-from typing import Dict, Optional, Union, Any, List, Iterable, TYPE_CHECKING
+from typing import Dict, Optional, Union, Any, List, Iterable, Literal, TYPE_CHECKING
 
-from ._lancedb import __version__ as __version__
+from packaging.version import Version as _Version
+
+from ._lancedb import __version__ as _native_version
+
+# Match Python package metadata without requiring the lancedb distribution.
+__version__ = str(_Version(_native_version))
+
 from ._lancedb import connect as lancedb_connect
 from ._lancedb import FtsToken
 from ._lancedb import FunctionErrorFragment as FunctionErrorFragment
 from ._lancedb import FunctionErrorRecord as FunctionErrorRecord
 from ._lancedb import FunctionErrors as FunctionErrors
+from ._lancedb import GpuClass as GpuClass
 from ._lancedb import RTEWriteSpec
 from ._lancedb import tokenize as _tokenize
 from .common import URI, sanitize_uri
@@ -32,21 +40,26 @@ from .functions import (
     FunctionArtifactRequest as FunctionArtifactRequest,
     FunctionApplication as FunctionApplication,
     FunctionBinding as FunctionBinding,
+    FunctionDefinition as FunctionDefinition,
     FunctionRegistrationRequest as FunctionRegistrationRequest,
+    FunctionRetryPolicy as FunctionRetryPolicy,
     FunctionVersion as FunctionVersion,
+    HuggingFaceModel as HuggingFaceModel,
     PythonRuntimeSpec as PythonRuntimeSpec,
     RefreshColumnResult as RefreshColumnResult,
-    UdfDefinition as UdfDefinition,
+    function as function,
     udf as udf,
 )
 from .secrets import EnvVarSecret as EnvVarSecret
 from .secrets import SecretInfo as SecretInfo
+from .storage_integration import StorageIntegrationInfo as StorageIntegrationInfo
 from .materialized_view import (
     AsyncMaterializedView,
     MaterializedView,
     MaterializedViewDefinition,
 )
 from .view import ViewDescription as ViewDescription
+from .graph import PropertyGraph, PropertyGraphDescription
 from .table import AsyncTable, CompactionOptions, Table
 from .types import BaseTokenizerType
 from ._lancedb import Session
@@ -67,6 +80,7 @@ from .catalog import (
 
 if TYPE_CHECKING:
     from lance.blob import BlobType as BlobType
+    from .functions import UdfDefinition as UdfDefinition
 
 
 def __getattr__(name: str):
@@ -75,6 +89,13 @@ def __getattr__(name: str):
 
         globals()["BlobType"] = BlobType
         return BlobType
+    if name == "UdfDefinition":
+        from . import functions
+
+        warnings.warn(
+            functions.UDF_DEFINITION_DEPRECATION, DeprecationWarning, stacklevel=2
+        )
+        return functions.FunctionDefinition
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -297,11 +318,11 @@ def connect(
             raise ValueError(f"Unknown keyword arguments: {unknown_kwargs}")
         if session is not None:
             raise NotImplementedError(
-                "session is not supported for LanceDB Distributed connections"
+                "session is not supported for LanceDB Enterprise connections"
             )
         if manifest_enabled:
             raise NotImplementedError(
-                "manifest_enabled is not supported for LanceDB Distributed connections"
+                "manifest_enabled is not supported for LanceDB Enterprise connections"
             )
         if api_key is None:
             api_key = os.environ.get("LANCEDB_API_KEY")
@@ -354,13 +375,31 @@ def tokenize(
     ngram_min_length: int = 3,
     ngram_max_length: int = 3,
     prefix_only: bool = False,
+    analyzer: Optional[Literal["text", "code"]] = None,
+    split_identifiers: Optional[bool] = None,
+    split_on_numerics: Optional[bool] = None,
+    preserve_original: Optional[bool] = None,
+    index_operators: Optional[bool] = None,
 ) -> Iterable[FtsToken]:
     """Tokenize a full-text search query using an explicit tokenizer.
 
     This does not require an FTS index. The tokenizer options match
     :class:`lancedb.index.FTS`. ``custom_stop_words`` accepts a list of strings.
     When ``stem`` or ``remove_stop_words`` is None, the base tokenizer's default
-    applies: False for ``code`` and ``ngram``, True otherwise.
+    applies: False for ``code`` and ``ngram``, True otherwise. ``analyzer`` and the
+    code flags (``split_identifiers``, ``split_on_numerics``, ``preserve_original``
+    and ``index_operators``) behave as they do on :class:`lancedb.index.FTS`.
+
+    Examples
+    --------
+    Inspect the identifier and subwords produced by the code analyzer:
+
+    >>> import lancedb
+    >>> tokens = lancedb.tokenize(
+    ...     "parseHTTPRequest", analyzer="code", split_identifiers=True
+    ... )
+    >>> [token.text for token in tokens]
+    ['parsehttprequest', 'parse', 'http', 'request']
     """
 
     return _tokenize(
@@ -376,6 +415,11 @@ def tokenize(
         ngram_min_length=ngram_min_length,
         ngram_max_length=ngram_max_length,
         prefix_only=prefix_only,
+        analyzer=analyzer,
+        split_identifiers=split_identifiers,
+        split_on_numerics=split_on_numerics,
+        preserve_original=preserve_original,
+        index_operators=index_operators,
     )
 
 
@@ -621,6 +665,8 @@ __all__ = [
     "MaterializedView",
     "MaterializedViewDefinition",
     "ViewDescription",
+    "PropertyGraph",
+    "PropertyGraphDescription",
     "connect",
     "connect_async",
     "tokenize",

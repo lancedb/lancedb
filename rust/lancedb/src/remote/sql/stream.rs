@@ -20,7 +20,8 @@ use uuid::Uuid;
 
 use super::{
     ABANDONED_QUERY_RETENTION, DEFAULT_READ_TIMEOUT, ResultEndpointStream, ResultStartGuard,
-    SqlClientInner, TERMINAL_QUERY_RETENTION, resolve_timeout, sql_error, with_overall_timeout,
+    SqlClientInner, TERMINAL_QUERY_RETENTION, resolve_timeout, sql_error, sql_flight_error,
+    sql_status_error, with_overall_timeout,
 };
 use crate::arrow::{SendableRecordBatchStream, SimpleRecordBatchStream};
 use crate::error::{Error, Result};
@@ -99,6 +100,9 @@ impl Drop for Borrowed<'_> {
 
 pub(super) const PROTOCOL_HEADER: &str = "lancedb-sql-protocol";
 pub(super) const PROTOCOL_VERSION: &str = "adaptive-v1";
+const MATERIALIZED_VIEW_JOB_HANDLE_HEADER: &str = "x-lancedb-mv-job-handle";
+const MATERIALIZED_VIEW_JOB_HANDLE_VALUE: &str = "early";
+const MATERIALIZED_VIEW_JOB_HANDLE_ACK: &[u8] = b"early-v1";
 const RESPONSE_TYPE_URL: &str = "type.googleapis.com/lancedb.sql.QueryResponse";
 
 #[derive(Clone, PartialEq, Message)]
@@ -118,13 +122,19 @@ pub(super) enum Submission {
     Deferred(PollInfo),
 }
 
+pub(super) struct OpenedSubmission {
+    pub(super) submission: Submission,
+    pub(super) materialized_view_job_handle_supported: bool,
+}
+
 impl StreamingQuery {
     pub(super) async fn open(
         client: Arc<SqlClientInner>,
         query: &str,
         parameters: Option<RecordBatch>,
         default_namespace_path: &[String],
-    ) -> Result<Submission> {
+        materialized_view_job_handle: bool,
+    ) -> Result<OpenedSubmission> {
         if let Some(parameters) = &parameters
             && parameters.num_rows() != 1
         {
@@ -154,6 +164,12 @@ impl StreamingQuery {
             .metadata()
             .clone();
         metadata.insert(PROTOCOL_HEADER, PROTOCOL_VERSION.parse().unwrap());
+        if materialized_view_job_handle {
+            metadata.insert(
+                MATERIALIZED_VIEW_JOB_HANDLE_HEADER,
+                MATERIALIZED_VIEW_JOB_HANDLE_VALUE.parse().unwrap(),
+            );
+        }
         let mut flight = connection.client.clone();
         let response = if let Some(parameters) = parameters {
             let messages = FlightDataEncoderBuilder::new()
@@ -162,7 +178,7 @@ impl StreamingQuery {
                 .build(futures::stream::iter([Ok(parameters)]))
                 .try_collect::<Vec<_>>()
                 .await
-                .map_err(|error| sql_error(&request_id, error))?;
+                .map_err(|error| sql_flight_error(&request_id, &error))?;
             let mut request = tonic::Request::new(futures::stream::iter(messages));
             *request.metadata_mut() = metadata;
             tokio::time::timeout(read_timeout, flight.do_exchange(request)).await
@@ -173,7 +189,7 @@ impl StreamingQuery {
             tokio::time::timeout(read_timeout, flight.do_get(request)).await
         }
         .map_err(|_| sql_error(&request_id, "SQL query submission timed out"))?
-        .map_err(|error| sql_error(&request_id, error))?;
+        .map_err(|error| sql_status_error(&request_id, &error))?;
         let negotiated = response
             .metadata()
             .get(PROTOCOL_HEADER)
@@ -183,7 +199,7 @@ impl StreamingQuery {
             let first = tokio::time::timeout(read_timeout, response_stream.message())
                 .await
                 .map_err(|_| sql_error(&request_id, "SQL query handoff timed out"))?
-                .map_err(|error| sql_error(&request_id, error))?
+                .map_err(|error| sql_status_error(&request_id, &error))?
                 .ok_or_else(|| {
                     sql_error(&request_id, "SQL response omitted its execution decision")
                 })?;
@@ -210,18 +226,28 @@ impl StreamingQuery {
                         "SQL handoff omitted result and continuation information",
                     ));
                 }
-                return Ok(Submission::Deferred(info));
+                let materialized_view_job_handle_supported =
+                    info.info.as_ref().is_some_and(|info| {
+                        info.app_metadata.as_ref() == MATERIALIZED_VIEW_JOB_HANDLE_ACK
+                    });
+                return Ok(OpenedSubmission {
+                    submission: Submission::Deferred(info),
+                    materialized_view_job_handle_supported,
+                });
             }
         }
         let stream = FlightRecordBatchStream::new_from_flight_data(
             response_stream
                 .map_err(|status| arrow_flight::error::FlightError::Tonic(Box::new(status))),
         );
-        Ok(Submission::Stream(ResultEndpointStream {
-            stream,
-            request_id,
-            read_timeout,
-        }))
+        Ok(OpenedSubmission {
+            submission: Submission::Stream(ResultEndpointStream {
+                stream,
+                request_id,
+                read_timeout,
+            }),
+            materialized_view_job_handle_supported: false,
+        })
     }
 
     pub(super) fn new(

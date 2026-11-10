@@ -81,6 +81,85 @@ if TYPE_CHECKING:
         from typing_extensions import Self
 
 T = TypeVar("T", bound="LanceModel")
+
+
+def _top_level_alias_key(alias: Any) -> str | None:
+    if isinstance(alias, str):
+        return alias
+    if isinstance(alias, pydantic.AliasPath) and alias.path:
+        key = alias.path[0]
+        return key if isinstance(key, str) else None
+    return None
+
+
+def _top_level_alias_keys(alias: Any) -> set[str]:
+    options = alias.choices if isinstance(alias, pydantic.AliasChoices) else (alias,)
+    return {
+        key for option in options if (key := _top_level_alias_key(option)) is not None
+    }
+
+
+def _single_component_alias(alias: Any) -> str | None:
+    # AliasChoices validates against the first matching source, so only use
+    # its first option as a field-name fallback.
+    option = alias.choices[0] if isinstance(alias, pydantic.AliasChoices) else alias
+    if isinstance(option, pydantic.AliasPath) and len(option.path) != 1:
+        # A nested path needs a structured payload; do not infer one here.
+        return None
+    return _top_level_alias_key(option)
+
+
+def _rows_to_models(model: type[T], rows: List[dict]) -> List[T]:
+    """Build ``model`` instances from result rows.
+
+    A table created from a LanceModel stores each field under its name, while
+    pydantic validates an aliased field by its alias. Pass a row's value under
+    the alias when the row has the field name but none of the aliases, so a
+    model with aliases can read the tables it wrote; rows keyed by any alias
+    still work.
+    """
+    if model.model_config.get("validate_by_alias", True) is False:
+        # Name-only validation: pydantic reads field names and ignores aliases.
+        return [model(**row) for row in rows]
+    aliases = {
+        name: field.validation_alias or field.alias
+        for name, field in model.model_fields.items()
+    }
+    # populate_by_name is the pre-2.11 spelling; an explicit new flag wins.
+    accepts_by_name = model.model_config.get(
+        "validate_by_name",
+        model.model_config.get("populate_by_name", False),
+    )
+    # Every top-level key some field reads, including the first step of an
+    # AliasPath and each choice of an AliasChoices.
+    alias_keys = {}
+    for name, alias in aliases.items():
+        keys = _top_level_alias_keys(alias)
+        if not keys or accepts_by_name:
+            keys.add(name)
+        alias_keys[name] = keys
+    readers = {}
+    for name, keys in alias_keys.items():
+        for key in keys:
+            readers.setdefault(key, set()).add(name)
+    renames = {
+        name: target
+        for name, alias in aliases.items()
+        if (target := _single_component_alias(alias)) is not None
+        # Do not move a source that another field reads.
+        and target != name
+        and not (readers.get(name, set()) - {name})
+        # Do not add a source that another field accepts. Introducing a shared
+        # alias key could change that field's Pydantic selection.
+        and not (readers.get(target, set()) - {name})
+    }
+    for row in rows:
+        for name, target in renames.items():
+            if name in row and not any(key in row for key in alias_keys[name]):
+                row[target] = row.pop(name)
+    return [model(**row) for row in rows]
+
+
 AnalyzePlanDistributedMetrics = Literal["aggregate", "per_worker", "full"]
 _SYNC_VECTOR_QUERY_TYPES = (list, tuple, np.ndarray, pa.Array, pa.ChunkedArray)
 
@@ -125,7 +204,7 @@ def _supports_local_blob_fetch(
 def _blob_bytes_without_snapshot_error() -> NotImplementedError:
     return NotImplementedError(
         "blob_mode='bytes' cannot safely materialize blob columns without a "
-        "stable table snapshot. LanceDB Distributed and namespace QueryTable pushdown "
+        "stable table snapshot. LanceDB Enterprise and namespace QueryTable pushdown "
         "run the query on a server, so the blob fetch could read another table "
         "version. Use blob_mode='descriptions'."
     )
@@ -157,6 +236,7 @@ def _query_is_plain_scan(query: Query) -> bool:
         query.vector is None
         and query.full_text_query is None
         and query.take_offsets is None
+        and query.take_row_ids is None
         and not query.postfilter
         and not query.order_by
     )
@@ -834,6 +914,12 @@ class Query(pydantic.BaseModel):
         The size of the nearest neighbor list maintained during HNSW search
 
         This will only be set on vector search.
+    approx_mode : Optional[str]
+        The speed / accuracy tradeoff to use for approximate vector search
+
+        One of "fast", "normal" or "accurate".
+
+        This will only be set on vector search.
     full_text_query : Optional[Union[str, dict]]
         The full text search query
 
@@ -924,6 +1010,9 @@ class Query(pydantic.BaseModel):
     # This is populated when a take query is converted to this serializable form.
     take_offsets: Optional[List[int]] = None
 
+    # Row IDs whose requested order and duplicate occurrences must be restored.
+    take_row_ids: Optional[List[int]] = None
+
     # if true, will only search the indexed data
     fast_search: Optional[bool] = None
 
@@ -934,6 +1023,9 @@ class Query(pydantic.BaseModel):
 
     # size of the nearest neighbor list maintained during HNSW search
     ef: Optional[int] = None
+
+    # speed / accuracy tradeoff for approximate vector search
+    approx_mode: Optional[str] = None
 
     # Bypass the vector index and use a brute force search
     bypass_vector_index: Optional[bool] = None
@@ -946,6 +1038,7 @@ class Query(pydantic.BaseModel):
         query.limit = req.limit
         query.offset = req.offset
         query.take_offsets = req.take_offsets
+        query.take_row_ids = req.take_row_ids
         query.filter = req.filter
         query.full_text_query = req.full_text_search
         query.columns = req.select
@@ -965,6 +1058,7 @@ class Query(pydantic.BaseModel):
         query.lower_bound = req.lower_bound
         query.upper_bound = req.upper_bound
         query.ef = req.ef
+        query.approx_mode = req.approx_mode
         query.refine_factor = req.refine_factor
         query.bypass_vector_index = req.bypass_vector_index
         query.postfilter = req.postfilter
@@ -1133,6 +1227,7 @@ class LanceQueryBuilder(ABC):
         self._vector = None
         self._text = None
         self._ef = None
+        self._approx_mode = None
         self._bypass_vector_index = None
         self._order_by = None
 
@@ -1184,7 +1279,7 @@ class LanceQueryBuilder(ABC):
             mode and for legacy blob columns. Other local blob v2
             queries return descriptors in ``"lazy"`` and ``"descriptions"``
             modes, or payloads in ``"bytes"`` mode, through :meth:`to_arrow`.
-            LanceDB Distributed blob queries support only ``"descriptions"`` until a
+            LanceDB Enterprise blob queries support only ``"descriptions"`` until a
             stable
             table snapshot can bind the query and blob fetches.
         **kwargs
@@ -1240,6 +1335,9 @@ class LanceQueryBuilder(ABC):
         and also the "_distance" column which is the distance between the query
         vector and the returned vectors.
 
+        This collects all results in memory. To process a large result a batch
+        at a time, use [to_batches][lancedb.query.LanceQueryBuilder.to_batches].
+
         Parameters
         ----------
         timeout: Optional[timedelta]
@@ -1271,6 +1369,11 @@ class LanceQueryBuilder(ABC):
         ``fetch_blobs``. The ``"bytes"`` and ``"descriptions"`` modes hide
         automatic row ids.
 
+        A remote table decodes batches as they arrive when the server streams
+        query results. If the response stops partway, reading raises
+        [ResponseInterruptedError][lancedb.remote.errors.ResponseInterruptedError]
+        after the batches already returned, which are valid but incomplete.
+
         Parameters
         ----------
         batch_size: int
@@ -1278,6 +1381,8 @@ class LanceQueryBuilder(ABC):
         timeout: Optional[timedelta]
             The maximum time to wait for the query to complete.
             If None, wait indefinitely.
+            The timeout also covers reading the batches, so consuming them
+            slowly can exceed it.
         blob_mode: str, default "lazy"
             ``"lazy"`` keeps blob descriptors and auto row ids for manual fetches.
             ``"descriptions"`` omits auto row ids. ``"bytes"`` fetches blob v2
@@ -1340,7 +1445,7 @@ class LanceQueryBuilder(ABC):
         -------
         List[LanceModel]
         """
-        return [model(**row) for row in self.to_arrow(timeout=timeout).to_pylist()]
+        return _rows_to_models(model, self.to_arrow(timeout=timeout).to_pylist())
 
     def to_polars(self, *, timeout: Optional[timedelta] = None) -> "pl.DataFrame":
         """
@@ -1965,6 +2070,11 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
     def search_effort(self, search_effort: Optional[float]) -> LanceVectorQueryBuilder:
         """Set the initial IVF search effort to a finite value in [0, 1].
 
+        Efforts 0.1 and 0.25 target empirical mean partition-routing recall of
+        80% and 90% for L2, cosine and dot through k=100000. The probe budget
+        adapts to the metric and k. Hamming and larger k remain uncalibrated;
+        100000 is not an API limit. Remote queries also require server support.
+
         None (the default) uses Auto, internally 0.5. Zero starts at the caller
         minimum; one searches all partitions within the caller maximum. Later
         probing may continue when too few candidates are found. Any explicit
@@ -2055,6 +2165,35 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             The LanceQueryBuilder object.
         """
         self._ef = ef
+        return self
+
+    def approx_mode(
+        self, approx_mode: Literal["fast", "normal", "accurate"]
+    ) -> LanceVectorQueryBuilder:
+        """Set the speed / accuracy tradeoff to use for approximate search.
+
+        This currently affects RQ-quantized indexes, such as IVF_RQ, and
+        prefiltered search on HNSW indexes, where "fast" enables the ACORN
+        traversal. Other index types ignore this setting.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("memory://")
+        >>> table = db.create_table("approx_vectors", [{"vector": [0.1, 0.2]}])
+        >>> query = table.search([0.1, 0.2]).approx_mode("fast")
+
+        Parameters
+        ----------
+        approx_mode: "fast" or "normal" or "accurate"
+            The tradeoff to use. By default "normal" is used.
+
+        Returns
+        -------
+        LanceVectorQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        self._approx_mode = approx_mode
         return self
 
     def refine_factor(self, refine_factor: int) -> LanceVectorQueryBuilder:
@@ -2151,6 +2290,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             offset=self._offset,
             fast_search=self._fast_search,
             ef=self._ef,
+            approx_mode=self._approx_mode,
             bypass_vector_index=self._bypass_vector_index,
             order_by=self._order_by,
         )
@@ -2173,6 +2313,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         timeout: timedelta, default None
             The maximum time to wait for the query to complete.
             If None, wait indefinitely.
+            The timeout also covers reading the batches, so consuming them
+            slowly can exceed it.
         blob_mode: str, default "lazy"
             Controls blob conversion as described in
             :meth:`LanceQueryBuilder.to_batches`.
@@ -2709,7 +2851,10 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             )
             if not with_row_ids and "_rowid" in empty.column_names:
                 empty = empty.drop(["_rowid"])
-            return empty
+            # Match the columns a non-empty result has for this reranker. Call the
+            # base method so an override that assumes rows never sees the empty
+            # table (#3030).
+            return Reranker._keep_relevance_score(reranker, empty)
 
         original_distances = None
         original_scores = None
@@ -2891,6 +3036,11 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
     def search_effort(self, search_effort: Optional[float]) -> LanceHybridQueryBuilder:
         """Set the initial IVF search effort to a finite value in [0, 1].
 
+        Efforts 0.1 and 0.25 target empirical mean partition-routing recall of
+        80% and 90% for L2, cosine and dot through k=100000. The probe budget
+        adapts to the metric and k. Hamming and larger k remain uncalibrated;
+        100000 is not an API limit. Remote queries also require server support.
+
         None (the default) uses Auto, internally 0.5. Zero starts at the caller
         minimum; one searches all partitions within the caller maximum. Later
         probing may continue when too few candidates are found. Any explicit
@@ -2976,6 +3126,43 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             The LanceHybridQueryBuilder object.
         """
         self._ef = ef
+        return self
+
+    def approx_mode(
+        self, approx_mode: Literal["fast", "normal", "accurate"]
+    ) -> LanceHybridQueryBuilder:
+        """
+        Set the speed / accuracy tradeoff to use for approximate search.
+
+        This currently affects RQ-quantized indexes, such as IVF_RQ, and
+        prefiltered search on HNSW indexes, where "fast" enables the ACORN
+        traversal. Other index types ignore this setting.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("memory://")
+        >>> table = db.create_table(
+        ...     "approx_hybrid", [{"vector": [0.1, 0.2], "text": "dog"}]
+        ... )
+        >>> query = (
+        ...     table.search(query_type="hybrid")
+        ...     .vector([0.1, 0.2])
+        ...     .text("dog")
+        ...     .approx_mode("accurate")
+        ... )
+
+        Parameters
+        ----------
+        approx_mode: "fast" or "normal" or "accurate"
+            The tradeoff to use. By default "normal" is used.
+
+        Returns
+        -------
+        LanceHybridQueryBuilder
+            The LanceHybridQueryBuilder object.
+        """
+        self._approx_mode = approx_mode
         return self
 
     def metric(self, metric: Literal["l2", "cosine", "dot"]) -> LanceHybridQueryBuilder:
@@ -3222,6 +3409,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._vector_query.refine_factor(self._refine_factor)
         if self._ef:
             self._vector_query.ef(self._ef)
+        if self._approx_mode:
+            self._vector_query.approx_mode(self._approx_mode)
         if self._bypass_vector_index:
             self._vector_query.bypass_vector_index()
         if self._lower_bound is not None or self._upper_bound is not None:
@@ -3393,6 +3582,11 @@ class AsyncQueryBase(object):
         """
         Execute the query and return the results as an Apache Arrow RecordBatchReader.
 
+        A remote table decodes batches as they arrive when the server streams
+        query results. If the response stops partway, reading raises
+        [ResponseInterruptedError][lancedb.remote.errors.ResponseInterruptedError]
+        after the batches already returned, which are valid but incomplete.
+
         Parameters
         ----------
 
@@ -3405,6 +3599,8 @@ class AsyncQueryBase(object):
             The maximum time to wait for the query to complete.
             If not specified, no timeout is applied. If the query does not
             complete within the specified time, an error will be raised.
+            The timeout also covers reading the batches, so consuming them
+            slowly can exceed it.
         blob_mode: str, default "lazy"
             ``"lazy"`` keeps blob descriptors and auto row ids for manual fetches.
             ``"descriptions"`` omits auto row ids. ``"bytes"`` fetches blob v2
@@ -3521,7 +3717,7 @@ class AsyncQueryBase(object):
             ``fetch_blobs`` reads. ``"descriptions"`` returns them without it.
             ``"bytes"`` returns payload bytes and raises for legacy blob columns
             and blobs inside lists.
-            LanceDB Distributed and namespace query pushdown refuse ``"bytes"``.
+            LanceDB Enterprise and namespace query pushdown refuse ``"bytes"``.
         """
         blob_sources = await self._validated_blob_sources(blob_mode)
         batch_iter = await self.to_batches(timeout=timeout)
@@ -3600,7 +3796,7 @@ class AsyncQueryBase(object):
             mode and for legacy blob columns. Other local blob v2
             queries return descriptors in ``"lazy"`` and ``"descriptions"``
             modes, or payloads in ``"bytes"`` mode, through :meth:`to_arrow`.
-            LanceDB Distributed blob queries support only ``"descriptions"`` until a
+            LanceDB Enterprise blob queries support only ``"descriptions"`` until a
             stable
             table snapshot can bind the query and blob fetches.
         **kwargs
@@ -3770,9 +3966,9 @@ class AsyncQueryBase(object):
         -------
         list[LanceModel]
         """
-        return [
-            model(**row) for row in (await self.to_arrow(timeout=timeout)).to_pylist()
-        ]
+        return _rows_to_models(
+            model, (await self.to_arrow(timeout=timeout)).to_pylist()
+        )
 
     async def explain_plan(self, verbose: Optional[bool] = False):
         """Return the execution plan for this query.
@@ -4249,7 +4445,7 @@ class AsyncVectorQueryBase:
         you the desired recall.
 
         LanceDB retains this as `nprobes` through LanceDB Embedded and LanceDB
-        Distributed request construction. Lance sets both probe bounds to this
+        Enterprise request construction. Lance sets both probe bounds to this
         value. Explicit minimum or maximum settings can override their respective
         bounds.
         """
@@ -4258,6 +4454,11 @@ class AsyncVectorQueryBase:
 
     def search_effort(self, search_effort: Optional[float]) -> Self:
         """Set the initial IVF search effort to a finite value in [0, 1].
+
+        Efforts 0.1 and 0.25 target empirical mean partition-routing recall of
+        80% and 90% for L2, cosine and dot through k=100000. The probe budget
+        adapts to the metric and k. Hamming and larger k remain uncalibrated;
+        100000 is not an API limit. Remote queries also require server support.
 
         None preserves Auto (internally 0.5) and fixed nprobes. Any explicit
         effort, including 0.5, overrides nprobes in either call order; explicit
@@ -4346,6 +4547,33 @@ class AsyncVectorQueryBase:
         data and the recall that you need to achieve.
         """
         self._inner.ef(ef)
+        return self
+
+    def approx_mode(self, approx_mode: Literal["fast", "normal", "accurate"]) -> Self:
+        """
+        Set the speed / accuracy tradeoff to use for approximate search
+
+        This currently affects RQ-quantized indexes, such as IVF_RQ, and prefiltered
+        search on HNSW indexes, where "fast" enables the ACORN traversal.  Other index
+        types ignore this setting.
+
+        "fast" favors lower latency and may reduce recall, "normal" (the default) uses
+        the index's default balance, and "accurate" favors higher recall and may
+        increase latency.
+
+        Examples
+        --------
+        >>> import asyncio
+        >>> import lancedb
+        >>> async def build_query():
+        ...     db = await lancedb.connect_async("memory://")
+        ...     table = await db.create_table(
+        ...         "approx_async", [{"vector": [0.1, 0.2]}]
+        ...     )
+        ...     return table.vector_search([0.1, 0.2]).approx_mode("accurate")
+        >>> query = asyncio.run(build_query())
+        """
+        self._inner.approx_mode(approx_mode)
         return self
 
     def refine_factor(self, refine_factor: int) -> Self:
@@ -4905,6 +5133,8 @@ class BaseQueryBuilder(object):
             The maximum time to wait for the query to complete.
             If not specified, no timeout is applied. If the query does not
             complete within the specified time, an error will be raised.
+            The timeout also covers reading the batches, so consuming them
+            slowly can exceed it.
         blob_mode: str, default "lazy"
             Controls blob conversion as described in
             :meth:`AsyncQueryBase.to_batches`.

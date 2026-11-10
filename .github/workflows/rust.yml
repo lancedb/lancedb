@@ -14,6 +14,12 @@ on:
       - docs/web-tests/blob-v2/rs/**
       - nodejs/Cargo.toml
       - python/Cargo.toml
+      - python/src/**
+      - python/python/lancedb/exceptions.py
+      - python/python/lancedb/remote/errors.py
+      - ci/build_no_lock.py
+      - ci/tests/test_build_no_lock.py
+      - .github/actions/setup-protoc/**
       - .github/workflows/rust.yml
 
 permissions:
@@ -134,7 +140,8 @@ jobs:
           command: check advisories bans licenses sources
 
   build-no-lock:
-    runs-on: ubuntu-24.04
+    # Keep the existing Linux runner; its available disk varies by image.
+    runs-on: ubuntu-2404-4x-x64
     timeout-minutes: 30
     env:
       # Need up-to-date compilers for kernels
@@ -161,9 +168,22 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y protobuf-compiler libssl-dev
+      - name: Test build output cleanup
+        run: python3 -m unittest discover -s ci/tests -p test_build_no_lock.py -v
       - name: Build all
         run: |
-          cargo build --profile ci --benches --all-features --tests
+          df -h .
+          # Every target is linked, but this job never executes the test binaries.
+          python3 ci/build_no_lock.py
+      - name: Report build disk usage
+        if: always()
+        run: |
+          df -h .
+          for build_path in target "$HOME/.cargo/registry" "$HOME/.cargo/git"; do
+            if [ -d "$build_path" ]; then
+              du -h -d 2 "$build_path"
+            fi
+          done
 
   linux:
     timeout-minutes: 60
@@ -179,6 +199,8 @@ jobs:
       # Need up-to-date compilers for kernels
       CC: clang-18
       CXX: clang++-18
+      # Preserve the repository CPU flags and use setup-mold's system linker.
+      RUSTFLAGS: "-C target-cpu=haswell -C target-feature=+avx2,+fma,+f16c -C linker-features=-lld"
     steps:
       - uses: actions/checkout@v6
         with:
@@ -218,16 +240,20 @@ jobs:
           sudo mkswap "$swapfile"
           sudo swapon "$swapfile"
       - name: Build
-        run: cargo build --profile ci --all-features --tests --locked --examples
+        run: cargo build --profile ci -p lancedb --all-features --tests --locked --examples
       - name: Run feature tests
         run: CARGO_ARGS="--profile ci" make -C ./lancedb feature-tests
       - name: Run examples
-        run: cargo run --profile ci --all-features --example simple --locked
+        run: cargo run --profile ci -p lancedb --all-features --example simple --locked
       - name: Run blob v2 docs example
         # Python and TypeScript blob docs tests install preview packages.
         # Those builds are not guaranteed to remain available for more than
         # 6 months, so they stay a manual run. This example uses the workspace crate.
-        run: cargo run --profile ci --all-features -p lancedb-blob-v2-docs --example multimodal --locked
+        run: |
+          # The completed all-features checks leave large lancedb artifacts in target.
+          # Reclaim that package before building the example with a different feature set.
+          cargo clean --profile ci -p lancedb
+          cargo run --profile ci --all-features -p lancedb-blob-v2-docs --example multimodal --locked
 
   remote:
     timeout-minutes: 30
@@ -243,6 +269,8 @@ jobs:
     env:
       CC: clang-18
       CXX: clang++-18
+      # Rust's default rust-lld bypasses setup-mold's /usr/bin/ld replacement.
+      RUSTFLAGS: "-C target-cpu=haswell -C target-feature=+avx2,+fma,+f16c -C linker-features=-lld"
       GH_TOKEN: ${{ github.token }}
       SOPHON_READ_TOKEN: ${{ secrets.SOPHON_READ_TOKEN }}
     steps:
@@ -270,7 +298,7 @@ jobs:
     timeout-minutes: 60
     strategy:
       matrix:
-        mac-runner: ["macos-14", "macos-15"]
+        mac-runner: ["macos-15", "macos-26"]
     runs-on: "${{ matrix.mac-runner }}"
     defaults:
       run:
@@ -324,8 +352,8 @@ jobs:
           # unreadable outside their own branch anyway, since GitHub scopes
           # caches to the creating ref.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Install Protoc v21.12
-        run: choco install --no-progress protoc
+      - name: Install protoc
+        uses: ./.github/actions/setup-protoc
       - name: Build
         run: |
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
@@ -361,8 +389,8 @@ jobs:
           # unreadable outside their own branch anyway, since GitHub scopes
           # caches to the creating ref.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Install Protoc v21.12
-        run: choco install --no-progress protoc
+      - name: Install protoc
+        uses: ./.github/actions/setup-protoc
       - name: Build
         run: |
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT

@@ -17,12 +17,15 @@ use arrow_schema::{DataType, SchemaRef};
 use datafusion_common::{DataFusionError, Result as DataFusionResult};
 use datafusion_execution::TaskContext;
 use datafusion_expr::{Expr, col, lit};
-use datafusion_physical_expr::{EquivalenceProperties, Partitioning};
+use datafusion_physical_expr::{
+    EquivalenceProperties, Partitioning, expressions::col as physical_col,
+};
 use datafusion_physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
     coalesce_partitions::CoalescePartitionsExec,
     execution_plan::{Boundedness, EmissionType},
     limit::GlobalLimitExec,
+    projection::ProjectionExec,
     stream::RecordBatchStreamAdapter,
 };
 use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt, stream, try_join};
@@ -444,8 +447,8 @@ pub trait QueryBase {
     /// # }
     /// ```
     ///
-    /// Note: Expression filters are not supported for LanceDB Distributed queries.
-    /// Use [`QueryBase::only_if`] with SQL strings in LanceDB Distributed.
+    /// Note: Expression filters are not supported for LanceDB Enterprise queries.
+    /// Use [`QueryBase::only_if`] with SQL strings in LanceDB Enterprise.
     ///
     /// Calling this multiple times combines the expressions with a logical AND
     /// rather than replacing the previous filter.
@@ -658,6 +661,10 @@ pub struct QueryExecutionOptions {
     /// By default, this is 1024
     pub max_batch_length: u32,
     /// Max duration to wait for the query to execute before timing out.
+    ///
+    /// The timeout also covers reading the results, so a caller that consumes
+    /// the stream slowly can exceed it. For a remote table it counts from when
+    /// the query is sent, and the server is given the same timeout.
     pub timeout: Option<Duration>,
     /// How distributed worker metrics should be displayed by
     /// [`ExecutableQuery::analyze_plan`].
@@ -743,6 +750,11 @@ pub trait ExecutableQuery {
     /// This readahead is limited however and backpressure will be applied if this
     /// stream is consumed slowly (this constrains the maximum memory used by a
     /// single query.
+    ///
+    /// A remote table decodes batches as they arrive when the server streams
+    /// query results. If the response stops partway, the stream ends with
+    /// `Error::ResponseInterrupted`. The batches already returned are valid but
+    /// incomplete, and the query is not retried.
     ///
     /// For simpler access or row-based access we recommend creating extension traits
     /// to convert Arrow data into your internal data model.
@@ -850,6 +862,11 @@ pub struct QueryRequest {
     #[doc(hidden)]
     pub take_offsets: Option<Vec<u64>>,
 
+    /// Row IDs whose requested order and multiplicity are restored after lookup.
+    /// This is client-side metadata, not part of the remote query protocol.
+    #[doc(hidden)]
+    pub take_row_ids: Option<Vec<u64>>,
+
     /// Apply filter to the returned rows.
     pub filter: Option<QueryFilter>,
 
@@ -919,6 +936,7 @@ impl Default for QueryRequest {
             limit: None,
             offset: None,
             take_offsets: None,
+            take_row_ids: None,
             filter: None,
             filter_error: None,
             full_text_search: None,
@@ -936,6 +954,10 @@ impl Default for QueryRequest {
 }
 
 impl QueryRequest {
+    pub(crate) fn has_take(&self) -> bool {
+        self.take_offsets.is_some() || self.take_row_ids.is_some()
+    }
+
     /// Add a filter, combining it with any existing filter using a logical AND.
     ///
     /// If the new filter cannot be combined with the existing one (because they
@@ -1025,7 +1047,7 @@ impl Query {
     /// By default, there is no embedding model, and the input should be
     /// vector/slice of floats.
     /// NaN and infinite components are rejected with [`Error::InvalidInput`]
-    /// after conversion to Float32, in both LanceDB Embedded and LanceDB Distributed.
+    /// after conversion to Float32, in both LanceDB Embedded and LanceDB Enterprise.
     ///
     /// If there is only one vector column (a column whose data type is a
     /// fixed size list of floats) then the column does not need to be specified.
@@ -1269,7 +1291,7 @@ impl VectorQuery {
     /// result.
     ///
     /// NaN and infinite components are rejected with [`Error::InvalidInput`]
-    /// after conversion to Float32, in both LanceDB Embedded and LanceDB Distributed.
+    /// after conversion to Float32, in both LanceDB Embedded and LanceDB Enterprise.
     pub fn add_query_vector(mut self, vector: impl IntoQueryVector) -> Result<Self> {
         self.request.add_query_vector(vector)?;
         Ok(self)
@@ -1316,7 +1338,11 @@ impl VectorQuery {
     ///
     /// None (the default) resolves to 0.5, preserving Auto probing. At 0 the
     /// search starts at the caller minimum; at 1 it searches all partitions
-    /// within the caller maximum. Intermediate values interpolate around Auto.
+    /// within the caller maximum. Efforts 0.1 and 0.25 target empirical mean
+    /// partition-routing recall of 80% and 90%, respectively, for L2, cosine
+    /// and dot with k up to 100,000. The budget adapts to the metric and k;
+    /// this is a calibration boundary, not a limit on k. Hamming and larger k
+    /// retain uncalibrated behavior. Other values interpolate between tiers.
     /// Later probing may continue when too few candidates are found.
     /// Any explicit value, including 0.5, overrides [`Self::nprobes`] regardless
     /// of setter order. Explicit minimum and maximum bounds still apply.
@@ -1476,8 +1502,10 @@ impl VectorQuery {
 
     /// Set the speed / accuracy tradeoff for approximate vector search.
     ///
-    /// This setting is currently only used by RQ-quantized indexes, such as
-    /// IVF_RQ. Other index types ignore this setting.
+    /// This setting is currently used by RQ-quantized indexes (such as IVF_RQ)
+    /// and by prefiltered search on HNSW sub-indexes, where
+    /// [`ApproxMode::Fast`] enables the ACORN traversal. Other index types
+    /// ignore this setting.
     pub fn approx_mode(mut self, approx_mode: ApproxMode) -> Self {
         self.request.approx_mode = Some(approx_mode);
         self
@@ -1674,42 +1702,42 @@ impl HasQuery for VectorQuery {
     }
 }
 
-fn take_occurrences(offsets: &[u64]) -> HashMap<u64, usize> {
-    let mut occurrences = HashMap::with_capacity(offsets.len());
-    for offset in offsets {
-        *occurrences.entry(*offset).or_insert(0) += 1;
+fn take_occurrences(indices: &[u64]) -> HashMap<u64, usize> {
+    let mut occurrences = HashMap::with_capacity(indices.len());
+    for index in indices {
+        *occurrences.entry(*index).or_insert(0) += 1;
     }
     occurrences
 }
 
 fn restore_take_batch_with_occurrences(
     batch: RecordBatch,
-    offsets: &[u64],
+    indices: &[u64],
     occurrences: &HashMap<u64, usize>,
     ordering_column: &str,
     drop_ordering_column: bool,
     preserve_order: bool,
 ) -> Result<RecordBatch> {
-    let actual_offsets = batch
+    let actual_indices = batch
         .column_by_name(ordering_column)
         .ok_or_else(|| Error::Schema {
             message: format!(
                 "take query result did not include ordering column '{ordering_column}'"
             ),
         })?;
-    let actual_offsets = match actual_offsets.data_type() {
-        DataType::UInt64 => actual_offsets
+    let actual_indices = match actual_indices.data_type() {
+        DataType::UInt64 => actual_indices
             .as_primitive::<UInt64Type>()
             .values()
             .to_vec(),
-        DataType::Int64 => actual_offsets
+        DataType::Int64 => actual_indices
             .as_primitive::<Int64Type>()
             .values()
             .iter()
-            .map(|offset| {
-                u64::try_from(*offset).map_err(|_| Error::Schema {
+            .map(|index| {
+                u64::try_from(*index).map_err(|_| Error::Schema {
                     message: format!(
-                        "take query ordering column '{ordering_column}' contained a negative offset"
+                        "take query ordering column '{ordering_column}' contained a negative index"
                     ),
                 })
             })
@@ -1723,26 +1751,26 @@ fn restore_take_batch_with_occurrences(
         }
     };
 
-    let mut desired_order = Vec::with_capacity(offsets.len());
+    let mut desired_order = Vec::with_capacity(indices.len());
     if preserve_order {
-        let ordering = actual_offsets
+        let ordering = actual_indices
             .iter()
             .copied()
             .enumerate()
-            .map(|(index, offset)| (offset, index as u64))
+            .map(|(position, index)| (index, position as u64))
             .collect::<HashMap<_, _>>();
-        // Missing offsets retain the filter-based behavior of returning no row.
+        // Missing indices retain the filter-based behavior of returning no row.
         desired_order.extend(
-            offsets
+            indices
                 .iter()
-                .filter_map(|offset| ordering.get(offset).copied()),
+                .filter_map(|index| ordering.get(index).copied()),
         );
     } else {
-        // Public take queries do not guarantee output order. Preserve the lookup's
-        // existing order and only restore the multiplicity of each matching row.
-        for (index, offset) in actual_offsets.iter().enumerate() {
-            if let Some(count) = occurrences.get(offset) {
-                desired_order.extend(std::iter::repeat_n(index as u64, *count));
+        // Unordered offset takes and explicitly sorted queries retain the lookup's
+        // order while restoring the multiplicity of each matching row.
+        for (position, index) in actual_indices.iter().enumerate() {
+            if let Some(count) = occurrences.get(index) {
+                desired_order.extend(std::iter::repeat_n(position as u64, *count));
             }
         }
     }
@@ -1759,7 +1787,15 @@ fn restore_take_batch_with_occurrences(
     };
 
     if drop_ordering_column {
-        ordered_batch = ordered_batch.drop_column(ordering_column)?;
+        // Project preserves the row count even when no user columns were selected.
+        let columns = ordered_batch
+            .schema()
+            .fields()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, field)| (field.name() != ordering_column).then_some(i))
+            .collect::<Vec<_>>();
+        ordered_batch = ordered_batch.project(&columns)?;
     }
 
     Ok(ordered_batch)
@@ -1768,32 +1804,32 @@ fn restore_take_batch_with_occurrences(
 #[cfg(test)]
 fn restore_take_batch(
     batch: RecordBatch,
-    offsets: &[u64],
+    indices: &[u64],
     ordering_column: &str,
     drop_ordering_column: bool,
     preserve_order: bool,
 ) -> Result<RecordBatch> {
     restore_take_batch_with_occurrences(
         batch,
-        offsets,
-        &take_occurrences(offsets),
+        indices,
+        &take_occurrences(indices),
         ordering_column,
         drop_ordering_column,
         preserve_order,
     )
 }
 
-/// Restores the logical offset occurrence sequence above the physical lookup plan.
+/// Restores the logical index occurrence sequence above the physical lookup plan.
 ///
 /// The lookup plan returns each matching row at most once. For ordinary unordered
 /// takes this operator expands each input batch incrementally and preserves the
-/// lookup's partitioning. The explicitly ordered reader path collects one coalesced
+/// lookup's partitioning. Ordered takes collect one coalesced
 /// input before restoring requested order. Pagination must remain above this operator
 /// so it applies to occurrences.
 #[derive(Debug)]
 struct TakeRestoreExec {
     input: Arc<dyn ExecutionPlan>,
-    offsets: Vec<u64>,
+    indices: Vec<u64>,
     occurrences: Arc<HashMap<u64, usize>>,
     ordering_column: String,
     drop_ordering_column: bool,
@@ -1805,15 +1841,20 @@ struct TakeRestoreExec {
 impl TakeRestoreExec {
     fn try_new(
         input: Arc<dyn ExecutionPlan>,
-        offsets: Vec<u64>,
+        indices: Vec<u64>,
         ordering_column: String,
         drop_ordering_column: bool,
         preserve_order: bool,
     ) -> Result<Self> {
         let schema = if drop_ordering_column {
-            RecordBatch::new_empty(input.schema())
-                .drop_column(&ordering_column)?
-                .schema()
+            let schema = input.schema();
+            let columns = schema
+                .fields()
+                .iter()
+                .enumerate()
+                .filter_map(|(i, field)| (field.name() != &ordering_column).then_some(i))
+                .collect::<Vec<_>>();
+            Arc::new(schema.project(&columns)?)
         } else {
             input.schema()
         };
@@ -1836,8 +1877,8 @@ impl TakeRestoreExec {
 
         Ok(Self {
             input,
-            occurrences: Arc::new(take_occurrences(&offsets)),
-            offsets,
+            occurrences: Arc::new(take_occurrences(&indices)),
+            indices,
             ordering_column,
             drop_ordering_column,
             preserve_order,
@@ -1856,7 +1897,7 @@ impl DisplayAs for TakeRestoreExec {
         write!(
             formatter,
             "TakeRestoreExec: occurrences={}",
-            self.offsets.len()
+            self.indices.len()
         )
     }
 }
@@ -1905,7 +1946,7 @@ impl ExecutionPlan for TakeRestoreExec {
         let child = children.into_iter().next().unwrap();
         let plan = Self::try_new(
             child,
-            self.offsets.clone(),
+            self.indices.clone(),
             self.ordering_column.clone(),
             self.drop_ordering_column,
             self.preserve_order,
@@ -1928,7 +1969,7 @@ impl ExecutionPlan for TakeRestoreExec {
 
         let input = self.input.execute(partition, context)?;
         let output_schema = self.schema.clone();
-        let offsets = self.offsets.clone();
+        let indices = self.indices.clone();
         let occurrences = self.occurrences.clone();
         let ordering_column = self.ordering_column.clone();
         let drop_ordering_column = self.drop_ordering_column;
@@ -1945,7 +1986,7 @@ impl ExecutionPlan for TakeRestoreExec {
                     };
                     restore_take_batch_with_occurrences(
                         batch,
-                        &offsets,
+                        &indices,
                         &occurrences,
                         &ordering_column,
                         drop_ordering_column,
@@ -1958,7 +1999,7 @@ impl ExecutionPlan for TakeRestoreExec {
                     batch.and_then(|batch| {
                         restore_take_batch_with_occurrences(
                             batch,
-                            &offsets,
+                            &indices,
                             &occurrences,
                             &ordering_column,
                             drop_ordering_column,
@@ -1996,8 +2037,18 @@ impl ExecutionPlan for TakeRestoreExec {
 pub struct TakeQuery {
     parent: Arc<dyn BaseTable>,
     request: QueryRequest,
-    offsets: Option<Vec<u64>>,
     preserve_order: bool,
+}
+
+struct TakeLookup {
+    request: QueryRequest,
+    indices: Vec<u64>,
+    ordering_column: String,
+    drop_ordering_column: bool,
+    output_offset: usize,
+    output_limit: Option<usize>,
+    preserve_order: bool,
+    output_projection: Option<Vec<(String, String)>>,
 }
 
 impl TakeQuery {
@@ -2018,10 +2069,9 @@ impl TakeQuery {
                 filter: Some(QueryFilter::Datafusion(
                     col("_rowoffset").in_list(in_list, false),
                 )),
-                take_offsets: Some(offsets.clone()),
+                take_offsets: Some(offsets),
                 ..Default::default()
             },
-            offsets: Some(offsets),
             preserve_order: false,
         }
     }
@@ -2030,14 +2080,20 @@ impl TakeQuery {
     ///
     /// See [`crate::Table::take_row_ids`] for more details.
     pub fn from_row_ids(parent: Arc<dyn BaseTable>, row_ids: Vec<u64>) -> Self {
-        let in_list: Vec<Expr> = row_ids.iter().map(|id| lit(*id)).collect();
+        let mut seen = HashSet::with_capacity(row_ids.len());
+        let in_list = row_ids
+            .iter()
+            .copied()
+            .filter(|id| seen.insert(*id))
+            .map(lit)
+            .collect();
         Self {
             parent,
             request: QueryRequest {
                 filter: Some(QueryFilter::Datafusion(col(ROW_ID).in_list(in_list, false))),
+                take_row_ids: Some(row_ids),
                 ..Default::default()
             },
-            offsets: None,
             preserve_order: false,
         }
     }
@@ -2046,7 +2102,7 @@ impl TakeQuery {
     ///
     /// This is reserved for readers whose API explicitly guarantees ordering.
     pub(crate) fn preserve_order(mut self) -> Self {
-        debug_assert!(self.offsets.is_some());
+        debug_assert!(self.request.take_offsets.is_some());
         self.preserve_order = true;
         self
     }
@@ -2104,29 +2160,124 @@ impl TakeQuery {
         Ok((request, ordering_column, drop_ordering_column))
     }
 
-    async fn prepare_offsets_lookup(
+    async fn prepare_take_lookup(
         parent: &dyn BaseTable,
         request: &QueryRequest,
-    ) -> Result<(QueryRequest, String, bool, usize, Option<usize>)> {
-        let (mut request, ordering_column, drop_ordering_column) =
-            Self::request_with_row_offset(parent, request).await?;
+        preserve_order: bool,
+    ) -> Result<TakeLookup> {
+        let (indices, by_row_id) = match (&request.take_offsets, &request.take_row_ids) {
+            (Some(indices), None) => (indices.clone(), false),
+            (None, Some(indices)) => (indices.clone(), true),
+            _ => {
+                return Err(Error::InvalidInput {
+                    message: "take lookup requires exactly one of take_offsets or take_row_ids"
+                        .to_string(),
+                });
+            }
+        };
+        let preserve_order =
+            preserve_order || (by_row_id && request.order_by.as_ref().is_none_or(Vec::is_empty));
+        let (mut request, ordering_column, drop_ordering_column, output_projection) = if by_row_id {
+            let mut request = request.clone();
+            let with_row_id = request.with_row_id;
+            let mut names = match &request.select {
+                Select::All => None,
+                Select::Columns(names) => Some(names.clone()),
+                Select::Dynamic(pairs) => {
+                    Some(pairs.iter().map(|(name, _)| name.clone()).collect())
+                }
+                Select::Expr(pairs) => Some(pairs.iter().map(|(name, _)| name.clone()).collect()),
+            };
+            let selected_row_id = names
+                .as_ref()
+                .is_some_and(|names| names.iter().any(|name| name == ROW_ID));
+            // with_row_id appends the metadata column, but Lance leaves an
+            // existing projection alias named _rowid untouched. Rename that
+            // alias during lookup so it cannot be mistaken for the real ID.
+            let alias = if selected_row_id
+                && matches!(request.select, Select::Dynamic(_) | Select::Expr(_))
+            {
+                let mut alias = "__lancedb_take_row_id".to_string();
+                while names.as_ref().is_some_and(|names| names.contains(&alias)) {
+                    alias.push('_');
+                }
+                Some(alias)
+            } else {
+                None
+            };
+            match &mut request.select {
+                // Remote tables expose metadata through with_row_id, not
+                // through the ordinary selected-column list.
+                Select::Columns(columns) => columns.retain(|name| name != ROW_ID),
+                Select::Dynamic(pairs) => {
+                    if let Some(alias) = &alias {
+                        for (name, _) in pairs.iter_mut().filter(|(name, _)| name == ROW_ID) {
+                            *name = alias.clone();
+                        }
+                    }
+                }
+                Select::Expr(pairs) => {
+                    if let Some(alias) = &alias {
+                        for (name, _) in pairs.iter_mut().filter(|(name, _)| name == ROW_ID) {
+                            *name = alias.clone();
+                        }
+                    }
+                }
+                Select::All => {}
+            }
+            if with_row_id && let Some(names) = &mut names {
+                if let Some(position) = names.iter().position(|name| name == ROW_ID) {
+                    names.remove(position);
+                }
+                names.push(ROW_ID.to_string());
+            }
+            let output_projection = if selected_row_id {
+                names.map(|names| {
+                    names
+                        .into_iter()
+                        .map(|name| {
+                            let input_name = if name == ROW_ID {
+                                alias.as_ref().unwrap_or(&name).clone()
+                            } else {
+                                name.clone()
+                            };
+                            (input_name, name)
+                        })
+                        .collect()
+                })
+            } else {
+                None
+            };
+            let drop_row_id = alias.is_some() || (!with_row_id && !selected_row_id);
+            request.with_row_id = true;
+            (request, ROW_ID.to_string(), drop_row_id, output_projection)
+        } else {
+            let (request, column, drop_column) =
+                Self::request_with_row_offset(parent, request).await?;
+            (request, column, drop_column, None)
+        };
+        request.take_offsets = None;
+        request.take_row_ids = None;
         // The lookup operates on distinct physical rows. Pagination is a logical
         // operation over occurrences and must be applied only after restoration.
         let output_offset = request.offset.take().unwrap_or_default();
         let output_limit = request.limit.take();
 
-        Ok((
+        Ok(TakeLookup {
             request,
+            indices,
             ordering_column,
             drop_ordering_column,
             output_offset,
             output_limit,
-        ))
+            preserve_order,
+            output_projection,
+        })
     }
 
-    fn wrap_offsets_plan(
+    fn wrap_take_plan(
         lookup: Arc<dyn ExecutionPlan>,
-        offsets: &[u64],
+        indices: &[u64],
         ordering_column: String,
         drop_ordering_column: bool,
         output_offset: usize,
@@ -2140,7 +2291,7 @@ impl TakeQuery {
         };
         let restored: Arc<dyn ExecutionPlan> = Arc::new(TakeRestoreExec::try_new(
             lookup,
-            offsets.to_vec(),
+            indices.to_vec(),
             ordering_column,
             drop_ordering_column,
             preserve_order,
@@ -2157,7 +2308,7 @@ impl TakeQuery {
         }
     }
 
-    fn wrap_offsets_explanation(
+    fn wrap_take_explanation(
         lookup: &str,
         occurrence_count: usize,
         output_offset: usize,
@@ -2195,21 +2346,6 @@ impl TakeQuery {
         } else {
             restored
         }
-    }
-
-    async fn create_offsets_plan(
-        &self,
-        offsets: &[u64],
-        options: QueryExecutionOptions,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        create_take_offsets_plan(
-            self.parent.as_ref(),
-            &self.request,
-            offsets,
-            options,
-            self.preserve_order,
-        )
-        .await
     }
 
     /// Convert the `TakeQuery` into a `QueryRequest`.
@@ -2256,15 +2392,22 @@ impl TakeQuery {
     }
 }
 
-pub(crate) async fn create_take_offsets_plan(
+pub(crate) async fn create_take_plan(
     parent: &dyn BaseTable,
     request: &QueryRequest,
-    offsets: &[u64],
     options: QueryExecutionOptions,
     preserve_order: bool,
 ) -> Result<Arc<dyn ExecutionPlan>> {
-    let (request, ordering_column, drop_ordering_column, output_offset, output_limit) =
-        TakeQuery::prepare_offsets_lookup(parent, request).await?;
+    let TakeLookup {
+        request,
+        indices,
+        ordering_column,
+        drop_ordering_column,
+        output_offset,
+        output_limit,
+        preserve_order,
+        output_projection,
+    } = TakeQuery::prepare_take_lookup(parent, request, preserve_order).await?;
     let lookup_options = if preserve_order {
         options.without_output_batch_length_limit()
     } else {
@@ -2274,43 +2417,73 @@ pub(crate) async fn create_take_offsets_plan(
         .create_plan(&AnyQuery::Query(request), lookup_options)
         .await?;
 
-    TakeQuery::wrap_offsets_plan(
+    let plan = TakeQuery::wrap_take_plan(
         lookup,
-        offsets,
+        &indices,
         ordering_column,
         drop_ordering_column,
         output_offset,
         output_limit,
         preserve_order,
-    )
+    )?;
+    if let Some(projection) = output_projection {
+        let schema = plan.schema();
+        let expressions = projection
+            .into_iter()
+            .map(|(input, output)| Ok((physical_col(&input, &schema)?, output)))
+            .collect::<DataFusionResult<Vec<_>>>()?;
+        Ok(Arc::new(ProjectionExec::try_new(expressions, plan)?))
+    } else {
+        Ok(plan)
+    }
 }
 
-pub(crate) async fn explain_take_offsets_plan(
+pub(crate) async fn explain_take_plan(
     parent: &dyn BaseTable,
     request: &QueryRequest,
-    offsets: &[u64],
     verbose: bool,
+    preserve_order: bool,
 ) -> Result<String> {
-    let (request, _, _, output_offset, output_limit) =
-        TakeQuery::prepare_offsets_lookup(parent, request).await?;
+    let TakeLookup {
+        request,
+        indices,
+        output_offset,
+        output_limit,
+        preserve_order,
+        output_projection,
+        ..
+    } = TakeQuery::prepare_take_lookup(parent, request, preserve_order).await?;
     let lookup = parent
         .explain_plan(&AnyQuery::Query(request), verbose)
         .await?;
-    Ok(TakeQuery::wrap_offsets_explanation(
+    let explanation = TakeQuery::wrap_take_explanation(
         &lookup,
-        offsets.len(),
+        indices.len(),
         output_offset,
         output_limit,
-        false,
-    ))
+        preserve_order,
+    );
+    if output_projection.is_some() {
+        Ok(format!(
+            "ProjectionExec\n{}",
+            explanation
+                .lines()
+                .map(|line| format!("  {line}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ))
+    } else {
+        Ok(explanation)
+    }
 }
 
-pub(crate) async fn prepare_take_offsets_request(
+pub(crate) async fn prepare_take_request(
     parent: &dyn BaseTable,
     request: &QueryRequest,
 ) -> Result<QueryRequest> {
-    let (request, _, _, _, _) = TakeQuery::prepare_offsets_lookup(parent, request).await?;
-    Ok(request)
+    Ok(TakeQuery::prepare_take_lookup(parent, request, false)
+        .await?
+        .request)
 }
 
 impl HasQuery for TakeQuery {
@@ -2321,8 +2494,14 @@ impl HasQuery for TakeQuery {
 
 impl ExecutableQuery for TakeQuery {
     async fn create_plan(&self, options: QueryExecutionOptions) -> Result<Arc<dyn ExecutionPlan>> {
-        if let Some(offsets) = &self.offsets {
-            return self.create_offsets_plan(offsets, options).await;
+        if self.request.has_take() {
+            return create_take_plan(
+                self.parent.as_ref(),
+                &self.request,
+                options,
+                self.preserve_order,
+            )
+            .await;
         }
 
         let req = AnyQuery::Query(self.request.clone());
@@ -2333,7 +2512,7 @@ impl ExecutableQuery for TakeQuery {
         &self,
         options: QueryExecutionOptions,
     ) -> Result<SendableRecordBatchStream> {
-        if self.offsets.is_some() {
+        if self.request.has_take() {
             let plan = self.create_plan(options.clone()).await?;
             let inner = execute_plan(plan, Default::default())?;
             let inner = MaxBatchLengthStream::new_boxed(inner, options.max_batch_length as usize);
@@ -2352,23 +2531,14 @@ impl ExecutableQuery for TakeQuery {
     }
 
     async fn explain_plan(&self, verbose: bool) -> Result<String> {
-        if let Some(offsets) = &self.offsets {
-            let (request, _, _, output_offset, output_limit) =
-                Self::prepare_offsets_lookup(self.parent.as_ref(), &self.request).await?;
-            // Ask the backend to explain only the distinct-row lookup. This keeps
-            // remote explanation non-executing while still showing the client-side
-            // operators that create_plan and execution place above that lookup.
-            let lookup = self
-                .parent
-                .explain_plan(&AnyQuery::Query(request), verbose)
-                .await?;
-            return Ok(Self::wrap_offsets_explanation(
-                &lookup,
-                offsets.len(),
-                output_offset,
-                output_limit,
+        if self.request.has_take() {
+            return explain_take_plan(
+                self.parent.as_ref(),
+                &self.request,
+                verbose,
                 self.preserve_order,
-            ));
+            )
+            .await;
         }
 
         let query = AnyQuery::Query(self.request.clone());
@@ -2376,10 +2546,9 @@ impl ExecutableQuery for TakeQuery {
     }
 
     async fn analyze_plan_with_options(&self, options: QueryExecutionOptions) -> Result<String> {
-        if self.offsets.is_some() {
+        if self.request.has_take() {
             if self.parent.analyze_plan_is_remote() {
-                let (request, _, _, _, _) =
-                    Self::prepare_offsets_lookup(self.parent.as_ref(), &self.request).await?;
+                let request = prepare_take_request(self.parent.as_ref(), &self.request).await?;
                 // Remote analysis is owned by the service. The current wire
                 // request represents only the distinct-row lookup, so return
                 // the service report unchanged instead of fabricating metrics
@@ -3720,10 +3889,13 @@ mod tests {
         let texts = texts.iter().map(|e| e.unwrap()).collect::<HashSet<_>>();
         assert!(texts.contains("cat")); // should be close by vector search
         assert!(texts.contains("b")); // should be close by fts search
+        // Both rows rank first in one of the two search results.
+        let scores = batch["_relevance_score"].as_primitive::<Float32Type>();
+        assert_eq!(scores.values().as_ref(), &[1.0 / 61.0, 1.0 / 61.0]);
 
         // ensure that this works correctly if there are no matching FTS results
         let fts_query = FullTextSearchQuery::new("z".to_string());
-        table
+        let results = table
             .query()
             .full_text_search(fts_query)
             .limit(2)
@@ -3735,6 +3907,12 @@ mod tests {
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
+        let batch = &results[0];
+        let texts = batch["text"].as_string::<i32>();
+        assert_eq!(texts.value(0), "cat");
+        assert_eq!(texts.value(1), "dog");
+        let scores = batch["_relevance_score"].as_primitive::<Float32Type>();
+        assert_eq!(scores.values().as_ref(), &[1.0 / 61.0, 1.0 / 62.0]);
     }
 
     #[tokio::test]
@@ -4183,13 +4361,17 @@ mod tests {
         assert!(!analyzed.contains("CoalescePartitionsExec"));
     }
 
+    #[rstest::rstest]
+    #[case::unsorted(vec![5, 1, 17], vec![5, 1, 17])]
+    #[case::duplicate_and_missing(vec![17, 5, 17, u64::MAX, 1], vec![17, 5, 17, 1])]
+    #[case::empty(vec![], vec![])]
     #[tokio::test]
-    async fn test_take_row_ids() {
+    async fn test_take_row_ids(#[case] requested: Vec<u64>, #[case] expected: Vec<i32>) {
         let tmp_dir = tempdir().unwrap();
         let table = make_test_table(&tmp_dir).await;
 
         let results = table
-            .take_row_ids(vec![5, 1, 17])
+            .take_row_ids(requested)
             .execute()
             .await
             .unwrap()
@@ -4198,18 +4380,226 @@ mod tests {
             .unwrap();
 
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].num_rows(), 3);
+        assert_eq!(results[0].num_rows(), expected.len());
         assert_eq!(results[0].num_columns(), 2);
 
-        let mut ids = results[0]
+        let ids = results[0]
             .column_by_name("id")
             .unwrap()
             .as_primitive::<Int32Type>()
             .values()
             .to_vec();
 
-        ids.sort();
+        assert_eq!(ids, expected);
+    }
 
-        assert_eq!(ids, vec![1, 5, 17]);
+    #[rstest::rstest]
+    #[case::stable(true)]
+    #[case::physical(false)]
+    #[tokio::test]
+    async fn test_take_row_ids_deleted_and_pagination(#[case] stable: bool) {
+        let tmp_dir = tempdir().unwrap();
+        let conn = connect(tmp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let batch = arrow_array::record_batch!(
+            ("id", Int32, [0, 1, 2, 3]),
+            ("label", Utf8, ["a", "b", "c", "d"])
+        )
+        .unwrap();
+        let table = conn
+            .create_table("rows", vec![batch])
+            .write_options(crate::table::WriteOptions {
+                lance_write_params: Some(lance::dataset::WriteParams {
+                    max_rows_per_file: 2,
+                    max_rows_per_group: 2,
+                    enable_stable_row_ids: stable,
+                    ..Default::default()
+                }),
+            })
+            .execute()
+            .await
+            .unwrap();
+        let batches = table
+            .query()
+            .select(Select::columns(&["id"]))
+            .with_row_id()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let batch = concat_batches(&batches[0].schema(), &batches).unwrap();
+        let row_ids: HashMap<_, _> = batch["id"]
+            .as_primitive::<Int32Type>()
+            .values()
+            .iter()
+            .copied()
+            .zip(
+                batch[ROW_ID]
+                    .as_primitive::<UInt64Type>()
+                    .values()
+                    .iter()
+                    .copied(),
+            )
+            .collect();
+        table.delete("id = 1").await.unwrap();
+        let take = table
+            .take_row_ids(vec![
+                row_ids[&3],
+                row_ids[&1],
+                row_ids[&3],
+                u64::MAX,
+                row_ids[&0],
+            ])
+            .select(Select::columns(&["label"]))
+            .with_row_id()
+            .offset(1)
+            .limit(2);
+        let batches = take
+            .execute_with_options(QueryExecutionOptions {
+                max_batch_length: 1,
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert!(batches.iter().all(|batch| batch.num_rows() <= 1));
+        let actual = concat_batches(&batches[0].schema(), &batches).unwrap();
+        assert_eq!(
+            actual["label"]
+                .as_string::<i32>()
+                .iter()
+                .collect::<Vec<_>>(),
+            vec![Some("d"), Some("a")]
+        );
+        assert_eq!(
+            actual[ROW_ID]
+                .as_primitive::<UInt64Type>()
+                .values()
+                .as_ref(),
+            &[row_ids[&3], row_ids[&0]]
+        );
+        let request = take.clone().into_request();
+        let direct = table
+            .base_table()
+            .query(&AnyQuery::Query(request), QueryExecutionOptions::default())
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(
+            concat_batches(&direct[0].schema(), &direct).unwrap(),
+            actual
+        );
+        let plan = take
+            .create_plan(QueryExecutionOptions::default())
+            .await
+            .unwrap();
+        let planned = execute_plan(plan, Default::default())
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(
+            concat_batches(&planned[0].schema(), &planned).unwrap(),
+            actual
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::empty(Select::Columns(vec![]), vec![], vec![])]
+    #[case::explicit_row_id(Select::columns(&[ROW_ID, "id"]), vec![ROW_ID, "id"], vec![5, 1, 17])]
+    #[case::dynamic_alias(Select::dynamic(&[(ROW_ID, "20 - id"), ("__lancedb_take_row_id", "id")]), vec![ROW_ID, "__lancedb_take_row_id"], vec![15, 19, 3])]
+    #[case::expr_alias(Select::expr_projection(&[(ROW_ID, lit(20) - col("id"))]), vec![ROW_ID], vec![15, 19, 3])]
+    #[tokio::test]
+    async fn test_take_row_ids_projection(
+        #[case] selection: Select,
+        #[case] names: Vec<&str>,
+        #[case] values: Vec<i32>,
+        #[values(false, true)] with_row_id: bool,
+        #[values(false, true)] order_by: bool,
+    ) {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+        let mut take = table.take_row_ids(vec![5, 1, 17]).select(selection);
+        if with_row_id {
+            take = take.with_row_id();
+        }
+        if order_by {
+            take = take.order_by(Some(vec![ColumnOrdering::asc_nulls_first(
+                "id".to_string(),
+            )]));
+        }
+        let batches = take
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let actual = concat_batches(&batches[0].schema(), &batches).unwrap();
+        assert_eq!(actual.num_rows(), 3);
+        let mut expected_names = names.clone();
+        if with_row_id {
+            expected_names.retain(|name| *name != ROW_ID);
+            expected_names.push(ROW_ID);
+        }
+        assert_eq!(
+            actual
+                .schema()
+                .fields()
+                .iter()
+                .map(|field| field.name().as_str())
+                .collect::<Vec<_>>(),
+            expected_names
+        );
+        if !values.is_empty() {
+            let row_ids = actual.column_by_name(ROW_ID).unwrap();
+            if row_ids.data_type() == &DataType::UInt64 {
+                assert_eq!(
+                    row_ids.as_primitive::<UInt64Type>().values().as_ref(),
+                    if order_by { &[1, 5, 17] } else { &[5, 1, 17] }
+                );
+            } else {
+                let mut expected = values;
+                if order_by {
+                    expected.swap(0, 1);
+                }
+                assert_eq!(
+                    row_ids.as_primitive::<Int32Type>().values().as_ref(),
+                    expected.as_slice()
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_take_row_ids_explicit_order_by() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+        let batches = table
+            .take_row_ids(vec![17, 5, 1, 5])
+            .order_by(Some(vec![ColumnOrdering::asc_nulls_first(
+                "id".to_string(),
+            )]))
+            .offset(1)
+            .limit(2)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let actual = concat_batches(&batches[0].schema(), &batches).unwrap();
+        assert_eq!(
+            actual["id"].as_primitive::<Int32Type>().values().as_ref(),
+            &[5, 5]
+        );
     }
 }

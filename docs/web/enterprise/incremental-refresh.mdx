@@ -1,0 +1,51 @@
+---
+title: "Incremental Refresh"
+sidebarTitle: "Incremental Refresh"
+description: "Why refreshing a computed column only recomputes fragments that hold a row whose inputs actually changed."
+icon: "arrow-rotate-right"
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+Refreshing a [computed column](/feature-engineering/add-computed-column)
+is incremental: it fills rows that have no value yet and recomputes the
+fragments that hold a row whose input changed since it was last computed,
+leaving every other fragment alone. A second refresh with nothing changed
+does nothing. The
+planner finds the rows that actually need work by checking which
+fragments still carry stale or empty values for the column, then groups
+them into claimable units a fleet of job workers can pick up in parallel
+-- see [Architecture](/index#architecture).
+
+<Note>
+A **materialized view** doesn't track stale rows the way a computed
+column does -- there's no smaller unit than the whole view to recompute
+from a saved query. In LanceDB Embedded, every refresh rebuilds the view
+completely with no incremental step; LanceDB Enterprise's server chooses
+the refresh mode instead, unless the caller forces a full rebuild. See
+[Refresh a materialized view](/feature-engineering/refresh-materialized-view).
+</Note>
+
+## Why this matters {#why}
+
+Appending rows is cheap: the next refresh only fills what's new, not what
+it already computed. Updating an input row is also cheap in the same
+way -- the derived column keeps its old value until the next refresh
+notices the input changed. Staleness is tracked per fragment, not per
+row: the refresh recomputes every row in a fragment where at least one
+input moved, which can re-evaluate rows whose own value didn't actually
+need it, not strictly only the row that changed. Nothing is recomputed
+between refreshes, so a derived column can be stale right up until you
+call for one.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Refresh a computed column" icon="arrows-rotate" href="/feature-engineering/refresh-column#idempotent">
+    The exact fill/recompute/leave-alone rules, with examples.
+  </Card>
+  <Card title="Adaptive Execution" icon="gauge-high" href="/enterprise/adaptive-execution">
+    How the units this planner produces get sized and run.
+  </Card>
+</CardGroup>

@@ -2603,7 +2603,7 @@ mod lsm_tests {
         }
         fn insert_batches(
             &self,
-            batches: &[lance::dataset::mem_wal::write::StoredBatch],
+            batches: &[lance::dataset::mem_wal::memtable::batch_store::StoredBatch],
         ) -> lance_core::Result<()> {
             self.0.insert_batches(batches)
         }

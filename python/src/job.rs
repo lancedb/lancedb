@@ -10,7 +10,7 @@ use arrow::{
 };
 use lancedb::job::JobEventsRequest;
 use pyo3::{
-    Bound, PyAny, PyRef, PyResult, Python,
+    Bound, Py, PyAny, PyRef, PyResult, Python,
     exceptions::PyValueError,
     pyclass, pymethods,
     types::{PyAnyMethods, PyDict, PyDictMethods},
@@ -94,10 +94,30 @@ impl Job {
         )
     }
 
-    pub fn wait(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    #[pyo3(signature = (progress=None))]
+    pub fn wait(self_: PyRef<'_, Self>, progress: Option<Py<PyAny>>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
-            let result = inner.wait().await.infer_error()?;
+            let result = if let Some(progress) = progress {
+                let observer = move |description: &lancedb::database::JobDescription| {
+                    Python::attach(|py| {
+                        let snapshot = description.progress_snapshot();
+                        let callback_result: PyResult<()> = (|| {
+                            let raw = snapshot.to_string();
+                            let parsed = parse_json_payload(py, Some(&raw))?
+                                .ok_or_else(|| PyValueError::new_err("missing progress"))?;
+                            progress.bind(py).call1((parsed,))?;
+                            Ok(())
+                        })();
+                        if let Err(error) = callback_result {
+                            log::warn!("job progress callback error: {error}");
+                        }
+                    });
+                };
+                inner.wait_with_progress(observer).await.infer_error()?
+            } else {
+                inner.wait().await.infer_error()?
+            };
             result
                 .map_err(|message| lancedb::Error::Runtime { message })
                 .infer_error()
@@ -164,6 +184,8 @@ pub struct JobInfo {
     job_type: String,
     state: String,
     created_at_millis: i64,
+    _progress_json: Option<String>,
+    paused: bool,
 }
 
 #[pymethods]
@@ -174,16 +196,32 @@ impl JobInfo {
             self.job_id, self.table, self.job_type, self.state, self.created_at_millis
         )
     }
+
+    /// Structured progress for job types that report it. Missing fields are
+    /// unknown, not zero.
+    #[getter]
+    fn progress<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        parse_json_payload(py, self._progress_json.as_deref())
+    }
+
+    /// Whether an operator has parked this job.
+    #[getter]
+    fn paused(&self) -> bool {
+        self.paused
+    }
 }
 
 impl From<lancedb::database::JobInfo> for JobInfo {
     fn from(info: lancedb::database::JobInfo) -> Self {
+        let progress = info.progress_snapshot().to_string();
         Self {
             job_id: info.job_id,
             table: info.table,
             job_type: info.job_type,
             state: info.state,
             created_at_millis: info.created_at_millis,
+            _progress_json: Some(progress),
+            paused: info.paused,
         }
     }
 }
@@ -194,15 +232,35 @@ impl From<lancedb::database::JobInfo> for JobInfo {
 pub struct JobFailureInfo {
     phase: Option<String>,
     message: Option<String>,
+    /// User-code traceback, possibly truncated by the server.
+    traceback: Option<String>,
     retryable: Option<bool>,
+    sql_job_id: Option<String>,
 }
 
 #[pymethods]
 impl JobFailureInfo {
     fn __repr__(&self) -> String {
+        let phase = self
+            .phase
+            .as_ref()
+            .map_or_else(|| "None".to_string(), |value| format!("{value:?}"));
+        let message = self
+            .message
+            .as_ref()
+            .map_or_else(|| "None".to_string(), |value| format!("{value:?}"));
+        let retryable = match self.retryable {
+            Some(true) => "True",
+            Some(false) => "False",
+            None => "None",
+        };
+        let sql_job_id = self
+            .sql_job_id
+            .as_ref()
+            .map_or_else(|| "None".to_string(), |value| format!("{value:?}"));
         format!(
-            "JobFailureInfo(phase={:?}, message={:?}, retryable={:?})",
-            self.phase, self.message, self.retryable
+            "JobFailureInfo(phase={phase}, message={message}, retryable={retryable}, \
+             sql_job_id={sql_job_id})"
         )
     }
 }
@@ -219,6 +277,7 @@ pub struct JobDescription {
     _spec_json: Option<String>,
     /// Internal: the wire form behind the `result` property.
     _result_json: Option<String>,
+    _progress_json: Option<String>,
     failure: Option<JobFailureInfo>,
 }
 
@@ -234,6 +293,13 @@ impl JobDescription {
     #[getter]
     fn result<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
         parse_json_payload(py, self._result_json.as_deref())
+    }
+
+    /// Structured progress snapshot. Lifecycle and queue fields are present
+    /// even when a job type or older server supplies no counters.
+    #[getter]
+    fn progress<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        parse_json_payload(py, self._progress_json.as_deref())
     }
 
     fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
@@ -263,6 +329,7 @@ impl JobDescription {
 
 impl From<lancedb::database::JobDescription> for JobDescription {
     fn from(description: lancedb::database::JobDescription) -> Self {
+        let progress_json = description.progress_snapshot().to_string();
         Self {
             job_id: description.job_id,
             job_type: description.job_type,
@@ -273,10 +340,13 @@ impl From<lancedb::database::JobDescription> for JobDescription {
                 .result
                 .filter(|result| !result.is_null())
                 .map(|result| result.to_string()),
+            _progress_json: Some(progress_json),
             failure: description.failure.map(|failure| JobFailureInfo {
                 phase: failure.phase,
                 message: failure.message,
+                traceback: failure.traceback,
                 retryable: failure.retryable,
+                sql_job_id: failure.sql_job_id,
             }),
         }
     }

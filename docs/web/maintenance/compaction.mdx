@@ -39,17 +39,19 @@ partitions.
 
 ## Optimize a table {#what-it-does}
 
-```python
+<CodeGroup>
+```python Python icon="python"
 table.optimize()
 ```
+</CodeGroup>
 
 Three operations, in one call:
 
 | | |
 | --- | --- |
 | **Compaction** | merges small files into larger ones |
-| **Prune** | removes versions older than the retention window (see [Cleanup](/maintenance/cleanup)) |
-| **Index** | folds newly added rows into existing indexes (see [Build & Repair](/indexing/reindexing)) |
+| **Prune** | removes versions older than the retention window (see [Garbage Collection](/maintenance/cleanup)) |
+| **Index** | folds newly added rows into existing indexes (see [Incremental Indexing](/indexing/incremental-indexing)) |
 
 Compaction itself is only the first of the three: merging small fragments back
 into larger ones, which is what keeps a scan from opening more files than it
@@ -91,6 +93,10 @@ Frequent small appends are what make it necessary, because each one commits
 files. A table written in a few large batches needs it rarely; one taking
 continuous small writes needs it on a schedule.
 
+Opening a table in LanceDB Embedded logs a warning at most once per table per
+process when at least 100 fragments have fewer than 100,000 rows each. Set
+`LANCEDB_LOG=warn` to surface this log if your logger hides warnings by default.
+
 <Note>
 Compaction rewrites files, which conflicts with a concurrent
 [computed-column refresh](/feature-engineering/add-computed-column) or
@@ -98,8 +104,8 @@ Compaction rewrites files, which conflicts with a concurrent
 version it replaces. Sequence them rather than running both at once.
 </Note>
 
-See [Cleanup](/maintenance/cleanup) for pruning old versions, and
-[Build & Repair](/indexing/reindexing) for the index-folding half of
+See [Garbage Collection](/maintenance/cleanup) for pruning old versions, and
+[Incremental Indexing](/indexing/incremental-indexing) for the index-folding half of
 `optimize()`.
 
 ## Performance {#performance}
@@ -111,13 +117,15 @@ Two things accumulate on a long-lived table as more and more data gets added to 
 
 In LanceDB Embedded, you run them yourself via `optimize()`, which bundles both into a single call:
 
+<CodeGroup>
 ```python Python icon="python"
 from datetime import timedelta
 table.optimize()                                       # 7-day default retention
 table.optimize(cleanup_older_than=timedelta(days=1))   # reclaim space sooner
 ```
+</CodeGroup>
 
-The best practice is to run `optimize()` after large writes or on a schedule. It also bundles incremental index updates. See [Build & Repair](/indexing/reindexing) for the breakdown. Updates also move rows out of the vector index, so they remain searchable but unindexed. Update or rebuild the index after large update batches.
+The best practice is to run `optimize()` after large writes or on a schedule. It also bundles incremental index updates. See [Incremental Indexing](/indexing/incremental-indexing) for the breakdown. Updates also move rows out of the vector index, so they remain searchable but unindexed. Update or rebuild the index after large update batches.
 
 {/*
 Draft for the Python compaction_options release. Keep this section unpublished
@@ -142,9 +150,10 @@ task at a time can also reduce memory use.
 The Rust example runs compaction only. Run pruning and index optimization
 separately when needed; Python's `optimize()` includes those steps.
 
-TypeScript's `optimize()` does not currently expose the fragment row target,
-scan batch size, or compaction thread count. These tuning examples apply to
-Python and Rust tables in LanceDB Embedded.
+TypeScript's `optimize()` exposes the fragment row target through
+`compactionOptions.targetRowsPerFragment` and the scanner batch size through
+`compactionOptions.batchSize`. Compaction thread count is not exposed. The tuning
+examples above use Python and Rust tables in LanceDB Embedded.
 
 Planning remains row based. The row target bounds later passes after existing
 oversized fragments have been rewritten; the first pass rewrites those

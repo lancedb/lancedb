@@ -1,6 +1,6 @@
 ---
-title: "Scalar Indexes"
-sidebarTitle: "Scalar Index"
+title: "Scalar Indexing"
+sidebarTitle: "Scalar Indexing"
 description: "Learn how to use scalar indexes in LanceDB for efficient metadata filtering and query optimization."
 icon: "tree"
 availability:
@@ -26,12 +26,13 @@ Scalar indexes accelerate filters on values such as numbers, categories and
 strings. Use them for selective table queries or metadata filters combined
 with vector and full-text search.
 
-LanceDB supports four types of scalar indexes:
+LanceDB supports five types of scalar indexes:
 
 - `BTREE`: Stores column data in sorted order for binary search. Best for columns with many unique values.
 - `BITMAP`: Uses bitmaps to track value presence. Ideal for columns with few unique values (e.g., categories, tags).
-- `LABEL_LIST`: Special index for `List<T>` and `LargeList<T>` columns of primitive values supporting `array_contains_all` and `array_contains_any` queries.
+- `LABEL_LIST`: Special index for `List<T>` and `LargeList<T>` columns of primitive values supporting `array_has_all` and `array_has_any` queries.
 - `FM`: FM-Index over string or binary columns that accelerates substring search via `contains(col, 'needle')`.
+- `NGRAM`: Trigram index over UTF-8 string columns that accelerates substring search via `contains(col, 'needle')`, along with some `LIKE` and regular-expression filters.
 
 <Tip title="Working with scalar indices">
 Use scalar indexes with:
@@ -50,10 +51,11 @@ Use scalar indexes with:
 | Boolean, numbers or strings with fewer than 1,000 unique values | `<`, `=`, `>`, `in`, `between`, `is null` | `BITMAP`     |
 | List of low cardinality of numbers or strings                   | `array_has_any`, `array_has_all`          | `LABEL_LIST` |
 | String or binary (`Utf8`, `LargeUtf8`, `Binary`, `LargeBinary`) | `contains(col, 'needle')`                 | `FM`         |
+| String (`Utf8`, `LargeUtf8`)                                    | `contains(col, 'needle')`, `LIKE`, regex  | `NGRAM`      |
 
 ## Scalar Index Operations
 
-### 1. Build the Index
+### 1\. Build the Index
 
 You can create multiple scalar indexes within a table. By default, the index will be `BTREE`, but you can always configure another type like `BITMAP`
 
@@ -67,7 +69,7 @@ You can create multiple scalar indexes within a table. By default, the index wil
 If you are using LanceDB Enterprise, the `create_scalar_index` API returns immediately, but the building of the scalar index is asynchronous. To wait until all data is fully indexed, you can specify the `wait_timeout` parameter on `create_scalar_index()` or call `wait_for_index()` on the table.
 </Note>
 
-### 2. Check Index Status
+### 2\. Check Index Status
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -77,7 +79,7 @@ If you are using LanceDB Enterprise, the `create_scalar_index` API returns immed
 
 `wait_for_index(...)` waits until the named scalar indexes exist and `index_stats(...)` reports `num_unindexed_rows == 0`. If a table is receiving steady writes, that fully indexed state may not stabilize before the timeout. In LanceDB Enterprise, rows added after the index was built are indexed only once enough have accumulated, so a small remainder can also keep the wait from finishing.
 
-### 3. Update the Index
+### 3\. Update the Index
 
 Updating the table data (adding, deleting, or modifying records) requires that you also update the scalar index. In the embedded library, call `optimize`, which will trigger an update to the existing scalar index.
 
@@ -91,7 +93,7 @@ Updating the table data (adding, deleting, or modifying records) requires that y
 New data added after creating the scalar index will still appear in search results if optimize is not used, but with increased latency due to a flat search on the unindexed portion. LanceDB Enterprise does not support `optimize()`; instead it adds new rows to `BTREE`, `BITMAP` and `LABEL_LIST` indexes in the background once enough have accumulated. It does not update `FM` indexes automatically.
 </Note>
 
-### 4. Run Indexed Searches
+### 4\. Run Indexed Searches
 
 The following scan will be faster if the column `book_id` has a scalar index:
 
@@ -108,22 +110,6 @@ Scalar indexes can also speed up scans containing a vector search or full text s
     {ScalarIndexPrefilter}
     </CodeBlock>
 </CodeGroup>
-
-## Indexing nested fields
-
-Scalar indexes can target a scalar field inside a struct by passing its full dotted path. The path is preserved end to end: it's the value you pass to `create_scalar_index`, it's what `list_indices()` reports under `columns`, and it's the column reference you use in filter predicates.
-
-```python
-# Schema: pa.struct([pa.field("user_id", pa.int32())]) stored under the `metadata` column.
-table.create_scalar_index("metadata.user_id", name="metadata_user_id_idx")
-
-# The same dotted path works in WHERE clauses.
-table.search().where("metadata.user_id = 42").limit(1).to_list()
-```
-
-<Note>
-Nested paths follow Lance field-path semantics: dot-separate each struct field from root to leaf (for example, `metadata.author.name`). The same convention applies to FTS and vector indexes.
-</Note>
 
 ## FM-Index for substring search
 
@@ -177,11 +163,52 @@ tbl.create_index(&["text"], Index::Fm(FmIndexBuilder::default()))
 
 After the index is built, substring filters use it automatically:
 
+<CodeGroup>
+```python Python icon="python"
+table.search().where("contains(text, 'needle')").limit(10).to_pandas()
+```
+</CodeGroup>
+
+`list_indices()` reports the index type as `"Fm"`.
+
+## NGram index for substring search
+
+The `NGram` index is a scalar index over UTF-8 string columns. It tokenizes
+values into overlapping character n-grams (using Lance's default trigram
+parameters) and uses them to accelerate `contains(col, 'needle')`, along with
+some `LIKE` and regular-expression filters. Unlike the `FM` index, which matches
+arbitrary substrings of the raw bytes, the `NGram` index is trigram based, so a
+query shorter than the n-gram length cannot be served by it.
+
+### Create an NGram index
+
+Build an NGram index with the async `create_index` API by passing the `NGram`
+config in Python. In Rust, use `Index::NGram(NGramIndexBuilder::default())`.
+
+<CodeGroup>
+```python Python icon="python"
+from lancedb.index import NGram
+
+await tbl.create_index("text", config=NGram())
+```
+
+```rust Rust icon="rust"
+use lancedb::index::Index;
+use lancedb::index::scalar::NGramIndexBuilder;
+
+tbl.create_index(&["text"], Index::NGram(NGramIndexBuilder::default()))
+    .execute()
+    .await?;
+```
+</CodeGroup>
+
+After the index is built, substring filters use it automatically:
+
 ```python
 table.search().where("contains(text, 'needle')").limit(10).to_pandas()
 ```
 
-`list_indices()` reports the index type as `"Fm"`.
+`list_indices()` reports the index type as `"NGram"`.
 
 ## Index UUID Columns
 
@@ -194,7 +221,7 @@ LanceDB supports scalar indexes on UUID columns (stored as `FixedSizeBinary(16)`
 - TypeScript SDK version `0.19.0` or later
 </Note>
 
-### 1. Define UUID Type
+### 1\. Define UUID Type
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -202,7 +229,7 @@ LanceDB supports scalar indexes on UUID columns (stored as `FixedSizeBinary(16)`
     </CodeBlock>
 </CodeGroup>
 
-### 2. Generate UUID Data
+### 2\. Generate UUID Data
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -210,7 +237,7 @@ LanceDB supports scalar indexes on UUID columns (stored as `FixedSizeBinary(16)`
     </CodeBlock>
 </CodeGroup>
 
-### 3. Create Table with UUID Column
+### 3\. Create Table with UUID Column
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -218,7 +245,7 @@ LanceDB supports scalar indexes on UUID columns (stored as `FixedSizeBinary(16)`
     </CodeBlock>
 </CodeGroup>
 
-### 4. Create and Wait for the Index
+### 4\. Create and Wait for the Index
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -226,7 +253,7 @@ LanceDB supports scalar indexes on UUID columns (stored as `FixedSizeBinary(16)`
     </CodeBlock>
 </CodeGroup>
 
-### 5. Perform Operations with the UUID Index
+### 5\. Perform Operations with the UUID Index
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -246,7 +273,9 @@ named `user.id` nested inside `metadata`), wrap that segment in backticks so
 LanceDB can tell the dot apart from the path separator: `` metadata.`user.id` ``.
 
 `list_indices()` echoes the same canonical path back, so the column you pass in
-round-trips through index metadata regardless of nesting depth or escaping.
+round-trips through index metadata regardless of nesting depth or escaping. Use the
+same path in filter predicates, for example `metadata.user_id = 42`. FTS and vector
+indexes follow the same path convention.
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">

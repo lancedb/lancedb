@@ -32,6 +32,7 @@ import {
   StaticHeaderProvider,
 } from "../lancedb/header";
 import { Index } from "../lancedb/indices";
+import type { JobProgress } from "../lancedb/job";
 import { LocalTable } from "../lancedb/table";
 
 // Test-only header providers
@@ -115,14 +116,14 @@ describe("remote connection", () => {
             ...options,
             mode: "overwrite",
           }),
-        ).rejects.toThrow(/write_options.*LanceDB Distributed/);
+        ).rejects.toThrow(/write_options.*LanceDB Enterprise/);
         await expect(
           db.createEmptyTable(
             "test",
             new Schema([new Field("value", new Int64(), true)]),
             options,
           ),
-        ).rejects.toThrow(/write_options.*LanceDB Distributed/);
+        ).rejects.toThrow(/write_options.*LanceDB Enterprise/);
       },
     );
     expect(requests).toEqual([]);
@@ -141,7 +142,7 @@ describe("remote connection", () => {
           await expect(
             db.openTable("test", undefined, options),
           ).rejects.toThrow(
-            /not supported for table access in LanceDB Distributed/,
+            /not supported for table access in LanceDB Enterprise/,
           );
         },
       );
@@ -311,14 +312,13 @@ describe("remote connection", () => {
         const cases: [() => Promise<unknown>, string][] = [
           [() => table.usesV2ManifestPaths(), "uses_v2_manifest_paths"],
           [() => table.migrateManifestPathsV2(), "migrate_manifest_paths_v2"],
-          [() => table.optimize(), "optimize"],
           [
             () => table.createIndex("vector", { config: Index.hnswPq() }),
             "IVF_HNSW_PQ",
           ],
         ];
         for (const [run, operation] of cases) {
-          let message = `LanceDBError: not supported: ${operation} is not supported in LanceDB Distributed.`;
+          let message = `LanceDBError: not supported: ${operation} is not supported in LanceDB Enterprise.`;
           if (operation === "IVF_HNSW_PQ") {
             message += " Please use IVF_HNSW_SQ instead.";
           }
@@ -483,98 +483,6 @@ describe("remote connection", () => {
     expect(insertRequests).toBe(2);
   });
 
-  it("creates a view and decodes the schema it resolved to", async () => {
-    await withMockDatabase(
-      (req, res) => {
-        expect(req.method).toBe("POST");
-        expect(req.url).toBe("/v1/view/analytics$adults/create");
-        res.writeHead(200, { "content-type": "application/json" }).end(
-          JSON.stringify({
-            name: "adults",
-            namespace: ["analytics"],
-            query: "SELECT name FROM people",
-            // biome-ignore lint/style/useNamingConvention: the wire field is snake_case
-            default_database: "db",
-            // biome-ignore lint/style/useNamingConvention: the wire field is snake_case
-            default_namespace: ["analytics"],
-            schema: {
-              fields: [
-                { name: "name", nullable: true, type: { type: "utf8" } },
-              ],
-            },
-          }),
-        );
-      },
-      async (db) => {
-        const view = await db.createView("adults", "SELECT name FROM people", [
-          "analytics",
-        ]);
-        expect(view.name).toBe("adults");
-        expect(view.namespacePath).toEqual(["analytics"]);
-        expect(view.query).toBe("SELECT name FROM people");
-        expect(view.defaultDatabase).toBe("db");
-        expect(view.defaultNamespacePath).toEqual(["analytics"]);
-        expect(view.schema.fields.map((f) => f.name)).toEqual(["name"]);
-      },
-    );
-  });
-
-  it("lists and drops views through their own routes", async () => {
-    await withMockDatabase(
-      (req, res) => {
-        expect(req.url).toBe("/v1/namespace/$/view/list");
-        res
-          .writeHead(200, { "content-type": "application/json" })
-          .end(JSON.stringify({ views: ["adults"] }));
-      },
-      async (db) => {
-        expect(await collect(db.listViews())).toEqual(["adults"]);
-      },
-    );
-
-    await withMockDatabase(
-      (req, res) => {
-        expect(req.method).toBe("POST");
-        expect(req.url).toBe("/v1/view/adults/drop");
-        res.writeHead(200, { "content-type": "application/json" }).end("{}");
-      },
-      async (db) => {
-        await db.dropView("adults");
-      },
-    );
-  });
-
-  it("reports the cleanup job when a view drop is accepted", async () => {
-    await withMockDatabase(
-      (req, res) => {
-        expect(req.method).toBe("POST");
-        expect(req.url).toBe("/v1/view/adults/drop");
-        res
-          .writeHead(202, { "content-type": "application/json" })
-          .end('{"job_id": "j1-do-abc"}');
-      },
-      async (db) => {
-        const job = await db.dropViewAsync("adults");
-        expect(job.id).toBe("j1-do-abc");
-      },
-    );
-  });
-
-  it("reports a finished job when a view drop had nothing to delete", async () => {
-    await withMockDatabase(
-      (req, res) => {
-        expect(req.url).toBe("/v1/view/adults/drop");
-        res.writeHead(200, { "content-type": "application/json" }).end("{}");
-      },
-      async (db) => {
-        // A 200 means the name was not bound, so there is no cleanup to wait on.
-        const job = await db.dropViewAsync("adults");
-        expect(job.id).toBeNull();
-        await job.wait();
-      },
-    );
-  });
-
   it("should accept partial connection options", async () => {
     await connect("db://test", {
       apiKey: "fake",
@@ -736,6 +644,80 @@ describe("remote connection", () => {
     expect(bodies).toEqual([
       JSON.parse('{"job_id": "j-7", "column": "embedding", "limit": 2}'),
       {},
+    ]);
+  });
+
+  it("forwards refresh options to the backfill request", async () => {
+    const bodies: unknown[] = [];
+    await withMockDatabase(
+      (req, res) => {
+        const path = req.url ?? "";
+        if (path.endsWith("/describe/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              name: "docs",
+              version: 1,
+              schema: { fields: [] },
+            }),
+          );
+          return;
+        }
+        if (path === "/v1/table/docs/backfill_column") {
+          let body = "";
+          req.on("data", (chunk) => {
+            body += chunk;
+          });
+          req.on("end", () => {
+            bodies.push(JSON.parse(body));
+            res
+              .writeHead(202, { "Content-Type": "application/json" })
+              .end('{"job_id": "j-9"}');
+          });
+          return;
+        }
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const table = await db.openTable("docs");
+        const job = await table.refreshColumnAsync("embedding", {
+          where: "id % 2 = 0",
+          batchSize: 16,
+          gpuClass: "a10g",
+          gpuCount: 2,
+          errorPolicy: "skip",
+          maxFailedFraction: 0.01,
+          maxFailedRows: 50,
+          rowTimeoutSeconds: 30,
+          initTimeoutSeconds: 120,
+          maxExecutorProcessesPerWorker: 2,
+        });
+        expect(job.id).toBe("j-9");
+        await table.refreshColumnAsync("embedding");
+        // Invalid options reject before any request is sent.
+        for (const [options, message] of [
+          [{ maxFailedRows: -1 }, "maxFailedRows"],
+          [{ errorPolicy: "retry" }, "errorPolicy"],
+          [{ where: " " }, "where"],
+          [{ maxFailedFraction: 2 }, "max_failed_fraction"],
+          [{ rowTimeoutSeconds: 0 }, "row_timeout_seconds"],
+          [{ numWorkers: 0 }, "num_workers"],
+          [{ gpuCount: 0 }, "gpu_count"],
+        ] as const) {
+          await expect(
+            table.refreshColumnAsync("embedding", options),
+          ).rejects.toThrow(message);
+        }
+      },
+    );
+    expect(bodies).toEqual([
+      JSON.parse(
+        `{"column": "embedding", "where": "id % 2 = 0", "batch_size": 16,
+          "gpu_class": "a10g", "gpu_count": 2, "error_policy": "skip",
+          "max_failed_fraction": 0.01, "max_failed_rows": 50,
+          "row_timeout_seconds": 30, "init_timeout_seconds": 120,
+          "max_executor_processes_per_worker": 2}`,
+      ),
+      { column: "embedding" },
     ]);
   });
 
@@ -1533,7 +1515,9 @@ describe("remote connection jobs surface", () => {
                 .end(
                   '{"jobs": [{"job_id": "job-1", "table": "t1", ' +
                     '"job_type": "create_index", "state": "in_progress", ' +
-                    '"created_at_millis": 1000}], "page_token": "next"}',
+                    '"created_at_millis": 1000, ' +
+                    '"progress": {"rows_planned": 4, "rows_computed": 2}, ' +
+                    '"phase": "running", "paused": false}], "page_token": "next"}',
                 );
             } else {
               res
@@ -1564,6 +1548,9 @@ describe("remote connection jobs surface", () => {
               .end(
                 '{"job_id": "job-1", "job_type": "create_index", ' +
                   '"job_state": "FAILED", "creation_ms": 1000, ' +
+                  '"progress": {"rows_planned": 4, "rows_computed": 2, ' +
+                  '"vendor_extension": "kept"}, ' +
+                  '"phase": "running", ' +
                   '"spec": {"column": "vec"}, "failure": {"phase": "execute", ' +
                   '"message": "worker died", "retryable": true}}',
               );
@@ -1610,6 +1597,19 @@ describe("remote connection jobs surface", () => {
         expect(jobs.map((job) => job.jobId)).toEqual(["job-1", "job-2"]);
         expect(jobs[0].state).toEqual("running");
         expect(jobs[1].state).toEqual("finished");
+        expect(jobs[0].progress).toEqual({
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          job_type: "create_index",
+          state: "running",
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          creation_ms: 1000,
+          paused: false,
+          phase: "running",
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          rows_planned: 4,
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          rows_computed: 2,
+        });
 
         expect(await db.cancelJob("job-1")).toBe(true);
         expect(await db.cancelJob("missing")).toBe(false);
@@ -1638,6 +1638,21 @@ describe("remote connection jobs surface", () => {
         expect(job.spec).toEqual({ column: "vec" });
         expect(job.result).toBeNull();
         expect(job.failure?.message).toEqual("worker died");
+        expect(await job.progress()).toEqual({
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          job_type: "create_index",
+          state: "failed",
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          creation_ms: 1000,
+          paused: false,
+          phase: "running",
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          rows_planned: 4,
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          rows_computed: 2,
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          vendor_extension: "kept",
+        });
 
         // The handle reaches its own events, supplying its job id.
         const jobEvents = await job.events({
@@ -1679,6 +1694,207 @@ describe("remote connection jobs surface", () => {
     );
   });
 
+  it("observes structured progress through the existing wait poller", async () => {
+    const now = Date.now();
+    const unknownFleet = {
+      desired: 2,
+      launched: 1,
+      // biome-ignore lint/style/useNamingConvention: server wire format
+      pending_workers: 1,
+      ready: 0,
+      // biome-ignore lint/style/useNamingConvention: server wire format
+      requested_gpus: 1,
+      // biome-ignore lint/style/useNamingConvention: server wire format
+      ready_gpus: 0,
+      // biome-ignore lint/style/useNamingConvention: server wire format
+      resource_classes: ["a10g"],
+      // biome-ignore lint/style/useNamingConvention: server wire format
+      first_launched_at_millis: now - 4000,
+    };
+    const knownFleet = {
+      ...unknownFleet,
+      // biome-ignore lint/style/useNamingConvention: server wire format
+      warm_reused: true,
+      // biome-ignore lint/style/useNamingConvention: server wire format
+      wait_reason: "Job queued, waiting for GPU capacity in class 'a10g'",
+    };
+    const progress = (
+      rowsComputed: number,
+      rowsRemaining: number,
+      sampleOffset: number,
+      workerFleet: typeof knownFleet | typeof unknownFleet,
+    ) =>
+      JSON.stringify({
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        rows_planned: 100,
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        rows_computed: rowsComputed,
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        rows_skipped: 0,
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        rows_remaining: rowsRemaining,
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        fragments_planned: 4,
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        execution_epoch: 7,
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        sample_at_millis: now - sampleOffset,
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        worker_fleet: workerFleet,
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        queue_reason: "Waiting for Function worker capacity",
+      });
+    const descriptions = [
+      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"queue_reason":"Waiting for Function worker capacity","progress":${progress(20, 80, 3000, unknownFleet)}}`,
+      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"queue_reason":"Waiting for Function worker capacity","progress":${progress(20, 80, 2000, knownFleet)}}`,
+      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"queue_reason":"Waiting for Function worker capacity","progress":${progress(40, 60, 1000, unknownFleet)}}`,
+      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"DONE","creation_ms":1000,"result":{},"progress":${progress(60, 0, 0, unknownFleet)}}`,
+    ];
+    let describeCount = 0;
+
+    await withMockDatabase(
+      (req, res) => {
+        if (req.url === "/v1/jobs/describe") {
+          describeCount++;
+          const description = descriptions.shift();
+          if (description === undefined) {
+            res.writeHead(500).end("unexpected describe");
+            return;
+          }
+          res
+            .writeHead(200, { "Content-Type": "application/json" })
+            .end(description);
+          return;
+        }
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const job = await db.openJob("job-wait");
+        const first = await job.progress();
+        expect(first).toMatchObject({
+          state: "running",
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          rows_computed: 20,
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          rows_remaining: 80,
+        });
+        expect(first?.worker_fleet).toMatchObject(knownFleet);
+        expect(
+          (first?.worker_fleet as Record<string, unknown> | null | undefined)
+            ?.warm_reused,
+        ).toBe(true);
+        expect(first?.queue_reason).toBe(
+          "Waiting for Function worker capacity",
+        );
+        expect(first).not.toHaveProperty("estimated_remaining_time_millis");
+
+        const observed: JobProgress[] = [];
+        await job.wait((progress) => observed.push(progress));
+
+        expect(observed).toHaveLength(2);
+        expect(observed[0]).toMatchObject({
+          state: "running",
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          rows_computed: 40,
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          estimated_remaining_time_millis: 3000,
+        });
+        expect(observed[0].worker_fleet).toEqual(unknownFleet);
+        expect(observed[0].worker_fleet).not.toHaveProperty("warm_reused");
+        expect(observed[0].queue_reason).toBe(
+          "Waiting for Function worker capacity",
+        );
+        expect(observed[1]).toMatchObject({
+          state: "finished",
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          rows_remaining: 0,
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          estimated_remaining_time_millis: 0,
+        });
+      },
+    );
+
+    expect(describeCount).toBe(4);
+  });
+
+  it("does not derive ETA across a zero-rate, epoch, or pause boundary", async () => {
+    const now = Date.now();
+    const descriptions = [
+      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":100,"rows_computed":20,"rows_skipped":0,"rows_remaining":80,"fragments_planned":4,"execution_epoch":1,"sample_at_millis":${now - 5000}}}`,
+      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":100,"rows_computed":20,"rows_skipped":0,"rows_remaining":80,"fragments_planned":4,"execution_epoch":1,"sample_at_millis":${now - 4000}}}`,
+      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":100,"rows_computed":40,"rows_skipped":0,"rows_remaining":60,"fragments_planned":4,"execution_epoch":2,"sample_at_millis":${now - 3000}}}`,
+      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"phase":"initializing","progress":{"rows_planned":100,"rows_computed":60,"rows_skipped":0,"rows_remaining":40,"fragments_planned":4,"execution_epoch":2,"sample_at_millis":${now - 2000}}}`,
+      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"paused_at_millis":5000,"progress":{"rows_planned":100,"rows_computed":60,"rows_skipped":0,"rows_remaining":40,"fragments_planned":4,"execution_epoch":2,"sample_at_millis":${now - 1500}}}`,
+      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":100,"rows_computed":80,"rows_skipped":0,"rows_remaining":20,"fragments_planned":4,"execution_epoch":2,"sample_at_millis":${now - 1000}}}`,
+    ];
+
+    await withMockDatabase(
+      (req, res) => {
+        if (req.url === "/v1/jobs/describe") {
+          const description = descriptions.shift();
+          if (description === undefined) {
+            res.writeHead(500).end("unexpected describe");
+            return;
+          }
+          res
+            .writeHead(200, { "Content-Type": "application/json" })
+            .end(description);
+          return;
+        }
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const job = await db.openJob("job-eta");
+        for (let i = 0; i < 5; i++) {
+          const progress = await job.progress();
+          expect(progress).not.toHaveProperty(
+            "estimated_remaining_time_millis",
+          );
+        }
+      },
+    );
+  });
+
+  it("keeps a thrown progress observer from escaping wait", async () => {
+    const descriptions = [
+      '{"job_id":"job-throw","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":4,"rows_computed":2}}',
+      '{"job_id":"job-throw","job_type":"refresh_column","job_state":"DONE","creation_ms":1000,"result":{}}',
+    ];
+
+    await withMockDatabase(
+      (req, res) => {
+        if (req.url === "/v1/jobs/describe") {
+          const description = descriptions.shift();
+          if (description === undefined) {
+            res.writeHead(500).end("unexpected describe");
+            return;
+          }
+          res
+            .writeHead(200, { "Content-Type": "application/json" })
+            .end(description);
+          return;
+        }
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const job = await db.openJob("job-throw");
+        const warn = jest
+          .spyOn(console, "warn")
+          .mockImplementation(() => undefined);
+        try {
+          await expect(
+            job.wait(() => {
+              throw new Error("observer failed");
+            }),
+          ).resolves.toBeUndefined();
+          expect(warn).toHaveBeenCalled();
+        } finally {
+          warn.mockRestore();
+        }
+      },
+    );
+  });
+
   it("leaves numDeletedRows absent when the server omits it", async () => {
     // A server that predates num_deleted_rows says nothing about deleted rows
     const statsReply =
@@ -1710,13 +1926,12 @@ async function collect<T>(items: AsyncIterable<T>): Promise<T[]> {
 }
 
 describe("lazy resource listings", () => {
-  for (const kind of ["views", "jobs"] as const) {
+  for (const kind of ["jobs"] as const) {
     const listing = (
       db: Connection,
       options: { pageToken?: string; pageLimit?: number } = {},
     ) => {
-      if (kind === "jobs") return db.listJobs(options);
-      return db.listViews(["team"], options);
+      return db.listJobs(options);
     };
     const page = (names: string[], token?: string) => {
       const items =

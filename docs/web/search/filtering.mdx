@@ -25,7 +25,7 @@ and removes it when finished.
 
 - **Python:** Install with `pip install lancedb`, save as `filtered_search.py`, then run `python filtered_search.py`.
 - **TypeScript:** Install with `npm install @lancedb/lancedb`, save as `filtered_search.mts`, then run `node filtered_search.mts` with Node.js 22.18 or later.
-- **Rust:** Download and extract the [complete Rust examples](/static/code/search-rust.zip), then run `cargo run --locked --bin filter_search` from the extracted directory.
+- **Rust:** Download and extract the [complete Rust examples](https://raw.githubusercontent.com/lancedb/lancedb/2af85bea8999c8cd23ec01ff62ba110c54652c10/docs/web/static/code/search-rust.zip), then run `cargo run --locked --bin filter_search` from the extracted directory.
 
 <CodeGroup>
 <CodeBlock filename="Python" language="python" icon="python">
@@ -239,10 +239,12 @@ If your column name contains special characters, upper-case characters, or is a 
 you can use backtick (`` ` ``) to escape it. For nested fields, each segment of the
 path must be wrapped in backticks.
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 `CUBE` = 10 AND `UpperCaseName` = '3' AND `column name with space` IS NOT NULL
 AND `nested with space`.`inner with space` < 2
 ```
+</CodeGroup>
 
 <Note>
 Periods separate nested fields. LanceDB does not allow a literal period in a
@@ -312,4 +314,4 @@ For a recall comparison, run the same query and predicate while bypassing the
 vector index on a suitably sized test table. Then compare the indexed query's
 results and latency while changing probe or refinement settings. Increasing
 those settings does not guarantee a full result set. See
-[vector search](/search/vector-search) and [query plans](/search/explain).
+[vector search](/search/vector-search) and [query plans](/basics/sql#query-plans).

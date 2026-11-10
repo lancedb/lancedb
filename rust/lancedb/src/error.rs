@@ -6,9 +6,185 @@ use std::sync::{Arc, PoisonError};
 
 use arrow_schema::ArrowError;
 use datafusion_common::DataFusionError;
+#[cfg(feature = "remote")]
+use serde::Deserialize;
 use snafu::Snafu;
 
 pub(crate) type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+/// Stable resource details carried by a structured remote HTTP error.
+#[cfg(feature = "remote")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct HttpErrorDetails {
+    /// Machine-readable error code from the server.
+    pub error_code: String,
+    /// The kind of resource named by the error.
+    pub resource_kind: String,
+    /// The leaf name of the resource.
+    pub resource_name: String,
+    /// The parent namespace path of the resource.
+    pub namespace_path: Vec<String>,
+}
+
+/// Stable resource identity reported with a remote Flight SQL failure.
+#[cfg(feature = "remote")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RemoteResourceIdentity {
+    /// The kind of resource named by the error.
+    pub kind: String,
+    /// The leaf name of the resource.
+    pub name: String,
+    /// The parent namespace path of the resource.
+    pub namespace_path: Vec<String>,
+}
+
+#[cfg(feature = "remote")]
+impl RemoteResourceIdentity {
+    /// Construct a resource identity as reported by a remote service.
+    pub fn new(
+        kind: impl Into<String>,
+        name: impl Into<String>,
+        namespace_path: Vec<String>,
+    ) -> Self {
+        Self {
+            kind: kind.into(),
+            name: name.into(),
+            namespace_path,
+        }
+    }
+}
+
+/// Correlation and classification metadata reported by a remote server.
+///
+/// Fields are absent when the server did not supply them. Diagnostic text is
+/// never used to infer an error code or a job identity.
+#[cfg(feature = "remote")]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RemoteErrorMetadata {
+    /// Machine-readable input error code, when available.
+    pub error_code: Option<String>,
+    /// SQL job that failed, when the request ran in an isolated job.
+    pub job_id: Option<String>,
+    /// Request executed by the isolated SQL worker.
+    pub job_request_id: Option<String>,
+    /// Structured resource identity supplied by the server, when available.
+    pub resource: Option<RemoteResourceIdentity>,
+}
+
+#[cfg(feature = "remote")]
+impl RemoteErrorMetadata {
+    pub(crate) fn from_headers(headers: &reqwest::header::HeaderMap) -> Self {
+        let header = |name| {
+            headers
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned)
+        };
+        Self {
+            error_code: header("x-lancedb-error-code"),
+            job_id: header("x-lancedb-sql-job-id"),
+            job_request_id: header("x-job-request-id"),
+            resource: header("x-lancedb-resource")
+                .as_deref()
+                .and_then(parse_flight_resource_identity),
+        }
+    }
+}
+
+#[cfg(feature = "remote")]
+#[derive(Deserialize)]
+struct FlightResourceIdentity {
+    kind: String,
+    name: String,
+    namespace_path: Vec<String>,
+}
+
+/// Decode the ASCII-safe structured resource metadata used by Flight SQL.
+#[cfg(feature = "remote")]
+pub(crate) fn parse_flight_resource_identity(value: &str) -> Option<RemoteResourceIdentity> {
+    use base64::Engine as _;
+
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(value)
+        .ok()?;
+    let identity = serde_json::from_slice::<FlightResourceIdentity>(&bytes).ok()?;
+    Some(RemoteResourceIdentity {
+        kind: identity.kind,
+        name: identity.name,
+        namespace_path: identity.namespace_path,
+    })
+}
+
+#[cfg(feature = "remote")]
+#[derive(Debug)]
+pub(crate) struct HttpErrorSource {
+    message: String,
+    details: Option<HttpErrorDetails>,
+    metadata: RemoteErrorMetadata,
+}
+
+#[cfg(feature = "remote")]
+impl HttpErrorSource {
+    pub(crate) fn new(
+        message: String,
+        response_body: Option<&str>,
+        metadata: RemoteErrorMetadata,
+    ) -> Self {
+        let details = response_body.and_then(parse_http_error_details);
+        let message = if metadata.error_code.is_some() {
+            response_body
+                .and_then(|body| serde_json::from_str::<serde_json::Value>(body).ok())
+                .and_then(|body| body.get("error")?.as_str().map(str::to_owned))
+                .unwrap_or(message)
+        } else {
+            message
+        };
+        Self {
+            message,
+            details,
+            metadata,
+        }
+    }
+}
+
+#[cfg(feature = "remote")]
+impl Display for HttpErrorSource {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+#[cfg(feature = "remote")]
+impl std::error::Error for HttpErrorSource {}
+
+#[cfg(feature = "remote")]
+#[derive(Deserialize)]
+struct HttpResponseBody {
+    error_code: String,
+    resource: HttpResponseResource,
+}
+
+#[cfg(feature = "remote")]
+#[derive(Deserialize)]
+struct HttpResponseResource {
+    kind: String,
+    name: String,
+    namespace_path: Vec<String>,
+}
+
+#[cfg(feature = "remote")]
+fn parse_http_error_details(response_body: &str) -> Option<HttpErrorDetails> {
+    let body: HttpResponseBody = serde_json::from_str(response_body).ok()?;
+    Some(HttpErrorDetails {
+        error_code: body.error_code,
+        resource_kind: body.resource.kind,
+        resource_name: body.resource.name,
+        namespace_path: body.resource.namespace_path,
+    })
+}
 
 // reqwest's Display omits the timeout cause. Add guidance at display time so
 // callers still receive the original typed source and its full error chain.
@@ -29,6 +205,48 @@ fn http_timeout_hint(source: &(dyn std::error::Error + 'static)) -> &'static str
     }
 }
 
+/// The error that ended a streamed response.
+///
+/// It is shared so that a copy of [`Error::ResponseInterrupted`] keeps it:
+/// DataFusion hands one error to every partition that reads the failed input.
+/// It dereferences to the underlying error, which is also the next error in the
+/// source chain.
+#[cfg(feature = "remote")]
+#[derive(Debug, Clone)]
+pub struct InterruptionSource(Arc<dyn std::error::Error + Send + Sync>);
+
+#[cfg(feature = "remote")]
+impl From<BoxError> for InterruptionSource {
+    fn from(source: BoxError) -> Self {
+        Self(source.into())
+    }
+}
+
+#[cfg(feature = "remote")]
+impl std::ops::Deref for InterruptionSource {
+    type Target = dyn std::error::Error + Send + Sync;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref()
+    }
+}
+
+#[cfg(feature = "remote")]
+impl Display for InterruptionSource {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+// Not `Error`: an `Arc` in the source chain hides the error it holds from
+// `downcast_ref`, and so would a wrapper that implements `Error`.
+#[cfg(feature = "remote")]
+impl snafu::AsErrorSource for InterruptionSource {
+    fn as_error_source(&self) -> &(dyn std::error::Error + 'static) {
+        self.0.as_ref()
+    }
+}
+
 /// Why a job failed, to whatever precision the backend provides.
 ///
 /// A job run in this process carries the error it failed with in [`Self::source`].
@@ -41,9 +259,15 @@ pub struct JobFailure {
     pub phase: Option<String>,
     /// A human-readable reason, when known.
     pub message: Option<String>,
+    /// User-code traceback, possibly truncated by the server.
+    pub traceback: Option<String>,
     /// Whether a retry could clear the failure, when known.
     pub retryable: Option<bool>,
-    /// The error the job failed with, when it ran in this process.
+    /// Isolated SQL job that raised this failure, when the server supplies
+    /// one across the Flight SQL boundary.
+    pub sql_job_id: Option<String>,
+    /// The underlying error from a job run in this process or a structured
+    /// remote Flight SQL failure.
     pub source: Option<Arc<Error>>,
 }
 
@@ -92,6 +316,13 @@ pub enum Error {
     EmbeddingFunctionNotFound { name: String, reason: String },
     #[snafu(display("Column '{name}' was not found"))]
     ColumnNotFound { name: String },
+    /// A missing query field with schema-qualified candidate paths.
+    #[snafu(display("{message}"))]
+    FieldNotFound {
+        name: String,
+        message: String,
+        source: BoxError,
+    },
     #[snafu(display("Column '{name}' already exists"))]
     ColumnAlreadyExists { name: String },
     #[snafu(display("Column '{name}' is not a computed column"))]
@@ -110,6 +341,15 @@ pub enum Error {
     },
     #[snafu(display("Schema Error: {message}"))]
     Schema { message: String },
+    /// A SQL response retaining its gRPC status and server metadata.
+    #[cfg(feature = "remote")]
+    #[snafu(display("{message} (request_id={request_id})"))]
+    Sql {
+        message: String,
+        request_id: String,
+        grpc_code: i32,
+        metadata: Box<RemoteErrorMetadata>,
+    },
     #[snafu(display("Runtime error: {message}"))]
     Runtime { message: String },
     #[snafu(display("Timeout error: {message}"))]
@@ -117,7 +357,7 @@ pub enum Error {
     #[snafu(display("Job{} failed{failure}", job_id.as_ref().map(|id| format!(" {id}")).unwrap_or_default()))]
     JobFailed {
         job_id: Option<String>,
-        failure: JobFailure,
+        failure: Box<JobFailure>,
     },
     #[snafu(display("Job{} was cancelled", job_id.as_ref().map(|id| format!(" {id}")).unwrap_or_default()))]
     JobCancelled { job_id: Option<String> },
@@ -164,6 +404,27 @@ pub enum Error {
         source: Box<dyn std::error::Error + Send + Sync>,
         status_code: Option<reqwest::StatusCode>,
     },
+    /// A streamed response stopped before the server signalled that it was complete.
+    ///
+    /// The batches already returned are valid, but the result is incomplete. The
+    /// request is not retried, because re-issuing it would return those batches
+    /// again. `table_version` is the table version the response reflected, when
+    /// the server reported one, so a caller can re-issue the request against it.
+    #[cfg(feature = "remote")]
+    #[snafu(display(
+        "Response for request_id={request_id} interrupted after {batches} batches \
+        ({rows} rows): {source}{}",
+        http_timeout_hint(&**source)
+    ))]
+    ResponseInterrupted {
+        request_id: String,
+        /// Batches returned before the interruption.
+        batches: u64,
+        /// Rows in those batches.
+        rows: u64,
+        table_version: Option<u64>,
+        source: InterruptionSource,
+    },
     #[snafu(display("Arrow error: {source}"))]
     Arrow { source: ArrowError },
     #[snafu(display("LanceDBError: not supported: {message}"))]
@@ -195,11 +456,31 @@ impl From<DataFusionError> for Error {
         match source {
             DataFusionError::ArrowError(source, _) => (*source).into(),
             DataFusionError::External(source) => Self::from_box_error(source),
+            // DataFusion adds context to an error, and shares one error between
+            // the partitions that read a failed input. An error of ours beneath
+            // either keeps its type; other errors keep the wrapper's message.
+            DataFusionError::Context(_, inner) if find_error(inner.as_ref()).is_some() => {
+                (*inner).into()
+            }
+            DataFusionError::Shared(shared) => match Arc::try_unwrap(shared) {
+                Ok(inner) => inner.into(),
+                Err(shared) => find_error(shared.as_ref())
+                    .and_then(Self::clone_shared)
+                    .unwrap_or_else(|| Self::External {
+                        source: Box::new(DataFusionError::Shared(shared)),
+                    }),
+            },
             other => Self::External {
                 source: Box::new(other),
             },
         }
     }
+}
+
+/// The first error of ours in an error's source chain.
+fn find_error<'a>(error: &'a (dyn std::error::Error + 'static)) -> Option<&'a Error> {
+    std::iter::successors(Some(error), |error| error.source())
+        .find_map(|error| error.downcast_ref::<Error>())
 }
 
 impl From<lance::Error> for Error {
@@ -214,9 +495,27 @@ impl From<lance::Error> for Error {
         match source {
             lance::Error::Wrapped { error, .. } => Self::from_box_error(error),
             lance::Error::External { source } => Self::from_box_error(source),
-            lance::Error::InvalidInput { source, .. } => Self::InvalidInput {
-                message: source.to_string(),
-            },
+            lance::Error::InvalidInput {
+                source, location, ..
+            } => {
+                if let Some(DataFusionError::SchemaError(error, _)) = source
+                    .downcast_ref::<DataFusionError>()
+                    .map(|error| error.find_root())
+                    && let datafusion_common::SchemaError::FieldNotFound { field, .. } =
+                        error.as_ref()
+                {
+                    // Preserve the known field identity before this boundary
+                    // turns other input diagnostics into plain messages.
+                    log::info!("Query input rejected at {location}: {source}");
+                    Self::ColumnNotFound {
+                        name: field.name.clone(),
+                    }
+                } else {
+                    Self::InvalidInput {
+                        message: source.to_string(),
+                    }
+                }
+            }
             _ => Self::Lance { source },
         }
     }
@@ -244,6 +543,78 @@ fn has_unsupported_local_filesystem_source(error: &(dyn std::error::Error + 'sta
 }
 
 impl Error {
+    /// Structured resource details reported by a remote HTTP error.
+    ///
+    /// Older servers do not include these fields, in which case this returns
+    /// `None` and callers should treat the error as a generic HTTP failure.
+    #[cfg(feature = "remote")]
+    pub fn http_error_details(&self) -> Option<&HttpErrorDetails> {
+        match self {
+            Self::Http { source, .. } => source
+                .downcast_ref::<HttpErrorSource>()
+                .and_then(|source| source.details.as_ref()),
+            Self::Retry { source, .. } => source
+                .downcast_ref::<Self>()
+                .and_then(Self::http_error_details),
+            _ => None,
+        }
+    }
+
+    /// Classification and correlation metadata supplied by a remote server.
+    ///
+    /// Unlike parsing [`Self::to_string`], this preserves absence and does not
+    /// mistake a user-provided identifier for an error classification.
+    ///
+    /// ```
+    /// # #[cfg(feature = "remote")]
+    /// fn reported_job(error: &lancedb::Error) -> Option<&str> {
+    ///     error.remote_error_metadata()?.job_id.as_deref()
+    /// }
+    /// ```
+    #[cfg(feature = "remote")]
+    pub fn remote_error_metadata(&self) -> Option<&RemoteErrorMetadata> {
+        match self {
+            Self::Http { source, .. } => source
+                .downcast_ref::<HttpErrorSource>()
+                .map(|source| &source.metadata),
+            Self::Retry { source, .. } => source
+                .downcast_ref::<Self>()
+                .and_then(Self::remote_error_metadata),
+            Self::TableNotFound { source, .. } => source
+                .downcast_ref::<Self>()
+                .and_then(Self::remote_error_metadata),
+            Self::JobFailed { failure, .. } => failure
+                .source
+                .as_deref()
+                .and_then(Self::remote_error_metadata),
+            Self::Sql { metadata, .. } => Some(metadata),
+            _ => None,
+        }
+    }
+
+    /// A copy of an error that other partitions of a DataFusion plan still hold.
+    /// Only an interrupted response can be copied, because it shares its source.
+    fn clone_shared(&self) -> Option<Self> {
+        #[cfg(feature = "remote")]
+        if let Self::ResponseInterrupted {
+            request_id,
+            batches,
+            rows,
+            table_version,
+            source,
+        } = self
+        {
+            return Some(Self::ResponseInterrupted {
+                request_id: request_id.clone(),
+                batches: *batches,
+                rows: *rows,
+                table_version: *table_version,
+                source: source.clone(),
+            });
+        }
+        None
+    }
+
     fn from_box_error(mut source: Box<dyn std::error::Error + Send + Sync>) -> Self {
         source = match source.downcast::<Self>() {
             Ok(e) => match *e {
@@ -336,6 +707,84 @@ impl From<candle_core::Error> for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_filter_column_retains_its_type_across_lance_conversion() {
+        let field_error = DataFusionError::SchemaError(
+            Box::new(datafusion_common::SchemaError::FieldNotFound {
+                field: Box::new(datafusion_common::Column::from_name("missing")),
+                valid_fields: vec![datafusion_common::Column::from_name("id")],
+            }),
+            Box::new(None),
+        );
+        let source =
+            lance::Error::invalid_input_source(Box::new(field_error.context("binding filter")));
+        assert!(matches!(Error::from(source), Error::ColumnNotFound { name } if name == "missing"));
+
+        let source = lance::Error::invalid_input("No field named missing");
+        assert!(matches!(Error::from(source), Error::InvalidInput { .. }));
+    }
+
+    /// DataFusion shares an error between the partitions that read a failed
+    /// input, and may add context to it. Whether or not another partition still
+    /// holds it, an interrupted response keeps its fields and its source.
+    #[cfg(feature = "remote")]
+    #[rstest::rstest]
+    fn shared_interruption_keeps_its_type_and_source(
+        #[values(false, true)] still_held: bool,
+        #[values(false, true)] with_context: bool,
+    ) {
+        let reset = BoxError::from(std::io::Error::from(std::io::ErrorKind::ConnectionReset));
+        let interrupted = Error::ResponseInterrupted {
+            request_id: "req-1".into(),
+            batches: 2,
+            rows: 2048,
+            table_version: Some(7),
+            source: reset.into(),
+        };
+        let shared = Arc::new(DataFusionError::External(Box::new(interrupted)));
+        let held = still_held.then(|| shared.clone());
+        let mut error = DataFusionError::Shared(shared);
+        if with_context {
+            error = error.context("merging query results");
+        }
+
+        let error = Error::from(error);
+
+        assert!(
+            matches!(
+                &error,
+                Error::ResponseInterrupted {
+                    request_id,
+                    batches: 2,
+                    rows: 2048,
+                    table_version: Some(7),
+                    ..
+                } if request_id == "req-1"
+            ),
+            "{error:?}"
+        );
+        let source = std::error::Error::source(&error).unwrap();
+        assert_eq!(
+            source.downcast_ref::<std::io::Error>().map(|e| e.kind()),
+            Some(std::io::ErrorKind::ConnectionReset)
+        );
+        drop(held);
+    }
+
+    #[test]
+    fn other_shared_errors_keep_their_message() {
+        let shared = Arc::new(DataFusionError::Execution("boom".into()));
+        let _held = shared.clone();
+
+        let error = Error::from(DataFusionError::Shared(shared).context("merging"));
+
+        assert!(matches!(error, Error::External { .. }), "{error:?}");
+        assert_eq!(
+            error.to_string(),
+            "merging\ncaused by\nExecution error: boom"
+        );
+    }
 
     #[cfg(feature = "remote")]
     #[test]

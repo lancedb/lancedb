@@ -56,6 +56,7 @@ export {
   MergeResult,
   AddResult,
   AddColumnsResult,
+  RefreshColumnOptions,
   RefreshColumnResult,
   FunctionErrors,
   FunctionErrorsOptions,
@@ -108,7 +109,11 @@ export {
 
 export { JobFailureInfo, JobInfo, Session } from "./native.js";
 
-export { Job, JobEventsOptions } from "./job";
+export {
+  Job,
+  JobEventsOptions,
+} from "./job";
+export type { JobProgress, JobProgressCallback } from "./job";
 
 export {
   AutoQuery,
@@ -160,6 +165,7 @@ export {
   AddDataOptions,
   UpdateOptions,
   OptimizeOptions,
+  CompactionOptions,
   Version,
   WriteProgress,
   FtsToken,

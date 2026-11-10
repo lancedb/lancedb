@@ -2,7 +2,9 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import json
+from collections import UserDict
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 
@@ -167,6 +169,33 @@ def test_function_version_preserves_source_digest(source_digest):
         version.source_digest = "sha256:changed"
 
 
+def test_function_version_exposes_registered_gpu_class():
+    value = job_result("remote_function_job.json")
+    legacy = FunctionVersion.from_json(json.dumps(value))
+    assert legacy.gpu_class is None
+
+    value["gpu_class"] = "a10g"
+    version = FunctionVersion.from_json(json.dumps(value))
+    assert version.gpu_class == "a10g"
+    assert json.loads(version.to_canonical_json())["gpu_class"] == "a10g"
+
+
+def test_function_version_preserves_execution_controls():
+    value = job_result("remote_function_job.json")
+    value.update(
+        batch_size=12,
+        row_timeout_seconds=8.0,
+        result_stability="input_and_context",
+    )
+    version = FunctionVersion.from_json(json.dumps(value))
+    encoded = json.loads(version.to_canonical_json())
+
+    assert encoded == value
+    assert type(encoded["batch_size"]) is int
+    assert type(encoded["row_timeout_seconds"]) is float
+    assert type(encoded["result_stability"]) is str
+
+
 def test_function_version_binds_named_columns_as_one_immutable_application():
     version = FunctionVersion.from_json(
         json.dumps(job_result("remote_function_job.json"))
@@ -272,10 +301,15 @@ def test_unknown_fields_and_discriminators_are_forward_decodable():
 
     version = FunctionVersion.from_json(json.dumps(value))
     assert version.image.descriptor["future_interface"] == {"kind": "wasm"}
-    assert json.loads(version.to_canonical_json())["image"]["descriptor"][
-        "future_interface"
-    ] == {"kind": "wasm"}
     assert version.signature.output.kind == "future_output_shape"
+    assert not hasattr(version, "future_version_metadata")
+
+    canonical = json.loads(version.to_canonical_json())
+    expected = json.loads(fixture("remote_function_version.canonical.json"))
+    expected["image"]["descriptor"]["future_interface"] = {"kind": "wasm"}
+    expected["signature"]["output"]["kind"] = "future_output_shape"
+    assert canonical == expected
+    assert "future_version_metadata" not in canonical
 
 
 def test_function_application_uses_rename_columns_only():
@@ -444,13 +478,16 @@ def known_application() -> FunctionApplication:
 
 
 @pytest.mark.asyncio
-async def test_add_columns_routes_struct_as_one_and_multi_output_binding_atomically():
+@pytest.mark.parametrize("mapping_type", [dict, UserDict, MappingProxyType])
+async def test_add_columns_routes_struct_as_one_and_multi_output_binding_atomically(
+    mapping_type,
+):
     inner = _FunctionDeclarationInner()
     table = AsyncTable(inner)
     application = known_application()
 
     result = await table.add_columns(
-        {"features": application._copy(update={"columns": {}})}
+        mapping_type({"features": application._copy(update={"columns": {}})})
     )
     assert result == "declared"
     assert inner.calls[-1][1] == "features"

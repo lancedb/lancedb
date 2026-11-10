@@ -4,6 +4,14 @@
 
 from typing import Optional
 
+from lance_namespace.errors import TableNotFoundError as _NamespaceTableNotFoundError
+
+from lancedb.exceptions import (
+    ColumnNotFoundError as _ColumnNotFoundError,
+    ReferenceNotFoundError as _ReferenceNotFoundError,
+    SchemaMismatchError as _SchemaMismatchError,
+)
+
 
 class LanceDBClientError(RuntimeError):
     """An error that occurred in the LanceDB client.
@@ -44,6 +52,313 @@ class HttpError(LanceDBClientError):
     status_code: int
         The HTTP status code of the response. May be None if the request
         failed before the response was received.
+    error_code: str
+        A machine-readable error code reported by the server, if available.
+    resource_kind: str
+        The kind of resource reported by the server, if available.
+    resource_name: str
+        The name of the resource reported by the server, if available.
+    namespace_path: tuple[str, ...]
+        The parent namespace path of the resource, if available.
+    is_transport_error: bool
+        Whether the request failed while connecting, sending, or reading, rather
+        than because of an HTTP status or an invalid response payload.
+    job_id: str or None
+        SQL job reported by the server, when available.
+    job_request_id: str or None
+        Original request executed by the isolated SQL worker, when available.
+    """
+
+    def __new__(
+        cls,
+        message: str,
+        request_id: str,
+        status_code: Optional[int] = None,
+        error_code: Optional[str] = None,
+        resource_kind: Optional[str] = None,
+        resource_name: Optional[str] = None,
+        namespace_path: Optional[tuple[str, ...]] = None,
+        is_transport_error: bool = False,
+        job_id: Optional[str] = None,
+        job_request_id: Optional[str] = None,
+    ):
+        if cls is HttpError:
+            mapped_cls = _http_error_class(error_code, resource_kind, status_code)
+            if mapped_cls is not None:
+                cls = mapped_cls
+        return RuntimeError.__new__(cls)
+
+    def __init__(
+        self,
+        message: str,
+        request_id: str,
+        status_code: Optional[int] = None,
+        error_code: Optional[str] = None,
+        resource_kind: Optional[str] = None,
+        resource_name: Optional[str] = None,
+        namespace_path: Optional[tuple[str, ...]] = None,
+        is_transport_error: bool = False,
+        job_id: Optional[str] = None,
+        job_request_id: Optional[str] = None,
+    ):
+        super().__init__(message, request_id, status_code)
+        self.is_transport_error = is_transport_error
+        self.job_id = job_id
+        self.job_request_id = job_request_id
+        self.error_code = error_code
+        self.resource_kind = resource_kind
+        self.resource_name = resource_name
+        self.namespace_path = (
+            tuple(namespace_path) if namespace_path is not None else None
+        )
+
+    def __reduce__(self) -> tuple[type, tuple]:
+        return (
+            self.__class__,
+            (
+                str(self),
+                self.request_id,
+                self.status_code,
+                self.error_code,
+                self.resource_kind,
+                self.resource_name,
+                self.namespace_path,
+                self.is_transport_error,
+                self.job_id,
+                self.job_request_id,
+            ),
+        )
+
+
+def _http_error_class(
+    error_code: Optional[str], resource_kind: Optional[str], status_code: Optional[int]
+) -> Optional[type[HttpError]]:
+    if status_code == 400 and error_code is not None:
+        input_class = {
+            "column_not_found": ColumnNotFoundError,
+            "schema_mismatch": SchemaMismatchError,
+        }.get(error_code)
+        if input_class is not None:
+            return input_class
+    if status_code == 404 and error_code is not None:
+        input_class = {
+            "table_not_found": TableNotFoundError,
+            "reference_not_found": ReferenceNotFoundError,
+        }.get(error_code)
+        if input_class is not None:
+            return input_class
+    if error_code == "already_exists":
+        return AlreadyExistsError
+    if status_code == 409:
+        return ConflictError
+    if error_code != "not_found" or resource_kind is None:
+        return None
+    return {
+        "secret": SecretNotFoundError,
+        "function": FunctionNotFoundError,
+        "namespace": NamespaceNotFoundError,
+    }.get(resource_kind)
+
+
+class ColumnNotFoundError(HttpError, _ColumnNotFoundError):
+    """A remote HTTP request named a missing table column."""
+
+
+class ReferenceNotFoundError(HttpError, _ReferenceNotFoundError):
+    """A remote HTTP request named a missing branch or table reference."""
+
+
+class SchemaMismatchError(HttpError, _SchemaMismatchError):
+    """Input to a remote HTTP request does not match the table schema."""
+
+
+class SqlError(LanceDBClientError):
+    """A SQL response with its gRPC status and correlation fields.
+
+    ``grpc_code`` is the numeric gRPC code. ``error_code`` is an optional
+    machine-readable classification supplied by the server; message text is
+    never used to choose a subclass. ``job_id`` and ``job_request_id`` are absent
+    unless the server reports an isolated SQL job. ``request_id`` identifies the
+    current request. Older servers still produce SqlError without a category.
+
+    Examples
+    --------
+    >>> error = SqlError("Column 'missing' was not found", "req-1", 3,
+    ...                  "column_not_found", "job-1", "worker-1")
+    >>> isinstance(error, SqlColumnNotFoundError)
+    True
+    >>> error.job_request_id
+    'worker-1'
+    """
+
+    def __new__(
+        cls,
+        message: str,
+        request_id: str,
+        grpc_code: int,
+        error_code: Optional[str] = None,
+        job_id: Optional[str] = None,
+        job_request_id: Optional[str] = None,
+    ):
+        if cls is SqlError and error_code is not None:
+            cls = {
+                (3, "column_not_found"): SqlColumnNotFoundError,
+                (3, "schema_mismatch"): SqlSchemaMismatchError,
+                (5, "table_not_found"): SqlTableNotFoundError,
+                (5, "reference_not_found"): SqlReferenceNotFoundError,
+            }.get((grpc_code, error_code), cls)
+        return RuntimeError.__new__(cls)
+
+    def __init__(
+        self,
+        message: str,
+        request_id: str,
+        grpc_code: int,
+        error_code: Optional[str] = None,
+        job_id: Optional[str] = None,
+        job_request_id: Optional[str] = None,
+    ):
+        super().__init__(message, request_id)
+        self.grpc_code = grpc_code
+        self.error_code = error_code
+        self.job_id = job_id
+        self.job_request_id = job_request_id
+
+    def __reduce__(self):
+        return (
+            self.__class__,
+            (
+                str(self),
+                self.request_id,
+                self.grpc_code,
+                self.error_code,
+                self.job_id,
+                self.job_request_id,
+            ),
+        )
+
+
+class SqlColumnNotFoundError(SqlError, _ColumnNotFoundError):
+    """A SQL request named a missing column."""
+
+
+class SqlReferenceNotFoundError(SqlError, _ReferenceNotFoundError):
+    """A SQL request named a missing branch or table reference."""
+
+
+class SqlSchemaMismatchError(SqlError, _SchemaMismatchError):
+    """SQL input does not match the table schema."""
+
+
+class SqlTableNotFoundError(SqlError, ValueError, _NamespaceTableNotFoundError):
+    """A SQL request named a missing table."""
+
+
+class SecretNotFoundError(HttpError):
+    """A remote secret was not found."""
+
+
+class FunctionNotFoundError(HttpError):
+    """A remote function was not found."""
+
+
+class NamespaceNotFoundError(HttpError):
+    """A remote namespace was not found."""
+
+
+class AlreadyExistsError(HttpError):
+    """A remote resource already exists."""
+
+
+class ConflictError(HttpError):
+    """A remote operation conflicts with the current state of a resource.
+
+    For example, deleting a branch whose files are still needed by another
+    branch raises this error. The server's reason is included in the message.
+
+    Examples
+    --------
+    >>> error = HttpError("main depends on the branch's files", "req-1", 409)
+    >>> isinstance(error, ConflictError)
+    True
+    >>> error.status_code
+    409
+    """
+
+
+class ResponseInterruptedError(HttpError):
+    """A streamed query response stopped before the server finished sending it.
+
+    The batches already returned are valid, but the result is incomplete. The
+    query is not retried automatically, because a new attempt would return those
+    rows a second time. To read the same data in a new attempt, check out
+    ``table_version`` first.
+
+    Attributes
+    ----------
+    batches: int
+        The number of batches returned before the interruption.
+    rows: int
+        The number of rows in those batches.
+    table_version: int or None
+        The table version the response reflected, if the server reported it.
+
+    Examples
+    --------
+    >>> error = ResponseInterruptedError("interrupted", "req-1", 2, 2048, 7)
+    >>> isinstance(error, HttpError)
+    True
+    >>> (error.rows, error.table_version)
+    (2048, 7)
+    """
+
+    # HttpError.__new__ takes HttpError's arguments, to choose a subclass.
+    def __new__(cls, *args, **kwargs):
+        return RuntimeError.__new__(cls)
+
+    def __init__(
+        self,
+        message: str,
+        request_id: str,
+        batches: int,
+        rows: int,
+        table_version: Optional[int] = None,
+        is_transport_error: bool = False,
+    ):
+        super().__init__(message, request_id, is_transport_error=is_transport_error)
+        self.batches = batches
+        self.rows = rows
+        self.table_version = table_version
+
+    def __reduce__(self) -> tuple[type, tuple]:
+        return (
+            self.__class__,
+            (
+                str(self),
+                self.request_id,
+                self.batches,
+                self.rows,
+                self.table_version,
+                self.is_transport_error,
+            ),
+        )
+
+
+class TableNotFoundError(HttpError, ValueError, _NamespaceTableNotFoundError):
+    """A remote table was not found.
+
+    This is also a ``lance_namespace.errors.TableNotFoundError`` and a
+    ``ValueError``, so existing missing-table handlers continue to work.
+    Like [HttpError][lancedb.remote.errors.HttpError], it carries the
+    ``request_id`` and ``status_code`` of the failed request.
+
+    Examples
+    --------
+    >>> error = TableNotFoundError("Table 'missing' was not found", "req-123", 404)
+    >>> isinstance(error, ValueError)
+    True
+    >>> error.request_id
+    'req-123'
     """
 
     pass

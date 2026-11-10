@@ -171,7 +171,7 @@ pub(crate) fn physical_unnest(
             return Err(Error::NotSupported {
                 message: format!(
                     "'{name}' in FROM position is a Function; views over Function rows are \
-                     supported only in LanceDB Distributed"
+                     supported only in LanceDB Enterprise"
                 ),
             });
         }
@@ -1665,7 +1665,7 @@ impl CreateMaterializedViewBuilder {
         self
     }
 
-    /// Enable or disable automatic refresh in LanceDB Distributed.
+    /// Enable or disable automatic refresh in LanceDB Enterprise.
     /// When omitted, the server determines whether automatic refresh is enabled.
     /// LanceDB Embedded does not support automatic refresh.
     pub fn auto_refresh_enabled(mut self, enabled: bool) -> Self {
@@ -1673,7 +1673,7 @@ impl CreateMaterializedViewBuilder {
         self
     }
 
-    /// Set a positive, finite refresh interval in seconds in LanceDB Distributed.
+    /// Set a positive, finite refresh interval in seconds in LanceDB Enterprise.
     /// When omitted, the server determines when to refresh.
     ///
     /// ```no_run
@@ -1766,7 +1766,7 @@ impl CreateMaterializedViewBuilder {
         crate::require_experimental_functions()?;
         if self.auto_refresh_enabled == Some(true) || self.auto_refresh_interval_seconds.is_some() {
             return Err(Error::NotSupported {
-                message: "automatic materialized-view refresh requires LanceDB Distributed"
+                message: "automatic materialized-view refresh requires LanceDB Enterprise"
                     .to_string(),
             });
         }
@@ -1863,7 +1863,83 @@ impl MaterializedView {
             view: self.clone(),
             source_version: None,
             full: false,
+            options: Default::default(),
         }
+    }
+}
+
+/// Per-execution resource caps and GPU placement for Enterprise MV refreshes.
+///
+/// CPU is in millicores (1000 = one core), memory is bytes, and GPUs are a
+/// simultaneous cap across the refresh, not a per-Function allocation. CPU or
+/// memory requires all three budget fields. Embedded refreshes reject options.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RefreshMaterializedViewOptions {
+    pub cpu_millis: Option<u64>,
+    pub memory_bytes: Option<u64>,
+    pub gpu_count: Option<u32>,
+    pub gpu_class: Option<String>,
+}
+
+impl RefreshMaterializedViewOptions {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.cpu_millis.is_none()
+            && self.memory_bytes.is_none()
+            && self.gpu_count.is_none()
+            && self.gpu_class.is_none()
+    }
+
+    pub(crate) fn validate(&self) -> Result<()> {
+        let invalid = |message: &str| Error::InvalidInput {
+            message: message.into(),
+        };
+        if self.cpu_millis == Some(0) || self.memory_bytes == Some(0) {
+            return Err(invalid(
+                "cpu_millis and memory_bytes must be positive integers",
+            ));
+        }
+        if (self.cpu_millis.is_some() || self.memory_bytes.is_some())
+            && !(self.cpu_millis.is_some()
+                && self.memory_bytes.is_some()
+                && self.gpu_count.is_some())
+        {
+            return Err(invalid(
+                "cpu_millis, memory_bytes, and gpu_count must be specified together",
+            ));
+        }
+        if let Some(class) = &self.gpu_class {
+            crate::function::validate_gpu_class_name(class)?;
+            if self.gpu_count == Some(0) {
+                return Err(invalid("gpu_class requires a positive GPU budget"));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn sql_clause(&self, full: bool) -> Result<String> {
+        self.validate()?;
+        let mut values = Vec::new();
+        if full {
+            values.push("full = true".to_string());
+        }
+        if let Some(cpu) = self.cpu_millis {
+            values.push(format!("cpu_millis = {cpu}"));
+        }
+        if let Some(memory) = self.memory_bytes {
+            values.push(format!("memory_bytes = {memory}"));
+        }
+        if let Some(gpu) = self.gpu_count {
+            values.push(format!("gpu_count = {gpu}"));
+        }
+        if let Some(class) = &self.gpu_class {
+            values.push(format!("gpu_class = '{class}'"));
+        }
+        Ok(if values.is_empty() {
+            String::new()
+        } else {
+            format!(" WITH ({})", values.join(", "))
+        })
     }
 }
 
@@ -1872,9 +1948,34 @@ pub struct RefreshMaterializedViewBuilder {
     view: MaterializedView,
     source_version: Option<u64>,
     full: bool,
+    options: RefreshMaterializedViewOptions,
 }
 
 impl RefreshMaterializedViewBuilder {
+    /// Cap total CPU capacity in millicores; requires memory and GPU budgets.
+    pub fn cpu_millis(mut self, cpu_millis: u64) -> Self {
+        self.options.cpu_millis = Some(cpu_millis);
+        self
+    }
+
+    /// Cap total memory in bytes; requires CPU and GPU budgets.
+    pub fn memory_bytes(mut self, memory_bytes: u64) -> Self {
+        self.options.memory_bytes = Some(memory_bytes);
+        self
+    }
+
+    /// Cap concurrent GPUs for this refresh. Zero is CPU-only.
+    pub fn gpu_count(mut self, gpu_count: u32) -> Self {
+        self.options.gpu_count = Some(gpu_count);
+        self
+    }
+
+    /// Select an operator-configured GPU class for this execution only.
+    pub fn gpu_class(mut self, gpu_class: impl Into<String>) -> Self {
+        self.options.gpu_class = Some(gpu_class.into());
+        self
+    }
+
     /// Force a complete rebuild instead of letting the server choose
     /// the refresh mode. Defaults to `false`. LanceDB Embedded views always rebuild.
     ///
@@ -1900,13 +2001,21 @@ impl RefreshMaterializedViewBuilder {
 
     /// Submit the refresh and return a job that settles with its result.
     pub async fn execute_async(self) -> Result<Job<RefreshMaterializedViewResult>> {
+        self.options.validate()?;
         if self.view.table.as_native().is_none() {
             return self
                 .view
                 .table
                 .base_table()
-                .refresh_materialized_view_async(self.source_version, self.full)
+                .refresh_materialized_view_async_with_options(
+                    self.source_version,
+                    self.full,
+                    self.options,
+                )
                 .await;
+        }
+        if !self.options.is_empty() {
+            return Err(Error::NotSupported { message: "resource budgets and GPU placement require an Enterprise materialized-view refresh".into() });
         }
         crate::require_experimental_functions()?;
         Ok(Job::spawned(tokio::spawn(async move {
@@ -1916,6 +2025,10 @@ impl RefreshMaterializedViewBuilder {
 
     /// Refresh the view, waiting for the job to finish.
     pub async fn execute(self) -> Result<RefreshMaterializedViewResult> {
+        self.options.validate()?;
+        if self.view.table.as_native().is_some() && !self.options.is_empty() {
+            return Err(Error::NotSupported { message: "resource budgets and GPU placement require an Enterprise materialized-view refresh".into() });
+        }
         if self.view.table.as_native().is_some() {
             return refresh::execute_refresh(&self.view.table, self.source_version).await;
         }
@@ -2015,7 +2128,7 @@ impl Connection {
     /// Start dropping a materialized view and return its job.
     ///
     /// This validates that the named resource is a materialized view rather
-    /// than an ordinary table. In LanceDB Distributed the job has type `query`
+    /// than an ordinary table. In LanceDB Enterprise the job has type `query`
     /// and its ID identifies the SQL query. Waiting completes once the catalog
     /// binding is removed; physical cleanup continues in the background.
     ///
@@ -2051,10 +2164,52 @@ impl Connection {
 
 #[cfg(test)]
 mod tests {
-    use arrow_array::{RecordBatch, record_batch};
+    use arrow_array::{FixedSizeListArray, Float32Array, Int32Array, RecordBatch, record_batch};
+    use futures::TryStreamExt;
+    use lance_arrow::FixedSizeListArrayExt;
 
     use super::*;
     use crate::connect;
+    use crate::index::vector::IvfFlatIndexBuilder;
+    use crate::index::{Index, IndexType};
+    use crate::query::{ExecutableQuery, QueryBase};
+
+    /// A source of `rows` 4-d vectors. Hand-rolled rather than `record_batch!`
+    /// because the macro has no fixed-size-list form.
+    async fn db_with_vectors(rows: i32) -> (Connection, Table) {
+        const DIM: i32 = 4;
+        let vectors = FixedSizeListArray::try_new_from_values(
+            Float32Array::from((0..rows * DIM).map(|v| v as f32).collect::<Vec<_>>()),
+            DIM,
+        )
+        .unwrap();
+        let schema = Arc::new(ArrowSchema::new(vec![
+            ArrowField::new("id", DataType::Int32, true),
+            ArrowField::new(
+                "vec",
+                DataType::FixedSizeList(
+                    Arc::new(ArrowField::new("item", DataType::Float32, true)),
+                    DIM,
+                ),
+                true,
+            ),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..rows)),
+                Arc::new(vectors),
+            ],
+        )
+        .unwrap();
+        let conn = connect("memory://").execute().await.unwrap();
+        let table = conn
+            .create_table("src", vec![batch])
+            .execute()
+            .await
+            .unwrap();
+        (conn, table)
+    }
 
     #[test]
     fn remote_source_namespace_uses_one_sql_schema_position() {
@@ -2108,6 +2263,15 @@ mod tests {
             .execute()
             .await
             .unwrap();
+
+        assert!(matches!(
+            view.refresh().gpu_count(0).execute().await,
+            Err(Error::NotSupported { .. })
+        ));
+        assert!(matches!(
+            view.refresh().gpu_class("h100").execute_async().await,
+            Err(Error::NotSupported { .. })
+        ));
 
         assert_eq!(view.table().count_rows(None).await.unwrap(), 2);
         assert!(
@@ -2396,6 +2560,102 @@ mod tests {
             view.table().count_rows(Some("x > 2".into())).await.unwrap(),
             2
         );
+    }
+
+    /// The fragment-swap rebuild replaces every fragment the vector index was
+    /// trained over. Its definition must survive, and search must still answer
+    /// over the replacement rows before maintenance indexes them again.
+    #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
+    async fn test_rebuild_retains_vector_index() {
+        let (conn, source) = db_with_vectors(256).await;
+        let view = conn
+            .create_materialized_view("vecs", "src")
+            .select([("id", "id"), ("vec", "vec")])
+            .execute()
+            .await
+            .unwrap();
+        view.table()
+            .create_index(
+                &["vec"],
+                Index::IvfFlat(
+                    IvfFlatIndexBuilder::default()
+                        .num_partitions(1)
+                        .sample_rate(1)
+                        .max_iterations(1),
+                ),
+            )
+            .execute()
+            .await
+            .unwrap();
+
+        let indices = view.table().list_indices().await.unwrap();
+        assert_eq!(indices.len(), 1);
+        let index_name = indices[0].name.clone();
+        assert_eq!(indices[0].index_type, IndexType::IvfFlat);
+        assert_eq!(indices[0].columns, vec!["vec".to_string()]);
+        let stats = view
+            .table()
+            .index_stats(&index_name)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stats.num_unindexed_rows, 0);
+
+        source
+            .update()
+            .column("id", "id + 1000")
+            .execute()
+            .await
+            .unwrap();
+        let result = view.refresh().execute().await.unwrap();
+        assert_eq!(result.mode, Some(RefreshMode::Rebuild));
+        assert_eq!(result.rows_written, Some(256));
+
+        let indices = view.table().list_indices().await.unwrap();
+        assert_eq!(indices.len(), 1, "the rebuild dropped the vector index");
+        assert_eq!(indices[0].name, index_name);
+        assert_eq!(indices[0].index_type, IndexType::IvfFlat);
+        assert_eq!(indices[0].columns, vec!["vec".to_string()]);
+
+        // The definition survives, but the retained index covers none of the
+        // replacement rows until it is rebuilt.
+        let stats = view
+            .table()
+            .index_stats(&index_name)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stats.num_unindexed_rows, 256);
+
+        let batches = view
+            .table()
+            .query()
+            .nearest_to(vec![0.0f32; 4])
+            .unwrap()
+            .limit(5)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let mut ids = Vec::new();
+        for batch in &batches {
+            ids.extend(
+                batch["id"]
+                    .as_any()
+                    .downcast_ref::<Int32Array>()
+                    .unwrap()
+                    .values()
+                    .iter()
+                    .copied(),
+            );
+        }
+        assert_eq!(ids, vec![1000, 1001, 1002, 1003, 1004]);
     }
 
     #[tokio::test]

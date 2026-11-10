@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use lancedb::{connect, table::NewColumnTransform};
+use lancedb::connect;
 
 // --8<-- [start:quickstart_define_struct]
 use std::sync::Arc;
@@ -54,14 +54,12 @@ fn frames_schema() -> Arc<Schema> {
     ]))
 }
 
-fn frames_to_reader(
-    schema: Arc<Schema>,
-    rows: &[Frame],
-) -> Box<dyn RecordBatchReader + Send> {
-    let frame_ids = LargeStringArray::from_iter_values(rows.iter().map(|row| row.frame_id.as_str()));
-    let video_ids = LargeStringArray::from_iter_values(rows.iter().map(|row| row.video_id.as_str()));
-    let captions =
-        LargeStringArray::from_iter_values(rows.iter().map(|row| row.caption.as_str()));
+fn frames_to_reader(schema: Arc<Schema>, rows: &[Frame]) -> Box<dyn RecordBatchReader + Send> {
+    let frame_ids =
+        LargeStringArray::from_iter_values(rows.iter().map(|row| row.frame_id.as_str()));
+    let video_ids =
+        LargeStringArray::from_iter_values(rows.iter().map(|row| row.video_id.as_str()));
+    let captions = LargeStringArray::from_iter_values(rows.iter().map(|row| row.caption.as_str()));
 
     let motion = Int8Array::from_iter_values(rows.iter().map(|row| row.stats.motion));
     let sharpness = Int8Array::from_iter_values(rows.iter().map(|row| row.stats.sharpness));
@@ -220,31 +218,6 @@ async fn main() {
     assert_eq!(frame_id_col.get(0).unwrap(), "2");
     assert_eq!(frame_id_col.get(1).unwrap(), "4");
 
-    // --8<-- [start:quickstart_curate_with_metadata]
-    let curated = table
-        .query()
-        .nearest_to(&query_vector)
-        .unwrap()
-        .only_if("stats.motion >= 4")
-        .select(Select::Columns(vec![
-            "frame_id".to_string(),
-            "video_id".to_string(),
-            "caption".to_string(),
-            "_distance".to_string(),
-        ]))
-        .limit(2)
-        .execute()
-        .await
-        .unwrap()
-        .into_polars()
-        .await
-        .unwrap();
-    println!("{curated:?}");
-    // --8<-- [end:quickstart_curate_with_metadata]
-    let curated_frame_id_col = curated.column("frame_id").unwrap().str().unwrap();
-    assert_eq!(curated_frame_id_col.get(0).unwrap(), "2");
-    assert_eq!(curated_frame_id_col.get(1).unwrap(), "4");
-
     // --8<-- [start:quickstart_output_array]
     let result = table
         .query()
@@ -267,38 +240,6 @@ async fn main() {
     // --8<-- [end:quickstart_output_array]
     let frame_id_col = result.column("frame_id").unwrap().str().unwrap();
     assert_eq!(frame_id_col.get(0).unwrap(), "2");
-
-    // --8<-- [start:quickstart_add_feature]
-    table
-        .add_columns(
-            NewColumnTransform::SqlExpressions(vec![(
-                "quality_score".to_string(),
-                "cast(((stats.motion + stats.sharpness + stats.exposure + stats.framing) / 4.0) as float)"
-                    .to_string(),
-            )]),
-            None,
-        )
-        .await
-        .unwrap();
-    // --8<-- [end:quickstart_add_feature]
-
-    // --8<-- [start:quickstart_query_feature]
-    let features = table
-        .query()
-        .select(Select::Columns(vec![
-            "frame_id".to_string(),
-            "video_id".to_string(),
-            "quality_score".to_string(),
-        ]))
-        .execute()
-        .await
-        .unwrap()
-        .into_polars()
-        .await
-        .unwrap();
-    println!("{features:?}");
-    // --8<-- [end:quickstart_query_feature]
-    assert_eq!(features.column("quality_score").unwrap().len(), 4);
 
     // What the quickstart's download step leaves in an application's directory.
     let app = tempfile::tempdir().unwrap();
