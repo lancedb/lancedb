@@ -10,14 +10,14 @@ keywords: ["multimodal lakehouse", "training", "feature engineering", "search", 
 layer for search and retrieval, curation, feature engineering, and model training. It is built on [Lance](/basics/lance), an
 open-source columnar format for multimodal AI data.
 
-Raw data, metadata, embeddings, and features live together in one versioned table, stored in open files on local
-disk or object storage. You search the table, curate it, add derived columns, and stream it into training without
-copying data into a separate system for each step.
-
-LanceDB includes:
+LanceDB depends only on object storage for its primary state, and NVME/memory for caching in the serving
+layer, giving it the latency profile of an in-memory database with the petabyte scalability and cost profile
+of S3. LanceDB is intended for use as a single solution in your org for all of the following, giving your
+team one system to become expert in and removing the need for multiple database systems and
+synchronization pipelines between them:
 
 - [**Multimodal tables**](/management/table#multimodal) that hold images, video, audio, text, embeddings, and
-  metadata in one schema-enforced table
+  metadata in schema-enforced tables
 - [**Vector search**](/search/vector-search), combined with [filters](/search/filtering) and
   [reranking](/reranking)
 - [**Full-text search**](/search/full-text-search) with BM25 ranking, and
