@@ -1145,6 +1145,8 @@ LanceDB Enterprise it is the server's backfill job.
     `resourceBudget` and `maxExecutorProcessesPerWorker` size registered
     Function refreshes. A `resourceBudget` requires `cpuMillis` and
     `memoryBytes`; its `gpuCount` defaults to zero for a CPU-only Function.
+    The budget applies only to this explicit refresh and does not configure
+    a later automatic refresh.
     `gpuCount` at the top level is the shorthand that preserves the
     deployment defaults for CPU and memory, and cannot be combined with
     `resourceBudget`. `numWorkers` applies only to expression columns; use
