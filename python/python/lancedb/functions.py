@@ -873,17 +873,47 @@ class RefreshColumnResult(_RemoteValue):
 
     LanceDB Embedded jobs produce this value in process. LanceDB Enterprise
     decodes the same value from the durable server-job terminal payload.
+
+    Row counters describe logical rows planned for this refresh, not user-code
+    calls or retry attempts. ``rows_assigned`` counts rows successfully written
+    with an output value, ``rows_failed`` counts rows whose computation failed,
+    and ``rows_remaining`` counts planned rows neither assigned nor terminally
+    skipped. Rows already counted in ``rows_failed`` are covered and are not
+    counted again in ``rows_remaining``.
+
+    For example, a refresh over 2,001 logical rows that assigns 1,891 values and
+    fails 110 rows reports ``rows_assigned=1,891``, ``rows_failed=110``, and
+    ``rows_remaining=0``. Its failure-rate denominator is those 2,001 logical
+    rows, not the number of execution attempts.
     """
 
     rows_assigned: _UInt64
+    """Number of logical rows successfully assigned an output value by this
+    refresh. Each row counts once, regardless of retry attempts, and failed rows
+    are not included."""
+
     rows_failed: _UInt64
+    """Number of logical rows whose computation failed. Rows deferred because
+    an input was not ready are not failures."""
+
     rows_remaining: _UInt64
+    """Number of planned logical rows neither assigned nor terminally skipped.
+    Rows already counted in ``rows_failed`` are covered and are not counted
+    again."""
+
     source_version: _UInt64
+    """Exact table version the refresh read."""
+
     published_version: Optional[_UInt64] = None
+    """Table version made visible by the refresh, when one was published."""
 
     @property
     def rows_filled(self) -> int:
-        """Deprecated compatibility alias for :attr:`rows_assigned`."""
+        """Deprecated compatibility alias for :attr:`rows_assigned`.
+
+        The value is the same successful logical-row count; it does not count
+        execution attempts.
+        """
         return self.rows_assigned
 
     @property

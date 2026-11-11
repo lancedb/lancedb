@@ -1197,6 +1197,11 @@ LanceDB Enterprise it is the server's backfill job.
     `resourceBudget` for registered Functions. All are LanceDB Enterprise
     only; a LanceDB Embedded refresh rejects every option other than
     `batchSize`, `gpuClass` and `gpuCount`.
+    `publicationIntervalRows` opts into publishing completed Function split
+    ranges once their accumulated unpublished rows reach the threshold.
+    It must be a positive safe integer and requires non-Blob Function outputs.
+    Omit it for whole-fragment publication. Publications can exceed the
+    threshold, and remaining rows publish at completion.
 
 #### Returns
 
@@ -1212,6 +1217,7 @@ const job = await table.refreshColumnAsync("embedding", {
     memoryBytes: 16 * 1024 ** 3,
   },
   maxConcurrency: 4,
+  publicationIntervalRows: 10000,
   errorPolicy: "skip",
   maxFailedFraction: 0.01,
   rowTimeoutSeconds: 30,

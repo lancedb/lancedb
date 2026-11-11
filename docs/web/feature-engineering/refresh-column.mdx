@@ -414,8 +414,8 @@ and `gpuCount` in the `refreshColumnAsync` options.
 </Note>
 
 Completed Function outputs publish with their fragment by default. To opt into
-a row-count publication threshold, set `publication_interval_rows` in Python or
-`publication_interval_rows()` in Rust:
+a row-count publication threshold, set `publication_interval_rows` in Python,
+`publicationIntervalRows` in TypeScript, or `publication_interval_rows()` in Rust:
 
 <CodeGroup>
 ```python Python icon="python"
@@ -424,6 +424,13 @@ job = table.refresh_column_async(
     publication_interval_rows=60,
 )
 job.wait()
+```
+
+```typescript TypeScript icon="square-js"
+const job = await table.refreshColumnAsync("embedding", {
+  publicationIntervalRows: 60,
+});
+await job.wait();
 ```
 
 ```rust Rust icon="rust"
@@ -443,7 +450,9 @@ individual publication can differ from this value depending on completed work
 and Function batching; this is not an exact-N contract. Omit it to keep
 whole-fragment publication.
 
-The TypeScript SDK does not expose the publication threshold option yet.
+In TypeScript, the threshold must be a positive safe integer, at most
+`Number.MAX_SAFE_INTEGER`. This option requires a supporting LanceDB Enterprise
+server and Function outputs without Blob types; Blob inputs are allowed.
 
 The job APIs also take the row filter and failure handling of the SQL
 `REFRESH COLUMN ... WHERE ... WITH (...)` form, so a refresh can be narrowed

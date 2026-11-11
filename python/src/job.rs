@@ -152,6 +152,13 @@ impl Job {
         self.inner.description().map(JobDescription::from)
     }
 
+    pub fn timeline(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            Ok(inner.timeline().await.infer_error()?.to_string())
+        })
+    }
+
     #[pyo3(signature = (*, limit=None, filter=None))]
     pub fn events(
         self_: PyRef<'_, Self>,
