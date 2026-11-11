@@ -1601,7 +1601,7 @@ pub struct FunctionWorkerResourceBudget {
 
 fn resource_budget_integer(value: f64, name: &str) -> napi::Result<u64> {
     const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
-    if !value.is_finite() || value.fract() != 0.0 || value < 1.0 || value > MAX_SAFE_INTEGER {
+    if !value.is_finite() || value.fract() != 0.0 || !(1.0..=MAX_SAFE_INTEGER).contains(&value) {
         return Err(napi::Error::from_reason(format!(
             "{name} must be a positive safe integer"
         )));
@@ -1613,7 +1613,7 @@ fn resource_budget_gpu_count(value: Option<f64>) -> napi::Result<u32> {
     let Some(value) = value else {
         return Ok(0);
     };
-    if !value.is_finite() || value.fract() != 0.0 || value < 0.0 || value > u32::MAX as f64 {
+    if !value.is_finite() || value.fract() != 0.0 || !(0.0..=u32::MAX as f64).contains(&value) {
         return Err(napi::Error::from_reason(
             "resourceBudget.gpuCount must be an integer between 0 and 4294967295",
         ));
