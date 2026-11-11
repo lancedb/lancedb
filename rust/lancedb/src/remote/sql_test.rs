@@ -3936,6 +3936,21 @@ async fn remote_optimize_parser_errors_are_clear_without_resubmission() {
             "Unknown OPTIMIZE option 'io_buffer_size'",
             true,
         ),
+        (
+            tonic::Code::InvalidArgument,
+            "ParserError: future grammar diagnostic",
+            true,
+        ),
+        (
+            tonic::Code::InvalidArgument,
+            "Unknown OPTIMIZE option 'future_option'",
+            true,
+        ),
+        (
+            tonic::Code::PermissionDenied,
+            "ParserError: future grammar diagnostic",
+            false,
+        ),
         (tonic::Code::PermissionDenied, "permission denied", false),
         (tonic::Code::NotFound, "table not found", false),
         (tonic::Code::Unavailable, "transport error", false),
@@ -4010,7 +4025,7 @@ async fn remote_optimize_branch_options_are_not_dropped() {
         .await
         .unwrap_err();
     assert!(matches!(error, Error::NotSupported { .. }));
-    assert!(error.to_string().contains("invocation options"));
+    assert!(error.to_string().contains("compatible release"));
     assert_eq!(
         *statements.lock().unwrap(),
         ["OPTIMIZE \"events\" REWRITE DATA WITH (branch = 'exp', io_buffer_size = 0)"]

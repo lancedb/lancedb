@@ -35,32 +35,17 @@ pub(super) fn compaction_sql_options(
     Ok(result)
 }
 
-const UNSUPPORTED_OPTIMIZE: &str = "This Enterprise server does not support OPTIMIZE <table> REWRITE DATA. Upgrade the Enterprise server to a compatible release to run remote compaction.";
-const UNSUPPORTED_OPTIONS: &str = "This Enterprise server does not support the requested compaction invocation options. Upgrade the server; options will not be removed or retried.";
+const UNSUPPORTED_OPTIMIZE: &str = "Compaction on an Enterprise table requires support for OPTIMIZE <table> REWRITE DATA. Upgrade LanceDB Enterprise to a compatible release.";
+const UNSUPPORTED_OPTIONS: &str = "The requested compaction options are not supported by this version of LanceDB Enterprise. Upgrade to a compatible release; requested options will not be removed or retried.";
 
-/// Only recognize unsupported syntax in optimize statements the client constructs.
-fn unsupported_optimize_message(message: &str, has_options: bool) -> Option<&'static str> {
+/// The client generates the whole statement, so parser errors indicate a
+/// client/server syntax mismatch. Match option errors without enumerating names.
+fn unsupported_optimize_message(message: &str) -> Option<&'static str> {
     let message = message.to_ascii_lowercase();
-    let parser_error = message.contains("parsererror");
-    if (parser_error
-        && has_options
-        && (message.contains("expected: end of statement, found: with")
-            || message.contains("expected: ), found: ,")))
-        || [
-            "target_rows_per_fragment",
-            "max_source_rows",
-            "io_buffer_size",
-            "batch_size",
-        ]
-        .iter()
-        .any(|name| message.contains(&format!("unknown optimize option '{name}'")))
-    {
-        Some(UNSUPPORTED_OPTIONS)
-    } else if parser_error
-        && (message.contains("expected: end of statement, found: rewrite")
-            || message.contains("expected: table, found:"))
-    {
+    if message.contains("parsererror") {
         Some(UNSUPPORTED_OPTIMIZE)
+    } else if message.contains("unknown optimize option") {
+        Some(UNSUPPORTED_OPTIONS)
     } else {
         None
     }
@@ -68,22 +53,22 @@ fn unsupported_optimize_message(message: &str, has_options: bool) -> Option<&'st
 
 /// Apply compatibility handling only to this constructed operation.
 /// Preserve every unrelated SQL/authentication/transport error unchanged.
-pub(super) fn map_optimize_error(error: Error, has_options: bool) -> Error {
-    fn unsupported(error: &Error, has_options: bool) -> Option<(&Error, &'static str)> {
+pub(super) fn map_optimize_error(error: Error) -> Error {
+    fn unsupported(error: &Error) -> Option<(&Error, &'static str)> {
         match error {
             Error::Sql {
                 message, grpc_code, ..
             } if *grpc_code == tonic::Code::InvalidArgument as i32 => {
-                unsupported_optimize_message(message, has_options).map(|reason| (error, reason))
+                unsupported_optimize_message(message).map(|reason| (error, reason))
             }
             Error::JobFailed { failure, .. } => failure
                 .source
                 .as_deref()
-                .and_then(|source| unsupported(source, has_options)),
+                .and_then(|source| unsupported(source)),
             _ => None,
         }
     }
-    if let Some((source, reason)) = unsupported(&error, has_options) {
+    if let Some((source, reason)) = unsupported(&error) {
         let diagnostic = match &error {
             Error::Sql { .. } => error.to_string(),
             // JobFailure's Display omits its source, including the SQL request ID.
@@ -117,7 +102,7 @@ mod tests {
     fn direct_optimize_error_prints_its_diagnostic_once() {
         let diagnostic = "ParserError: Expected: end of statement, found: REWRITE";
         let Error::NotSupported { message } =
-            map_optimize_error(sql_error(tonic::Code::InvalidArgument, diagnostic), false)
+            map_optimize_error(sql_error(tonic::Code::InvalidArgument, diagnostic))
         else {
             panic!("known optimize syntax must be unsupported");
         };
@@ -140,7 +125,7 @@ mod tests {
                 ..Default::default()
             }),
         };
-        let Error::NotSupported { message } = map_optimize_error(error, false) else {
+        let Error::NotSupported { message } = map_optimize_error(error) else {
             panic!("wrapped unsupported optimize SQL must be translated");
         };
         assert!(message.contains(UNSUPPORTED_OPTIMIZE));
@@ -156,10 +141,7 @@ mod tests {
         for (code, diagnostic) in [
             (tonic::Code::PermissionDenied, unsupported),
             (tonic::Code::Unavailable, unsupported),
-            (
-                tonic::Code::InvalidArgument,
-                "ParserError: Expected: identifier",
-            ),
+            (tonic::Code::InvalidArgument, "invalid table configuration"),
         ] {
             let source = Arc::new(sql_error(code, diagnostic));
             let error = Error::JobFailed {
@@ -173,7 +155,7 @@ mod tests {
                     ..Default::default()
                 }),
             };
-            let Error::JobFailed { job_id, failure } = map_optimize_error(error, false) else {
+            let Error::JobFailed { job_id, failure } = map_optimize_error(error) else {
                 panic!("{code:?}: unrelated SQL failure must keep its classification");
             };
             assert_eq!(job_id.as_deref(), Some("optimize-job"));
@@ -186,39 +168,36 @@ mod tests {
     }
 
     #[test]
-    fn optimize_errors_do_not_classify_other_failures() {
-        assert_eq!(
-            unsupported_optimize_message(
-                "ParserError: Expected: end of statement, found: REWRITE",
-                false
-            ),
-            Some(UNSUPPORTED_OPTIMIZE)
-        );
-        assert_eq!(
-            unsupported_optimize_message("ParserError: Expected: TABLE, found: events", false),
-            Some(UNSUPPORTED_OPTIMIZE)
-        );
-        assert_eq!(
-            unsupported_optimize_message("Unknown OPTIMIZE option 'max_source_rows'", true),
-            Some(UNSUPPORTED_OPTIONS)
-        );
-        assert_eq!(
-            unsupported_optimize_message("ParserError: Expected: ), found: ,", true),
-            Some(UNSUPPORTED_OPTIONS)
-        );
-        assert!(
-            unsupported_optimize_message("ParserError: Expected: ), found: ,", false).is_none()
-        );
-        for message in [
+    fn generated_optimize_syntax_errors_indicate_incompatible_servers() {
+        for diagnostic in [
+            "ParserError: Expected: end of statement, found: REWRITE",
+            "ParserError: Expected: identifier",
+            "SQL error: ParserError: future grammar diagnostic",
+            "parsererror: lowercase diagnostic",
+        ] {
+            assert_eq!(
+                unsupported_optimize_message(diagnostic),
+                Some(UNSUPPORTED_OPTIMIZE)
+            );
+        }
+        for diagnostic in [
+            "Unknown OPTIMIZE option 'io_buffer_size'",
+            "Error during planning: Unknown OPTIMIZE option 'future_option'",
+        ] {
+            assert_eq!(
+                unsupported_optimize_message(diagnostic),
+                Some(UNSUPPORTED_OPTIONS)
+            );
+        }
+        for diagnostic in [
             "permission denied",
             "table not found",
             "connection reset",
-            "ParserError: Expected: identifier",
-            "Unknown OPTIMIZE option 'future_option'",
+            "invalid table configuration",
         ] {
             assert!(
-                unsupported_optimize_message(message, true).is_none(),
-                "{message}"
+                unsupported_optimize_message(diagnostic).is_none(),
+                "{diagnostic}"
             );
         }
     }
