@@ -179,7 +179,8 @@ jobs:
     strategy:
       matrix:
         features: ["default", "experimental-functions"]
-    timeout-minutes: 30
+    # A cold native build plus experimental-functions tests can exceed 30 minutes.
+    timeout-minutes: 60
     runs-on: macos-15
     defaults:
       run:
