@@ -211,6 +211,7 @@ impl From<lancedb::database::JobInfo> for JobInfo {
 
 /// The server's account of why a job failed.
 #[napi(object)]
+#[derive(Clone, Debug)]
 pub struct JobFailureInfo {
     pub phase: Option<String>,
     pub message: Option<String>,

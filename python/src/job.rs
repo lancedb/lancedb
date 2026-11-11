@@ -228,7 +228,7 @@ impl From<lancedb::database::JobInfo> for JobInfo {
 
 /// The server's account of why a job failed.
 #[pyclass(module = "lancedb._lancedb", get_all, skip_from_py_object)]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct JobFailureInfo {
     phase: Option<String>,
     message: Option<String>,
