@@ -1725,10 +1725,24 @@ describe("When creating an index", () => {
     });
   });
 
+  it("should be able to create IVF_SQ", async () => {
+    await tbl.createIndex("vec", {
+      config: Index.ivfSq({
+        numPartitions: 10,
+      }),
+    });
+
+    const indices = await tbl.listIndices();
+    expect(indices).toHaveLength(1);
+    expect(indices[0].indexType).toBe("IvfSq");
+    expect(indices[0].columns).toEqual(["vec"]);
+  });
+
   it.each([
     ["IvfPq", Index.ivfPq({ targetPartitionSize: 100 })],
     ["IvfFlat", Index.ivfFlat({ targetPartitionSize: 100 })],
     ["IvfRq", Index.ivfRq({ targetPartitionSize: 100 })],
+    ["IvfSq", Index.ivfSq({ targetPartitionSize: 100 })],
     ["IvfHnswPq", Index.hnswPq({ targetPartitionSize: 100 })],
     ["IvfHnswSq", Index.hnswSq({ targetPartitionSize: 100 })],
   ])("should create %s with targetPartitionSize", async (indexType, config) => {
