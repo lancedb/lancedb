@@ -64,6 +64,17 @@ Deadline for Function initialization, in seconds.
 
 ***
 
+### maxConcurrency?
+
+```ts
+optional maxConcurrency: number;
+```
+
+Override the registered Function's maximum concurrent user-code calls
+for this logical execution.
+
+***
+
 ### maxExecutorProcessesPerWorker?
 
 ```ts
