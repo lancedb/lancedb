@@ -5645,7 +5645,7 @@ class LanceTable(Table):
     def wait_fresh(
         self, column: str, timeout: Optional[timedelta] = None
     ) -> FunctionColumnStatus:
-        return LOOP.run(self._table.wait_column_fresh(column, timeout))
+        return LOOP.run(self._table.wait_fresh(column, timeout))
 
     def alter_columns(
         self, *alterations: Iterable[Dict[str, str]]
