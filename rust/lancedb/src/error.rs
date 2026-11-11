@@ -543,6 +543,25 @@ fn has_unsupported_local_filesystem_source(error: &(dyn std::error::Error + 'sta
 }
 
 impl Error {
+    /// HTTP status associated with a remote request error.
+    ///
+    /// Retry wrappers preserve the underlying status. Other error variants do
+    /// not represent an HTTP response and return `None`.
+    #[cfg(feature = "remote")]
+    pub fn status_code(&self) -> Option<reqwest::StatusCode> {
+        match self {
+            Self::Http { status_code, .. } => *status_code,
+            Self::Retry { status_code, .. } => *status_code,
+            Self::TableNotFound { source, .. } => {
+                source.downcast_ref::<Self>().and_then(Self::status_code)
+            }
+            Self::JobFailed { failure, .. } => {
+                failure.source.as_deref().and_then(Self::status_code)
+            }
+            _ => None,
+        }
+    }
+
     /// Structured resource details reported by a remote HTTP error.
     ///
     /// Older servers do not include these fields, in which case this returns

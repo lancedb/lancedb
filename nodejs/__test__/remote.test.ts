@@ -647,6 +647,69 @@ describe("remote connection", () => {
     ]);
   });
 
+  it("passes a pinned version and decodes Function scheduler status", async () => {
+    const queries: Record<string, string>[] = [];
+    await withMockDatabase(
+      (req, res) => {
+        const url = new URL(req.url ?? "/", "http://localhost");
+        if (url.pathname.endsWith("/describe/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              name: "docs",
+              version: 42,
+              schema: { fields: [] },
+            }),
+          );
+          return;
+        }
+        if (url.pathname === "/v1/table/docs/function_columns/status") {
+          queries.push(Object.fromEntries(url.searchParams.entries()));
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            `[{
+              "column":"embedding",
+              "binding_id":"fb_01",
+              "function":{
+                "name":"embed",
+                "object_id":"embed",
+                "location":"objects/embed",
+                "version":"7",
+                "manifest_digest":"sha256:abc"
+              },
+              "table_version":42,
+              "rows":4,
+              "fresh":2,
+              "stale":2,
+              "never_computed":0,
+              "failed":0,
+              "auto_refresh":{
+                "enabled":true,
+                "interval_seconds":60,
+                "state":"blocked",
+                "failure_streak":3,
+                "effective_cooldown_millis":8000,
+                "blocked_reason":"preparation_backoff",
+                "next_run_at_millis":null
+              }
+            }]`,
+          );
+          return;
+        }
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const table = await db.openTable("docs");
+        await table.checkout(42);
+        const status = await table.functionColumnStatus("embedding");
+        expect(status.tableVersion).toBe(42n);
+        expect(status.autoRefresh.state).toBe("blocked");
+        expect(status.autoRefresh.failureStreak).toBe(3);
+        expect(status.autoRefresh.effectiveCooldownMillis).toBe(8000n);
+        expect(status.autoRefresh.blockedReason).toBe("preparation_backoff");
+      },
+    );
+    expect(queries).toEqual([{ column: "embedding", version: "42" }]);
+  });
+
   it("forwards refresh options to the backfill request", async () => {
     const bodies: unknown[] = [];
     await withMockDatabase(

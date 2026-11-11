@@ -523,6 +523,14 @@ with BlobReader(read_range, len(payload)) as reader:
 
 ::: lancedb.FunctionErrorFragment
 
+::: lancedb.FunctionColumnStatus
+
+::: lancedb.FunctionColumnVersionStatus
+
+::: lancedb.FunctionColumnLastRefreshJob
+
+::: lancedb.FunctionColumnAutoRefreshStatus
+
 ::: lancedb.job.Job
 
 ::: lancedb.job.AsyncJob

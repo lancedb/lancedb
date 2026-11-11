@@ -16,9 +16,10 @@ use query::{FTSQuery, HybridQuery, Query, VectorQuery};
 use session::Session;
 use table::{
     AddColumnsResult, AddResult, AlterColumnsResult, DeleteResult, DropColumnsResult, FtsToken,
-    FunctionErrorFragment, FunctionErrorRecord, FunctionErrors, MergeResult, PyBlobFile,
-    RTEWriteSpec, RefreshColumnResult, RefreshMaterializedViewResult, Table,
-    UpdateFieldMetadataResult, UpdateResult,
+    FunctionColumnAutoRefreshStatus, FunctionColumnLastRefreshJob, FunctionColumnStatus,
+    FunctionColumnVersionStatus, FunctionErrorFragment, FunctionErrorRecord, FunctionErrors,
+    MergeResult, PyBlobFile, RTEWriteSpec, RefreshColumnResult, RefreshMaterializedViewResult,
+    Table, UpdateFieldMetadataResult, UpdateResult,
 };
 
 pub mod arrow;
@@ -117,6 +118,10 @@ pub fn _lancedb(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<FunctionErrors>()?;
     m.add_class::<FunctionErrorRecord>()?;
     m.add_class::<FunctionErrorFragment>()?;
+    m.add_class::<FunctionColumnStatus>()?;
+    m.add_class::<FunctionColumnVersionStatus>()?;
+    m.add_class::<FunctionColumnLastRefreshJob>()?;
+    m.add_class::<FunctionColumnAutoRefreshStatus>()?;
     m.add_class::<RefreshMaterializedViewResult>()?;
     m.add_class::<AlterColumnsResult>()?;
     m.add_class::<UpdateFieldMetadataResult>()?;

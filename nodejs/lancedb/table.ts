@@ -258,6 +258,66 @@ export interface RTEWriteSpec {
   writerConfigDefaults?: Record<string, string>;
 }
 
+/** Exact immutable Function revision attached to a table output. */
+export interface FunctionColumnVersionStatus {
+  name: string;
+  namespacePath: string[];
+  objectId: string;
+  location: string;
+  version: string;
+  manifestDigest: string;
+}
+
+/** Latest matching refresh Job projected for a Function output. */
+export interface FunctionColumnLastRefreshJob {
+  jobId: string;
+  state: string;
+  automatic?: boolean;
+  completedAtMillis?: bigint;
+}
+
+/** Automatic-refresh projection for a Function output. */
+export interface FunctionColumnAutoRefreshStatus {
+  enabled: boolean;
+  intervalSeconds?: bigint;
+  activeJobId?: string;
+  state:
+    | "disabled"
+    | "running"
+    | "ready"
+    | "up_to_date"
+    | "waiting_interval"
+    | "waiting_backoff"
+    | "blocked"
+    | "unobservable";
+  failureStreak: number;
+  effectiveCooldownMillis?: bigint;
+  blockedReason?:
+    | "table_has_mem_wal"
+    | "inputs_not_settled"
+    | "dependency_in_flight"
+    | "table_capacity"
+    | "cancelled"
+    | "preparation_backoff";
+  nextRunAtMillis: bigint | null;
+  nextRunAtReason?: string;
+}
+
+/** Exact four-way status of one Function output at one table version. */
+export interface FunctionColumnStatus {
+  column: string;
+  bindingId: string;
+  function: FunctionColumnVersionStatus;
+  tableVersion: bigint;
+  rows: bigint;
+  fresh: bigint;
+  stale: bigint;
+  neverComputed: bigint;
+  failed: bigint;
+  lastRefreshJob?: FunctionColumnLastRefreshJob;
+  autoRefresh: FunctionColumnAutoRefreshStatus;
+}
+
 /**
  * A Table is a collection of Records in a LanceDB Database.
  *
@@ -779,6 +839,32 @@ export abstract class Table {
   abstract functionErrors(
     options?: FunctionErrorsOptions,
   ): Promise<FunctionErrors>;
+
+  /**
+   * Return exact freshness status for Function-backed output columns.
+   *
+   * All results describe one server table version. Omit `column` for every
+   * Function output. Rows already failed remain visible and do not prevent
+   * `waitFresh` from completing. A handle pinned to an exact version requests
+   * that version; a latest handle retains normal read-freshness behavior.
+   */
+  abstract functionColumnStatuses(
+    column?: string,
+  ): Promise<FunctionColumnStatus[]>;
+
+  /** Return exact freshness status for one Function-backed output column. */
+  abstract functionColumnStatus(column: string): Promise<FunctionColumnStatus>;
+
+  /**
+   * Poll until no stale or never-computed rows remain.
+   *
+   * Only HTTP 503 with the exact finalization-pending error code is retried;
+   * every other error propagates. Failed rows do not block completion.
+   */
+  abstract waitFresh(
+    column: string,
+    timeoutSeconds?: number,
+  ): Promise<FunctionColumnStatus>;
 
   /**
    * Recompute this table's contents from its materialized-view definition.
@@ -1555,6 +1641,31 @@ export class LocalTable extends Table {
   ): Promise<FunctionErrors> {
     validateNonNegativeInteger(options?.limit, "limit");
     return await this.inner.functionErrors(options);
+  }
+
+  async functionColumnStatuses(
+    column?: string,
+  ): Promise<FunctionColumnStatus[]> {
+    return (await this.inner.functionColumnStatuses(
+      column,
+    )) as FunctionColumnStatus[];
+  }
+
+  async functionColumnStatus(column: string): Promise<FunctionColumnStatus> {
+    return (await this.inner.functionColumnStatus(
+      column,
+    )) as FunctionColumnStatus;
+  }
+
+  async waitFresh(
+    column: string,
+    timeoutSeconds?: number,
+  ): Promise<FunctionColumnStatus> {
+    validateNonNegativeInteger(timeoutSeconds, "timeoutSeconds");
+    return (await this.inner.waitForFunctionColumn(
+      column,
+      timeoutSeconds,
+    )) as FunctionColumnStatus;
   }
 
   async refreshMaterializedView(

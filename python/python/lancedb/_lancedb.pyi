@@ -671,6 +671,13 @@ class Table:
         column: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> FunctionErrors: ...
+    async def column_statuses(
+        self, column: Optional[str] = None
+    ) -> list[FunctionColumnStatus]: ...
+    async def column_status(self, column: str) -> FunctionColumnStatus: ...
+    async def wait_column_fresh(
+        self, column: str, timeout: Optional[timedelta] = None
+    ) -> FunctionColumnStatus: ...
     async def refresh_materialized_view(
         self,
         source_version: Optional[int] = None,
@@ -1087,6 +1094,44 @@ class FunctionErrors:
     records: list[FunctionErrorRecord]
     fragments: list[FunctionErrorFragment]
     truncated: bool
+
+class FunctionColumnVersionStatus:
+    name: str
+    namespace_path: list[str]
+    object_id: str
+    location: str
+    version: str
+    manifest_digest: str
+
+class FunctionColumnLastRefreshJob:
+    job_id: str
+    state: str
+    automatic: Optional[bool]
+    completed_at_millis: Optional[int]
+
+class FunctionColumnAutoRefreshStatus:
+    enabled: bool
+    interval_seconds: Optional[int]
+    active_job_id: Optional[str]
+    state: str
+    failure_streak: int
+    effective_cooldown_millis: Optional[int]
+    blocked_reason: Optional[str]
+    next_run_at_millis: Optional[int]
+    next_run_at_reason: Optional[str]
+
+class FunctionColumnStatus:
+    column: str
+    binding_id: str
+    function: FunctionColumnVersionStatus
+    table_version: int
+    rows: int
+    fresh: int
+    stale: int
+    never_computed: int
+    failed: int
+    last_refresh_job: Optional[FunctionColumnLastRefreshJob]
+    auto_refresh: FunctionColumnAutoRefreshStatus
 
 class RefreshMaterializedViewResult:
     @staticmethod
