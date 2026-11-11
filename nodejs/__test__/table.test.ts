@@ -5687,6 +5687,9 @@ describe("computed columns", () => {
       table.refreshColumnAsync("x", { errorPolicy: "skip" }),
     ).rejects.toThrow("error_policy requires a LanceDB Enterprise refresh");
     await expect(
+      table.refreshColumnAsync("x", { maxConcurrency: 4 }),
+    ).rejects.toThrow("max_concurrency requires a LanceDB Enterprise refresh");
+    await expect(
       table.refreshColumnAsync("x", {
         resourceBudget: { cpuMillis: 1_000, memoryBytes: 1_024 },
       }),

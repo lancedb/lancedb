@@ -134,6 +134,7 @@ def test_function_execution_controls_match_shared_registration_golden():
         env={"MODE": "test"},
         python_version="3.12",
         batch_size=2,
+        max_concurrency=4,
         row_timeout_seconds=0.75,
     )(normalize_score.__wrapped__)
     assert (
@@ -157,6 +158,31 @@ def test_function_execution_controls_apply_to_vectorized_functions():
     request = json.loads(identity.registration_request.to_canonical_json())
     assert request["batch_size"] == 3
     assert request["row_timeout_seconds"] == 1.25
+
+
+def test_function_registration_transports_max_concurrency():
+    @function(name="normalize_score", max_concurrency=4)
+    def registered(value: float) -> float:
+        return value
+
+    with _mock_remote_function_catalog() as (host, state):
+        db = lancedb.connect(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            client_config={"retry_config": {"retries": 0}},
+        )
+        version = db.create_function(registered)
+
+    create_requests = [
+        body
+        for path, body in state["requests"]
+        if path == "/v1/function/normalize_score/create"
+    ]
+    assert len(create_requests) == 1
+    assert create_requests[0]["max_concurrency"] == 4
+    assert type(create_requests[0]["max_concurrency"]) is int
+    assert version.max_concurrency == 4
 
 
 def test_function_retry_policy_is_part_of_registration():
@@ -193,6 +219,11 @@ def test_function_retry_policy_rejects_invalid_options(options):
         ({"batch_size": 0}, "batch_size"),
         ({"batch_size": 2**32}, "batch_size"),
         ({"batch_size": True}, "batch_size"),
+        ({"max_concurrency": 0}, "max_concurrency"),
+        ({"max_concurrency": -1}, "max_concurrency"),
+        ({"max_concurrency": 2**32}, "max_concurrency"),
+        ({"max_concurrency": True}, "max_concurrency"),
+        ({"max_concurrency": 1.5}, "max_concurrency"),
         ({"row_timeout_seconds": 0}, "row_timeout_seconds"),
         ({"row_timeout_seconds": -0.25}, "row_timeout_seconds"),
         ({"row_timeout_seconds": float("inf")}, "row_timeout_seconds"),
@@ -2085,6 +2116,11 @@ def _mock_remote_function_catalog():
                     "signature": body["signature"],
                     "source_digest": body["artifact"]["digest"],
                     "secret_bindings": body.get("secret_bindings", []),
+                    **(
+                        {"max_concurrency": body["max_concurrency"]}
+                        if "max_concurrency" in body
+                        else {}
+                    ),
                     "created_at_millis": 1787270400000,  # 2026-08-21T00:00:00Z
                 }
                 response = {"job_id": "job-register"}

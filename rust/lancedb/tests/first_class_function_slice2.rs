@@ -71,6 +71,7 @@ fn execution_controls_match_shared_canonical_golden() {
 
     let value: Value = serde_json::from_str(&request.to_canonical_json().unwrap()).unwrap();
     assert_eq!(value["batch_size"], 2);
+    assert_eq!(value["max_concurrency"], 4);
     assert_eq!(value["row_timeout_seconds"], 0.75);
 }
 
@@ -80,6 +81,10 @@ fn execution_controls_require_their_positive_ranges() {
     for (field, value) in [
         ("batch_size", Value::from(0)),
         ("batch_size", Value::from(4_294_967_296_u64)),
+        ("max_concurrency", Value::from(0)),
+        ("max_concurrency", Value::from(4_294_967_296_u64)),
+        ("max_concurrency", Value::from(-1)),
+        ("max_concurrency", Value::from(1.5)),
         ("row_timeout_seconds", Value::from(0)),
         ("row_timeout_seconds", Value::from(-0.25)),
     ] {
@@ -107,6 +112,11 @@ fn execution_controls_are_validated_before_canonical_serialization() {
     request.batch_size = Some(0);
     let error = request.to_canonical_json().unwrap_err();
     assert!(error.to_string().contains("batch_size"), "{error}");
+
+    let mut request = FunctionRegistrationRequest::from_json(&source).unwrap();
+    request.max_concurrency = Some(0);
+    let error = request.to_canonical_json().unwrap_err();
+    assert!(error.to_string().contains("max_concurrency"), "{error}");
 }
 
 /// The same shared golden as the Python suite builds from `@function(secrets=...)`

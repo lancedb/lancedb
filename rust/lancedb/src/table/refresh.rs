@@ -149,6 +149,12 @@ pub struct RefreshColumnOptions {
     /// effect on expression-backed columns in LanceDB Embedded.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub batch_size: Option<usize>,
+    /// Override the registered Function's maximum concurrent user-code calls
+    /// for this logical execution. Must be greater than zero. `None` uses the
+    /// registration default, or disabled when the Function declares none.
+    /// This is not an account quota and does not change `resource_budget`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_concurrency: Option<u32>,
     /// Opt-in row-count threshold for publishing completed Function outputs.
     ///
     /// Must be greater than zero. `None` keeps whole-fragment publication.
@@ -235,6 +241,13 @@ impl RefreshColumnOptions {
         self
     }
 
+    /// Override the registered Function's maximum concurrent user-code calls
+    /// for this logical execution.
+    pub fn max_concurrency(mut self, max_concurrency: u32) -> Self {
+        self.max_concurrency = Some(max_concurrency);
+        self
+    }
+
     /// Use `rows` as the opt-in publication threshold for completed Function
     /// outputs. The actual publication boundary can be larger than this value.
     pub fn publication_interval_rows(mut self, rows: u64) -> Self {
@@ -278,6 +291,7 @@ impl RefreshColumnOptions {
                 "max_executor_processes_per_worker",
                 self.max_executor_processes_per_worker.is_some(),
             ),
+            ("max_concurrency", self.max_concurrency.is_some()),
             (
                 "publication_interval_rows",
                 self.publication_interval_rows.is_some(),
@@ -333,6 +347,11 @@ impl RefreshColumnOptions {
         if self.batch_size == Some(0) {
             return Err(Error::InvalidInput {
                 message: "batch_size must be greater than zero".into(),
+            });
+        }
+        if self.max_concurrency == Some(0) {
+            return Err(Error::InvalidInput {
+                message: "max_concurrency must be greater than zero".into(),
             });
         }
         if self.publication_interval_rows == Some(0) {
