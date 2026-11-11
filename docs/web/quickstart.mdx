@@ -59,8 +59,9 @@ uv add --prerelease allow --index https://pypi.fury.io/lancedb/ lancedb
 
 Most applications only need `lancedb`. Install the optional `pylance` extra and
 include the Lance preview index only when building query engines or connectors,
-calling format-level `lance` APIs directly, or converting plain-scan lazy or
-legacy blob columns with `to_pandas()`:
+calling format-level `lance` APIs directly, or converting plain-scan lazy blob
+handles with `to_pandas()`. Legacy plain-scan byte conversions use LanceDB's
+native path and do not require `pylance`:
 
 <CodeGroup>
 ```bash Python (pip) icon="terminal"
