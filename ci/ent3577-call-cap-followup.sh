@@ -38,7 +38,11 @@ run_stage_in() {
   return "$status"
 }
 
-python_extension="$(find "$repo_root/python/.venv" -name '_lancedb*.so' -print -quit)"
+python_extension="$(
+  cd "$repo_root/python"
+  uv run --extra tests python -c \
+    'import lancedb._lancedb as native; print(native.__file__)'
+)"
 printf '%s\n' "$python_extension" >"$evidence_root/python-extension-path.txt"
 sha256sum "$python_extension" >"$evidence_root/python-extension-before.sha256"
 
