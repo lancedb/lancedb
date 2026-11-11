@@ -211,6 +211,11 @@ pub const FUNCTION_BINDINGS_VERSION: u32 = 1;
 /// declared before signatures existed.
 pub const SOURCE_SIGNATURE_META_KEY: &str = "computed_refresh.source_signature";
 
+/// Signatures of input-preserving rewrites whose retained Function outputs
+/// are current but whose inserted rows still need their first computation.
+/// A sidecar reference keeps this separate from completed freshness stamps.
+pub const PENDING_FILL_SIGNATURE_META_KEY: &str = "computed_refresh.pending_fill_signature";
+
 /// Field metadata key holding the definition digest a column was last
 /// computed under. A change to it makes every row stale.
 pub const DEFINITION_VERSION_META_KEY: &str = "computed_refresh.definition_version";

@@ -113,6 +113,11 @@ pub(crate) async fn execute_update(
     }
 
     // 4. Apply the columns (SET clause)
+    let written_columns = update
+        .columns
+        .iter()
+        .map(|(column, _)| column.clone())
+        .collect::<Vec<_>>();
     for (column, value) in update.columns {
         builder = builder.set(column, &value)?;
     }
@@ -120,13 +125,25 @@ pub(crate) async fn execute_update(
     // 5. Execute the operation (Write new files)
     let operation = builder.build()?;
     let res = operation.execute().await?;
+    let mut new_dataset = res.new_dataset.as_ref().clone();
+    if let Err(error) = super::freshness::preserve_function_freshness(
+        &mut new_dataset,
+        super::freshness::FunctionWrite::Update {
+            columns: &written_columns,
+        },
+    )
+    .await
+    {
+        log::warn!("update committed but Function freshness could not be preserved: {error}");
+    }
 
     // 6. Update the table's view of the latest version
-    table.dataset.update(res.new_dataset.as_ref().clone());
+    let version = new_dataset.version().version;
+    table.dataset.update(new_dataset);
 
     Ok(UpdateResult {
         rows_updated: res.rows_updated,
-        version: res.new_dataset.version().version,
+        version,
     })
 }
 
