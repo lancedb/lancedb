@@ -33,7 +33,9 @@ export CARGO_TARGET_DIR=/home/ec2-user/Code/targets/ent3563-freshness-bb527bb
 
 uvx --from 'maturin>=1.10' maturin develop \
   --manifest-path "$repo_root/python/Cargo.toml" \
-  --locked >"$out_dir/python-build.log" 2>&1
+  --locked \
+  --no-default-features \
+  --features 'remote,lancedb/metrics-otel' >"$out_dir/python-build.log" 2>&1
 printf '%s\n' "$?" >"$out_dir/python-build.log.exit"
 
 python -c 'import lancedb._lancedb as native; print(native.__file__)' \
