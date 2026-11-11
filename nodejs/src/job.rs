@@ -138,12 +138,7 @@ impl Job {
     /// Why the job failed, when it failed and the server reports a reason.
     #[napi(getter)]
     pub fn failure(&self) -> Option<JobFailureInfo> {
-        self.inner.failure().map(|failure| JobFailureInfo {
-            phase: failure.phase,
-            message: failure.message,
-            traceback: failure.traceback,
-            retryable: failure.retryable,
-        })
+        self.inner.failure().map(Into::into)
     }
 
     /// This job's recorded lifecycle events, as an Arrow IPC stream buffer.
@@ -222,4 +217,18 @@ pub struct JobFailureInfo {
     /// User-code traceback, possibly truncated by the server.
     pub traceback: Option<String>,
     pub retryable: Option<bool>,
+    /// Isolated SQL job that raised this failure, when supplied by the server.
+    pub sql_job_id: Option<String>,
+}
+
+impl From<lancedb::error::JobFailure> for JobFailureInfo {
+    fn from(failure: lancedb::error::JobFailure) -> Self {
+        Self {
+            phase: failure.phase,
+            message: failure.message,
+            traceback: failure.traceback,
+            retryable: failure.retryable,
+            sql_job_id: failure.sql_job_id,
+        }
+    }
 }

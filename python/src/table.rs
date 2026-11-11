@@ -15,6 +15,7 @@ use crate::{
     error::PythonErrorExt,
     expr::PyExpr,
     index::{CodeAnalyzerOptions, IndexConfig, extract_index_params},
+    job::JobFailureInfo,
     query::{Query, TakeQuery},
     table::scannable::PyScannable,
 };
@@ -925,6 +926,7 @@ pub struct FunctionColumnLastRefreshJob {
     pub state: String,
     pub automatic: Option<bool>,
     pub completed_at_millis: Option<i64>,
+    pub failure: Option<JobFailureInfo>,
 }
 
 impl From<lancedb::table::FunctionColumnLastRefreshJob> for FunctionColumnLastRefreshJob {
@@ -934,6 +936,7 @@ impl From<lancedb::table::FunctionColumnLastRefreshJob> for FunctionColumnLastRe
             state: job.state,
             automatic: job.automatic,
             completed_at_millis: job.completed_at_millis,
+            failure: job.failure.map(Into::into),
         }
     }
 }
@@ -985,6 +988,7 @@ pub struct FunctionColumnStatus {
     pub never_computed: u64,
     pub failed: u64,
     pub last_refresh_job: Option<FunctionColumnLastRefreshJob>,
+    pub last_failure_job: Option<FunctionColumnLastRefreshJob>,
     pub auto_refresh: FunctionColumnAutoRefreshStatus,
 }
 
@@ -1017,6 +1021,7 @@ impl From<lancedb::table::FunctionColumnStatus> for FunctionColumnStatus {
             never_computed: status.never_computed,
             failed: status.failed,
             last_refresh_job: status.last_refresh_job.map(Into::into),
+            last_failure_job: status.last_failure_job.map(Into::into),
             auto_refresh: status.auto_refresh.into(),
         }
     }

@@ -11655,12 +11655,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_function_column_status_decodes_blocked_scheduler_fields() {
+    async fn test_function_column_status_decodes_scheduler_lifecycle_and_failures() {
         let table = Table::new_with_handler("my_table", |_request| {
             http::Response::builder()
                 .status(200)
                 .body(
-                    r#"[{
+                    r#"[
+                    {
                         "column":"embedding",
                         "binding_id":"fb_01",
                         "function":{
@@ -11674,6 +11675,101 @@ mod tests {
                         "rows":4,
                         "fresh":2,
                         "stale":2,
+                        "never_computed":0,
+                        "failed":0,
+                        "last_refresh_job":{
+                            "job_id":"job-cancelled",
+                            "state":"cancelled",
+                            "automatic":true,
+                            "completed_at_millis":1790000002000
+                        },
+                        "last_failure_job":{
+                            "job_id":"job-failed",
+                            "state":"failed",
+                            "automatic":true,
+                            "completed_at_millis":1790000001000,
+                            "failure":{
+                                "phase":"finalize",
+                                "message":"worker timed out",
+                                "traceback":"Traceback: timeout",
+                                "retryable":true,
+                                "sql_job_id":"sql-job-7"
+                            }
+                        },
+                        "auto_refresh":{
+                            "enabled":true,
+                            "interval_seconds":60,
+                            "active_job_id":"job-queued",
+                            "state":"queued",
+                            "failure_streak":1,
+                            "next_run_at_millis":null,
+                            "next_run_at_reason":"job_queued_not_started"
+                        }
+                    },
+                    {
+                        "column":"rerank",
+                        "binding_id":"fb_02",
+                        "function":{
+                            "name":"rerank",
+                            "object_id":"rerank",
+                            "location":"objects/rerank",
+                            "version":"3",
+                            "manifest_digest":"sha256:def"
+                        },
+                        "table_version":42,
+                        "rows":0,
+                        "fresh":0,
+                        "stale":0,
+                        "never_computed":0,
+                        "failed":0,
+                        "auto_refresh":{
+                            "enabled":true,
+                            "interval_seconds":60,
+                            "state":"blocked",
+                            "failure_streak":5,
+                            "blocked_reason":"failure_threshold_reached",
+                            "next_run_at_millis":null
+                        }
+                    },
+                    {
+                        "column":"classify",
+                        "binding_id":"fb_03",
+                        "function":{
+                            "name":"classify",
+                            "object_id":"classify",
+                            "location":"objects/classify",
+                            "version":"2",
+                            "manifest_digest":"sha256:ghi"
+                        },
+                        "table_version":42,
+                        "rows":0,
+                        "fresh":0,
+                        "stale":0,
+                        "never_computed":0,
+                        "failed":0,
+                        "auto_refresh":{
+                            "enabled":true,
+                            "interval_seconds":60,
+                            "state":"blocked",
+                            "failure_streak":0,
+                            "blocked_reason":"binding_revision_missing",
+                            "next_run_at_millis":null
+                        }
+                    },
+                    {
+                        "column":"summarize",
+                        "binding_id":"fb_04",
+                        "function":{
+                            "name":"summarize",
+                            "object_id":"summarize",
+                            "location":"objects/summarize",
+                            "version":"4",
+                            "manifest_digest":"sha256:jkl"
+                        },
+                        "table_version":42,
+                        "rows":0,
+                        "fresh":0,
+                        "stale":0,
                         "never_computed":0,
                         "failed":0,
                         "auto_refresh":{
@@ -11690,15 +11786,52 @@ mod tests {
                 .unwrap()
         });
 
-        let status = table.function_column_status("embedding").await.unwrap();
+        let statuses = table.function_column_statuses(None).await.unwrap();
+        assert_eq!(statuses.len(), 4);
+        let status = &statuses[0];
         assert_eq!(
             status.auto_refresh.state,
-            crate::table::FunctionColumnAutoRefreshState::Blocked
+            crate::table::FunctionColumnAutoRefreshState::Queued
         );
-        assert_eq!(status.auto_refresh.failure_streak, 3);
-        assert_eq!(status.auto_refresh.effective_cooldown_millis, Some(8000));
         assert_eq!(
-            status.auto_refresh.blocked_reason,
+            status.auto_refresh.active_job_id.as_deref(),
+            Some("job-queued")
+        );
+        assert_eq!(
+            status.auto_refresh.next_run_at_reason.as_deref(),
+            Some("job_queued_not_started")
+        );
+        assert_eq!(
+            status
+                .last_refresh_job
+                .as_ref()
+                .map(|job| job.state.as_str()),
+            Some("cancelled")
+        );
+        let failure_job = status.last_failure_job.as_ref().unwrap();
+        assert_eq!(failure_job.job_id, "job-failed");
+        let failure = failure_job.failure.as_ref().unwrap();
+        assert_eq!(failure.phase.as_deref(), Some("finalize"));
+        assert_eq!(failure.message.as_deref(), Some("worker timed out"));
+        assert_eq!(failure.retryable, Some(true));
+        assert_eq!(failure.sql_job_id.as_deref(), Some("sql-job-7"));
+
+        assert_eq!(statuses[1].auto_refresh.failure_streak, 5);
+        assert_eq!(
+            statuses[1].auto_refresh.blocked_reason,
+            Some(crate::table::FunctionColumnAutoRefreshBlockedReason::FailureThresholdReached)
+        );
+        assert_eq!(
+            statuses[2].auto_refresh.blocked_reason,
+            Some(crate::table::FunctionColumnAutoRefreshBlockedReason::BindingRevisionMissing)
+        );
+        assert_eq!(statuses[3].auto_refresh.failure_streak, 3);
+        assert_eq!(
+            statuses[3].auto_refresh.effective_cooldown_millis,
+            Some(8000)
+        );
+        assert_eq!(
+            statuses[3].auto_refresh.blocked_reason,
             Some(crate::table::FunctionColumnAutoRefreshBlockedReason::PreparationBackoff)
         );
     }
