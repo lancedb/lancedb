@@ -49,13 +49,13 @@ run_stage_in rust_function_version "$repo_root" \
 run_stage_in rust_registration_controls "$repo_root" \
   cargo test -p lancedb --test first_class_function_slice2 execution_controls
 run_stage_in rust_registration_sql "$repo_root" \
-  cargo test -p lancedb --lib function_creation_and_description_use_sql_query_handles
+  cargo test -p lancedb --features remote --lib function_creation_and_description_use_sql_query_handles
 run_stage_in rust_registration_invalid "$repo_root" \
-  cargo test -p lancedb --lib function_creation_rejects_invalid_execution_controls_before_sql
+  cargo test -p lancedb --features remote --lib function_creation_rejects_invalid_execution_controls_before_sql
 run_stage_in rust_refresh_wire "$repo_root" \
-  cargo test -p lancedb --lib test_refresh_column_async_filter_and_failure_options
+  cargo test -p lancedb --features remote --lib test_refresh_column_async_filter_and_failure_options
 run_stage_in rust_refresh_invalid "$repo_root" \
-  cargo test -p lancedb --lib test_refresh_column_rejects_invalid_filter_and_limit_options_before_request
+  cargo test -p lancedb --features remote --lib test_refresh_column_rejects_invalid_filter_and_limit_options_before_request
 
 run_stage_in python_build "$repo_root/python" \
   uv run --extra tests --extra dev maturin develop --extras tests,dev
