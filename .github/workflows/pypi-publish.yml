@@ -36,8 +36,8 @@ concurrency:
 jobs:
   linux:
     name: Python ${{ matrix.config.package_name }} ${{ matrix.config.platform }} manylinux${{ matrix.config.manylinux }}
-    # The ARM64 release build can exceed an hour with fat LTO on a cold runner.
-    timeout-minutes: ${{ matrix.config.platform == 'aarch64' && 120 || 60 }}
+    # ARM64 and compatibility release builds can exceed an hour with cold fat LTO.
+    timeout-minutes: ${{ (matrix.config.platform == 'aarch64' || matrix.config.package_name == 'lancedb-compat') && 120 || 60 }}
     strategy:
       matrix:
         config:
@@ -102,7 +102,8 @@ jobs:
           path: target/wheels/*.whl
           if-no-files-found: error
   mac:
-    timeout-minutes: 90
+    # Cold fat LTO was still compiling when the 90-minute limit was reached.
+    timeout-minutes: 150
     runs-on: ${{ matrix.config.runner }}
     strategy:
       matrix:
