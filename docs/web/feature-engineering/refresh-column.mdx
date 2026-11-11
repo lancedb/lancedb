@@ -166,8 +166,97 @@ The resource values cap the Function workers together: this example allows
 up to 8 CPUs, 16 GiB of memory, and 2 GPUs across the fleet. They are not
 per-worker allocations or a guaranteed worker count. `num_workers` is only
 accepted for SQL-expression columns; registered Function columns reject it.
-When setting CPU or memory, supply all three budget fields, using
-`gpu_count = 0` for a CPU-only Function.
+
+The SDKs accept the same nested budget. CPU and memory are required; the GPU
+count inside the budget defaults to zero, so a CPU-only Function can omit it:
+
+<CodeGroup>
+```python Python icon="python"
+job = table.refresh_column_async(
+    "embedding",
+    resource_budget={
+        "cpu_millis": 8000,
+        "memory_bytes": 16 * 1024**3,
+    },
+)
+job.wait()
+```
+
+```rust Rust icon="rust"
+use lancedb::table::{
+    FunctionWorkerResourceBudget,
+    RefreshColumnOptions,
+};
+
+let _job = table
+    .refresh_column_async_with_options(
+        "embedding",
+        RefreshColumnOptions::default().resource_budget(
+            FunctionWorkerResourceBudget::new(8000, 17_179_869_184),
+        ),
+    )
+    .await?;
+```
+
+```typescript TypeScript icon="typescript"
+const job = await table.refreshColumnAsync("embedding", {
+  resourceBudget: {
+    cpuMillis: 8000,
+    memoryBytes: 16 * 1024 ** 3,
+  },
+});
+await job.wait();
+```
+</CodeGroup>
+
+On current SQL servers, the equivalent `REFRESH COLUMN ... WITH (...)` form
+still takes all three fields when CPU or memory is set; use `gpu_count = 0`
+for a CPU-only Function. The SDK normalizes an omitted nested GPU count to a
+numeric zero before sending the request.
+
+The existing top-level `gpu_count` / `gpuCount` option remains the shorthand
+for changing only the aggregate GPU budget. It cannot be combined with the
+complete resource budget. Omitting both preserves the server's existing
+defaults.
+
+These examples configure only the explicit refresh shown. A registered
+Function declaration can separately set `auto_refresh_resource_budget` on
+`add_columns`; that declaration controls the budget for its automatic
+refreshes. SQL-expression columns reject the automatic resource-budget option
+because they do not use Function workers.
+
+To override the registered Function's call concurrency for this logical
+execution only:
+
+<CodeGroup>
+```python Python icon="python"
+job = table.refresh_column_async("embedding", max_concurrency=4)
+job.wait()
+```
+
+```rust Rust icon="rust"
+use lancedb::table::RefreshColumnOptions;
+
+let _job = table
+    .refresh_column_async_with_options(
+        "embedding",
+        RefreshColumnOptions::default().max_concurrency(4),
+    )
+    .await?;
+```
+
+```typescript TypeScript icon="typescript"
+const job = await table.refreshColumnAsync("embedding", {
+  maxConcurrency: 4,
+});
+await job.wait();
+```
+</CodeGroup>
+
+`max_concurrency` caps user-code calls in flight for one Function within one
+logical execution. It is not an account-wide quota and does not resize or
+rewrite `resource_budget`. Omitting it uses the registration default; a
+refresh value overrides that default for this execution only.
 
 `batch_size` caps rows in one Function call; LanceDB adapts actual call and
 work sizes. For Function columns, the refresh defaults to
@@ -248,7 +337,8 @@ async fn refresh(
 </CodeGroup>
 
 `gpu_count` is the aggregate GPU budget for the refresh's Function workers,
-not a request for that many GPUs per worker. It must be positive.
+not a request for that many GPUs per worker. It must be positive and preserves
+the deployment's CPU and memory defaults.
 `gpu_class` must name a class returned by `list_gpu_classes()`; class names
 are lowercase DNS labels. Omit either option to use the Function's registered
 class or the server's configured budget. `list_gpu_classes()` requires System
@@ -260,6 +350,38 @@ The Rust GPU discovery and refresh controls are not in the latest Rust
 release. TypeScript does not expose GPU class discovery; pass `gpuClass`
 and `gpuCount` in the `refreshColumnAsync` options.
 </Note>
+
+Completed Function outputs publish with their fragment by default. To opt into
+a row-count publication threshold, set `publication_interval_rows` in Python or
+`publication_interval_rows()` in Rust:
+
+<CodeGroup>
+```python Python icon="python"
+job = table.refresh_column_async(
+    "embedding",
+    publication_interval_rows=60,
+)
+job.wait()
+```
+
+```rust Rust icon="rust"
+use lancedb::table::RefreshColumnOptions;
+
+let _job = table
+    .refresh_column_async_with_options(
+        "embedding",
+        RefreshColumnOptions::default().publication_interval_rows(60),
+    )
+    .await?;
+```
+</CodeGroup>
+
+The threshold is opt-in and must be greater than zero. The number of rows in an
+individual publication can differ from this value depending on completed work
+and Function batching; this is not an exact-N contract. Omit it to keep
+whole-fragment publication.
+
+The TypeScript SDK does not expose the publication threshold option yet.
 
 The job APIs also take the row filter and failure handling of the SQL
 `REFRESH COLUMN ... WHERE ... WITH (...)` form, so a refresh can be narrowed
@@ -309,7 +431,8 @@ The SDK rejects a blank `where`, a `max_failed_fraction` outside 0 to 1, a
 timeout that is not a positive number and a zero worker or process count
 before sending the request; the server validates everything else. A LanceDB
 Embedded refresh rejects every option other than `batch_size`, `gpu_class`
-and `gpu_count`.
+and `gpu_count`; in particular, it rejects `resource_budget` rather than
+silently ignoring it.
 
 ## When a refresh fails {#failures}
 

@@ -97,6 +97,16 @@ def _validate_batch_size(value: Any) -> Optional[int]:
     return value
 
 
+def _validate_max_concurrency(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("max_concurrency must be an integer")
+    if not 1 <= value <= 2**32 - 1:
+        raise ValueError("max_concurrency must be between 1 and 4294967295")
+    return value
+
+
 def _validate_row_timeout(value: Any) -> Optional[float]:
     if value is None:
         return None
@@ -529,9 +539,10 @@ class FunctionVersion(_RemoteValue):
     ``gpu_class`` is the operator-defined GPU pool fixed into this Function
     version, or ``None`` when registration used the deployment default.
 
-    ``batch_size``, ``row_timeout_seconds``, and ``result_stability`` retain
-    the execution controls reported by the catalog. They are ``None`` for
-    versions registered before the corresponding declaration.
+    ``batch_size``, ``max_concurrency``, ``row_timeout_seconds``, and
+    ``result_stability`` retain the execution controls reported by the
+    catalog. They are ``None`` for versions registered before the
+    corresponding declaration.
     """
 
     name: str
@@ -548,6 +559,7 @@ class FunctionVersion(_RemoteValue):
     disabled: bool
     gpu_class: Optional[str] = None
     batch_size: Optional[int] = None
+    max_concurrency: Optional[int] = None
     row_timeout_seconds: Optional[float] = None
     result_stability: Optional[str] = None
 
@@ -555,6 +567,11 @@ class FunctionVersion(_RemoteValue):
     @classmethod
     def _validate_batch_size(cls, value):
         return _validate_batch_size(value)
+
+    @field_validator("max_concurrency", mode="before")
+    @classmethod
+    def _validate_max_concurrency(cls, value):
+        return _validate_max_concurrency(value)
 
     @field_validator("row_timeout_seconds", mode="before")
     @classmethod
@@ -691,6 +708,7 @@ class FunctionRegistrationRequest(_RemoteValue):
     signature: FunctionSignature
     runtime: PythonRuntimeSpec
     batch_size: Optional[int] = None
+    max_concurrency: Optional[int] = None
     row_timeout_seconds: Optional[float] = None
     retry_policy: Optional[FunctionRetryPolicy] = None
     secret_bindings: tuple[SecretBinding, ...] = ()
@@ -700,6 +718,11 @@ class FunctionRegistrationRequest(_RemoteValue):
     @classmethod
     def _validate_batch_size(cls, value):
         return _validate_batch_size(value)
+
+    @field_validator("max_concurrency", mode="before")
+    @classmethod
+    def _validate_max_concurrency(cls, value):
+        return _validate_max_concurrency(value)
 
     @field_validator("row_timeout_seconds", mode="before")
     @classmethod
@@ -1428,19 +1451,21 @@ def _is_function_decorator(node: ast.expr) -> bool:
     )
 
 
-def _literal_source(value: Any) -> str:
+def _literal_source(value: Any, name: str) -> str:
     if value is None or type(value) in (bool, int, str, bytes):
         return repr(value)
     if type(value) is float and math.isfinite(value):
         return repr(value)
     if type(value) is tuple:
-        children = ", ".join(_literal_source(child) for child in value)
+        children = ", ".join(_literal_source(child, name) for child in value)
         if len(value) == 1:
             children += ","
         return f"({children})"
     raise TypeError(
         "Function source references an unsupported global value of type "
-        f"{type(value).__name__}"
+        f"{type(value).__name__} in {name!r}. Only None, bool, int, str, bytes, "
+        "finite float, and tuples of these literals can be captured. "
+        "Define this value inside the function or class body instead."
     )
 
 
@@ -1875,7 +1900,7 @@ class _SourcePackager:
             if imported is value:
                 self._require_importable(module_name)
                 return f"from {module_name} import {qualname} as {name}"
-        return f"{name} = {_literal_source(value)}"
+        return f"{name} = {_literal_source(value, name)}"
 
     def _require_importable(self, module_name: str) -> None:
         """Warn about an import the Function's environment may not be able to
@@ -2161,6 +2186,7 @@ class FunctionDefinition:
         env: Mapping[str, str],
         python_version: Optional[str],
         batch_size: Optional[int] = None,
+        max_concurrency: Optional[int] = None,
         row_timeout_seconds: Optional[float] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
         gpu: bool = False,
@@ -2308,6 +2334,7 @@ class FunctionDefinition:
             signature=signature,
             runtime=runtime,
             batch_size=batch_size,
+            max_concurrency=max_concurrency,
             row_timeout_seconds=row_timeout_seconds,
             retry_policy=retry_policy,
             models=models,
@@ -2406,6 +2433,7 @@ def function(
     env: Optional[Mapping[str, str]] = None,
     python_version: Optional[str] = None,
     batch_size: Optional[int] = None,
+    max_concurrency: Optional[int] = None,
     row_timeout_seconds: Optional[float] = None,
     retry_policy: Optional[FunctionRetryPolicy] = None,
     gpu: bool = False,
@@ -2429,6 +2457,7 @@ def function(
     env: Optional[Mapping[str, str]] = None,
     python_version: Optional[str] = None,
     batch_size: Optional[int] = None,
+    max_concurrency: Optional[int] = None,
     row_timeout_seconds: Optional[float] = None,
     retry_policy: Optional[FunctionRetryPolicy] = None,
     gpu: bool = False,
@@ -2486,8 +2515,8 @@ def function(
     - modules, and classes and functions importable from an installed
       package, become imports; the package must be declared in ``pip`` or
       ``conda``;
-    - literals (``None``, booleans, numbers, strings, bytes, tuples of them)
-      are inlined;
+    - literals (``None``, ``bool``, ``int``, ``str``, ``bytes``, finite
+      ``float``, and tuples containing only these literals) are inlined;
     - functions and classes defined in ``__main__``, such as notebook cells,
       are packaged by source, together with what they reference;
     - modules and packages listed in ``code`` are shipped as Python source and
@@ -2505,6 +2534,9 @@ def function(
     image. Warnings follow normal Python warning filters and may be promoted
     to errors. Declare every third-party import in ``pip`` or ``conda`` even
     when it happens to be installed on the registration host.
+    Other global values, including Arrow types and schemas, lists, dictionaries,
+    sets, and NumPy arrays, cannot be captured as literals. Define them inside
+    the function or class body instead.
     Closures, lambdas, nested definitions, mutable module-level
     objects, code that reaches the module namespace another way
     (``globals()``/``eval``, ``sys.modules``, ``builtins``), and a
@@ -2559,6 +2591,11 @@ def function(
         Maximum number of input rows supplied in one execution batch. Must be
         between 1 and 4294967295. Remote execution may use smaller batches.
         When omitted, the service chooses the batch size adaptively.
+    max_concurrency : int, optional
+        Maximum user-code calls in flight for one Function within one logical
+        execution. Must be between 1 and 4294967295. A refresh can override
+        this default for that execution only. Omitting it preserves the
+        existing behavior. This is not an account-wide quota.
     row_timeout_seconds : float, optional
         Positive, finite deadline in seconds for each Python call: one row for
         scalar Functions and one batch for vectorized Functions. This does not
@@ -2695,6 +2732,7 @@ def function(
             env={} if env is None else env,
             python_version=python_version,
             batch_size=batch_size,
+            max_concurrency=max_concurrency,
             row_timeout_seconds=row_timeout_seconds,
             retry_policy=retry_policy,
             gpu=gpu,

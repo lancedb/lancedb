@@ -99,6 +99,7 @@
 - [FunctionErrorRecord](interfaces/FunctionErrorRecord.md)
 - [FunctionErrors](interfaces/FunctionErrors.md)
 - [FunctionErrorsOptions](interfaces/FunctionErrorsOptions.md)
+- [FunctionWorkerResourceBudget](interfaces/FunctionWorkerResourceBudget.md)
 - [HnswPqOptions](interfaces/HnswPqOptions.md)
 - [HnswSqOptions](interfaces/HnswSqOptions.md)
 - [IndexConfig](interfaces/IndexConfig.md)

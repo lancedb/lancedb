@@ -10,6 +10,7 @@ import io
 import inspect
 import json
 import multiprocessing as mp
+from pathlib import Path
 import pickle
 import re
 import socket
@@ -36,6 +37,7 @@ from lancedb.graph import (
     PropertyGraph,
     PropertyGraphDescription,
 )
+from lancedb.functions import FunctionApplication, function
 from lancedb.query import (
     AsyncQuery,
     ColumnOrdering,
@@ -1863,6 +1865,16 @@ def test_remote_create_index_async_returns_job():
         {"batch_size": None},
         {"batch_size": 1},
         {"batch_size": 8},
+        {"max_concurrency": 3},
+        {"publication_interval_rows": 60},
+        {"resource_budget": {"cpu_millis": 2000, "memory_bytes": 4 * 1024**3}},
+        {
+            "resource_budget": {
+                "cpu_millis": 8000,
+                "memory_bytes": 16 * 1024**3,
+                "gpu_count": 2,
+            }
+        },
         {"gpu_class": "a10g", "gpu_count": 2},
         {
             "retry_policy": {"transient": True, "max_attempts": 3},
@@ -1903,6 +1915,12 @@ async def test_remote_refresh_async_returns_typed_terminal_result(
                 expected["gpu_class"] = refresh_kwargs["gpu_class"]
             if refresh_kwargs.get("gpu_count") is not None:
                 expected["gpu_count"] = refresh_kwargs["gpu_count"]
+            if refresh_kwargs.get("resource_budget") is not None:
+                budget = refresh_kwargs["resource_budget"]
+                expected["resource_budget"] = {
+                    **budget,
+                    "gpu_count": budget.get("gpu_count", 0),
+                }
             if refresh_kwargs.get("retry_policy") is not None:
                 expected["retry_policy"] = lancedb.FunctionRetryPolicy.model_validate(
                     refresh_kwargs["retry_policy"]
@@ -1911,6 +1929,8 @@ async def test_remote_refresh_async_returns_typed_terminal_result(
                 expected["error_policy"] = refresh_kwargs["error_policy"]
             for key in (
                 "where",
+                "max_concurrency",
+                "publication_interval_rows",
                 "max_failed_fraction",
                 "max_failed_rows",
                 "row_timeout_seconds",
@@ -2088,7 +2108,47 @@ def test_remote_refresh_async_forwards_progress_from_submitted_handle():
         ({"max_failed_rows": -1}, "max_failed_rows"),
         ({"row_timeout_seconds": 0}, "row_timeout_seconds"),
         ({"init_timeout_seconds": -5}, "init_timeout_seconds"),
+        ({"publication_interval_rows": 0}, "publication_interval_rows"),
+        ({"publication_interval_rows": -1}, "publication_interval_rows"),
+        ({"max_concurrency": True}, "max_concurrency"),
+        ({"max_concurrency": 1.5}, "max_concurrency"),
+        ({"max_concurrency": 0}, "max_concurrency"),
+        ({"max_concurrency": -1}, "max_concurrency"),
+        ({"max_concurrency": 2**32}, "max_concurrency"),
         ({"num_workers": 0}, "num_workers"),
+        (
+            {"resource_budget": {"cpu_millis": 1000}},
+            "resource_budget.memory_bytes",
+        ),
+        (
+            {
+                "resource_budget": {
+                    "cpu_millis": 0,
+                    "memory_bytes": 1,
+                }
+            },
+            "resource_budget.cpu_millis",
+        ),
+        (
+            {
+                "resource_budget": {
+                    "cpu_millis": 1000,
+                    "memory_bytes": 1,
+                },
+                "gpu_count": 1,
+            },
+            "gpu_count cannot be combined with resource_budget",
+        ),
+        (
+            {
+                "resource_budget": {
+                    "cpu_millis": 1000,
+                    "memory_bytes": 1,
+                    "unknown": 1,
+                }
+            },
+            "unsupported key 'unknown'",
+        ),
         (
             {"max_executor_processes_per_worker": -2},
             "max_executor_processes_per_worker",
@@ -4954,8 +5014,12 @@ def test_sync_remote_blob_pandas_avoids_storage_access(
             assert "_rowid" not in df.columns
             assert df["image"][0]["size"] == 5
         else:
-            with pytest.raises(NotImplementedError, match="stable table snapshot"):
+            with pytest.raises(
+                NotImplementedError, match="stable table snapshot"
+            ) as exc:
                 query.to_pandas(blob_mode=blob_mode)
+            assert "fetch_blobs(column, row_ids)" in str(exc.value)
+            assert "with_row_id(True)" in str(exc.value)
 
 
 @pytest.mark.asyncio
@@ -5535,9 +5599,6 @@ def test_remote_job_handle_reports_its_own_detail():
         assert json.loads(job._spec_json) == {"column": "vec"}
         assert json.loads(job._result_json) == {"rows_assigned": 1000000}
 
-        # print() shows everything the handle knows and nothing it does not.
-        # print() lays every known field out on its own line, with the JSON
-        # payloads indented rather than crammed onto one line.
         assert repr(job) == "\n".join(
             [
                 "Job(",
@@ -5545,12 +5606,8 @@ def test_remote_job_handle_reports_its_own_detail():
                 "    state='finished',",
                 "    job_type='refresh_column',",
                 "    creation_ms=2000,",
-                "    spec={",
-                '        "column": "vec"',
-                "    },",
-                "    result={",
-                '        "rows_assigned": 1000000',
-                "    },",
+                "    spec={'column': 'vec'},",
+                "    result={'rows_assigned': 1000000},",
                 ")",
             ]
         )
@@ -5784,6 +5841,92 @@ def test_remote_add_columns_reader_not_supported():
 
 
 @pytest.mark.asyncio
+async def test_remote_add_function_columns_forwards_auto_refresh_resource_budget():
+    bodies = []
+    application = FunctionApplication.from_json(
+        json.dumps(
+            {
+                "function": {
+                    "name": "embed",
+                    "version": "1",
+                    "object_id": "fixture",
+                    "location": "memory:///fixture",
+                    "manifest_digest": (
+                        "sha256:7e22f815b6648e14f093a3979a8e5a2082"
+                        "fa773ebe1ec84b135cae7e84d6f8e6"
+                    ),
+                },
+                "inputs": [
+                    {
+                        "parameter": "text",
+                        "kind": "column",
+                        "value": {"path": "text"},
+                    }
+                ],
+                "output": {
+                    "kind": "scalar",
+                    "arrow_type": "float32",
+                    "nullable": False,
+                },
+            }
+        )
+    )
+
+    def handler(request):
+        if request.path == "/v1/table/test/describe/":
+            response = {
+                "version": 1,
+                "schema": {
+                    "fields": [
+                        {
+                            "name": "text",
+                            "type": {"type": "string"},
+                            "nullable": True,
+                        }
+                    ]
+                },
+            }
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(json.dumps(response).encode())
+        elif request.path == "/v1/table/test/add_columns/":
+            content_len = int(request.headers.get("Content-Length", 0))
+            bodies.append(json.loads(request.rfile.read(content_len)))
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b'{"version": 2}')
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    budget = {"cpu_millis": 2_000, "memory_bytes": 4 * 1024**3}
+    with mock_lancedb_connection(handler) as db:
+        table = db.open_table("test")
+        table.add_columns(
+            {"embedding": application},
+            auto_refresh_resource_budget=budget,
+        )
+
+    async with mock_lancedb_connection_async(handler) as db:
+        table = await db.open_table("test")
+        await table.add_columns(
+            {"embedding": application},
+            auto_refresh_resource_budget=budget,
+        )
+
+    assert len(bodies) == 2
+    for body in bodies:
+        assert body["auto_refresh_enabled"] is True
+        assert body["auto_refresh_resource_budget"] == {
+            **budget,
+            "gpu_count": 0,
+        }
+        assert body["new_columns"] == [{"name": "embedding", "all_null": True}]
+
+
+@pytest.mark.asyncio
 async def test_async_property_graph_handles():
     calls = []
 
@@ -5956,6 +6099,45 @@ def _mock_remote_sql_connection(flight_server):
 def _mock_remote_table_with_sql(flight_server):
     with _mock_remote_sql_connection(flight_server) as kwargs:
         yield lancedb.connect(**kwargs).create_table("test", [{"id": 1}])
+
+
+def test_remote_function_registration_transports_max_concurrency():
+    flight = pytest.importorskip("pyarrow.flight")
+    fixture = (
+        Path(__file__).parents[3]
+        / "rust"
+        / "lancedb"
+        / "tests"
+        / "fixtures"
+        / "first_class_functions"
+        / "v1"
+        / "remote_function_version.canonical.json"
+    )
+    definition = json.loads(fixture.read_text())
+    definition["max_concurrency"] = 4
+
+    @function(name="normalize_score", max_concurrency=4)
+    def registered(value: float) -> float:
+        return value
+
+    class RegistrationServer(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.tickets = []
+
+        def do_get(self, context, ticket):
+            self.tickets.append(ticket.ticket)
+            return flight.RecordBatchStream(
+                pa.table({"definition": [json.dumps(definition)]})
+            )
+
+    server = RegistrationServer()
+    with _mock_remote_sql_connection(server) as kwargs:
+        version = lancedb.connect(**kwargs).create_function(registered)
+
+    assert len(server.tickets) == 1
+    assert b'"max_concurrency":4' in server.tickets[0]
+    assert version.max_concurrency == 4
 
 
 @pytest.mark.asyncio

@@ -722,15 +722,30 @@ export abstract class Table {
    * @param {RefreshColumnOptions} options Refresh options, mirroring the SQL
    * `REFRESH COLUMN ... WHERE ... WITH (...)` form: `where` narrows the rows,
    * `errorPolicy`, `maxFailedFraction`, `maxFailedRows`, `rowTimeoutSeconds`
-   * and `initTimeoutSeconds` govern failing rows, and `batchSize`,
-   * `gpuClass`, `gpuCount`, `numWorkers` and `maxExecutorProcessesPerWorker`
-   * size the workers. All are LanceDB Enterprise only; a LanceDB Embedded
-   * refresh rejects every option other than `batchSize`, `gpuClass` and
-   * `gpuCount`.
+   * and `initTimeoutSeconds` govern failing rows. `batchSize`, `gpuClass`,
+   * `maxConcurrency`, `resourceBudget` and
+   * `maxExecutorProcessesPerWorker` size registered Function refreshes.
+   * `maxConcurrency` overrides the registered default for this logical
+   * execution only and is a positive integer; it is not an account-wide
+   * quota. A `resourceBudget` requires `cpuMillis` and
+   * `memoryBytes`; its `gpuCount` defaults to zero for a CPU-only Function.
+   * The budget applies only to this explicit refresh and does not configure
+   * a later automatic refresh.
+   * `gpuCount` at the top level is the shorthand that preserves the
+   * deployment defaults for CPU and memory, and cannot be combined with
+   * `resourceBudget`. `numWorkers` applies only to expression columns; use
+   * `resourceBudget` for registered Functions. All are LanceDB Enterprise
+   * only; a LanceDB Embedded refresh rejects every option other than
+   * `batchSize`, `gpuClass` and `gpuCount`.
    * @example
    * ```ts
    * const job = await table.refreshColumnAsync("embedding", {
    *   where: "published_at > '2026-01-01'",
+   *   resourceBudget: {
+   *     cpuMillis: 8000,
+   *     memoryBytes: 16 * 1024 ** 3,
+   *   },
+   *   maxConcurrency: 4,
    *   errorPolicy: "skip",
    *   maxFailedFraction: 0.01,
    *   rowTimeoutSeconds: 30,

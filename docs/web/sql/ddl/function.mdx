@@ -94,9 +94,12 @@ registration handle has type `query` and uses the SQL query UUID as its single
 
 ```sql
 DESCRIBE FUNCTION embed WITH (version = '1', include_source = true)
+DESCRIBE FUNCTION embed
 ```
 
-DESCRIBE returns one `definition` JSON column for the exact version.
+DESCRIBE returns one `definition` JSON column for the exact version. When
+`version` is omitted, it resolves and returns the latest currently visible
+immutable revision.
 `include_source` defaults to false; source-inclusive reads report an omission
 when the stored artifact exceeds the inline source limit.
 

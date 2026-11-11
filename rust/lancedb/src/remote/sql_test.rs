@@ -160,8 +160,17 @@ impl TestSqlService {
             return Response::new(rows);
         }
         let poll_info = self.defer.then(|| {
-            let mut info = FlightInfo::new()
-                .with_endpoint(FlightEndpoint::new().with_ticket(Ticket::new(query.to_string())));
+            let mut info = FlightInfo::new();
+            if !query.starts_with("SELECT durable job") {
+                info = info.with_endpoint(
+                    FlightEndpoint::new().with_ticket(Ticket::new(query.to_string())),
+                );
+            }
+            if query.starts_with("SELECT durable job") {
+                info = info
+                    .try_with_schema(&self.result_for_query(query).schema())
+                    .unwrap();
+            }
             if self.materialized_view_job_handle_supported {
                 info.app_metadata = b"early-v1".to_vec().into();
             }
@@ -198,6 +207,13 @@ impl TestSqlService {
         response
             .metadata_mut()
             .insert(PROTOCOL_HEADER, PROTOCOL_VERSION.parse().unwrap());
+        if query.starts_with("SELECT direct durable job") {
+            let job_id = query.rsplit(' ').next().unwrap();
+            response.metadata_mut().insert(
+                SQL_JOB_ID_METADATA_KEY,
+                format!("job-{job_id}").parse().unwrap(),
+            );
+        }
         response
     }
 }
@@ -351,7 +367,14 @@ impl FlightService for TestSqlService {
                 .insert("x-lancedb-sql-job-id", "job-1".parse().unwrap());
             return Err(status);
         }
-        let complete = if query == "SELECT no info" {
+        if query == "SELECT durable job failure" && stage == 1 {
+            let mut status = Status::internal("durable SQL job failed");
+            status
+                .metadata_mut()
+                .insert("x-lancedb-sql-job-id", "job-1".parse().unwrap());
+            return Err(status);
+        }
+        let complete = if query == "SELECT no info" || query.starts_with("SELECT durable job") {
             stage >= 2
         } else {
             stage >= 1
@@ -362,11 +385,14 @@ impl FlightService for TestSqlService {
         } else {
             query.clone()
         };
-        let mut info = FlightInfo::new().with_endpoint(
-            FlightEndpoint::new()
-                .with_ticket(Ticket::new(first_ticket))
-                .with_location("grpc://127.0.0.1:1"),
-        );
+        let mut info = FlightInfo::new();
+        if !(query.starts_with("SELECT durable job") && !complete) {
+            info = info.with_endpoint(
+                FlightEndpoint::new()
+                    .with_ticket(Ticket::new(first_ticket))
+                    .with_location("grpc://127.0.0.1:1"),
+            );
+        }
         if query == "SELECT incremental" && stage > 0 {
             info = info.with_endpoint(
                 FlightEndpoint::new()
@@ -378,13 +404,21 @@ impl FlightService for TestSqlService {
             let schema = self.result_for_query(&query).schema();
             info = info.try_with_schema(&schema).unwrap();
         }
-        Ok(Response::new(PollInfo {
+        let mut response = Response::new(PollInfo {
             info: (query != "SELECT no info" || stage > 0).then_some(info),
             flight_descriptor: (!complete)
                 .then(|| FlightDescriptor::new_cmd(format!("poll:{}:{query}", stage + 1))),
             progress: Some(if complete { 1.0 } else { 0.25 }),
             expiration_time: None,
-        }))
+        });
+        if query.starts_with("SELECT durable job") && stage > 0 {
+            let job_id = query.rsplit(' ').next().unwrap();
+            response.metadata_mut().insert(
+                SQL_JOB_ID_METADATA_KEY,
+                format!("job-{job_id}").parse().unwrap(),
+            );
+        }
+        Ok(response)
     }
 
     async fn get_schema(
@@ -728,6 +762,106 @@ async fn parameters_travel_on_one_exchange() {
     assert_eq!(headers[0].database, "analytics");
     assert_eq!(headers[0].namespace_path, "events$raw");
     assert_eq!(headers[0].api_key, "test-key");
+}
+
+#[tokio::test]
+async fn running_job_backed_queries_expose_their_own_durable_job_id() {
+    let service = TestSqlService {
+        adaptive: true,
+        defer: true,
+        ..Default::default()
+    };
+    let (client, _shutdown) = start_sql_service(service, ClientConfig::default()).await;
+
+    let first = client
+        .execute(ExecuteQueryRequest::new("SELECT durable job first"))
+        .await
+        .unwrap();
+    let second = client
+        .execute(ExecuteQueryRequest::new("SELECT durable job second"))
+        .await
+        .unwrap();
+    assert_eq!(first.job_id(), None);
+    assert_eq!(second.job_id(), None);
+
+    let first_description = first.describe().await.unwrap();
+    let second_description = second.describe().await.unwrap();
+    assert_eq!(first_description.status, QueryStatus::Running);
+    assert_eq!(first_description.job_id.as_deref(), Some("job-first"));
+    assert_eq!(second_description.status, QueryStatus::Running);
+    assert_eq!(second_description.job_id.as_deref(), Some("job-second"));
+    assert_ne!(first.id(), second.id());
+    assert_ne!(first_description.job_id, second_description.job_id);
+
+    let reader = first.reader().await.unwrap();
+    assert_eq!(
+        reader
+            .schema()
+            .metadata()
+            .get(SQL_JOB_ID_METADATA_KEY)
+            .map(String::as_str),
+        Some("job-first")
+    );
+    assert_eq!(first.job_id().as_deref(), Some("job-first"));
+    assert_eq!(second.job_id().as_deref(), Some("job-second"));
+
+    let reader_only = client
+        .execute(ExecuteQueryRequest::new("SELECT durable job reader-only"))
+        .await
+        .unwrap();
+    let reader_only_result = reader_only.reader().await.unwrap();
+    assert_eq!(
+        reader_only_result
+            .schema()
+            .metadata()
+            .get(SQL_JOB_ID_METADATA_KEY)
+            .map(String::as_str),
+        Some("job-reader-only")
+    );
+
+    let ordinary = client
+        .execute(ExecuteQueryRequest::new("SELECT ordinary"))
+        .await
+        .unwrap();
+    assert_eq!(ordinary.describe().await.unwrap().job_id, None);
+}
+
+#[tokio::test]
+async fn direct_job_backed_queries_expose_the_initial_response_job_id() {
+    let service = TestSqlService {
+        adaptive: true,
+        ..Default::default()
+    };
+    let (client, _shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let query = client
+        .execute(ExecuteQueryRequest::new("SELECT direct durable job direct"))
+        .await
+        .unwrap();
+
+    assert_eq!(query.job_id().as_deref(), Some("job-direct"));
+    assert_eq!(
+        query.describe().await.unwrap().job_id.as_deref(),
+        Some("job-direct")
+    );
+    let reader = query.reader().await.unwrap();
+    assert_eq!(
+        reader
+            .schema()
+            .metadata()
+            .get(SQL_JOB_ID_METADATA_KEY)
+            .map(String::as_str),
+        Some("job-direct")
+    );
+    let batches = reader.try_collect::<Vec<_>>().await.unwrap();
+    assert_eq!(batches.len(), 1);
+    assert_eq!(
+        batches[0]
+            .schema()
+            .metadata()
+            .get(SQL_JOB_ID_METADATA_KEY)
+            .map(String::as_str),
+        Some("job-direct")
+    );
 }
 
 /// The server plans before it answers, so a refusal is the submission's.
@@ -1210,6 +1344,35 @@ async fn function_failure_preserves_the_isolated_sql_job_id() {
     assert_eq!(failure.sql_job_id.as_deref(), Some("job-1"));
     assert_eq!(failure.phase, None);
     assert_eq!(failure.retryable, None);
+    shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
+async fn fast_durable_job_failure_exposes_the_same_job_id_on_the_query_handle() {
+    let (client, shutdown) = start_sql_service(
+        TestSqlService {
+            adaptive: true,
+            defer: true,
+            ..Default::default()
+        },
+        ClientConfig::default(),
+    )
+    .await;
+    let query = client
+        .execute(ExecuteQueryRequest {
+            query: "SELECT durable job failure".into(),
+            default_namespace_path: vec![],
+            parameters: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(query.job_id(), None);
+
+    let Err(Error::JobFailed { job_id, .. }) = collect_result(&query).await else {
+        panic!("a failed durable query must remain a structured JobFailed error");
+    };
+    assert_eq!(job_id.as_deref(), Some("job-1"));
+    assert_eq!(query.job_id().as_deref(), Some("job-1"));
     shutdown.send(()).unwrap();
 }
 
@@ -1843,6 +2006,7 @@ async fn submits_polls_fetches_cancels_and_reuses_client() {
                 flight_descriptor: Some(FlightDescriptor::new_cmd("restored")),
                 ..Default::default()
             },
+            None,
         )
         .unwrap(),
     );
@@ -1975,6 +2139,7 @@ async fn submits_polls_fetches_cancels_and_reuses_client() {
                     flight_descriptor: Some(FlightDescriptor::new_cmd(descriptor)),
                     ..Default::default()
                 },
+                None,
             )
             .unwrap(),
         );
@@ -1996,6 +2161,7 @@ async fn submits_polls_fetches_cancels_and_reuses_client() {
                 expiration_time: Some(Default::default()),
                 ..Default::default()
             },
+            None,
         )
         .unwrap(),
     );
@@ -2012,6 +2178,7 @@ async fn submits_polls_fetches_cancels_and_reuses_client() {
                 flight_descriptor: Some(FlightDescriptor::new_cmd("stale")),
                 ..Default::default()
             },
+            None,
         )
         .unwrap(),
     );
@@ -2792,6 +2959,7 @@ async fn function_creation_and_description_use_sql_query_handles() {
     for (defer, with_models) in [(false, false), (false, true), (true, false), (true, true)] {
         let mut request_json: serde_json::Value = serde_json::from_str(REQUEST).unwrap();
         request_json["batch_size"] = serde_json::json!(2);
+        request_json["max_concurrency"] = serde_json::json!(4);
         request_json["row_timeout_seconds"] = serde_json::json!(0.75);
         request_json["secret_bindings"] = serde_json::json!([{
             "kind": "env",
@@ -2800,6 +2968,7 @@ async fn function_creation_and_description_use_sql_query_handles() {
         }]);
         let mut version_json: serde_json::Value = serde_json::from_str(VERSION).unwrap();
         version_json["batch_size"] = serde_json::json!(12);
+        version_json["max_concurrency"] = serde_json::json!(4);
         version_json["row_timeout_seconds"] = serde_json::json!(8.0);
         version_json["result_stability"] = serde_json::json!("input_and_context");
         if with_models {
@@ -2843,6 +3012,7 @@ async fn function_creation_and_description_use_sql_query_handles() {
         assert_eq!(created.name(), "embed");
         assert_eq!(created.version(), "1");
         assert_eq!(created.batch_size(), Some(12));
+        assert_eq!(created.max_concurrency(), Some(4));
         assert_eq!(created.row_timeout_seconds(), Some(8.0));
         assert_eq!(created.result_stability(), Some("input_and_context"));
         // Assert the actual SQL body, after the same native JSON decode used
@@ -2862,6 +3032,7 @@ async fn function_creation_and_description_use_sql_query_handles() {
             serde_json::from_str(&created.to_canonical_json().unwrap()).unwrap();
         assert_eq!(created_json["image"].get("models"), expected_models);
         assert_eq!(created_json["batch_size"], 12);
+        assert_eq!(created_json["max_concurrency"], 4);
         assert_eq!(created_json["row_timeout_seconds"], 8.0);
         assert_eq!(created_json["result_stability"], "input_and_context");
         assert_eq!(
@@ -2874,20 +3045,30 @@ async fn function_creation_and_description_use_sql_query_handles() {
             .unwrap();
         assert_eq!(described.name(), "embed");
         assert_eq!(described.batch_size(), Some(12));
+        assert_eq!(described.max_concurrency(), Some(4));
         assert_eq!(described.row_timeout_seconds(), Some(8.0));
         assert_eq!(described.result_stability(), Some("input_and_context"));
         let described_json: serde_json::Value =
             serde_json::from_str(&described.to_canonical_json().unwrap()).unwrap();
         assert_eq!(described_json["image"].get("models"), expected_models);
         assert_eq!(described_json["batch_size"], 12);
+        assert_eq!(described_json["max_concurrency"], 4);
         assert_eq!(described_json["row_timeout_seconds"], 8.0);
         assert_eq!(described_json["result_stability"], "input_and_context");
+        let latest = db
+            .get_function_latest("embed", &["team".into()])
+            .await
+            .unwrap();
+        assert_eq!(latest.name(), "embed");
+        assert_eq!(latest.version(), "1");
+        assert_eq!(latest.batch_size(), Some(12));
         let listed = db
             .list_functions(&["team".into()], Default::default())
             .await
             .unwrap();
         assert_eq!(listed.items.len(), 1);
         assert_eq!(listed.items[0].batch_size(), Some(12));
+        assert_eq!(listed.items[0].max_concurrency(), Some(4));
         assert_eq!(listed.items[0].row_timeout_seconds(), Some(8.0));
         assert_eq!(
             listed.items[0].result_stability(),
@@ -2897,10 +3078,12 @@ async fn function_creation_and_description_use_sql_query_handles() {
             serde_json::from_str(&listed.items[0].to_canonical_json().unwrap()).unwrap();
         assert_eq!(listed_json["image"].get("models"), expected_models);
         assert_eq!(listed_json["batch_size"], 12);
+        assert_eq!(listed_json["max_concurrency"], 4);
         assert_eq!(listed_json["row_timeout_seconds"], 8.0);
         assert_eq!(listed_json["result_stability"], "input_and_context");
         let seen = statements.lock().unwrap();
         assert_eq!(seen[1], "DESCRIBE FUNCTION \"embed\" WITH (version = '1')");
+        assert_eq!(seen[2], "DESCRIBE FUNCTION \"embed\"");
         shutdown.send(()).unwrap();
     }
 }
@@ -2931,6 +3114,13 @@ async fn function_creation_rejects_invalid_execution_controls_before_sql() {
     request.batch_size = Some(0);
     let error = db.create_function_async(request, &[]).await.unwrap_err();
     assert!(matches!(error, Error::InvalidInput { message } if message.contains("batch_size")));
+
+    let mut request = crate::function::FunctionRegistrationRequest::from_json(REQUEST).unwrap();
+    request.max_concurrency = Some(0);
+    let error = db.create_function_async(request, &[]).await.unwrap_err();
+    assert!(
+        matches!(error, Error::InvalidInput { message } if message.contains("max_concurrency"))
+    );
     assert!(statements.lock().unwrap().is_empty());
     shutdown.send(()).unwrap();
 }

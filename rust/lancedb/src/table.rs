@@ -114,7 +114,7 @@ pub use optimize::{
     CompactionMode, CompactionOptions, CompactionOverrides, IndexRemapMode, OptimizeAction,
     OptimizeStats,
 };
-pub use refresh::{RefreshColumnOptions, RefreshColumnResult};
+pub use refresh::{FunctionWorkerResourceBudget, RefreshColumnOptions, RefreshColumnResult};
 pub use rte_stats::{MemtableStats, RTEStats, SsTableStats, TableShardStats};
 pub use schema_evolution::{
     AddColumnsResult, AlterColumnsResult, DropColumnsResult, FieldMetadataUpdate,
@@ -2156,10 +2156,18 @@ impl Table {
     ///
     /// [`RefreshColumnOptions::batch_size()`] caps rows per Function call in
     /// LanceDB Enterprise and must be greater than zero when set.
+    /// [`RefreshColumnOptions::publication_interval_rows()`] sets an opt-in
+    /// row-count publication threshold for completed Function outputs; unset
+    /// keeps whole-fragment publication.
+    /// [`RefreshColumnOptions::resource_budget()`] sets the aggregate CPU,
+    /// memory, and GPU budget for a Function refresh.
     /// [`RefreshColumnOptions::gpu_class()`] selects a GPU pool and
-    /// [`RefreshColumnOptions::gpu_count()`] sets the aggregate GPU budget.
-    /// These options have no effect on expression-backed columns in LanceDB
-    /// Embedded. Remote refreshes require
+    /// [`RefreshColumnOptions::gpu_count()`] sets the aggregate GPU budget
+    /// without changing the deployment's CPU and memory defaults.
+    /// Batch-size and GPU options have no effect on expression-backed columns
+    /// in LanceDB Embedded; a resource budget and publication threshold are
+    /// rejected there.
+    /// Remote refreshes require
     /// [`Table::refresh_column_async_with_options`].
     ///
     /// ```
@@ -2216,12 +2224,18 @@ impl Table {
     /// Set [`RefreshColumnOptions::batch_size()`] to cap the rows each remote
     /// Function call receives, for example to keep slow Functions within the
     /// executor's per-call deadline. Set
-    /// [`RefreshColumnOptions::gpu_class()`] and
-    /// [`RefreshColumnOptions::gpu_count()`] to override the registered GPU
-    /// class or set an aggregate GPU budget for Function workers. Unset values
-    /// use the Function and server defaults; zero counts and malformed class
-    /// names are rejected before submitting a job. Embedded expression
-    /// refreshes ignore all three options.
+    /// [`RefreshColumnOptions::publication_interval_rows()`] to publish
+    /// completed Function outputs at a row-count threshold; unset keeps
+    /// whole-fragment publication. Set
+    /// [`RefreshColumnOptions::resource_budget()`] to pass a complete aggregate
+    /// CPU, memory, and GPU budget for a Function refresh. The standalone
+    /// [`RefreshColumnOptions::gpu_count()`] shorthand and
+    /// [`RefreshColumnOptions::gpu_class()`] placement remain available; a
+    /// resource budget cannot be combined with the gpu-count shorthand. Unset
+    /// values use the Function and server defaults; invalid counts and malformed
+    /// class names are rejected before submitting a job. Embedded expression
+    /// refreshes ignore the batch-size and GPU options, and reject resource
+    /// budgets, publication thresholds, and other Enterprise-only options.
     ///
     /// ```
     /// # use lancedb::{Table, table::RefreshColumnOptions};
@@ -3428,7 +3442,11 @@ impl NativeTable {
         namespace_client: Option<Arc<dyn LanceNamespace>>,
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
     ) -> Result<Self> {
-        let batches = computed_columns::admit_create_source(batches)?;
+        let session = params.as_ref().and_then(|p| p.session.as_deref());
+        let batches = computed_columns::admit_create_source(
+            batches,
+            session.and_then(lance::session::Session::datafusion_session),
+        )?;
         // Default params uses format v1.
         let params = params.unwrap_or(WriteParams {
             ..Default::default()
@@ -3529,7 +3547,12 @@ impl NativeTable {
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
         session: Option<Arc<lance::session::Session>>,
     ) -> Result<Self> {
-        let batches = computed_columns::admit_create_source(batches)?;
+        let batches = computed_columns::admit_create_source(
+            batches,
+            session
+                .as_deref()
+                .and_then(lance::session::Session::datafusion_session),
+        )?;
         // Build table_id from namespace + name for the storage options provider
         let mut table_id = namespace.clone();
         table_id.push(name.to_string());
