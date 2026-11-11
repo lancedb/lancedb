@@ -72,7 +72,7 @@ CPU, memory, and optional GPU budget. CPU and memory are required. The nested
 <CodeGroup>
 ```python Python icon="python"
 table.add_columns(
-    {"caption": function_version},
+    {"caption": version(jpeg=col("jpeg"))},
     auto_refresh_resource_budget={
         "cpu_millis": 8000,
         "memory_bytes": 16 * 1024**3,
