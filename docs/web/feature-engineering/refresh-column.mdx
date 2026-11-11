@@ -150,6 +150,57 @@ does not raise, which is what makes it safe in a loop; `wait()` raises
 A long backfill can therefore be started, left, and checked on from a different
 process.
 
+{/*
+Draft for the Function freshness release. Keep this section hidden until the
+Enterprise status endpoint and its integration acceptance are deployed.
+
+### Check Function column freshness {#freshness}
+
+For a Function-backed column, the SDK can report how many live rows are
+`fresh`, `stale`, `never_computed`, or `failed` at the table version it
+reads. `wait_fresh`, `waitFresh`, and `wait_for_function_column` poll until no
+stale or never-computed rows remain. Rows that already failed stay in the
+returned status and do not keep the wait pending, so inspect `failed` after a
+successful wait:
+
+<CodeGroup>
+```python Python icon="python"
+status = table.column_status("embedding")
+print(status.fresh, status.stale, status.never_computed, status.failed)
+
+final_status = table.wait_fresh("embedding")
+print(final_status.failed)
+```
+
+```typescript TypeScript icon="typescript"
+const status = await table.functionColumnStatus("embedding");
+console.log(
+  status.fresh,
+  status.stale,
+  status.neverComputed,
+  status.failed,
+);
+
+const finalStatus = await table.waitFresh("embedding");
+console.log(finalStatus.failed);
+```
+
+```rust Rust icon="rust"
+let status = table.function_column_status("embedding").await?;
+println!(
+    "{} {} {} {}",
+    status.fresh, status.stale, status.never_computed, status.failed
+);
+
+let final_status = table.wait_for_function_column("embedding", None).await?;
+println!("{}", final_status.failed);
+```
+</CodeGroup>
+
+The wait helpers do not submit or cancel a refresh. They retry only the typed
+finalization-pending response and propagate other errors.
+*/}
+
 ### Configure workers and resources {#resources}
 
 SQL exposes the worker budget directly, which is the lever when a backfill is

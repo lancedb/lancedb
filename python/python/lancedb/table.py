@@ -35,7 +35,7 @@ from urllib.parse import urlparse
 from lancedb.scannable import _hf_batches, _register_optional_converters, to_scannable
 
 from . import __version__
-from ._lancedb import _parse_field_path
+from ._lancedb import FunctionColumnStatus, _parse_field_path
 from ._blob import (
     BlobFile,
     _normalize_blob_descriptor,
@@ -3505,6 +3505,36 @@ class Table(ABC):
         """
 
     @abstractmethod
+    def column_statuses(
+        self, column: Optional[str] = None
+    ) -> list[FunctionColumnStatus]:
+        """Return exact status for Function-backed output columns.
+
+        All statuses describe one server table version. ``column=None`` returns
+        every Function output. This operation is available on LanceDB
+        Enterprise tables. A table handle pinned to an exact version requests
+        that version; a latest handle retains the normal read-freshness
+        behavior.
+        """
+
+    @abstractmethod
+    def column_status(self, column: str) -> FunctionColumnStatus:
+        """Return exact status for one Function-backed output column."""
+
+    @abstractmethod
+    def wait_fresh(
+        self, column: str, timeout: Optional[timedelta] = None
+    ) -> FunctionColumnStatus:
+        """Poll until the column has no stale or never-computed rows.
+
+        Rows already failed remain visible in the returned status and do not
+        keep this method waiting. The method never submits or cancels work.
+        Transport errors and unrecoverable status-evidence errors propagate.
+        A typed finalization-pending response is retried; arbitrary failure
+        responses are not.
+        """
+
+    @abstractmethod
     def alter_columns(self, *alterations: Iterable[Dict[str, str]]):
         """
         Alter column names and nullability.
@@ -5603,6 +5633,19 @@ class LanceTable(Table):
         return LOOP.run(
             self._table.function_errors(job_id=job_id, column=column, limit=limit)
         )
+
+    def column_statuses(
+        self, column: Optional[str] = None
+    ) -> list[FunctionColumnStatus]:
+        return LOOP.run(self._table.column_statuses(column=column))
+
+    def column_status(self, column: str) -> FunctionColumnStatus:
+        return LOOP.run(self._table.column_status(column))
+
+    def wait_fresh(
+        self, column: str, timeout: Optional[timedelta] = None
+    ) -> FunctionColumnStatus:
+        return LOOP.run(self._table.wait_fresh(column, timeout))
 
     def alter_columns(
         self, *alterations: Iterable[Dict[str, str]]
@@ -8167,6 +8210,32 @@ class AsyncTable:
         return await self._inner.function_errors(
             job_id=job_id, column=column, limit=limit
         )
+
+    async def column_statuses(
+        self, column: Optional[str] = None
+    ) -> list[FunctionColumnStatus]:
+        """Return exact status for Function-backed output columns.
+
+        All results describe one server table version. ``column=None`` returns
+        every Function output. A handle pinned to an exact version requests
+        that version.
+        """
+        return await self._inner.column_statuses(column=column)
+
+    async def column_status(self, column: str) -> FunctionColumnStatus:
+        """Return exact status for one Function-backed output column."""
+        return await self._inner.column_status(column)
+
+    async def wait_fresh(
+        self, column: str, timeout: Optional[timedelta] = None
+    ) -> FunctionColumnStatus:
+        """Poll until no stale or never-computed rows remain.
+
+        Failed rows do not block completion. Server and transport errors are
+        not retried. Only the typed finalization-pending response is retried
+        with bounded backoff; arbitrary 500 responses surface immediately.
+        """
+        return await self._inner.wait_column_fresh(column, timeout)
 
     async def refresh_column_async(
         self,

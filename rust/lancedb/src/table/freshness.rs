@@ -21,6 +21,7 @@
 //! removed by [`prune_sidecars`].
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt;
 use std::io::{Cursor, Read};
 use std::ops::Range;
 
@@ -98,6 +99,56 @@ impl DirtyRows {
 /// `{fragment id -> row-level dirty state}`. A missing fragment is clean.
 pub type RowStateMap = BTreeMap<u32, DirtyRows>;
 
+/// Physical rows whose latest Function outcome is an unresolved failure.
+pub type FailureRows = BTreeMap<u32, RoaringBitmap>;
+
+/// Evidence for rows whose latest Function outcome is known.
+///
+/// `known_rows` includes both successful and failed observations.
+/// `failed_rows` is the failure subset. A missing row is unknown, not clean.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FailureEvidence {
+    pub known_rows: FailureRows,
+    pub failed_rows: FailureRows,
+}
+
+impl FailureEvidence {
+    fn is_empty(&self) -> bool {
+        self.known_rows.is_empty() && self.failed_rows.is_empty()
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.failed_rows.iter().any(|(fragment_id, failed)| {
+            !self
+                .known_rows
+                .get(fragment_id)
+                .is_some_and(|known| failed.is_subset(known))
+        }) {
+            return Err(invalid(
+                "failed rows are not covered by the failure evidence update".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn for_fragments(&self, fragments: &HashSet<u32>) -> Self {
+        Self {
+            known_rows: self
+                .known_rows
+                .iter()
+                .filter(|(fragment_id, _)| fragments.contains(fragment_id))
+                .map(|(fragment_id, rows)| (*fragment_id, rows.clone()))
+                .collect(),
+            failed_rows: self
+                .failed_rows
+                .iter()
+                .filter(|(fragment_id, _)| fragments.contains(fragment_id))
+                .map(|(fragment_id, rows)| (*fragment_id, rows.clone()))
+                .collect(),
+        }
+    }
+}
+
 /// The single owning value of the freshness sidecar.
 ///
 /// `SignatureMap` remains the public facade for callers that only need input
@@ -107,6 +158,13 @@ pub type RowStateMap = BTreeMap<u32, DirtyRows>;
 struct FreshnessState {
     signatures: SignatureMap,
     row_state: RowStateMap,
+    /// Physical offsets with an exact current-generation outcome.
+    failure_coverage: FailureRows,
+    /// The failed subset of `failure_coverage`.
+    failed_rows: FailureRows,
+    /// Whether the decoded source used the v3 sidecar format that carries
+    /// failure evidence. Older formats leave failure rows unclassified.
+    failure_evidence_recorded: bool,
     basis: String,
     // A fresh identity for each begin, even when the basis and dirty rows repeat.
     intent_id: Uuid,
@@ -115,6 +173,8 @@ struct FreshnessState {
 impl FreshnessState {
     fn normalize(mut self) -> Result<Self> {
         self.row_state.retain(|_, rows| !rows.is_explicitly_empty());
+        self.failure_coverage.retain(|_, rows| !rows.is_empty());
+        self.failed_rows.retain(|_, rows| !rows.is_empty());
         if self
             .row_state
             .keys()
@@ -122,6 +182,26 @@ impl FreshnessState {
         {
             return Err(invalid(
                 "row state names a fragment without a signature".to_string(),
+            ));
+        }
+        if self
+            .failure_coverage
+            .keys()
+            .chain(self.failed_rows.keys())
+            .any(|fragment_id| !self.signatures.contains_key(fragment_id))
+        {
+            return Err(invalid(
+                "failure evidence names a fragment without a signature".to_string(),
+            ));
+        }
+        if self.failed_rows.iter().any(|(fragment_id, failed)| {
+            !self
+                .failure_coverage
+                .get(fragment_id)
+                .is_some_and(|covered| failed.is_subset(covered))
+        }) {
+            return Err(invalid(
+                "failed rows are not covered by failure evidence".to_string(),
             ));
         }
         if self
@@ -137,6 +217,38 @@ impl FreshnessState {
             return Err(invalid("freshness basis exceeds u16 bytes".to_string()));
         }
         Ok(self)
+    }
+
+    fn invalidate_failure_evidence(&mut self, fragments: impl IntoIterator<Item = u32>) {
+        for fragment_id in fragments {
+            self.failure_coverage.remove(&fragment_id);
+            self.failed_rows.remove(&fragment_id);
+        }
+    }
+
+    fn invalidate_failure_rows(&mut self, rows: &BTreeMap<u32, RoaringBitmap>) {
+        for (fragment_id, rows) in rows {
+            if let Some(covered) = self.failure_coverage.get_mut(fragment_id) {
+                *covered -= rows;
+            }
+            if self
+                .failure_coverage
+                .get(fragment_id)
+                .is_some_and(RoaringBitmap::is_empty)
+            {
+                self.failure_coverage.remove(fragment_id);
+            }
+            if let Some(failed) = self.failed_rows.get_mut(fragment_id) {
+                *failed -= rows;
+            }
+            if self
+                .failed_rows
+                .get(fragment_id)
+                .is_some_and(RoaringBitmap::is_empty)
+            {
+                self.failed_rows.remove(fragment_id);
+            }
+        }
     }
 }
 
@@ -398,7 +510,8 @@ const SIDECAR_DIR: &str = "_computed";
 const SIDECAR_REF: &str = "sidecar:";
 const SIDECAR_MAGIC: &[u8; 4] = b"CSIG";
 const SIDECAR_FORMAT_V1: u8 = 1;
-const SIDECAR_FORMAT: u8 = 2;
+const SIDECAR_FORMAT_V2: u8 = 2;
+const SIDECAR_FORMAT: u8 = 3;
 /// How long an unreferenced sidecar is presumed to be a stamp in flight:
 /// lance's own threshold for unverified files, independent of how much
 /// version history a cleanup keeps.
@@ -446,9 +559,85 @@ fn encode_legacy_sidecar(map: &SignatureMap) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+#[cfg(test)]
+fn encode_v2_sidecar(state: &FreshnessState) -> Result<Vec<u8>> {
+    let state = state.clone().normalize()?;
+    let basis_len = u16::try_from(state.basis.len())
+        .map_err(|_| invalid("freshness basis exceeds u16 bytes".to_string()))?;
+    let fragment_count = u32::try_from(state.signatures.len())
+        .map_err(|_| invalid("too many fragments for a freshness sidecar".to_string()))?;
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(SIDECAR_MAGIC);
+    bytes.push(SIDECAR_FORMAT_V2);
+    bytes.extend_from_slice(state.intent_id.as_bytes());
+    bytes.extend_from_slice(&basis_len.to_le_bytes());
+    bytes.extend_from_slice(state.basis.as_bytes());
+    bytes.extend_from_slice(&fragment_count.to_le_bytes());
+    for (fragment_id, signature) in &state.signatures {
+        let hash = u64::from_str_radix(signature, 16).map_err(|_| {
+            invalid(format!(
+                "signature '{signature}' is not a 64-bit hex digest"
+            ))
+        })?;
+        let rows = state
+            .row_state
+            .get(fragment_id)
+            .cloned()
+            .unwrap_or_else(|| DirtyRows::Rows(RoaringBitmap::new()));
+        let (kind, bitmap) = match rows {
+            DirtyRows::Rows(bitmap) => (0u8, bitmap),
+            DirtyRows::AllExcept(clean) => (1u8, clean),
+        };
+        bytes.extend_from_slice(&fragment_id.to_le_bytes());
+        bytes.extend_from_slice(&hash.to_le_bytes());
+        bytes.push(kind);
+        encode_bitmap(&mut bytes, Some(&bitmap))?;
+    }
+    Ok(bytes)
+}
+
+fn encode_bitmap(bytes: &mut Vec<u8>, bitmap: Option<&RoaringBitmap>) -> Result<()> {
+    let Some(bitmap) = bitmap.filter(|bitmap| !bitmap.is_empty()) else {
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        return Ok(());
+    };
+    let mut encoded = Vec::with_capacity(bitmap.serialized_size());
+    bitmap
+        .serialize_into(&mut encoded)
+        .map_err(|error| invalid(format!("encoding freshness bitmap: {error}")))?;
+    let bitmap_len = u32::try_from(encoded.len())
+        .map_err(|_| invalid("freshness bitmap exceeds u32 bytes".to_string()))?;
+    bytes.extend_from_slice(&bitmap_len.to_le_bytes());
+    bytes.extend_from_slice(&encoded);
+    Ok(())
+}
+
+fn decode_bitmap(
+    cursor: &mut Cursor<&[u8]>,
+    malformed: &impl Fn() -> Error,
+) -> Result<Option<RoaringBitmap>> {
+    let mut bitmap_len = [0u8; 4];
+    cursor
+        .read_exact(&mut bitmap_len)
+        .map_err(|_| malformed())?;
+    let bitmap_len = u32::from_le_bytes(bitmap_len) as usize;
+    if bitmap_len == 0 {
+        return Ok(None);
+    }
+    let mut encoded = vec![0u8; bitmap_len];
+    cursor.read_exact(&mut encoded).map_err(|_| malformed())?;
+    let mut bitmap_reader = Cursor::new(encoded.as_slice());
+    let bitmap = RoaringBitmap::deserialize_from(&mut bitmap_reader).map_err(|_| malformed())?;
+    if bitmap_reader.position() != bitmap_len as u64 {
+        return Err(malformed());
+    }
+    Ok(Some(bitmap))
+}
+
 /// `CSIG`, format byte, 16-byte intent UUID, basis, entry count, then for each fragment its id,
-/// 8-byte signature, dirty-row mode and serialized bitmap. All integers are
-/// little-endian. Format 1 remains readable as clean row state.
+/// 8-byte signature, dirty-row mode and serialized bitmap. Format 3 appends
+/// failure-coverage and failed-row bitmaps. All integers are little-endian.
+/// Format 1 remains readable as clean row state.
 fn encode_sidecar(state: &FreshnessState) -> Result<Vec<u8>> {
     let state = state.clone().normalize()?;
     let basis_len = u16::try_from(state.basis.len())
@@ -477,17 +666,12 @@ fn encode_sidecar(state: &FreshnessState) -> Result<Vec<u8>> {
             DirtyRows::Rows(bitmap) => (0u8, bitmap),
             DirtyRows::AllExcept(clean) => (1u8, clean),
         };
-        let mut encoded = Vec::with_capacity(bitmap.serialized_size());
-        bitmap
-            .serialize_into(&mut encoded)
-            .map_err(|error| invalid(format!("encoding freshness bitmap: {error}")))?;
-        let bitmap_len = u32::try_from(encoded.len())
-            .map_err(|_| invalid("freshness bitmap exceeds u32 bytes".to_string()))?;
         bytes.extend_from_slice(&fragment_id.to_le_bytes());
         bytes.extend_from_slice(&hash.to_le_bytes());
         bytes.push(kind);
-        bytes.extend_from_slice(&bitmap_len.to_le_bytes());
-        bytes.extend_from_slice(&encoded);
+        encode_bitmap(&mut bytes, Some(&bitmap))?;
+        encode_bitmap(&mut bytes, state.failure_coverage.get(fragment_id))?;
+        encode_bitmap(&mut bytes, state.failed_rows.get(fragment_id))?;
     }
     Ok(bytes)
 }
@@ -526,7 +710,7 @@ fn decode_sidecar(bytes: &[u8]) -> Result<FreshnessState> {
     cursor.read_exact(&mut magic).map_err(|_| malformed())?;
     let mut format = [0u8; 1];
     cursor.read_exact(&mut format).map_err(|_| malformed())?;
-    if &magic != SIDECAR_MAGIC || format[0] != SIDECAR_FORMAT {
+    if &magic != SIDECAR_MAGIC || !matches!(format[0], SIDECAR_FORMAT_V2 | SIDECAR_FORMAT) {
         return Err(malformed());
     }
     let mut intent_id = [0u8; 16];
@@ -542,6 +726,7 @@ fn decode_sidecar(bytes: &[u8]) -> Result<FreshnessState> {
     let mut state = FreshnessState {
         basis,
         intent_id: Uuid::from_bytes(intent_id),
+        failure_evidence_recorded: format[0] == SIDECAR_FORMAT,
         ..Default::default()
     };
     for _ in 0..count {
@@ -554,19 +739,7 @@ fn decode_sidecar(bytes: &[u8]) -> Result<FreshnessState> {
         cursor.read_exact(&mut signature).map_err(|_| malformed())?;
         let mut kind = [0u8; 1];
         cursor.read_exact(&mut kind).map_err(|_| malformed())?;
-        let mut bitmap_len = [0u8; 4];
-        cursor
-            .read_exact(&mut bitmap_len)
-            .map_err(|_| malformed())?;
-        let bitmap_len = u32::from_le_bytes(bitmap_len) as usize;
-        let mut encoded = vec![0u8; bitmap_len];
-        cursor.read_exact(&mut encoded).map_err(|_| malformed())?;
-        let mut bitmap_reader = Cursor::new(encoded.as_slice());
-        let bitmap =
-            RoaringBitmap::deserialize_from(&mut bitmap_reader).map_err(|_| malformed())?;
-        if bitmap_reader.position() != bitmap_len as u64 {
-            return Err(malformed());
-        }
+        let bitmap = decode_bitmap(&mut cursor, &malformed)?.unwrap_or_default();
         let dirty = match kind[0] {
             0 => DirtyRows::Rows(bitmap),
             1 => DirtyRows::AllExcept(bitmap),
@@ -581,6 +754,14 @@ fn decode_sidecar(bytes: &[u8]) -> Result<FreshnessState> {
         );
         if !dirty.is_explicitly_empty() {
             state.row_state.insert(fragment_id, dirty);
+        }
+        if format[0] == SIDECAR_FORMAT {
+            if let Some(covered) = decode_bitmap(&mut cursor, &malformed)? {
+                state.failure_coverage.insert(fragment_id, covered);
+            }
+            if let Some(failed) = decode_bitmap(&mut cursor, &malformed)? {
+                state.failed_rows.insert(fragment_id, failed);
+            }
         }
     }
     if cursor.position() != bytes.len() as u64 {
@@ -763,12 +944,15 @@ enum StoredFreshnessState {
     Unreadable,
 }
 
-async fn stored_freshness_state(dataset: &Dataset, column: &str) -> StoredFreshnessState {
+async fn load_freshness_state(
+    dataset: &Dataset,
+    column: &str,
+) -> Result<Option<(FreshnessState, Option<String>)>> {
     let Some(encoded) = field_meta(dataset, column, SOURCE_SIGNATURE_META_KEY) else {
-        return StoredFreshnessState::Absent;
+        return Ok(None);
     };
     // Inline JSON is the declaration's empty seed and the pre-sidecar form.
-    let (read, digest) = match encoded.strip_prefix(SIDECAR_REF) {
+    let read = match encoded.strip_prefix(SIDECAR_REF) {
         Some(digest) => (
             read_sidecar(dataset, digest).await,
             Some(digest.to_string()),
@@ -783,8 +967,14 @@ async fn stored_freshness_state(dataset: &Dataset, column: &str) -> StoredFreshn
             None,
         ),
     };
-    match read {
-        Ok(state) => StoredFreshnessState::Present { state, digest },
+    let (state, digest) = read;
+    Ok(Some((state?, digest)))
+}
+
+async fn stored_freshness_state(dataset: &Dataset, column: &str) -> StoredFreshnessState {
+    match load_freshness_state(dataset, column).await {
+        Ok(Some((state, digest))) => StoredFreshnessState::Present { state, digest },
+        Ok(None) => StoredFreshnessState::Absent,
         Err(error) => {
             log::warn!(
                 "computed column '{column}' freshness state is unreadable ({error}); every fragment will be recomputed"
@@ -850,6 +1040,38 @@ impl StalenessPlan {
     /// Whether the fragment requires any recomputation, whole or row-level.
     pub fn needs_recompute(&self, fragment_id: u32) -> bool {
         self.is_dirty(fragment_id) || self.has_dirty_rows(fragment_id)
+    }
+}
+
+/// Strict, internally consistent evidence for a Function-column status read.
+///
+/// Unlike [`staleness_against`], this value never converts an unreadable
+/// sidecar into a conservative recompute plan. Failure coverage may be
+/// partial: the caller combines it with live-row freshness and value evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StrictFreshness {
+    /// No freshness certificate is recorded on this dataset version.
+    ///
+    /// This does not prove that no refresh was ever attempted; older failed
+    /// attempts may be untracked. Assignment and value evidence still decide
+    /// stale versus never computed.
+    Absent,
+    /// The sidecar predates failure evidence. Its staleness plan is still
+    /// usable; row classification may use freshness, values, and assignment
+    /// evidence outside this sidecar.
+    Uncertified { staleness: StalenessPlan },
+    /// Exact staleness and current-generation failed rows.
+    Certified {
+        staleness: StalenessPlan,
+        failures: FailureEvidence,
+    },
+}
+
+fn incomplete_certificate(column: &str, reason: impl fmt::Display) -> Error {
+    Error::Runtime {
+        message: format!(
+            "computed column '{column}' has no complete freshness certificate: {reason}"
+        ),
     }
 }
 
@@ -1158,6 +1380,16 @@ pub async fn staleness_against(
         }
         StoredFreshnessState::Present { state: stored, .. } => stored,
     };
+    staleness_from_state(dataset, column, definition_version, inputs, stored).await
+}
+
+async fn staleness_from_state(
+    dataset: &Dataset,
+    column: &str,
+    definition_version: &str,
+    inputs: &InputFields,
+    stored: FreshnessState,
+) -> Result<StalenessPlan> {
     let stored_version = field_meta(dataset, column, DEFINITION_VERSION_META_KEY);
     if stored_version.is_some_and(|version| version != definition_version) {
         return Ok(StalenessPlan {
@@ -1221,6 +1453,71 @@ pub async fn staleness_against(
     })
 }
 
+/// Read exact status evidence without the planner's conservative fallback.
+///
+/// A missing metadata key returns [`StrictFreshness::Absent`]. A referenced
+/// sidecar that cannot be read or decoded propagates the existing error. The
+/// returned plan is certified when the sidecar records a definition and can be
+/// decoded. Failure coverage is returned only for live fragments whose stored
+/// input signature still matches; stale evidence is omitted. The status
+/// provider remains responsible for classifying uncovered live rows as fresh,
+/// stale, or never computed, and for reporting an error only when a row is
+/// genuinely ambiguous.
+pub async fn strict_freshness_against(
+    dataset: &Dataset,
+    column: &str,
+    definition_version: &str,
+    inputs: &InputFields,
+) -> Result<StrictFreshness> {
+    let Some((stored, _)) = load_freshness_state(dataset, column).await? else {
+        return Ok(StrictFreshness::Absent);
+    };
+    let Some(stored_definition) = field_meta(dataset, column, DEFINITION_VERSION_META_KEY) else {
+        return Err(incomplete_certificate(
+            column,
+            "the recorded definition is missing",
+        ));
+    };
+    let staleness =
+        staleness_from_state(dataset, column, definition_version, inputs, stored.clone()).await?;
+    if !stored.failure_evidence_recorded {
+        return Ok(StrictFreshness::Uncertified { staleness });
+    }
+    if stored_definition != definition_version {
+        return Ok(StrictFreshness::Certified {
+            staleness,
+            failures: FailureEvidence::default(),
+        });
+    }
+    let mut failures = FailureEvidence::default();
+    for fragment in dataset.get_fragments() {
+        let fragment_id = fragment.id() as u32;
+        let current = signature_of(dataset, fragment_id, inputs)?.ok_or_else(|| {
+            incomplete_certificate(column, format!("fragment {fragment_id} is not live"))
+        })?;
+        if stored.signatures.get(&fragment_id) != Some(&current) {
+            // The old generation's failure evidence no longer describes this
+            // fragment. Its live rows are stale or never computed, not
+            // ambiguously failed.
+            continue;
+        }
+        if let Some(covered) = stored.failure_coverage.get(&fragment_id)
+            && !covered.is_empty()
+        {
+            failures.known_rows.insert(fragment_id, covered.clone());
+        }
+        if let Some(failed) = stored.failed_rows.get(&fragment_id)
+            && !failed.is_empty()
+        {
+            failures.failed_rows.insert(fragment_id, failed.clone());
+        }
+    }
+    Ok(StrictFreshness::Certified {
+        staleness,
+        failures,
+    })
+}
+
 /// What [`record_freshness`] wrote: the table version the stamp landed at,
 /// if it wrote one, and the entries recorded and dropped for having moved.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -1252,6 +1549,55 @@ pub async fn record_freshness(
     inputs: &InputFields,
     computed: SignatureMap,
 ) -> Result<FreshnessRecord> {
+    record_freshness_impl(
+        latest,
+        pinned,
+        column,
+        definition_version,
+        inputs,
+        computed,
+        None,
+    )
+    .await
+}
+
+/// Record signatures and an explicit current-generation failure outcome in one
+/// immutable sidecar transition.
+///
+/// `failures.known_rows` must include only physical offsets whose final
+/// outcome is known. `failures.failed_rows` is the failed subset. Rows omitted
+/// from coverage remain unknown to failure classification; freshness, values,
+/// and assignment evidence may still classify them.
+pub async fn record_freshness_with_failures(
+    latest: &mut Dataset,
+    pinned: Option<(&Dataset, &StalenessPlan)>,
+    column: &str,
+    definition_version: &str,
+    inputs: &InputFields,
+    computed: SignatureMap,
+    failures: &FailureEvidence,
+) -> Result<FreshnessRecord> {
+    record_freshness_impl(
+        latest,
+        pinned,
+        column,
+        definition_version,
+        inputs,
+        computed,
+        Some(failures),
+    )
+    .await
+}
+
+async fn record_freshness_impl(
+    latest: &mut Dataset,
+    pinned: Option<(&Dataset, &StalenessPlan)>,
+    column: &str,
+    definition_version: &str,
+    inputs: &InputFields,
+    computed: SignatureMap,
+    failures: Option<&FailureEvidence>,
+) -> Result<FreshnessRecord> {
     let absent = matches!(
         stored_signatures(latest, column).await,
         StoredSignatures::Absent
@@ -1270,7 +1616,7 @@ pub async fn record_freshness(
         }
     }
     entries.extend(computed);
-    if entries.is_empty() && !absent {
+    if entries.is_empty() && !absent && failures.is_none_or(FailureEvidence::is_empty) {
         return Ok(FreshnessRecord::default());
     }
     let fragments: Vec<u32> = entries.keys().copied().collect();
@@ -1280,7 +1626,19 @@ pub async fn record_freshness(
         .filter(|(fragment_id, signature)| current.get(fragment_id) == Some(signature))
         .collect();
     let recorded = verified.len();
-    let version = write_signatures(latest, column, definition_version, verified).await?;
+    let verified_fragments: HashSet<u32> = verified.keys().copied().collect();
+    let scoped_failures = failures
+        .map(|failures| failures.for_fragments(&verified_fragments))
+        .filter(|failures| !failures.is_empty());
+    let version = write_signatures_impl(
+        latest,
+        column,
+        definition_version,
+        Some(inputs),
+        verified,
+        scoped_failures.as_ref(),
+    )
+    .await?;
     Ok(FreshnessRecord {
         version: Some(version),
         recorded,
@@ -1582,6 +1940,25 @@ pub async fn write_signatures(
     definition_version: &str,
     entries: SignatureMap,
 ) -> Result<u64> {
+    write_signatures_impl(dataset, column, definition_version, None, entries, None).await
+}
+
+async fn write_signatures_impl(
+    dataset: &mut Dataset,
+    column: &str,
+    definition_version: &str,
+    inputs: Option<&InputFields>,
+    entries: SignatureMap,
+    failures: Option<&FailureEvidence>,
+) -> Result<u64> {
+    if let Some(failures) = failures {
+        failures.validate()?;
+        if inputs.is_none() {
+            return Err(invalid(
+                "failure evidence requires input fields for signature validation".to_string(),
+            ));
+        }
+    }
     let definition_changed = field_meta(dataset, column, DEFINITION_VERSION_META_KEY)
         .is_some_and(|version| version != definition_version);
     let live: HashSet<u32> = dataset
@@ -1619,17 +1996,40 @@ pub async fn write_signatures(
     }
     // A signature entry written through this API means the fragment was
     // recomputed in full. Whole callers keep their old semantics while
-    // clearing any partial retry state left by a previous publication.
+    // clearing any partial retry state left by a previous publication. The
+    // old failure outcome is also unknown unless the failure-aware wrapper
+    // supplies it below.
     for fragment_id in &recomputed {
         state.row_state.remove(fragment_id);
     }
-    state.signatures.extend(entries);
+    state.invalidate_failure_evidence(recomputed.iter().copied());
+    state.signatures.extend(
+        entries
+            .iter()
+            .map(|(fragment_id, signature)| (*fragment_id, signature.clone())),
+    );
     state
         .signatures
         .retain(|fragment_id, _| live.contains(fragment_id));
     state
         .row_state
         .retain(|fragment_id, _| live.contains(fragment_id));
+    state
+        .failure_coverage
+        .retain(|fragment_id, _| live.contains(fragment_id));
+    state
+        .failed_rows
+        .retain(|fragment_id, _| live.contains(fragment_id));
+    if let Some(failures) = failures {
+        apply_failure_evidence(
+            dataset,
+            inputs.expect("failure evidence requires input fields"),
+            &entries,
+            &mut state,
+            failures,
+        )
+        .await?;
+    }
     if state.row_state.is_empty() || state_unreadable || signatures_changed {
         state.basis.clear();
     }
@@ -1645,6 +2045,70 @@ struct FreshnessWrite {
     intent_digest: Option<String>,
 }
 
+async fn apply_failure_evidence(
+    dataset: &Dataset,
+    inputs: &InputFields,
+    accepted: &SignatureMap,
+    state: &mut FreshnessState,
+    update: &FailureEvidence,
+) -> Result<()> {
+    update.validate()?;
+    let physical_rows: BTreeMap<u32, u64> = {
+        let mut rows = BTreeMap::new();
+        for fragment in dataset.get_fragments() {
+            rows.insert(fragment.id() as u32, fragment.physical_rows().await? as u64);
+        }
+        rows
+    };
+    let mut applied = HashSet::new();
+    for (fragment_id, covered) in &update.known_rows {
+        let Some(rows) = physical_rows.get(fragment_id) else {
+            continue;
+        };
+        let Some(current) = signature_of(dataset, *fragment_id, inputs)? else {
+            continue;
+        };
+        // Evidence belongs to the attempt that produced this accepted
+        // signature. A concurrent attempt may have stamped a newer signature
+        // into `state`; that does not make this attempt's rows valid for it.
+        if accepted.get(fragment_id) != Some(&current) {
+            continue;
+        }
+        if state.signatures.get(fragment_id) != Some(&current) {
+            continue;
+        }
+        if covered
+            .max()
+            .is_some_and(|offset| u64::from(offset) >= *rows)
+        {
+            return Err(invalid(format!(
+                "failure evidence for fragment {fragment_id} exceeds its {rows} physical rows"
+            )));
+        }
+        if let Some(failed) = state.failed_rows.get_mut(fragment_id) {
+            *failed -= covered;
+        }
+        let coverage = state.failure_coverage.entry(*fragment_id).or_default();
+        *coverage |= covered;
+        applied.insert(*fragment_id);
+    }
+    for (fragment_id, failed) in &update.failed_rows {
+        if !applied.contains(fragment_id) {
+            continue;
+        }
+        if !update.known_rows.contains_key(fragment_id) {
+            return Err(invalid(format!(
+                "failed rows for fragment {fragment_id} have no coverage update"
+            )));
+        }
+        let current = state.failed_rows.entry(*fragment_id).or_default();
+        *current |= failed;
+    }
+    state.failed_rows.retain(|_, rows| !rows.is_empty());
+    state.failure_coverage.retain(|_, rows| !rows.is_empty());
+    Ok(())
+}
+
 async fn write_freshness_state(
     dataset: &mut Dataset,
     column: &str,
@@ -1656,6 +2120,8 @@ async fn write_freshness_state(
     let state = state.normalize()?;
     let inline_empty = state.signatures.is_empty()
         && state.row_state.is_empty()
+        && state.failure_coverage.is_empty()
+        && state.failed_rows.is_empty()
         && state.basis.is_empty()
         && !retain_empty_sidecar;
     // The sidecar is durable before the metadata commit references it.
@@ -1817,6 +2283,8 @@ pub async fn begin_row_repair(
         freshness.signatures =
             signatures_for(dataset, &live.iter().copied().collect::<Vec<_>>(), inputs)?;
         freshness.row_state.clear();
+        freshness.failure_coverage.clear();
+        freshness.failed_rows.clear();
         freshness.basis.clear();
     }
     if state_unreadable || definition_changed {
@@ -1826,6 +2294,8 @@ pub async fn begin_row_repair(
             .iter()
             .map(|id| (*id, DirtyRows::AllExcept(RoaringBitmap::new())))
             .collect();
+        freshness.failure_coverage.clear();
+        freshness.failed_rows.clear();
     }
 
     for (fragment_id, repair) in repairs {
@@ -1842,6 +2312,9 @@ pub async fn begin_row_repair(
         let preserve = !state_unreadable
             && !definition_changed
             && freshness.signatures.get(fragment_id) == Some(&current);
+        if !preserve {
+            freshness.invalidate_failure_evidence([*fragment_id]);
+        }
         let dirty = if preserve {
             freshness
                 .row_state
@@ -1864,6 +2337,12 @@ pub async fn begin_row_repair(
         .retain(|fragment_id, _| live.contains(fragment_id));
     freshness
         .row_state
+        .retain(|fragment_id, _| live.contains(fragment_id));
+    freshness
+        .failure_coverage
+        .retain(|fragment_id, _| live.contains(fragment_id));
+    freshness
+        .failed_rows
         .retain(|fragment_id, _| live.contains(fragment_id));
     freshness.basis = basis.clone();
     freshness.intent_id = Uuid::new_v4();
@@ -1959,6 +2438,66 @@ pub async fn finish_row_repair(
     skipped_rows: &BTreeMap<u32, RoaringBitmap>,
     verified_version: Option<u64>,
 ) -> Result<u64> {
+    finish_row_repair_impl(
+        dataset,
+        column,
+        definition_version,
+        inputs,
+        token,
+        filled_rows,
+        skipped_rows,
+        None,
+        verified_version,
+    )
+    .await
+}
+
+/// Finalize a row repair together with the exact failure evidence observed for
+/// those rows.
+///
+/// `failures.known_rows` must be a subset of the rows assigned either a
+/// value or an explicit skipped outcome. This permits a deferral to become
+/// known non-failed without turning it into a failure. `failed_rows` must be a
+/// subset of `known_rows`. The same token, input-signature and version
+/// fences as [`finish_row_repair`] apply.
+#[allow(clippy::too_many_arguments)]
+pub async fn finish_row_repair_with_failures(
+    dataset: &mut Dataset,
+    column: &str,
+    definition_version: &str,
+    inputs: &InputFields,
+    token: &RowStateToken,
+    filled_rows: &BTreeMap<u32, RoaringBitmap>,
+    skipped_rows: &BTreeMap<u32, RoaringBitmap>,
+    failures: &FailureEvidence,
+    verified_version: Option<u64>,
+) -> Result<u64> {
+    finish_row_repair_impl(
+        dataset,
+        column,
+        definition_version,
+        inputs,
+        token,
+        filled_rows,
+        skipped_rows,
+        Some(failures),
+        verified_version,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn finish_row_repair_impl(
+    dataset: &mut Dataset,
+    column: &str,
+    definition_version: &str,
+    inputs: &InputFields,
+    token: &RowStateToken,
+    filled_rows: &BTreeMap<u32, RoaringBitmap>,
+    skipped_rows: &BTreeMap<u32, RoaringBitmap>,
+    failures: Option<&FailureEvidence>,
+    verified_version: Option<u64>,
+) -> Result<u64> {
     if !is_sha256_hex(&token.intent_digest) {
         return Err(invalid("row repair token is malformed".to_string()));
     }
@@ -1970,6 +2509,36 @@ pub async fn finish_row_repair(
         return Err(invalid(
             "row repair result names a fragment outside its token".to_string(),
         ));
+    }
+    if let Some(failures) = failures {
+        failures.validate()?;
+        for (fragment_id, covered) in &failures.known_rows {
+            let selected = token.selected_rows.get(fragment_id).ok_or_else(|| {
+                invalid(format!(
+                    "failure evidence names fragment {fragment_id} outside its token"
+                ))
+            })?;
+            let mut known = filled_rows.get(fragment_id).cloned().unwrap_or_default();
+            if let Some(skipped) = skipped_rows.get(fragment_id) {
+                known |= skipped;
+            }
+            if !covered.is_subset(selected) || !covered.is_subset(&known) {
+                return Err(invalid(format!(
+                    "failure evidence for fragment {fragment_id} covers rows without a final outcome"
+                )));
+            }
+        }
+        for (fragment_id, failed) in &failures.failed_rows {
+            if !failures.known_rows.contains_key(fragment_id)
+                || skipped_rows
+                    .get(fragment_id)
+                    .is_none_or(|skipped| !failed.is_subset(skipped))
+            {
+                return Err(invalid(format!(
+                    "failed rows for fragment {fragment_id} must be an explicit skipped subset"
+                )));
+            }
+        }
     }
     dataset.checkout_latest().await?;
     if verified_version.is_some_and(|version| dataset.version().version != version) {
@@ -2015,14 +2584,32 @@ pub async fn finish_row_repair(
             )));
         }
     }
-    let before = state.row_state.clone();
+    let before = state.clone();
+    state.invalidate_failure_rows(&token.selected_rows);
     apply_row_repair(
         &mut state.row_state,
         &token.selected_rows,
         filled_rows,
         skipped_rows,
     )?;
-    if state.row_state == before {
+    if let Some(failures) = failures {
+        let accepted = token
+            .selected_rows
+            .keys()
+            .map(|fragment_id| {
+                state
+                    .signatures
+                    .get(fragment_id)
+                    .cloned()
+                    .map(|signature| (*fragment_id, signature))
+            })
+            .collect::<Option<SignatureMap>>()
+            .ok_or_else(|| {
+                invalid("row repair failure evidence lost an accepted signature".to_string())
+            })?;
+        apply_failure_evidence(dataset, inputs, &accepted, &mut state, failures).await?;
+    }
+    if state == before {
         return Ok(dataset.version().version);
     }
     if current_digest != token.intent_digest.as_str() {
@@ -2868,6 +3455,41 @@ mod tests {
             .unwrap();
     }
 
+    async fn stamp_v2(
+        dataset: &mut Dataset,
+        column: &str,
+        definition: &str,
+        entries: SignatureMap,
+    ) {
+        let reference = write_sidecar_bytes(
+            dataset,
+            encode_v2_sidecar(&FreshnessState {
+                signatures: entries,
+                ..Default::default()
+            })
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        let describes = dataset.version().version.to_string();
+        dataset
+            .update_field_metadata()
+            .update(
+                column,
+                [
+                    (SOURCE_SIGNATURE_META_KEY.to_string(), reference),
+                    (
+                        DEFINITION_VERSION_META_KEY.to_string(),
+                        definition.to_string(),
+                    ),
+                    (RECORDED_AT_VERSION_META_KEY.to_string(), describes),
+                ],
+            )
+            .unwrap()
+            .await
+            .unwrap();
+    }
+
     fn fragment_signature(dataset: &Dataset, fragment_id: u32) -> String {
         signature_of(dataset, fragment_id, &inputs(dataset))
             .unwrap()
@@ -2894,6 +3516,15 @@ mod tests {
                 (3, DirtyRows::Rows(RoaringBitmap::from_iter([1, 4, 9]))),
                 (7, DirtyRows::AllExcept(RoaringBitmap::from_iter([0, 2]))),
             ]),
+            failure_coverage: FailureRows::from([
+                (3, RoaringBitmap::from_iter([1, 2, 4, 9])),
+                (7, RoaringBitmap::from_iter([0, 1, 2, 3])),
+            ]),
+            failed_rows: FailureRows::from([
+                (3, RoaringBitmap::from_iter([1])),
+                (7, RoaringBitmap::from_iter([1, 3])),
+            ]),
+            failure_evidence_recorded: true,
         };
         let encoded = encode_sidecar(&state).unwrap();
         assert_eq!(encoded[4], SIDECAR_FORMAT);
@@ -2913,7 +3544,281 @@ mod tests {
         let state = decode_sidecar(&encode_legacy_sidecar(&signatures).unwrap()).unwrap();
         assert_eq!(state.signatures, signatures);
         assert!(state.row_state.is_empty());
+        assert!(state.failure_coverage.is_empty());
+        assert!(state.failed_rows.is_empty());
+        assert!(!state.failure_evidence_recorded);
         assert!(state.basis.is_empty());
+    }
+
+    #[test]
+    fn v2_sidecar_decodes_with_unknown_failure_evidence() {
+        let state = FreshnessState {
+            signatures: SignatureMap::from([(1, "0000000000000001".to_string())]),
+            row_state: RowStateMap::from([(1, DirtyRows::Rows(RoaringBitmap::from_iter([2, 3])))]),
+            basis: "legacy-intent".to_string(),
+            intent_id: Uuid::from_u128(1),
+            ..Default::default()
+        };
+        let decoded = decode_sidecar(&encode_v2_sidecar(&state).unwrap()).unwrap();
+        assert_eq!(decoded, state);
+        assert!(decoded.failure_coverage.is_empty());
+        assert!(decoded.failed_rows.is_empty());
+        assert!(!decoded.failure_evidence_recorded);
+    }
+
+    #[tokio::test]
+    async fn a_first_partial_write_keeps_untouched_legacy_rows_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dataset = table(dir.path().to_str().unwrap()).await;
+        let definition = definition_version(EXPRESSION);
+        let ids = inputs(&dataset);
+        let entries = signatures_for(&dataset, &[0, 1], &ids).unwrap();
+        stamp_v2(&mut dataset, COLUMN, &definition, entries).await;
+
+        let StrictFreshness::Uncertified { staleness } =
+            strict_freshness_against(&dataset, COLUMN, &definition, &ids)
+                .await
+                .unwrap()
+        else {
+            panic!("the v2 sidecar should yield a readable uncertified plan");
+        };
+        assert_eq!(staleness, StalenessPlan::default());
+
+        let selected = RoaringBitmap::from_iter([1, 2]);
+        let repairs = BTreeMap::from([(0, repair(&dataset, 0, selected.clone()))]);
+        let token = begin_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            "legacy-partial",
+            &repairs,
+        )
+        .await
+        .unwrap();
+        finish_row_repair_with_failures(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            &token,
+            &BTreeMap::from([(0, RoaringBitmap::from_iter([2]))]),
+            &BTreeMap::from([(0, RoaringBitmap::from_iter([1]))]),
+            &FailureEvidence {
+                known_rows: BTreeMap::from([(0, selected)]),
+                failed_rows: BTreeMap::from([(0, RoaringBitmap::from_iter([1]))]),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        let StrictFreshness::Certified {
+            staleness,
+            failures,
+        } = strict_freshness_against(&dataset, COLUMN, &definition, &ids)
+            .await
+            .unwrap()
+        else {
+            panic!("partial v3 evidence is still readable");
+        };
+        assert_eq!(
+            staleness.row_dirty.get(&0),
+            Some(&DirtyRows::Rows(RoaringBitmap::from_iter([1])))
+        );
+        assert_eq!(
+            failures.known_rows.get(&0),
+            Some(&RoaringBitmap::from_iter([1, 2])),
+            "only the rows this partial publication observed are covered"
+        );
+        assert_eq!(
+            failures.failed_rows.get(&0),
+            Some(&RoaringBitmap::from_iter([1]))
+        );
+        assert!(
+            !failures.known_rows.contains_key(&1),
+            "the untouched legacy fragment remains unknown"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_successful_retry_clears_only_its_failed_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dataset = table(dir.path().to_str().unwrap()).await;
+        let definition = definition_version(EXPRESSION);
+        let ids = inputs(&dataset);
+        let signatures = signatures_for(&dataset, &[0, 1], &ids).unwrap();
+        stamp_v2(&mut dataset, COLUMN, &definition, signatures).await;
+
+        let first_selected = RoaringBitmap::from_iter([1, 2]);
+        let first_repairs = BTreeMap::from([(0, repair(&dataset, 0, first_selected.clone()))]);
+        let first = begin_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            "failed-wave",
+            &first_repairs,
+        )
+        .await
+        .unwrap();
+        finish_row_repair_with_failures(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            &first,
+            &BTreeMap::from([(0, RoaringBitmap::from_iter([2]))]),
+            &BTreeMap::from([(0, RoaringBitmap::from_iter([1]))]),
+            &FailureEvidence {
+                known_rows: BTreeMap::from([(0, first_selected)]),
+                failed_rows: BTreeMap::from([(0, RoaringBitmap::from_iter([1]))]),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        let retry_selected = RoaringBitmap::from_iter([1]);
+        let retry_repairs = BTreeMap::from([(0, repair(&dataset, 0, retry_selected.clone()))]);
+        let retry = begin_row_repair(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            "successful-retry",
+            &retry_repairs,
+        )
+        .await
+        .unwrap();
+        finish_row_repair_with_failures(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            &ids,
+            &retry,
+            &BTreeMap::from([(0, retry_selected.clone())]),
+            &BTreeMap::new(),
+            &FailureEvidence {
+                known_rows: BTreeMap::from([(0, retry_selected)]),
+                failed_rows: BTreeMap::new(),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        let StrictFreshness::Certified { failures, .. } =
+            strict_freshness_against(&dataset, COLUMN, &definition, &ids)
+                .await
+                .unwrap()
+        else {
+            panic!("status should remain readable");
+        };
+        assert!(!failures.failed_rows.contains_key(&0));
+        assert_eq!(
+            failures.known_rows.get(&0),
+            Some(&RoaringBitmap::from_iter([1, 2]))
+        );
+    }
+
+    #[tokio::test]
+    async fn an_old_attempt_cannot_rewrite_a_newer_signature_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dataset = table(dir.path().to_str().unwrap()).await;
+        let definition = definition_version(EXPRESSION);
+        let ids = inputs(&dataset);
+        let old = dataset.clone();
+        let old_inputs = ids.clone();
+        let old_signature = signature_of(&old, 0, &old_inputs).unwrap().unwrap();
+
+        rewrite_value(&mut dataset, 0).await;
+        let new_signature = signature_of(&dataset, 0, &inputs(&dataset))
+            .unwrap()
+            .unwrap();
+        assert_ne!(old_signature, new_signature);
+
+        let current_entries = signatures_for(&dataset, &[0, 1], &inputs(&dataset)).unwrap();
+        write_signatures(&mut dataset, COLUMN, &definition, current_entries.clone())
+            .await
+            .unwrap();
+        let StoredFreshnessState::Present {
+            state: mut current_state,
+            ..
+        } = stored_freshness_state(&dataset, COLUMN).await
+        else {
+            panic!("new attempt state");
+        };
+        current_state
+            .failure_coverage
+            .insert(0, RoaringBitmap::from_iter([3, 4]));
+        current_state
+            .failed_rows
+            .insert(0, RoaringBitmap::from_iter([4]));
+        let write = write_freshness_state(
+            &mut dataset,
+            COLUMN,
+            &definition,
+            current_state.clone(),
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(write.version > 0);
+        let new_evidence = FailureEvidence {
+            known_rows: current_state.failure_coverage.clone(),
+            failed_rows: current_state.failed_rows.clone(),
+        };
+
+        let record = record_freshness_with_failures(
+            &mut dataset,
+            None,
+            COLUMN,
+            &definition,
+            &old_inputs,
+            SignatureMap::from([(0, old_signature)]),
+            &FailureEvidence {
+                known_rows: BTreeMap::from([(0, RoaringBitmap::from_iter([1, 2]))]),
+                failed_rows: BTreeMap::from([(0, RoaringBitmap::from_iter([1]))]),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!((record.recorded, record.moved), (0, 1));
+
+        let StrictFreshness::Certified { failures, .. } =
+            strict_freshness_against(&dataset, COLUMN, &definition, &inputs(&dataset))
+                .await
+                .unwrap()
+        else {
+            panic!("current signature evidence should remain readable");
+        };
+        assert_eq!(failures.known_rows, new_evidence.known_rows);
+        assert_eq!(failures.failed_rows, new_evidence.failed_rows);
+        assert_eq!(
+            failures.failed_rows.get(&0),
+            Some(&RoaringBitmap::from_iter([4])),
+            "old S1 failure must not replace the S2 failure"
+        );
+        assert!(!failures.known_rows.contains_key(&1));
+    }
+
+    #[test]
+    fn failure_evidence_must_be_a_subset_of_coverage() {
+        let state = FreshnessState {
+            signatures: SignatureMap::from([(3, "0000000000000003".to_string())]),
+            failure_coverage: FailureRows::from([(3, RoaringBitmap::from_iter([1]))]),
+            failed_rows: FailureRows::from([(3, RoaringBitmap::from_iter([2]))]),
+            ..Default::default()
+        };
+        let error = encode_sidecar(&state).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("failed rows are not covered by failure evidence"),
+            "{error}"
+        );
     }
 
     #[tokio::test]

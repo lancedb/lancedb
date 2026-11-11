@@ -2288,6 +2288,137 @@ def test_remote_function_errors_lists_the_rows_a_refresh_skipped(attempts):
     assert everything.truncated is True
 
 
+def test_remote_function_column_status_passes_pinned_version():
+    queries = []
+    status = {
+        "column": "embedding",
+        "binding_id": "fb_01",
+        "function": {
+            "name": "embed",
+            "object_id": "embed",
+            "location": "objects/embed",
+            "version": "7",
+            "manifest_digest": "sha256:abc",
+        },
+        "table_version": 42,
+        "rows": 4,
+        "fresh": 2,
+        "stale": 2,
+        "never_computed": 0,
+        "failed": 0,
+        "auto_refresh": {
+            "enabled": True,
+            "interval_seconds": 60,
+            "active_job_id": None,
+            "state": "blocked",
+            "failure_streak": 3,
+            "effective_cooldown_millis": 8000,
+            "blocked_reason": "preparation_backoff",
+            "next_run_at_millis": None,
+        },
+    }
+
+    def handler(request):
+        parsed = urlparse(request.path)
+        if parsed.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                json.dumps({"version": 42, "schema": {"fields": []}}).encode()
+            )
+        elif parsed.path == "/v1/table/test/function_columns/status":
+            queries.append(parse_qs(parsed.query))
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(json.dumps([status]).encode())
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.open_table("test")
+        table.checkout(42)
+        result = table.column_status("embedding")
+
+    assert queries == [{"column": ["embedding"], "version": ["42"]}]
+    assert result.table_version == 42
+    assert (result.fresh, result.stale, result.never_computed, result.failed) == (
+        2,
+        2,
+        0,
+        0,
+    )
+    assert result.auto_refresh.state == "blocked"
+    assert result.auto_refresh.failure_streak == 3
+    assert result.auto_refresh.effective_cooldown_millis == 8000
+    assert result.auto_refresh.blocked_reason == "preparation_backoff"
+
+
+def test_remote_wait_fresh_retries_only_typed_finalization_pending():
+    calls = 0
+    status = {
+        "column": "embedding",
+        "binding_id": "fb_01",
+        "function": {
+            "name": "embed",
+            "object_id": "embed",
+            "location": "objects/embed",
+            "version": "7",
+            "manifest_digest": "sha256:abc",
+        },
+        "table_version": 42,
+        "rows": 1,
+        "fresh": 1,
+        "stale": 0,
+        "never_computed": 0,
+        "failed": 0,
+        "auto_refresh": {
+            "enabled": False,
+            "state": "disabled",
+            "failure_streak": 0,
+            "next_run_at_millis": None,
+        },
+    }
+
+    def handler(request):
+        nonlocal calls
+        parsed = urlparse(request.path)
+        if parsed.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                json.dumps({"version": 42, "schema": {"fields": []}}).encode()
+            )
+        elif parsed.path == "/v1/table/test/function_columns/status":
+            calls += 1
+            if calls == 1:
+                request.send_response(503)
+                request.send_header(
+                    "x-lancedb-error-code",
+                    "function_column_status_finalization_pending",
+                )
+                request.end_headers()
+                request.wfile.write(b"finalization pending")
+            else:
+                request.send_response(200)
+                request.send_header("Content-Type", "application/json")
+                request.end_headers()
+                request.wfile.write(json.dumps([status]).encode())
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.open_table("test")
+        result = table.wait_fresh("embedding", timeout=timedelta(seconds=2))
+
+    assert calls == 2
+    assert result.fresh == result.rows == 1
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("sync", [False, True])
 @pytest.mark.parametrize("failure", ["send", "read"])

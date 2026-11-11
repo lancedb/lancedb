@@ -704,6 +704,47 @@ so this is safe to call repeatedly.
 
 ***
 
+### functionColumnStatus()
+
+```ts
+abstract functionColumnStatus(column): Promise<FunctionColumnStatus>
+```
+
+Return exact freshness status for one Function-backed output column.
+
+#### Parameters
+
+* **column**: `string`
+
+#### Returns
+
+`Promise`&lt;[`FunctionColumnStatus`](../interfaces/FunctionColumnStatus.md)&gt;
+
+***
+
+### functionColumnStatuses()
+
+```ts
+abstract functionColumnStatuses(column?): Promise<FunctionColumnStatus[]>
+```
+
+Return exact freshness status for Function-backed output columns.
+
+All results describe one server table version. Omit `column` for every
+Function output. Rows already failed remain visible and do not prevent
+`waitFresh` from completing. A handle pinned to an exact version requests
+that version; a latest handle retains normal read-freshness behavior.
+
+#### Parameters
+
+* **column?**: `string`
+
+#### Returns
+
+`Promise`&lt;[`FunctionColumnStatus`](../interfaces/FunctionColumnStatus.md)[]&gt;
+
+***
+
 ### functionErrors()
 
 ```ts
@@ -1598,3 +1639,26 @@ Waits for asynchronous indexing to complete on the table.
 #### Returns
 
 `Promise`&lt;`void`&gt;
+
+***
+
+### waitFresh()
+
+```ts
+abstract waitFresh(column, timeoutSeconds?): Promise<FunctionColumnStatus>
+```
+
+Poll until no stale or never-computed rows remain.
+
+Only HTTP 503 with the exact finalization-pending error code is retried;
+every other error propagates. Failed rows do not block completion.
+
+#### Parameters
+
+* **column**: `string`
+
+* **timeoutSeconds?**: `number`
+
+#### Returns
+
+`Promise`&lt;[`FunctionColumnStatus`](../interfaces/FunctionColumnStatus.md)&gt;

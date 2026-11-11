@@ -535,6 +535,55 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn function_column_statuses(
+        &self,
+        column: Option<String>,
+    ) -> napi::Result<Vec<FunctionColumnStatus>> {
+        let statuses = self
+            .inner_ref()?
+            .function_column_statuses(column.as_deref())
+            .await
+            .default_error()?;
+        Ok(statuses.into_iter().map(Into::into).collect())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn function_column_status(
+        &self,
+        column: String,
+    ) -> napi::Result<FunctionColumnStatus> {
+        let status = self
+            .inner_ref()?
+            .function_column_status(&column)
+            .await
+            .default_error()?;
+        Ok(status.into())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn wait_for_function_column(
+        &self,
+        column: String,
+        timeout_seconds: Option<i64>,
+    ) -> napi::Result<FunctionColumnStatus> {
+        let timeout = timeout_seconds
+            .map(|seconds| {
+                u64::try_from(seconds)
+                    .map(std::time::Duration::from_secs)
+                    .map_err(|_| {
+                        napi::Error::from_reason("timeoutSeconds must be a non-negative integer")
+                    })
+            })
+            .transpose()?;
+        let status = self
+            .inner_ref()?
+            .wait_for_function_column(&column, timeout)
+            .await
+            .default_error()?;
+        Ok(status.into())
+    }
+
+    #[napi(catch_unwind)]
     pub async fn refresh_materialized_view(
         &self,
         source_version: Option<i64>,
@@ -1797,6 +1846,108 @@ pub struct FunctionErrors {
     pub fragments: Vec<FunctionErrorFragment>,
     /// Whether the listing stopped at its limit.
     pub truncated: bool,
+}
+
+/// One exact immutable Function revision attached to a table output.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct FunctionColumnVersionStatus {
+    pub name: String,
+    pub namespace_path: Vec<String>,
+    pub object_id: String,
+    pub location: String,
+    pub version: String,
+    pub manifest_digest: String,
+}
+
+/// Latest matching refresh Job projected for a Function output.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct FunctionColumnLastRefreshJob {
+    pub job_id: String,
+    pub state: String,
+    pub automatic: Option<bool>,
+    pub completed_at_millis: Option<BigInt>,
+}
+
+/// Automatic-refresh projection for a Function output.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct FunctionColumnAutoRefreshStatus {
+    pub enabled: bool,
+    pub interval_seconds: Option<BigInt>,
+    pub active_job_id: Option<String>,
+    pub state: String,
+    pub failure_streak: u32,
+    pub effective_cooldown_millis: Option<BigInt>,
+    pub blocked_reason: Option<String>,
+    pub next_run_at_millis: Option<BigInt>,
+    pub next_run_at_reason: Option<String>,
+}
+
+/// Exact four-way status of one Function output at one table version.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct FunctionColumnStatus {
+    pub column: String,
+    pub binding_id: String,
+    pub function: FunctionColumnVersionStatus,
+    pub table_version: BigInt,
+    pub rows: BigInt,
+    pub fresh: BigInt,
+    pub stale: BigInt,
+    pub never_computed: BigInt,
+    pub failed: BigInt,
+    pub last_refresh_job: Option<FunctionColumnLastRefreshJob>,
+    pub auto_refresh: FunctionColumnAutoRefreshStatus,
+}
+
+impl From<lancedb::table::FunctionColumnStatus> for FunctionColumnStatus {
+    fn from(status: lancedb::table::FunctionColumnStatus) -> Self {
+        Self {
+            column: status.column,
+            binding_id: status.binding_id,
+            function: FunctionColumnVersionStatus {
+                name: status.function.name,
+                namespace_path: status.function.namespace_path,
+                object_id: status.function.object_id,
+                location: status.function.location,
+                version: status.function.version,
+                manifest_digest: status.function.manifest_digest,
+            },
+            table_version: BigInt::from(status.table_version),
+            rows: BigInt::from(status.rows),
+            fresh: BigInt::from(status.fresh),
+            stale: BigInt::from(status.stale),
+            never_computed: BigInt::from(status.never_computed),
+            failed: BigInt::from(status.failed),
+            last_refresh_job: status
+                .last_refresh_job
+                .map(|job| FunctionColumnLastRefreshJob {
+                    job_id: job.job_id,
+                    state: job.state,
+                    automatic: job.automatic,
+                    completed_at_millis: job.completed_at_millis.map(BigInt::from),
+                }),
+            auto_refresh: FunctionColumnAutoRefreshStatus {
+                enabled: status.auto_refresh.enabled,
+                interval_seconds: status.auto_refresh.interval_seconds.map(BigInt::from),
+                active_job_id: status.auto_refresh.active_job_id,
+                state: status.auto_refresh.state.as_str().to_string(),
+                failure_streak: status.auto_refresh.failure_streak,
+                effective_cooldown_millis: status
+                    .auto_refresh
+                    .effective_cooldown_millis
+                    .map(BigInt::from),
+                blocked_reason: status
+                    .auto_refresh
+                    .blocked_reason
+                    .map(|reason| reason.as_str().to_string()),
+                next_run_at_millis: status.auto_refresh.next_run_at_millis.map(BigInt::from),
+                next_run_at_reason: status.auto_refresh.next_run_at_reason,
+            },
+        }
+    }
 }
 
 impl From<lancedb::function::FunctionErrors> for FunctionErrors {

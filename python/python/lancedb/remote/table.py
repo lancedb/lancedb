@@ -34,6 +34,7 @@ from lancedb._lancedb import (
     DeleteResult,
     DropColumnsResult,
     FtsToken,
+    FunctionColumnStatus,
     IndexConfig,
     RTEWriteSpec,
     MergeResult,
@@ -1232,6 +1233,19 @@ class RemoteTable(Table):
         return LOOP.run(
             self._table.function_errors(job_id=job_id, column=column, limit=limit)
         )
+
+    def column_statuses(
+        self, column: Optional[str] = None
+    ) -> list[FunctionColumnStatus]:
+        return LOOP.run(self._table.column_statuses(column=column))
+
+    def column_status(self, column: str) -> FunctionColumnStatus:
+        return LOOP.run(self._table.column_status(column))
+
+    def wait_fresh(
+        self, column: str, timeout: Optional[timedelta] = None
+    ) -> FunctionColumnStatus:
+        return LOOP.run(self._table.wait_fresh(column, timeout))
 
     def alter_columns(
         self, *alterations: Iterable[Dict[str, str]]
