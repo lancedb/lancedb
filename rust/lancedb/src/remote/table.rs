@@ -11755,6 +11755,66 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
+    #[tokio::test]
+    async fn test_function_column_status_keeps_latest_freshness_headers() {
+        let table = RemoteTable::new_mock(
+            "my_table".to_string(),
+            |request| {
+                assert_eq!(request.method(), "GET");
+                assert_eq!(
+                    request.url().query_pairs().collect::<Vec<_>>(),
+                    vec![(
+                        std::borrow::Cow::Borrowed("column"),
+                        std::borrow::Cow::Borrowed("embedding")
+                    )]
+                );
+                assert_eq!(
+                    request
+                        .headers()
+                        .get("x-lancedb-min-version")
+                        .and_then(|value| value.to_str().ok()),
+                    Some("7")
+                );
+                http::Response::builder()
+                    .status(200)
+                    .body(
+                        r#"[{
+                            "column":"embedding",
+                            "binding_id":"fb_01",
+                            "function":{
+                                "name":"embed",
+                                "object_id":"embed",
+                                "location":"objects/embed",
+                                "version":"7",
+                                "manifest_digest":"sha256:abc"
+                            },
+                            "table_version":42,
+                            "rows":0,
+                            "fresh":0,
+                            "stale":0,
+                            "never_computed":0,
+                            "failed":0,
+                            "auto_refresh":{
+                                "enabled":false,
+                                "state":"disabled",
+                                "failure_streak":0,
+                                "next_run_at_millis":null
+                            }
+                        }]"#,
+                    )
+                    .unwrap()
+            },
+            None,
+        );
+        table.freshness.lock().unwrap().min_version = Some(7);
+
+        let statuses = table
+            .function_column_statuses(Some("embedding"))
+            .await
+            .unwrap();
+        assert_eq!(statuses.len(), 1);
+    }
+
     /// The error listing is table-addressed with optional job and column
     /// filters, mirroring the server's SQL surface, and the two non-record
     /// signals come back as their own fields rather than as rows.
