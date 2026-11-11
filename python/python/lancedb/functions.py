@@ -877,12 +877,14 @@ class RefreshColumnResult(_RemoteValue):
     Row counters describe logical rows planned for this refresh, not user-code
     calls or retry attempts. ``rows_assigned`` counts rows successfully written
     with an output value, ``rows_failed`` counts rows whose computation failed,
-    and ``rows_remaining`` counts rows that still need a value.
+    and ``rows_remaining`` counts planned rows neither assigned nor terminally
+    skipped. Rows already counted in ``rows_failed`` are covered and are not
+    counted again in ``rows_remaining``.
 
     For example, a refresh over 2,001 logical rows that assigns 1,891 values and
     fails 110 rows reports ``rows_assigned=1,891``, ``rows_failed=110``, and
     ``rows_remaining=0``. Its failure-rate denominator is those 2,001 logical
-    rows, not the number of execution attempts or metering rows.
+    rows, not the number of execution attempts.
     """
 
     rows_assigned: _UInt64
@@ -895,8 +897,9 @@ class RefreshColumnResult(_RemoteValue):
     an input was not ready are not failures."""
 
     rows_remaining: _UInt64
-    """Number of planned logical rows that still need an output value when the
-    job completes."""
+    """Number of planned logical rows neither assigned nor terminally skipped.
+    Rows already counted in ``rows_failed`` are covered and are not counted
+    again."""
 
     source_version: _UInt64
     """Exact table version the refresh read."""
@@ -909,7 +912,7 @@ class RefreshColumnResult(_RemoteValue):
         """Deprecated compatibility alias for :attr:`rows_assigned`.
 
         The value is the same successful logical-row count; it does not count
-        execution attempts or metering rows.
+        execution attempts.
         """
         return self.rows_assigned
 
