@@ -178,7 +178,7 @@ class RTree:
     shows up as ``ScalarIndexQuery``.
 
     Remote tables send the ``RTREE`` index type to the server, which must
-    support it; LanceDB Enterprise does not support geospatial data yet.
+    support it.
 
     Examples
     --------
