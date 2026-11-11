@@ -1895,6 +1895,8 @@ def test_local_function_catalog_operations_are_not_supported(tmp_path):
     with pytest.raises(NotImplementedError, match=message):
         db.get_function("normalize_score", version=FUNCTION_VERSION)
     with pytest.raises(NotImplementedError, match=message):
+        db.get_function("normalize_score")
+    with pytest.raises(NotImplementedError, match=message):
         list(db.list_functions())
     with pytest.raises(NotImplementedError, match=message):
         db.drop_function("normalize_score", version=FUNCTION_VERSION)
@@ -1903,8 +1905,10 @@ def test_local_function_catalog_operations_are_not_supported(tmp_path):
 class _RawFunctionCatalog:
     def __init__(self, definition, *, encode=False):
         self.definition = json.dumps(definition) if encode else definition
+        self.requested_versions = []
 
-    async def get_function(self, _name, version, namespace_path):
+    async def get_function(self, _name, version=None, namespace_path=None):
+        self.requested_versions.append(version)
         return self.definition
 
     def list_functions(self, *, namespace_path=None, page_token=None, page_limit=None):
@@ -1944,13 +1948,22 @@ async def test_async_catalog_path_preserves_execution_controls():
         row_timeout_seconds=8.0,
         result_stability="input_and_context",
     )
-    connection = AsyncConnection(_RawFunctionCatalog(definition, encode=True))
+    catalog = _RawFunctionCatalog(definition, encode=True)
+    connection = AsyncConnection(catalog)
 
+    latest = await connection.get_function("embed")
+    integer = await connection.get_function("embed", version=1)
     exact = await connection.get_function("embed", version="1")
+    await connection.get_function("embed", version="001")
     listed = [item async for item in connection.list_functions(page_limit=32)]
     assert len(listed) == 1
-    for version in [exact, *listed]:
+    for version in [latest, integer, exact, *listed]:
         assert _assert_execution_control_encoding(version) == definition
+    assert catalog.requested_versions == [None, "1", "1", "001"]
+    with pytest.raises(TypeError, match="int, str, or None"):
+        await connection.get_function("embed", version=True)
+    with pytest.raises(TypeError, match="int, str, or None"):
+        await connection.get_function("embed", version=1.5)
 
 
 def test_sync_catalog_path_preserves_execution_controls():
@@ -1963,13 +1976,22 @@ def test_sync_catalog_path_preserves_execution_controls():
         result_stability="input_and_context",
     )
     connection = object.__new__(RemoteDBConnection)
-    connection._conn = _RawFunctionCatalog(FunctionVersion(**definition))
+    catalog = _RawFunctionCatalog(FunctionVersion(**definition))
+    connection._conn = catalog
 
+    latest = connection.get_function("embed")
+    integer = connection.get_function("embed", version=1)
     exact = connection.get_function("embed", version="1")
+    connection.get_function("embed", version="001")
     listed = list(connection.list_functions(page_limit=32))
     assert len(listed) == 1
-    for version in [exact, *listed]:
+    for version in [latest, integer, exact, *listed]:
         assert _assert_execution_control_encoding(version) == definition
+    assert catalog.requested_versions == [None, "1", "1", "001"]
+    with pytest.raises(TypeError, match="int, str, or None"):
+        connection.get_function("embed", version=True)
+    with pytest.raises(TypeError, match="int, str, or None"):
+        connection.get_function("embed", version=1.5)
 
 
 def test_sync_drop_function_emits_server_warnings_without_changing_bool_api():

@@ -190,7 +190,10 @@ class Connection(object):
         self, request_json: str, namespace_path: Optional[List[str]] = None
     ) -> Job: ...
     async def get_function(
-        self, name: str, version: str, namespace_path: Optional[List[str]] = None
+        self,
+        name: str,
+        version: Optional[str] = None,
+        namespace_path: Optional[List[str]] = None,
     ) -> str: ...
     def list_functions(
         self,
