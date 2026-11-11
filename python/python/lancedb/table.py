@@ -3187,6 +3187,7 @@ class Table(ABC):
         where: Optional[str] = None,
         batch_size: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
+        resource_budget: Optional[Dict[str, int]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -3231,15 +3232,23 @@ class Table(ABC):
             actual publication boundary can be larger than this threshold
             because it also depends on completed work and Function batching.
             LanceDB Enterprise only; local refreshes reject this option.
+        resource_budget: dict[str, int], optional
+            Aggregate resources for one registered Function refresh. The
+            ``cpu_millis`` and ``memory_bytes`` keys are required;
+            ``gpu_count`` is optional and defaults to zero, which requests a
+            CPU-only budget. This budget cannot be combined with the top-level
+            ``gpu_count`` shorthand. LanceDB Enterprise only; local refreshes
+            reject it.
         gpu_class: str, optional
             GPU class for Function workers. Must be a lowercase name of 1-63
             letters, digits, or hyphens, without a leading or trailing hyphen.
             None keeps the Function's registered class or the deployment
             default. LanceDB Enterprise only.
         gpu_count: int, optional
-            Positive aggregate GPU budget for Function workers. None leaves
-            the server's configured budget unchanged. LanceDB Enterprise
-            only.
+            Positive aggregate GPU budget for Function workers without changing
+            the deployment's CPU and memory defaults. None leaves the server's
+            configured budget unchanged. For a complete CPU and memory budget,
+            use ``resource_budget`` instead. LanceDB Enterprise only.
         retry_policy: FunctionRetryPolicy, optional
             Override retries of failed user-code calls. Only use when repeating
             partial work is safe. Set max_attempts=1 to disable retries.
@@ -3259,7 +3268,8 @@ class Table(ABC):
             Deadline for Function initialization. LanceDB Enterprise only.
         num_workers: int, optional
             Worker count for an expression column; registered Function
-            columns reject it. LanceDB Enterprise only.
+            columns reject it and use ``resource_budget`` instead. LanceDB
+            Enterprise only.
         max_executor_processes_per_worker: int, optional
             Cap on executor processes per Function worker. LanceDB
             Enterprise only.
@@ -3279,6 +3289,7 @@ class Table(ABC):
         where: Optional[str] = None,
         batch_size: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
+        resource_budget: Optional[Dict[str, int]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -3322,15 +3333,23 @@ class Table(ABC):
             actual publication boundary can be larger than this threshold
             because it also depends on completed work and Function batching.
             LanceDB Enterprise only; local refreshes reject this option.
+        resource_budget: dict[str, int], optional
+            Aggregate resources for one registered Function refresh. The
+            ``cpu_millis`` and ``memory_bytes`` keys are required;
+            ``gpu_count`` is optional and defaults to zero, which requests a
+            CPU-only budget. This budget cannot be combined with the top-level
+            ``gpu_count`` shorthand. LanceDB Enterprise only; local refreshes
+            reject it.
         gpu_class: str, optional
             GPU class for Function workers. Must be a lowercase name of 1-63
             letters, digits, or hyphens, without a leading or trailing hyphen.
             None keeps the Function's registered class or the deployment
             default. LanceDB Enterprise only.
         gpu_count: int, optional
-            Positive aggregate GPU budget for Function workers. None leaves
-            the server's configured budget unchanged. LanceDB Enterprise
-            only.
+            Positive aggregate GPU budget for Function workers without changing
+            the deployment's CPU and memory defaults. None leaves the server's
+            configured budget unchanged. For a complete CPU and memory budget,
+            use ``resource_budget`` instead. LanceDB Enterprise only.
         retry_policy: FunctionRetryPolicy, optional
             Override retries of failed user-code calls. Only use when repeating
             partial work is safe. Set max_attempts=1 to disable retries.
@@ -3350,7 +3369,8 @@ class Table(ABC):
             Deadline for Function initialization. LanceDB Enterprise only.
         num_workers: int, optional
             Worker count for an expression column; registered Function
-            columns reject it. LanceDB Enterprise only.
+            columns reject it and use ``resource_budget`` instead. LanceDB
+            Enterprise only.
         max_executor_processes_per_worker: int, optional
             Cap on executor processes per Function worker. LanceDB
             Enterprise only.
@@ -5465,6 +5485,7 @@ class LanceTable(Table):
         where: Optional[str] = None,
         batch_size: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
+        resource_budget: Optional[Dict[str, int]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -5485,6 +5506,7 @@ class LanceTable(Table):
                 where=where,
                 batch_size=batch_size,
                 publication_interval_rows=publication_interval_rows,
+                resource_budget=resource_budget,
                 gpu_class=gpu_class,
                 gpu_count=gpu_count,
                 retry_policy=retry_policy,
@@ -5505,6 +5527,7 @@ class LanceTable(Table):
         where: Optional[str] = None,
         batch_size: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
+        resource_budget: Optional[Dict[str, int]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -5527,6 +5550,7 @@ class LanceTable(Table):
                     where=where,
                     batch_size=batch_size,
                     publication_interval_rows=publication_interval_rows,
+                    resource_budget=resource_budget,
                     gpu_class=gpu_class,
                     gpu_count=gpu_count,
                     retry_policy=retry_policy,
@@ -7895,6 +7919,7 @@ class AsyncTable:
         where: Optional[str] = None,
         batch_size: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
+        resource_budget: Optional[Dict[str, int]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -7939,15 +7964,23 @@ class AsyncTable:
             actual publication boundary can be larger than this threshold
             because it also depends on completed work and Function batching.
             LanceDB Enterprise only; local refreshes reject this option.
+        resource_budget: dict[str, int], optional
+            Aggregate resources for one registered Function refresh. The
+            ``cpu_millis`` and ``memory_bytes`` keys are required;
+            ``gpu_count`` is optional and defaults to zero, which requests a
+            CPU-only budget. This budget cannot be combined with the top-level
+            ``gpu_count`` shorthand. LanceDB Enterprise only; local refreshes
+            reject it.
         gpu_class: str, optional
             GPU class for Function workers. Must be a lowercase name of 1-63
             letters, digits, or hyphens, without a leading or trailing hyphen.
             None keeps the Function's registered class or the deployment
             default. LanceDB Enterprise only.
         gpu_count: int, optional
-            Positive aggregate GPU budget for Function workers. None leaves
-            the server's configured budget unchanged. LanceDB Enterprise
-            only.
+            Positive aggregate GPU budget for Function workers without changing
+            the deployment's CPU and memory defaults. None leaves the server's
+            configured budget unchanged. For a complete CPU and memory budget,
+            use ``resource_budget`` instead. LanceDB Enterprise only.
         retry_policy: FunctionRetryPolicy, optional
             Override retries of failed user-code calls. Only use when repeating
             partial work is safe. Set max_attempts=1 to disable retries.
@@ -7967,7 +8000,8 @@ class AsyncTable:
             Deadline for Function initialization. LanceDB Enterprise only.
         num_workers: int, optional
             Worker count for an expression column; registered Function
-            columns reject it. LanceDB Enterprise only.
+            columns reject it and use ``resource_budget`` instead. LanceDB
+            Enterprise only.
         max_executor_processes_per_worker: int, optional
             Cap on executor processes per Function worker. LanceDB
             Enterprise only.
@@ -7982,6 +8016,7 @@ class AsyncTable:
             where=where,
             batch_size=batch_size,
             publication_interval_rows=publication_interval_rows,
+            resource_budget=resource_budget,
             gpu_class=gpu_class,
             gpu_count=gpu_count,
             retry_policy=None
@@ -8092,6 +8127,7 @@ class AsyncTable:
         where: Optional[str] = None,
         batch_size: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
+        resource_budget: Optional[Dict[str, int]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -8135,15 +8171,23 @@ class AsyncTable:
             actual publication boundary can be larger than this threshold
             because it also depends on completed work and Function batching.
             LanceDB Enterprise only; local refreshes reject this option.
+        resource_budget: dict[str, int], optional
+            Aggregate resources for one registered Function refresh. The
+            ``cpu_millis`` and ``memory_bytes`` keys are required;
+            ``gpu_count`` is optional and defaults to zero, which requests a
+            CPU-only budget. This budget cannot be combined with the top-level
+            ``gpu_count`` shorthand. LanceDB Enterprise only; local refreshes
+            reject it.
         gpu_class: str, optional
             GPU class for Function workers. Must be a lowercase name of 1-63
             letters, digits, or hyphens, without a leading or trailing hyphen.
             None keeps the Function's registered class or the deployment
             default. LanceDB Enterprise only.
         gpu_count: int, optional
-            Positive aggregate GPU budget for Function workers. None leaves
-            the server's configured budget unchanged. LanceDB Enterprise
-            only.
+            Positive aggregate GPU budget for Function workers without changing
+            the deployment's CPU and memory defaults. None leaves the server's
+            configured budget unchanged. For a complete CPU and memory budget,
+            use ``resource_budget`` instead. LanceDB Enterprise only.
         retry_policy: FunctionRetryPolicy, optional
             Override retries of failed user-code calls. Only use when repeating
             partial work is safe. Set max_attempts=1 to disable retries.
@@ -8163,7 +8207,8 @@ class AsyncTable:
             Deadline for Function initialization. LanceDB Enterprise only.
         num_workers: int, optional
             Worker count for an expression column; registered Function
-            columns reject it. LanceDB Enterprise only.
+            columns reject it and use ``resource_budget`` instead. LanceDB
+            Enterprise only.
         max_executor_processes_per_worker: int, optional
             Cap on executor processes per Function worker. LanceDB
             Enterprise only.
@@ -8195,6 +8240,7 @@ class AsyncTable:
                 where=where,
                 batch_size=batch_size,
                 publication_interval_rows=publication_interval_rows,
+                resource_budget=resource_budget,
                 gpu_class=gpu_class,
                 gpu_count=gpu_count,
                 retry_policy=None

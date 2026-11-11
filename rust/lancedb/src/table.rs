@@ -114,7 +114,7 @@ pub use optimize::{
     CompactionMode, CompactionOptions, CompactionOverrides, IndexRemapMode, OptimizeAction,
     OptimizeStats,
 };
-pub use refresh::{RefreshColumnOptions, RefreshColumnResult};
+pub use refresh::{FunctionWorkerResourceBudget, RefreshColumnOptions, RefreshColumnResult};
 pub use rte_stats::{MemtableStats, RTEStats, SsTableStats, TableShardStats};
 pub use schema_evolution::{
     AddColumnsResult, AlterColumnsResult, DropColumnsResult, FieldMetadataUpdate,
@@ -2144,10 +2144,14 @@ impl Table {
     /// [`RefreshColumnOptions::publication_interval_rows()`] sets an opt-in
     /// row-count publication threshold for completed Function outputs; unset
     /// keeps whole-fragment publication.
+    /// [`RefreshColumnOptions::resource_budget()`] sets the aggregate CPU,
+    /// memory, and GPU budget for a Function refresh.
     /// [`RefreshColumnOptions::gpu_class()`] selects a GPU pool and
-    /// [`RefreshColumnOptions::gpu_count()`] sets the aggregate GPU budget.
+    /// [`RefreshColumnOptions::gpu_count()`] sets the aggregate GPU budget
+    /// without changing the deployment's CPU and memory defaults.
     /// Batch-size and GPU options have no effect on expression-backed columns
-    /// in LanceDB Embedded; a publication threshold is rejected there.
+    /// in LanceDB Embedded; a resource budget and publication threshold are
+    /// rejected there.
     /// Remote refreshes require
     /// [`Table::refresh_column_async_with_options`].
     ///
@@ -2208,13 +2212,15 @@ impl Table {
     /// [`RefreshColumnOptions::publication_interval_rows()`] to publish
     /// completed Function outputs at a row-count threshold; unset keeps
     /// whole-fragment publication. Set
-    /// [`RefreshColumnOptions::gpu_class()`] and
-    /// [`RefreshColumnOptions::gpu_count()`] to override the registered GPU
-    /// class or set an aggregate GPU budget for Function workers. Unset values
-    /// use the Function and server defaults; zero counts and malformed class
-    /// names are rejected before submitting a job. Embedded expression
-    /// refreshes ignore the batch-size and GPU options, and reject publication
-    /// thresholds and other Enterprise-only options.
+    /// [`RefreshColumnOptions::resource_budget()`] to pass a complete aggregate
+    /// CPU, memory, and GPU budget for a Function refresh. The standalone
+    /// [`RefreshColumnOptions::gpu_count()`] shorthand and
+    /// [`RefreshColumnOptions::gpu_class()`] placement remain available; a
+    /// resource budget cannot be combined with the gpu-count shorthand. Unset
+    /// values use the Function and server defaults; invalid counts and malformed
+    /// class names are rejected before submitting a job. Embedded expression
+    /// refreshes ignore the batch-size and GPU options, and reject resource
+    /// budgets, publication thresholds, and other Enterprise-only options.
     ///
     /// ```
     /// # use lancedb::{Table, table::RefreshColumnOptions};

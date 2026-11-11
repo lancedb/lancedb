@@ -1864,6 +1864,14 @@ def test_remote_create_index_async_returns_job():
         {"batch_size": 1},
         {"batch_size": 8},
         {"publication_interval_rows": 60},
+        {"resource_budget": {"cpu_millis": 2000, "memory_bytes": 4 * 1024**3}},
+        {
+            "resource_budget": {
+                "cpu_millis": 8000,
+                "memory_bytes": 16 * 1024**3,
+                "gpu_count": 2,
+            }
+        },
         {"gpu_class": "a10g", "gpu_count": 2},
         {
             "retry_policy": {"transient": True, "max_attempts": 3},
@@ -1904,6 +1912,12 @@ async def test_remote_refresh_async_returns_typed_terminal_result(
                 expected["gpu_class"] = refresh_kwargs["gpu_class"]
             if refresh_kwargs.get("gpu_count") is not None:
                 expected["gpu_count"] = refresh_kwargs["gpu_count"]
+            if refresh_kwargs.get("resource_budget") is not None:
+                budget = refresh_kwargs["resource_budget"]
+                expected["resource_budget"] = {
+                    **budget,
+                    "gpu_count": budget.get("gpu_count", 0),
+                }
             if refresh_kwargs.get("retry_policy") is not None:
                 expected["retry_policy"] = lancedb.FunctionRetryPolicy.model_validate(
                     refresh_kwargs["retry_policy"]
@@ -2093,6 +2107,39 @@ def test_remote_refresh_async_forwards_progress_from_submitted_handle():
         ({"publication_interval_rows": 0}, "publication_interval_rows"),
         ({"publication_interval_rows": -1}, "publication_interval_rows"),
         ({"num_workers": 0}, "num_workers"),
+        (
+            {"resource_budget": {"cpu_millis": 1000}},
+            "resource_budget.memory_bytes",
+        ),
+        (
+            {
+                "resource_budget": {
+                    "cpu_millis": 0,
+                    "memory_bytes": 1,
+                }
+            },
+            "resource_budget.cpu_millis",
+        ),
+        (
+            {
+                "resource_budget": {
+                    "cpu_millis": 1000,
+                    "memory_bytes": 1,
+                },
+                "gpu_count": 1,
+            },
+            "gpu_count cannot be combined with resource_budget",
+        ),
+        (
+            {
+                "resource_budget": {
+                    "cpu_millis": 1000,
+                    "memory_bytes": 1,
+                    "unknown": 1,
+                }
+            },
+            "unsupported key 'unknown'",
+        ),
         (
             {"max_executor_processes_per_worker": -2},
             "max_executor_processes_per_worker",
