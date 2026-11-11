@@ -741,8 +741,8 @@ def test_gpu_scalar_warning_names_the_vectorized_alternative():
             return value
 
         @function(gpu=True, input_schema=input_schema, output_schema=pa.list_(pa.int64()))
-        def record_batch_embedding(batch: pa.RecordBatch) -> pa.Array:
-            return batch.column(0)
+        def record_batch_embedding(value: pa.RecordBatch) -> pa.Array:
+            return value.column(0)
 
         @function
         def cpu_scalar(value: str) -> int:
