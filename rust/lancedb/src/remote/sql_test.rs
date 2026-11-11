@@ -3945,12 +3945,7 @@ async fn remote_optimize_parser_errors_are_clear_without_resubmission() {
             false,
         ),
     ] {
-        let mut status = Status::new(code, message);
-        if message.contains("Expected: TABLE") {
-            status
-                .metadata_mut()
-                .insert("x-lancedb-sql-job-id", "legacy-sql-job".parse().unwrap());
-        }
+        let status = Status::new(code, message);
         let service = TestSqlService {
             adaptive: true,
             optimize_error: Some(status),
