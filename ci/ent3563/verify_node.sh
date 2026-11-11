@@ -9,7 +9,7 @@ mkdir -p "$out_dir"
 export PATH="/home/ec2-user/.local/node/node-v24.11.1-linux-x64/bin:/home/ec2-user/.local/bin:$PATH"
 export CARGO_BUILD_JOBS=2
 export CARGO_INCREMENTAL=0
-export CARGO_TARGET_DIR=/home/ec2-user/Code/targets/ent3563-node-7df3ca1c
+export CARGO_TARGET_DIR=/home/ec2-user/Code/targets/ent3563-freshness-bb527bb
 
 cd "$repo_root"
 git rev-parse HEAD >"$out_dir/source-head.txt"

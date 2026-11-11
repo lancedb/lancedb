@@ -29,7 +29,7 @@ UV_PROJECT_ENVIRONMENT="$venv" uv sync \
 source "$venv/bin/activate"
 export CARGO_BUILD_JOBS=2
 export CARGO_INCREMENTAL=0
-export CARGO_TARGET_DIR=/home/ec2-user/Code/targets/ent3563-python-7df3ca1c
+export CARGO_TARGET_DIR=/home/ec2-user/Code/targets/ent3563-freshness-bb527bb
 
 uvx --from 'maturin>=1.10' maturin develop \
   --manifest-path "$repo_root/python/Cargo.toml" \
