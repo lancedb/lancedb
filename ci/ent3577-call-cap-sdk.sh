@@ -67,6 +67,10 @@ run_stage_in python_registration "$repo_root/python" \
   uv run --extra tests pytest -q \
   python/tests/test_first_class_function_slice2.py \
   -k 'function_execution_controls or function_registration_transports_max_concurrency'
+run_stage_in python_registration_transport "$repo_root/python" \
+  uv run --extra tests pytest -q \
+  python/tests/test_remote_db.py \
+  -k remote_function_registration_transports_max_concurrency
 run_stage_in python_remote_refresh "$repo_root/python" \
   uv run --extra tests pytest -q \
   python/tests/test_remote_db.py \

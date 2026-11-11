@@ -160,31 +160,6 @@ def test_function_execution_controls_apply_to_vectorized_functions():
     assert request["row_timeout_seconds"] == 1.25
 
 
-def test_function_registration_transports_max_concurrency():
-    @function(name="normalize_score", max_concurrency=4)
-    def registered(value: float) -> float:
-        return value
-
-    with _mock_remote_function_catalog() as (host, state):
-        db = lancedb.connect(
-            "db://dev",
-            api_key="fake",
-            host_override=host,
-            client_config={"retry_config": {"retries": 0}},
-        )
-        version = db.create_function(registered)
-
-    create_requests = [
-        body
-        for path, body in state["requests"]
-        if path == "/v1/function/normalize_score/create"
-    ]
-    assert len(create_requests) == 1
-    assert create_requests[0]["max_concurrency"] == 4
-    assert type(create_requests[0]["max_concurrency"]) is int
-    assert version.max_concurrency == 4
-
-
 def test_function_retry_policy_is_part_of_registration():
     policy = lancedb.FunctionRetryPolicy(transient=True, max_attempts=4)
     definition = function(retry_policy=policy)(normalize_score.__wrapped__)
@@ -2116,11 +2091,6 @@ def _mock_remote_function_catalog():
                     "signature": body["signature"],
                     "source_digest": body["artifact"]["digest"],
                     "secret_bindings": body.get("secret_bindings", []),
-                    **(
-                        {"max_concurrency": body["max_concurrency"]}
-                        if "max_concurrency" in body
-                        else {}
-                    ),
                     "created_at_millis": 1787270400000,  # 2026-08-21T00:00:00Z
                 }
                 response = {"job_id": "job-register"}
