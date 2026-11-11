@@ -53,8 +53,7 @@ In Python, `job.status()` returns the current state:
 
 This is a point-in-time check. It does not wait for completion or raise when
 the job fails or is cancelled. States from a newer server that the SDK does
-not recognize are returned unchanged. For Enterprise registry jobs, the Python
-SDK reports the REST state `in_progress` as `running`.
+not recognize are returned unchanged.
 
 Use `job.wait()` to wait for completion and raise if the job fails or is
 cancelled. Both `Job.wait()` and `AsyncJob.wait()` retry transient connection
