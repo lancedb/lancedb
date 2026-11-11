@@ -5686,6 +5686,14 @@ describe("computed columns", () => {
     await expect(
       table.refreshColumnAsync("x", { errorPolicy: "skip" }),
     ).rejects.toThrow("error_policy requires a LanceDB Enterprise refresh");
+    for (const refresh of [
+      () => table.refreshColumn("x", { publicationIntervalRows: 60 }),
+      () => table.refreshColumnAsync("x", { publicationIntervalRows: 60 }),
+    ]) {
+      await expect(refresh()).rejects.toThrow(
+        "publication_interval_rows requires a LanceDB Enterprise refresh",
+      );
+    }
     await expect(
       table.refreshColumnAsync("x", { maxConcurrency: 4 }),
     ).rejects.toThrow("max_concurrency requires a LanceDB Enterprise refresh");

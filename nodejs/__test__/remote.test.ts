@@ -776,6 +776,7 @@ describe("remote connection", () => {
         const job = await table.refreshColumnAsync("embedding", {
           where: "id % 2 = 0",
           batchSize: 16,
+          publicationIntervalRows: 60,
           maxConcurrency: 3,
           gpuClass: "a10g",
           gpuCount: 2,
@@ -789,6 +790,18 @@ describe("remote connection", () => {
         expect(job.id).toBe("j-9");
         await table.refreshColumnAsync("embedding");
         await table.refreshColumnAsync("embedding", {
+          publicationIntervalRows: undefined,
+        });
+        for (const publicationIntervalRows of [
+          1,
+          2 ** 32 + 1,
+          Number.MAX_SAFE_INTEGER,
+        ]) {
+          await table.refreshColumnAsync("embedding", {
+            publicationIntervalRows,
+          });
+        }
+        await table.refreshColumnAsync("embedding", {
           resourceBudget: {
             cpuMillis: 8_000,
             memoryBytes: 16 * 1024 ** 3,
@@ -799,6 +812,14 @@ describe("remote connection", () => {
             maxConcurrency: true as unknown as number,
           }),
         ).rejects.toThrow();
+        for (const publicationIntervalRows of [true, "60", 60n]) {
+          await expect(
+            table.refreshColumnAsync("embedding", {
+              publicationIntervalRows:
+                publicationIntervalRows as unknown as number,
+            }),
+          ).rejects.toThrow();
+        }
         // Invalid options reject before any request is sent.
         for (const [options, message] of [
           [{ maxFailedRows: -1 }, "maxFailedRows"],
@@ -806,6 +827,22 @@ describe("remote connection", () => {
           [{ where: " " }, "where"],
           [{ maxFailedFraction: 2 }, "max_failed_fraction"],
           [{ rowTimeoutSeconds: 0 }, "row_timeout_seconds"],
+          [{ publicationIntervalRows: 0 }, "publicationIntervalRows"],
+          [{ publicationIntervalRows: -1 }, "publicationIntervalRows"],
+          [{ publicationIntervalRows: 1.5 }, "publicationIntervalRows"],
+          [{ publicationIntervalRows: Number.NaN }, "publicationIntervalRows"],
+          [
+            { publicationIntervalRows: Number.POSITIVE_INFINITY },
+            "publicationIntervalRows",
+          ],
+          [
+            { publicationIntervalRows: Number.NEGATIVE_INFINITY },
+            "publicationIntervalRows",
+          ],
+          [
+            { publicationIntervalRows: Number.MAX_SAFE_INTEGER + 1 },
+            "publicationIntervalRows",
+          ],
           [{ maxConcurrency: 1.5 }, "maxConcurrency"],
           [{ maxConcurrency: 0 }, "maxConcurrency"],
           [{ maxConcurrency: -1 }, "maxConcurrency"],
@@ -893,6 +930,7 @@ describe("remote connection", () => {
     expect(bodies).toEqual([
       JSON.parse(
         `{"column": "embedding", "where": "id % 2 = 0", "batch_size": 16,
+          "publication_interval_rows": 60,
           "max_concurrency": 3, "gpu_class": "a10g", "gpu_count": 2,
           "error_policy": "skip",
           "max_failed_fraction": 0.01, "max_failed_rows": 50,
@@ -900,6 +938,14 @@ describe("remote connection", () => {
           "max_executor_processes_per_worker": 2}`,
       ),
       { column: "embedding" },
+      { column: "embedding" },
+      JSON.parse('{"column": "embedding", "publication_interval_rows": 1}'),
+      JSON.parse(
+        '{"column": "embedding", "publication_interval_rows": 4294967297}',
+      ),
+      JSON.parse(
+        '{"column": "embedding", "publication_interval_rows": 9007199254740991}',
+      ),
       JSON.parse(
         `{"column": "embedding",
           "resource_budget": {
