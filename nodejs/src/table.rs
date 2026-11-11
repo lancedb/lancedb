@@ -1902,40 +1902,6 @@ pub struct FunctionColumnStatus {
     pub auto_refresh: FunctionColumnAutoRefreshStatus,
 }
 
-fn auto_refresh_state(state: lancedb::table::FunctionColumnAutoRefreshState) -> &'static str {
-    match state {
-        lancedb::table::FunctionColumnAutoRefreshState::Disabled => "disabled",
-        lancedb::table::FunctionColumnAutoRefreshState::Running => "running",
-        lancedb::table::FunctionColumnAutoRefreshState::Ready => "ready",
-        lancedb::table::FunctionColumnAutoRefreshState::UpToDate => "up_to_date",
-        lancedb::table::FunctionColumnAutoRefreshState::WaitingInterval => "waiting_interval",
-        lancedb::table::FunctionColumnAutoRefreshState::WaitingBackoff => "waiting_backoff",
-        lancedb::table::FunctionColumnAutoRefreshState::Blocked => "blocked",
-        lancedb::table::FunctionColumnAutoRefreshState::Unobservable => "unobservable",
-    }
-}
-
-fn auto_refresh_blocked_reason(
-    reason: lancedb::table::FunctionColumnAutoRefreshBlockedReason,
-) -> &'static str {
-    match reason {
-        lancedb::table::FunctionColumnAutoRefreshBlockedReason::TableHasMemWal => {
-            "table_has_mem_wal"
-        }
-        lancedb::table::FunctionColumnAutoRefreshBlockedReason::InputsNotSettled => {
-            "inputs_not_settled"
-        }
-        lancedb::table::FunctionColumnAutoRefreshBlockedReason::DependencyInFlight => {
-            "dependency_in_flight"
-        }
-        lancedb::table::FunctionColumnAutoRefreshBlockedReason::TableCapacity => "table_capacity",
-        lancedb::table::FunctionColumnAutoRefreshBlockedReason::Cancelled => "cancelled",
-        lancedb::table::FunctionColumnAutoRefreshBlockedReason::PreparationBackoff => {
-            "preparation_backoff"
-        }
-    }
-}
-
 impl From<lancedb::table::FunctionColumnStatus> for FunctionColumnStatus {
     fn from(status: lancedb::table::FunctionColumnStatus) -> Self {
         Self {
@@ -1967,7 +1933,7 @@ impl From<lancedb::table::FunctionColumnStatus> for FunctionColumnStatus {
                 enabled: status.auto_refresh.enabled,
                 interval_seconds: status.auto_refresh.interval_seconds.map(BigInt::from),
                 active_job_id: status.auto_refresh.active_job_id,
-                state: auto_refresh_state(status.auto_refresh.state).to_string(),
+                state: status.auto_refresh.state.as_str().to_string(),
                 failure_streak: status.auto_refresh.failure_streak,
                 effective_cooldown_millis: status
                     .auto_refresh
@@ -1976,8 +1942,7 @@ impl From<lancedb::table::FunctionColumnStatus> for FunctionColumnStatus {
                 blocked_reason: status
                     .auto_refresh
                     .blocked_reason
-                    .map(auto_refresh_blocked_reason)
-                    .map(str::to_string),
+                    .map(|reason| reason.as_str().to_string()),
                 next_run_at_millis: status.auto_refresh.next_run_at_millis.map(BigInt::from),
                 next_run_at_reason: status.auto_refresh.next_run_at_reason,
             },

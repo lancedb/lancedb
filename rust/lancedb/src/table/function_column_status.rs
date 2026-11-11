@@ -39,6 +39,21 @@ pub enum FunctionColumnAutoRefreshState {
     Unobservable,
 }
 
+impl FunctionColumnAutoRefreshState {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Running => "running",
+            Self::UpToDate => "up_to_date",
+            Self::Ready => "ready",
+            Self::WaitingInterval => "waiting_interval",
+            Self::WaitingBackoff => "waiting_backoff",
+            Self::Blocked => "blocked",
+            Self::Unobservable => "unobservable",
+        }
+    }
+}
+
 /// Why an enabled automatic refresh is not currently schedulable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -49,6 +64,19 @@ pub enum FunctionColumnAutoRefreshBlockedReason {
     TableCapacity,
     Cancelled,
     PreparationBackoff,
+}
+
+impl FunctionColumnAutoRefreshBlockedReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::TableHasMemWal => "table_has_mem_wal",
+            Self::InputsNotSettled => "inputs_not_settled",
+            Self::DependencyInFlight => "dependency_in_flight",
+            Self::TableCapacity => "table_capacity",
+            Self::Cancelled => "cancelled",
+            Self::PreparationBackoff => "preparation_backoff",
+        }
+    }
 }
 
 /// Automatic-refresh projection for a Function output.

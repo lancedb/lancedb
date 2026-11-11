@@ -959,43 +959,12 @@ impl From<lancedb::table::FunctionColumnAutoRefreshStatus> for FunctionColumnAut
             enabled: status.enabled,
             interval_seconds: status.interval_seconds,
             active_job_id: status.active_job_id,
-            state: match status.state {
-                lancedb::table::FunctionColumnAutoRefreshState::Disabled => "disabled",
-                lancedb::table::FunctionColumnAutoRefreshState::Running => "running",
-                lancedb::table::FunctionColumnAutoRefreshState::Ready => "ready",
-                lancedb::table::FunctionColumnAutoRefreshState::UpToDate => "up_to_date",
-                lancedb::table::FunctionColumnAutoRefreshState::WaitingInterval => {
-                    "waiting_interval"
-                }
-                lancedb::table::FunctionColumnAutoRefreshState::WaitingBackoff => "waiting_backoff",
-                lancedb::table::FunctionColumnAutoRefreshState::Unobservable => "unobservable",
-            }
-            .to_string(),
+            state: status.state.as_str().to_string(),
             failure_streak: status.failure_streak,
             effective_cooldown_millis: status.effective_cooldown_millis,
-            blocked_reason: status.blocked_reason.map(|reason| {
-                match reason {
-                    lancedb::table::FunctionColumnAutoRefreshBlockedReason::TableHasMemWal => {
-                        "table_has_mem_wal"
-                    }
-                    lancedb::table::FunctionColumnAutoRefreshBlockedReason::InputsNotSettled => {
-                        "inputs_not_settled"
-                    }
-                    lancedb::table::FunctionColumnAutoRefreshBlockedReason::DependencyInFlight => {
-                        "dependency_in_flight"
-                    }
-                    lancedb::table::FunctionColumnAutoRefreshBlockedReason::TableCapacity => {
-                        "table_capacity"
-                    }
-                    lancedb::table::FunctionColumnAutoRefreshBlockedReason::Cancelled => {
-                        "cancelled"
-                    }
-                    lancedb::table::FunctionColumnAutoRefreshBlockedReason::PreparationBackoff => {
-                        "preparation_backoff"
-                    }
-                }
-                .to_string()
-            }),
+            blocked_reason: status
+                .blocked_reason
+                .map(|reason| reason.as_str().to_string()),
             next_run_at_millis: status.next_run_at_millis,
             next_run_at_reason: status.next_run_at_reason,
         }
