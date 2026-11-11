@@ -17,6 +17,7 @@ on:
       - .github/workflows/build_windows_wheel/**
       - .github/actions/setup-protoc/**
       - .github/workflows/run_tests/**
+      - ci/check_python_wheel.py
 
 permissions:
   contents: read
@@ -155,6 +156,9 @@ jobs:
       - uses: ./.github/workflows/build_linux_wheel
         with:
           args: --profile ci
+      - name: Validate wheel ABI and metadata
+        shell: bash
+        run: python ../ci/check_python_wheel.py abi3 --platform-fragment manylinux target/wheels/lancedb-*.whl
       - uses: ./.github/workflows/run_tests
         with:
           integration: true
@@ -172,6 +176,43 @@ jobs:
             --ignore=python/tests/test_namespace_integration.py \
             --ignore=python/tests/test_query.py
       # Make sure wheels are not included in the Rust cache
+      - name: Delete wheels
+        run: rm -rf target/wheels
+  free-threaded:
+    name: "Linux: CPython 3.15t"
+    timeout-minutes: 90
+    runs-on: "ubuntu-24.04"
+    defaults:
+      run:
+        shell: bash
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          lfs: true
+      - name: Set up free-threaded Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.15t"
+      - uses: ./.github/workflows/build_linux_wheel
+        with:
+          python-minor-version: 15
+          maturin-version: "1.15.0"
+          manylinux: "2_28"
+          args: --profile ci --interpreter python3.15t --no-default-features --features free-threaded
+      - name: Validate free-threaded wheel ABI and metadata
+        shell: bash
+        run: python ../ci/check_python_wheel.py cp315t --platform-fragment manylinux_2_28_x86_64 target/wheels/lancedb-*.whl
+      # The full test extra pins optional packages without 3.15t wheels. Keep
+      # the regular jobs running the full suite and exercise the installed
+      # free-threaded wheel with its runtime dependencies here.
+      - name: Install wheel and focused test dependencies
+        run: python -m pip install target/wheels/lancedb-*.whl pytest pytest-asyncio
+      - name: Test the installed wheel without the GIL
+        run: |
+          python -c "import sys, lancedb; assert not sys._is_gil_enabled()"
+          python -m pytest -q python/python/tests/test_free_threaded.py
       - name: Delete wheels
         run: rm -rf target/wheels
   platform:
@@ -205,6 +246,9 @@ jobs:
       - uses: ./.github/workflows/build_mac_wheel
         with:
           args: --profile ci --features ${{ matrix.features }}
+      - name: Validate wheel ABI and metadata
+        shell: bash
+        run: python ../ci/check_python_wheel.py abi3 --platform-fragment macosx target/wheels/lancedb-*.whl
       - uses: ./.github/workflows/run_tests
       # Make sure wheels are not included in the Rust cache
       - name: Delete wheels
@@ -242,6 +286,9 @@ jobs:
       - uses: ./.github/workflows/build_windows_wheel
         with:
           args: --profile ci
+      - name: Validate wheel ABI and metadata
+        shell: bash
+        run: python ../ci/check_python_wheel.py abi3 --platform-fragment win_amd64 target/wheels/lancedb-*.whl
       - uses: ./.github/workflows/run_tests
       # Make sure wheels are not included in the Rust cache
       - name: Delete wheels

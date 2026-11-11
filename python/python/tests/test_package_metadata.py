@@ -61,6 +61,43 @@ def test_pyo3_abi_matches_minimum_supported_python():
     )
 
 
+def test_cargo_profiles_preserve_abi3_and_enable_native_free_threading():
+    project_dir = Path(__file__).parents[2]
+    cargo_manifest = (project_dir / "Cargo.toml").read_text()
+    features_section = re.search(
+        r"(?ms)^\[features\]\s*(.*?)(?=^\[[^]]+\]|\Z)", cargo_manifest
+    )
+    assert features_section is not None
+
+    def feature_values(name):
+        match = re.search(
+            rf"(?ms)^{re.escape(name)}\s*=\s*\[(.*?)\]", features_section.group(1)
+        )
+        assert match is not None, f"missing Cargo feature {name!r}"
+        return re.findall(r'"([^"]+)"', match.group(1))
+
+    default_python_features = {
+        "remote",
+        "lancedb/aws",
+        "lancedb/gcs",
+        "lancedb/azure",
+        "lancedb/dynamodb",
+        "lancedb/oss",
+        "lancedb/huggingface",
+        "lancedb/cos",
+        "lancedb/goosefs",
+        "lancedb/metrics-otel",
+    }
+    assert set(feature_values("default-python")) == default_python_features
+    assert set(feature_values("default")) == {"stable-abi", "default-python"}
+    assert feature_values("stable-abi") == ["pyo3/abi3-py310"]
+    assert feature_values("free-threaded") == ["default-python"]
+
+    pyo3_dependency = re.search(r"(?m)^pyo3\s*=\s*\{([^}]*)\}", cargo_manifest)
+    assert pyo3_dependency is not None
+    assert "abi3-py310" not in pyo3_dependency.group(1)
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows wheel regression test")
 def test_windows_wheel_tag_and_native_import():
     project_dir = Path(__file__).parents[2]
