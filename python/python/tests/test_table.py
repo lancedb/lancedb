@@ -6036,6 +6036,16 @@ def test_function_errors_are_remote_only(tmp_path):
         table.function_errors()
 
 
+def test_function_column_status_is_remote_only(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", [{"x": 1}])
+    with pytest.raises(
+        NotImplementedError,
+        match="exact Function column status is supported only in LanceDB Enterprise",
+    ):
+        table.wait_fresh("x")
+
+
 @pytest.mark.experimental_functions
 @pytest.mark.parametrize("batch_size", [None, 8])
 def test_refresh_column_async_returns_job(tmp_path, batch_size):
