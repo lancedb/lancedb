@@ -5996,6 +5996,10 @@ def test_refresh_column_rejects_invalid_batch_size(tmp_path, method, batch_size)
         ({"row_timeout_seconds": 30}, "row_timeout_seconds"),
         ({"init_timeout_seconds": 60}, "init_timeout_seconds"),
         ({"publication_interval_rows": 60}, "publication_interval_rows"),
+        (
+            {"resource_budget": {"cpu_millis": 1000, "memory_bytes": 1024}},
+            "resource_budget",
+        ),
         ({"num_workers": 2}, "num_workers"),
         ({"max_executor_processes_per_worker": 2}, "max_executor_processes_per_worker"),
     ],

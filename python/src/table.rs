@@ -29,15 +29,17 @@ use lancedb::connection::LanceFileVersion;
 use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::table::{
     AddDataMode, ColumnAlteration, CompactionMode, CompactionOptions, Duration,
-    FieldMetadataUpdate, FtsToken as LanceDbFtsToken, IndexRemapMode, NewColumnTransform, Ref,
-    RefreshColumnOptions, Table as LanceDbTable,
+    FieldMetadataUpdate, FtsToken as LanceDbFtsToken, FunctionWorkerResourceBudget, IndexRemapMode,
+    NewColumnTransform, Ref, RefreshColumnOptions, Table as LanceDbTable,
 };
 use lancedb::tokenize as lancedb_tokenize;
 use pyo3::{
     Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
     exceptions::{PyRuntimeError, PyValueError},
     pyclass, pyfunction, pymethods,
-    types::{IntoPyDict, PyAnyMethods, PyBytes, PyDict, PyDictMethods, PyList, PyListMethods},
+    types::{
+        IntoPyDict, PyAnyMethods, PyBool, PyBytes, PyDict, PyDictMethods, PyList, PyListMethods,
+    },
 };
 
 mod scannable;
@@ -47,6 +49,7 @@ struct RefreshColumnArgs {
     where_clause: Option<String>,
     batch_size: Option<i64>,
     publication_interval_rows: Option<i64>,
+    resource_budget: Option<FunctionWorkerResourceBudget>,
     gpu_class: Option<String>,
     gpu_count: Option<i64>,
     retry_policy: Option<String>,
@@ -70,11 +73,71 @@ fn positive_count<T: TryFrom<i64>>(value: Option<i64>, name: &str) -> PyResult<O
         .transpose()
 }
 
+fn resource_budget_integer(
+    value: &Bound<'_, PyAny>,
+    name: &str,
+    allow_zero: bool,
+) -> PyResult<u64> {
+    if value.is_none() || value.is_instance_of::<PyBool>() {
+        return Err(PyValueError::new_err(format!(
+            "resource_budget.{name} must be an integer"
+        )));
+    }
+    let parsed = value
+        .extract::<u64>()
+        .map_err(|_| PyValueError::new_err(format!("resource_budget.{name} must be an integer")))?;
+    if !allow_zero && parsed == 0 {
+        return Err(PyValueError::new_err(format!(
+            "resource_budget.{name} must be greater than zero"
+        )));
+    }
+    Ok(parsed)
+}
+
+fn parse_resource_budget(
+    budget: Option<&Bound<'_, PyDict>>,
+) -> PyResult<Option<FunctionWorkerResourceBudget>> {
+    let Some(budget) = budget else {
+        return Ok(None);
+    };
+    for key in budget.keys() {
+        let key = key
+            .extract::<String>()
+            .map_err(|_| PyValueError::new_err("resource_budget keys must be strings"))?;
+        if !matches!(key.as_str(), "cpu_millis" | "memory_bytes" | "gpu_count") {
+            return Err(PyValueError::new_err(format!(
+                "resource_budget contains unsupported key '{key}'"
+            )));
+        }
+    }
+    let cpu_millis = budget
+        .get_item("cpu_millis")?
+        .ok_or_else(|| PyValueError::new_err("resource_budget.cpu_millis is required"))?;
+    let cpu_millis = resource_budget_integer(&cpu_millis, "cpu_millis", false)?;
+    let memory_bytes = budget
+        .get_item("memory_bytes")?
+        .ok_or_else(|| PyValueError::new_err("resource_budget.memory_bytes is required"))?;
+    let memory_bytes = resource_budget_integer(&memory_bytes, "memory_bytes", false)?;
+    let gpu_count = match budget.get_item("gpu_count")? {
+        None => 0,
+        Some(value) if value.is_none() => 0,
+        Some(value) => {
+            u32::try_from(resource_budget_integer(&value, "gpu_count", true)?).map_err(|_| {
+                PyValueError::new_err("resource_budget.gpu_count must be no greater than u32::MAX")
+            })?
+        }
+    };
+    Ok(Some(
+        FunctionWorkerResourceBudget::new(cpu_millis, memory_bytes).with_gpu_count(gpu_count),
+    ))
+}
+
 fn refresh_column_options(args: RefreshColumnArgs) -> PyResult<RefreshColumnOptions> {
     let RefreshColumnArgs {
         where_clause,
         batch_size,
         publication_interval_rows,
+        resource_budget,
         gpu_class,
         gpu_count,
         retry_policy,
@@ -118,6 +181,7 @@ fn refresh_column_options(args: RefreshColumnArgs) -> PyResult<RefreshColumnOpti
         .map_err(|_| PyValueError::new_err("batch_size must be greater than zero"))?;
     options.publication_interval_rows =
         positive_count(publication_interval_rows, "publication_interval_rows")?;
+    options.resource_budget = resource_budget;
     options.gpu_class = gpu_class;
     options.gpu_count = gpu_count
         .map(|count| {
@@ -2210,14 +2274,15 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, *, r#where=None, batch_size=None, publication_interval_rows=None, gpu_class=None, gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None))]
+    #[pyo3(signature = (column, *, r#where=None, batch_size=None, publication_interval_rows=None, resource_budget=None, gpu_class=None, gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None))]
     #[allow(clippy::too_many_arguments)]
-    pub fn refresh_column(
-        self_: PyRef<'_, Self>,
+    pub fn refresh_column<'py>(
+        self_: PyRef<'py, Self>,
         column: String,
         r#where: Option<String>,
         batch_size: Option<i64>,
         publication_interval_rows: Option<i64>,
+        resource_budget: Option<Bound<'py, PyDict>>,
         gpu_class: Option<String>,
         gpu_count: Option<i64>,
         retry_policy: Option<String>,
@@ -2228,11 +2293,12 @@ impl Table {
         init_timeout_seconds: Option<f64>,
         num_workers: Option<i64>,
         max_executor_processes_per_worker: Option<i64>,
-    ) -> PyResult<Bound<'_, PyAny>> {
+    ) -> PyResult<Bound<'py, PyAny>> {
         let options = refresh_column_options(RefreshColumnArgs {
             where_clause: r#where,
             batch_size,
             publication_interval_rows,
+            resource_budget: parse_resource_budget(resource_budget.as_ref())?,
             gpu_class,
             gpu_count,
             retry_policy,
@@ -2254,14 +2320,15 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, *, r#where=None, batch_size=None, publication_interval_rows=None, gpu_class=None, gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None))]
+    #[pyo3(signature = (column, *, r#where=None, batch_size=None, publication_interval_rows=None, resource_budget=None, gpu_class=None, gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None))]
     #[allow(clippy::too_many_arguments)]
-    pub fn refresh_column_async(
-        self_: PyRef<'_, Self>,
+    pub fn refresh_column_async<'py>(
+        self_: PyRef<'py, Self>,
         column: String,
         r#where: Option<String>,
         batch_size: Option<i64>,
         publication_interval_rows: Option<i64>,
+        resource_budget: Option<Bound<'py, PyDict>>,
         gpu_class: Option<String>,
         gpu_count: Option<i64>,
         retry_policy: Option<String>,
@@ -2272,11 +2339,12 @@ impl Table {
         init_timeout_seconds: Option<f64>,
         num_workers: Option<i64>,
         max_executor_processes_per_worker: Option<i64>,
-    ) -> PyResult<Bound<'_, PyAny>> {
+    ) -> PyResult<Bound<'py, PyAny>> {
         let options = refresh_column_options(RefreshColumnArgs {
             where_clause: r#where,
             batch_size,
             publication_interval_rows,
+            resource_budget: parse_resource_budget(resource_budget.as_ref())?,
             gpu_class,
             gpu_count,
             retry_policy,

@@ -57,6 +57,7 @@ export {
   AddResult,
   AddColumnsResult,
   RefreshColumnOptions,
+  FunctionWorkerResourceBudget,
   RefreshColumnResult,
   FunctionErrors,
   FunctionErrorsOptions,
