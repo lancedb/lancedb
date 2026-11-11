@@ -1,6 +1,7 @@
 {
   "name": "normalize_score",
   "batch_size": 2,
+  "max_concurrency": 4,
   "row_timeout_seconds": 0.75,
   "artifact": {
     "kind": "python_callable",

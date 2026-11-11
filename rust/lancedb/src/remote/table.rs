@@ -3954,6 +3954,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         if let Some(interval) = options.auto_refresh_interval_seconds {
             body["auto_refresh_interval_seconds"] = serde_json::json!(interval);
         }
+        if let Some(budget) = options.auto_refresh_resource_budget {
+            body["auto_refresh_resource_budget"] = serde_json::json!(budget);
+        }
         self.apply_branch_body(&mut body);
         let request = self
             .client
@@ -10389,6 +10392,7 @@ mod tests {
                 .computed_options(crate::table::computed_columns::ComputedColumnOptions {
                     auto_refresh_enabled: false,
                     auto_refresh_interval_seconds: interval,
+                    auto_refresh_resource_budget: None,
                 })
                 .execute()
                 .await
@@ -10825,6 +10829,11 @@ mod tests {
                 ))
                 .unwrap();
                 expected["auto_refresh_enabled"] = serde_json::json!(true);
+                expected["auto_refresh_resource_budget"] = serde_json::json!({
+                    "cpu_millis": 8_000,
+                    "memory_bytes": 17_179_869_184_u64,
+                    "gpu_count": 2,
+                });
                 assert_eq!(actual, expected);
                 http::Response::builder()
                     .status(200)
@@ -10852,6 +10861,14 @@ mod tests {
         let result = table
             .add_columns()
             .function(application)
+            .computed_options(crate::table::computed_columns::ComputedColumnOptions {
+                auto_refresh_enabled: true,
+                auto_refresh_interval_seconds: None,
+                auto_refresh_resource_budget: Some(
+                    crate::table::FunctionWorkerResourceBudget::new(8_000, 17_179_869_184)
+                        .with_gpu_count(2),
+                ),
+            })
             .execute()
             .await
             .unwrap();
@@ -11056,6 +11073,48 @@ mod tests {
         assert_eq!(job.id(), Some("j-gpu"));
     }
 
+    #[rstest]
+    #[case(None, 0)]
+    #[case(Some(2), 2)]
+    #[tokio::test]
+    async fn test_refresh_column_async_resource_budget(
+        #[case] gpu_count: Option<u32>,
+        #[case] expected_gpu_count: u32,
+    ) {
+        use crate::table::{FunctionWorkerResourceBudget, RefreshColumnOptions};
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/backfill_column");
+            assert_eq!(
+                request_body_json(&request),
+                serde_json::json!({
+                    "column": "quality",
+                    "resource_budget": {
+                        "cpu_millis": 8_000,
+                        "memory_bytes": 17_179_869_184_u64,
+                        "gpu_count": expected_gpu_count,
+                    },
+                })
+            );
+            http::Response::builder()
+                .status(202)
+                .body(r#"{"job_id":"j-budget"}"#)
+                .unwrap()
+        });
+        let mut budget = FunctionWorkerResourceBudget::new(8_000, 17_179_869_184);
+        if let Some(gpu_count) = gpu_count {
+            budget = budget.with_gpu_count(gpu_count);
+        }
+        let job = table
+            .refresh_column_async_with_options(
+                "quality",
+                RefreshColumnOptions::default().resource_budget(budget),
+            )
+            .await
+            .unwrap();
+        assert_eq!(job.id(), Some("j-budget"));
+    }
+
     #[tokio::test]
     async fn test_refresh_column_async_retry_policy() {
         use crate::function::{FunctionErrorPolicy, FunctionRetryPolicy};
@@ -11100,6 +11159,8 @@ mod tests {
                 serde_json::json!({
                     "column": "quality",
                     "where": "id % 2 = 0",
+                    "max_concurrency": 3,
+                    "publication_interval_rows": 60,
                     "error_policy": "skip",
                     "max_failed_fraction": 0.01,
                     "max_failed_rows": 50,
@@ -11116,6 +11177,8 @@ mod tests {
         });
         let options = RefreshColumnOptions::default()
             .where_clause("id % 2 = 0")
+            .max_concurrency(3)
+            .publication_interval_rows(60)
             .error_policy(FunctionErrorPolicy::Skip)
             .max_failed_fraction(0.01)
             .max_failed_rows(50)
@@ -11160,8 +11223,16 @@ mod tests {
                 "num_workers",
             ),
             (
+                RefreshColumnOptions::default().max_concurrency(0),
+                "max_concurrency",
+            ),
+            (
                 RefreshColumnOptions::default().max_executor_processes_per_worker(0),
                 "max_executor_processes_per_worker",
+            ),
+            (
+                RefreshColumnOptions::default().publication_interval_rows(0),
+                "publication_interval_rows",
             ),
         ] {
             let error = table
@@ -11177,7 +11248,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_refresh_column_rejects_invalid_gpu_options_before_request() {
-        use crate::table::RefreshColumnOptions;
+        use crate::table::{FunctionWorkerResourceBudget, RefreshColumnOptions};
 
         let table = Table::new_with_handler("my_table", |_| -> http::Response<String> {
             panic!("invalid GPU options must not send a request")
@@ -11192,6 +11263,22 @@ mod tests {
                 "gpu_class",
             ),
             (RefreshColumnOptions::default().gpu_count(0), "gpu_count"),
+            (
+                RefreshColumnOptions::default()
+                    .resource_budget(FunctionWorkerResourceBudget::new(0, 1)),
+                "resource_budget.cpu_millis",
+            ),
+            (
+                RefreshColumnOptions::default()
+                    .resource_budget(FunctionWorkerResourceBudget::new(1, 0)),
+                "resource_budget.memory_bytes",
+            ),
+            (
+                RefreshColumnOptions::default()
+                    .resource_budget(FunctionWorkerResourceBudget::new(1, 1))
+                    .gpu_count(1),
+                "gpu_count cannot be combined with resource_budget",
+            ),
         ] {
             let error = table
                 .refresh_column_async_with_options("quality", options)

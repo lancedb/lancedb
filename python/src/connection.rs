@@ -877,22 +877,22 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (name, version, namespace_path=None))]
+    #[pyo3(signature = (name, version=None, namespace_path=None))]
     pub fn get_function(
         self_: PyRef<'_, Self>,
         name: String,
-        version: String,
+        version: Option<String>,
         namespace_path: Option<Vec<String>>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         let namespace_path = namespace_path.unwrap_or_default();
         future_into_py(self_.py(), async move {
-            inner
-                .get_function(name, version, &namespace_path)
-                .await
-                .infer_error()?
-                .to_canonical_json()
-                .infer_error()
+            let function = match version {
+                Some(version) => inner.get_function(name, version, &namespace_path).await,
+                None => inner.get_function_latest(name, &namespace_path).await,
+            }
+            .infer_error()?;
+            function.to_canonical_json().infer_error()
         })
     }
 

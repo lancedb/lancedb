@@ -611,6 +611,13 @@ pub struct FunctionVersion {
         deserialize_with = "deserialize_batch_size"
     )]
     batch_size: Option<u32>,
+    /// Default maximum concurrent user-code calls per logical execution.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_max_concurrency"
+    )]
+    max_concurrency: Option<u32>,
     /// Per-call deadline in seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     row_timeout_seconds: Option<RowTimeoutSeconds>,
@@ -679,6 +686,11 @@ impl FunctionVersion {
     /// Default maximum rows in one callable batch, when declared.
     pub fn batch_size(&self) -> Option<u32> {
         self.batch_size
+    }
+
+    /// Default maximum concurrent user-code calls, when declared.
+    pub fn max_concurrency(&self) -> Option<u32> {
+        self.max_concurrency
     }
 
     /// Per-call deadline in seconds, when declared.
@@ -769,9 +781,28 @@ where
     Ok(value)
 }
 
+fn deserialize_max_concurrency<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<u32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<u32>::deserialize(deserializer)
+        .map_err(|error| de::Error::custom(format!("max_concurrency: {error}")))?;
+    validate_max_concurrency_value(value).map_err(de::Error::custom)?;
+    Ok(value)
+}
+
 fn validate_batch_size_value(value: Option<u32>) -> std::result::Result<(), &'static str> {
     if value == Some(0) {
         return Err("batch_size must be between 1 and u32::MAX");
+    }
+    Ok(())
+}
+
+fn validate_max_concurrency_value(value: Option<u32>) -> std::result::Result<(), &'static str> {
+    if value == Some(0) {
+        return Err("max_concurrency must be between 1 and u32::MAX");
     }
     Ok(())
 }
@@ -804,6 +835,15 @@ pub struct FunctionRegistrationRequest {
         deserialize_with = "deserialize_batch_size"
     )]
     pub batch_size: Option<u32>,
+    /// Default maximum concurrent user-code calls for each logical execution
+    /// of this Function version. Omission leaves the current behavior
+    /// unchanged.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_max_concurrency"
+    )]
+    pub max_concurrency: Option<u32>,
     /// Deadline for each Python call, in seconds: one row for scalar Functions
     /// and one batch for vectorized Functions. It does not govern Function
     /// initialization.
@@ -841,6 +881,7 @@ impl FunctionRegistrationRequest {
             message: message.to_string(),
         };
         validate_batch_size_value(self.batch_size).map_err(invalid_input)?;
+        validate_max_concurrency_value(self.max_concurrency).map_err(invalid_input)?;
         validate_row_timeout_value(self.row_timeout_seconds).map_err(invalid_input)?;
         if let Some(policy) = &self.retry_policy {
             policy.validate()?;
@@ -1318,6 +1359,15 @@ mod tests {
         assert_eq!(version.gpu_class(), Some("a10g"));
         let encoded: Value = serde_json::from_str(&version.to_canonical_json().unwrap()).unwrap();
         assert_eq!(encoded["gpu_class"], "a10g");
+
+        document["max_concurrency"] = serde_json::json!(4);
+        let version = FunctionVersion::from_json(&document.to_string()).unwrap();
+        assert_eq!(version.max_concurrency(), Some(4));
+        let encoded: Value = serde_json::from_str(&version.to_canonical_json().unwrap()).unwrap();
+        assert_eq!(encoded["max_concurrency"], 4);
+
+        document["max_concurrency"] = serde_json::json!(0);
+        assert!(FunctionVersion::from_json(&document.to_string()).is_err());
     }
 
     #[test]

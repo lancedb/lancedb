@@ -166,7 +166,9 @@ pub(crate) async fn execute_declare(
                 .into(),
         });
     }
-    let transform = computed_columns::declare(table.schema().await?, columns)?;
+    let session = table.dataset.get().await?.session();
+    let transform =
+        computed_columns::declare(table.schema().await?, columns, session.datafusion_session())?;
     let NewColumnTransform::AllNulls(schema) = transform else {
         unreachable!("declarations are all-null")
     };
@@ -307,7 +309,11 @@ pub(crate) async fn execute_alter_columns(
         .filter(|alteration| alteration.rename.is_some() || alteration.data_type.is_some())
         .map(|alteration| alteration.path.as_str())
         .collect::<Vec<_>>();
-    computed_columns::ensure_not_an_input(&schema, &rebinding)?;
+    computed_columns::ensure_not_an_input(
+        &schema,
+        &rebinding,
+        dataset.session().datafusion_session(),
+    )?;
     let retyped = alterations
         .iter()
         .filter(|alteration| alteration.data_type.is_some())
@@ -344,7 +350,12 @@ pub(crate) async fn execute_drop_columns(
     let dropped = names.iter().map(String::as_str).collect::<Vec<_>>();
     ensure_not_embedding_column(&schema, "drop", dropped.iter().copied())?;
     computed_columns::ensure_not_bound_by(&unbinding.retained, "schema evolution", &dropped)?;
-    computed_columns::ensure_not_an_input_of(&schema, &dropped, &dropped)?;
+    computed_columns::ensure_not_an_input_of(
+        &schema,
+        &dropped,
+        &dropped,
+        dataset.session().datafusion_session(),
+    )?;
 
     if !unbinding.is_noop() {
         // The retirement commits before the projection, so the whole

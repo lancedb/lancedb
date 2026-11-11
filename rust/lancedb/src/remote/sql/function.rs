@@ -51,17 +51,20 @@ impl SqlClient {
     pub(in crate::remote) async fn describe_function(
         &self,
         name: &str,
-        version: &str,
+        version: Option<&str>,
         namespace: &[String],
     ) -> Result<FunctionVersion> {
         validate_function_name(name)?;
         validate_namespace(namespace)?;
+        let version_clause = match version {
+            Some(version) => format!(" WITH (version = {})", literal(version)),
+            None => String::new(),
+        };
         self.object_job(
             ExecuteQueryRequest {
                 query: format!(
-                    "DESCRIBE FUNCTION {} WITH (version = {})",
-                    quote_identifier(name),
-                    literal(version)
+                    "DESCRIBE FUNCTION {}{version_clause}",
+                    quote_identifier(name)
                 ),
                 default_namespace_path: namespace.to_vec(),
                 parameters: None,

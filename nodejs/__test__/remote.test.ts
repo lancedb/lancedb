@@ -682,6 +682,7 @@ describe("remote connection", () => {
         const job = await table.refreshColumnAsync("embedding", {
           where: "id % 2 = 0",
           batchSize: 16,
+          maxConcurrency: 3,
           gpuClass: "a10g",
           gpuCount: 2,
           errorPolicy: "skip",
@@ -693,6 +694,17 @@ describe("remote connection", () => {
         });
         expect(job.id).toBe("j-9");
         await table.refreshColumnAsync("embedding");
+        await table.refreshColumnAsync("embedding", {
+          resourceBudget: {
+            cpuMillis: 8_000,
+            memoryBytes: 16 * 1024 ** 3,
+          },
+        });
+        await expect(
+          table.refreshColumnAsync("embedding", {
+            maxConcurrency: true as unknown as number,
+          }),
+        ).rejects.toThrow();
         // Invalid options reject before any request is sent.
         for (const [options, message] of [
           [{ maxFailedRows: -1 }, "maxFailedRows"],
@@ -700,8 +712,83 @@ describe("remote connection", () => {
           [{ where: " " }, "where"],
           [{ maxFailedFraction: 2 }, "max_failed_fraction"],
           [{ rowTimeoutSeconds: 0 }, "row_timeout_seconds"],
+          [{ maxConcurrency: 1.5 }, "maxConcurrency"],
+          [{ maxConcurrency: 0 }, "maxConcurrency"],
+          [{ maxConcurrency: -1 }, "maxConcurrency"],
+          [{ maxConcurrency: 2 ** 32 }, "maxConcurrency"],
+          [{ maxConcurrency: Number.NaN }, "maxConcurrency"],
+          [{ maxConcurrency: Number.POSITIVE_INFINITY }, "maxConcurrency"],
           [{ numWorkers: 0 }, "num_workers"],
           [{ gpuCount: 0 }, "gpu_count"],
+          [
+            {
+              resourceBudget: {
+                cpuMillis: 1_000,
+                memoryBytes: 1_024,
+              },
+              gpuCount: 1,
+            },
+            "gpu_count cannot be combined with resource_budget",
+          ],
+          [
+            {
+              resourceBudget: {
+                cpuMillis: 0,
+                memoryBytes: 1_024,
+              },
+            },
+            "resourceBudget.cpuMillis",
+          ],
+          [
+            {
+              resourceBudget: {
+                cpuMillis: 1_000,
+                memoryBytes: 1_024,
+                gpuCount: 1.5,
+              },
+            },
+            "resourceBudget.gpuCount",
+          ],
+          [
+            {
+              resourceBudget: {
+                cpuMillis: 1_000,
+                memoryBytes: 1_024,
+                gpuCount: -1,
+              },
+            },
+            "resourceBudget.gpuCount",
+          ],
+          [
+            {
+              resourceBudget: {
+                cpuMillis: 1_000,
+                memoryBytes: 1_024,
+                gpuCount: 2 ** 32,
+              },
+            },
+            "resourceBudget.gpuCount",
+          ],
+          [
+            {
+              resourceBudget: {
+                cpuMillis: 1_000,
+                memoryBytes: 1_024,
+                gpuCount: Number.NaN,
+              },
+            },
+            "resourceBudget.gpuCount",
+          ],
+          [
+            {
+              resourceBudget: {
+                cpuMillis: 1_000,
+                memoryBytes: 1_024,
+                gpuCount: Number.POSITIVE_INFINITY,
+              },
+            },
+            "resourceBudget.gpuCount",
+          ],
         ] as const) {
           await expect(
             table.refreshColumnAsync("embedding", options),
@@ -712,12 +799,21 @@ describe("remote connection", () => {
     expect(bodies).toEqual([
       JSON.parse(
         `{"column": "embedding", "where": "id % 2 = 0", "batch_size": 16,
-          "gpu_class": "a10g", "gpu_count": 2, "error_policy": "skip",
+          "max_concurrency": 3, "gpu_class": "a10g", "gpu_count": 2,
+          "error_policy": "skip",
           "max_failed_fraction": 0.01, "max_failed_rows": 50,
           "row_timeout_seconds": 30, "init_timeout_seconds": 120,
           "max_executor_processes_per_worker": 2}`,
       ),
       { column: "embedding" },
+      JSON.parse(
+        `{"column": "embedding",
+          "resource_budget": {
+            "cpu_millis": 8000,
+            "memory_bytes": 17179869184,
+            "gpu_count": 0
+          }}`,
+      ),
     ]);
   });
 

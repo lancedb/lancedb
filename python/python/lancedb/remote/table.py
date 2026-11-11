@@ -1127,6 +1127,7 @@ class RemoteTable(Table):
         computed: Dict[str, str] | None = None,
         auto_refresh_enabled: bool | None = None,
         auto_refresh_interval_seconds: int | None = None,
+        auto_refresh_resource_budget: Optional[Dict[str, int]] = None,
     ) -> AddColumnsResult:
         return LOOP.run(
             self._table.add_columns(
@@ -1134,6 +1135,7 @@ class RemoteTable(Table):
                 computed=computed,
                 auto_refresh_enabled=auto_refresh_enabled,
                 auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+                auto_refresh_resource_budget=auto_refresh_resource_budget,
             )
         )
 
@@ -1143,6 +1145,9 @@ class RemoteTable(Table):
         *,
         where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        max_concurrency: Optional[int] = None,
+        publication_interval_rows: Optional[int] = None,
+        resource_budget: Optional[Dict[str, int]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -1159,6 +1164,9 @@ class RemoteTable(Table):
                 column,
                 where=where,
                 batch_size=batch_size,
+                max_concurrency=max_concurrency,
+                publication_interval_rows=publication_interval_rows,
+                resource_budget=resource_budget,
                 gpu_class=gpu_class,
                 gpu_count=gpu_count,
                 retry_policy=retry_policy,
@@ -1178,6 +1186,9 @@ class RemoteTable(Table):
         *,
         where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        max_concurrency: Optional[int] = None,
+        publication_interval_rows: Optional[int] = None,
+        resource_budget: Optional[Dict[str, int]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -1195,6 +1206,9 @@ class RemoteTable(Table):
                     column,
                     where=where,
                     batch_size=batch_size,
+                    max_concurrency=max_concurrency,
+                    publication_interval_rows=publication_interval_rows,
+                    resource_budget=resource_budget,
                     gpu_class=gpu_class,
                     gpu_count=gpu_count,
                     retry_policy=retry_policy,

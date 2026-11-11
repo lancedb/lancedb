@@ -25,6 +25,7 @@ from .index import (
     LabelList,
     Fm,
     NGram,
+    ZoneMap,
     HnswPq,
     HnswSq,
     HnswFlat,
@@ -189,7 +190,10 @@ class Connection(object):
         self, request_json: str, namespace_path: Optional[List[str]] = None
     ) -> Job: ...
     async def get_function(
-        self, name: str, version: str, namespace_path: Optional[List[str]] = None
+        self,
+        name: str,
+        version: Optional[str] = None,
+        namespace_path: Optional[List[str]] = None,
     ) -> str: ...
     def list_functions(
         self,
@@ -501,6 +505,8 @@ class JobDescription:
 class SqlQuery:
     @property
     def id(self) -> UUID: ...
+    @property
+    def job_id(self) -> Optional[str]: ...
     async def describe(self) -> QueryDescription: ...
     async def reader(self) -> RecordBatchStream: ...
     async def cancel(self) -> None: ...
@@ -508,6 +514,8 @@ class SqlQuery:
 class QueryDescription:
     @property
     def id(self) -> UUID: ...
+    @property
+    def job_id(self) -> Optional[str]: ...
     @property
     def status(self) -> str: ...
     @property
@@ -549,6 +557,7 @@ class Table:
             LabelList,
             Fm,
             NGram,
+            ZoneMap,
             FTS,
         ],
         replace: Optional[bool],
@@ -572,6 +581,7 @@ class Table:
             LabelList,
             Fm,
             NGram,
+            ZoneMap,
             FTS,
         ],
         replace: Optional[bool],
@@ -605,6 +615,7 @@ class Table:
         columns: list[tuple[str, str]],
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[int] = None,
+        auto_refresh_resource_budget: Optional[dict[str, int]] = None,
     ) -> AddColumnsResult: ...
     async def add_function_columns(
         self,
@@ -612,6 +623,7 @@ class Table:
         output_name: Optional[str],
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[int] = None,
+        auto_refresh_resource_budget: Optional[dict[str, int]] = None,
     ) -> AddColumnsResult: ...
     async def refresh_column(
         self,
@@ -619,6 +631,9 @@ class Table:
         *,
         where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        max_concurrency: Optional[int] = None,
+        publication_interval_rows: Optional[int] = None,
+        resource_budget: Optional[dict[str, int]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[str] = None,
@@ -636,6 +651,9 @@ class Table:
         *,
         where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        max_concurrency: Optional[int] = None,
+        publication_interval_rows: Optional[int] = None,
+        resource_budget: Optional[dict[str, int]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[str] = None,

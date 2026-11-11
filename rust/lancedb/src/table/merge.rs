@@ -428,6 +428,10 @@ pub(crate) async fn execute_merge_insert(
     let collect_threshold_bytes = params
         .source_collect_threshold_bytes
         .unwrap_or(DEFAULT_SOURCE_COLLECT_THRESHOLD_BYTES);
+    let rescannable = new_data.rescannable();
+    let source_plan = merge_source_plan(new_data, cast_schema)?;
+    let source_schema = source_plan.schema();
+    let on = params.on.clone();
     let mut builder = LanceMergeInsertBuilder::try_new(dataset.clone(), params.on)?;
     match (
         params.when_matched_update_all,
@@ -468,7 +472,7 @@ pub(crate) async fn execute_merge_insert(
     // Reading the source used to happen inside `execute`, so collecting it
     // stays under the same timeout.
     let future = async move {
-        match prepare_merge_source(new_data, cast_schema, collect_threshold_bytes).await? {
+        match prepare_merge_plan(source_plan, rescannable, collect_threshold_bytes).await? {
             MergeSource::Provider(provider) => job.execute_provider(provider).await,
             MergeSource::Batches(batches) => job.execute_batches(batches).await,
         }
@@ -485,8 +489,21 @@ pub(crate) async fn execute_merge_insert(
         Either::Right(future)
     };
     let (new_dataset, stats) = future.await?;
+    let mut new_dataset = new_dataset.as_ref().clone();
+    if let Err(error) = super::freshness::preserve_function_freshness(
+        &mut new_dataset,
+        super::freshness::FunctionWrite::Merge {
+            source_schema: &source_schema,
+            on: &on,
+            num_inserted_rows: stats.num_inserted_rows,
+        },
+    )
+    .await
+    {
+        log::warn!("merge committed but Function freshness could not be preserved: {error}");
+    }
     let version = new_dataset.manifest().version;
-    table.dataset.update(new_dataset.as_ref().clone());
+    table.dataset.update(new_dataset);
     Ok(MergeResult {
         version,
         num_updated_rows: stats.num_updated_rows,
@@ -523,6 +540,18 @@ fn merge_source_plan(
     }
 }
 
+/// Plan `source` with [`merge_source_plan`] and prepare it with [`prepare_merge_plan`].
+#[cfg(test)]
+pub(crate) async fn prepare_merge_source(
+    source: Box<dyn Scannable>,
+    cast_schema: Option<&arrow_schema::Schema>,
+    collect_threshold_bytes: usize,
+) -> Result<MergeSource> {
+    let rescannable = source.rescannable();
+    let plan = merge_source_plan(source, cast_schema)?;
+    prepare_merge_plan(plan, rescannable, collect_threshold_bytes).await
+}
+
 /// Prepare a merge source so the merge join can see its statistics.
 ///
 /// * A rescannable source becomes a provider reporting its exact row count.
@@ -532,14 +561,13 @@ fn merge_source_plan(
 ///   spilled so retries can replay it, and reported with the prefix row count
 ///   as a lower bound.
 ///
-/// When `cast_schema` is set, the source is cast to it on every scan.
-pub(crate) async fn prepare_merge_source(
-    source: Box<dyn Scannable>,
-    cast_schema: Option<&arrow_schema::Schema>,
+/// `plan` comes from [`merge_source_plan`], and `rescannable` from the source it
+/// was planned from.
+async fn prepare_merge_plan(
+    plan: Arc<dyn ExecutionPlan>,
+    rescannable: bool,
     collect_threshold_bytes: usize,
 ) -> Result<MergeSource> {
-    let rescannable = source.rescannable();
-    let plan = merge_source_plan(source, cast_schema)?;
     if rescannable {
         return Ok(MergeSource::Provider(Arc::new(ScannableProvider::new(
             plan,

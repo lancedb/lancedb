@@ -348,7 +348,7 @@ def test_plain_scan_query_to_pandas_blob_bytes_projection(tmp_db, blob_schema):
 
 
 @pytest.mark.parametrize("blob_mode", ["bytes", "descriptions"])
-def test_plain_scan_query_to_pandas_blob_mode_does_not_collect_arrow(
+def test_plain_scan_query_to_pandas_blob_mode_uses_native_path(
     tmp_db, monkeypatch, blob_mode
 ):
     pytest.importorskip("lance")
@@ -362,7 +362,8 @@ def test_plain_scan_query_to_pandas_blob_mode_does_not_collect_arrow(
     def fail_to_arrow(*args, **kwargs):
         raise AssertionError("to_arrow should not be called before native pandas")
 
-    monkeypatch.setattr(query, "to_arrow", fail_to_arrow)
+    if blob_mode == "descriptions":
+        monkeypatch.setattr(query, "to_arrow", fail_to_arrow)
 
     df = query.to_pandas(blob_mode=blob_mode)
 
@@ -488,7 +489,7 @@ async def test_async_plain_scan_query_to_pandas_blob_bytes_projection(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("blob_mode", ["bytes", "descriptions"])
-async def test_async_plain_scan_query_to_pandas_blob_mode_does_not_collect_arrow(
+async def test_async_plain_scan_query_to_pandas_blob_mode_uses_native_path(
     tmp_db_async, monkeypatch, blob_mode
 ):
     pytest.importorskip("lance")
@@ -502,7 +503,8 @@ async def test_async_plain_scan_query_to_pandas_blob_mode_does_not_collect_arrow
     async def fail_to_arrow(*args, **kwargs):
         raise AssertionError("to_arrow should not be called before native pandas")
 
-    monkeypatch.setattr(query, "to_arrow", fail_to_arrow)
+    if blob_mode == "descriptions":
+        monkeypatch.setattr(query, "to_arrow", fail_to_arrow)
 
     df = await query.to_pandas(blob_mode=blob_mode)
 
@@ -541,12 +543,14 @@ def test_vector_query_to_pandas_legacy_blob_descriptions_and_bytes(tmp_db):
     df = query.to_pandas(blob_mode="descriptions")
     assert df["blob"].tolist() == [{"position": 0, "size": 3}]
 
-    with pytest.raises(ValueError, match="legacy blob columns"):
+    with pytest.raises(ValueError, match=r"\['blob'\].*local plain scans"):
         query.to_pandas(blob_mode="bytes")
-    with pytest.raises(ValueError, match="legacy blob columns"):
+    with pytest.raises(ValueError, match=r"\['blob'\].*local plain scans"):
         query.to_arrow(blob_mode="bytes")
-    with pytest.raises(ValueError, match="legacy blob columns"):
-        table.to_arrow(blob_mode="bytes")
+    table_arrow = table.to_arrow(blob_mode="bytes")
+    assert table_arrow.schema.field("blob").type == pa.large_binary()
+    assert "_rowid" not in table_arrow.column_names
+    assert table_arrow["blob"].to_pylist() == [b"one", b"two", b"three", b"four"]
     assert table.to_pandas(blob_mode="bytes")["blob"].tolist() == [
         b"one",
         b"two",
