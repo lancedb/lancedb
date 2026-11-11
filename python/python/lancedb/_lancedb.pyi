@@ -615,6 +615,7 @@ class Table:
         columns: list[tuple[str, str]],
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[int] = None,
+        auto_refresh_resource_budget: Optional[dict[str, int]] = None,
     ) -> AddColumnsResult: ...
     async def add_function_columns(
         self,
@@ -622,6 +623,7 @@ class Table:
         output_name: Optional[str],
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[int] = None,
+        auto_refresh_resource_budget: Optional[dict[str, int]] = None,
     ) -> AddColumnsResult: ...
     async def refresh_column(
         self,

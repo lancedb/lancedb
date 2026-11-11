@@ -459,6 +459,7 @@ class _FunctionDeclarationInner:
         output_name,
         auto_refresh_enabled,
         auto_refresh_interval_seconds,
+        auto_refresh_resource_budget,
     ):
         self.calls.append(
             (
@@ -466,6 +467,7 @@ class _FunctionDeclarationInner:
                 output_name,
                 auto_refresh_enabled,
                 auto_refresh_interval_seconds,
+                auto_refresh_resource_budget,
             )
         )
         return "declared"
@@ -491,7 +493,7 @@ async def test_add_columns_routes_struct_as_one_and_multi_output_binding_atomica
     )
     assert result == "declared"
     assert inner.calls[-1][1] == "features"
-    assert inner.calls[-1][2:] == (None, None)
+    assert inner.calls[-1][2:] == (None, None, None)
 
     bare = application._copy(update={"columns": {}}).rename(
         columns={"normalized_text": "search_text"}
@@ -502,7 +504,7 @@ async def test_add_columns_routes_struct_as_one_and_multi_output_binding_atomica
     assert result == "declared"
     assert inner.calls[-1][1] is None
     assert inner.calls[-1][0]["columns"] == {"normalized_text": "search_text"}
-    assert inner.calls[-1][2:] == (False, 300)
+    assert inner.calls[-1][2:] == (False, 300, None)
 
 
 @pytest.mark.asyncio

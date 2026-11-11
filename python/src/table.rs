@@ -2217,17 +2217,21 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (columns, auto_refresh_enabled=None, auto_refresh_interval_seconds=None))]
-    pub fn add_computed_columns(
-        self_: PyRef<'_, Self>,
+    #[pyo3(signature = (columns, auto_refresh_enabled=None, auto_refresh_interval_seconds=None, auto_refresh_resource_budget=None))]
+    pub fn add_computed_columns<'py>(
+        self_: PyRef<'py, Self>,
         columns: Vec<(String, String)>,
         auto_refresh_enabled: Option<bool>,
         auto_refresh_interval_seconds: Option<u64>,
-    ) -> PyResult<Bound<'_, PyAny>> {
+        auto_refresh_resource_budget: Option<Bound<'py, PyDict>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         let options = ComputedColumnOptions {
             auto_refresh_enabled: auto_refresh_enabled.unwrap_or(true),
             auto_refresh_interval_seconds,
+            auto_refresh_resource_budget: parse_resource_budget(
+                auto_refresh_resource_budget.as_ref(),
+            )?,
         };
         options.validate().infer_error()?;
         future_into_py(self_.py(), async move {
@@ -2244,20 +2248,24 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (application_json, output_name, auto_refresh_enabled=None, auto_refresh_interval_seconds=None))]
-    pub fn add_function_columns(
-        self_: PyRef<'_, Self>,
+    #[pyo3(signature = (application_json, output_name, auto_refresh_enabled=None, auto_refresh_interval_seconds=None, auto_refresh_resource_budget=None))]
+    pub fn add_function_columns<'py>(
+        self_: PyRef<'py, Self>,
         application_json: String,
         output_name: Option<String>,
         auto_refresh_enabled: Option<bool>,
         auto_refresh_interval_seconds: Option<u64>,
-    ) -> PyResult<Bound<'_, PyAny>> {
+        auto_refresh_resource_budget: Option<Bound<'py, PyDict>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
         let application =
             lancedb::function::FunctionApplication::from_json(&application_json).infer_error()?;
         let inner = self_.inner_ref()?.clone();
         let options = ComputedColumnOptions {
             auto_refresh_enabled: auto_refresh_enabled.unwrap_or(true),
             auto_refresh_interval_seconds,
+            auto_refresh_resource_budget: parse_resource_budget(
+                auto_refresh_resource_budget.as_ref(),
+            )?,
         };
         options.validate().infer_error()?;
         future_into_py(self_.py(), async move {

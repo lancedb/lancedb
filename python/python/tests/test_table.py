@@ -6255,6 +6255,21 @@ def test_auto_refresh_options_require_computed_columns(tmp_path):
         table.add_columns({"doubled": "x * 2"}, auto_refresh_enabled=True)
 
 
+def test_auto_refresh_resource_budget_requires_a_function(tmp_path):
+    table = lancedb.connect(tmp_path).create_table("invalid_budget", [{"x": 1}])
+    before = table.version
+    with pytest.raises(ValueError, match="registered Function"):
+        table.add_columns(
+            computed={"doubled": "x * 2"},
+            auto_refresh_resource_budget={
+                "cpu_millis": 1_000,
+                "memory_bytes": 1_024,
+            },
+        )
+    assert table.version == before
+    assert table.schema.names == ["x"]
+
+
 @pytest.mark.experimental_functions
 @pytest.mark.asyncio
 async def test_async_computed_auto_refresh_uses_server_interval(tmp_path):
