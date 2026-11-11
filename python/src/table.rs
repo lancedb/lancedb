@@ -2582,11 +2582,11 @@ impl Table {
     }
 
     #[pyo3(signature = (column, timeout=None))]
-    pub fn wait_column_fresh(
-        self_: PyRef<'_, Self>,
+    pub fn wait_column_fresh<'py>(
+        self_: PyRef<'py, Self>,
         column: String,
-        timeout: Option<Bound<'_, PyAny>>,
-    ) -> PyResult<Bound<'_, PyAny>> {
+        timeout: Option<Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
         let timeout = timeout
             .map(|timeout| timeout.extract::<std::time::Duration>())
             .transpose()?;
