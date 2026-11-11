@@ -35,7 +35,7 @@ pub(super) fn compaction_sql_options(
     Ok(result)
 }
 
-const UNSUPPORTED_OPTIMIZE: &str = "Remote compaction requires an Enterprise server with OPTIMIZE <table> REWRITE DATA job submission enabled. Enable server-side job submission or upgrade to a compatible release.";
+const UNSUPPORTED_OPTIMIZE: &str = "This Enterprise server does not support OPTIMIZE <table> REWRITE DATA. Upgrade the Enterprise server to a compatible release to run remote compaction.";
 const UNSUPPORTED_OPTIONS: &str = "This Enterprise server does not support the requested compaction invocation options. Upgrade the server; options will not be removed or retried.";
 
 /// Only recognize unsupported syntax in optimize statements the client constructs.
