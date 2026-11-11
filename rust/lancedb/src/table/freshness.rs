@@ -2056,7 +2056,7 @@ async fn apply_failure_evidence(
     let physical_rows: BTreeMap<u32, u64> = {
         let mut rows = BTreeMap::new();
         for fragment in dataset.get_fragments() {
-            rows.insert(fragment.id() as u32, fragment.physical_rows().await?);
+            rows.insert(fragment.id() as u32, fragment.physical_rows().await? as u64);
         }
         rows
     };
@@ -2595,7 +2595,7 @@ async fn finish_row_repair_impl(
     if let Some(failures) = failures {
         let accepted = token
             .selected_rows
-            .iter()
+            .keys()
             .map(|fragment_id| {
                 state
                     .signatures
