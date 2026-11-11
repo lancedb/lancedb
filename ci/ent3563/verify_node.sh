@@ -47,13 +47,20 @@ set +e
 pnpm exec jest \
   __test__/remote.test.ts \
   --runInBand \
+  --json \
+  --outputFile "$out_dir/jest-results.json" \
   -t 'passes a pinned version and decodes Function scheduler status' \
   >"$out_dir/jest.log" 2>&1
 status=$?
 set -e
-if [[ "$status" -eq 0 ]] && ! grep -Eq "Tests:.*1 passed, 1 total" "$out_dir/jest.log"; then
-  printf '%s\n' "expected one Node test to pass" >"$out_dir/selection-error.txt"
-  status=1
+if [[ "$status" -eq 0 ]]; then
+  if ! node -e \
+    'const result = require(process.argv[1]); process.exit(result.numPassedTests === 1 && result.numFailedTests === 0 ? 0 : 1)' \
+    "$out_dir/jest-results.json"; then
+    printf '%s\n' "expected one Node test to pass with zero failures" \
+      >"$out_dir/selection-error.txt"
+    status=1
+  fi
 fi
 printf '%s\n' "$status" >"$out_dir/jest.log.exit"
 
