@@ -51,9 +51,8 @@ In Python, `job.status()` returns the current state:
 | `failed` | The operation failed. |
 | `cancelled` | The operation was cancelled. |
 
-This is a point-in-time check. It does not wait for completion or raise when
-the job fails or is cancelled. States from a newer server that the SDK does
-not recognize are returned unchanged.
+`job.status()` checks the current state without waiting for completion.
+It returns `failed` or `cancelled` for unsuccessful jobs.
 
 Use `job.wait()` to wait for completion and raise if the job fails or is
 cancelled. Both `Job.wait()` and `AsyncJob.wait()` retry transient connection
