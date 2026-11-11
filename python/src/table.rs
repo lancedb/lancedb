@@ -48,6 +48,7 @@ mod scannable;
 struct RefreshColumnArgs {
     where_clause: Option<String>,
     batch_size: Option<i64>,
+    max_concurrency: Option<u32>,
     publication_interval_rows: Option<i64>,
     resource_budget: Option<FunctionWorkerResourceBudget>,
     gpu_class: Option<String>,
@@ -71,6 +72,31 @@ fn positive_count<T: TryFrom<i64>>(value: Option<i64>, name: &str) -> PyResult<O
                 .ok_or_else(|| PyValueError::new_err(format!("{name} must be greater than zero")))
         })
         .transpose()
+}
+
+fn positive_u32_integer(value: Option<&Bound<'_, PyAny>>, name: &str) -> PyResult<Option<u32>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.is_none() || value.is_instance_of::<PyBool>() {
+        return Err(PyValueError::new_err(format!(
+            "{name} must be an integer between 1 and 4294967295"
+        )));
+    }
+    let parsed = value.extract::<i64>().map_err(|_| {
+        PyValueError::new_err(format!(
+            "{name} must be an integer between 1 and 4294967295"
+        ))
+    })?;
+    u32::try_from(parsed)
+        .ok()
+        .filter(|parsed| *parsed > 0)
+        .map(Some)
+        .ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "{name} must be an integer between 1 and 4294967295"
+            ))
+        })
 }
 
 fn resource_budget_integer(
@@ -136,6 +162,7 @@ fn refresh_column_options(args: RefreshColumnArgs) -> PyResult<RefreshColumnOpti
     let RefreshColumnArgs {
         where_clause,
         batch_size,
+        max_concurrency,
         publication_interval_rows,
         resource_budget,
         gpu_class,
@@ -179,6 +206,7 @@ fn refresh_column_options(args: RefreshColumnArgs) -> PyResult<RefreshColumnOpti
         .map(usize::try_from)
         .transpose()
         .map_err(|_| PyValueError::new_err("batch_size must be greater than zero"))?;
+    options.max_concurrency = max_concurrency;
     options.publication_interval_rows =
         positive_count(publication_interval_rows, "publication_interval_rows")?;
     options.resource_budget = resource_budget;
@@ -2282,13 +2310,14 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, *, r#where=None, batch_size=None, publication_interval_rows=None, resource_budget=None, gpu_class=None, gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None))]
+    #[pyo3(signature = (column, *, r#where=None, batch_size=None, max_concurrency=None, publication_interval_rows=None, resource_budget=None, gpu_class=None, gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None))]
     #[allow(clippy::too_many_arguments)]
     pub fn refresh_column<'py>(
         self_: PyRef<'py, Self>,
         column: String,
         r#where: Option<String>,
         batch_size: Option<i64>,
+        max_concurrency: Option<Bound<'py, PyAny>>,
         publication_interval_rows: Option<i64>,
         resource_budget: Option<Bound<'py, PyDict>>,
         gpu_class: Option<String>,
@@ -2305,6 +2334,7 @@ impl Table {
         let options = refresh_column_options(RefreshColumnArgs {
             where_clause: r#where,
             batch_size,
+            max_concurrency: positive_u32_integer(max_concurrency.as_ref(), "max_concurrency")?,
             publication_interval_rows,
             resource_budget: parse_resource_budget(resource_budget.as_ref())?,
             gpu_class,
@@ -2328,13 +2358,14 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, *, r#where=None, batch_size=None, publication_interval_rows=None, resource_budget=None, gpu_class=None, gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None))]
+    #[pyo3(signature = (column, *, r#where=None, batch_size=None, max_concurrency=None, publication_interval_rows=None, resource_budget=None, gpu_class=None, gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None))]
     #[allow(clippy::too_many_arguments)]
     pub fn refresh_column_async<'py>(
         self_: PyRef<'py, Self>,
         column: String,
         r#where: Option<String>,
         batch_size: Option<i64>,
+        max_concurrency: Option<Bound<'py, PyAny>>,
         publication_interval_rows: Option<i64>,
         resource_budget: Option<Bound<'py, PyDict>>,
         gpu_class: Option<String>,
@@ -2351,6 +2382,7 @@ impl Table {
         let options = refresh_column_options(RefreshColumnArgs {
             where_clause: r#where,
             batch_size,
+            max_concurrency: positive_u32_integer(max_concurrency.as_ref(), "max_concurrency")?,
             publication_interval_rows,
             resource_budget: parse_resource_budget(resource_budget.as_ref())?,
             gpu_class,

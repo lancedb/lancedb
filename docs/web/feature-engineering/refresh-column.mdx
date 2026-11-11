@@ -225,6 +225,39 @@ Function declaration can separately set `auto_refresh_resource_budget` on
 refreshes. SQL-expression columns reject the automatic resource-budget option
 because they do not use Function workers.
 
+To override the registered Function's call concurrency for this logical
+execution only:
+
+<CodeGroup>
+```python Python icon="python"
+job = table.refresh_column_async("embedding", max_concurrency=4)
+job.wait()
+```
+
+```rust Rust icon="rust"
+use lancedb::table::RefreshColumnOptions;
+
+let _job = table
+    .refresh_column_async_with_options(
+        "embedding",
+        RefreshColumnOptions::default().max_concurrency(4),
+    )
+    .await?;
+```
+
+```typescript TypeScript icon="typescript"
+const job = await table.refreshColumnAsync("embedding", {
+  maxConcurrency: 4,
+});
+await job.wait();
+```
+</CodeGroup>
+
+`max_concurrency` caps user-code calls in flight for one Function within one
+logical execution. It is not an account-wide quota and does not resize or
+rewrite `resource_budget`. Omitting it uses the registration default; a
+refresh value overrides that default for this execution only.
+
 `batch_size` caps rows in one Function call; LanceDB adapts actual call and
 work sizes. For Function columns, the refresh defaults to
 `error_policy = 'fail'`. Set `error_policy = 'skip'` to write null outputs for

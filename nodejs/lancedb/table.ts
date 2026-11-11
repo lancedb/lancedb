@@ -723,8 +723,11 @@ export abstract class Table {
    * `REFRESH COLUMN ... WHERE ... WITH (...)` form: `where` narrows the rows,
    * `errorPolicy`, `maxFailedFraction`, `maxFailedRows`, `rowTimeoutSeconds`
    * and `initTimeoutSeconds` govern failing rows. `batchSize`, `gpuClass`,
-   * `resourceBudget` and `maxExecutorProcessesPerWorker` size registered
-   * Function refreshes. A `resourceBudget` requires `cpuMillis` and
+   * `maxConcurrency`, `resourceBudget` and
+   * `maxExecutorProcessesPerWorker` size registered Function refreshes.
+   * `maxConcurrency` overrides the registered default for this logical
+   * execution only and is a positive integer; it is not an account-wide
+   * quota. A `resourceBudget` requires `cpuMillis` and
    * `memoryBytes`; its `gpuCount` defaults to zero for a CPU-only Function.
    * The budget applies only to this explicit refresh and does not configure
    * a later automatic refresh.
@@ -742,6 +745,7 @@ export abstract class Table {
    *     cpuMillis: 8000,
    *     memoryBytes: 16 * 1024 ** 3,
    *   },
+   *   maxConcurrency: 4,
    *   errorPolicy: "skip",
    *   maxFailedFraction: 0.01,
    *   rowTimeoutSeconds: 30,

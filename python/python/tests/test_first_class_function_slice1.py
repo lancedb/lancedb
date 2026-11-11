@@ -184,6 +184,7 @@ def test_function_version_preserves_execution_controls():
     value = job_result("remote_function_job.json")
     value.update(
         batch_size=12,
+        max_concurrency=4,
         row_timeout_seconds=8.0,
         result_stability="input_and_context",
     )
@@ -192,8 +193,13 @@ def test_function_version_preserves_execution_controls():
 
     assert encoded == value
     assert type(encoded["batch_size"]) is int
+    assert type(encoded["max_concurrency"]) is int
     assert type(encoded["row_timeout_seconds"]) is float
     assert type(encoded["result_stability"]) is str
+
+    for invalid in [True, 1.5, 0, -1, 2**32]:
+        with pytest.raises(ValueError, match="max_concurrency"):
+            FunctionVersion(**{**value, "max_concurrency": invalid})
 
 
 def test_function_version_binds_named_columns_as_one_immutable_application():
