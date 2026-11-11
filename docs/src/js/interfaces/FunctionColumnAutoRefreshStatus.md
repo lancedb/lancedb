@@ -27,7 +27,9 @@ optional blockedReason:
   | "dependency_in_flight"
   | "table_capacity"
   | "cancelled"
-  | "preparation_backoff";
+  | "preparation_backoff"
+  | "failure_threshold_reached"
+  | "binding_revision_missing";
 ```
 
 ***
@@ -85,6 +87,7 @@ optional nextRunAtReason: string;
 ```ts
 state:
   | "running"
+  | "queued"
   | "disabled"
   | "ready"
   | "up_to_date"

@@ -58,6 +58,17 @@ function: FunctionColumnVersionStatus;
 
 ***
 
+### lastFailureJob?
+
+```ts
+optional lastFailureJob: FunctionColumnLastRefreshJob;
+```
+
+Newest failed refresh Job. This remains present when `lastRefreshJob`
+is a later cancellation.
+
+***
+
 ### lastRefreshJob?
 
 ```ts
