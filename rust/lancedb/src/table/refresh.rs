@@ -68,6 +68,7 @@ pub struct FunctionWorkerResourceBudget {
     pub cpu_millis: u64,
     pub memory_bytes: u64,
     /// Aggregate GPU budget across the refresh. Zero is CPU-only.
+    #[serde(default)]
     pub gpu_count: u32,
 }
 

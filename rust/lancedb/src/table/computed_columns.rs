@@ -2584,19 +2584,44 @@ mod tests {
             options
         );
 
-        let mut malformed = metadata.clone();
-        malformed.insert(
+        let mut omitted_gpu = metadata.clone();
+        omitted_gpu.insert(
             super::AUTO_REFRESH_RESOURCE_BUDGET_META_KEY.into(),
             r#"{"cpu_millis":8000,"memory_bytes":17179869184}"#.into(),
         );
-        assert!(super::ComputedColumnOptions::from_metadata(&malformed).is_err());
-
-        let mut zero = metadata;
-        zero.insert(
-            super::AUTO_REFRESH_RESOURCE_BUDGET_META_KEY.into(),
-            r#"{"cpu_millis":0,"memory_bytes":17179869184,"gpu_count":2}"#.into(),
+        let decoded = super::ComputedColumnOptions::from_metadata(&omitted_gpu).unwrap();
+        assert_eq!(decoded.auto_refresh_resource_budget.unwrap().gpu_count, 0);
+        assert_eq!(
+            decoded
+                .metadata()
+                .unwrap()
+                .get(super::AUTO_REFRESH_RESOURCE_BUDGET_META_KEY)
+                .map(String::as_str),
+            Some(r#"{"cpu_millis":8000,"memory_bytes":17179869184,"gpu_count":0}"#)
         );
-        assert!(super::ComputedColumnOptions::from_metadata(&zero).is_err());
+
+        for invalid in [
+            r#"{"memory_bytes":17179869184,"gpu_count":2}"#,
+            r#"{"cpu_millis":8000,"gpu_count":2}"#,
+            r#"{"cpu_millis":"8000","memory_bytes":17179869184,"gpu_count":2}"#,
+            r#"{"cpu_millis":-1,"memory_bytes":17179869184,"gpu_count":2}"#,
+            r#"{"cpu_millis":18446744073709551616,"memory_bytes":17179869184,"gpu_count":2}"#,
+            r#"{"cpu_millis":8000,"memory_bytes":17179869184,"gpu_count":-1}"#,
+            r#"{"cpu_millis":8000,"memory_bytes":17179869184,"gpu_count":4294967296}"#,
+            r#"{"cpu_millis":8000,"memory_bytes":17179869184,"gpu_count":2,"unknown":1}"#,
+            r#"{"cpu_millis":0,"memory_bytes":17179869184,"gpu_count":2}"#,
+            r#"{"cpu_millis":8000,"memory_bytes":0,"gpu_count":2}"#,
+        ] {
+            let mut malformed = metadata.clone();
+            malformed.insert(
+                super::AUTO_REFRESH_RESOURCE_BUDGET_META_KEY.into(),
+                invalid.into(),
+            );
+            assert!(
+                super::ComputedColumnOptions::from_metadata(&malformed).is_err(),
+                "accepted invalid budget: {invalid}"
+            );
+        }
     }
 
     #[test]
