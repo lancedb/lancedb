@@ -385,6 +385,8 @@ pub(crate) async fn execute_merge_insert(
     }
 
     let dataset = table.dataset.get().await?;
+    let source_schema = source.schema();
+    let on = params.on.clone();
     let mut builder = LanceMergeInsertBuilder::try_new(dataset.clone(), params.on)?;
     match (
         params.when_matched_update_all,
@@ -432,8 +434,21 @@ pub(crate) async fn execute_merge_insert(
         Either::Right(job.execute(source).map_err(|e| e.into()))
     };
     let (new_dataset, stats) = future.await?;
+    let mut new_dataset = new_dataset.as_ref().clone();
+    if let Err(error) = super::freshness::preserve_function_freshness(
+        &mut new_dataset,
+        super::freshness::FunctionWrite::Merge {
+            source_schema: &source_schema,
+            on: &on,
+            num_inserted_rows: stats.num_inserted_rows,
+        },
+    )
+    .await
+    {
+        log::warn!("merge committed but Function freshness could not be preserved: {error}");
+    }
     let version = new_dataset.manifest().version;
-    table.dataset.update(new_dataset.as_ref().clone());
+    table.dataset.update(new_dataset);
     Ok(MergeResult {
         version,
         num_updated_rows: stats.num_updated_rows,
