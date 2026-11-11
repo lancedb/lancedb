@@ -3647,22 +3647,18 @@ mod tests {
         let mut dataset = table(dir.path().to_str().unwrap()).await;
         let definition = definition_version(EXPRESSION);
         let ids = inputs(&dataset);
-        stamp_v2(
-            &mut dataset,
-            COLUMN,
-            &definition,
-            signatures_for(&dataset, &[0, 1], &ids).unwrap(),
-        )
-        .await;
+        let signatures = signatures_for(&dataset, &[0, 1], &ids).unwrap();
+        stamp_v2(&mut dataset, COLUMN, &definition, signatures).await;
 
         let first_selected = RoaringBitmap::from_iter([1, 2]);
+        let first_repairs = BTreeMap::from([(0, repair(&dataset, 0, first_selected.clone()))]);
         let first = begin_row_repair(
             &mut dataset,
             COLUMN,
             &definition,
             &ids,
             "failed-wave",
-            &BTreeMap::from([(0, repair(&dataset, 0, first_selected.clone()))]),
+            &first_repairs,
         )
         .await
         .unwrap();
@@ -3684,13 +3680,14 @@ mod tests {
         .unwrap();
 
         let retry_selected = RoaringBitmap::from_iter([1]);
+        let retry_repairs = BTreeMap::from([(0, repair(&dataset, 0, retry_selected.clone()))]);
         let retry = begin_row_repair(
             &mut dataset,
             COLUMN,
             &definition,
             &ids,
             "successful-retry",
-            &BTreeMap::from([(0, repair(&dataset, 0, retry_selected.clone()))]),
+            &retry_repairs,
         )
         .await
         .unwrap();
