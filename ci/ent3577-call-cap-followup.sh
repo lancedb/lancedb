@@ -77,18 +77,21 @@ run_stage_in python_local_rejection "$repo_root/python" \
   -k local_refresh_rejects_enterprise_options
 run_stage_in python_ruff "$repo_root/python" \
   uv run --extra tests --extra dev ruff check \
-  lancedb/functions.py lancedb/table.py lancedb/remote/table.py \
-  tests/test_first_class_function_slice1.py \
-  tests/test_first_class_function_slice2.py \
-  tests/test_remote_db.py tests/test_table.py
+  python/lancedb/functions.py python/lancedb/table.py \
+  python/lancedb/remote/table.py \
+  python/tests/test_first_class_function_slice1.py \
+  python/tests/test_first_class_function_slice2.py \
+  python/tests/test_remote_db.py python/tests/test_table.py
 run_stage_in python_ruff_format "$repo_root/python" \
   uv run --extra tests --extra dev ruff format --check \
-  lancedb/functions.py lancedb/table.py lancedb/remote/table.py \
-  tests/test_first_class_function_slice1.py \
-  tests/test_first_class_function_slice2.py \
-  tests/test_remote_db.py tests/test_table.py
+  python/lancedb/functions.py python/lancedb/table.py \
+  python/lancedb/remote/table.py \
+  python/tests/test_first_class_function_slice1.py \
+  python/tests/test_first_class_function_slice2.py \
+  python/tests/test_remote_db.py python/tests/test_table.py
 run_stage_in python_types "$repo_root/python" \
-  uv run --extra tests --extra dev pyright lancedb/functions.py lancedb/table.py
+  uv run --extra tests --extra dev pyright \
+  python/lancedb/functions.py python/lancedb/table.py
 
 run_stage_in node_build "$repo_root/nodejs" pnpm build
 run_stage_in node_lint "$repo_root/nodejs" pnpm lint-ci
