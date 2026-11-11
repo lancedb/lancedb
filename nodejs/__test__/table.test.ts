@@ -1790,6 +1790,41 @@ describe("When creating an index", () => {
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
   });
 
+  test("create a ZoneMap index and use it for range filters", async () => {
+    await tbl.createIndex("id", { config: Index.zoneMap() });
+    expect(await tbl.listIndices()).toEqual([
+      expect.objectContaining({
+        indexType: "ZoneMap",
+        columns: ["id"],
+      }),
+    ]);
+
+    const query = tbl.query().where("id >= 100 AND id < 110").select(["id"]);
+    expect(await query.explainPlan(true)).toContain("ScalarIndexQuery");
+    expect(
+      (await query.toArray()).map((row) => row.id).sort((a, b) => a - b),
+    ).toEqual(Array.from({ length: 10 }, (_, i) => i + 100));
+  });
+
+  test.each([
+    ["default", undefined],
+    ["custom", { numberOfItems: 64, probability: 0.01 }],
+  ])("create a BloomFilter index with %s options", async (_, options) => {
+    await tbl.createIndex("id", { config: Index.bloomFilter(options) });
+    expect(await tbl.listIndices()).toEqual([
+      expect.objectContaining({
+        indexType: "BloomFilter",
+        columns: ["id"],
+      }),
+    ]);
+
+    const query = tbl.query().where("id IN (42, 142, 999)").select(["id"]);
+    expect(await query.explainPlan(true)).toContain("ScalarIndexQuery");
+    expect(
+      (await query.toArray()).map((row) => row.id).sort((a, b) => a - b),
+    ).toEqual([42, 142]);
+  });
+
   test("create a hnswPq index", async () => {
     await tbl.createIndex("vec", {
       config: Index.hnswPq({

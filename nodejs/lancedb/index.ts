@@ -148,6 +148,7 @@ export {
   IvfFlatOptions,
   HnswPqOptions,
   HnswSqOptions,
+  BloomFilterOptions,
   FtsOptions,
   BaseTokenizer,
 } from "./indices";

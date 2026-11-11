@@ -62,6 +62,7 @@
 - [AddDataOptions](interfaces/AddDataOptions.md)
 - [AddResult](interfaces/AddResult.md)
 - [AlterColumnsResult](interfaces/AlterColumnsResult.md)
+- [BloomFilterOptions](interfaces/BloomFilterOptions.md)
 - [BranchColumnChange](interfaces/BranchColumnChange.md)
 - [BranchColumnSummary](interfaces/BranchColumnSummary.md)
 - [BranchDiff](interfaces/BranchDiff.md)

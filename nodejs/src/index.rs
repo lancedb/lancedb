@@ -4,7 +4,10 @@
 use std::sync::Mutex;
 
 use lancedb::index::Index as LanceDbIndex;
-use lancedb::index::scalar::{BTreeIndexBuilder, FmIndexBuilder, FtsIndexBuilder};
+use lancedb::index::scalar::{
+    BTreeIndexBuilder, BloomFilterIndexBuilder, FmIndexBuilder, FtsIndexBuilder,
+    ZoneMapIndexBuilder,
+};
 use lancedb::index::vector::{
     IvfFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder,
     IvfRqIndexBuilder,
@@ -224,6 +227,42 @@ impl Index {
         Self {
             inner: Mutex::new(Some(LanceDbIndex::Fm(FmIndexBuilder::default()))),
         }
+    }
+
+    /// Create a ZoneMap index using the defaults in [`ZoneMapIndexBuilder`].
+    #[napi(factory)]
+    pub fn zone_map() -> Self {
+        Self {
+            inner: Mutex::new(Some(LanceDbIndex::ZoneMap(ZoneMapIndexBuilder::default()))),
+        }
+    }
+
+    /// Create a Bloom filter index with validated [`BloomFilterIndexBuilder`] options.
+    #[napi(factory)]
+    pub fn bloom_filter(
+        number_of_items: Option<f64>,
+        probability: Option<f64>,
+    ) -> napi::Result<Self> {
+        let mut opts = BloomFilterIndexBuilder::default();
+        if let Some(number_of_items) = number_of_items {
+            // JavaScript numbers must be losslessly representable before conversion to u64.
+            if number_of_items.fract() != 0.0
+                || !(1.0..=9_007_199_254_740_991.0).contains(&number_of_items)
+            {
+                return Err(napi::Error::from_reason(
+                    "BloomFilter numberOfItems must be a positive safe integer",
+                ));
+            }
+            opts = opts
+                .number_of_items(number_of_items as u64)
+                .default_error()?;
+        }
+        if let Some(probability) = probability {
+            opts = opts.probability(probability).default_error()?;
+        }
+        Ok(Self {
+            inner: Mutex::new(Some(LanceDbIndex::BloomFilter(opts))),
+        })
     }
 
     #[napi(factory)]
