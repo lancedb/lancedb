@@ -21,7 +21,8 @@ PROFILES = {
 def validate_wheel(wheel_path: Path, profile: str, platform_fragment: str) -> None:
     expected_python, expected_abi = PROFILES[profile]
     match = re.fullmatch(
-        r"lancedb-[^-]+-(?P<python>[^-]+)-(?P<abi>[^-]+)-(?P<platform>[^.]+)\.whl",
+        r"lancedb-[^-]+-(?P<python>[^-]+)-(?P<abi>[^-]+)-"
+        r"(?P<platform>[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*)\.whl",
         wheel_path.name,
     )
     if match is None:
@@ -58,10 +59,13 @@ def validate_wheel(wheel_path: Path, profile: str, platform_fragment: str) -> No
                 archive.read(metadata_paths[0])
             )
             tags = wheel_metadata.get_all("Tag", [])
-            expected_tag = f"{expected_python}-{expected_abi}-{platform_tag}"
-            if tags != [expected_tag]:
+            expected_tags = {
+                f"{expected_python}-{expected_abi}-{platform}"
+                for platform in platform_tag.split(".")
+            }
+            if set(tags) != expected_tags or len(tags) != len(expected_tags):
                 raise ValueError(
-                    f"WHEEL metadata has tags {tags!r}; expected {[expected_tag]!r}"
+                    f"WHEEL metadata has tags {tags!r}; expected {sorted(expected_tags)!r}"
                 )
 
             distribution_name = (distribution_metadata.get("Name") or "").lower()
