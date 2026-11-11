@@ -27,7 +27,7 @@ tests=(
   "remote::table::tests::test_wait_for_function_column_does_not_retry_generic_500"
   "remote::table::tests::test_function_column_status_decodes_agent_up_to_date"
   "remote::table::tests::test_function_column_status_decodes_blocked_scheduler_fields"
-  "remote::table::tests::test_function_column_status_rejects_a_pinned_table_reference"
+  "remote::table::tests::test_function_column_status_passes_a_pinned_version"
 )
 
 overall=0

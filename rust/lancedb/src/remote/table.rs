@@ -4091,12 +4091,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         }
         let read_snapshot = self.snapshot_read_state().await;
         if let Some(version) = read_snapshot.version {
-            return Err(Error::NotSupported {
-                message: format!(
-                    "Function column status is available only on a latest table reference; \
-                     this handle is pinned to version {version}. Call checkout_latest() first."
-                ),
-            });
+            request = request.query(&[("version", version)]);
         }
         let request = read_snapshot.freshness.apply(request);
         // A typed finalization-pending 503 is a domain result. Let the caller's
@@ -11697,30 +11692,67 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_function_column_status_rejects_a_pinned_table_reference() {
+    async fn test_function_column_status_passes_a_pinned_version() {
         let calls = Arc::new(AtomicUsize::new(0));
         let table = Table::new_with_handler("my_table", {
             let calls = calls.clone();
             move |request| {
                 calls.fetch_add(1, Ordering::SeqCst);
-                assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
-                assert_eq!(request_body_json(&request)["version"], 42);
-                http::Response::builder()
-                    .status(200)
-                    .body(r#"{"version":42,"schema":{"fields":[]}}"#)
-                    .unwrap()
+                match request.url().path() {
+                    "/v1/table/my_table/describe/" => {
+                        assert_eq!(request_body_json(&request)["version"], 42);
+                        http::Response::builder()
+                            .status(200)
+                            .body(r#"{"version":42,"schema":{"fields":[]}}"#)
+                            .unwrap()
+                    }
+                    "/v1/table/my_table/function_columns/status" => {
+                        assert_eq!(request.method(), "GET");
+                        let query: std::collections::BTreeMap<_, _> =
+                            request.url().query_pairs().collect();
+                        assert_eq!(
+                            query.get("column").map(|value| value.as_ref()),
+                            Some("embedding")
+                        );
+                        assert_eq!(query.get("version").map(|value| value.as_ref()), Some("42"));
+                        http::Response::builder()
+                            .status(200)
+                            .body(
+                                r#"[{
+                                    "column":"embedding",
+                                    "binding_id":"fb_01",
+                                    "function":{
+                                        "name":"embed",
+                                        "object_id":"embed",
+                                        "location":"objects/embed",
+                                        "version":"7",
+                                        "manifest_digest":"sha256:abc"
+                                    },
+                                    "table_version":42,
+                                    "rows":0,
+                                    "fresh":0,
+                                    "stale":0,
+                                    "never_computed":0,
+                                    "failed":0,
+                                    "auto_refresh":{
+                                        "enabled":false,
+                                        "state":"disabled",
+                                        "failure_streak":0,
+                                        "next_run_at_millis":null
+                                    }
+                                }]"#,
+                            )
+                            .unwrap()
+                    }
+                    path => panic!("unexpected request path: {path}"),
+                }
             }
         });
         table.checkout(42).await.unwrap();
 
-        let error = table.function_column_status("embedding").await.unwrap_err();
-        assert!(matches!(
-            error,
-            Error::NotSupported { message }
-                if message.contains("pinned to version 42")
-                    && message.contains("checkout_latest")
-        ));
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let status = table.function_column_status("embedding").await.unwrap();
+        assert_eq!(status.table_version, 42);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     /// The error listing is table-addressed with optional job and column

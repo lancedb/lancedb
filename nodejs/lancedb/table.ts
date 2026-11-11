@@ -845,8 +845,8 @@ export abstract class Table {
    *
    * All results describe one server table version. Omit `column` for every
    * Function output. Rows already failed remain visible and do not prevent
-   * `waitFresh` from completing. A handle pinned to an exact version is
-   * rejected; call `checkoutLatest()` first.
+   * `waitFresh` from completing. A handle pinned to an exact version requests
+   * that version; a latest handle retains normal read-freshness behavior.
    */
   abstract functionColumnStatuses(
     column?: string,

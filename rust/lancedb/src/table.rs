@@ -2268,10 +2268,9 @@ impl Table {
     /// Return exact freshness status for all Function-backed output columns.
     ///
     /// The server evaluates all counts at one table version. Clients never
-    /// derive counts by joining schema, Job, and error listings. The status
-    /// route currently accepts a branch at latest, so a handle pinned to an
-    /// exact version is rejected instead of silently reading a different
-    /// snapshot.
+    /// derive counts by joining schema, Job, and error listings. A handle
+    /// pinned with `checkout` sends that exact version, while a latest handle
+    /// keeps the existing read-freshness headers.
     pub async fn function_column_statuses(
         &self,
         column: Option<&str>,
