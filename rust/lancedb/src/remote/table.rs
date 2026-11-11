@@ -289,6 +289,10 @@ impl<S: HttpSend> crate::job::JobHandle for FreshnessJob<S> {
         crate::job::JobHandle::describe(&self.inner).await
     }
 
+    async fn timeline(&self) -> Result<serde_json::Value> {
+        crate::job::JobHandle::timeline(&self.inner).await
+    }
+
     async fn events(
         &self,
         request: crate::job::JobEventsRequest,
@@ -368,6 +372,10 @@ impl<S: HttpSend> crate::job::JobHandle for MaterializedViewRefreshJob<S> {
 
     async fn describe(&self) -> Result<crate::database::JobDescription> {
         crate::job::JobHandle::describe(&self.inner).await
+    }
+
+    async fn timeline(&self) -> Result<serde_json::Value> {
+        crate::job::JobHandle::timeline(&self.inner).await
     }
 
     async fn events(
@@ -12133,6 +12141,8 @@ mod tests {
                         .body(events.clone())
                         .unwrap()
                 }
+                "/v1/jobs/timeline" => http::Response::builder().status(200)
+                    .body(br#"{"traceEvents":[],"metadata":{"partial":true}}"#.to_vec()).unwrap(),
                 other => panic!("unexpected path {other}"),
             }
         });
@@ -12149,6 +12159,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+        assert_eq!(job.timeline().await.unwrap()["metadata"]["partial"], true);
     }
 
     /// A newly submitted refresh returns a freshness-wrapped handle. Waiting

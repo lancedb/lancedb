@@ -235,6 +235,32 @@ impl<S: HttpSend> JobHandle for RemoteJob<S> {
         Ok(self.fetch_description().await?.1.into_description())
     }
 
+    async fn timeline(&self) -> Result<serde_json::Value> {
+        let request = self
+            .client
+            .post("/v1/jobs/timeline")
+            .json(&serde_json::json!({"job_id": self.job_id}));
+        let (request_id, response) = self.client.send(request).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        let trace: serde_json::Value =
+            serde_json::from_str(&body).map_err(|error| Error::Http {
+                source: format!("failed to parse job timeline: {error}").into(),
+                request_id: request_id.clone(),
+                status_code: None,
+            })?;
+        if !trace
+            .get("traceEvents")
+            .is_some_and(serde_json::Value::is_array)
+        {
+            return Err(Error::Http {
+                source: "server response is not Chrome Trace Event JSON; job timeline export requires server support".into(),
+                request_id, status_code: None,
+            });
+        }
+        Ok(trace)
+    }
+
     async fn events(&self, request: JobEventsRequest) -> Result<Vec<RecordBatch>> {
         let mut body = serde_json::json!({ "job_id": self.job_id });
         if let Some(limit) = request.limit {
