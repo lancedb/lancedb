@@ -37,7 +37,7 @@ import pyarrow as pa
 
 from ..common import DATA
 from lancedb.listing import Listing, NamespaceListing, TableListing
-from ..db import DBConnection, LOOP
+from ..db import DBConnection, LOOP, _normalize_function_version
 from ..functions import FunctionVersion, FunctionDefinition
 from ..graph import EdgeTable, NodeTable, PropertyGraph
 from ..job import AsyncJob, Job
@@ -985,9 +985,10 @@ class RemoteDBConnection(DBConnection):
         self,
         name: str,
         *,
-        version: str,
+        version: Optional[Union[int, str]] = None,
         namespace_path: Optional[List[str]] = None,
     ) -> FunctionVersion:
+        version = _normalize_function_version(version)
         return LOOP.run(
             self._conn.get_function(
                 name, version=version, namespace_path=namespace_path

@@ -35,6 +35,7 @@ import {
   FunctionErrorsOptions,
   IndexConfig,
   IndexStatistics,
+  JobFailureInfo,
   Branches as NativeBranches,
   OptimizeStats,
   RTEStats,
@@ -256,6 +257,76 @@ export interface RTEWriteSpec {
   maintainedIndexes?: string[];
   /** Default `ShardWriter` configuration recorded in the MemWAL index. */
   writerConfigDefaults?: Record<string, string>;
+}
+
+/** Exact immutable Function revision attached to a table output. */
+export interface FunctionColumnVersionStatus {
+  name: string;
+  namespacePath: string[];
+  objectId: string;
+  location: string;
+  version: string;
+  manifestDigest: string;
+}
+
+/** Latest matching refresh Job projected for a Function output. */
+export interface FunctionColumnLastRefreshJob {
+  jobId: string;
+  state: string;
+  automatic?: boolean;
+  completedAtMillis?: bigint;
+  /** Structured failure details for a failed Job. */
+  failure?: JobFailureInfo;
+}
+
+/** Automatic-refresh projection for a Function output. */
+export interface FunctionColumnAutoRefreshStatus {
+  enabled: boolean;
+  intervalSeconds?: bigint;
+  activeJobId?: string;
+  state:
+    | "disabled"
+    | "running"
+    | "queued"
+    | "ready"
+    | "up_to_date"
+    | "waiting_interval"
+    | "waiting_backoff"
+    | "blocked"
+    | "unobservable";
+  failureStreak: number;
+  effectiveCooldownMillis?: bigint;
+  blockedReason?:
+    | "table_has_mem_wal"
+    | "inputs_not_settled"
+    | "dependency_in_flight"
+    | "table_capacity"
+    | "cancelled"
+    | "preparation_backoff"
+    | "failure_threshold_reached"
+    | "binding_revision_missing";
+  nextRunAtMillis: bigint | null;
+  nextRunAtReason?: string;
+}
+
+/** Exact four-way status of one Function output at one table version. */
+export interface FunctionColumnStatus {
+  column: string;
+  bindingId: string;
+  function: FunctionColumnVersionStatus;
+  tableVersion: bigint;
+  rows: bigint;
+  fresh: bigint;
+  stale: bigint;
+  neverComputed: bigint;
+  failed: bigint;
+  lastRefreshJob?: FunctionColumnLastRefreshJob;
+  /**
+   * Newest failed refresh Job. This remains present when `lastRefreshJob`
+   * is a later cancellation.
+   */
+  lastFailureJob?: FunctionColumnLastRefreshJob;
+  autoRefresh: FunctionColumnAutoRefreshStatus;
 }
 
 /**
@@ -722,15 +793,36 @@ export abstract class Table {
    * @param {RefreshColumnOptions} options Refresh options, mirroring the SQL
    * `REFRESH COLUMN ... WHERE ... WITH (...)` form: `where` narrows the rows,
    * `errorPolicy`, `maxFailedFraction`, `maxFailedRows`, `rowTimeoutSeconds`
-   * and `initTimeoutSeconds` govern failing rows, and `batchSize`,
-   * `gpuClass`, `gpuCount`, `numWorkers` and `maxExecutorProcessesPerWorker`
-   * size the workers. All are LanceDB Enterprise only; a LanceDB Embedded
-   * refresh rejects every option other than `batchSize`, `gpuClass` and
-   * `gpuCount`.
+   * and `initTimeoutSeconds` govern failing rows. `batchSize`, `gpuClass`,
+   * `maxConcurrency`, `resourceBudget` and
+   * `maxExecutorProcessesPerWorker` size registered Function refreshes.
+   * `maxConcurrency` overrides the registered default for this logical
+   * execution only and is a positive integer; it is not an account-wide
+   * quota. A `resourceBudget` requires `cpuMillis` and
+   * `memoryBytes`; its `gpuCount` defaults to zero for a CPU-only Function.
+   * The budget applies only to this explicit refresh and does not configure
+   * a later automatic refresh.
+   * `gpuCount` at the top level is the shorthand that preserves the
+   * deployment defaults for CPU and memory, and cannot be combined with
+   * `resourceBudget`. `numWorkers` applies only to expression columns; use
+   * `resourceBudget` for registered Functions. All are LanceDB Enterprise
+   * only; a LanceDB Embedded refresh rejects every option other than
+   * `batchSize`, `gpuClass` and `gpuCount`.
+   * `publicationIntervalRows` opts into publishing completed Function split
+   * ranges once their accumulated unpublished rows reach the threshold.
+   * It must be a positive safe integer and requires non-Blob Function outputs.
+   * Omit it for whole-fragment publication. Publications can exceed the
+   * threshold, and remaining rows publish at completion.
    * @example
    * ```ts
    * const job = await table.refreshColumnAsync("embedding", {
    *   where: "published_at > '2026-01-01'",
+   *   resourceBudget: {
+   *     cpuMillis: 8000,
+   *     memoryBytes: 16 * 1024 ** 3,
+   *   },
+   *   maxConcurrency: 4,
+   *   publicationIntervalRows: 10000,
    *   errorPolicy: "skip",
    *   maxFailedFraction: 0.01,
    *   rowTimeoutSeconds: 30,
@@ -764,6 +856,32 @@ export abstract class Table {
   abstract functionErrors(
     options?: FunctionErrorsOptions,
   ): Promise<FunctionErrors>;
+
+  /**
+   * Return exact freshness status for Function-backed output columns.
+   *
+   * All results describe one server table version. Omit `column` for every
+   * Function output. Rows already failed remain visible and do not prevent
+   * `waitFresh` from completing. A handle pinned to an exact version requests
+   * that version; a latest handle retains normal read-freshness behavior.
+   */
+  abstract functionColumnStatuses(
+    column?: string,
+  ): Promise<FunctionColumnStatus[]>;
+
+  /** Return exact freshness status for one Function-backed output column. */
+  abstract functionColumnStatus(column: string): Promise<FunctionColumnStatus>;
+
+  /**
+   * Poll until no stale or never-computed rows remain.
+   *
+   * Only HTTP 503 with the exact finalization-pending error code is retried;
+   * every other error propagates. Failed rows do not block completion.
+   */
+  abstract waitFresh(
+    column: string,
+    timeoutSeconds?: number,
+  ): Promise<FunctionColumnStatus>;
 
   /**
    * Recompute this table's contents from its materialized-view definition.
@@ -1540,6 +1658,31 @@ export class LocalTable extends Table {
   ): Promise<FunctionErrors> {
     validateNonNegativeInteger(options?.limit, "limit");
     return await this.inner.functionErrors(options);
+  }
+
+  async functionColumnStatuses(
+    column?: string,
+  ): Promise<FunctionColumnStatus[]> {
+    return (await this.inner.functionColumnStatuses(
+      column,
+    )) as FunctionColumnStatus[];
+  }
+
+  async functionColumnStatus(column: string): Promise<FunctionColumnStatus> {
+    return (await this.inner.functionColumnStatus(
+      column,
+    )) as FunctionColumnStatus;
+  }
+
+  async waitFresh(
+    column: string,
+    timeoutSeconds?: number,
+  ): Promise<FunctionColumnStatus> {
+    validateNonNegativeInteger(timeoutSeconds, "timeoutSeconds");
+    return (await this.inner.waitForFunctionColumn(
+      column,
+      timeoutSeconds,
+    )) as FunctionColumnStatus;
   }
 
   async refreshMaterializedView(

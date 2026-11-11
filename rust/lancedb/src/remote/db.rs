@@ -887,7 +887,20 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         validate_function_name(name)?;
         validate_namespace(namespace_path)?;
         self.sql_client()?
-            .describe_function(name, version, namespace_path)
+            .describe_function(name, Some(version), namespace_path)
+            .await
+            .map_err(direct_catalog_resource_error)
+    }
+
+    async fn get_function_latest(
+        &self,
+        name: &str,
+        namespace_path: &[String],
+    ) -> Result<FunctionVersion> {
+        validate_function_name(name)?;
+        validate_namespace(namespace_path)?;
+        self.sql_client()?
+            .describe_function(name, None, namespace_path)
             .await
             .map_err(direct_catalog_resource_error)
     }
@@ -4245,6 +4258,49 @@ mod tests {
         assert_eq!(
             conn.resume_job("job-1").await.unwrap(),
             ResumeJobStatus::StillPausing
+        );
+    }
+
+    #[tokio::test]
+    async fn test_job_timeline_fetches_recorded_trace_without_waiting() {
+        let conn = Connection::new_with_handler(|request| {
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(body["job_id"], "job-1");
+            let body = match request.url().path() {
+                "/v1/jobs/describe" => {
+                    r#"{"job_id":"job-1","job_type":"function_refresh","job_state":"IN_PROGRESS","creation_ms":1}"#
+                }
+                "/v1/jobs/timeline" => {
+                    r#"{"traceEvents":[{"ph":"X","pid":1,"tid":1,"ts":0,"dur":1000,"name":"Split 1"}],"metadata":{"partial":true}}"#
+                }
+                path => panic!("Unexpected request: {path}"),
+            };
+            http::Response::builder().status(200).body(body).unwrap()
+        });
+        let job = conn.open_job("job-1").await.unwrap();
+        let trace = job.timeline().await.unwrap();
+        assert_eq!(trace["traceEvents"][0]["dur"], 1000);
+        assert_eq!(trace["metadata"]["partial"], true);
+    }
+
+    #[tokio::test]
+    async fn test_job_timeline_rejects_an_unrelated_json_response() {
+        let conn = Connection::new_with_handler(|request| {
+            let body = if request.url().path() == "/v1/jobs/describe" {
+                r#"{"job_id":"job-1","job_type":"function_refresh","job_state":"SUCCEEDED","creation_ms":1}"#
+            } else {
+                r#"{"message":"not a trace"}"#
+            };
+            http::Response::builder().status(200).body(body).unwrap()
+        });
+        let job = conn.open_job("job-1").await.unwrap();
+        assert!(
+            job.timeline()
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("not Chrome Trace Event JSON")
         );
     }
 

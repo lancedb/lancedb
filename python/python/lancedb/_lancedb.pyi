@@ -25,6 +25,7 @@ from .index import (
     LabelList,
     Fm,
     NGram,
+    ZoneMap,
     HnswPq,
     HnswSq,
     HnswFlat,
@@ -189,7 +190,10 @@ class Connection(object):
         self, request_json: str, namespace_path: Optional[List[str]] = None
     ) -> Job: ...
     async def get_function(
-        self, name: str, version: str, namespace_path: Optional[List[str]] = None
+        self,
+        name: str,
+        version: Optional[str] = None,
+        namespace_path: Optional[List[str]] = None,
     ) -> str: ...
     def list_functions(
         self,
@@ -408,6 +412,7 @@ class Job:
     ) -> Optional[str]: ...
     async def cancel(self) -> None: ...
     async def refresh(self) -> None: ...
+    async def timeline(self) -> str: ...
     async def events(
         self,
         *,
@@ -501,6 +506,8 @@ class JobDescription:
 class SqlQuery:
     @property
     def id(self) -> UUID: ...
+    @property
+    def job_id(self) -> Optional[str]: ...
     async def describe(self) -> QueryDescription: ...
     async def reader(self) -> RecordBatchStream: ...
     async def cancel(self) -> None: ...
@@ -508,6 +515,8 @@ class SqlQuery:
 class QueryDescription:
     @property
     def id(self) -> UUID: ...
+    @property
+    def job_id(self) -> Optional[str]: ...
     @property
     def status(self) -> str: ...
     @property
@@ -549,6 +558,7 @@ class Table:
             LabelList,
             Fm,
             NGram,
+            ZoneMap,
             FTS,
         ],
         replace: Optional[bool],
@@ -572,6 +582,7 @@ class Table:
             LabelList,
             Fm,
             NGram,
+            ZoneMap,
             FTS,
         ],
         replace: Optional[bool],
@@ -605,6 +616,7 @@ class Table:
         columns: list[tuple[str, str]],
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[int] = None,
+        auto_refresh_resource_budget: Optional[dict[str, int]] = None,
     ) -> AddColumnsResult: ...
     async def add_function_columns(
         self,
@@ -612,6 +624,7 @@ class Table:
         output_name: Optional[str],
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[int] = None,
+        auto_refresh_resource_budget: Optional[dict[str, int]] = None,
     ) -> AddColumnsResult: ...
     async def refresh_column(
         self,
@@ -619,7 +632,9 @@ class Table:
         *,
         where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
+        resource_budget: Optional[dict[str, int]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[str] = None,
@@ -637,7 +652,9 @@ class Table:
         *,
         where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
+        resource_budget: Optional[dict[str, int]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[str] = None,
@@ -655,6 +672,13 @@ class Table:
         column: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> FunctionErrors: ...
+    async def column_statuses(
+        self, column: Optional[str] = None
+    ) -> list[FunctionColumnStatus]: ...
+    async def column_status(self, column: str) -> FunctionColumnStatus: ...
+    async def wait_column_fresh(
+        self, column: str, timeout: Optional[timedelta] = None
+    ) -> FunctionColumnStatus: ...
     async def refresh_materialized_view(
         self,
         source_version: Optional[int] = None,
@@ -1071,6 +1095,46 @@ class FunctionErrors:
     records: list[FunctionErrorRecord]
     fragments: list[FunctionErrorFragment]
     truncated: bool
+
+class FunctionColumnVersionStatus:
+    name: str
+    namespace_path: list[str]
+    object_id: str
+    location: str
+    version: str
+    manifest_digest: str
+
+class FunctionColumnLastRefreshJob:
+    job_id: str
+    state: str
+    automatic: Optional[bool]
+    completed_at_millis: Optional[int]
+    failure: Optional[JobFailureInfo]
+
+class FunctionColumnAutoRefreshStatus:
+    enabled: bool
+    interval_seconds: Optional[int]
+    active_job_id: Optional[str]
+    state: str
+    failure_streak: int
+    effective_cooldown_millis: Optional[int]
+    blocked_reason: Optional[str]
+    next_run_at_millis: Optional[int]
+    next_run_at_reason: Optional[str]
+
+class FunctionColumnStatus:
+    column: str
+    binding_id: str
+    function: FunctionColumnVersionStatus
+    table_version: int
+    rows: int
+    fresh: int
+    stale: int
+    never_computed: int
+    failed: int
+    last_refresh_job: Optional[FunctionColumnLastRefreshJob]
+    last_failure_job: Optional[FunctionColumnLastRefreshJob]
+    auto_refresh: FunctionColumnAutoRefreshStatus
 
 class RefreshMaterializedViewResult:
     @staticmethod

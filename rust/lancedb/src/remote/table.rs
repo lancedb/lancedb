@@ -42,7 +42,8 @@ use crate::table::query::create_multi_vector_plan;
 use crate::table::rte_stats::GetRTEStatsResponse;
 use crate::table::write_progress::FinishOnDrop;
 use crate::table::{
-    AlterColumnsResult, FieldMetadataUpdate, RefreshColumnResult, UpdateFieldMetadataResult,
+    AlterColumnsResult, FieldMetadataUpdate, FunctionColumnStatus, RefreshColumnResult,
+    UpdateFieldMetadataResult,
 };
 use crate::table::{AnyQuery, Filter, Predicate, PreprocessingOutput, TableStatistics};
 use crate::utils::background_cache::BackgroundCache;
@@ -288,6 +289,10 @@ impl<S: HttpSend> crate::job::JobHandle for FreshnessJob<S> {
         crate::job::JobHandle::describe(&self.inner).await
     }
 
+    async fn timeline(&self) -> Result<serde_json::Value> {
+        crate::job::JobHandle::timeline(&self.inner).await
+    }
+
     async fn events(
         &self,
         request: crate::job::JobEventsRequest,
@@ -367,6 +372,10 @@ impl<S: HttpSend> crate::job::JobHandle for MaterializedViewRefreshJob<S> {
 
     async fn describe(&self) -> Result<crate::database::JobDescription> {
         crate::job::JobHandle::describe(&self.inner).await
+    }
+
+    async fn timeline(&self) -> Result<serde_json::Value> {
+        crate::job::JobHandle::timeline(&self.inner).await
     }
 
     async fn events(
@@ -3951,6 +3960,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         if let Some(interval) = options.auto_refresh_interval_seconds {
             body["auto_refresh_interval_seconds"] = serde_json::json!(interval);
         }
+        if let Some(budget) = options.auto_refresh_resource_budget {
+            body["auto_refresh_resource_budget"] = serde_json::json!(budget);
+        }
         self.apply_branch_body(&mut body);
         let request = self
             .client
@@ -4072,6 +4084,54 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             request_id,
             status_code: None,
         })
+    }
+
+    async fn function_column_statuses(
+        &self,
+        column: Option<&str>,
+    ) -> Result<Vec<FunctionColumnStatus>> {
+        let mut request = self.apply_branch_query(self.client.get(&format!(
+            "/v1/table/{}/function_columns/status",
+            self.identifier
+        )));
+        if let Some(column) = column {
+            request = request.query(&[("column", column)]);
+        }
+        let read_snapshot = self.snapshot_read_state().await;
+        if let Some(version) = read_snapshot.version {
+            request = request.query(&[("version", version)]);
+        }
+        let request = read_snapshot.freshness.apply(request);
+        // A typed finalization-pending 503 is a domain result. Let the caller's
+        // bounded wait policy handle it instead of a generic 5xx retry loop.
+        let (request_id, response) = self.client.send_with_retry(request, None, false).await?;
+        if response.status().is_success() {
+            read_snapshot
+                .freshness
+                .observe_headers(&self.freshness, response.headers());
+        }
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        let statuses: Vec<FunctionColumnStatus> =
+            serde_json::from_str(&body).map_err(|error| Error::Http {
+                source: format!("failed to parse Function column status response: {error}").into(),
+                request_id,
+                status_code: None,
+            })?;
+        crate::table::function_column_status::validate_statuses(&statuses)?;
+        if let Some(requested_version) = read_snapshot.version
+            && let Some(returned_version) = statuses
+                .iter()
+                .map(|status| status.table_version)
+                .find(|version| *version != requested_version)
+        {
+            return Err(Error::Runtime {
+                message: format!(
+                    "Function column status response returned table version {returned_version}, but the table handle is pinned to version {requested_version}"
+                ),
+            });
+        }
+        Ok(statuses)
     }
 
     async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<AlterColumnsResult> {
@@ -10361,6 +10421,7 @@ mod tests {
                 .computed_options(crate::table::computed_columns::ComputedColumnOptions {
                     auto_refresh_enabled: false,
                     auto_refresh_interval_seconds: interval,
+                    auto_refresh_resource_budget: None,
                 })
                 .execute()
                 .await
@@ -10797,6 +10858,11 @@ mod tests {
                 ))
                 .unwrap();
                 expected["auto_refresh_enabled"] = serde_json::json!(true);
+                expected["auto_refresh_resource_budget"] = serde_json::json!({
+                    "cpu_millis": 8_000,
+                    "memory_bytes": 17_179_869_184_u64,
+                    "gpu_count": 2,
+                });
                 assert_eq!(actual, expected);
                 http::Response::builder()
                     .status(200)
@@ -10824,6 +10890,14 @@ mod tests {
         let result = table
             .add_columns()
             .function(application)
+            .computed_options(crate::table::computed_columns::ComputedColumnOptions {
+                auto_refresh_enabled: true,
+                auto_refresh_interval_seconds: None,
+                auto_refresh_resource_budget: Some(
+                    crate::table::FunctionWorkerResourceBudget::new(8_000, 17_179_869_184)
+                        .with_gpu_count(2),
+                ),
+            })
             .execute()
             .await
             .unwrap();
@@ -11028,6 +11102,48 @@ mod tests {
         assert_eq!(job.id(), Some("j-gpu"));
     }
 
+    #[rstest]
+    #[case(None, 0)]
+    #[case(Some(2), 2)]
+    #[tokio::test]
+    async fn test_refresh_column_async_resource_budget(
+        #[case] gpu_count: Option<u32>,
+        #[case] expected_gpu_count: u32,
+    ) {
+        use crate::table::{FunctionWorkerResourceBudget, RefreshColumnOptions};
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/backfill_column");
+            assert_eq!(
+                request_body_json(&request),
+                serde_json::json!({
+                    "column": "quality",
+                    "resource_budget": {
+                        "cpu_millis": 8_000,
+                        "memory_bytes": 17_179_869_184_u64,
+                        "gpu_count": expected_gpu_count,
+                    },
+                })
+            );
+            http::Response::builder()
+                .status(202)
+                .body(r#"{"job_id":"j-budget"}"#)
+                .unwrap()
+        });
+        let mut budget = FunctionWorkerResourceBudget::new(8_000, 17_179_869_184);
+        if let Some(gpu_count) = gpu_count {
+            budget = budget.with_gpu_count(gpu_count);
+        }
+        let job = table
+            .refresh_column_async_with_options(
+                "quality",
+                RefreshColumnOptions::default().resource_budget(budget),
+            )
+            .await
+            .unwrap();
+        assert_eq!(job.id(), Some("j-budget"));
+    }
+
     #[tokio::test]
     async fn test_refresh_column_async_retry_policy() {
         use crate::function::{FunctionErrorPolicy, FunctionRetryPolicy};
@@ -11072,6 +11188,7 @@ mod tests {
                 serde_json::json!({
                     "column": "quality",
                     "where": "id % 2 = 0",
+                    "max_concurrency": 3,
                     "publication_interval_rows": 60,
                     "error_policy": "skip",
                     "max_failed_fraction": 0.01,
@@ -11089,6 +11206,7 @@ mod tests {
         });
         let options = RefreshColumnOptions::default()
             .where_clause("id % 2 = 0")
+            .max_concurrency(3)
             .publication_interval_rows(60)
             .error_policy(FunctionErrorPolicy::Skip)
             .max_failed_fraction(0.01)
@@ -11134,6 +11252,10 @@ mod tests {
                 "num_workers",
             ),
             (
+                RefreshColumnOptions::default().max_concurrency(0),
+                "max_concurrency",
+            ),
+            (
                 RefreshColumnOptions::default().max_executor_processes_per_worker(0),
                 "max_executor_processes_per_worker",
             ),
@@ -11155,7 +11277,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_refresh_column_rejects_invalid_gpu_options_before_request() {
-        use crate::table::RefreshColumnOptions;
+        use crate::table::{FunctionWorkerResourceBudget, RefreshColumnOptions};
 
         let table = Table::new_with_handler("my_table", |_| -> http::Response<String> {
             panic!("invalid GPU options must not send a request")
@@ -11170,6 +11292,22 @@ mod tests {
                 "gpu_class",
             ),
             (RefreshColumnOptions::default().gpu_count(0), "gpu_count"),
+            (
+                RefreshColumnOptions::default()
+                    .resource_budget(FunctionWorkerResourceBudget::new(0, 1)),
+                "resource_budget.cpu_millis",
+            ),
+            (
+                RefreshColumnOptions::default()
+                    .resource_budget(FunctionWorkerResourceBudget::new(1, 0)),
+                "resource_budget.memory_bytes",
+            ),
+            (
+                RefreshColumnOptions::default()
+                    .resource_budget(FunctionWorkerResourceBudget::new(1, 1))
+                    .gpu_count(1),
+                "gpu_count cannot be combined with resource_budget",
+            ),
         ] {
             let error = table
                 .refresh_column_async_with_options("quality", options)
@@ -11267,6 +11405,583 @@ mod tests {
 
         table.schema().await.unwrap();
         assert_eq!(schema_requests.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_function_column_status_decodes_one_exact_snapshot() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "GET");
+            assert_eq!(
+                request.url().path(),
+                "/v1/table/my_table/function_columns/status"
+            );
+            assert_eq!(request.url().query(), None);
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"[{
+                        "column":"embedding",
+                        "binding_id":"fb_01",
+                        "function":{
+                            "name":"embed",
+                            "object_id":"embed",
+                            "location":"objects/embed",
+                            "version":"7",
+                            "manifest_digest":"sha256:abc"
+                        },
+                        "table_version":42,
+                        "rows":10,
+                        "fresh":6,
+                        "stale":2,
+                        "never_computed":1,
+                        "failed":1,
+                        "last_refresh_job":{
+                            "job_id":"job-7",
+                            "state":"finished",
+                            "automatic":true,
+                            "completed_at_millis":1790000000000
+                        },
+                        "auto_refresh":{
+                            "enabled":true,
+                            "interval_seconds":60,
+                            "active_job_id":null,
+                            "state":"unobservable",
+                            "failure_streak":0,
+                            "next_run_at_millis":null,
+                            "next_run_at_reason":"authoritative_scheduler_projection_unavailable"
+                        }
+                    }]"#,
+                )
+                .unwrap()
+        });
+
+        let statuses = table.function_column_statuses(None).await.unwrap();
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].table_version, 42);
+        assert_eq!(statuses[0].failed, 1);
+        assert_eq!(
+            statuses[0]
+                .last_refresh_job
+                .as_ref()
+                .map(|job| job.job_id.as_str()),
+            Some("job-7")
+        );
+        assert_eq!(
+            statuses[0].auto_refresh.state,
+            crate::table::FunctionColumnAutoRefreshState::Unobservable
+        );
+    }
+
+    #[tokio::test]
+    async fn test_function_column_status_filters_with_a_get_query() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "GET");
+            assert_eq!(request.url().query(), Some("column=embedding"));
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"[{
+                        "column":"embedding",
+                        "binding_id":"fb_01",
+                        "function":{
+                            "name":"embed",
+                            "object_id":"embed",
+                            "location":"objects/embed",
+                            "version":"7",
+                            "manifest_digest":"sha256:abc"
+                        },
+                        "table_version":42,
+                        "rows":0,
+                        "fresh":0,
+                        "stale":0,
+                        "never_computed":0,
+                        "failed":0,
+                        "auto_refresh":{
+                            "enabled":false,
+                            "state":"disabled",
+                            "failure_streak":0,
+                            "next_run_at_millis":null
+                        }
+                    }]"#,
+                )
+                .unwrap()
+        });
+
+        let status = table.function_column_status("embedding").await.unwrap();
+        assert_eq!(status.column, "embedding");
+        assert!(status.last_refresh_job.is_none());
+        assert_eq!(
+            status.auto_refresh.state,
+            crate::table::FunctionColumnAutoRefreshState::Disabled
+        );
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_function_column_retries_only_typed_finalization_pending() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let table = Table::new_with_handler("my_table", {
+            let calls = calls.clone();
+            move |_request| {
+                if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    http::Response::builder()
+                        .status(StatusCode::SERVICE_UNAVAILABLE)
+                        .header(
+                            "x-lancedb-error-code",
+                            crate::table::function_column_status::FINALIZATION_PENDING_ERROR_CODE,
+                        )
+                        .body(b"finalization pending".to_vec())
+                        .unwrap()
+                } else {
+                    http::Response::builder()
+                        .status(200)
+                        .body(
+                            br#"[{
+                                "column":"embedding",
+                                "binding_id":"fb_01",
+                                "function":{
+                                    "name":"embed",
+                                    "object_id":"embed",
+                                    "location":"objects/embed",
+                                    "version":"7",
+                                    "manifest_digest":"sha256:abc"
+                                },
+                                "table_version":42,
+                                "rows":0,
+                                "fresh":0,
+                                "stale":0,
+                                "never_computed":0,
+                                "failed":0,
+                                "auto_refresh":{
+                                    "enabled":false,
+                                    "state":"disabled",
+                                    "failure_streak":0,
+                                    "next_run_at_millis":null
+                                }
+                            }]"#
+                            .to_vec(),
+                        )
+                        .unwrap()
+                }
+            }
+        });
+
+        let status = table
+            .wait_for_function_column("embedding", Some(Duration::from_secs(2)))
+            .await
+            .unwrap();
+        assert_eq!(status.table_version, 42);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_finalization_code_on_other_status_is_not_retried() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let table = Table::new_with_handler("my_table", {
+            let calls = calls.clone();
+            move |_request| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                http::Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .header(
+                        "x-lancedb-error-code",
+                        crate::table::function_column_status::FINALIZATION_PENDING_ERROR_CODE,
+                    )
+                    .body(b"misclassified pending".to_vec())
+                    .unwrap()
+            }
+        });
+
+        let error = table
+            .wait_for_function_column("embedding", Some(Duration::from_secs(2)))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("misclassified pending"));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_function_column_does_not_retry_generic_500() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let table = Table::new_with_handler("my_table", {
+            let calls = calls.clone();
+            move |_request| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                http::Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(b"corrupt freshness evidence".to_vec())
+                    .unwrap()
+            }
+        });
+
+        let error = table
+            .wait_for_function_column("embedding", Some(Duration::from_secs(2)))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("corrupt freshness evidence"));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_function_column_status_decodes_agent_up_to_date() {
+        let table = Table::new_with_handler("my_table", |_request| {
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"[{
+                        "column":"embedding",
+                        "binding_id":"fb_01",
+                        "function":{
+                            "name":"embed",
+                            "object_id":"embed",
+                            "location":"objects/embed",
+                            "version":"7",
+                            "manifest_digest":"sha256:abc"
+                        },
+                        "table_version":42,
+                        "rows":4,
+                        "fresh":4,
+                        "stale":0,
+                        "never_computed":0,
+                        "failed":0,
+                        "auto_refresh":{
+                            "enabled":true,
+                            "interval_seconds":60,
+                            "state":"up_to_date",
+                            "failure_streak":0,
+                            "next_run_at_millis":null
+                        }
+                    }]"#,
+                )
+                .unwrap()
+        });
+
+        let status = table.function_column_status("embedding").await.unwrap();
+        assert_eq!(
+            status.auto_refresh.state,
+            crate::table::FunctionColumnAutoRefreshState::UpToDate
+        );
+    }
+
+    #[tokio::test]
+    async fn test_function_column_status_decodes_scheduler_lifecycle_and_failures() {
+        let table = Table::new_with_handler("my_table", |_request| {
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"[
+                    {
+                        "column":"embedding",
+                        "binding_id":"fb_01",
+                        "function":{
+                            "name":"embed",
+                            "object_id":"embed",
+                            "location":"objects/embed",
+                            "version":"7",
+                            "manifest_digest":"sha256:abc"
+                        },
+                        "table_version":42,
+                        "rows":4,
+                        "fresh":2,
+                        "stale":2,
+                        "never_computed":0,
+                        "failed":0,
+                        "last_refresh_job":{
+                            "job_id":"job-cancelled",
+                            "state":"cancelled",
+                            "automatic":true,
+                            "completed_at_millis":1790000002000
+                        },
+                        "last_failure_job":{
+                            "job_id":"job-failed",
+                            "state":"failed",
+                            "automatic":true,
+                            "completed_at_millis":1790000001000,
+                            "failure":{
+                                "phase":"finalize",
+                                "message":"worker timed out",
+                                "traceback":"Traceback: timeout",
+                                "retryable":true,
+                                "sql_job_id":"sql-job-7"
+                            }
+                        },
+                        "auto_refresh":{
+                            "enabled":true,
+                            "interval_seconds":60,
+                            "active_job_id":"job-queued",
+                            "state":"queued",
+                            "failure_streak":1,
+                            "next_run_at_millis":null,
+                            "next_run_at_reason":"job_queued_not_started"
+                        }
+                    },
+                    {
+                        "column":"rerank",
+                        "binding_id":"fb_02",
+                        "function":{
+                            "name":"rerank",
+                            "object_id":"rerank",
+                            "location":"objects/rerank",
+                            "version":"3",
+                            "manifest_digest":"sha256:def"
+                        },
+                        "table_version":42,
+                        "rows":0,
+                        "fresh":0,
+                        "stale":0,
+                        "never_computed":0,
+                        "failed":0,
+                        "auto_refresh":{
+                            "enabled":true,
+                            "interval_seconds":60,
+                            "state":"blocked",
+                            "failure_streak":5,
+                            "blocked_reason":"failure_threshold_reached",
+                            "next_run_at_millis":null
+                        }
+                    },
+                    {
+                        "column":"classify",
+                        "binding_id":"fb_03",
+                        "function":{
+                            "name":"classify",
+                            "object_id":"classify",
+                            "location":"objects/classify",
+                            "version":"2",
+                            "manifest_digest":"sha256:ghi"
+                        },
+                        "table_version":42,
+                        "rows":0,
+                        "fresh":0,
+                        "stale":0,
+                        "never_computed":0,
+                        "failed":0,
+                        "auto_refresh":{
+                            "enabled":true,
+                            "interval_seconds":60,
+                            "state":"blocked",
+                            "failure_streak":0,
+                            "blocked_reason":"binding_revision_missing",
+                            "next_run_at_millis":null
+                        }
+                    },
+                    {
+                        "column":"summarize",
+                        "binding_id":"fb_04",
+                        "function":{
+                            "name":"summarize",
+                            "object_id":"summarize",
+                            "location":"objects/summarize",
+                            "version":"4",
+                            "manifest_digest":"sha256:jkl"
+                        },
+                        "table_version":42,
+                        "rows":0,
+                        "fresh":0,
+                        "stale":0,
+                        "never_computed":0,
+                        "failed":0,
+                        "auto_refresh":{
+                            "enabled":true,
+                            "interval_seconds":60,
+                            "state":"blocked",
+                            "failure_streak":3,
+                            "effective_cooldown_millis":8000,
+                            "blocked_reason":"preparation_backoff",
+                            "next_run_at_millis":null
+                        }
+                    }]"#,
+                )
+                .unwrap()
+        });
+
+        let statuses = table.function_column_statuses(None).await.unwrap();
+        assert_eq!(statuses.len(), 4);
+        let status = &statuses[0];
+        assert_eq!(
+            status.auto_refresh.state,
+            crate::table::FunctionColumnAutoRefreshState::Queued
+        );
+        assert_eq!(
+            status.auto_refresh.active_job_id.as_deref(),
+            Some("job-queued")
+        );
+        assert_eq!(
+            status.auto_refresh.next_run_at_reason.as_deref(),
+            Some("job_queued_not_started")
+        );
+        assert_eq!(
+            status
+                .last_refresh_job
+                .as_ref()
+                .map(|job| job.state.as_str()),
+            Some("cancelled")
+        );
+        let failure_job = status.last_failure_job.as_ref().unwrap();
+        assert_eq!(failure_job.job_id, "job-failed");
+        let failure = failure_job.failure.as_ref().unwrap();
+        assert_eq!(failure.phase.as_deref(), Some("finalize"));
+        assert_eq!(failure.message.as_deref(), Some("worker timed out"));
+        assert_eq!(failure.retryable, Some(true));
+        assert_eq!(failure.sql_job_id.as_deref(), Some("sql-job-7"));
+
+        assert_eq!(statuses[1].auto_refresh.failure_streak, 5);
+        assert_eq!(
+            statuses[1].auto_refresh.blocked_reason,
+            Some(crate::table::FunctionColumnAutoRefreshBlockedReason::FailureThresholdReached)
+        );
+        assert_eq!(
+            statuses[2].auto_refresh.blocked_reason,
+            Some(crate::table::FunctionColumnAutoRefreshBlockedReason::BindingRevisionMissing)
+        );
+        assert_eq!(statuses[3].auto_refresh.failure_streak, 3);
+        assert_eq!(
+            statuses[3].auto_refresh.effective_cooldown_millis,
+            Some(8000)
+        );
+        assert_eq!(
+            statuses[3].auto_refresh.blocked_reason,
+            Some(crate::table::FunctionColumnAutoRefreshBlockedReason::PreparationBackoff)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_function_column_status_passes_a_pinned_version() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let status_calls = Arc::new(AtomicUsize::new(0));
+        let table = Table::new_with_handler("my_table", {
+            let calls = calls.clone();
+            let status_calls = status_calls.clone();
+            move |request| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                match request.url().path() {
+                    "/v1/table/my_table/describe/" => {
+                        assert_eq!(request_body_json(&request)["version"], 42);
+                        http::Response::builder()
+                            .status(200)
+                            .body(r#"{"version":42,"schema":{"fields":[]}}"#.to_string())
+                            .unwrap()
+                    }
+                    "/v1/table/my_table/function_columns/status" => {
+                        assert_eq!(request.method(), "GET");
+                        let query: std::collections::BTreeMap<_, _> =
+                            request.url().query_pairs().collect();
+                        assert_eq!(
+                            query.get("column").map(|value| value.as_ref()),
+                            Some("embedding")
+                        );
+                        assert_eq!(query.get("version").map(|value| value.as_ref()), Some("42"));
+                        let returned_version = if status_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                            42
+                        } else {
+                            43
+                        };
+                        http::Response::builder()
+                            .status(200)
+                            .body(format!(
+                                r#"[{{
+                                    "column":"embedding",
+                                    "binding_id":"fb_01",
+                                    "function":{{
+                                        "name":"embed",
+                                        "object_id":"embed",
+                                        "location":"objects/embed",
+                                        "version":"7",
+                                        "manifest_digest":"sha256:abc"
+                                    }},
+                                    "table_version":{returned_version},
+                                    "rows":0,
+                                    "fresh":0,
+                                    "stale":0,
+                                    "never_computed":0,
+                                    "failed":0,
+                                    "auto_refresh":{{
+                                        "enabled":false,
+                                        "state":"disabled",
+                                        "failure_streak":0,
+                                        "next_run_at_millis":null
+                                    }}
+                                }}]"#,
+                            ))
+                            .unwrap()
+                    }
+                    path => panic!("unexpected request path: {path}"),
+                }
+            }
+        });
+        table.checkout(42).await.unwrap();
+
+        let status = table.function_column_status("embedding").await.unwrap();
+        assert_eq!(status.table_version, 42);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        let error = table.function_column_status("embedding").await.unwrap_err();
+        assert!(
+            error.to_string().contains(
+                "returned table version 43, but the table handle is pinned to version 42"
+            )
+        );
+        assert_eq!(status_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn test_function_column_status_keeps_latest_freshness_headers() {
+        let table = RemoteTable::new_mock(
+            "my_table".to_string(),
+            |request| {
+                assert_eq!(request.method(), "GET");
+                assert_eq!(
+                    request.url().query_pairs().collect::<Vec<_>>(),
+                    vec![(
+                        std::borrow::Cow::Borrowed("column"),
+                        std::borrow::Cow::Borrowed("embedding")
+                    )]
+                );
+                assert_eq!(
+                    request
+                        .headers()
+                        .get("x-lancedb-min-version")
+                        .and_then(|value| value.to_str().ok()),
+                    Some("7")
+                );
+                http::Response::builder()
+                    .status(200)
+                    .body(
+                        r#"[{
+                            "column":"embedding",
+                            "binding_id":"fb_01",
+                            "function":{
+                                "name":"embed",
+                                "object_id":"embed",
+                                "location":"objects/embed",
+                                "version":"7",
+                                "manifest_digest":"sha256:abc"
+                            },
+                            "table_version":42,
+                            "rows":0,
+                            "fresh":0,
+                            "stale":0,
+                            "never_computed":0,
+                            "failed":0,
+                            "auto_refresh":{
+                                "enabled":false,
+                                "state":"disabled",
+                                "failure_streak":0,
+                                "next_run_at_millis":null
+                            }
+                        }]"#,
+                    )
+                    .unwrap()
+            },
+            None,
+        );
+        table.freshness.lock().unwrap().min_version = Some(7);
+
+        let statuses = table
+            .function_column_statuses(Some("embedding"))
+            .await
+            .unwrap();
+        assert_eq!(statuses.len(), 1);
     }
 
     /// The error listing is table-addressed with optional job and column
@@ -11426,6 +12141,8 @@ mod tests {
                         .body(events.clone())
                         .unwrap()
                 }
+                "/v1/jobs/timeline" => http::Response::builder().status(200)
+                    .body(br#"{"traceEvents":[],"metadata":{"partial":true}}"#.to_vec()).unwrap(),
                 other => panic!("unexpected path {other}"),
             }
         });
@@ -11442,6 +12159,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+        assert_eq!(job.timeline().await.unwrap()["metadata"]["partial"], true);
     }
 
     /// A newly submitted refresh returns a freshness-wrapped handle. Waiting

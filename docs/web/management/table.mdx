@@ -465,9 +465,11 @@ methods `to_pandas()`, `to_arrow()`, `to_list()`, and `to_batches()` accept a
 
 For supported local v2 blob projections, `to_pandas(blob_mode="bytes")` and
 `to_pandas(blob_mode="descriptions")` use native Arrow conversion without
-pylance. Pandas conversions that need the Lance scanner, including plain-scan
-`"lazy"` handles and legacy blobs, still require pylance. `to_arrow()`,
-`to_list()`, `to_batches()`, and the fetch methods do not require pylance.
+pylance. Eligible local plain scans also convert row-addressable legacy blob
+bytes without pylance. Pandas conversions that need the Lance scanner,
+including plain-scan `"lazy"` handles and scanner-only options, still require
+pylance. `to_arrow()`, `to_list()`, `to_batches()`, and the fetch methods do
+not require pylance for supported local queries.
 
 `blob_mode="bytes"` requires a LanceDB Embedded table snapshot, so Enterprise
 and in-memory tables raise `NotImplementedError`. On an Enterprise table,
@@ -476,6 +478,51 @@ and in-memory tables raise `NotImplementedError`. On an Enterprise table,
 the default `"lazy"` mode because it would open `BlobFile` handles. Query with
 `blob_mode="descriptions"`, then read bytes with `fetch_blobs` or
 `fetch_blob_files`.
+
+###### Copy a subset of blob rows {#multimodal-copy-subset}
+
+Blob query results describe the stored payload; they are not the bytes to
+insert into another table. These APIs return different values:
+
+| Read path | Value |
+| --- | --- |
+| SQL or an Arrow query in `"descriptions"` mode | Descriptor struct identifying the stored blob. Treat it as opaque. |
+| `table.fetch_blobs(column, row_ids)` | Arrow `large_binary` array; `.to_pylist()` gives `bytes` or `None` in the requested order. |
+| A Function parameter annotated `lancedb.BlobReader` | Lazy, seekable reader over the input blob, available inside the Function. |
+
+For an Enterprise source table, select the rows and fetch their bytes explicitly.
+The following example copies up to 100 rows from an existing `images` table with
+an integer `id` and a blob `image` column. Keep the source unchanged during this
+operation: selection and fetching are separate requests.
+
+```python
+import lancedb
+import pyarrow as pa
+
+source = db.open_table("images")
+hits = (
+    source.search()
+    .where("id < 100")
+    .select(["id"])
+    .with_row_id(True)
+    .limit(100)
+    .to_arrow()
+)
+payloads = source.fetch_blobs("image", hits["_rowid"]).to_pylist()
+subset = db.create_table(
+    "image_subset",
+    schema=pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")]),
+)
+if hits.num_rows:
+    subset.add([
+        {"id": image_id, "image": payload}
+        for image_id, payload in zip(hits["id"].to_pylist(), payloads, strict=True)
+    ])
+```
+
+Empty blobs remain `b""` and null blobs remain `None`. Fetch bounded batches
+for larger subsets; `fetch_blobs` materializes all requested bytes in memory.
+For incremental decoding, use `fetch_blob_files` instead.
 
 `blob_mode="bytes"` materializes top-level and struct-nested blob columns. It
 raises `ValueError` when the selected columns include blobs
@@ -486,10 +533,11 @@ PyArrow.
 
 ###### Stream blob results {#multimodal-blob-batches}
 
-`to_batches(blob_mode="bytes")` fetches blob v2 payloads one batch at a time
-and returns them as Arrow `large_binary` values. Iterate over the reader and
-call `batch.to_pandas()` to convert each batch to a DataFrame without collecting
-all payloads at once.
+`to_batches(blob_mode="bytes")` fetches row-addressable blob v2 payloads and
+eligible local plain-scan legacy v1 payloads one batch at a time and returns
+them as Arrow `large_binary` values. Iterate over the reader and call
+`batch.to_pandas()` to convert each batch to a DataFrame without collecting all
+payloads at once.
 
 For sync queries, call `query.to_batches(batch_size=64, blob_mode="bytes")`
 and iterate with `for`. For async queries, call
@@ -497,17 +545,18 @@ and iterate with `for`. For async queries, call
 with `async for`. Sync full-text and hybrid queries do not support
 `to_batches()`.
 
-The default `"lazy"` mode returns descriptors and keeps automatic `_rowid`
-columns visible for manual fetches. `"descriptions"` returns the five-field
-descriptors. Both `"bytes"` and `"descriptions"` hide automatic row IDs;
-explicitly requested row IDs remain visible.
+The default `"lazy"` mode returns blob v2 descriptors and keeps their automatic
+`_rowid` columns visible for manual fetches. `"descriptions"` returns the
+five-field descriptors. Both `"bytes"` and `"descriptions"` hide automatic row
+IDs; explicitly requested row IDs remain visible.
 
 Bytes mode has the same restrictions as `to_arrow(blob_mode="bytes")`,
-including no legacy blobs, blobs inside lists, Enterprise tables, or namespace
-`QueryTable` pushdown. If concurrent writers can overwrite the table, use a
-separate reader checked out to a fixed version before querying. Otherwise,
-an overwrite can invalidate the row IDs used to fetch bytes and raise
-`ValueError`.
+including no blobs inside lists, Enterprise tables, namespace `QueryTable`
+pushdown, or query shapes that cannot preserve their row results. Legacy v1
+bytes are limited to eligible local plain scans. If concurrent writers can
+overwrite the table, use a separate reader checked out to a fixed version
+before querying. Otherwise, an overwrite can invalidate the row IDs used to
+fetch bytes and raise `ValueError`.
 
 ###### Optional pandas examples {#multimodal-blob-pandas}
 

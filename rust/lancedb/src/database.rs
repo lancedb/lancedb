@@ -552,6 +552,14 @@ pub trait Database:
     ) -> Result<crate::function::FunctionVersion> {
         function_catalog_not_supported()
     }
+    /// Look up the latest currently visible immutable Function version.
+    async fn get_function_latest(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<crate::function::FunctionVersion> {
+        function_catalog_not_supported()
+    }
     /// Fetch one page of published immutable Function versions in one namespace.
     async fn list_functions(
         &self,

@@ -704,6 +704,47 @@ so this is safe to call repeatedly.
 
 ***
 
+### functionColumnStatus()
+
+```ts
+abstract functionColumnStatus(column): Promise<FunctionColumnStatus>
+```
+
+Return exact freshness status for one Function-backed output column.
+
+#### Parameters
+
+* **column**: `string`
+
+#### Returns
+
+`Promise`&lt;[`FunctionColumnStatus`](../interfaces/FunctionColumnStatus.md)&gt;
+
+***
+
+### functionColumnStatuses()
+
+```ts
+abstract functionColumnStatuses(column?): Promise<FunctionColumnStatus[]>
+```
+
+Return exact freshness status for Function-backed output columns.
+
+All results describe one server table version. Omit `column` for every
+Function output. Rows already failed remain visible and do not prevent
+`waitFresh` from completing. A handle pinned to an exact version requests
+that version; a latest handle retains normal read-freshness behavior.
+
+#### Parameters
+
+* **column?**: `string`
+
+#### Returns
+
+`Promise`&lt;[`FunctionColumnStatus`](../interfaces/FunctionColumnStatus.md)[]&gt;
+
+***
+
 ### functionErrors()
 
 ```ts
@@ -1141,11 +1182,26 @@ LanceDB Enterprise it is the server's backfill job.
     Refresh options, mirroring the SQL
     `REFRESH COLUMN ... WHERE ... WITH (...)` form: `where` narrows the rows,
     `errorPolicy`, `maxFailedFraction`, `maxFailedRows`, `rowTimeoutSeconds`
-    and `initTimeoutSeconds` govern failing rows, and `batchSize`,
-    `gpuClass`, `gpuCount`, `numWorkers` and `maxExecutorProcessesPerWorker`
-    size the workers. All are LanceDB Enterprise only; a LanceDB Embedded
-    refresh rejects every option other than `batchSize`, `gpuClass` and
-    `gpuCount`.
+    and `initTimeoutSeconds` govern failing rows. `batchSize`, `gpuClass`,
+    `maxConcurrency`, `resourceBudget` and
+    `maxExecutorProcessesPerWorker` size registered Function refreshes.
+    `maxConcurrency` overrides the registered default for this logical
+    execution only and is a positive integer; it is not an account-wide
+    quota. A `resourceBudget` requires `cpuMillis` and
+    `memoryBytes`; its `gpuCount` defaults to zero for a CPU-only Function.
+    The budget applies only to this explicit refresh and does not configure
+    a later automatic refresh.
+    `gpuCount` at the top level is the shorthand that preserves the
+    deployment defaults for CPU and memory, and cannot be combined with
+    `resourceBudget`. `numWorkers` applies only to expression columns; use
+    `resourceBudget` for registered Functions. All are LanceDB Enterprise
+    only; a LanceDB Embedded refresh rejects every option other than
+    `batchSize`, `gpuClass` and `gpuCount`.
+    `publicationIntervalRows` opts into publishing completed Function split
+    ranges once their accumulated unpublished rows reach the threshold.
+    It must be a positive safe integer and requires non-Blob Function outputs.
+    Omit it for whole-fragment publication. Publications can exceed the
+    threshold, and remaining rows publish at completion.
 
 #### Returns
 
@@ -1156,6 +1212,12 @@ LanceDB Enterprise it is the server's backfill job.
 ```ts
 const job = await table.refreshColumnAsync("embedding", {
   where: "published_at > '2026-01-01'",
+  resourceBudget: {
+    cpuMillis: 8000,
+    memoryBytes: 16 * 1024 ** 3,
+  },
+  maxConcurrency: 4,
+  publicationIntervalRows: 10000,
   errorPolicy: "skip",
   maxFailedFraction: 0.01,
   rowTimeoutSeconds: 30,
@@ -1583,3 +1645,26 @@ Waits for asynchronous indexing to complete on the table.
 #### Returns
 
 `Promise`&lt;`void`&gt;
+
+***
+
+### waitFresh()
+
+```ts
+abstract waitFresh(column, timeoutSeconds?): Promise<FunctionColumnStatus>
+```
+
+Poll until no stale or never-computed rows remain.
+
+Only HTTP 503 with the exact finalization-pending error code is retried;
+every other error propagates. Failed rows do not block completion.
+
+#### Parameters
+
+* **column**: `string`
+
+* **timeoutSeconds?**: `number`
+
+#### Returns
+
+`Promise`&lt;[`FunctionColumnStatus`](../interfaces/FunctionColumnStatus.md)&gt;

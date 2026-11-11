@@ -171,7 +171,9 @@ impl AddColumnsBuilder {
 
     /// Configure automatic refresh for every output declared in this call.
     /// Settings are stored with the declaration. They require computed or
-    /// Function columns; LanceDB Embedded persists them without starting a scheduler.
+    /// Function columns. LanceDB Embedded persists enabled and interval settings
+    /// without starting a scheduler; an automatic resource budget requires an
+    /// Enterprise registered Function and rejects SQL-expression columns.
     ///
     /// ```
     /// # use lancedb::{Table, table::computed_columns::ComputedColumnOptions};
@@ -180,6 +182,7 @@ impl AddColumnsBuilder {
     ///     .computed_options(ComputedColumnOptions {
     ///         auto_refresh_enabled: true,
     ///         auto_refresh_interval_seconds: Some(300),
+    ///         auto_refresh_resource_budget: None,
     ///     }).execute().await?;
     /// # Ok(())
     /// # }
@@ -205,6 +208,13 @@ impl AddColumnsBuilder {
                 return Err(Error::InvalidInput {
                     message: "automatic refresh options require computed or Function columns"
                         .into(),
+                });
+            }
+            if options.auto_refresh_resource_budget.is_some() && function.is_none() {
+                return Err(Error::InvalidInput {
+                    message:
+                        "auto_refresh_resource_budget requires a registered Function declaration"
+                            .into(),
                 });
             }
         }
@@ -289,6 +299,7 @@ mod tests {
         let options = ComputedColumnOptions {
             auto_refresh_enabled: false,
             auto_refresh_interval_seconds: Some(300),
+            auto_refresh_resource_budget: None,
         };
         let result = table
             .add_columns()
@@ -370,6 +381,36 @@ mod tests {
                 .unwrap()
                 .get("auto_refresh_interval_seconds")
                 .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_refresh_resource_budget_requires_a_function() {
+        let table = table_with_two_columns("budget_expression").await;
+        let err = table
+            .add_columns()
+            .computed("doubled", "x * 2")
+            .computed_options(ComputedColumnOptions {
+                auto_refresh_enabled: true,
+                auto_refresh_interval_seconds: None,
+                auto_refresh_resource_budget: Some(
+                    crate::table::FunctionWorkerResourceBudget::new(1_000, 1_024),
+                ),
+            })
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidInput { message } if message.contains("registered Function")),
+            "{err:?}"
+        );
+        assert!(
+            table
+                .schema()
+                .await
+                .unwrap()
+                .field_with_name("doubled")
+                .is_err()
         );
     }
 
