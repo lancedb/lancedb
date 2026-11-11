@@ -1878,6 +1878,9 @@ pub struct FunctionColumnAutoRefreshStatus {
     pub interval_seconds: Option<BigInt>,
     pub active_job_id: Option<String>,
     pub state: String,
+    pub failure_streak: u32,
+    pub effective_cooldown_millis: Option<BigInt>,
+    pub blocked_reason: Option<String>,
     pub next_run_at_millis: Option<BigInt>,
     pub next_run_at_reason: Option<String>,
 }
@@ -1907,7 +1910,29 @@ fn auto_refresh_state(state: lancedb::table::FunctionColumnAutoRefreshState) -> 
         lancedb::table::FunctionColumnAutoRefreshState::UpToDate => "up_to_date",
         lancedb::table::FunctionColumnAutoRefreshState::WaitingInterval => "waiting_interval",
         lancedb::table::FunctionColumnAutoRefreshState::WaitingBackoff => "waiting_backoff",
+        lancedb::table::FunctionColumnAutoRefreshState::Blocked => "blocked",
         lancedb::table::FunctionColumnAutoRefreshState::Unobservable => "unobservable",
+    }
+}
+
+fn auto_refresh_blocked_reason(
+    reason: lancedb::table::FunctionColumnAutoRefreshBlockedReason,
+) -> &'static str {
+    match reason {
+        lancedb::table::FunctionColumnAutoRefreshBlockedReason::TableHasMemWal => {
+            "table_has_mem_wal"
+        }
+        lancedb::table::FunctionColumnAutoRefreshBlockedReason::InputsNotSettled => {
+            "inputs_not_settled"
+        }
+        lancedb::table::FunctionColumnAutoRefreshBlockedReason::DependencyInFlight => {
+            "dependency_in_flight"
+        }
+        lancedb::table::FunctionColumnAutoRefreshBlockedReason::TableCapacity => "table_capacity",
+        lancedb::table::FunctionColumnAutoRefreshBlockedReason::Cancelled => "cancelled",
+        lancedb::table::FunctionColumnAutoRefreshBlockedReason::PreparationBackoff => {
+            "preparation_backoff"
+        }
     }
 }
 
@@ -1943,6 +1968,16 @@ impl From<lancedb::table::FunctionColumnStatus> for FunctionColumnStatus {
                 interval_seconds: status.auto_refresh.interval_seconds.map(BigInt::from),
                 active_job_id: status.auto_refresh.active_job_id,
                 state: auto_refresh_state(status.auto_refresh.state).to_string(),
+                failure_streak: status.auto_refresh.failure_streak,
+                effective_cooldown_millis: status
+                    .auto_refresh
+                    .effective_cooldown_millis
+                    .map(BigInt::from),
+                blocked_reason: status
+                    .auto_refresh
+                    .blocked_reason
+                    .map(auto_refresh_blocked_reason)
+                    .map(str::to_string),
                 next_run_at_millis: status.auto_refresh.next_run_at_millis.map(BigInt::from),
                 next_run_at_reason: status.auto_refresh.next_run_at_reason,
             },

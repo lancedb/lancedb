@@ -31,11 +31,24 @@ pub struct FunctionColumnLastRefreshJob {
 pub enum FunctionColumnAutoRefreshState {
     Disabled,
     Running,
-    Ready,
     UpToDate,
+    Ready,
     WaitingInterval,
     WaitingBackoff,
+    Blocked,
     Unobservable,
+}
+
+/// Why an enabled automatic refresh is not currently schedulable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FunctionColumnAutoRefreshBlockedReason {
+    TableHasMemWal,
+    InputsNotSettled,
+    DependencyInFlight,
+    TableCapacity,
+    Cancelled,
+    PreparationBackoff,
 }
 
 /// Automatic-refresh projection for a Function output.
@@ -47,6 +60,11 @@ pub struct FunctionColumnAutoRefreshStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_job_id: Option<String>,
     pub state: FunctionColumnAutoRefreshState,
+    pub failure_streak: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_cooldown_millis: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_reason: Option<FunctionColumnAutoRefreshBlockedReason>,
     /// Null is intentional until the Lance Agent exposes its scheduler decision.
     pub next_run_at_millis: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -83,6 +101,31 @@ impl FunctionColumnStatus {
                 message: format!(
                     "Function column '{}' status counts do not partition {} rows",
                     self.column, self.rows
+                ),
+            });
+        }
+        if self.auto_refresh.state == FunctionColumnAutoRefreshState::Blocked
+            && self.auto_refresh.blocked_reason.is_none()
+        {
+            return Err(Error::Runtime {
+                message: format!(
+                    "Function column '{}' reported a blocked scheduler state without a reason",
+                    self.column
+                ),
+            });
+        }
+        if self.auto_refresh.state == FunctionColumnAutoRefreshState::Unobservable
+            && self.auto_refresh.next_run_at_millis.is_none()
+            && self
+                .auto_refresh
+                .next_run_at_reason
+                .as_deref()
+                .is_none_or(str::is_empty)
+        {
+            return Err(Error::Runtime {
+                message: format!(
+                    "Function column '{}' omitted a reason for an unavailable next run",
+                    self.column
                 ),
             });
         }
@@ -150,6 +193,9 @@ mod tests {
                 interval_seconds: Some(60),
                 active_job_id: None,
                 state: FunctionColumnAutoRefreshState::Unobservable,
+                failure_streak: 0,
+                effective_cooldown_millis: None,
+                blocked_reason: None,
                 next_run_at_millis: None,
                 next_run_at_reason: Some(
                     "authoritative_scheduler_projection_unavailable".to_string(),
@@ -194,6 +240,36 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&FunctionColumnAutoRefreshState::UpToDate).unwrap(),
             "\"up_to_date\""
+        );
+    }
+
+    #[test]
+    fn blocked_auto_refresh_wire_keeps_its_reason() {
+        let mut value = status("a", 42);
+        value.auto_refresh.state = FunctionColumnAutoRefreshState::Blocked;
+        value.auto_refresh.failure_streak = 3;
+        value.auto_refresh.effective_cooldown_millis = Some(8000);
+        value.auto_refresh.blocked_reason =
+            Some(FunctionColumnAutoRefreshBlockedReason::PreparationBackoff);
+        value.auto_refresh.next_run_at_reason = None;
+
+        let encoded = serde_json::to_value(&value).unwrap();
+        assert_eq!(encoded["auto_refresh"]["state"], "blocked");
+        assert_eq!(
+            encoded["auto_refresh"]["blocked_reason"],
+            "preparation_backoff"
+        );
+        assert_eq!(encoded["auto_refresh"]["failure_streak"], 3);
+        assert_eq!(encoded["auto_refresh"]["effective_cooldown_millis"], 8000);
+        value.validate().unwrap();
+
+        value.auto_refresh.blocked_reason = None;
+        assert!(
+            value
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("blocked scheduler state without a reason")
         );
     }
 }

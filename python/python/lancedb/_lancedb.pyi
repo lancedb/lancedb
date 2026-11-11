@@ -1114,6 +1114,9 @@ class FunctionColumnAutoRefreshStatus:
     interval_seconds: Optional[int]
     active_job_id: Optional[str]
     state: str
+    failure_streak: int
+    effective_cooldown_millis: Optional[int]
+    blocked_reason: Optional[str]
     next_run_at_millis: Optional[int]
     next_run_at_reason: Optional[str]
 

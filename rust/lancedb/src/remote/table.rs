@@ -4090,6 +4090,14 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             request = request.query(&[("column", column)]);
         }
         let read_snapshot = self.snapshot_read_state().await;
+        if let Some(version) = read_snapshot.version {
+            return Err(Error::NotSupported {
+                message: format!(
+                    "Function column status is available only on a latest table reference; \
+                     this handle is pinned to version {version}. Call checkout_latest() first."
+                ),
+            });
+        }
         let request = read_snapshot.freshness.apply(request);
         // A typed finalization-pending 503 is a domain result. Let the caller's
         // bounded wait policy handle it instead of a generic 5xx retry loop.
@@ -11423,6 +11431,7 @@ mod tests {
                             "interval_seconds":60,
                             "active_job_id":null,
                             "state":"unobservable",
+                            "failure_streak":0,
                             "next_run_at_millis":null,
                             "next_run_at_reason":"authoritative_scheduler_projection_unavailable"
                         }
@@ -11475,6 +11484,7 @@ mod tests {
                         "auto_refresh":{
                             "enabled":false,
                             "state":"disabled",
+                            "failure_streak":0,
                             "next_run_at_millis":null
                         }
                     }]"#,
@@ -11529,6 +11539,7 @@ mod tests {
                                 "auto_refresh":{
                                     "enabled":false,
                                     "state":"disabled",
+                                    "failure_streak":0,
                                     "next_run_at_millis":null
                                 }
                             }]"#
@@ -11621,6 +11632,7 @@ mod tests {
                             "enabled":true,
                             "interval_seconds":60,
                             "state":"up_to_date",
+                            "failure_streak":0,
                             "next_run_at_millis":null
                         }
                     }]"#,
@@ -11633,6 +11645,82 @@ mod tests {
             status.auto_refresh.state,
             crate::table::FunctionColumnAutoRefreshState::UpToDate
         );
+    }
+
+    #[tokio::test]
+    async fn test_function_column_status_decodes_blocked_scheduler_fields() {
+        let table = Table::new_with_handler("my_table", |_request| {
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"[{
+                        "column":"embedding",
+                        "binding_id":"fb_01",
+                        "function":{
+                            "name":"embed",
+                            "object_id":"embed",
+                            "location":"objects/embed",
+                            "version":"7",
+                            "manifest_digest":"sha256:abc"
+                        },
+                        "table_version":42,
+                        "rows":4,
+                        "fresh":2,
+                        "stale":2,
+                        "never_computed":0,
+                        "failed":0,
+                        "auto_refresh":{
+                            "enabled":true,
+                            "interval_seconds":60,
+                            "state":"blocked",
+                            "failure_streak":3,
+                            "effective_cooldown_millis":8000,
+                            "blocked_reason":"preparation_backoff",
+                            "next_run_at_millis":null
+                        }
+                    }]"#,
+                )
+                .unwrap()
+        });
+
+        let status = table.function_column_status("embedding").await.unwrap();
+        assert_eq!(
+            status.auto_refresh.state,
+            crate::table::FunctionColumnAutoRefreshState::Blocked
+        );
+        assert_eq!(status.auto_refresh.failure_streak, 3);
+        assert_eq!(status.auto_refresh.effective_cooldown_millis, Some(8000));
+        assert_eq!(
+            status.auto_refresh.blocked_reason,
+            Some(crate::table::FunctionColumnAutoRefreshBlockedReason::PreparationBackoff)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_function_column_status_rejects_a_pinned_table_reference() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let table = Table::new_with_handler("my_table", {
+            let calls = calls.clone();
+            move |request| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
+                assert_eq!(request_body_json(&request)["version"], 42);
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version":42,"schema":{"fields":[]}}"#)
+                    .unwrap()
+            }
+        });
+        table.checkout(42).await.unwrap();
+
+        let error = table.function_column_status("embedding").await.unwrap_err();
+        assert!(matches!(
+            error,
+            Error::NotSupported { message }
+                if message.contains("pinned to version 42")
+                    && message.contains("checkout_latest")
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     /// The error listing is table-addressed with optional job and column

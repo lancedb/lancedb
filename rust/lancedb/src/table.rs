@@ -108,8 +108,9 @@ pub use computed_columns::{
 };
 pub use delete::DeleteResult;
 pub use function_column_status::{
-    FunctionColumnAutoRefreshState, FunctionColumnAutoRefreshStatus, FunctionColumnLastRefreshJob,
-    FunctionColumnStatus, FunctionColumnVersionStatus,
+    FunctionColumnAutoRefreshBlockedReason, FunctionColumnAutoRefreshState,
+    FunctionColumnAutoRefreshStatus, FunctionColumnLastRefreshJob, FunctionColumnStatus,
+    FunctionColumnVersionStatus,
 };
 use futures::future::join_all;
 pub use lance::dataset::refs::{BranchContents, Ref, TagContents, Tags as LanceTags};
@@ -2267,7 +2268,10 @@ impl Table {
     /// Return exact freshness status for all Function-backed output columns.
     ///
     /// The server evaluates all counts at one table version. Clients never
-    /// derive counts by joining schema, Job, and error listings.
+    /// derive counts by joining schema, Job, and error listings. The status
+    /// route currently accepts a branch at latest, so a handle pinned to an
+    /// exact version is rejected instead of silently reading a different
+    /// snapshot.
     pub async fn function_column_statuses(
         &self,
         column: Option<&str>,

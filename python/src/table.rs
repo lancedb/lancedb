@@ -946,6 +946,9 @@ pub struct FunctionColumnAutoRefreshStatus {
     pub interval_seconds: Option<u64>,
     pub active_job_id: Option<String>,
     pub state: String,
+    pub failure_streak: u32,
+    pub effective_cooldown_millis: Option<u64>,
+    pub blocked_reason: Option<String>,
     pub next_run_at_millis: Option<i64>,
     pub next_run_at_reason: Option<String>,
 }
@@ -968,6 +971,31 @@ impl From<lancedb::table::FunctionColumnAutoRefreshStatus> for FunctionColumnAut
                 lancedb::table::FunctionColumnAutoRefreshState::Unobservable => "unobservable",
             }
             .to_string(),
+            failure_streak: status.failure_streak,
+            effective_cooldown_millis: status.effective_cooldown_millis,
+            blocked_reason: status.blocked_reason.map(|reason| {
+                match reason {
+                    lancedb::table::FunctionColumnAutoRefreshBlockedReason::TableHasMemWal => {
+                        "table_has_mem_wal"
+                    }
+                    lancedb::table::FunctionColumnAutoRefreshBlockedReason::InputsNotSettled => {
+                        "inputs_not_settled"
+                    }
+                    lancedb::table::FunctionColumnAutoRefreshBlockedReason::DependencyInFlight => {
+                        "dependency_in_flight"
+                    }
+                    lancedb::table::FunctionColumnAutoRefreshBlockedReason::TableCapacity => {
+                        "table_capacity"
+                    }
+                    lancedb::table::FunctionColumnAutoRefreshBlockedReason::Cancelled => {
+                        "cancelled"
+                    }
+                    lancedb::table::FunctionColumnAutoRefreshBlockedReason::PreparationBackoff => {
+                        "preparation_backoff"
+                    }
+                }
+                .to_string()
+            }),
             next_run_at_millis: status.next_run_at_millis,
             next_run_at_reason: status.next_run_at_reason,
         }

@@ -3512,7 +3512,9 @@ class Table(ABC):
 
         All statuses describe one server table version. ``column=None`` returns
         every Function output. This operation is available on LanceDB
-        Enterprise tables.
+        Enterprise tables. The REST status route reads the latest version of a
+        branch, so a table handle pinned to an exact version must call
+        ``checkout_latest()`` first.
         """
 
     @abstractmethod
@@ -8215,7 +8217,8 @@ class AsyncTable:
         """Return exact status for Function-backed output columns.
 
         All results describe one server table version. ``column=None`` returns
-        every Function output.
+        every Function output. A handle pinned to an exact version is rejected;
+        call ``checkout_latest()`` first.
         """
         return await self._inner.column_statuses(column=column)
 

@@ -288,7 +288,17 @@ export interface FunctionColumnAutoRefreshStatus {
     | "up_to_date"
     | "waiting_interval"
     | "waiting_backoff"
+    | "blocked"
     | "unobservable";
+  failureStreak: number;
+  effectiveCooldownMillis?: bigint;
+  blockedReason?:
+    | "table_has_mem_wal"
+    | "inputs_not_settled"
+    | "dependency_in_flight"
+    | "table_capacity"
+    | "cancelled"
+    | "preparation_backoff";
   nextRunAtMillis: bigint | null;
   nextRunAtReason?: string;
 }
@@ -835,7 +845,8 @@ export abstract class Table {
    *
    * All results describe one server table version. Omit `column` for every
    * Function output. Rows already failed remain visible and do not prevent
-   * `waitFresh` from completing.
+   * `waitFresh` from completing. A handle pinned to an exact version is
+   * rejected; call `checkoutLatest()` first.
    */
   abstract functionColumnStatuses(
     column?: string,
