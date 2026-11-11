@@ -52,7 +52,7 @@ def test_pyo3_abi_matches_minimum_supported_python():
 
     major, minor = minimum_python.groups()
     expected_abi = f"abi3-py{major}{minor}"
-    configured_abis = re.findall(r'"(abi3-py\d+)"', cargo_manifest)
+    configured_abis = re.findall(r'"(?:pyo3/)?(abi3-py\d+)"', cargo_manifest)
 
     # PyO3 0.29 configures the ABI through the runtime dependency; its
     # build-config crate no longer exposes ABI features.
