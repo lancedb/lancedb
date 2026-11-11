@@ -1670,11 +1670,13 @@ impl TryFrom<RefreshColumnOptions> for lancedb::table::RefreshColumnOptions {
         options.resource_budget = value
             .resource_budget
             .map(|budget| {
-                Ok(LanceFunctionWorkerResourceBudget::new(
-                    resource_budget_integer(budget.cpu_millis, "resourceBudget.cpuMillis")?,
-                    resource_budget_integer(budget.memory_bytes, "resourceBudget.memoryBytes")?,
+                Ok::<_, napi::Error>(
+                    LanceFunctionWorkerResourceBudget::new(
+                        resource_budget_integer(budget.cpu_millis, "resourceBudget.cpuMillis")?,
+                        resource_budget_integer(budget.memory_bytes, "resourceBudget.memoryBytes")?,
+                    )
+                    .with_gpu_count(resource_budget_gpu_count(budget.gpu_count)?),
                 )
-                .with_gpu_count(resource_budget_gpu_count(budget.gpu_count)?))
             })
             .transpose()?;
         options.gpu_count = value.gpu_count;
