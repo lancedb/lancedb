@@ -845,12 +845,13 @@ describe("remote connection", () => {
       ),
       { column: "embedding" },
       { column: "embedding" },
-      { column: "embedding", publication_interval_rows: 1 },
-      { column: "embedding", publication_interval_rows: 2 ** 32 + 1 },
-      {
-        column: "embedding",
-        publication_interval_rows: Number.MAX_SAFE_INTEGER,
-      },
+      JSON.parse('{"column": "embedding", "publication_interval_rows": 1}'),
+      JSON.parse(
+        '{"column": "embedding", "publication_interval_rows": 4294967297}',
+      ),
+      JSON.parse(
+        '{"column": "embedding", "publication_interval_rows": 9007199254740991}',
+      ),
       JSON.parse(
         `{"column": "embedding",
           "resource_budget": {
