@@ -737,6 +737,11 @@ export abstract class Table {
    * `resourceBudget` for registered Functions. All are LanceDB Enterprise
    * only; a LanceDB Embedded refresh rejects every option other than
    * `batchSize`, `gpuClass` and `gpuCount`.
+   * `publicationIntervalRows` opts into publishing completed Function split
+   * ranges once their accumulated unpublished rows reach the threshold.
+   * It must be a positive safe integer and requires non-Blob Function outputs.
+   * Omit it for whole-fragment publication. Publications can exceed the
+   * threshold, and remaining rows publish at completion.
    * @example
    * ```ts
    * const job = await table.refreshColumnAsync("embedding", {
@@ -746,6 +751,7 @@ export abstract class Table {
    *     memoryBytes: 16 * 1024 ** 3,
    *   },
    *   maxConcurrency: 4,
+   *   publicationIntervalRows: 10000,
    *   errorPolicy: "skip",
    *   maxFailedFraction: 0.01,
    *   rowTimeoutSeconds: 30,

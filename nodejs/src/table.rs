@@ -1599,7 +1599,7 @@ pub struct FunctionWorkerResourceBudget {
     pub gpu_count: Option<f64>,
 }
 
-fn resource_budget_integer(value: f64, name: &str) -> napi::Result<u64> {
+fn positive_safe_integer(value: f64, name: &str) -> napi::Result<u64> {
     const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
     if !value.is_finite() || value.fract() != 0.0 || !(1.0..=MAX_SAFE_INTEGER).contains(&value) {
         return Err(napi::Error::from_reason(format!(
@@ -1649,6 +1649,11 @@ pub struct RefreshColumnOptions {
     pub where_clause: Option<String>,
     /// Maximum rows per Function call; must be greater than zero.
     pub batch_size: Option<u32>,
+    /// Row-count threshold for publishing completed Function split ranges.
+    /// Must be a positive safe integer. Omit for whole-fragment publication.
+    /// Actual publications can be larger; remaining rows publish at completion.
+    /// Requires LanceDB Enterprise with non-Blob Function outputs.
+    pub publication_interval_rows: Option<f64>,
     /// Override the registered Function's maximum concurrent user-code calls
     /// for this logical execution.
     pub max_concurrency: Option<f64>,
@@ -1685,6 +1690,10 @@ impl TryFrom<RefreshColumnOptions> for lancedb::table::RefreshColumnOptions {
         let mut options = Self::default();
         options.where_clause = value.where_clause;
         options.batch_size = value.batch_size.map(|size| size as usize);
+        options.publication_interval_rows = value
+            .publication_interval_rows
+            .map(|rows| positive_safe_integer(rows, "publicationIntervalRows"))
+            .transpose()?;
         options.max_concurrency = positive_u32(value.max_concurrency, "maxConcurrency")?;
         options.gpu_class = value.gpu_class;
         options.resource_budget = value
@@ -1692,8 +1701,8 @@ impl TryFrom<RefreshColumnOptions> for lancedb::table::RefreshColumnOptions {
             .map(|budget| {
                 Ok::<_, napi::Error>(
                     LanceFunctionWorkerResourceBudget::new(
-                        resource_budget_integer(budget.cpu_millis, "resourceBudget.cpuMillis")?,
-                        resource_budget_integer(budget.memory_bytes, "resourceBudget.memoryBytes")?,
+                        positive_safe_integer(budget.cpu_millis, "resourceBudget.cpuMillis")?,
+                        positive_safe_integer(budget.memory_bytes, "resourceBudget.memoryBytes")?,
                     )
                     .with_gpu_count(resource_budget_gpu_count(budget.gpu_count)?),
                 )

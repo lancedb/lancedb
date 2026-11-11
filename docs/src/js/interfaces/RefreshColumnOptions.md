@@ -117,6 +117,19 @@ Worker count for an expression column; Function columns reject it.
 
 ***
 
+### publicationIntervalRows?
+
+```ts
+optional publicationIntervalRows: number;
+```
+
+Row-count threshold for publishing completed Function split ranges.
+Must be a positive safe integer. Omit for whole-fragment publication.
+Actual publications can be larger; remaining rows publish at completion.
+Requires LanceDB Enterprise with non-Blob Function outputs.
+
+***
+
 ### resourceBudget?
 
 ```ts
