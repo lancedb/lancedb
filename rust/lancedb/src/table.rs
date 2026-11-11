@@ -83,6 +83,7 @@ pub mod datafusion;
 pub(crate) mod dataset;
 pub mod delete;
 pub mod freshness;
+pub mod function_column_status;
 pub mod merge;
 pub mod optimize;
 pub(crate) mod primary_key;
@@ -106,6 +107,10 @@ pub use computed_columns::{
     ComputedColumn, ComputedColumnKind, computed_column_from_field, computed_columns,
 };
 pub use delete::DeleteResult;
+pub use function_column_status::{
+    FunctionColumnAutoRefreshState, FunctionColumnAutoRefreshStatus, FunctionColumnLastRefreshJob,
+    FunctionColumnStatus, FunctionColumnVersionStatus,
+};
 use futures::future::join_all;
 pub use lance::dataset::refs::{BranchContents, Ref, TagContents, Tags as LanceTags};
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
@@ -959,6 +964,19 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         Err(Error::NotSupported {
             message: DocLink::FunctionErrors
                 .append_to("per-row Function errors are recorded only in LanceDB Enterprise"),
+        })
+    }
+    /// Exact four-way freshness status for Function-backed output columns.
+    ///
+    /// `column` filters to one user-visible output; `None` returns every
+    /// Function output. The default returns `NotSupported`.
+    async fn function_column_statuses(
+        &self,
+        _column: Option<&str>,
+    ) -> Result<Vec<FunctionColumnStatus>> {
+        Err(Error::NotSupported {
+            message: DocLink::Functions
+                .append_to("exact Function column status is supported only in LanceDB Enterprise"),
         })
     }
     /// Alter columns in the table.
@@ -2244,6 +2262,70 @@ impl Table {
         self.inner
             .refresh_column_async_with_options(column.as_ref(), options)
             .await
+    }
+
+    /// Return exact freshness status for all Function-backed output columns.
+    ///
+    /// The server evaluates all counts at one table version. Clients never
+    /// derive counts by joining schema, Job, and error listings.
+    pub async fn function_column_statuses(
+        &self,
+        column: Option<&str>,
+    ) -> Result<Vec<FunctionColumnStatus>> {
+        let statuses = self.inner.function_column_statuses(column).await?;
+        function_column_status::validate_statuses(&statuses)?;
+        Ok(statuses)
+    }
+
+    /// Return exact freshness status for one Function-backed output column.
+    pub async fn function_column_status(&self, column: &str) -> Result<FunctionColumnStatus> {
+        let mut statuses = self.function_column_statuses(Some(column)).await?;
+        if statuses.len() != 1 || statuses[0].column != column {
+            return Err(Error::ColumnNotFound {
+                name: column.to_string(),
+            });
+        }
+        Ok(statuses.remove(0))
+    }
+
+    /// Poll until a Function output has no stale or never-computed rows.
+    ///
+    /// Failed rows do not keep the call pending. A typed
+    /// `function_column_status_finalization_pending` response is retried with
+    /// bounded exponential backoff; every other error is returned immediately.
+    pub async fn wait_for_function_column(
+        &self,
+        column: &str,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<FunctionColumnStatus> {
+        let started = std::time::Instant::now();
+        let mut delay = std::time::Duration::from_millis(250);
+        loop {
+            let result = self.function_column_status(column).await;
+            match result {
+                Ok(status) if status.stale == 0 && status.never_computed == 0 => return Ok(status),
+                Ok(_) => {}
+                Err(error) if function_column_status::is_finalization_pending(&error) => {}
+                Err(error) => return Err(error),
+            }
+
+            let sleep_for = match timeout {
+                Some(timeout) => {
+                    let remaining = timeout.saturating_sub(started.elapsed());
+                    if remaining.is_zero() {
+                        return Err(Error::Timeout {
+                            message: format!(
+                                "Function column '{column}' did not become fresh before timeout"
+                            ),
+                        });
+                    }
+                    delay.min(remaining)
+                }
+                None => delay,
+            };
+            tokio::time::sleep(sleep_for).await;
+            delay = std::cmp::min(delay * 2, std::time::Duration::from_secs(1));
+        }
     }
 
     /// The per-row errors Function refreshes recorded on this table: the

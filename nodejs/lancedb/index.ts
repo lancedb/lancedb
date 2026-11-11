@@ -154,6 +154,10 @@ export {
 
 export {
   Table,
+  FunctionColumnAutoRefreshStatus,
+  FunctionColumnLastRefreshJob,
+  FunctionColumnStatus,
+  FunctionColumnVersionStatus,
   Branches,
   BranchColumnSummary,
   BranchColumnChange,

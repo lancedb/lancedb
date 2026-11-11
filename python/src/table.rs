@@ -892,6 +892,139 @@ impl From<lancedb::function::FunctionErrors> for FunctionErrors {
     }
 }
 
+/// Exact immutable Function revision attached to a table output.
+#[pyclass(module = "lancedb._lancedb", get_all, from_py_object)]
+#[derive(Clone, Debug)]
+pub struct FunctionColumnVersionStatus {
+    pub name: String,
+    pub namespace_path: Vec<String>,
+    pub object_id: String,
+    pub location: String,
+    pub version: String,
+    pub manifest_digest: String,
+}
+
+impl From<lancedb::function::FunctionVersionRef> for FunctionColumnVersionStatus {
+    fn from(function: lancedb::function::FunctionVersionRef) -> Self {
+        Self {
+            name: function.name,
+            namespace_path: function.namespace_path,
+            object_id: function.object_id,
+            location: function.location,
+            version: function.version,
+            manifest_digest: function.manifest_digest,
+        }
+    }
+}
+
+/// Latest matching refresh Job projected for a Function output.
+#[pyclass(module = "lancedb._lancedb", get_all, from_py_object)]
+#[derive(Clone, Debug)]
+pub struct FunctionColumnLastRefreshJob {
+    pub job_id: String,
+    pub state: String,
+    pub automatic: Option<bool>,
+    pub completed_at_millis: Option<i64>,
+}
+
+impl From<lancedb::table::FunctionColumnLastRefreshJob> for FunctionColumnLastRefreshJob {
+    fn from(job: lancedb::table::FunctionColumnLastRefreshJob) -> Self {
+        Self {
+            job_id: job.job_id,
+            state: job.state,
+            automatic: job.automatic,
+            completed_at_millis: job.completed_at_millis,
+        }
+    }
+}
+
+/// Automatic-refresh projection for a Function output.
+#[pyclass(module = "lancedb._lancedb", get_all, from_py_object)]
+#[derive(Clone, Debug)]
+pub struct FunctionColumnAutoRefreshStatus {
+    pub enabled: bool,
+    pub interval_seconds: Option<u64>,
+    pub active_job_id: Option<String>,
+    pub state: String,
+    pub next_run_at_millis: Option<i64>,
+    pub next_run_at_reason: Option<String>,
+}
+
+impl From<lancedb::table::FunctionColumnAutoRefreshStatus> for FunctionColumnAutoRefreshStatus {
+    fn from(status: lancedb::table::FunctionColumnAutoRefreshStatus) -> Self {
+        Self {
+            enabled: status.enabled,
+            interval_seconds: status.interval_seconds,
+            active_job_id: status.active_job_id,
+            state: match status.state {
+                lancedb::table::FunctionColumnAutoRefreshState::Disabled => "disabled",
+                lancedb::table::FunctionColumnAutoRefreshState::Running => "running",
+                lancedb::table::FunctionColumnAutoRefreshState::Ready => "ready",
+                lancedb::table::FunctionColumnAutoRefreshState::UpToDate => "up_to_date",
+                lancedb::table::FunctionColumnAutoRefreshState::WaitingInterval => {
+                    "waiting_interval"
+                }
+                lancedb::table::FunctionColumnAutoRefreshState::WaitingBackoff => "waiting_backoff",
+                lancedb::table::FunctionColumnAutoRefreshState::Unobservable => "unobservable",
+            }
+            .to_string(),
+            next_run_at_millis: status.next_run_at_millis,
+            next_run_at_reason: status.next_run_at_reason,
+        }
+    }
+}
+
+/// Exact four-way status of one Function output at one table version.
+#[pyclass(module = "lancedb._lancedb", get_all, from_py_object)]
+#[derive(Clone, Debug)]
+pub struct FunctionColumnStatus {
+    pub column: String,
+    pub binding_id: String,
+    pub function: FunctionColumnVersionStatus,
+    pub table_version: u64,
+    pub rows: u64,
+    pub fresh: u64,
+    pub stale: u64,
+    pub never_computed: u64,
+    pub failed: u64,
+    pub last_refresh_job: Option<FunctionColumnLastRefreshJob>,
+    pub auto_refresh: FunctionColumnAutoRefreshStatus,
+}
+
+#[pymethods]
+impl FunctionColumnStatus {
+    pub fn __repr__(&self) -> String {
+        format!(
+            "FunctionColumnStatus(column={:?}, table_version={}, rows={}, fresh={}, stale={}, never_computed={}, failed={})",
+            self.column,
+            self.table_version,
+            self.rows,
+            self.fresh,
+            self.stale,
+            self.never_computed,
+            self.failed
+        )
+    }
+}
+
+impl From<lancedb::table::FunctionColumnStatus> for FunctionColumnStatus {
+    fn from(status: lancedb::table::FunctionColumnStatus) -> Self {
+        Self {
+            column: status.column,
+            binding_id: status.binding_id,
+            function: status.function.into(),
+            table_version: status.table_version,
+            rows: status.rows,
+            fresh: status.fresh,
+            stale: status.stale,
+            never_computed: status.never_computed,
+            failed: status.failed,
+            last_refresh_job: status.last_refresh_job.map(Into::into),
+            auto_refresh: status.auto_refresh.into(),
+        }
+    }
+}
+
 #[pyclass(get_all, from_py_object)]
 #[derive(Clone, Debug)]
 pub struct RefreshMaterializedViewResult {
@@ -2422,6 +2555,51 @@ impl Table {
         future_into_py(self_.py(), async move {
             let errors = inner.function_errors(request).await.infer_error()?;
             Ok(FunctionErrors::from(errors))
+        })
+    }
+
+    #[pyo3(signature = (column=None))]
+    pub fn column_statuses(
+        self_: PyRef<'_, Self>,
+        column: Option<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let statuses = inner
+                .function_column_statuses(column.as_deref())
+                .await
+                .infer_error()?;
+            Ok(statuses
+                .into_iter()
+                .map(FunctionColumnStatus::from)
+                .collect::<Vec<_>>())
+        })
+    }
+
+    pub fn column_status(self_: PyRef<'_, Self>, column: String) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let status = inner.function_column_status(&column).await.infer_error()?;
+            Ok(FunctionColumnStatus::from(status))
+        })
+    }
+
+    #[pyo3(signature = (column, timeout=None))]
+    pub fn wait_column_fresh(
+        self_: PyRef<'_, Self>,
+        column: String,
+        timeout: Option<Bound<'_, PyAny>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let timeout = timeout
+            .map(|timeout| timeout.extract::<std::time::Duration>())
+            .transpose()?;
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let status = inner
+                .wait_for_function_column(&column, timeout)
+                .await
+                .infer_error()?;
+            Ok(FunctionColumnStatus::from(status))
         })
     }
 
