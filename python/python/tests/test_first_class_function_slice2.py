@@ -736,11 +736,15 @@ def test_gpu_scalar_warning_names_the_vectorized_alternative():
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
 
-        @function(gpu=True, input_schema=input_schema, output_schema=pa.list_(pa.int64()))
+        @function(
+            gpu=True, input_schema=input_schema, output_schema=pa.list_(pa.int64())
+        )
         def array_embedding(value: pa.Array) -> pa.Array:
             return value
 
-        @function(gpu=True, input_schema=input_schema, output_schema=pa.list_(pa.int64()))
+        @function(
+            gpu=True, input_schema=input_schema, output_schema=pa.list_(pa.int64())
+        )
         def record_batch_embedding(value: pa.RecordBatch) -> pa.Array:
             return value.column(0)
 
