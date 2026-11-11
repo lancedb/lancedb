@@ -2959,6 +2959,7 @@ async fn function_creation_and_description_use_sql_query_handles() {
     for (defer, with_models) in [(false, false), (false, true), (true, false), (true, true)] {
         let mut request_json: serde_json::Value = serde_json::from_str(REQUEST).unwrap();
         request_json["batch_size"] = serde_json::json!(2);
+        request_json["max_concurrency"] = serde_json::json!(4);
         request_json["row_timeout_seconds"] = serde_json::json!(0.75);
         request_json["secret_bindings"] = serde_json::json!([{
             "kind": "env",
@@ -2967,6 +2968,7 @@ async fn function_creation_and_description_use_sql_query_handles() {
         }]);
         let mut version_json: serde_json::Value = serde_json::from_str(VERSION).unwrap();
         version_json["batch_size"] = serde_json::json!(12);
+        version_json["max_concurrency"] = serde_json::json!(4);
         version_json["row_timeout_seconds"] = serde_json::json!(8.0);
         version_json["result_stability"] = serde_json::json!("input_and_context");
         if with_models {
@@ -3010,6 +3012,7 @@ async fn function_creation_and_description_use_sql_query_handles() {
         assert_eq!(created.name(), "embed");
         assert_eq!(created.version(), "1");
         assert_eq!(created.batch_size(), Some(12));
+        assert_eq!(created.max_concurrency(), Some(4));
         assert_eq!(created.row_timeout_seconds(), Some(8.0));
         assert_eq!(created.result_stability(), Some("input_and_context"));
         // Assert the actual SQL body, after the same native JSON decode used
@@ -3029,6 +3032,7 @@ async fn function_creation_and_description_use_sql_query_handles() {
             serde_json::from_str(&created.to_canonical_json().unwrap()).unwrap();
         assert_eq!(created_json["image"].get("models"), expected_models);
         assert_eq!(created_json["batch_size"], 12);
+        assert_eq!(created_json["max_concurrency"], 4);
         assert_eq!(created_json["row_timeout_seconds"], 8.0);
         assert_eq!(created_json["result_stability"], "input_and_context");
         assert_eq!(
@@ -3041,12 +3045,14 @@ async fn function_creation_and_description_use_sql_query_handles() {
             .unwrap();
         assert_eq!(described.name(), "embed");
         assert_eq!(described.batch_size(), Some(12));
+        assert_eq!(described.max_concurrency(), Some(4));
         assert_eq!(described.row_timeout_seconds(), Some(8.0));
         assert_eq!(described.result_stability(), Some("input_and_context"));
         let described_json: serde_json::Value =
             serde_json::from_str(&described.to_canonical_json().unwrap()).unwrap();
         assert_eq!(described_json["image"].get("models"), expected_models);
         assert_eq!(described_json["batch_size"], 12);
+        assert_eq!(described_json["max_concurrency"], 4);
         assert_eq!(described_json["row_timeout_seconds"], 8.0);
         assert_eq!(described_json["result_stability"], "input_and_context");
         let latest = db
@@ -3062,6 +3068,7 @@ async fn function_creation_and_description_use_sql_query_handles() {
             .unwrap();
         assert_eq!(listed.items.len(), 1);
         assert_eq!(listed.items[0].batch_size(), Some(12));
+        assert_eq!(listed.items[0].max_concurrency(), Some(4));
         assert_eq!(listed.items[0].row_timeout_seconds(), Some(8.0));
         assert_eq!(
             listed.items[0].result_stability(),
@@ -3071,6 +3078,7 @@ async fn function_creation_and_description_use_sql_query_handles() {
             serde_json::from_str(&listed.items[0].to_canonical_json().unwrap()).unwrap();
         assert_eq!(listed_json["image"].get("models"), expected_models);
         assert_eq!(listed_json["batch_size"], 12);
+        assert_eq!(listed_json["max_concurrency"], 4);
         assert_eq!(listed_json["row_timeout_seconds"], 8.0);
         assert_eq!(listed_json["result_stability"], "input_and_context");
         let seen = statements.lock().unwrap();
@@ -3106,6 +3114,13 @@ async fn function_creation_rejects_invalid_execution_controls_before_sql() {
     request.batch_size = Some(0);
     let error = db.create_function_async(request, &[]).await.unwrap_err();
     assert!(matches!(error, Error::InvalidInput { message } if message.contains("batch_size")));
+
+    let mut request = crate::function::FunctionRegistrationRequest::from_json(REQUEST).unwrap();
+    request.max_concurrency = Some(0);
+    let error = db.create_function_async(request, &[]).await.unwrap_err();
+    assert!(
+        matches!(error, Error::InvalidInput { message } if message.contains("max_concurrency"))
+    );
     assert!(statements.lock().unwrap().is_empty());
     shutdown.send(()).unwrap();
 }

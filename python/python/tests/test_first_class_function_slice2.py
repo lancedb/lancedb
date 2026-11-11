@@ -134,6 +134,7 @@ def test_function_execution_controls_match_shared_registration_golden():
         env={"MODE": "test"},
         python_version="3.12",
         batch_size=2,
+        max_concurrency=4,
         row_timeout_seconds=0.75,
     )(normalize_score.__wrapped__)
     assert (
@@ -193,6 +194,11 @@ def test_function_retry_policy_rejects_invalid_options(options):
         ({"batch_size": 0}, "batch_size"),
         ({"batch_size": 2**32}, "batch_size"),
         ({"batch_size": True}, "batch_size"),
+        ({"max_concurrency": 0}, "max_concurrency"),
+        ({"max_concurrency": -1}, "max_concurrency"),
+        ({"max_concurrency": 2**32}, "max_concurrency"),
+        ({"max_concurrency": True}, "max_concurrency"),
+        ({"max_concurrency": 1.5}, "max_concurrency"),
         ({"row_timeout_seconds": 0}, "row_timeout_seconds"),
         ({"row_timeout_seconds": -0.25}, "row_timeout_seconds"),
         ({"row_timeout_seconds": float("inf")}, "row_timeout_seconds"),

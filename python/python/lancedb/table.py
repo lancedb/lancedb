@@ -3193,6 +3193,7 @@ class Table(ABC):
         *,
         where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
         resource_budget: Optional[Dict[str, int]] = None,
         gpu_class: Optional[str] = None,
@@ -3233,6 +3234,12 @@ class Table(ABC):
             Maximum rows per Function call on the remote server. Must be
             greater than zero. None uses the server default. Has no effect on
             local expression-backed columns.
+        max_concurrency: int, optional
+            Override the registered Function's maximum concurrent user-code
+            calls for this logical execution. Must be between 1 and
+            4294967295. None uses the registration default. This is not an
+            account-wide quota. LanceDB Enterprise only; local refreshes
+            reject this option.
         publication_interval_rows: int, optional
             Opt-in publication threshold for completed Function outputs. Must
             be greater than zero. None keeps whole-fragment publication. The
@@ -3295,6 +3302,7 @@ class Table(ABC):
         *,
         where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
         resource_budget: Optional[Dict[str, int]] = None,
         gpu_class: Optional[str] = None,
@@ -3334,6 +3342,12 @@ class Table(ABC):
             greater than zero. None uses the server default. Lower this for
             slow Functions to stay within the executor's per-call deadline.
             Has no effect on local expression-backed columns.
+        max_concurrency: int, optional
+            Override the registered Function's maximum concurrent user-code
+            calls for this logical execution. Must be between 1 and
+            4294967295. None uses the registration default. This is not an
+            account-wide quota. LanceDB Enterprise only; local refreshes
+            reject this option.
         publication_interval_rows: int, optional
             Opt-in publication threshold for completed Function outputs. Must
             be greater than zero. None keeps whole-fragment publication. The
@@ -5493,6 +5507,7 @@ class LanceTable(Table):
         *,
         where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
         resource_budget: Optional[Dict[str, int]] = None,
         gpu_class: Optional[str] = None,
@@ -5514,6 +5529,7 @@ class LanceTable(Table):
                 column,
                 where=where,
                 batch_size=batch_size,
+                max_concurrency=max_concurrency,
                 publication_interval_rows=publication_interval_rows,
                 resource_budget=resource_budget,
                 gpu_class=gpu_class,
@@ -5535,6 +5551,7 @@ class LanceTable(Table):
         *,
         where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
         resource_budget: Optional[Dict[str, int]] = None,
         gpu_class: Optional[str] = None,
@@ -5558,6 +5575,7 @@ class LanceTable(Table):
                     column,
                     where=where,
                     batch_size=batch_size,
+                    max_concurrency=max_concurrency,
                     publication_interval_rows=publication_interval_rows,
                     resource_budget=resource_budget,
                     gpu_class=gpu_class,
@@ -7940,6 +7958,7 @@ class AsyncTable:
         *,
         where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
         resource_budget: Optional[Dict[str, int]] = None,
         gpu_class: Optional[str] = None,
@@ -7980,6 +7999,12 @@ class AsyncTable:
             Maximum rows per Function call on the remote server. Must be
             greater than zero. None uses the server default. Has no effect on
             local expression-backed columns.
+        max_concurrency: int, optional
+            Override the registered Function's maximum concurrent user-code
+            calls for this logical execution. Must be between 1 and
+            4294967295. None uses the registration default. This is not an
+            account-wide quota. LanceDB Enterprise only; local refreshes
+            reject this option.
         publication_interval_rows: int, optional
             Opt-in publication threshold for completed Function outputs. Must
             be greater than zero. None keeps whole-fragment publication. The
@@ -8037,6 +8062,7 @@ class AsyncTable:
             column,
             where=where,
             batch_size=batch_size,
+            max_concurrency=max_concurrency,
             publication_interval_rows=publication_interval_rows,
             resource_budget=resource_budget,
             gpu_class=gpu_class,
@@ -8148,6 +8174,7 @@ class AsyncTable:
         *,
         where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
         resource_budget: Optional[Dict[str, int]] = None,
         gpu_class: Optional[str] = None,
@@ -8187,6 +8214,12 @@ class AsyncTable:
             greater than zero. None uses the server default. Lower this for
             slow Functions to stay within the executor's per-call deadline.
             Has no effect on local expression-backed columns.
+        max_concurrency: int, optional
+            Override the registered Function's maximum concurrent user-code
+            calls for this logical execution. Must be between 1 and
+            4294967295. None uses the registration default. This is not an
+            account-wide quota. LanceDB Enterprise only; local refreshes
+            reject this option.
         publication_interval_rows: int, optional
             Opt-in publication threshold for completed Function outputs. Must
             be greater than zero. None keeps whole-fragment publication. The
@@ -8261,6 +8294,7 @@ class AsyncTable:
                 column,
                 where=where,
                 batch_size=batch_size,
+                max_concurrency=max_concurrency,
                 publication_interval_rows=publication_interval_rows,
                 resource_budget=resource_budget,
                 gpu_class=gpu_class,

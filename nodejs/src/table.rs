@@ -1621,6 +1621,22 @@ fn resource_budget_gpu_count(value: Option<f64>) -> napi::Result<u32> {
     Ok(value as u32)
 }
 
+fn positive_u32(value: Option<f64>, name: &str) -> napi::Result<Option<u32>> {
+    value
+        .map(|value| {
+            if !value.is_finite()
+                || value.fract() != 0.0
+                || !(1.0..=u32::MAX as f64).contains(&value)
+            {
+                return Err(napi::Error::from_reason(format!(
+                    "{name} must be an integer between 1 and 4294967295"
+                )));
+            }
+            Ok(value as u32)
+        })
+        .transpose()
+}
+
 /// Options for `Table.refreshColumn` and `Table.refreshColumnAsync`. Every
 /// option is LanceDB Enterprise only; a LanceDB Embedded refresh ignores
 /// `batchSize`, `gpuClass` and `gpuCount` and rejects the rest, including
@@ -1633,6 +1649,9 @@ pub struct RefreshColumnOptions {
     pub where_clause: Option<String>,
     /// Maximum rows per Function call; must be greater than zero.
     pub batch_size: Option<u32>,
+    /// Override the registered Function's maximum concurrent user-code calls
+    /// for this logical execution.
+    pub max_concurrency: Option<f64>,
     /// GPU class for Function workers.
     pub gpu_class: Option<String>,
     /// Complete aggregate CPU and memory budget for a registered Function
@@ -1666,6 +1685,7 @@ impl TryFrom<RefreshColumnOptions> for lancedb::table::RefreshColumnOptions {
         let mut options = Self::default();
         options.where_clause = value.where_clause;
         options.batch_size = value.batch_size.map(|size| size as usize);
+        options.max_concurrency = positive_u32(value.max_concurrency, "maxConcurrency")?;
         options.gpu_class = value.gpu_class;
         options.resource_budget = value
             .resource_budget

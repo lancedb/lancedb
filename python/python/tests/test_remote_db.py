@@ -10,6 +10,7 @@ import io
 import inspect
 import json
 import multiprocessing as mp
+from pathlib import Path
 import pickle
 import re
 import socket
@@ -36,7 +37,7 @@ from lancedb.graph import (
     PropertyGraph,
     PropertyGraphDescription,
 )
-from lancedb.functions import FunctionApplication
+from lancedb.functions import FunctionApplication, function
 from lancedb.query import (
     AsyncQuery,
     ColumnOrdering,
@@ -1864,6 +1865,7 @@ def test_remote_create_index_async_returns_job():
         {"batch_size": None},
         {"batch_size": 1},
         {"batch_size": 8},
+        {"max_concurrency": 3},
         {"publication_interval_rows": 60},
         {"resource_budget": {"cpu_millis": 2000, "memory_bytes": 4 * 1024**3}},
         {
@@ -1927,6 +1929,7 @@ async def test_remote_refresh_async_returns_typed_terminal_result(
                 expected["error_policy"] = refresh_kwargs["error_policy"]
             for key in (
                 "where",
+                "max_concurrency",
                 "publication_interval_rows",
                 "max_failed_fraction",
                 "max_failed_rows",
@@ -2107,6 +2110,11 @@ def test_remote_refresh_async_forwards_progress_from_submitted_handle():
         ({"init_timeout_seconds": -5}, "init_timeout_seconds"),
         ({"publication_interval_rows": 0}, "publication_interval_rows"),
         ({"publication_interval_rows": -1}, "publication_interval_rows"),
+        ({"max_concurrency": True}, "max_concurrency"),
+        ({"max_concurrency": 1.5}, "max_concurrency"),
+        ({"max_concurrency": 0}, "max_concurrency"),
+        ({"max_concurrency": -1}, "max_concurrency"),
+        ({"max_concurrency": 2**32}, "max_concurrency"),
         ({"num_workers": 0}, "num_workers"),
         (
             {"resource_budget": {"cpu_millis": 1000}},
@@ -6091,6 +6099,45 @@ def _mock_remote_sql_connection(flight_server):
 def _mock_remote_table_with_sql(flight_server):
     with _mock_remote_sql_connection(flight_server) as kwargs:
         yield lancedb.connect(**kwargs).create_table("test", [{"id": 1}])
+
+
+def test_remote_function_registration_transports_max_concurrency():
+    flight = pytest.importorskip("pyarrow.flight")
+    fixture = (
+        Path(__file__).parents[3]
+        / "rust"
+        / "lancedb"
+        / "tests"
+        / "fixtures"
+        / "first_class_functions"
+        / "v1"
+        / "remote_function_version.canonical.json"
+    )
+    definition = json.loads(fixture.read_text())
+    definition["max_concurrency"] = 4
+
+    @function(name="normalize_score", max_concurrency=4)
+    def registered(value: float) -> float:
+        return value
+
+    class RegistrationServer(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.tickets = []
+
+        def do_get(self, context, ticket):
+            self.tickets.append(ticket.ticket)
+            return flight.RecordBatchStream(
+                pa.table({"definition": [json.dumps(definition)]})
+            )
+
+    server = RegistrationServer()
+    with _mock_remote_sql_connection(server) as kwargs:
+        version = lancedb.connect(**kwargs).create_function(registered)
+
+    assert len(server.tickets) == 1
+    assert b'"max_concurrency":4' in server.tickets[0]
+    assert version.max_concurrency == 4
 
 
 @pytest.mark.asyncio

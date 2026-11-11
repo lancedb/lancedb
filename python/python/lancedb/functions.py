@@ -97,6 +97,16 @@ def _validate_batch_size(value: Any) -> Optional[int]:
     return value
 
 
+def _validate_max_concurrency(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("max_concurrency must be an integer")
+    if not 1 <= value <= 2**32 - 1:
+        raise ValueError("max_concurrency must be between 1 and 4294967295")
+    return value
+
+
 def _validate_row_timeout(value: Any) -> Optional[float]:
     if value is None:
         return None
@@ -529,9 +539,10 @@ class FunctionVersion(_RemoteValue):
     ``gpu_class`` is the operator-defined GPU pool fixed into this Function
     version, or ``None`` when registration used the deployment default.
 
-    ``batch_size``, ``row_timeout_seconds``, and ``result_stability`` retain
-    the execution controls reported by the catalog. They are ``None`` for
-    versions registered before the corresponding declaration.
+    ``batch_size``, ``max_concurrency``, ``row_timeout_seconds``, and
+    ``result_stability`` retain the execution controls reported by the
+    catalog. They are ``None`` for versions registered before the
+    corresponding declaration.
     """
 
     name: str
@@ -548,6 +559,7 @@ class FunctionVersion(_RemoteValue):
     disabled: bool
     gpu_class: Optional[str] = None
     batch_size: Optional[int] = None
+    max_concurrency: Optional[int] = None
     row_timeout_seconds: Optional[float] = None
     result_stability: Optional[str] = None
 
@@ -555,6 +567,11 @@ class FunctionVersion(_RemoteValue):
     @classmethod
     def _validate_batch_size(cls, value):
         return _validate_batch_size(value)
+
+    @field_validator("max_concurrency", mode="before")
+    @classmethod
+    def _validate_max_concurrency(cls, value):
+        return _validate_max_concurrency(value)
 
     @field_validator("row_timeout_seconds", mode="before")
     @classmethod
@@ -691,6 +708,7 @@ class FunctionRegistrationRequest(_RemoteValue):
     signature: FunctionSignature
     runtime: PythonRuntimeSpec
     batch_size: Optional[int] = None
+    max_concurrency: Optional[int] = None
     row_timeout_seconds: Optional[float] = None
     retry_policy: Optional[FunctionRetryPolicy] = None
     secret_bindings: tuple[SecretBinding, ...] = ()
@@ -700,6 +718,11 @@ class FunctionRegistrationRequest(_RemoteValue):
     @classmethod
     def _validate_batch_size(cls, value):
         return _validate_batch_size(value)
+
+    @field_validator("max_concurrency", mode="before")
+    @classmethod
+    def _validate_max_concurrency(cls, value):
+        return _validate_max_concurrency(value)
 
     @field_validator("row_timeout_seconds", mode="before")
     @classmethod
@@ -2163,6 +2186,7 @@ class FunctionDefinition:
         env: Mapping[str, str],
         python_version: Optional[str],
         batch_size: Optional[int] = None,
+        max_concurrency: Optional[int] = None,
         row_timeout_seconds: Optional[float] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
         gpu: bool = False,
@@ -2310,6 +2334,7 @@ class FunctionDefinition:
             signature=signature,
             runtime=runtime,
             batch_size=batch_size,
+            max_concurrency=max_concurrency,
             row_timeout_seconds=row_timeout_seconds,
             retry_policy=retry_policy,
             models=models,
@@ -2408,6 +2433,7 @@ def function(
     env: Optional[Mapping[str, str]] = None,
     python_version: Optional[str] = None,
     batch_size: Optional[int] = None,
+    max_concurrency: Optional[int] = None,
     row_timeout_seconds: Optional[float] = None,
     retry_policy: Optional[FunctionRetryPolicy] = None,
     gpu: bool = False,
@@ -2431,6 +2457,7 @@ def function(
     env: Optional[Mapping[str, str]] = None,
     python_version: Optional[str] = None,
     batch_size: Optional[int] = None,
+    max_concurrency: Optional[int] = None,
     row_timeout_seconds: Optional[float] = None,
     retry_policy: Optional[FunctionRetryPolicy] = None,
     gpu: bool = False,
@@ -2564,6 +2591,11 @@ def function(
         Maximum number of input rows supplied in one execution batch. Must be
         between 1 and 4294967295. Remote execution may use smaller batches.
         When omitted, the service chooses the batch size adaptively.
+    max_concurrency : int, optional
+        Maximum user-code calls in flight for one Function within one logical
+        execution. Must be between 1 and 4294967295. A refresh can override
+        this default for that execution only. Omitting it preserves the
+        existing behavior. This is not an account-wide quota.
     row_timeout_seconds : float, optional
         Positive, finite deadline in seconds for each Python call: one row for
         scalar Functions and one batch for vectorized Functions. This does not
@@ -2700,6 +2732,7 @@ def function(
             env={} if env is None else env,
             python_version=python_version,
             batch_size=batch_size,
+            max_concurrency=max_concurrency,
             row_timeout_seconds=row_timeout_seconds,
             retry_policy=retry_policy,
             gpu=gpu,
