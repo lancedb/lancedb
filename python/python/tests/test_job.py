@@ -756,7 +756,7 @@ async def test_query_wait_timeout_requires_keeping_original_handle():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("sync", [False, True])
-async def test_timeline_writes_fresh_recording_without_waiting(sync, tmp_path):
+async def test_export_timeline_writes_fresh_recording_without_waiting(sync, tmp_path):
     trace = {
         "traceEvents": [{"ph": "X", "ts": 0, "dur": 1000}],
         "metadata": {"partial": True},
@@ -769,9 +769,9 @@ async def test_timeline_writes_fresh_recording_without_waiting(sync, tmp_path):
     job = AsyncJob(inner)
     path = tmp_path / "job.trace.json"
     if sync:
-        await asyncio.to_thread(Job(job).timeline, str(path))
+        await asyncio.to_thread(Job(job).export_timeline, str(path))
     else:
-        await job.timeline(path)
+        await job.export_timeline(path)
     assert json.loads(path.read_text()) == trace
     inner.timeline.assert_awaited_once_with()
     inner.wait.assert_not_awaited()
@@ -779,7 +779,7 @@ async def test_timeline_writes_fresh_recording_without_waiting(sync, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_timeline_failure_preserves_existing_file(tmp_path):
+async def test_export_timeline_failure_preserves_existing_file(tmp_path):
     path = tmp_path / "job.trace.json"
     path.write_text("previous recording")
     job = AsyncJob(
@@ -788,18 +788,18 @@ async def test_timeline_failure_preserves_existing_file(tmp_path):
         )
     )
     with pytest.raises(RuntimeError, match="unsupported server"):
-        await job.timeline(path)
+        await job.export_timeline(path)
     assert path.read_text() == "previous recording"
     with pytest.raises(NotImplementedError, match="server-side Function job"):
-        await AsyncJob(None).timeline(path)
+        await AsyncJob(None).export_timeline(path)
     with pytest.raises(NotImplementedError, match="server-side Function job"):
-        Job(None).timeline(path)
+        Job(None).export_timeline(path)
 
 
 @pytest.mark.asyncio
-async def test_timeline_reports_filesystem_errors(tmp_path):
+async def test_export_timeline_reports_filesystem_errors(tmp_path):
     job = AsyncJob(
         SimpleNamespace(timeline=AsyncMock(return_value='{"traceEvents":[]}'))
     )
     with pytest.raises(FileNotFoundError):
-        await job.timeline(tmp_path / "missing" / "trace.json")
+        await job.export_timeline(tmp_path / "missing" / "trace.json")

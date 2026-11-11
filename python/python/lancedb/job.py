@@ -424,7 +424,7 @@ class AsyncJob(Generic[T]):
         description = self._inner._description if self._inner is not None else None
         return getattr(description, name) if description is not None else None
 
-    async def timeline(self, path: str | PathLike[str]) -> None:
+    async def export_timeline(self, path: str | PathLike[str]) -> None:
         """Write a fresh recorded Function job timeline as Chrome trace JSON.
 
         Open the file in Perfetto or Chrome tracing. The recording contains
@@ -440,7 +440,7 @@ class AsyncJob(Generic[T]):
 
         Examples
         --------
-        >>> await job.timeline("refresh.trace.json")  # doctest: +SKIP
+        >>> await job.export_timeline("refresh.trace.json")  # doctest: +SKIP
         """
         if self._inner is None:
             raise NotImplementedError(
@@ -648,20 +648,21 @@ class Job(Generic[T]):
     def _field(self, name: str) -> Optional[Any]:
         return getattr(self._inner, name) if self._inner is not None else None
 
-    def timeline(self, path: str | PathLike[str]) -> None:
+    def export_timeline(self, path: str | PathLike[str]) -> None:
         """Write Chrome trace JSON for this Function job.
 
-        See :meth:`AsyncJob.timeline`. Open the file in Perfetto or Chrome tracing.
+        See :meth:`AsyncJob.export_timeline`. Open the file in Perfetto or
+        Chrome tracing.
 
         Examples
         --------
-        >>> job.timeline("refresh.trace.json")  # doctest: +SKIP
+        >>> job.export_timeline("refresh.trace.json")  # doctest: +SKIP
         """
         if self._inner is None:
             raise NotImplementedError(
                 "job timeline export requires a server-side Function job"
             )
-        return LOOP.run(self._inner.timeline(path))
+        return LOOP.run(self._inner.export_timeline(path))
 
     def events(
         self,
