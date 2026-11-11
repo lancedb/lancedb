@@ -228,7 +228,7 @@ impl From<lancedb::database::JobInfo> for JobInfo {
 
 /// The server's account of why a job failed.
 #[pyclass(module = "lancedb._lancedb", get_all, skip_from_py_object)]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct JobFailureInfo {
     phase: Option<String>,
     message: Option<String>,
@@ -236,6 +236,18 @@ pub struct JobFailureInfo {
     traceback: Option<String>,
     retryable: Option<bool>,
     sql_job_id: Option<String>,
+}
+
+impl From<lancedb::error::JobFailure> for JobFailureInfo {
+    fn from(failure: lancedb::error::JobFailure) -> Self {
+        Self {
+            phase: failure.phase,
+            message: failure.message,
+            traceback: failure.traceback,
+            retryable: failure.retryable,
+            sql_job_id: failure.sql_job_id,
+        }
+    }
 }
 
 #[pymethods]
@@ -341,13 +353,7 @@ impl From<lancedb::database::JobDescription> for JobDescription {
                 .filter(|result| !result.is_null())
                 .map(|result| result.to_string()),
             _progress_json: Some(progress_json),
-            failure: description.failure.map(|failure| JobFailureInfo {
-                phase: failure.phase,
-                message: failure.message,
-                traceback: failure.traceback,
-                retryable: failure.retryable,
-                sql_job_id: failure.sql_job_id,
-            }),
+            failure: description.failure.map(Into::into),
         }
     }
 }

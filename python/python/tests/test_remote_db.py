@@ -2306,15 +2306,33 @@ def test_remote_function_column_status_passes_pinned_version():
         "stale": 2,
         "never_computed": 0,
         "failed": 0,
+        "last_refresh_job": {
+            "job_id": "job-cancelled",
+            "state": "cancelled",
+            "automatic": True,
+            "completed_at_millis": 1790000002000,
+        },
+        "last_failure_job": {
+            "job_id": "job-failed",
+            "state": "failed",
+            "automatic": True,
+            "completed_at_millis": 1790000001000,
+            "failure": {
+                "phase": "finalize",
+                "message": "worker timed out",
+                "traceback": "Traceback: timeout",
+                "retryable": True,
+                "sql_job_id": "sql-job-7",
+            },
+        },
         "auto_refresh": {
             "enabled": True,
             "interval_seconds": 60,
-            "active_job_id": None,
-            "state": "blocked",
-            "failure_streak": 3,
-            "effective_cooldown_millis": 8000,
-            "blocked_reason": "preparation_backoff",
+            "active_job_id": "job-queued",
+            "state": "queued",
+            "failure_streak": 1,
             "next_run_at_millis": None,
+            "next_run_at_reason": "job_queued_not_started",
         },
     }
 
@@ -2350,10 +2368,19 @@ def test_remote_function_column_status_passes_pinned_version():
         0,
         0,
     )
-    assert result.auto_refresh.state == "blocked"
-    assert result.auto_refresh.failure_streak == 3
-    assert result.auto_refresh.effective_cooldown_millis == 8000
-    assert result.auto_refresh.blocked_reason == "preparation_backoff"
+    assert result.auto_refresh.state == "queued"
+    assert result.auto_refresh.active_job_id == "job-queued"
+    assert result.auto_refresh.failure_streak == 1
+    assert result.auto_refresh.next_run_at_reason == "job_queued_not_started"
+    assert result.last_refresh_job.state == "cancelled"
+    assert result.last_refresh_job.failure is None
+    assert result.last_failure_job.job_id == "job-failed"
+    failure = result.last_failure_job.failure
+    assert failure.phase == "finalize"
+    assert failure.message == "worker timed out"
+    assert failure.traceback == "Traceback: timeout"
+    assert failure.retryable is True
+    assert failure.sql_job_id == "sql-job-7"
 
 
 def test_remote_wait_fresh_retries_only_typed_finalization_pending():

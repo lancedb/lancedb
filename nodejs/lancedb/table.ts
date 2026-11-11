@@ -35,6 +35,7 @@ import {
   FunctionErrorsOptions,
   IndexConfig,
   IndexStatistics,
+  JobFailureInfo,
   Branches as NativeBranches,
   OptimizeStats,
   RTEStats,
@@ -274,6 +275,8 @@ export interface FunctionColumnLastRefreshJob {
   state: string;
   automatic?: boolean;
   completedAtMillis?: bigint;
+  /** Structured failure details for a failed Job. */
+  failure?: JobFailureInfo;
 }
 
 /** Automatic-refresh projection for a Function output. */
@@ -284,6 +287,7 @@ export interface FunctionColumnAutoRefreshStatus {
   state:
     | "disabled"
     | "running"
+    | "queued"
     | "ready"
     | "up_to_date"
     | "waiting_interval"
@@ -298,7 +302,9 @@ export interface FunctionColumnAutoRefreshStatus {
     | "dependency_in_flight"
     | "table_capacity"
     | "cancelled"
-    | "preparation_backoff";
+    | "preparation_backoff"
+    | "failure_threshold_reached"
+    | "binding_revision_missing";
   nextRunAtMillis: bigint | null;
   nextRunAtReason?: string;
 }
@@ -315,6 +321,11 @@ export interface FunctionColumnStatus {
   neverComputed: bigint;
   failed: bigint;
   lastRefreshJob?: FunctionColumnLastRefreshJob;
+  /**
+   * Newest failed refresh Job. This remains present when `lastRefreshJob`
+   * is a later cancellation.
+   */
+  lastFailureJob?: FunctionColumnLastRefreshJob;
   autoRefresh: FunctionColumnAutoRefreshStatus;
 }
 

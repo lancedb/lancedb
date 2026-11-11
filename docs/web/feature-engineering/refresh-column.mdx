@@ -197,6 +197,17 @@ println!("{}", final_status.failed);
 ```
 </CodeGroup>
 
+`auto_refresh.state` reports `queued` while the scheduler has accepted the
+refresh but a worker has not started it; `running` means execution has started.
+`last_refresh_job` describes the most recent attempt, including a cancellation
+or a failure. If a later attempt was cancelled, `last_failure_job` retains the
+most recent job that actually failed, so its nested `failure` continues to
+explain the failed rows.
+
+These fields require a matching Agent, Query Node, and SDK deployment. An older
+client cannot decode the `queued` state, and an older server can omit the new
+optional failure fields.
+
 The wait helpers do not submit or cancel a refresh. They retry only the typed
 finalization-pending response and propagate other errors.
 */}

@@ -1108,6 +1108,7 @@ class FunctionColumnLastRefreshJob:
     state: str
     automatic: Optional[bool]
     completed_at_millis: Optional[int]
+    failure: Optional[JobFailureInfo]
 
 class FunctionColumnAutoRefreshStatus:
     enabled: bool
@@ -1131,6 +1132,7 @@ class FunctionColumnStatus:
     never_computed: int
     failed: int
     last_refresh_job: Optional[FunctionColumnLastRefreshJob]
+    last_failure_job: Optional[FunctionColumnLastRefreshJob]
     auto_refresh: FunctionColumnAutoRefreshStatus
 
 class RefreshMaterializedViewResult:

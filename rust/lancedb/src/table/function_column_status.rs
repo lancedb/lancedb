@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::JobFailure;
 use crate::function::FunctionVersionRef;
 use crate::{Error, Result};
 
@@ -23,6 +24,9 @@ pub struct FunctionColumnLastRefreshJob {
     pub automatic: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_at_millis: Option<i64>,
+    /// Why this Job failed, when the server retained a structured failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<JobFailure>,
 }
 
 /// Automatic-refresh scheduling state that the server can prove.
@@ -31,6 +35,7 @@ pub struct FunctionColumnLastRefreshJob {
 pub enum FunctionColumnAutoRefreshState {
     Disabled,
     Running,
+    Queued,
     UpToDate,
     Ready,
     WaitingInterval,
@@ -44,6 +49,7 @@ impl FunctionColumnAutoRefreshState {
         match self {
             Self::Disabled => "disabled",
             Self::Running => "running",
+            Self::Queued => "queued",
             Self::UpToDate => "up_to_date",
             Self::Ready => "ready",
             Self::WaitingInterval => "waiting_interval",
@@ -64,6 +70,8 @@ pub enum FunctionColumnAutoRefreshBlockedReason {
     TableCapacity,
     Cancelled,
     PreparationBackoff,
+    FailureThresholdReached,
+    BindingRevisionMissing,
 }
 
 impl FunctionColumnAutoRefreshBlockedReason {
@@ -75,6 +83,8 @@ impl FunctionColumnAutoRefreshBlockedReason {
             Self::TableCapacity => "table_capacity",
             Self::Cancelled => "cancelled",
             Self::PreparationBackoff => "preparation_backoff",
+            Self::FailureThresholdReached => "failure_threshold_reached",
+            Self::BindingRevisionMissing => "binding_revision_missing",
         }
     }
 }
@@ -113,6 +123,10 @@ pub struct FunctionColumnStatus {
     pub failed: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_refresh_job: Option<FunctionColumnLastRefreshJob>,
+    /// Newest failed refresh Job. Unlike `last_refresh_job`, this remains
+    /// visible when the latest attempt was cancelled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_failure_job: Option<FunctionColumnLastRefreshJob>,
     pub auto_refresh: FunctionColumnAutoRefreshStatus,
 }
 
@@ -216,6 +230,7 @@ mod tests {
             never_computed: 1,
             failed: 1,
             last_refresh_job: None,
+            last_failure_job: None,
             auto_refresh: FunctionColumnAutoRefreshStatus {
                 enabled: true,
                 interval_seconds: Some(60),
@@ -253,6 +268,7 @@ mod tests {
             state: "finished".to_string(),
             automatic: Some(true),
             completed_at_millis: Some(1_790_000_000_000),
+            failure: None,
         });
         let encoded = serde_json::to_value(value).unwrap();
         assert_eq!(encoded["last_refresh_job"]["job_id"], "job-7");
@@ -264,11 +280,31 @@ mod tests {
     }
 
     #[test]
-    fn up_to_date_wire_is_stable() {
-        assert_eq!(
-            serde_json::to_string(&FunctionColumnAutoRefreshState::UpToDate).unwrap(),
-            "\"up_to_date\""
-        );
+    fn scheduler_wire_names_are_stable() {
+        for (state, expected) in [
+            (FunctionColumnAutoRefreshState::Queued, "queued"),
+            (FunctionColumnAutoRefreshState::UpToDate, "up_to_date"),
+        ] {
+            assert_eq!(
+                serde_json::to_string(&state).unwrap(),
+                format!("\"{expected}\"")
+            );
+        }
+        for (reason, expected) in [
+            (
+                FunctionColumnAutoRefreshBlockedReason::FailureThresholdReached,
+                "failure_threshold_reached",
+            ),
+            (
+                FunctionColumnAutoRefreshBlockedReason::BindingRevisionMissing,
+                "binding_revision_missing",
+            ),
+        ] {
+            assert_eq!(
+                serde_json::to_string(&reason).unwrap(),
+                format!("\"{expected}\"")
+            );
+        }
     }
 
     #[test]

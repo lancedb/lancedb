@@ -253,23 +253,47 @@ impl snafu::AsErrorSource for InterruptionSource {
 /// A job run remotely carries whatever the server reported, which older servers
 /// do not report at all. Every field is absent rather than invented when the
 /// backend does not supply it.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 pub struct JobFailure {
     /// The stage the job was in, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<String>,
     /// A human-readable reason, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
     /// User-code traceback, possibly truncated by the server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub traceback: Option<String>,
     /// Whether a retry could clear the failure, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retryable: Option<bool>,
     /// Isolated SQL job that raised this failure, when the server supplies
     /// one across the Flight SQL boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sql_job_id: Option<String>,
     /// The underlying error from a job run in this process or a structured
     /// remote Flight SQL failure.
+    #[serde(skip)]
     pub source: Option<Arc<Error>>,
 }
+
+impl PartialEq for JobFailure {
+    fn eq(&self, other: &Self) -> bool {
+        let source_matches = match (&self.source, &other.source) {
+            (None, None) => true,
+            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+            _ => false,
+        };
+        self.phase == other.phase
+            && self.message == other.message
+            && self.traceback == other.traceback
+            && self.retryable == other.retryable
+            && self.sql_job_id == other.sql_job_id
+            && source_matches
+    }
+}
+
+impl Eq for JobFailure {}
 
 impl JobFailure {
     /// A failure whose only known detail is the error that caused it.

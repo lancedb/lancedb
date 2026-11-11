@@ -681,14 +681,33 @@ describe("remote connection", () => {
               "stale":2,
               "never_computed":0,
               "failed":0,
+              "last_refresh_job":{
+                "job_id":"job-cancelled",
+                "state":"cancelled",
+                "automatic":true,
+                "completed_at_millis":1790000002000
+              },
+              "last_failure_job":{
+                "job_id":"job-failed",
+                "state":"failed",
+                "automatic":true,
+                "completed_at_millis":1790000001000,
+                "failure":{
+                  "phase":"finalize",
+                  "message":"worker timed out",
+                  "traceback":"Traceback: timeout",
+                  "retryable":true,
+                  "sql_job_id":"sql-job-7"
+                }
+              },
               "auto_refresh":{
                 "enabled":true,
                 "interval_seconds":60,
-                "state":"blocked",
-                "failure_streak":3,
-                "effective_cooldown_millis":8000,
-                "blocked_reason":"preparation_backoff",
-                "next_run_at_millis":null
+                "active_job_id":"job-queued",
+                "state":"queued",
+                "failure_streak":1,
+                "next_run_at_millis":null,
+                "next_run_at_reason":"job_queued_not_started"
               }
             }]`,
           );
@@ -701,10 +720,22 @@ describe("remote connection", () => {
         await table.checkout(42);
         const status = await table.functionColumnStatus("embedding");
         expect(status.tableVersion).toBe(42n);
-        expect(status.autoRefresh.state).toBe("blocked");
-        expect(status.autoRefresh.failureStreak).toBe(3);
-        expect(status.autoRefresh.effectiveCooldownMillis).toBe(8000n);
-        expect(status.autoRefresh.blockedReason).toBe("preparation_backoff");
+        expect(status.autoRefresh.state).toBe("queued");
+        expect(status.autoRefresh.activeJobId).toBe("job-queued");
+        expect(status.autoRefresh.failureStreak).toBe(1);
+        expect(status.autoRefresh.nextRunAtReason).toBe(
+          "job_queued_not_started",
+        );
+        expect(status.lastRefreshJob?.state).toBe("cancelled");
+        expect(status.lastRefreshJob?.failure).toBeUndefined();
+        expect(status.lastFailureJob?.jobId).toBe("job-failed");
+        expect(status.lastFailureJob?.failure).toEqual({
+          phase: "finalize",
+          message: "worker timed out",
+          traceback: "Traceback: timeout",
+          retryable: true,
+          sqlJobId: "sql-job-7",
+        });
       },
     );
     expect(queries).toEqual([{ column: "embedding", version: "42" }]);

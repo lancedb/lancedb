@@ -20,6 +20,7 @@ use napi_derive::napi;
 use crate::blob::{BlobFile, copy_blob_buffers, parse_row_ids, spawn_abortable};
 use crate::error::NapiErrorExt;
 use crate::index::Index;
+use crate::job::JobFailureInfo;
 use crate::merge::NativeMergeInsertBuilder;
 use crate::query::{Query, TakeQuery, VectorQuery};
 use crate::util::schema_to_buffer;
@@ -1868,6 +1869,19 @@ pub struct FunctionColumnLastRefreshJob {
     pub state: String,
     pub automatic: Option<bool>,
     pub completed_at_millis: Option<BigInt>,
+    pub failure: Option<JobFailureInfo>,
+}
+
+impl From<lancedb::table::FunctionColumnLastRefreshJob> for FunctionColumnLastRefreshJob {
+    fn from(job: lancedb::table::FunctionColumnLastRefreshJob) -> Self {
+        Self {
+            job_id: job.job_id,
+            state: job.state,
+            automatic: job.automatic,
+            completed_at_millis: job.completed_at_millis.map(BigInt::from),
+            failure: job.failure.map(Into::into),
+        }
+    }
 }
 
 /// Automatic-refresh projection for a Function output.
@@ -1899,6 +1913,7 @@ pub struct FunctionColumnStatus {
     pub never_computed: BigInt,
     pub failed: BigInt,
     pub last_refresh_job: Option<FunctionColumnLastRefreshJob>,
+    pub last_failure_job: Option<FunctionColumnLastRefreshJob>,
     pub auto_refresh: FunctionColumnAutoRefreshStatus,
 }
 
@@ -1921,14 +1936,8 @@ impl From<lancedb::table::FunctionColumnStatus> for FunctionColumnStatus {
             stale: BigInt::from(status.stale),
             never_computed: BigInt::from(status.never_computed),
             failed: BigInt::from(status.failed),
-            last_refresh_job: status
-                .last_refresh_job
-                .map(|job| FunctionColumnLastRefreshJob {
-                    job_id: job.job_id,
-                    state: job.state,
-                    automatic: job.automatic,
-                    completed_at_millis: job.completed_at_millis.map(BigInt::from),
-                }),
+            last_refresh_job: status.last_refresh_job.map(Into::into),
+            last_failure_job: status.last_failure_job.map(Into::into),
             auto_refresh: FunctionColumnAutoRefreshStatus {
                 enabled: status.auto_refresh.enabled,
                 interval_seconds: status.auto_refresh.interval_seconds.map(BigInt::from),
