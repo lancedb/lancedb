@@ -3951,6 +3951,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         if let Some(interval) = options.auto_refresh_interval_seconds {
             body["auto_refresh_interval_seconds"] = serde_json::json!(interval);
         }
+        if let Some(budget) = options.auto_refresh_resource_budget {
+            body["auto_refresh_resource_budget"] = serde_json::json!(budget);
+        }
         self.apply_branch_body(&mut body);
         let request = self
             .client
@@ -10361,6 +10364,7 @@ mod tests {
                 .computed_options(crate::table::computed_columns::ComputedColumnOptions {
                     auto_refresh_enabled: false,
                     auto_refresh_interval_seconds: interval,
+                    auto_refresh_resource_budget: None,
                 })
                 .execute()
                 .await
@@ -10797,6 +10801,11 @@ mod tests {
                 ))
                 .unwrap();
                 expected["auto_refresh_enabled"] = serde_json::json!(true);
+                expected["auto_refresh_resource_budget"] = serde_json::json!({
+                    "cpu_millis": 8_000,
+                    "memory_bytes": 17_179_869_184_u64,
+                    "gpu_count": 2,
+                });
                 assert_eq!(actual, expected);
                 http::Response::builder()
                     .status(200)
@@ -10824,6 +10833,14 @@ mod tests {
         let result = table
             .add_columns()
             .function(application)
+            .computed_options(crate::table::computed_columns::ComputedColumnOptions {
+                auto_refresh_enabled: true,
+                auto_refresh_interval_seconds: None,
+                auto_refresh_resource_budget: Some(
+                    crate::table::FunctionWorkerResourceBudget::new(8_000, 17_179_869_184)
+                        .with_gpu_count(2),
+                ),
+            })
             .execute()
             .await
             .unwrap();

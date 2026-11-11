@@ -3085,6 +3085,7 @@ class Table(ABC):
         computed: Dict[str, str] | None = None,
         auto_refresh_enabled: bool | None = None,
         auto_refresh_interval_seconds: int | None = None,
+        auto_refresh_resource_budget: Optional[Dict[str, int]] = None,
     ):
         """
         Add new columns with defined values.
@@ -3153,6 +3154,12 @@ class Table(ABC):
             When omitted, the server determines when to refresh. Applies to every
             computed output in this call.
             Scheduling options require computed or Function columns.
+        auto_refresh_resource_budget: dict[str, int], optional
+            Aggregate CPU, memory, and GPU budget for automatic refreshes of a
+            registered Function declaration. ``cpu_millis`` and
+            ``memory_bytes`` are required; ``gpu_count`` defaults to zero.
+            This option cannot be used with SQL-expression columns. LanceDB
+            Enterprise only.
 
         Returns
         -------
@@ -5468,6 +5475,7 @@ class LanceTable(Table):
         computed: Dict[str, str] | None = None,
         auto_refresh_enabled: bool | None = None,
         auto_refresh_interval_seconds: int | None = None,
+        auto_refresh_resource_budget: Optional[Dict[str, int]] = None,
     ) -> AddColumnsResult:
         return LOOP.run(
             self._table.add_columns(
@@ -5475,6 +5483,7 @@ class LanceTable(Table):
                 computed=computed,
                 auto_refresh_enabled=auto_refresh_enabled,
                 auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+                auto_refresh_resource_budget=auto_refresh_resource_budget,
             )
         )
 
@@ -7755,6 +7764,7 @@ class AsyncTable:
         computed: dict[str, str] | None = None,
         auto_refresh_enabled: bool | None = None,
         auto_refresh_interval_seconds: int | None = None,
+        auto_refresh_resource_budget: Optional[Dict[str, int]] = None,
     ) -> AddColumnsResult:
         """
         Add new columns with defined values.
@@ -7821,6 +7831,12 @@ class AsyncTable:
             not force recomputation. Applies to every declared computed output.
             These options cannot be used with one-time transforms or ordinary
             all-null columns.
+        auto_refresh_resource_budget: dict[str, int], optional
+            Aggregate CPU, memory, and GPU budget for automatic refreshes of
+            registered Function outputs. ``cpu_millis`` and ``memory_bytes``
+            are required; ``gpu_count`` defaults to zero. SQL-expression
+            columns do not use Function workers and reject this option.
+            LanceDB Enterprise only.
 
         Examples
         --------
@@ -7849,6 +7865,7 @@ class AsyncTable:
         options_supplied = (
             auto_refresh_enabled is not None
             or auto_refresh_interval_seconds is not None
+            or auto_refresh_resource_budget is not None
         )
         function_application = None
         function_output_name = None
@@ -7877,6 +7894,7 @@ class AsyncTable:
                 function_output_name,
                 auto_refresh_enabled,
                 auto_refresh_interval_seconds,
+                auto_refresh_resource_budget,
             )
 
         if isinstance(transforms, pa.Field):
@@ -7897,6 +7915,7 @@ class AsyncTable:
                 list(computed.items()),
                 auto_refresh_enabled,
                 auto_refresh_interval_seconds,
+                auto_refresh_resource_budget,
             )
         if options_supplied:
             raise ValueError(

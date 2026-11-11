@@ -36,6 +36,7 @@ from lancedb.graph import (
     PropertyGraph,
     PropertyGraphDescription,
 )
+from lancedb.functions import FunctionApplication
 from lancedb.query import (
     AsyncQuery,
     ColumnOrdering,
@@ -5829,6 +5830,89 @@ def test_remote_add_columns_reader_not_supported():
         with pytest.raises(NotImplementedError, match="Only SQL expressions"):
             table.add_columns(pa.table({"score": [10]}).to_reader())
         assert all("/add_columns/" not in path for path in requests)
+
+
+@pytest.mark.asyncio
+async def test_remote_add_function_columns_forwards_auto_refresh_resource_budget():
+    bodies = []
+    application = FunctionApplication.from_json(
+        json.dumps(
+            {
+                "function": {
+                    "name": "embed",
+                    "version": "1",
+                    "object_id": "fixture",
+                    "location": "memory:///fixture",
+                    "manifest_digest": "sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6",
+                },
+                "inputs": [
+                    {
+                        "parameter": "text",
+                        "kind": "column",
+                        "value": {"path": "text"},
+                    }
+                ],
+                "output": {
+                    "kind": "scalar",
+                    "arrow_type": "float32",
+                    "nullable": False,
+                },
+            }
+        )
+    )
+
+    def handler(request):
+        if request.path == "/v1/table/test/describe/":
+            response = {
+                "version": 1,
+                "schema": {
+                    "fields": [
+                        {
+                            "name": "text",
+                            "type": {"type": "string"},
+                            "nullable": True,
+                        }
+                    ]
+                },
+            }
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(json.dumps(response).encode())
+        elif request.path == "/v1/table/test/add_columns/":
+            content_len = int(request.headers.get("Content-Length", 0))
+            bodies.append(json.loads(request.rfile.read(content_len)))
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b'{"version": 2}')
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    budget = {"cpu_millis": 2_000, "memory_bytes": 4 * 1024**3}
+    with mock_lancedb_connection(handler) as db:
+        table = db.open_table("test")
+        table.add_columns(
+            {"embedding": application},
+            auto_refresh_resource_budget=budget,
+        )
+
+    async with mock_lancedb_connection_async(handler) as db:
+        table = await db.open_table("test")
+        await table.add_columns(
+            {"embedding": application},
+            auto_refresh_resource_budget=budget,
+        )
+
+    assert len(bodies) == 2
+    for body in bodies:
+        assert body["auto_refresh_enabled"] is True
+        assert body["auto_refresh_resource_budget"] == {
+            **budget,
+            "gpu_count": 0,
+        }
+        assert body["new_columns"] == [{"name": "embedding", "all_null": True}]
 
 
 @pytest.mark.asyncio

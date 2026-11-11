@@ -61,7 +61,8 @@ use crate::{Error, Result};
 /// values cap the Function workers together; they are not per-worker
 /// allocations. The default GPU budget is zero, which describes a CPU-only
 /// Function. This option is rejected by LanceDB Embedded refreshes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[non_exhaustive]
 pub struct FunctionWorkerResourceBudget {
     pub cpu_millis: u64,
@@ -84,6 +85,21 @@ impl FunctionWorkerResourceBudget {
     pub fn with_gpu_count(mut self, gpu_count: u32) -> Self {
         self.gpu_count = gpu_count;
         self
+    }
+
+    /// Require every per-tier resource limit to request at least one unit.
+    pub fn validate(&self) -> Result<()> {
+        if self.cpu_millis == 0 {
+            return Err(Error::InvalidInput {
+                message: "resource_budget.cpu_millis must be greater than zero".into(),
+            });
+        }
+        if self.memory_bytes == 0 {
+            return Err(Error::InvalidInput {
+                message: "resource_budget.memory_bytes must be greater than zero".into(),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -329,16 +345,7 @@ impl RefreshColumnOptions {
             });
         }
         if let Some(budget) = &self.resource_budget {
-            if budget.cpu_millis == 0 {
-                return Err(Error::InvalidInput {
-                    message: "resource_budget.cpu_millis must be greater than zero".into(),
-                });
-            }
-            if budget.memory_bytes == 0 {
-                return Err(Error::InvalidInput {
-                    message: "resource_budget.memory_bytes must be greater than zero".into(),
-                });
-            }
+            budget.validate()?;
         }
         if let Some(gpu_class) = &self.gpu_class {
             validate_gpu_class_name(gpu_class)?;
