@@ -35,7 +35,7 @@ pnpm exec biome check lancedb/table.ts __test__/remote.test.ts \
   >"$out_dir/biome.log" 2>&1
 printf '%s\n' "$?" >"$out_dir/biome.log.exit"
 
-pnpm tsc -b >"$out_dir/tsc.log" 2>&1
+pnpm tsc >"$out_dir/tsc.log" 2>&1
 printf '%s\n' "$?" >"$out_dir/tsc.log.exit"
 
 find lancedb -maxdepth 1 -name '*.node' -type f -print \
