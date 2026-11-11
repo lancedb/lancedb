@@ -64,7 +64,8 @@ jobs:
           - platform: x86_64
             manylinux: "2_28"
             extra_args: ""
-            runner: ubuntu-22.04
+            # Keep fat LTO on the same larger runner as the standard x64 wheel.
+            runner: ubuntu-2404-8x-x64
             package_name: "lancedb-compat"
             rustflags: "-Ctarget-cpu=x86-64-v2"
     runs-on: ${{ matrix.config.runner }}
