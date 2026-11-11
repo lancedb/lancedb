@@ -42,9 +42,23 @@ print(job.status())
     result. If it failed or was cancelled, inspect the failure details and any
     results it committed before stopping.
 
-In Python, `job.status()` reports the current state and `job.wait()` waits for
-completion, raising if the job fails or is cancelled. Both `Job.wait()` and
-`AsyncJob.wait()` retry transient connection and read errors with capped
+In Python, `job.status()` returns the current state:
+
+| State | Meaning |
+| --- | --- |
+| `running` | The operation is in progress. |
+| `finished` | The operation completed successfully. |
+| `failed` | The operation failed. |
+| `cancelled` | The operation was cancelled. |
+
+This is a point-in-time check. It does not wait for completion or raise when
+the job fails or is cancelled. States from a newer server that the SDK does
+not recognize are returned unchanged. For Enterprise registry jobs, the Python
+SDK reports the REST state `in_progress` as `running`.
+
+Use `job.wait()` to wait for completion and raise if the job fails or is
+cancelled. Both `Job.wait()` and `AsyncJob.wait()` retry transient connection
+and read errors with capped
 exponential backoff within the caller's timeout. Without a timeout, retries
 continue indefinitely.
 
