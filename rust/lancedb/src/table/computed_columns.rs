@@ -140,6 +140,7 @@ impl ComputedColumnOptions {
     /// Attach validated settings to newly declared computed output fields.
     pub fn apply_to_schema(&self, schema: &ArrowSchema) -> Result<ArrowSchema> {
         self.validate()?;
+        let option_metadata = self.metadata()?;
         let fields = schema
             .fields()
             .iter()
@@ -155,7 +156,7 @@ impl ComputedColumnOptions {
                     return field.clone();
                 }
                 let mut metadata = field.metadata().clone();
-                metadata.extend(self.metadata()?);
+                metadata.extend(option_metadata.clone());
                 Arc::new(field.as_ref().clone().with_metadata(metadata))
             })
             .collect::<Vec<_>>();
