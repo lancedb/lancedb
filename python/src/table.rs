@@ -2276,13 +2276,13 @@ impl Table {
 
     #[pyo3(signature = (column, *, r#where=None, batch_size=None, publication_interval_rows=None, resource_budget=None, gpu_class=None, gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None))]
     #[allow(clippy::too_many_arguments)]
-    pub fn refresh_column(
-        self_: PyRef<'_, Self>,
+    pub fn refresh_column<'py>(
+        self_: PyRef<'py, Self>,
         column: String,
         r#where: Option<String>,
         batch_size: Option<i64>,
         publication_interval_rows: Option<i64>,
-        resource_budget: Option<Bound<'_, PyDict>>,
+        resource_budget: Option<Bound<'py, PyDict>>,
         gpu_class: Option<String>,
         gpu_count: Option<i64>,
         retry_policy: Option<String>,
@@ -2293,7 +2293,7 @@ impl Table {
         init_timeout_seconds: Option<f64>,
         num_workers: Option<i64>,
         max_executor_processes_per_worker: Option<i64>,
-    ) -> PyResult<Bound<'_, PyAny>> {
+    ) -> PyResult<Bound<'py, PyAny>> {
         let options = refresh_column_options(RefreshColumnArgs {
             where_clause: r#where,
             batch_size,
@@ -2322,13 +2322,13 @@ impl Table {
 
     #[pyo3(signature = (column, *, r#where=None, batch_size=None, publication_interval_rows=None, resource_budget=None, gpu_class=None, gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None))]
     #[allow(clippy::too_many_arguments)]
-    pub fn refresh_column_async(
-        self_: PyRef<'_, Self>,
+    pub fn refresh_column_async<'py>(
+        self_: PyRef<'py, Self>,
         column: String,
         r#where: Option<String>,
         batch_size: Option<i64>,
         publication_interval_rows: Option<i64>,
-        resource_budget: Option<Bound<'_, PyDict>>,
+        resource_budget: Option<Bound<'py, PyDict>>,
         gpu_class: Option<String>,
         gpu_count: Option<i64>,
         retry_policy: Option<String>,
@@ -2339,7 +2339,7 @@ impl Table {
         init_timeout_seconds: Option<f64>,
         num_workers: Option<i64>,
         max_executor_processes_per_worker: Option<i64>,
-    ) -> PyResult<Bound<'_, PyAny>> {
+    ) -> PyResult<Bound<'py, PyAny>> {
         let options = refresh_column_options(RefreshColumnArgs {
             where_clause: r#where,
             batch_size,
