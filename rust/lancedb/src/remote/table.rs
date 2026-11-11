@@ -3717,14 +3717,14 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     /// `OptimizeAction::All`, `::Prune`, and `::Index` remain unsupported
     /// remotely: there is no SQL statement yet for version pruning or index
     /// optimization. A branch-scoped table handle submits a
-    /// `WITH (branch = '<branch>')` clause; the statement does not itself
-    /// validate the branch exists, so a nonexistent branch surfaces as an
-    /// async job failure rather than an error from this call. Per-job
+    /// `WITH (branch = '<branch>')` clause; the server resolves and validates
+    /// the selected target. Per-job
     /// `target_rows_per_fragment`, `max_source_rows`, `io_buffer_size`, and
     /// `batch_size` are forwarded in the SQL `WITH` clause. Other non-default
     /// options are rejected before submission. Servers must support these
-    /// SQL options; an older server's error is returned without retrying
-    /// with the settings removed.
+    /// SQL options. Parser errors and unknown optimize option errors become
+    /// `NotSupported` with the server diagnostic after one SQL submission.
+    /// No settings are removed and the operation is never resubmitted.
     async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats> {
         self.check_mutable().await?;
         let OptimizeAction::Compact {
@@ -3782,9 +3782,11 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         // value is built afterward.
         sql_client
             .submit_as_job(statement, self.namespace.clone(), || async { Ok(()) })
-            .await?
+            .await
+            .map_err(optimize::map_optimize_error)?
             .wait()
-            .await?;
+            .await
+            .map_err(optimize::map_optimize_error)?;
         Ok(OptimizeStats {
             compaction: Some(lance::dataset::optimize::CompactionMetrics::default()),
             prune: None,

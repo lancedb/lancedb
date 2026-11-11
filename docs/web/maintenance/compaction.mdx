@@ -13,8 +13,8 @@ import { PyStorageCompactionTuning, PyStorageRebuildVectorIndex, RsStorageCompac
 Every write commits a new table version, and versions accumulate: small files
 from frequent appends, superseded files from updates and deletes, and rows added
 since an index was built. In the embedded library, `optimize()` addresses all
-three; a deployment handles them in the background and does not support
-`optimize()`.
+three. Enterprise handles maintenance in the background and also supports
+on-demand compaction through `optimize()` on compatible servers.
 
 Run optimization as regular table maintenance, particularly after many small
 writes or a large ingest.
