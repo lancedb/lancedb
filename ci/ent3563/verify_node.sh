@@ -51,6 +51,10 @@ pnpm exec jest \
   >"$out_dir/jest.log" 2>&1
 status=$?
 set -e
+if [[ "$status" -eq 0 ]] && ! grep -Eq "Tests:.*1 passed, 1 total" "$out_dir/jest.log"; then
+  printf '%s\n' "expected one Node test to pass" >"$out_dir/selection-error.txt"
+  status=1
+fi
 printf '%s\n' "$status" >"$out_dir/jest.log.exit"
 
 git status --porcelain=v1 >"$out_dir/source-status-after.txt"
