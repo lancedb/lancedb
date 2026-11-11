@@ -8,6 +8,10 @@ repo_root="$(git rev-parse --show-toplevel)"
 head="$(git -C "$repo_root" rev-parse HEAD)"
 evidence_root="${ENT3577_EVIDENCE_ROOT:-/home/ec2-user/ent3577-call-cap-evidence/$head-quality}"
 mkdir -p "$evidence_root"
+node_bin_dir="${ENT3577_NODE_BIN_DIR:-/home/ec2-user/tools/node-v24.22.2-linux-x64/bin}"
+if [[ -x "$node_bin_dir/node" ]]; then
+  export PATH="$node_bin_dir:$PATH"
+fi
 
 printf '%s\n' "$head" >"$evidence_root/source-head.txt"
 git -C "$repo_root" rev-parse 'HEAD^{tree}' >"$evidence_root/source-tree.txt"
