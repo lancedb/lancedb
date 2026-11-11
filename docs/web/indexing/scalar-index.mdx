@@ -343,13 +343,11 @@ query plan:
     </CodeBlock>
 </CodeGroup>
 
-<Note title="LanceDB Enterprise">
+<Note title="Remote tables">
 On a remote table, `create_index` sends the request with the `RTREE` index
-type, and spatial filters are sent to the deployment as written. Whether a
-deployment can build the index and evaluate `ST_*` functions depends on its
-server version. LanceDB Enterprise does not ship geospatial support yet (see
-[SQL data types](/sql/data-types#geospatial)), so the R-tree index and
-spatial filters are currently for local tables.
+type, and spatial filters are sent to the server as written. Whether the
+server can build the index and evaluate `ST_*` functions depends on its
+version.
 </Note>
 
 ## Index UUID Columns
