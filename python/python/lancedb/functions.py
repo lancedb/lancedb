@@ -1439,6 +1439,17 @@ def _infer_signature(
     return FunctionSignature(inputs=tuple(inputs), output=output)
 
 
+def _is_vectorized_callable(function: Callable[..., Any], *, method: bool) -> bool:
+    parameters = _callable_parameters(function)
+    if method:
+        parameters = parameters[1:]
+    annotations = get_type_hints(function, include_extras=True)
+    annotated = tuple(annotations.get(parameter.name) for parameter in parameters)
+    return (len(annotated) == 1 and annotated[0] is pa.RecordBatch) or (
+        bool(annotated) and all(annotation is pa.Array for annotation in annotated)
+    )
+
+
 # Both spellings strip from packaged source; `udf` is the deprecated alias.
 _DECORATOR_NAMES = frozenset({"function", "udf"})
 
@@ -2172,7 +2183,9 @@ class FunctionDefinition:
     once per row. A callable whose parameters are all annotated as
     ``pyarrow.Array`` receives whole Arrow arrays and returns a
     ``pyarrow.Array`` instead. This authoring choice is independent of the
-    internal artifact adapter in the registration request.
+    internal artifact adapter in the registration request. GPU Functions should
+    use the Arrow form when the model supports batches: a scalar GPU callable is
+    invoked once per row and leaves the model's own batching unavailable.
     """
 
     def __init__(
@@ -2290,6 +2303,18 @@ class FunctionDefinition:
             signature = signature._copy(update={"initialization": initialization})
         else:
             signature = _infer_signature(function, input_schema, output_schema)
+        if gpu_marker is not None:
+            call = _class_call(function) if is_class else function
+            if not _is_vectorized_callable(call, method=is_class):
+                warnings.warn(
+                    f"GPU Function {function_name!r} uses a scalar callable, so each "
+                    "row invokes it separately and its model batch is not inferred. "
+                    "For GPU throughput, annotate every input as pyarrow.Array or "
+                    "take one pyarrow.RecordBatch, provide input_schema and "
+                    "output_schema, and batch inside that callable.",
+                    UserWarning,
+                    stacklevel=3,
+                )
         code_files, code_modules = _code_files(code)
         entry_source = _SourcePackager(
             code_modules, frozenset(_requirement_name(package) for package in packages)
