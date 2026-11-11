@@ -793,14 +793,14 @@ describe("remote connection", () => {
           "max_executor_processes_per_worker": 2}`,
       ),
       { column: "embedding" },
-      {
-        column: "embedding",
-        resource_budget: {
-          cpu_millis: 8_000,
-          memory_bytes: 16 * 1024 ** 3,
-          gpu_count: 0,
-        },
-      },
+      JSON.parse(
+        `{"column": "embedding",
+          "resource_budget": {
+            "cpu_millis": 8000,
+            "memory_bytes": 17179869184,
+            "gpu_count": 0
+          }}`,
+      ),
     ]);
   });
 
