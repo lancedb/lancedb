@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+
+set -uo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+out_dir="${1:?usage: verify_python.sh OUTPUT_DIR VENV}"
+venv="${2:?usage: verify_python.sh OUTPUT_DIR VENV}"
+mkdir -p "$out_dir" "$(dirname "$venv")"
+
+export CARGO_BUILD_JOBS=2
+export CARGO_INCREMENTAL=0
+export CARGO_TARGET_DIR=/home/ec2-user/Code/targets/ent3563-freshness-bb527bb
+
+cd "$repo_root"
+git rev-parse HEAD >"$out_dir/source-head.txt"
+git status --porcelain=v1 >"$out_dir/source-status-before.txt"
+sha256sum "${BASH_SOURCE[0]}" >"$out_dir/runner-sha256.txt"
+date -u +%Y-%m-%dT%H:%M:%SZ >"$out_dir/started-at.txt"
+
+if [[ -s "$out_dir/source-status-before.txt" ]]; then
+  printf 'source checkout is dirty\n' >"$out_dir/runner.error"
+  exit 2
+fi
+
+finish() {
+  local status="$1"
+  git status --porcelain=v1 >"$out_dir/source-status-after.txt"
+  date -u +%Y-%m-%dT%H:%M:%SZ >"$out_dir/finished-at.txt"
+  printf '%s\n' "$status" >"$out_dir/runner.exit"
+  exit "$status"
+}
+
+capture() {
+  local name="$1"
+  shift
+  "$@" >"$out_dir/$name.log" 2>&1
+  local status=$?
+  printf '%s\n' "$status" >"$out_dir/$name.log.exit"
+  return "$status"
+}
+
+capture venv uv venv --clear --python 3.11 "$venv" || finish 1
+capture sync env UV_PROJECT_ENVIRONMENT="$venv" uv sync \
+  --project "$repo_root/python" \
+  --locked \
+  --extra tests \
+  --extra dev \
+  --no-install-project || finish 1
+
+source "$venv/bin/activate"
+capture python-build uvx --from 'maturin>=1.10' maturin develop \
+  --manifest-path "$repo_root/python/Cargo.toml" \
+  --locked \
+  --no-default-features \
+  --features 'remote,lancedb/metrics-otel' || finish 1
+
+python -c 'import lancedb._lancedb as native; print(native.__file__)' \
+  >"$out_dir/extension-path.txt" || finish 1
+sha256sum "$(cat "$out_dir/extension-path.txt")" \
+  >"$out_dir/extension-sha256.txt" || finish 1
+
+capture pytest pytest -q \
+  python/python/tests/test_remote_db.py::test_remote_function_column_status_passes_pinned_version \
+  || finish 1
+if ! grep -Fq "1 passed" "$out_dir/pytest.log"; then
+  printf '%s\n' "expected one Python test to pass" >"$out_dir/selection-error.txt"
+  finish 1
+fi
+
+finish 0
