@@ -42,6 +42,7 @@ use serde_json::Value;
 
 use crate::function::{FUNCTION_BLOB_V2_TYPE, FunctionApplication, FunctionBinding};
 use crate::materialized_view::without_declarations;
+use crate::table::FunctionWorkerResourceBudget;
 use crate::utils::resolve_arrow_field_path;
 use crate::{Error, Result};
 
@@ -61,6 +62,9 @@ pub const INPUTS_META_KEY: &str = "computed_column.inputs";
 pub const AUTO_REFRESH_ENABLED_META_KEY: &str = "computed_column.auto_refresh_enabled";
 /// Minimum interval between successful automatic refreshes, in seconds.
 pub const AUTO_REFRESH_INTERVAL_META_KEY: &str = "computed_column.auto_refresh_interval_seconds";
+/// Aggregate worker-resource budget for automatic Function refreshes.
+pub const AUTO_REFRESH_RESOURCE_BUDGET_META_KEY: &str =
+    "computed_column.auto_refresh_resource_budget";
 
 /// Scheduling settings persisted on each computed output. LanceDB Embedded
 /// stores these settings; automatic scheduling requires LanceDB Enterprise.
@@ -73,6 +77,10 @@ pub struct ComputedColumnOptions {
     /// When omitted, the server determines when to refresh.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_refresh_interval_seconds: Option<u64>,
+    /// Aggregate worker-resource budget for automatic Function refreshes.
+    /// This option requires a registered Function output.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_refresh_resource_budget: Option<FunctionWorkerResourceBudget>,
 }
 
 impl Default for ComputedColumnOptions {
@@ -80,6 +88,7 @@ impl Default for ComputedColumnOptions {
         Self {
             auto_refresh_enabled: true,
             auto_refresh_interval_seconds: None,
+            auto_refresh_resource_budget: None,
         }
     }
 }
@@ -94,6 +103,9 @@ impl ComputedColumnOptions {
             return Err(Error::InvalidInput {
                 message: "auto_refresh_interval_seconds must be a positive integer no greater than u64::MAX / 1000".into(),
             });
+        }
+        if let Some(budget) = &self.auto_refresh_resource_budget {
+            budget.validate()?;
         }
         Ok(())
     }
@@ -112,6 +124,15 @@ impl ComputedColumnOptions {
                     message: "auto_refresh_interval_seconds must be a positive integer".into(),
                 })?);
         }
+        if let Some(value) = metadata.get(AUTO_REFRESH_RESOURCE_BUDGET_META_KEY) {
+            options.auto_refresh_resource_budget = Some(serde_json::from_str(value).map_err(
+                |error| Error::InvalidInput {
+                    message: format!(
+                        "auto_refresh_resource_budget must be a valid resource budget: {error}"
+                    ),
+                },
+            )?);
+        }
         options.validate()?;
         Ok(options)
     }
@@ -119,6 +140,7 @@ impl ComputedColumnOptions {
     /// Attach validated settings to newly declared computed output fields.
     pub fn apply_to_schema(&self, schema: &ArrowSchema) -> Result<ArrowSchema> {
         self.validate()?;
+        let option_metadata = self.metadata()?;
         let fields = schema
             .fields()
             .iter()
@@ -134,7 +156,7 @@ impl ComputedColumnOptions {
                     return field.clone();
                 }
                 let mut metadata = field.metadata().clone();
-                metadata.extend(self.metadata());
+                metadata.extend(option_metadata.clone());
                 Arc::new(field.as_ref().clone().with_metadata(metadata))
             })
             .collect::<Vec<_>>();
@@ -145,7 +167,7 @@ impl ComputedColumnOptions {
     }
 
     /// Field metadata values shared by native and server declaration paths.
-    pub fn metadata(&self) -> HashMap<String, String> {
+    pub fn metadata(&self) -> Result<HashMap<String, String>> {
         let mut metadata = HashMap::from([(
             AUTO_REFRESH_ENABLED_META_KEY.into(),
             self.auto_refresh_enabled.to_string(),
@@ -153,7 +175,15 @@ impl ComputedColumnOptions {
         if let Some(interval) = self.auto_refresh_interval_seconds {
             metadata.insert(AUTO_REFRESH_INTERVAL_META_KEY.into(), interval.to_string());
         }
-        metadata
+        if let Some(budget) = &self.auto_refresh_resource_budget {
+            metadata.insert(
+                AUTO_REFRESH_RESOURCE_BUDGET_META_KEY.into(),
+                serde_json::to_string(budget).map_err(|error| Error::InvalidInput {
+                    message: format!("failed to encode auto_refresh_resource_budget: {error}"),
+                })?,
+            );
+        }
+        Ok(metadata)
     }
 }
 
@@ -2533,6 +2563,129 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn computed_auto_refresh_resource_budget_metadata_round_trips() {
+        let budget = crate::table::FunctionWorkerResourceBudget::new(8_000, 17_179_869_184)
+            .with_gpu_count(2);
+        let options = super::ComputedColumnOptions {
+            auto_refresh_enabled: true,
+            auto_refresh_interval_seconds: Some(300),
+            auto_refresh_resource_budget: Some(budget),
+        };
+        assert_eq!(
+            super::ComputedColumnOptions::from_metadata(&HashMap::new()).unwrap(),
+            super::ComputedColumnOptions::default()
+        );
+        let metadata = options.metadata().unwrap();
+        assert_eq!(
+            metadata
+                .get(super::AUTO_REFRESH_RESOURCE_BUDGET_META_KEY)
+                .map(String::as_str),
+            Some(r#"{"cpu_millis":8000,"memory_bytes":17179869184,"gpu_count":2}"#)
+        );
+        assert_eq!(
+            super::ComputedColumnOptions::from_metadata(&metadata).unwrap(),
+            options
+        );
+
+        let mut omitted_gpu = metadata.clone();
+        omitted_gpu.insert(
+            super::AUTO_REFRESH_RESOURCE_BUDGET_META_KEY.into(),
+            r#"{"cpu_millis":8000,"memory_bytes":17179869184}"#.into(),
+        );
+        let decoded = super::ComputedColumnOptions::from_metadata(&omitted_gpu).unwrap();
+        assert_eq!(decoded.auto_refresh_resource_budget.unwrap().gpu_count, 0);
+        assert_eq!(
+            decoded
+                .metadata()
+                .unwrap()
+                .get(super::AUTO_REFRESH_RESOURCE_BUDGET_META_KEY)
+                .map(String::as_str),
+            Some(r#"{"cpu_millis":8000,"memory_bytes":17179869184,"gpu_count":0}"#)
+        );
+
+        for invalid in [
+            r#"{"memory_bytes":17179869184,"gpu_count":2}"#,
+            r#"{"cpu_millis":8000,"gpu_count":2}"#,
+            r#"{"cpu_millis":"8000","memory_bytes":17179869184,"gpu_count":2}"#,
+            r#"{"cpu_millis":-1,"memory_bytes":17179869184,"gpu_count":2}"#,
+            r#"{"cpu_millis":18446744073709551616,"memory_bytes":17179869184,"gpu_count":2}"#,
+            r#"{"cpu_millis":8000,"memory_bytes":17179869184,"gpu_count":-1}"#,
+            r#"{"cpu_millis":8000,"memory_bytes":17179869184,"gpu_count":4294967296}"#,
+            r#"{"cpu_millis":8000,"memory_bytes":17179869184,"gpu_count":2,"unknown":1}"#,
+            r#"{"cpu_millis":0,"memory_bytes":17179869184,"gpu_count":2}"#,
+            r#"{"cpu_millis":8000,"memory_bytes":0,"gpu_count":2}"#,
+        ] {
+            let mut malformed = metadata.clone();
+            malformed.insert(
+                super::AUTO_REFRESH_RESOURCE_BUDGET_META_KEY.into(),
+                invalid.into(),
+            );
+            assert!(
+                super::ComputedColumnOptions::from_metadata(&malformed).is_err(),
+                "accepted invalid budget: {invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn computed_auto_refresh_resource_budget_applies_to_function_outputs() {
+        let function_field = |name: &str, ordinal: u32| {
+            ArrowField::new(name, DataType::Int32, true).with_metadata(HashMap::from([
+                (
+                    super::COMPUTED_COLUMN_META_KEY.to_string(),
+                    "true".to_string(),
+                ),
+                (
+                    super::KIND_META_KEY.to_string(),
+                    super::FUNCTION_KIND.to_string(),
+                ),
+                (
+                    super::FUNCTION_BINDING_ID_META_KEY.to_string(),
+                    "binding-1".to_string(),
+                ),
+                (
+                    super::FUNCTION_OUTPUT_ORDINAL_META_KEY.to_string(),
+                    ordinal.to_string(),
+                ),
+                ("custom".to_string(), "preserved".to_string()),
+            ]))
+        };
+        let schema = ArrowSchema::new(vec![
+            ArrowField::new("input", DataType::Int32, true),
+            function_field("first", 0),
+            function_field("second", 1),
+            function_field("assignment", super::FUNCTION_ASSIGNMENT_OUTPUT_ORDINAL),
+        ]);
+        let budget = crate::table::FunctionWorkerResourceBudget::new(8_000, 17_179_869_184)
+            .with_gpu_count(2);
+        let updated = super::ComputedColumnOptions {
+            auto_refresh_resource_budget: Some(budget),
+            ..Default::default()
+        }
+        .apply_to_schema(&schema)
+        .unwrap();
+
+        for name in ["first", "second"] {
+            let metadata = updated.field_with_name(name).unwrap().metadata();
+            assert_eq!(
+                metadata.get(super::AUTO_REFRESH_RESOURCE_BUDGET_META_KEY),
+                Some(&serde_json::to_string(&budget).unwrap())
+            );
+            assert_eq!(
+                metadata.get("custom").map(String::as_str),
+                Some("preserved")
+            );
+        }
+        assert!(
+            !updated
+                .field_with_name("assignment")
+                .unwrap()
+                .metadata()
+                .contains_key(super::AUTO_REFRESH_RESOURCE_BUDGET_META_KEY)
+        );
+    }
+
     /// The gate's reproducer: the validator applies the same schema-level
     /// guard declaring does, so a staging caller is refused before it commits
     /// anything else.

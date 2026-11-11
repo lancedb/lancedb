@@ -219,9 +219,11 @@ for changing only the aggregate GPU budget. It cannot be combined with the
 complete resource budget. Omitting both preserves the server's existing
 defaults.
 
-These examples configure only the explicit refresh shown. They do not set the
-budget for an automatic refresh scheduled after `add_columns`; that remains a
-separate declaration and scheduler capability.
+These examples configure only the explicit refresh shown. A registered
+Function declaration can separately set `auto_refresh_resource_budget` on
+`add_columns`; that declaration controls the budget for its automatic
+refreshes. SQL-expression columns reject the automatic resource-budget option
+because they do not use Function workers.
 
 `batch_size` caps rows in one Function call; LanceDB adapts actual call and
 work sizes. For Function columns, the refresh defaults to
