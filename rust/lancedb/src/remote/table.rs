@@ -4111,6 +4111,18 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 status_code: None,
             })?;
         crate::table::function_column_status::validate_statuses(&statuses)?;
+        if let Some(requested_version) = read_snapshot.version
+            && let Some(returned_version) = statuses
+                .iter()
+                .map(|status| status.table_version)
+                .find(|version| *version != requested_version)
+        {
+            return Err(Error::Runtime {
+                message: format!(
+                    "Function column status response returned table version {returned_version}, but the table handle is pinned to version {requested_version}"
+                ),
+            });
+        }
         Ok(statuses)
     }
 
@@ -11694,8 +11706,10 @@ mod tests {
     #[tokio::test]
     async fn test_function_column_status_passes_a_pinned_version() {
         let calls = Arc::new(AtomicUsize::new(0));
+        let status_calls = Arc::new(AtomicUsize::new(0));
         let table = Table::new_with_handler("my_table", {
             let calls = calls.clone();
+            let status_calls = status_calls.clone();
             move |request| {
                 calls.fetch_add(1, Ordering::SeqCst);
                 match request.url().path() {
@@ -11715,33 +11729,38 @@ mod tests {
                             Some("embedding")
                         );
                         assert_eq!(query.get("version").map(|value| value.as_ref()), Some("42"));
+                        let returned_version = if status_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                            42
+                        } else {
+                            43
+                        };
                         http::Response::builder()
                             .status(200)
-                            .body(
-                                r#"[{
+                            .body(format!(
+                                r#"[{{
                                     "column":"embedding",
                                     "binding_id":"fb_01",
-                                    "function":{
+                                    "function":{{
                                         "name":"embed",
                                         "object_id":"embed",
                                         "location":"objects/embed",
                                         "version":"7",
                                         "manifest_digest":"sha256:abc"
-                                    },
-                                    "table_version":42,
+                                    }},
+                                    "table_version":{returned_version},
                                     "rows":0,
                                     "fresh":0,
                                     "stale":0,
                                     "never_computed":0,
                                     "failed":0,
-                                    "auto_refresh":{
+                                    "auto_refresh":{{
                                         "enabled":false,
                                         "state":"disabled",
                                         "failure_streak":0,
                                         "next_run_at_millis":null
-                                    }
-                                }]"#,
-                            )
+                                    }}
+                                }}]"#,
+                            ))
                             .unwrap()
                     }
                     path => panic!("unexpected request path: {path}"),
@@ -11753,6 +11772,15 @@ mod tests {
         let status = table.function_column_status("embedding").await.unwrap();
         assert_eq!(status.table_version, 42);
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        let error = table.function_column_status("embedding").await.unwrap_err();
+        assert!(
+            error.to_string().contains(
+                "returned table version 43, but the table handle is pinned to version 42"
+            )
+        );
+        assert_eq!(status_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
     }
 
     #[tokio::test]
