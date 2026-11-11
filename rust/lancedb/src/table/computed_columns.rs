@@ -2572,6 +2572,10 @@ mod tests {
             auto_refresh_interval_seconds: Some(300),
             auto_refresh_resource_budget: Some(budget),
         };
+        assert_eq!(
+            super::ComputedColumnOptions::from_metadata(&HashMap::new()).unwrap(),
+            super::ComputedColumnOptions::default()
+        );
         let metadata = options.metadata().unwrap();
         assert_eq!(
             metadata
