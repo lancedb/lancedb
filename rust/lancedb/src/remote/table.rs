@@ -11717,7 +11717,7 @@ mod tests {
                         assert_eq!(request_body_json(&request)["version"], 42);
                         http::Response::builder()
                             .status(200)
-                            .body(r#"{"version":42,"schema":{"fields":[]}}"#)
+                            .body(r#"{"version":42,"schema":{"fields":[]}}"#.to_string())
                             .unwrap()
                     }
                     "/v1/table/my_table/function_columns/status" => {
