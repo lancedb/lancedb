@@ -5843,7 +5843,10 @@ async def test_remote_add_function_columns_forwards_auto_refresh_resource_budget
                     "version": "1",
                     "object_id": "fixture",
                     "location": "memory:///fixture",
-                    "manifest_digest": "sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6",
+                    "manifest_digest": (
+                        "sha256:7e22f815b6648e14f093a3979a8e5a2082"
+                        "fa773ebe1ec84b135cae7e84d6f8e6"
+                    ),
                 },
                 "inputs": [
                     {
