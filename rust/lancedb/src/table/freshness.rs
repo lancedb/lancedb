@@ -21,6 +21,7 @@
 //! removed by [`prune_sidecars`].
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt;
 use std::io::{Cursor, Read};
 use std::ops::Range;
 
