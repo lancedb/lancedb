@@ -44,6 +44,7 @@ from typing import (
 )
 
 import pyarrow as pa
+from packaging.requirements import Requirement
 from pydantic import (
     AfterValidator,
     BaseModel,
@@ -57,6 +58,7 @@ from pydantic import (
 from .schema import blob as _blob_field
 from .schema import is_blob_v2_field as _is_blob_v2_field
 from ._blob_reader import BlobReader
+from ._lancedb import _validate_conda_requirement
 from .secrets import EnvVarSecret
 
 _Int32 = conint(strict=True, ge=-(2**31), le=2**31 - 1)
@@ -1701,6 +1703,29 @@ def _packaged_by_source(value: Any) -> bool:
     return True
 
 
+def _validate_package_requirements(kind: str, packages: Sequence[str]) -> None:
+    for index, package in enumerate(packages):
+        field = f"{kind}[{index}]"
+        if not isinstance(package, str):
+            raise TypeError(f"{field} must be a string, got {package!r}")
+        if not package or package != package.strip():
+            raise ValueError(
+                f"{field} requirement {package!r} must be non-empty and trimmed"
+            )
+        try:
+            if kind == "conda":
+                _validate_conda_requirement(package)
+            else:
+                candidate = package
+                if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", package):
+                    candidate = f"dependency @ {package}"
+                Requirement(candidate)
+        except ValueError as error:
+            raise ValueError(
+                f"invalid {field} requirement {package!r}: {error}"
+            ) from error
+
+
 def _requirement_name(requirement: str) -> str:
     requirement = requirement.rpartition("::")[2]
     match = _REQUIREMENT_NAME.match(requirement.strip())
@@ -2242,6 +2267,7 @@ class FunctionDefinition:
             raise ValueError("a Function environment is pip or conda, not both")
         if conda_channels and not conda:
             raise ValueError("conda_channels requires conda packages")
+        _validate_package_requirements("conda" if conda else "pip", conda or pip)
         gpu_marker = _normalize_gpu_marker(gpu)
         if gpu_class is not None:
             _validate_gpu_class_name(gpu_class)
@@ -2595,9 +2621,12 @@ def function(
         non-nullable. Required for batch annotations. When omitted, the output
         is inferred from the return annotation.
     pip : sequence of str, optional
-        Pip requirements for the remote environment.
+        Pip requirements for the remote environment. Syntax is validated at
+        decoration time, including extras and environment markers. Named direct
+        references and bare package or git URLs are supported.
     conda : sequence of str, optional
-        Conda packages for the remote environment, instead of ``pip``.
+        Conda packages for the remote environment, instead of ``pip``. MatchSpec
+        syntax is validated at decoration time, including channels and builds.
     conda_channels : sequence of str, optional
         Conda channels in priority order; requires ``conda``.
     apt : sequence of str, optional
