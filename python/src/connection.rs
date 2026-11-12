@@ -457,7 +457,7 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (target_table_name, source_uri, target_namespace_path=None, source_version=None, source_tag=None, is_shallow=true))]
+    #[pyo3(signature = (target_table_name, source_uri, target_namespace_path=None, source_version=None, source_tag=None, is_shallow=true, *, exist_ok=false))]
     pub fn clone_table(
         self_: PyRef<'_, Self>,
         target_table_name: String,
@@ -466,6 +466,7 @@ impl Connection {
         source_version: Option<u64>,
         source_tag: Option<String>,
         is_shallow: bool,
+        exist_ok: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
 
@@ -477,7 +478,7 @@ impl Connection {
         if let Some(tag) = source_tag {
             builder = builder.source_tag(tag);
         }
-        builder = builder.is_shallow(is_shallow);
+        builder = builder.is_shallow(is_shallow).exist_ok(exist_ok);
 
         future_into_py(self_.py(), async move {
             let table = builder.execute().await.infer_error()?;
