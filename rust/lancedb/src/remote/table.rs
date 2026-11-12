@@ -1168,20 +1168,21 @@ impl<S: HttpSend> RemoteTable<S> {
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
         let framing = resolve_arrow_ipc_framing(content_type.as_deref(), request_id)?;
+        let table_version = response
+            .headers()
+            .get(&VERSION_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|version| *version > 0);
 
-        match framing {
+        let stream = match framing {
             ArrowIpcFraming::Stream => {
-                let table_version = response
-                    .headers()
-                    .get(&VERSION_HEADER)
-                    .and_then(|value| value.to_str().ok())
-                    .and_then(|value| value.parse().ok());
                 ipc_stream::read_ipc_stream(
                     response.bytes_stream(),
                     request_id.to_string(),
                     table_version,
                 )
-                .await
+                .await?
             }
             ArrowIpcFraming::File => {
                 // File framing keeps its footer at the end, so the whole body is
@@ -1190,9 +1191,25 @@ impl<S: HttpSend> RemoteTable<S> {
                 let reader = FileReader::try_new(Cursor::new(body), None)?;
                 let schema = reader.schema();
                 let stream = futures::stream::iter(reader).map_err(DataFusionError::from);
-                Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
+                Box::pin(RecordBatchStreamAdapter::new(schema, stream)) as SendableRecordBatchStream
             }
+        };
+        // Bind subsequent blob reads to the response's snapshot, never to a
+        // version sampled from the live table before or after the query.
+        let mut metadata = stream.schema().metadata().clone();
+        metadata.remove("lancedb:query_version");
+        if let Some(version) = table_version {
+            metadata.insert("lancedb:query_version".into(), version.to_string());
         }
+        let schema = Arc::new(stream.schema().as_ref().clone().with_metadata(metadata));
+        let metadata = schema.metadata().clone();
+        let batches = stream.map(move |batch| {
+            batch.map(|mut batch| {
+                batch.schema_metadata_mut().clone_from(&metadata);
+                batch
+            })
+        });
+        Ok(Box::pin(RecordBatchStreamAdapter::new(schema, batches)))
     }
 
     fn apply_query_params(
@@ -1605,6 +1622,21 @@ impl<S: HttpSend> RemoteTable<S> {
         } else {
             streams.await?
         };
+
+        if let Some(first) = streams.first() {
+            let version = first
+                .schema()
+                .metadata()
+                .get("lancedb:query_version")
+                .cloned();
+            if streams.iter().skip(1).any(|stream| {
+                stream.schema().metadata().get("lancedb:query_version") != version.as_ref()
+            }) {
+                return Err(Error::Runtime {
+                    message: "Remote query responses refer to different table snapshots; retry the query against a fixed version".into(),
+                });
+            }
+        }
 
         Ok(streams
             .into_iter()

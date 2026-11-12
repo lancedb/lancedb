@@ -1965,14 +1965,24 @@ impl Table {
     }
 
     /// Read blob bytes for `row_ids` from blob v2 column `column`.
-    #[pyo3(signature = (column, row_ids))]
+    #[pyo3(signature = (column, row_ids, *, version=None))]
     pub fn fetch_blobs(
         self_: PyRef<'_, Self>,
         column: String,
         row_ids: Vec<u64>,
+        version: Option<u64>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
+            let inner = if let Some(version) = version {
+                // Checkout an independent handle so concurrent queries and
+                // writes on the caller's live table remain independent.
+                let snapshot = inner.query_snapshot().await.infer_error()?;
+                snapshot.checkout(version).await.infer_error()?;
+                snapshot
+            } else {
+                inner
+            };
             let blobs: LargeBinaryArray = inner
                 .fetch_blobs(column.as_str(), &row_ids)
                 .await
