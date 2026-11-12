@@ -6338,12 +6338,19 @@ def test_index_exist_ok_preserves_definition_and_version(mem_db, method, name):
     assert table.version > before
 
 
-def test_accelerated_index_exist_ok_skips_gpu_validation():
+@pytest.mark.parametrize(
+    "column,name,existing",
+    [
+        ("vector", "kept", "kept"),
+        ("`docs`.`nested.dot`", None, "docs.`nested.dot`_idx"),
+    ],
+)
+def test_accelerated_index_exist_ok_skips_gpu_validation(column, name, existing):
     dataset = MagicMock()
-    dataset.list_indices.return_value = [{"name": "kept"}]
+    dataset.list_indices.return_value = [{"name": existing}]
     with patch("lancedb.table._validate_index_accelerator") as validate:
         table_module._create_accelerated_index(
-            dataset, column="vector", accelerator="cuda", name="kept", exist_ok=True
+            dataset, column=column, accelerator="cuda", name=name, exist_ok=True
         )
     validate.assert_not_called()
     dataset.create_index.assert_not_called()

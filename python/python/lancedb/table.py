@@ -171,9 +171,16 @@ def _validate_index_accelerator(accelerator: Any) -> None:
 def _create_accelerated_index(dataset, *, exist_ok=False, name=None, **options):
     if exist_ok:
         parts = _parse_field_path(options["column"])
-        default_name = (
-            options["column"] if any("." in part for part in parts) else ".".join(parts)
-        )
+        default_name = ".".join(parts)
+        if any("." in part for part in parts):
+            default_name = ".".join(
+                "`" + part.replace("`", "``") + "`"
+                if any(
+                    not character.isalnum() and character != "_" for character in part
+                )
+                else part
+                for part in parts
+            )
         name = name or f"{default_name}_idx"
         dataset.checkout_latest()
         if any(index["name"] == name for index in dataset.list_indices()):
