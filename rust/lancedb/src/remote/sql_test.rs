@@ -1375,7 +1375,11 @@ async fn remote_create_if_not_exists_accepts_a_completed_noop_without_a_registry
             })
             .await
             .unwrap();
-        assert!(job.id().is_none());
+        if defer {
+            assert!(job.id().is_none());
+        } else {
+            assert_eq!(job.job_type().as_deref(), Some("query"));
+        }
         job.wait().await.unwrap();
         assert_eq!(job.status().await.unwrap(), "finished");
         assert_eq!(*statements.lock().unwrap(), [statement]);
