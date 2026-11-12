@@ -4565,7 +4565,7 @@ mod tests {
         )]));
         ensure_supported_function_metadata(&schema).unwrap();
         let decoded = function_bindings(&schema).unwrap();
-        assert_eq!(decoded, [binding.clone()]);
+        assert_eq!(decoded.as_slice(), std::slice::from_ref(&binding));
         assert_eq!(function_bindings_metadata(&decoded).unwrap(), raw);
         assert!(!protected_roots(&decoded).unwrap().contains("body"));
 
