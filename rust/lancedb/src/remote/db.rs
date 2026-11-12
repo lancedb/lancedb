@@ -1655,9 +1655,9 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             let (request_id, rsp) = self.client.send_with_retry(req, None, true).await?;
             let rsp =
                 RemoteTable::<S>::handle_table_not_found(&request.name, rsp, &request_id).await?;
-            self.client.check_response(&request_id, rsp).await?;
+            let rsp = self.client.check_response(&request_id, rsp).await?;
 
-            Ok(Arc::new(RemoteTable::new_with_sql_client(
+            let table = Arc::new(RemoteTable::new_with_sql_client(
                 self.client.clone(),
                 self.db_name.clone(),
                 request.name,
@@ -1665,7 +1665,9 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 identifier,
                 version,
                 self.sql_client.clone(),
-            )))
+            ));
+            table.seed_blob_ranges_capability(rsp.headers());
+            Ok(table)
         } else {
             // Describe the table to confirm it exists before moving on.
             let req = self
@@ -1676,6 +1678,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 RemoteTable::<S>::handle_table_not_found(&request.name, rsp, &request_id).await?;
             let rsp = self.client.check_response(&request_id, rsp).await?;
             let version = parse_server_version(&request_id, &rsp)?;
+            let describe_headers = rsp.headers().clone();
             let describe_body = rsp.text().await.ok();
             let table = Arc::new(RemoteTable::new_with_sql_client(
                 self.client.clone(),
@@ -1686,6 +1689,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 version.clone(),
                 self.sql_client.clone(),
             ));
+            table.seed_blob_ranges_capability(&describe_headers);
             // This describe already carries the schema, so hand it to the table
             // instead of making the first schema read fetch it again. A version or
             // branch pin applied after this invalidates the cache.

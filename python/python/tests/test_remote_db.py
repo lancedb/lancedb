@@ -5466,6 +5466,7 @@ def blob_remote_table(
     *,
     server_version=Version("0.5.0"),
     location=None,
+    range_capability=None,
     version_header="1",
     framing="file",
     requests=None,
@@ -5487,6 +5488,8 @@ def blob_remote_table(
             request.send_response(200)
             request.send_header("Content-Type", "application/json")
             request.send_header("phalanx-version", str(server_version))
+            if range_capability is not None:
+                request.send_header("x-lancedb-blob-ranges", range_capability)
             request.end_headers()
             response = dict(BLOB_DESCRIBE_RESPONSE)
             response["version"] = body.get("version") or state["version"]
@@ -5594,6 +5597,42 @@ def blob_remote_table(
             writer_factory = pa.ipc.new_file if framing == "file" else pa.ipc.new_stream
             with writer_factory(request.wfile, response_table.schema) as writer:
                 writer.write_table(response_table, max_chunksize=1)
+        elif (
+            range_capability == "1"
+            and request.path == "/v1/table/test/fetch_blob_ranges/"
+        ):
+            size = int(request.headers["Content-Length"])
+            body = json.loads(request.rfile.read(size))
+            payloads = {10: b"alpha", 20: None, 30: b"gamma", 40: b""}
+            values = []
+            for item in body["ranges"]:
+                row, offset, length = (
+                    item[key] for key in ("row_id", "offset", "length")
+                )
+                error = None
+                if row not in payloads:
+                    error = "only 1 exist"
+                elif payloads[row] is not None and offset + length > len(payloads[row]):
+                    error = "range exceeds blob size"
+                if error:
+                    request.send_response(400)
+                    request.end_headers()
+                    request.wfile.write(error.encode())
+                    return
+                payload = payloads[row]
+                values.append(
+                    None if payload is None else payload[offset : offset + length]
+                )
+            response_table = pa.table(
+                {"value": pa.array(values, type=pa.large_binary())}
+            )
+            request.send_response(200)
+            request.send_header("Content-Type", "application/vnd.apache.arrow.stream")
+            request.send_header("x-lancedb-version", "1")
+            request.send_header("x-lancedb-query-snapshot", "v1:" + "a" * 64)
+            request.end_headers()
+            with pa.ipc.new_stream(request.wfile, response_table.schema) as writer:
+                writer.write_table(response_table)
         elif request.path == "/v1/table/test/fetch_blobs/":
             content_len = int(request.headers.get("Content-Length", 0))
             body = json.loads(request.rfile.read(content_len))
@@ -5901,8 +5940,11 @@ def test_sync_remote_blob_pandas_avoids_storage_access(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("use_async", [False, True])
-async def test_remote_fetch_blob_ranges(use_async):
-    with blob_remote_table() as remote_table:
+@pytest.mark.parametrize("range_capability", [None, "0", "2", "1"])
+async def test_remote_fetch_blob_ranges(use_async, range_capability):
+    with blob_remote_table(
+        server_version="1.13.0-beta.0", range_capability=range_capability
+    ) as remote_table:
         table = remote_table._table if use_async else remote_table
         requests = [
             (30, 2, 3),

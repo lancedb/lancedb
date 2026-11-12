@@ -86,6 +86,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use tokio::sync::RwLock;
@@ -634,6 +635,8 @@ pub struct RemoteTable<S: HttpSend = Sender> {
     version: Arc<RwLock<Option<u64>>>,
     location: RwLock<Option<String>>,
     schema_cache: BackgroundCache<SchemaRef, Error>,
+    // Only a successful describe can opt into the batched range protocol.
+    blob_ranges_supported: Arc<AtomicBool>,
     // WAL-PK-FUSION: delete, with its initializers below.
     wal_pk_fusion: PkFusionMemory,
     freshness: Arc<Mutex<FreshnessState>>,
@@ -881,11 +884,21 @@ impl<S: HttpSend> RemoteTable<S> {
             version: Arc::new(RwLock::new(None)),
             location: RwLock::new(None),
             schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
+            blob_ranges_supported: Arc::new(AtomicBool::new(false)),
             wal_pk_fusion: PkFusionMemory::default(),
             freshness: Arc::new(Mutex::new(FreshnessState::default())),
             branch: None,
             expected_query_snapshot: None,
         }
+    }
+
+    pub(super) fn seed_blob_ranges_capability(&self, headers: &http::HeaderMap) {
+        self.blob_ranges_supported.store(
+            headers
+                .get("x-lancedb-blob-ranges")
+                .is_some_and(|value| value == "1"),
+            AtomicOrdering::Relaxed,
+        );
     }
 
     /// Seed the schema cache from a `describe` body the caller already fetched.
@@ -918,6 +931,7 @@ impl<S: HttpSend> RemoteTable<S> {
             version: Arc::new(RwLock::new(None)),
             location: RwLock::new(None),
             schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
+            blob_ranges_supported: self.blob_ranges_supported.clone(),
             wal_pk_fusion: PkFusionMemory::default(),
             freshness: Arc::new(Mutex::new(FreshnessState::default())),
             branch,
@@ -1067,6 +1081,7 @@ impl<S: HttpSend> RemoteTable<S> {
         };
 
         let response = self.check_table_response(&request_id, response).await?;
+        self.seed_blob_ranges_capability(response.headers());
 
         match response.text().await {
             Ok(body) => {
@@ -1943,6 +1958,7 @@ async fn fetch_schema<S: HttpSend>(
     read_snapshot: ReadSnapshot,
     branch: Option<String>,
     freshness: Arc<Mutex<FreshnessState>>,
+    blob_ranges_supported: Arc<AtomicBool>,
 ) -> Result<SchemaRef> {
     let mut body = serde_json::json!({ "version": read_snapshot.version });
     if let Some(branch) = &branch {
@@ -1969,6 +1985,13 @@ async fn fetch_schema<S: HttpSend>(
 
     let response = client.check_response(&request_id, response).await?;
     freshness_headers.observe_headers(&freshness, response.headers());
+    blob_ranges_supported.store(
+        response
+            .headers()
+            .get("x-lancedb-blob-ranges")
+            .is_some_and(|value| value == "1"),
+        AtomicOrdering::Relaxed,
+    );
     let body = response.text().await.map_err(|e| {
         let status_code = e.status();
         Error::Http {
@@ -2026,6 +2049,7 @@ mod test_utils {
                 version: Arc::new(RwLock::new(None)),
                 location: RwLock::new(None),
                 schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
+                blob_ranges_supported: Arc::new(AtomicBool::new(false)),
                 wal_pk_fusion: PkFusionMemory::default(),
                 freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
@@ -2054,6 +2078,7 @@ mod test_utils {
                 version: Arc::new(RwLock::new(None)),
                 location: RwLock::new(None),
                 schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
+                blob_ranges_supported: Arc::new(AtomicBool::new(false)),
                 wal_pk_fusion: PkFusionMemory::default(),
                 freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
@@ -2091,6 +2116,7 @@ mod test_utils {
                 version: Arc::new(RwLock::new(None)),
                 location: RwLock::new(None),
                 schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
+                blob_ranges_supported: Arc::new(AtomicBool::new(false)),
                 wal_pk_fusion: PkFusionMemory::default(),
                 freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
@@ -2885,6 +2911,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             let table_name = self.name.clone();
             let branch = self.branch.clone();
             let freshness = self.freshness.clone();
+            let blob_ranges_supported = self.blob_ranges_supported.clone();
 
             match self
                 .schema_cache
@@ -2896,6 +2923,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                         read_snapshot,
                         branch,
                         freshness,
+                        blob_ranges_supported,
                     )
                     .await
                 })
