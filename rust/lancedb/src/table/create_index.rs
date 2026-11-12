@@ -150,16 +150,47 @@ impl NativeTable {
     ) -> Result<()> {
         let (column, lance_idx_params, index_type) = prepared;
         let mut dataset = (*self.dataset.get().await?).clone();
+        let guarded_name = opts.exist_ok.then(|| opts.name.clone().unwrap_or_else(|| {
+            let suffix = if matches!(&opts.index, Index::FTS(params) if params.get_document_granularity().is_list_element()) {
+                "_list_element_idx"
+            } else { "_idx" };
+            format!("{column}{suffix}")
+        }));
+        if let Some(name) = &guarded_name
+            && dataset
+                .load_indices()
+                .await?
+                .iter()
+                .any(|index| &index.name == name)
+        {
+            return Ok(());
+        }
         let columns = [column.as_str()];
         let mut builder = dataset
             .create_index_builder(&columns, index_type, lance_idx_params.as_ref())
             .train(opts.train)
-            .replace(opts.replace);
+            .replace(opts.replace && !opts.exist_ok);
 
-        if let Some(name) = opts.name {
+        if let Some(name) = guarded_name.clone().or(opts.name) {
             builder = builder.name(name);
         }
-        builder.await?;
+        if let Err(error) = builder.await {
+            if let Some(name) = guarded_name {
+                self.dataset.reload().await?;
+                if self
+                    .dataset
+                    .get()
+                    .await?
+                    .load_indices()
+                    .await?
+                    .iter()
+                    .any(|index| index.name == name)
+                {
+                    return Ok(());
+                }
+            }
+            return Err(error.into());
+        }
         // A writer already open was built before this index existed, so it has
         // to pick it up here or a read needing it is refused until it reopens.
         self.dataset
@@ -566,6 +597,63 @@ mod tests {
             .unwrap();
 
         Ok(FixedSizeListArray::from(data))
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_index_exist_ok_preserves_single_identity() {
+        let dir = tempdir().unwrap();
+        let db = connect(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let batch = record_batch!(("id", Int32, (0..512).collect::<Vec<_>>())).unwrap();
+        let table = db.create_table("t", batch).execute().await.unwrap();
+        let second = db.open_table("t").execute().await.unwrap();
+        let (left, right) = tokio::join!(
+            table
+                .create_index(&["id"], Index::BTree(Default::default()))
+                .exist_ok(true)
+                .execute(),
+            second
+                .create_index(&["id"], Index::BTree(Default::default()))
+                .exist_ok(true)
+                .execute()
+        );
+        left.unwrap();
+        right.unwrap();
+        table.checkout_latest().await.unwrap();
+        let indices = table
+            .as_native()
+            .unwrap()
+            .dataset
+            .get()
+            .await
+            .unwrap()
+            .load_indices()
+            .await
+            .unwrap();
+        assert_eq!(indices.len(), 1);
+        let original_uuid = indices[0].uuid;
+        let version = table.version().await.unwrap();
+        table
+            .create_index(&["id"], Index::BTree(Default::default()))
+            .replace(true)
+            .exist_ok(true)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.version().await.unwrap(), version);
+        let indices = table
+            .as_native()
+            .unwrap()
+            .dataset
+            .get()
+            .await
+            .unwrap()
+            .load_indices()
+            .await
+            .unwrap();
+        assert_eq!(indices[0].uuid, original_uuid);
     }
 
     #[tokio::test]

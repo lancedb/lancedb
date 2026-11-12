@@ -15,6 +15,7 @@ availability:
 ```sql SQL icon="database"
 CREATE INDEX ON documents USING btree (title)
 CREATE INDEX text_search ON documents USING fts (text)
+CREATE INDEX IF NOT EXISTS text_search ON documents USING fts (text)
 ```
 </CodeGroup>
 
@@ -37,6 +38,25 @@ not a different feature. An SDK build that must not replace an existing index
 runs as `create_` followed by the algorithm instead. See
 [Incremental Indexing](/indexing/incremental-indexing).
 </Note>
+
+Use `IF NOT EXISTS` to preserve the existing index with the same name. Without an
+explicit name, the name is derived from the column (`title_idx`, or
+`title_list_element_idx` for list-element FTS). Existing definitions and builds
+are kept, even when the new request specifies different settings.
+
+The Python SDK exposes the same behavior through `exist_ok=True` on
+`create_index` and `create_index_async`, including scalar and FTS wrappers.
+This option takes precedence over `replace`, whose default behavior is unchanged.
+
+```python
+from lancedb.index import BTree
+
+table.create_index("title", config=BTree(), name="title_idx", exist_ok=True)
+```
+
+An existing background build continues running. A completed submission handle
+for a skipped creation does not wait for that build; use `wait_for_index` when
+its completion is required.
 
 ## DROP INDEX {#drop}
 

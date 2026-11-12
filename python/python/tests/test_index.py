@@ -621,3 +621,29 @@ def test_index_statistics_index_type_lists_all_supported_values():
         set(get_args(get_type_hints(IndexStatistics)["index_type"]))
         == expected_index_types
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("background", [False, True])
+@pytest.mark.parametrize(
+    "column,config", [("id", BTree()), ("vector", IvfFlat(num_partitions=1))]
+)
+async def test_index_exist_ok_preserves_existing_index(
+    some_table, background, column, config
+):
+    await some_table.create_index(column, config=config, exist_ok=True)
+    version = await some_table.version()
+    original = await some_table.list_indices()
+    if background:
+        job = await some_table.create_index_async(
+            column, config=config, replace=True, exist_ok=True
+        )
+        await job.wait()
+    else:
+        await some_table.create_index(
+            column, config=config, replace=True, exist_ok=True
+        )
+    assert await some_table.version() == version
+    assert [(i.name, i.index_type) for i in await some_table.list_indices()] == [
+        (i.name, i.index_type) for i in original
+    ]
