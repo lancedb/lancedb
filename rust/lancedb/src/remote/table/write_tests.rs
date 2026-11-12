@@ -253,6 +253,13 @@ async fn multipart_http_faults_preserve_committed_blob_payloads() {
             let last = progress.last().unwrap();
             assert_eq!(last.0, 2);
             assert!(last.1 > 0 && last.2);
+            assert_eq!(
+                progress.first().unwrap().1,
+                0,
+                "scan is not an acknowledgement"
+            );
+            assert!(progress.windows(2).all(|pair| pair[0].1 <= pair[1].1));
+            assert_eq!(last.1, state.parts.values().map(Vec::len).sum::<usize>());
             server.abort();
         }
     }
@@ -336,4 +343,94 @@ async fn multipart_retries_sixth_part_after_reused_connection_closes() {
     );
     let unique: std::collections::HashSet<_> = attempts.iter().map(|(path, _)| path).collect();
     assert_eq!(unique.len(), 6, "the staged sixth txn must be replaced");
+}
+
+#[tokio::test]
+async fn multipart_rejections_preserve_progress_and_cleanup_boundaries() {
+    // Stage rejection, definite complete rejection, and ambiguous successful responses.
+    for (stage_status, complete_status, complete_body, cleanup) in [
+        (503, 200, "{}", true),
+        (200, 409, "transaction conflict", true),
+        (200, 429, "rate limited", true),
+        (200, 200, "{}", false),
+        (200, 200, "not json", false),
+        (200, 503, "gateway failure", false),
+    ] {
+        for abort_status in [200, 503] {
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let observed = requests.clone();
+            let progress = Arc::new(Mutex::new(Vec::new()));
+            let during_request = progress.clone();
+            let remote = Arc::new(RemoteTable::new_mock(
+                "test".into(),
+                move |request| {
+                    let path = request.url().path();
+                    observed.lock().unwrap().push(path.to_owned());
+                    let (status, body) = if path.ends_with("/create") {
+                        (200, r#"{"upload_id":"rejected-upload"}"#)
+                    } else if path.ends_with("/insert/") {
+                        let progress = during_request.lock().unwrap();
+                        assert!(!progress.is_empty(), "must execute the scan tracker");
+                        assert!(progress.iter().all(|p: &(usize, usize, bool)| p.1 == 0));
+                        (stage_status, "{}")
+                    } else if path.ends_with("/complete") {
+                        (complete_status, complete_body)
+                    } else if path.ends_with("/abort") {
+                        (abort_status, "cleanup response")
+                    } else {
+                        panic!("unexpected request {path}")
+                    };
+                    http::Response::builder()
+                        .status(status)
+                        .body(body.to_owned())
+                        .unwrap()
+                },
+                Some(semver::Version::new(0, 4, 0)),
+            ));
+            let input = arrow_array::record_batch!(("id", Int32, [1, 2])).unwrap();
+            remote.seed_schema(&serde_json::json!({"version": 1, "schema": JsonSchema::try_from(input.schema().as_ref()).unwrap()}).to_string());
+            let seen = progress.clone();
+            let error = AddDataBuilder::new(remote, Box::new(input), None)
+                .write_parallelism(2)
+                .retries(0)
+                .progress(move |p| {
+                    seen.lock()
+                        .unwrap()
+                        .push((p.output_rows(), p.output_bytes(), p.done()))
+                })
+                .execute()
+                .await
+                .unwrap_err();
+            let requests = requests.lock().unwrap();
+            let count = |suffix: &str| {
+                requests
+                    .iter()
+                    .filter(|path| path.ends_with(suffix))
+                    .count()
+            };
+            assert_eq!(count("/create"), 1);
+            assert_eq!(count("/insert/"), 1);
+            assert_eq!(count("/complete"), usize::from(stage_status == 200));
+            assert_eq!(
+                count("/abort"),
+                usize::from(cleanup),
+                "cleanup must honor retries=0: {error}"
+            );
+            assert_eq!(
+                error.to_string().contains("commit outcome unknown"),
+                !cleanup,
+                "{error}"
+            );
+            let progress = progress.lock().unwrap();
+            let last = progress.last().unwrap();
+            assert!(last.2);
+            assert_eq!(last.0, 2);
+            if stage_status != 200 {
+                assert!(
+                    progress.iter().all(|p| p.1 == 0),
+                    "unacknowledged bytes reported"
+                );
+            }
+        }
+    }
 }
