@@ -204,6 +204,121 @@ impl RTreeIndexBuilder {
     }
 }
 
+/// Builder for any scalar index plugin registered with Lance, selected by name.
+///
+/// LanceDB does not interpret the parameters. It passes the plugin name and the
+/// parameters to Lance, and the registered plugin validates them and the column
+/// type. Use it for index types without a dedicated builder: plugins your
+/// application registers, or Lance index types this version of LanceDB does
+/// not wrap yet. For the index types they cover, the dedicated builders, such
+/// as [`ZoneMapIndexBuilder`] and [`BloomFilterIndexBuilder`], are still the
+/// better choice, because they check their parameters when you set them.
+///
+/// The name is the plugin's name in Lance's registry. Lance's built-in plugins
+/// are `btree`, `bitmap`, `labellist`, `ngram`, `zonemap`, `bloomfilter`,
+/// `inverted`, `json`, `fm` and `minhashlsh`, plus `rtree` when Lance is built
+/// with its `geo` feature. These can differ from LanceDB's own type names:
+/// `labellist`, not `LABEL_LIST`. Names are case-insensitive, as in Lance, so
+/// the builder trims and lower-cases the name: `"ZoneMap"` selects `zonemap`.
+///
+/// Parameters are optional and, if given, must be a JSON object. They use the
+/// plugin's own parameter names. Lance reports an unknown plugin name, or
+/// parameters the plugin rejects, when the index is built.
+///
+/// Remote tables need a server that supports plugin indexes; see
+/// [`Index::Plugin`](crate::index::Index::Plugin).
+///
+/// ```
+/// use lancedb::index::{Index, scalar::PluginIndexBuilder};
+/// use serde_json::json;
+///
+/// # async fn create_plugin_index(table: &lancedb::Table) -> lancedb::Result<()> {
+/// let bloom_filter = PluginIndexBuilder::new("bloomfilter")?
+///     .params(json!({"number_of_items": 4096, "probability": 0.01}))?;
+/// table
+///     .create_index(&["id"], Index::Plugin(bloom_filter))
+///     .execute()
+///     .await?;
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct PluginIndexBuilder {
+    pub(crate) index_type: String,
+    pub(crate) params: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+impl PluginIndexBuilder {
+    /// Select the scalar index plugin named `index_type`.
+    ///
+    /// The name is trimmed and lower-cased. Returns
+    /// [`Error::InvalidInput`](crate::Error::InvalidInput) if it is empty.
+    pub fn new(index_type: impl Into<String>) -> crate::Result<Self> {
+        let index_type = index_type.into().trim().to_lowercase();
+        if index_type.is_empty() {
+            return Err(crate::Error::InvalidInput {
+                message: "a scalar index plugin name must not be empty".into(),
+            });
+        }
+        Ok(Self {
+            index_type,
+            params: None,
+        })
+    }
+
+    /// Set the plugin's parameters, which must be a JSON object.
+    ///
+    /// Returns [`Error::InvalidInput`](crate::Error::InvalidInput) for any
+    /// other JSON value, including `null`.
+    pub fn params(mut self, params: serde_json::Value) -> crate::Result<Self> {
+        match params {
+            serde_json::Value::Object(params) => {
+                self.params = Some(params);
+                Ok(self)
+            }
+            other => Err(crate::Error::InvalidInput {
+                message: format!(
+                    "scalar index plugin params must be a JSON object, got {}",
+                    json_kind(&other)
+                ),
+            }),
+        }
+    }
+
+    /// Set the plugin's parameters from a JSON string, which must hold an object.
+    ///
+    /// Returns [`Error::InvalidInput`](crate::Error::InvalidInput) if the string
+    /// is not valid JSON or holds anything but an object.
+    pub fn params_json(self, params: impl AsRef<str>) -> crate::Result<Self> {
+        let params =
+            serde_json::from_str(params.as_ref()).map_err(|e| crate::Error::InvalidInput {
+                message: format!("scalar index plugin params are not valid JSON: {e}"),
+            })?;
+        self.params(params)
+    }
+
+    /// The plugin name, trimmed and lower-cased.
+    pub fn index_type(&self) -> &str {
+        &self.index_type
+    }
+
+    /// The plugin's parameters, if set.
+    pub fn parameters(&self) -> Option<&serde_json::Map<String, serde_json::Value>> {
+        self.params.as_ref()
+    }
+}
+
+fn json_kind(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "a boolean",
+        serde_json::Value::Number(_) => "a number",
+        serde_json::Value::String(_) => "a string",
+        serde_json::Value::Array(_) => "an array",
+        serde_json::Value::Object(_) => "an object",
+    }
+}
+
 pub use lance_index::scalar::FullTextSearchQuery;
 pub use lance_index::scalar::InvertedIndexParams as FtsIndexBuilder;
 pub use lance_index::scalar::InvertedIndexParams;
@@ -266,5 +381,67 @@ mod tests {
             assert!(RTreeIndexBuilder::default().page_size(page_size).is_err());
         }
         assert!(RTreeIndexBuilder::default().page_size(2).is_ok());
+    }
+
+    #[test]
+    fn plugin_index_builder_normalizes_the_name() {
+        for name in ["zonemap", "ZoneMap", "ZONEMAP", "  zonemap\t"] {
+            assert_eq!(
+                PluginIndexBuilder::new(name).unwrap().index_type(),
+                "zonemap"
+            );
+        }
+        for name in ["", "   ", "\n"] {
+            assert!(matches!(
+                PluginIndexBuilder::new(name),
+                Err(crate::Error::InvalidInput { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn plugin_index_builder_accepts_only_object_params() {
+        let builder = PluginIndexBuilder::new("bloomfilter").unwrap();
+        assert_eq!(builder.parameters(), None);
+
+        let expected = serde_json::json!({"number_of_items": 4096});
+        let from_value = builder.clone().params(expected.clone()).unwrap();
+        let from_json = builder
+            .clone()
+            .params_json(r#"{"number_of_items": 4096}"#)
+            .unwrap();
+        assert_eq!(from_value, from_json);
+        assert_eq!(from_value.parameters(), Some(expected.as_object().unwrap()));
+        assert_eq!(
+            builder
+                .clone()
+                .params(serde_json::json!({}))
+                .unwrap()
+                .parameters(),
+            Some(&serde_json::Map::new())
+        );
+
+        for (params, kind) in [
+            (serde_json::Value::Null, "null"),
+            (serde_json::json!(true), "a boolean"),
+            (serde_json::json!(1), "a number"),
+            (serde_json::json!("x"), "a string"),
+            (serde_json::json!([1]), "an array"),
+        ] {
+            let json = params.to_string();
+            for result in [
+                builder.clone().params(params),
+                builder.clone().params_json(json),
+            ] {
+                let Err(crate::Error::InvalidInput { message }) = result else {
+                    panic!("non-object params must be rejected");
+                };
+                assert!(message.ends_with(kind), "{message}");
+            }
+        }
+        let Err(crate::Error::InvalidInput { message }) = builder.params_json("{not json") else {
+            panic!("malformed JSON must be rejected");
+        };
+        assert!(message.contains("not valid JSON"), "{message}");
     }
 }

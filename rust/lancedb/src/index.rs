@@ -16,7 +16,8 @@ use crate::{DistanceType, Error, Result, job::Job, table::BaseTable};
 use self::{
     scalar::{
         BTreeIndexBuilder, BitmapIndexBuilder, BloomFilterIndexBuilder, FmIndexBuilder,
-        LabelListIndexBuilder, NGramIndexBuilder, RTreeIndexBuilder, ZoneMapIndexBuilder,
+        LabelListIndexBuilder, NGramIndexBuilder, PluginIndexBuilder, RTreeIndexBuilder,
+        ZoneMapIndexBuilder,
     },
     vector::{
         IvfHnswFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder,
@@ -73,6 +74,35 @@ pub enum Index {
     /// An R-tree index accelerates spatial intersection filters on GeoArrow geometries.
     /// Native creation requires the `geo` feature.
     RTree(RTreeIndexBuilder),
+
+    /// Any scalar index plugin registered with Lance, selected by name, with
+    /// optional JSON parameters. See [`PluginIndexBuilder`].
+    ///
+    /// Native tables build it as a Lance scalar index, and the plugin validates
+    /// the column and the parameters. [`list_indices`](crate::Table::list_indices)
+    /// reports the type Lance records for it: a built-in type such as
+    /// [`IndexType::ZoneMap`] when there is one, or else
+    /// [`IndexType::Custom`] with the plugin's display name.
+    ///
+    /// Remote tables send the upper-cased plugin name as the index type, and
+    /// the parameters as one JSON object under a top-level `params` key,
+    /// omitted when there are none. They are not flattened into the request
+    /// like the parameters of the built-in types, so they cannot collide with
+    /// request fields such as `column` or `name`. The server must support
+    /// plugin indexes; LanceDB Enterprise does not yet.
+    ///
+    /// ```
+    /// use lancedb::index::{Index, scalar::PluginIndexBuilder};
+    ///
+    /// # async fn create_zonemap(table: &lancedb::Table) -> lancedb::Result<()> {
+    /// table
+    ///     .create_index(&["timestamp"], Index::Plugin(PluginIndexBuilder::new("zonemap")?))
+    ///     .execute()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    Plugin(PluginIndexBuilder),
 
     /// Full text search index using BM25.
     ///
