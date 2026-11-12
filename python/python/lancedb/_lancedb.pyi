@@ -1227,6 +1227,7 @@ async def connect_catalog(
     sql_host_override: Optional[str] = None,
     read_consistency_interval: Optional[float] = None,
     oauth_config: Optional[Any] = None,
+    storage_options: Optional[dict[str, str]] = None,
 ) -> Catalog: ...
 
 class NameListing:
