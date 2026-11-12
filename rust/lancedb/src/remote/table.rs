@@ -2658,6 +2658,13 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .submit_materialized_view_job(statement, self.namespace.clone())
             .await?;
         match submission {
+            crate::remote::sql::materialized_view::MaterializedViewJobSubmission::AlreadyExists => {
+                Err(Error::Runtime {
+                    message:
+                        "REFRESH MATERIALIZED VIEW returned a create-only already_exists status"
+                            .into(),
+                })
+            }
             crate::remote::sql::materialized_view::MaterializedViewJobSubmission::Registry {
                 job_id,
             } => Ok(Job::new_typed(Box::new(MaterializedViewRefreshJob {
