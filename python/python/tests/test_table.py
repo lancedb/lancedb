@@ -6374,3 +6374,12 @@ def test_index_exist_ok_matches_lance_default_name(mem_db, column):
     table.create_index(column, config=BTree(), exist_ok=True)
     assert table.version == before
     assert len(table.list_indices()) == 1
+
+
+def test_fts_exist_ok_matches_quoted_default_name(mem_db):
+    table = mem_db.create_table("quoted_fts", [{"body-text": "keep this document"}])
+    table.create_index("`body-text`", config=FTS())
+    before = table.version
+    table.create_index("`body-text`", config=FTS(), exist_ok=True)
+    assert table.version == before
+    assert len(table.list_indices()) == 1

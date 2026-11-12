@@ -155,7 +155,9 @@ impl NativeTable {
                 name.clone()
             } else {
                 let names = lance_core::datatypes::parse_field_path(&column)?;
-                let default_name = if names.iter().any(|name| name.contains('.')) {
+                let default_name = if matches!(&opts.index, Index::FTS(_))
+                    || names.iter().any(|name| name.contains('.'))
+                {
                     column.clone()
                 } else {
                     names.join(".")
