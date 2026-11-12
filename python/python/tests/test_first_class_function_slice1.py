@@ -34,7 +34,7 @@ FIXTURES = (
 
 
 def fixture(name: str) -> str:
-    return (FIXTURES / name).read_text()
+    return (FIXTURES / name).read_text(encoding="utf-8")
 
 
 def job_result(name: str) -> dict:
@@ -146,6 +146,38 @@ def test_function_version_identity_is_immutable_and_exact():
     for invalid in [version.image.manifest_digest, "0", "01", "-1", str(2**64)]:
         with pytest.raises(ValueError):
             FunctionVersion(**{**value, "version": invalid})
+
+
+@pytest.mark.parametrize(
+    "case", json.loads(fixture("runtime_identity.json")), ids=lambda case: case["name"]
+)
+def test_runtime_digests_match_server_golden_values(case):
+    runtime = PythonRuntimeSpec.from_json(json.dumps(case["runtime"]))
+    assert runtime.digest == case["digest"]
+    assert (
+        PythonRuntimeSpec.from_json(runtime.to_canonical_json()).digest
+        == runtime.digest
+    )
+
+
+def test_unknown_runtime_digest_fails_closed():
+    runtime = PythonRuntimeSpec.from_json('{"kind":"python_v3","future":"value"}')
+    with pytest.raises(ValueError, match="cannot digest unknown runtime kind"):
+        runtime.digest
+
+
+@pytest.mark.parametrize("runtime_digest", [None, "sha256:runtime-inputs"])
+def test_function_version_preserves_runtime_digest(runtime_digest):
+    value = job_result("remote_function_job.json")
+    legacy = FunctionVersion.from_json(json.dumps(value))
+    assert legacy.runtime_digest is None
+    assert "runtime_digest" not in json.loads(legacy.to_canonical_json())
+    value["runtime_digest"] = runtime_digest
+    version = FunctionVersion.from_json(json.dumps(value))
+    assert version.runtime_digest == runtime_digest
+    assert FunctionVersion.from_json(version.to_canonical_json()) == version
+    with pytest.raises((TypeError, ValueError)):
+        version.runtime_digest = "sha256:changed"
 
 
 @pytest.mark.parametrize("source_digest", [None, "sha256:source-artifact"])

@@ -1,6 +1,6 @@
 [package]
 name = "lancedb"
-version = "0.42.0-beta.11"
+version = "0.42.0-beta.12"
 edition.workspace = true
 description = "LanceDB: A serverless, low-latency vector database for AI applications"
 license.workspace = true
@@ -46,7 +46,7 @@ lance-io = { workspace = true }
 lance-index = { workspace = true, features = ["tokenizer-jieba", "tokenizer-lindera"] }
 lance-table = { workspace = true }
 # Keep the upstream source for downstream SDKs, where workspace patches do not apply.
-lance-linalg = { "version" = "=15.0.0-beta.17", "tag" = "v15.0.0-beta.17", "git" = "https://github.com/lance-format/lance.git" }
+lance-linalg = { "version" = "=15.0.0-beta.18", "tag" = "v15.0.0-beta.18", "git" = "https://github.com/lance-format/lance.git" }
 lance-encoding = { workspace = true }
 lance-arrow = { workspace = true }
 lance-namespace = { workspace = true }

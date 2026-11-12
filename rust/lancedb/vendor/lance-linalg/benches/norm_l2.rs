@@ -16,7 +16,7 @@ use num_traits::Float;
 use rand::Rng;
 
 use lance_arrow::{ArrowFloatType, FloatArray, bfloat16::BFloat16Type};
-use lance_linalg::distance::{norm_l2, norm_l2_f64_simd, norm_l2_impl};
+use lance_linalg::distance::{norm_l2, norm_l2_impl};
 use lance_testing::datagen::generate_random_array_with_seed;
 
 #[cfg(target_os = "linux")]
@@ -113,7 +113,7 @@ fn bench_distance(c: &mut Criterion) {
         c,
         target.as_slice(),
         norm_l2_impl::<f64, f32, 8>,
-        Some(norm_l2_f64_simd),
+        Some(norm_l2),
     );
 }
 

@@ -150,6 +150,7 @@ pub fn _lancedb(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(table::tokenize, m)?)?;
     m.add_function(wrap_pyfunction!(permutation::async_permutation_builder, m)?)?;
     m.add_function(wrap_pyfunction!(util::validate_table_name, m)?)?;
+    m.add_function(wrap_pyfunction!(util::validate_conda_requirement, m)?)?;
     m.add_function(wrap_pyfunction!(util::validate_function_retry_policy, m)?)?;
     m.add_function(wrap_pyfunction!(util::parse_field_path, m)?)?;
     m.add_function(wrap_pyfunction!(query::fts_query_to_json, m)?)?;

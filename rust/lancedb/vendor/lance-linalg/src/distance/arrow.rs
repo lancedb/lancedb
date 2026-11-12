@@ -125,7 +125,9 @@ impl Operation<'_> {
     fn binary(self, query: &[u8], values: &[u8], dim: usize) -> Result<Vec<f32>> {
         match self {
             Self::Batch(DistanceType::Hamming) => {
-                Ok(hamming::hamming_distance_batch(query, values, dim).collect())
+                let mut distances = vec![0.0; values.len() / dim];
+                hamming::hamming_distance_batch_into(query, values, dim, &mut distances);
+                Ok(distances)
             }
             Self::Multivec(DistanceType::Hamming, rows) => {
                 Ok(multivec(query, values, dim, rows, hamming::hamming))

@@ -1,6 +1,6 @@
 [package]
 name = "lance-linalg"
-version = "15.0.0-beta.17"
+version = "15.0.0-beta.18"
 publish = false
 edition = { workspace = true }
 license = { workspace = true }
@@ -64,6 +64,10 @@ harness = false
 
 [[bench]]
 name = "batch_distance"
+harness = false
+
+[[bench]]
+name = "hamming"
 harness = false
 
 [lints.rust]

@@ -95,6 +95,7 @@ struct TestSqlService {
     exchanges: ReceivedExchanges,
     result_overrides: Arc<std::sync::Mutex<HashMap<String, RecordBatch>>>,
     materialized_view_job_handle_supported: bool,
+    optimize_error: Option<Status>,
     /// How many exchange responses have been dropped, finished or not.
     exchange_drops: Arc<AtomicUsize>,
     result: RecordBatch,
@@ -269,6 +270,7 @@ impl Default for TestSqlService {
             exchanges: Arc::new(std::sync::Mutex::new(Vec::new())),
             result_overrides: Arc::new(std::sync::Mutex::new(HashMap::new())),
             materialized_view_job_handle_supported: false,
+            optimize_error: None,
             exchange_drops: Arc::new(AtomicUsize::new(0)),
             result,
             large_result,
@@ -439,6 +441,11 @@ impl FlightService for TestSqlService {
             .and_then(|command| command.unpack::<CommandStatementQuery>().ok().flatten());
         if let Some(command) = &initial {
             self.statements.lock().unwrap().push(command.query.clone());
+            if command.query.starts_with("OPTIMIZE ")
+                && let Some(error) = &self.optimize_error
+            {
+                return Err(error.clone());
+            }
             if command.query == "SELECT rejected" {
                 return Err(Status::invalid_argument("invalid statement"));
             }
@@ -3931,4 +3938,120 @@ async fn remote_compact_preserves_omissions_and_explicit_default_values() {
         );
         shutdown.send(()).unwrap();
     }
+}
+
+#[tokio::test]
+async fn remote_optimize_parser_errors_are_clear_without_resubmission() {
+    use crate::table::optimize::CompactionOverrides;
+    for (code, message, unsupported) in [
+        (
+            tonic::Code::InvalidArgument,
+            "ParserError(\"Expected: end of statement, found: REWRITE at Line: 1\")",
+            true,
+        ),
+        (
+            tonic::Code::InvalidArgument,
+            "ParserError: Expected: TABLE, found: events",
+            true,
+        ),
+        (
+            tonic::Code::InvalidArgument,
+            "Unknown OPTIMIZE option 'io_buffer_size'",
+            true,
+        ),
+        (
+            tonic::Code::InvalidArgument,
+            "ParserError: future grammar diagnostic",
+            true,
+        ),
+        (
+            tonic::Code::InvalidArgument,
+            "Unknown OPTIMIZE option 'future_option'",
+            true,
+        ),
+        (
+            tonic::Code::PermissionDenied,
+            "ParserError: future grammar diagnostic",
+            false,
+        ),
+        (tonic::Code::PermissionDenied, "permission denied", false),
+        (tonic::Code::NotFound, "table not found", false),
+        (tonic::Code::Unavailable, "transport error", false),
+        (
+            tonic::Code::InvalidArgument,
+            "invalid table configuration",
+            false,
+        ),
+    ] {
+        let status = Status::new(code, message);
+        let service = TestSqlService {
+            adaptive: true,
+            optimize_error: Some(status),
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let (sql_client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let client =
+            client_with_handler(|_| -> http::Response<String> { panic!("no REST fallback") });
+        let table = RemoteTable::new_with_sql_client(
+            client,
+            "analytics".into(),
+            "events".into(),
+            vec![],
+            "events".into(),
+            Default::default(),
+            Some(sql_client),
+        );
+        let error = table
+            .compact(CompactionOverrides::default())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            matches!(error, Error::NotSupported { .. }),
+            unsupported,
+            "{error:?}"
+        );
+        assert!(error.to_string().contains(message));
+        assert!(error.to_string().contains("request_id"));
+        assert_eq!(statements.lock().unwrap().len(), 1);
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn remote_optimize_branch_options_are_not_dropped() {
+    let service = TestSqlService {
+        adaptive: true,
+        optimize_error: Some(Status::invalid_argument(
+            "ParserError: Expected: ), found: , at Line: 1",
+        )),
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let (sql_client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let client = client_with_handler(|_| -> http::Response<String> { panic!("no REST fallback") });
+    let table = RemoteTable::new_with_sql_client(
+        client,
+        "analytics".into(),
+        "events".into(),
+        vec![],
+        "events".into(),
+        Default::default(),
+        Some(sql_client),
+    )
+    .with_branch(Some("exp".into()));
+    let error = table
+        .compact(crate::table::optimize::CompactionOverrides {
+            io_buffer_size: Some(0),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(error, Error::NotSupported { .. }));
+    assert!(error.to_string().contains("compatible release"));
+    assert_eq!(
+        *statements.lock().unwrap(),
+        ["OPTIMIZE \"events\" REWRITE DATA WITH (branch = 'exp', io_buffer_size = 0)"]
+    );
+    shutdown.send(()).unwrap();
 }

@@ -22,6 +22,7 @@ import time
 from urllib.parse import parse_qs, urlparse
 from unittest.mock import MagicMock, patch
 import uuid
+import warnings
 from packaging.version import Version
 from lance_namespace.errors import TableNotFoundError
 
@@ -459,6 +460,31 @@ def test_remote_table_exists_rechecks_cached_table():
         assert db.table_exists(table_id) is False
         assert table_id == ["ns", "table"]
     assert requests == ["/v1/table/ns$table/describe/"] * 2
+
+
+@pytest.mark.parametrize("status", [200, 404, 403])
+def test_remote_membership_uses_direct_lookup(status):
+    requests = []
+
+    def handler(request):
+        requests.append(request.path)
+        assert request.command == "POST"
+        assert request.path == "/v1/table/t129/describe/"
+        request.send_response(status)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(b"{}" if status == 200 else b"lookup failed")
+
+    with mock_lancedb_connection(handler) as db:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            if status in (200, 404):
+                assert ("t129" in db) is (status == 200)
+            else:
+                with pytest.raises(HttpError) as exc_info:
+                    "t129" in db
+                assert exc_info.value.status_code == status
+    assert requests == ["/v1/table/t129/describe/"]
 
 
 def paginated_table_listing_handler(request):
@@ -6278,6 +6304,8 @@ def test_remote_function_registration_transports_max_concurrency():
     def registered(value: float) -> float:
         return value
 
+    definition["runtime_digest"] = registered.registration_request.runtime.digest
+
     class RegistrationServer(flight.FlightServerBase):
         def __init__(self):
             super().__init__("grpc://127.0.0.1:0")
@@ -6296,6 +6324,7 @@ def test_remote_function_registration_transports_max_concurrency():
     assert len(server.tickets) == 1
     assert b'"max_concurrency":4' in server.tickets[0]
     assert version.max_concurrency == 4
+    assert version.runtime_digest == registered.registration_request.runtime.digest
 
 
 @pytest.mark.asyncio
