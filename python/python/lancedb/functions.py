@@ -1296,6 +1296,21 @@ def _annotation_type(annotation: Any) -> tuple[pa.DataType, bool]:
     raise TypeError(f"unsupported Function annotation: {annotation!r}")
 
 
+def _validate_callable(function: Any) -> None:
+    if hasattr(function, "__wrapped__"):
+        raise TypeError(
+            "decorated wrappers are not supported; put caching inside the function "
+            "body or use a class Function with a cache in __init__"
+        )
+    if inspect.isgeneratorfunction(function) or inspect.isasyncgenfunction(function):
+        raise TypeError(
+            "generator Functions are not supported; return a value instead of "
+            "yielding, or return a list for multiple values"
+        )
+    if inspect.isfunction(function) and function.__name__ == "<lambda>":
+        raise TypeError("lambda Functions are not supported; use a named def instead")
+
+
 def _callable_parameters(function: Callable[..., Any]) -> tuple[inspect.Parameter, ...]:
     parameters = tuple(inspect.signature(function).parameters.values())
     for parameter in parameters:
@@ -1306,7 +1321,11 @@ def _callable_parameters(function: Callable[..., Any]) -> tuple[inspect.Paramete
         ):
             raise TypeError("Function callables require named, non-variadic parameters")
         if parameter.default is not inspect.Parameter.empty:
-            raise TypeError("Function callable defaults are not supported")
+            raise TypeError(
+                f"Function callable defaults are not supported: {parameter.name!r}; "
+                "move configuration parameters to a class Function's __init__ "
+                "and pass them as binding-time initialization values"
+            )
     return parameters
 
 
@@ -2176,6 +2195,7 @@ def _class_member(cls: type, name: str) -> Any:
 
 def _class_call(cls: type) -> Callable[..., Any]:
     call = _class_member(cls, "__call__")
+    _validate_callable(call)
     if not inspect.isfunction(call) or inspect.iscoroutinefunction(call):
         raise TypeError("a class Function must define a synchronous __call__ method")
     close = _class_member(cls, "close")
@@ -2232,12 +2252,10 @@ class FunctionDefinition:
         if not is_class and (
             not inspect.isfunction(function) or inspect.iscoroutinefunction(function)
         ):
+            _validate_callable(function)
             raise TypeError(
                 "@function requires a synchronous Python function or a class"
             )
-        function_name = name or function.__name__
-        if not _FUNCTION_NAME.fullmatch(function_name):
-            raise ValueError(f"invalid Function name: {function_name!r}")
         if pip and conda:
             raise ValueError("a Function environment is pip or conda, not both")
         if conda_channels and not conda:
@@ -2298,6 +2316,11 @@ class FunctionDefinition:
                 "model Functions reserve environment variables "
                 f"{reserved!r}; the worker sets them for the private snapshot"
             )
+        if not is_class:
+            _validate_callable(function)
+        function_name = name or function.__name__
+        if not _FUNCTION_NAME.fullmatch(function_name):
+            raise ValueError(f"invalid Function name: {function_name!r}")
         if is_class:
             if "<" in function.__qualname__ or "." in function.__qualname__:
                 raise ValueError(
@@ -2528,6 +2551,14 @@ def function(
     and build rate limiters in ``__init__``; every batch of the instance then
     reuses them. An instance serves many batches of one binding, so state is
     shared across them, but not across instances or workers.
+
+    Functions and ``__call__`` methods must return a value. Generators,
+    including async generators, are not supported; return a list to produce
+    multiple values for a list output. Lambdas and decorated wrappers such as
+    ``functools.lru_cache`` are not supported. Use a named ``def`` and keep
+    caches inside the body or in a class instance initialized by ``__init__``.
+    Callable input parameters cannot have defaults; move configurable values
+    to class initialization fields instead.
 
     **Initialization.** The annotated parameters of a class's ``__init__``
     are the Function's initialization fields. Their values belong to each
