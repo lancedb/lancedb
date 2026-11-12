@@ -1475,7 +1475,7 @@ impl<S: HttpSend> RemoteTable<S> {
         Ok(AddResult { version })
     }
 
-    async fn abort_multipart_write(&self, upload_id: &str) -> Result<()> {
+    async fn abort_multipart_write(&self, upload_id: &str, retries: Option<u8>) -> Result<()> {
         let request = self.apply_branch_query(
             self.client
                 .post(&format!(
@@ -1484,7 +1484,14 @@ impl<S: HttpSend> RemoteTable<S> {
                 ))
                 .query(&[("upload_id", upload_id)]),
         );
-        let (request_id, response) = self.send(request, true).await?;
+        let freshness = self.snapshot_freshness_headers();
+        let client = self.client.with_retries(retries);
+        let (request_id, response) = client
+            .send_with_retry(freshness.apply(request), None, true)
+            .await?;
+        if response.status().is_success() {
+            freshness.observe_headers(&self.freshness, response.headers());
+        }
         self.check_table_response(&request_id, response).await?;
         Ok(())
     }
@@ -2122,13 +2129,16 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
         output: PreprocessingOutput,
         num_partitions: usize,
     ) -> Result<AddResult> {
+        if let Some(tracker) = &output.tracker {
+            tracker.use_wire_bytes();
+        }
         let freshness_request = self.snapshot_freshness_headers();
         let upload_id = self.create_multipart_write(output.retries).await?;
         if let Err(err) = self
             .execute_multipart_inserts(&upload_id, &output, num_partitions)
             .await
         {
-            if let Err(abort_err) = self.abort_multipart_write(&upload_id).await {
+            if let Err(abort_err) = self.abort_multipart_write(&upload_id, output.retries).await {
                 log::warn!(
                     "Failed to abort multipart write {}: {}",
                     upload_id,
@@ -2139,31 +2149,57 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
         }
         // A lost complete response can mean a successful commit. Neither repeat
         // complete nor start a new upload session without a server commit token.
-        let result = self.complete_multipart_write(&upload_id).await.map_err(|err| {
-            let ambiguous = match &err {
-                Error::Http { status_code, .. } | Error::Retry { status_code, .. } => {
-                    status_code.is_none_or(|status| status.is_server_error())
+        let result = match self.complete_multipart_write(&upload_id).await {
+            Ok(result) => result,
+            Err(err) => {
+                let (request_id, status_code) = match &err {
+                    Error::Http {
+                        request_id,
+                        status_code,
+                        ..
+                    }
+                    | Error::Retry {
+                        request_id,
+                        status_code,
+                        ..
+                    } => (request_id.clone(), *status_code),
+                    _ => return Err(err),
+                };
+                // These responses positively reject the commit. Cleanup remains
+                // best effort and must not replace the original write error.
+                if matches!(
+                    status_code,
+                    Some(StatusCode::CONFLICT | StatusCode::TOO_MANY_REQUESTS)
+                ) {
+                    if let Err(abort_err) =
+                        self.abort_multipart_write(&upload_id, output.retries).await
+                    {
+                        log::warn!(
+                            "Failed to abort rejected multipart write {}: {}",
+                            upload_id,
+                            abort_err
+                        );
+                    }
+                    return Err(err);
                 }
-                _ => false,
-            };
-            if !ambiguous {
-                return err;
+                if status_code.is_some_and(|status| !status.is_server_error()) {
+                    return Err(err);
+                }
+                log::warn!(
+                    "Multipart write {} completion failed; commit outcome may be unknown: {}. Check the table before retrying.",
+                    upload_id,
+                    err
+                );
+                return Err(Error::Http {
+                    request_id,
+                    status_code,
+                    source: Box::new(UnknownWriteOutcome {
+                        upload_id,
+                        source: err,
+                    }),
+                });
             }
-            log::warn!("Multipart write {} completion failed; commit outcome may be unknown: {}. Check the table before retrying.", upload_id, err);
-            let request_id = match &err {
-                Error::Http { request_id, .. } | Error::Retry { request_id, .. } => request_id.clone(),
-                _ => String::new(),
-            };
-            let status_code = match &err {
-                Error::Http { status_code, .. } | Error::Retry { status_code, .. } => *status_code,
-                _ => None,
-            };
-            Error::Http {
-                request_id,
-                status_code,
-                source: Box::new(UnknownWriteOutcome { upload_id: upload_id.clone(), source: err }),
-            }
-        })?;
+        };
         if output.overwrite {
             self.invalidate_schema_cache();
         }

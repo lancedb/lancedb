@@ -150,6 +150,10 @@ Python and TypeScript report elapsed time in seconds; Rust returns a `Duration`.
 The expected row count may be unknown for streaming input. On the final update,
 it falls back to the number of rows written.
 
+For remote multipart writes, rows count input scanning, while bytes count
+acknowledged IPC parts. Bytes start at zero and a retried part is counted once,
+after acknowledgement. Scanned rows and staged bytes do not imply a commit.
+
 Keep callbacks short and use the write operation's result to determine success.
 The final `done` update means progress reporting has ended; it can also occur
 after a write fails or is cancelled. Input errors before writing starts may
@@ -203,6 +207,10 @@ an empty list disables them. The default includes `500`, `502`, `503`, and `504`
 The server replaces that part's staged transaction, so losing
 its response does not append the rows twice. Exhausting the part retry budget
 aborts the uncommitted session; it does not restart the entire upload.
+A complete request rejected with a transaction conflict (`409`) or rate limit
+(`429`) also triggers best-effort cleanup. Cleanup uses the call's retry budget;
+its failure does not replace the original error. Ambiguous completion outcomes
+never trigger cleanup or replay.
 
 Part size still affects memory and HTTP timeouts. A single blob row cannot be
 split across Arrow batches; a very large row may require a larger timeout and

@@ -6,7 +6,7 @@
 //! You can add a callback to process progress in [`crate::table::AddDataBuilder::progress`].
 //! [`WriteProgress`] is the struct passed to the callback.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -30,12 +30,19 @@ impl WriteProgress {
         self.elapsed
     }
 
-    /// Number of rows written so far.
+    /// Number of rows processed by the input scan.
+    ///
+    /// This does not indicate that the rows have been committed.
     pub fn output_rows(&self) -> usize {
         self.output_rows
     }
 
-    /// Number of bytes written so far.
+    /// Number of bytes processed by the writer.
+    ///
+    /// Remote multipart writes report acknowledged IPC part bytes, starting at
+    /// zero. Retransmitted parts are counted once. Other writers report their
+    /// encoded bytes when available, otherwise the scanned Arrow memory size.
+    /// This does not indicate that the write has been committed.
     pub fn output_bytes(&self) -> usize {
         self.output_bytes
     }
@@ -94,6 +101,8 @@ pub(crate) struct WriteProgressTracker {
     /// Wire bytes tracked separately by the insert layer. When set (> 0),
     /// this takes precedence over the in-memory bytes from `rows_and_bytes`.
     wire_bytes: AtomicUsize,
+    /// Multipart writes select this before scanning, including zero acknowledgements.
+    wire_bytes_enabled: AtomicBool,
     active_tasks: Arc<AtomicUsize>,
     total_tasks: AtomicUsize,
     start: Instant,
@@ -107,12 +116,18 @@ impl WriteProgressTracker {
         Self {
             rows_and_bytes: std::sync::Mutex::new((0, 0)),
             wire_bytes: AtomicUsize::new(0),
+            wire_bytes_enabled: AtomicBool::new(false),
             active_tasks: Arc::new(AtomicUsize::new(0)),
             total_tasks: AtomicUsize::new(1),
             start: Instant::now(),
             total_rows,
             callback,
         }
+    }
+
+    /// Select wire-byte progress, including zero, before polling the input plan.
+    pub fn use_wire_bytes(&self) {
+        self.wire_bytes_enabled.store(true, Ordering::Relaxed);
     }
 
     /// Set the total number of parallel write tasks (the write parallelism).
@@ -179,7 +194,11 @@ impl WriteProgressTracker {
         let wire = self.wire_bytes.load(Ordering::Relaxed);
         // Prefer wire bytes (actual I/O size) when the insert layer is
         // tracking them; fall back to in-memory Arrow size otherwise.
-        let output_bytes = if wire > 0 { wire } else { in_memory_bytes };
+        let output_bytes = if self.wire_bytes_enabled.load(Ordering::Relaxed) || wire > 0 {
+            wire
+        } else {
+            in_memory_bytes
+        };
         WriteProgress {
             elapsed: self.start.elapsed(),
             output_rows: rows,
