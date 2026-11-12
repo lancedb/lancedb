@@ -466,6 +466,126 @@ def test_nested_class_and_closure_are_rejected_with_the_reason():
             return value * factor
 
 
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "sys",
+        "builtins",
+        "importlib",
+        "inspect",
+        "gc",
+        "ctypes",
+        "types",
+        "ctypes.util",
+        "importlib.metadata",
+    ],
+)
+@pytest.mark.parametrize("import_style", ["import", "from", "global"])
+@pytest.mark.parametrize("class_function", [False, True])
+def test_namespace_module_errors_explain_the_rule_and_remedy(
+    helper_package, module_name, import_style, class_function
+):
+    statement = f"import {module_name} as namespace_module"
+    body = f"{statement}\nreturn value\n"
+    preamble = ""
+    if import_style == "from":
+        body = f"from {module_name} import __name__\nreturn value\n"
+    elif import_style == "global":
+        preamble = statement + "\n"
+        body = "return str(namespace_module)\n"
+    if class_function:
+        definition = "class blocked:\n    def __call__(self, value: str) -> str:\n"
+        source = preamble + definition + textwrap.indent(body, "        ")
+    else:
+        definition = "def blocked(value: str) -> str:\n"
+        source = preamble + definition + textwrap.indent(body, "    ")
+    module = helper_package("fx_namespace_import", {"__init__.py": source})
+
+    with pytest.raises(ValueError) as error:
+        function(module.blocked)
+    message = str(error.value)
+    assert "imports from namespace-access modules" in message
+    assert repr(module_name) in message
+    assert "builtins, ctypes, gc, importlib, inspect, sys, types" in message
+    assert "including submodules" in message
+    assert "reconstructed module namespace" in message
+    assert "importable helper module" in message
+    assert "code=, pip=, or conda=" in message
+    assert "dynamic namespace access" not in message
+
+
+@pytest.mark.filterwarnings("ignore:lancedb.udf is deprecated:DeprecationWarning")
+def test_udf_namespace_import_error_explains_the_helper_alternative():
+    with pytest.raises(ValueError, match="ctypes.util.*importable helper module"):
+
+        @udf
+        def probe(value: str) -> str:
+            import ctypes.util
+
+            return str(ctypes.util.find_library(value))
+
+
+@pytest.mark.parametrize(
+    "operation", ["globals", "locals", "vars", "eval", "exec", "compile", "__import__"]
+)
+def test_dynamic_namespace_errors_name_the_operation_and_remedy(
+    helper_package, operation
+):
+    module = helper_package(
+        "fx_namespace_operation",
+        {
+            "__init__.py": (
+                f"def blocked(value: str) -> str:\n    return str({operation})\n"
+            )
+        },
+    )
+    with pytest.raises(ValueError) as error:
+        function(module.blocked)
+    message = str(error.value)
+    assert f"dynamic namespace access: ['{operation}']" in message
+    assert "Reference dependencies explicitly" in message
+    assert "importable helper module" in message
+
+
+@pytest.mark.parametrize("ship_source", [False, True])
+def test_namespace_access_in_importable_helpers_keeps_its_module_namespace(
+    helper_package, ship_source
+):
+    helpers = helper_package(
+        "fx_namespace_helper",
+        {
+            "__init__.py": """
+                import ctypes.util
+
+                def module_name():
+                    return ctypes.util.__name__
+            """,
+        },
+    )
+    entry = helper_package(
+        "fx_namespace_entry",
+        {
+            "__init__.py": """
+                from fx_namespace_helper import module_name
+
+                def probe(value: str) -> str:
+                    return module_name() + value
+            """,
+        },
+    )
+    options = {"code": [helpers]} if ship_source else {"pip": ["fx-namespace-helper"]}
+    definition = function(**options)(entry.probe)
+    if ship_source:
+        files = bundle_files(definition)
+        assert "import ctypes.util" in files["fx_namespace_helper/__init__.py"]
+        source = files["user_function.py"]
+    else:
+        source = artifact(definition).decode()
+    namespace = {}
+    exec(compile(source, "user_function.py", "exec"), namespace)
+    assert namespace["probe"]("!") == "ctypes.util!"
+
+
 def test_binding_passes_initialization_as_constants():
     version = FunctionVersion.from_json(
         json.dumps(

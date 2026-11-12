@@ -888,7 +888,7 @@ def test_function_rejects_a_module_level_namespace_alias(tmp_path):
     spec = importlib.util.spec_from_file_location("aliasing_udfs", module_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    with pytest.raises(ValueError, match="dynamic namespace access"):
+    with pytest.raises(ValueError, match="imports from namespace-access modules"):
         function(module.score)
 
 
@@ -899,7 +899,6 @@ def test_function_rejects_a_module_level_namespace_alias(tmp_path):
         "eval('THRESHOLD')",
         "(lambda g: g()['THRESHOLD'])(globals)",
         "__import__('sys').modules[__name__].THRESHOLD",
-        "sys.modules[__name__].THRESHOLD",
     ],
 )
 def test_function_rejects_dynamic_namespace_access(access):
@@ -911,9 +910,7 @@ def test_function_rejects_dynamic_namespace_access(access):
     )
     with pytest.raises(ValueError, match="dynamic namespace access"):
         _package_from_text(
-            "def score(value: int) -> int:\n"
-            "    import sys\n"
-            f"    return value + {access}\n"
+            f"def score(value: int) -> int:\n    return value + {access}\n"
         )
 
 
