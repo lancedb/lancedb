@@ -2,7 +2,8 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 from dataclasses import dataclass
-from typing import List, Literal, Optional
+import json
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from ._lancedb import (
     IndexConfig,
@@ -145,6 +146,101 @@ class ZoneMap:
     """
 
     pass
+
+
+@dataclass
+class ScalarPlugin:
+    """Describe any scalar index plugin registered with Lance, by name.
+
+    LanceDB passes ``index_type`` and ``params`` to Lance without interpreting
+    them, and the registered plugin validates them and the column. Use it for
+    index types that have no dedicated config class, such as plugins your
+    application registers or Lance index types this version of LanceDB does
+    not wrap yet. For the index types they cover, the dedicated classes, such
+    as [BTree][lancedb.index.BTree], remain the better choice.
+
+    Lance's built-in plugins are ``btree``, ``bitmap``, ``labellist``,
+    ``ngram``, ``zonemap``, ``bloomfilter``, ``inverted``, ``json``, ``fm`` and
+    ``minhashlsh``. Plugin names can differ from LanceDB's type names, e.g.
+    ``labellist`` rather than ``LABEL_LIST``. A plugin that is newer than the
+    Lance version in your LanceDB release, such as a ``listelement`` index, is
+    available only once LanceDB depends on a Lance version that includes it.
+
+    An unknown plugin name, a column the plugin cannot index, or parameters it
+    rejects raise an error when the index is created.
+    [list_indices][lancedb.table.AsyncTable.list_indices] reports the type Lance
+    records for the index: for example ``"BloomFilter"`` for ``bloomfilter``,
+    or the plugin's own name, such as ``"MinHashLsh"``, when LanceDB has no
+    type for it.
+
+    LanceDB Enterprise does not support plugin indexes yet.
+
+    Examples
+    --------
+    >>> from lancedb.index import ScalarPlugin
+    >>> ScalarPlugin("bloomfilter", params={"number_of_items": 4096})
+    ScalarPlugin(index_type='bloomfilter', params={'number_of_items': 4096})
+
+    Pass it as ``config`` to ``create_index``:
+
+    >>> table.create_index(  # doctest: +SKIP
+    ...     "id",
+    ...     config=ScalarPlugin("bloomfilter", '{"probability": 0.01}'),
+    ... )
+
+    Attributes
+    ----------
+    index_type: str
+        The plugin name, case-insensitive, such as ``"zonemap"``. Surrounding
+        whitespace is ignored.
+    params: dict or str, optional
+        The plugin's parameters, as a dict or as a string holding a JSON
+        object. The plugin defines the parameter names. If omitted, the plugin
+        uses its defaults.
+
+    Raises
+    ------
+    ValueError
+        If ``index_type`` is empty, or ``params`` is a string that is not a
+        JSON object.
+    TypeError
+        If ``index_type`` is not a string, or ``params`` is not a dict, a
+        string or None.
+    """
+
+    index_type: str
+    params: Optional[Union[Dict[str, Any], str]] = None
+
+    def __post_init__(self):
+        if not isinstance(self.index_type, str):
+            raise TypeError(
+                "ScalarPlugin index_type must be a str, got "
+                + type(self.index_type).__name__
+            )
+        if not self.index_type.strip():
+            raise ValueError("ScalarPlugin index_type must not be empty")
+        if isinstance(self.params, str):
+            try:
+                parsed = json.loads(self.params)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"ScalarPlugin params are not valid JSON: {e}") from e
+            if not isinstance(parsed, dict):
+                raise ValueError(
+                    "ScalarPlugin params must be a JSON object, got "
+                    + type(parsed).__name__
+                )
+        elif self.params is not None and not isinstance(self.params, dict):
+            raise TypeError(
+                "ScalarPlugin params must be a dict, a JSON string or None, got "
+                + type(self.params).__name__
+            )
+
+    @property
+    def _params_json(self) -> Optional[str]:
+        # Read by the native layer, which checks again that this is an object.
+        if self.params is None or isinstance(self.params, str):
+            return self.params
+        return json.dumps(self.params)
 
 
 @dataclass
@@ -1001,4 +1097,5 @@ __all__ = [
     "LabelList",
     "Fm",
     "NGram",
+    "ScalarPlugin",
 ]

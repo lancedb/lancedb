@@ -210,6 +210,64 @@ table.search().where("contains(text, 'needle')").limit(10).to_pandas()
 
 `list_indices()` reports the index type as `"NGram"`.
 
+## Create a plugin index by name
+
+Lance implements scalar indexes as plugins, each registered under a name. To
+create one that has no dedicated config in LanceDB, pass its plugin name and
+optional parameters: `ScalarPlugin` in Python, `Index.plugin()` in TypeScript,
+or `Index::Plugin(PluginIndexBuilder)` in Rust. This also covers plugins your
+application registers with Lance. LanceDB passes the name and parameters to
+Lance unchanged, and the plugin validates them and the column. Plugin names are
+case-insensitive. Parameters are a JSON object, given as a dict or object or as
+a JSON string, and use the plugin's own parameter names.
+
+Lance's built-in plugins are `btree`, `bitmap`, `labellist`, `ngram`, `zonemap`,
+`bloomfilter`, `inverted`, `json`, `fm` and `minhashlsh`. A newer plugin, such
+as a `listelement` index over list elements, needs a LanceDB release built on a
+Lance version that includes it. Prefer a dedicated config such as `BTree` when
+one exists.
+
+<CodeGroup>
+```python Python icon="python"
+from lancedb.index import ScalarPlugin
+
+await tbl.create_index(
+    "id", config=ScalarPlugin("bloomfilter", {"number_of_items": 4096})
+)
+```
+
+```typescript TypeScript icon="square-js"
+import { Index } from "@lancedb/lancedb";
+
+await tbl.createIndex("id", {
+  config: Index.plugin("bloomfilter", { number_of_items: 4096 }),
+});
+```
+
+```rust Rust icon="rust"
+use lancedb::index::Index;
+use lancedb::index::scalar::PluginIndexBuilder;
+use serde_json::json;
+
+let bloom_filter = PluginIndexBuilder::new("bloomfilter")?
+    .params(json!({"number_of_items": 4096}))?;
+tbl.create_index(&["id"], Index::Plugin(bloom_filter))
+    .execute()
+    .await?;
+```
+</CodeGroup>
+
+`list_indices()` reports the type Lance records for the index, such as
+`"BloomFilter"`, or the plugin's own name, such as `"MinHashLsh"`, when LanceDB
+has no type for it. An unknown plugin name, a column the plugin cannot index,
+or parameters it rejects make `create_index` fail.
+
+<Note title="LanceDB Enterprise">
+LanceDB Enterprise does not support plugin indexes yet. The client sends the
+upper-cased plugin name as the index type, with the parameters under a single
+`params` key.
+</Note>
+
 ## Index UUID Columns
 
 LanceDB supports scalar indexes on UUID columns (stored as `FixedSizeBinary(16)`), enabling efficient lookups and filtering on UUID-based primary keys.

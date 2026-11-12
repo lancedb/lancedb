@@ -1008,7 +1008,12 @@ pub struct IndexConfig {
 
 impl From<lancedb::index::IndexConfig> for IndexConfig {
     fn from(value: lancedb::index::IndexConfig) -> Self {
-        let index_type = format!("{:?}", value.index_type);
+        // A registered plugin's type is its display name, such as "MinHashLsh",
+        // which `Debug` would render as `Custom("MinHashLsh")`.
+        let index_type = match value.index_type {
+            lancedb::index::IndexType::Custom(name) => name,
+            index_type => format!("{index_type:?}"),
+        };
         Self {
             index_type,
             columns: value.columns,

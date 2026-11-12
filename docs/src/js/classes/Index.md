@@ -258,3 +258,61 @@ using an underlying bitmap index.
 #### Returns
 
 [`Index`](Index.md)
+
+***
+
+### plugin()
+
+```ts
+static plugin(indexType, params?): Index
+```
+
+Create any scalar index plugin registered with Lance, by name.
+
+LanceDB passes the plugin name and the parameters to Lance without
+interpreting them, and the registered plugin validates them and the
+column. Use it for index types that have no dedicated factory on
+`Index`, such as plugins your application registers or Lance index types
+this version of LanceDB does not wrap yet.
+
+Lance's built-in plugins are `btree`, `bitmap`, `labellist`, `ngram`,
+`zonemap`, `bloomfilter`, `inverted`, `json`, `fm` and `minhashlsh`.
+Plugin names can differ from LanceDB's type names, e.g. `labellist`
+rather than `LABEL_LIST`. A plugin newer than the Lance version in your
+LanceDB release, such as a `listelement` index, is available only once
+LanceDB depends on a Lance version that includes it.
+
+An unknown plugin name, a column the plugin cannot index, or parameters
+it rejects cause `createIndex` to fail. `listIndices` reports the type
+Lance records for the index: for example `"BloomFilter"` for
+`bloomfilter`, or the plugin's own name, such as `"MinHashLsh"`, when
+LanceDB has no type for it.
+
+LanceDB Enterprise does not support plugin indexes yet.
+
+#### Parameters
+
+* **indexType**: `string`
+    The plugin name, case-insensitive, such as `"zonemap"`.
+    Surrounding whitespace is ignored. Must not be empty.
+
+* **params?**: `string` \| `Record`&lt;`string`, `unknown`&gt;
+    The plugin's parameters, as an object or as a string
+    holding a JSON object. They are passed as given, so use the plugin's
+    own parameter names. If omitted, the plugin uses its defaults.
+
+#### Returns
+
+[`Index`](Index.md)
+
+#### Throws
+
+If `indexType` is empty, or `params` is not a JSON object.
+
+#### Example
+
+```ts
+await table.createIndex("id", {
+  config: Index.plugin("bloomfilter", { number_of_items: 4096 }),
+});
+```

@@ -835,6 +835,52 @@ export class Index {
   }
 
   /**
+   * Create any scalar index plugin registered with Lance, by name.
+   *
+   * LanceDB passes the plugin name and the parameters to Lance without
+   * interpreting them, and the registered plugin validates them and the
+   * column. Use it for index types that have no dedicated factory on
+   * `Index`, such as plugins your application registers or Lance index types
+   * this version of LanceDB does not wrap yet.
+   *
+   * Lance's built-in plugins are `btree`, `bitmap`, `labellist`, `ngram`,
+   * `zonemap`, `bloomfilter`, `inverted`, `json`, `fm` and `minhashlsh`.
+   * Plugin names can differ from LanceDB's type names, e.g. `labellist`
+   * rather than `LABEL_LIST`. A plugin newer than the Lance version in your
+   * LanceDB release, such as a `listelement` index, is available only once
+   * LanceDB depends on a Lance version that includes it.
+   *
+   * An unknown plugin name, a column the plugin cannot index, or parameters
+   * it rejects cause `createIndex` to fail. `listIndices` reports the type
+   * Lance records for the index: for example `"BloomFilter"` for
+   * `bloomfilter`, or the plugin's own name, such as `"MinHashLsh"`, when
+   * LanceDB has no type for it.
+   *
+   * LanceDB Enterprise does not support plugin indexes yet.
+   *
+   * @param indexType - The plugin name, case-insensitive, such as `"zonemap"`.
+   *   Surrounding whitespace is ignored. Must not be empty.
+   * @param params - The plugin's parameters, as an object or as a string
+   *   holding a JSON object. They are passed as given, so use the plugin's
+   *   own parameter names. If omitted, the plugin uses its defaults.
+   * @throws If `indexType` is empty, or `params` is not a JSON object.
+   *
+   * @example
+   * ```ts
+   * await table.createIndex("id", {
+   *   config: Index.plugin("bloomfilter", { number_of_items: 4096 }),
+   * });
+   * ```
+   */
+  static plugin(indexType: string, params?: Record<string, unknown> | string) {
+    const paramsJson =
+      params === undefined || typeof params === "string"
+        ? params
+        : JSON.stringify(params);
+    return new Index(LanceDbIndex.plugin(indexType, paramsJson));
+  }
+
+  /**
    * Create a full text search index
    *
    * A full text search index is an index on a string column, so that you can conduct full
