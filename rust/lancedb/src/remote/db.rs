@@ -4432,7 +4432,7 @@ mod tests {
                 http::Response::builder().status(200).body("{}").unwrap()
             });
             let error = conn
-                .create_secret(name, "sk-live-0001", &[], false)
+                .create_secret(name, "sk-live-0001", &[])
                 .await
                 .expect_err("an illegal component must be refused");
             assert!(!*reached.lock().unwrap(), "{name:?} reached the transport");
