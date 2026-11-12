@@ -772,8 +772,10 @@ def test_code_packages_ship_as_a_bundle_and_version_with_their_source(
     assert "fx_helpers/fixtures/data.json" not in warning
     assert "fx_helpers/not-a-module.py" in warning
 
-    assert "pip=" in warning
-    assert "conda=" in warning
+    assert "safe relative names" in warning
+    assert "importable Python module names" in warning
+    resources = json.loads(artifact(first))["resources"]
+    assert base64.b64decode(resources["fx_helpers/fixtures/data.json"]) == b"{}"
     assert "__pycache__" not in warning
     assert ".pyc" not in warning
     shipped = bundle_files(first)
