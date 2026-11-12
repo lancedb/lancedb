@@ -281,7 +281,7 @@ async fn multipart_retries_sixth_part_after_reused_connection_closes() {
             .push((p.output_rows(), p.output_bytes()));
     }));
     let tracker = Arc::new(WriteProgressTracker::new(callback, Some(6)));
-    tracker.use_wire_bytes();
+    tracker.use_acknowledged_parts();
     let during_request = progress.clone();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

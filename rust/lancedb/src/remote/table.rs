@@ -2241,7 +2241,7 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
         num_partitions: usize,
     ) -> Result<AddResult> {
         if let Some(tracker) = &output.tracker {
-            tracker.use_wire_bytes();
+            tracker.use_acknowledged_parts();
         }
         let freshness_request = self.snapshot_freshness_headers();
         let upload_id = self.create_multipart_write(output.retries).await?;
