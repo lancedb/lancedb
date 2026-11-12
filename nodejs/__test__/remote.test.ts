@@ -542,6 +542,163 @@ describe("remote connection", () => {
     expect(attempts).toBe(scenario.attempts);
   });
 
+  it.each(
+    [409, 429, 502, 503, 504].flatMap((status) =>
+      [undefined, 0, 2].flatMap((retries) =>
+        [[], ["analytics", "features"]].map((namespacePath) => ({
+          status,
+          retries,
+          namespacePath,
+        })),
+      ),
+    ),
+  )("applies per-call merge retries: %j", async (scenario) => {
+    let attempts = 0;
+    const identifier = [...scenario.namespacePath, "items"].join("$");
+    const succeeds =
+      [409, 429].includes(scenario.status) && scenario.retries !== 0;
+    await withMockDatabase(
+      (req, res) => {
+        const url = new URL(req.url ?? "", "http://localhost");
+        if (url.pathname === `/v1/table/${identifier}/describe/`) {
+          res.writeHead(200).end(
+            JSON.stringify({
+              version: 1,
+              schema: {
+                fields: [
+                  { name: "id", type: { type: "int64" }, nullable: true },
+                ],
+              },
+            }),
+          );
+          return;
+        }
+        const chunks: Buffer[] = [];
+        req.on("data", (chunk) => chunks.push(chunk));
+        req.on("end", () => {
+          try {
+            expect(url.pathname).toBe(`/v1/table/${identifier}/merge_insert/`);
+            expect(url.searchParams.get("use_index")).toBe("false");
+            expect(req.headers["x-request-timeout-ms"]).toBe("10000");
+            // Rust compresses the batches; Arrow JS can inspect the schema without a codec.
+            const reader = RecordBatchReader.from(Buffer.concat(chunks)).open();
+            expect(reader.schema.fields.map((field) => field.name)).toEqual([
+              "id",
+            ]);
+          } finally {
+            attempts++;
+            res
+              .writeHead(attempts === 1 ? scenario.status : 200)
+              .end('{"version":2}');
+          }
+        });
+      },
+      async (db) => {
+        const table = await db.openTable("items", scenario.namespacePath);
+        const merge = table
+          .mergeInsert("id")
+          .whenNotMatchedInsertAll()
+          .useIndex(false);
+        const result = merge.execute([{ id: 1n }], {
+          timeoutMs: 10_000,
+          retries: scenario.retries,
+        });
+        if (succeeds) {
+          await expect(result).resolves.toMatchObject({ version: 2 });
+        } else {
+          await expect(result).rejects.toThrow();
+        }
+      },
+      {
+        clientConfig: {
+          retryConfig: {
+            retries: 3,
+            statuses: [409, 429, 502, 503, 504],
+            backoffFactor: 0,
+            backoffJitter: 0,
+          },
+        },
+      },
+    );
+    expect(attempts).toBe(succeeds ? 2 : 1);
+  });
+
+  it("isolates merge retry overrides across reused builders and reads", async () => {
+    let attempts = 0;
+    let readAttempts = 0;
+    await withMockDatabase(
+      (req, res) => {
+        if (req.url?.endsWith("/describe/")) {
+          res.writeHead(200).end(
+            JSON.stringify({
+              version: 1,
+              schema: {
+                fields: [
+                  { name: "id", type: { type: "int64" }, nullable: true },
+                ],
+              },
+            }),
+          );
+          return;
+        }
+        req.resume();
+        req.on("end", () => {
+          if (req.url?.endsWith("/count_rows/")) {
+            readAttempts++;
+            res.writeHead(readAttempts % 2 ? 429 : 200).end("1");
+          } else {
+            attempts++;
+            res
+              .writeHead([1, 2, 4, 6].includes(attempts) ? 429 : 200)
+              .end('{"version":2}');
+            expect(req.url).toContain("/merge_insert/");
+          }
+        });
+      },
+      async (db) => {
+        const table = await db.openTable("items");
+        const merge = table.mergeInsert("id").whenNotMatchedInsertAll();
+        for (const retries of [
+          -1,
+          256,
+          1.5,
+          Number.NaN,
+          Number.POSITIVE_INFINITY,
+        ]) {
+          await expect(
+            merge.execute([{ id: 1n }], { retries }),
+          ).rejects.toThrow("retries must be an integer between 0 and 255");
+        }
+        expect(attempts).toBe(0);
+        await expect(
+          merge.execute([{ id: 1n }], { retries: 0 }),
+        ).rejects.toThrow();
+        expect(attempts).toBe(1);
+        await expect(merge.execute([{ id: 1n }])).resolves.toMatchObject({
+          version: 2,
+        });
+        await expect(
+          merge.execute([{ id: 1n }], { retries: 255 }),
+        ).resolves.toMatchObject({ version: 2 });
+        expect(attempts).toBe(5);
+        await expect(table.countRows()).resolves.toBe(1);
+        expect(readAttempts).toBe(2);
+        await expect(
+          table
+            .mergeInsert("id")
+            .whenNotMatchedInsertAll()
+            .execute([{ id: 1n }]),
+        ).resolves.toMatchObject({ version: 2 });
+        expect(attempts).toBe(7);
+      },
+      {
+        clientConfig: {
+          retryConfig: { retries: 3, backoffFactor: 0, backoffJitter: 0 },
+        },
+      },
+    );
+  });
+
   it("should accept partial connection options", async () => {
     await connect("db://test", {
       apiKey: "fake",

@@ -935,9 +935,10 @@ class RemoteTable(Table):
         new_data: DATA,
         on_bad_vectors: str,
         fill_value: float,
+        retries: Optional[int] = None,
     ) -> MergeResult:
         return LOOP.run(
-            self._table._do_merge(merge, new_data, on_bad_vectors, fill_value)
+            self._table._do_merge(merge, new_data, on_bad_vectors, fill_value, retries)
         )
 
     @_deprecated_keyword("predicate", "where")

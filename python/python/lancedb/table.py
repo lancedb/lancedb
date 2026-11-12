@@ -2767,6 +2767,7 @@ class Table(ABC):
         new_data: DATA,
         on_bad_vectors: OnBadVectorsType,
         fill_value: float,
+        retries: Optional[int] = None,
     ) -> MergeResult: ...
 
     @abstractmethod
@@ -5357,9 +5358,10 @@ class LanceTable(Table):
         new_data: DATA,
         on_bad_vectors: OnBadVectorsType,
         fill_value: float,
+        retries: Optional[int] = None,
     ) -> MergeResult:
         return LOOP.run(
-            self._table._do_merge(merge, new_data, on_bad_vectors, fill_value)
+            self._table._do_merge(merge, new_data, on_bad_vectors, fill_value, retries)
         )
 
     @property
@@ -7676,6 +7678,7 @@ class AsyncTable:
         new_data: DATA,
         on_bad_vectors: OnBadVectorsType,
         fill_value: float,
+        retries: Optional[int] = None,
     ) -> MergeResult:
         schema = await self.schema()
         if on_bad_vectors is None:
@@ -7707,6 +7710,7 @@ class AsyncTable:
                 use_rte=merge._use_rte,
                 validate_single_shard=merge._validate_single_shard,
             ),
+            retries=retries,
         )
 
     async def delete(self, where: Union[str, Expr]) -> DeleteResult:

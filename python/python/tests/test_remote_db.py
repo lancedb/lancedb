@@ -309,6 +309,164 @@ async def test_add_retry_override(sync_api, retries, status):
     assert attempts == (2 if expected_success else 1)
 
 
+@pytest.mark.parametrize("sync_api", [False, True])
+@pytest.mark.parametrize("namespace_path", [[], ["analytics", "features"]])
+@pytest.mark.parametrize("retries", [None, 0, 2])
+@pytest.mark.parametrize("status", [409, 429, 502, 503, 504])
+@pytest.mark.asyncio
+async def test_merge_retry_override(sync_api, namespace_path, retries, status, capfd):
+    attempts = 0
+    identifier = "$".join(namespace_path + ["test"])
+
+    def handler(request):
+        nonlocal attempts
+        if request.path == f"/v1/table/{identifier}/describe/":
+            send_json(
+                request,
+                {
+                    "version": 1,
+                    "schema": {
+                        "fields": [
+                            {"name": "id", "type": {"type": "int64"}, "nullable": True}
+                        ]
+                    },
+                },
+            )
+            return
+        assert urlparse(request.path).path == f"/v1/table/{identifier}/merge_insert/"
+        query = parse_qs(urlparse(request.path).query)
+        assert query["use_index"] == ["false"]
+        assert request.headers["x-request-timeout-ms"] == "10000"
+        body = bytearray()
+        if request.headers.get("Transfer-Encoding") == "chunked":
+            while True:
+                size = int(request.rfile.readline().strip(), 16)
+                if size == 0:
+                    request.rfile.readline()
+                    break
+                body.extend(request.rfile.read(size))
+                request.rfile.read(2)
+        else:
+            body.extend(
+                request.rfile.read(int(request.headers.get("Content-Length", 0)))
+            )
+        assert pa.ipc.open_stream(body).read_all().to_pylist() == [{"id": 1}]
+        attempts += 1
+        send_json(request, {"version": 2}, status if attempts == 1 else 200)
+
+    config = {
+        "retry_config": {
+            "retries": 3,
+            "statuses": [409, 429, 502, 503, 504],
+            "backoff_factor": 0,
+            "backoff_jitter": 0,
+        }
+    }
+    expected_success = status in (409, 429) and retries != 0
+
+    async def check(table):
+        merge = table.merge_insert("id").when_not_matched_insert_all().use_index(False)
+        options = {"timeout": timedelta(seconds=10)}
+        if retries is not None:
+            options["retries"] = retries
+        if expected_success:
+            result = merge.execute([{"id": 1}], **options)
+            if not sync_api:
+                result = await result
+            assert result.version == 2
+        else:
+            with pytest.raises((HttpError, RetryError)):
+                result = merge.execute([{"id": 1}], **options)
+                if not sync_api:
+                    await result
+
+    if sync_api:
+        with mock_lancedb_connection(handler, **config) as db:
+            await check(db.open_table("test", namespace_path=namespace_path))
+    else:
+        async with mock_lancedb_connection_async(handler, **config) as db:
+            await check(await db.open_table("test", namespace_path=namespace_path))
+    assert attempts == (2 if expected_success else 1)
+    warnings = [
+        line
+        for line in capfd.readouterr().err.splitlines()
+        if "Retrying merge insert" in line
+    ]
+    assert len(warnings) == (1 if expected_success else 0)
+    if expected_success:
+        assert "WARN" in warnings[0]
+        assert f"status Some({status}); attempt 2" in warnings[0]
+
+
+@pytest.mark.parametrize("sync_api", [False, True])
+@pytest.mark.asyncio
+async def test_merge_retry_override_isolation(sync_api):
+    attempts = 0
+    read_attempts = 0
+
+    def handler(request):
+        nonlocal attempts, read_attempts
+        if request.path.endswith("/describe/"):
+            send_json(
+                request,
+                {
+                    "version": 1,
+                    "schema": {
+                        "fields": [
+                            {"name": "id", "type": {"type": "int64"}, "nullable": True}
+                        ]
+                    },
+                },
+            )
+        elif request.path.endswith("/count_rows/"):
+            read_attempts += 1
+            send_json(request, 1, 429 if read_attempts % 2 else 200)
+        else:
+            assert urlparse(request.path).path.endswith("/merge_insert/")
+            attempts += 1
+            send_json(request, {"version": 2}, 429 if attempts in (1, 2, 4, 6) else 200)
+
+    async def check(table):
+        merge = table.merge_insert("id").when_not_matched_insert_all()
+        for retries in [-1, 256, 1.5, "1"]:
+            with pytest.raises((OverflowError, TypeError, ValueError)):
+                result = merge.execute([{"id": 1}], retries=retries)
+                if not sync_api:
+                    await result
+        assert attempts == 0
+        with pytest.raises((HttpError, RetryError)):
+            result = merge.execute([{"id": 1}], retries=0)
+            if not sync_api:
+                await result
+        assert attempts == 1
+        for options in ({}, {"retries": 255}):
+            result = merge.execute([{"id": 1}], **options)
+            if not sync_api:
+                result = await result
+            assert result.version == 2
+        assert attempts == 5
+        result = table.count_rows()
+        if not sync_api:
+            result = await result
+        assert result == 1
+        assert read_attempts == 2
+        result = (
+            table.merge_insert("id").when_not_matched_insert_all().execute([{"id": 1}])
+        )
+        if not sync_api:
+            result = await result
+        assert result.version == 2
+        assert attempts == 7
+
+    config = {"retry_config": {"retries": 3, "backoff_factor": 0, "backoff_jitter": 0}}
+    if sync_api:
+        with mock_lancedb_connection(handler, **config) as db:
+            await check(db.open_table("test"))
+    else:
+        async with mock_lancedb_connection_async(handler, **config) as db:
+            await check(await db.open_table("test"))
+
+
 @pytest.fixture
 def missing_table_handler(cached, namespace_path):
     request_ids = []

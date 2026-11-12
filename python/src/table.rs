@@ -2161,10 +2161,12 @@ impl Table {
         })
     }
 
+    #[pyo3(signature = (data, parameters, retries=None))]
     pub fn execute_merge_insert<'a>(
         self_: PyRef<'a, Self>,
         data: Bound<'a, PyAny>,
         parameters: MergeInsertParams,
+        retries: Option<u8>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let batches: ArrowArrayStreamReader = ArrowArrayStreamReader::from_pyarrow_bound(&data)?;
         let on = parameters.on.iter().map(|s| s.as_str()).collect::<Vec<_>>();
@@ -2186,6 +2188,9 @@ impl Table {
         }
         if let Some(timeout) = parameters.timeout {
             builder.timeout(timeout);
+        }
+        if let Some(retries) = retries {
+            builder.retries(retries);
         }
         if let Some(use_index) = parameters.use_index {
             builder.use_index(use_index);
