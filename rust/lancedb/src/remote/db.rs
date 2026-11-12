@@ -385,7 +385,7 @@ impl RemoteDatabase {
                 sql: options.sql_host_override.clone(),
             },
             config,
-            RemoteOptions::default(),
+            StorageOptions(options.storage_options.clone()).into(),
             options.read_consistency_interval,
             super::client::ParsedDbUrl {
                 db_name: name.unwrap_or("").to_string(),

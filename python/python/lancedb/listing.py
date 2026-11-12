@@ -175,6 +175,9 @@ class _AsyncPagedNameListing(AsyncIterator[str]):
 class AsyncTableListing(_AsyncPagedNameListing):
     """Awaitable table iterator; awaiting loads one page.
 
+    Iteration fetches all pages. The ``tables`` attribute contains only the
+    current page, so use ``await db.table_exists([name])`` for existence checks.
+
     For example::
 
         page = await db.list_tables(limit=20)
@@ -229,6 +232,10 @@ class _PagedNameListing(Iterator[str]):
 class TableListing(_PagedNameListing):
     """Table iterator retaining the current page as a list.
 
+    Iteration fetches all pages. The ``tables`` attribute contains only the
+    current page, so use ``db.table_exists([name])`` or ``name in db`` for
+    existence checks. Use ``list(db.list_tables())`` to collect all names.
+
     For example::
 
         page = db.list_tables(limit=20)
@@ -239,6 +246,7 @@ class TableListing(_PagedNameListing):
 
     @property
     def tables(self) -> list[str]:
+        """A copy of the table names in the most recently fetched page."""
         return self._inner.tables
 
 

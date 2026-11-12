@@ -22,6 +22,7 @@ import time
 from urllib.parse import parse_qs, urlparse
 from unittest.mock import MagicMock, patch
 import uuid
+import warnings
 from packaging.version import Version
 from lance_namespace.errors import TableNotFoundError
 
@@ -459,6 +460,31 @@ def test_remote_table_exists_rechecks_cached_table():
         assert db.table_exists(table_id) is False
         assert table_id == ["ns", "table"]
     assert requests == ["/v1/table/ns$table/describe/"] * 2
+
+
+@pytest.mark.parametrize("status", [200, 404, 403])
+def test_remote_membership_uses_direct_lookup(status):
+    requests = []
+
+    def handler(request):
+        requests.append(request.path)
+        assert request.command == "POST"
+        assert request.path == "/v1/table/t129/describe/"
+        request.send_response(status)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(b"{}" if status == 200 else b"lookup failed")
+
+    with mock_lancedb_connection(handler) as db:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            if status in (200, 404):
+                assert ("t129" in db) is (status == 200)
+            else:
+                with pytest.raises(HttpError) as exc_info:
+                    "t129" in db
+                assert exc_info.value.status_code == status
+    assert requests == ["/v1/table/t129/describe/"]
 
 
 def paginated_table_listing_handler(request):
@@ -2529,6 +2555,144 @@ async def test_remote_job_wait_disconnection_timeout_can_be_resumed(sync):
     assert "db.open_job('job-1')" in str(exc.value)
     assert isinstance(exc.value.__cause__, HttpError)
     assert exc.value.__cause__.is_transport_error is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync", [False, True])
+@pytest.mark.parametrize(
+    "job_type", ["function_refresh", "computed_refresh", "refresh_column"]
+)
+@pytest.mark.parametrize("running", [False, True])
+@pytest.mark.parametrize("rows_failed", [0, 8])
+async def test_reopened_refresh_job_wait_returns_typed_result(
+    sync, job_type, running, rows_failed
+):
+    terminal_result = {
+        "rows_assigned": 400 - rows_failed,
+        "rows_failed": rows_failed,
+        "rows_remaining": 0,
+        "source_version": 7,
+        "published_version": 8,
+        "summary": {"future_field": True},
+    }
+    polls = 0
+
+    def handler(request):
+        nonlocal polls
+        assert request.path == "/v1/jobs/describe"
+        payload = json.loads(request.rfile.read(int(request.headers["Content-Length"])))
+        assert payload == {"job_id": "refresh-1"}
+        polls += 1
+        in_progress = running and polls <= 2
+        response = {
+            "job_id": "refresh-1",
+            "job_type": job_type,
+            "job_state": "IN_PROGRESS" if in_progress else "DONE",
+            "creation_ms": 1000,
+            "spec": {"column": "derived"},
+        }
+        if not in_progress:
+            response["result"] = terminal_result
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(response).encode())
+
+    observed = []
+    if sync:
+        with mock_lancedb_connection(handler) as db:
+            job = db.open_job("refresh-1")
+            assert job.id == "refresh-1"
+            assert job.spec == {"column": "derived"}
+            result = job.wait(timeout=timedelta(seconds=5), progress=observed.append)
+            assert job.wait() == result
+            job.refresh()
+            assert job.result == terminal_result
+    else:
+        async with mock_lancedb_connection_async(handler) as db:
+            job = await db.open_job("refresh-1")
+            assert job.id == "refresh-1"
+            assert job.spec == {"column": "derived"}
+            result = await job.wait(
+                timeout=timedelta(seconds=5), progress=observed.append
+            )
+            assert await job.wait() == result
+            await job.refresh()
+            assert job.result == terminal_result
+
+    assert isinstance(result, lancedb.RefreshColumnResult)
+    assert result == lancedb.RefreshColumnResult.model_validate(terminal_result)
+    assert result.rows_failed == rows_failed
+    assert observed[-1]["state"] == "finished"
+    if running:
+        assert observed[0]["state"] == "running"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync", [False, True])
+@pytest.mark.parametrize("terminal_result", [None, {}])
+async def test_reopened_refresh_job_rejects_missing_or_invalid_result(
+    sync, terminal_result
+):
+    def handler(request):
+        assert request.path == "/v1/jobs/describe"
+        request.rfile.read(int(request.headers["Content-Length"]))
+        request.send_response(200)
+        request.end_headers()
+        request.wfile.write(
+            json.dumps(
+                {
+                    "job_id": "refresh-1",
+                    "job_type": "function_refresh",
+                    "job_state": "DONE",
+                    "result": terminal_result,
+                }
+            ).encode()
+        )
+
+    if sync:
+        with mock_lancedb_connection(handler) as db:
+            job = db.open_job("refresh-1")
+            with pytest.raises(HttpError, match="typed job"):
+                job.wait()
+    else:
+        async with mock_lancedb_connection_async(handler) as db:
+            job = await db.open_job("refresh-1")
+            with pytest.raises(HttpError, match="typed job"):
+                await job.wait()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync", [False, True])
+async def test_reopened_unit_job_ignores_additive_result_payload(sync):
+    terminal_result = {"future_field": True}
+
+    def handler(request):
+        assert request.path == "/v1/jobs/describe"
+        request.rfile.read(int(request.headers["Content-Length"]))
+        request.send_response(200)
+        request.end_headers()
+        request.wfile.write(
+            json.dumps(
+                {
+                    "job_id": "index-1",
+                    "job_type": "create_index",
+                    "job_state": "DONE",
+                    "result": terminal_result,
+                }
+            ).encode()
+        )
+
+    if sync:
+        with mock_lancedb_connection(handler) as db:
+            job = db.open_job("index-1")
+            assert job.wait() is None
+            assert job.result == terminal_result
+    else:
+        async with mock_lancedb_connection_async(handler) as db:
+            job = await db.open_job("index-1")
+            assert await job.wait() is None
+            assert job.result == terminal_result
 
 
 @pytest.mark.parametrize("payload", [b"{", b"{}"])
@@ -6278,6 +6442,8 @@ def test_remote_function_registration_transports_max_concurrency():
     def registered(value: float) -> float:
         return value
 
+    definition["runtime_digest"] = registered.registration_request.runtime.digest
+
     class RegistrationServer(flight.FlightServerBase):
         def __init__(self):
             super().__init__("grpc://127.0.0.1:0")
@@ -6296,6 +6462,7 @@ def test_remote_function_registration_transports_max_concurrency():
     assert len(server.tickets) == 1
     assert b'"max_concurrency":4' in server.tickets[0]
     assert version.max_concurrency == 4
+    assert version.runtime_digest == registered.registration_request.runtime.digest
 
 
 @pytest.mark.asyncio
