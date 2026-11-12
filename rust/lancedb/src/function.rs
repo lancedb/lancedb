@@ -834,6 +834,9 @@ fn validate_row_timeout_value(value: Option<f64>) -> std::result::Result<(), &'s
 /// database already holds, which Sophon resolves inside the remote runtime.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FunctionRegistrationRequest {
+    /// Preserve an existing named Function version instead of registering a new one.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub exist_ok: bool,
     /// Default retries of failed user-code calls. Enterprise only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_policy: Option<FunctionRetryPolicy>,
@@ -874,6 +877,10 @@ pub struct FunctionRegistrationRequest {
     /// Model snapshots prepared by the service before user code runs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub models: Vec<HuggingFaceModel>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl FunctionRegistrationRequest {

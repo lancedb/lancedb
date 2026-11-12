@@ -865,15 +865,17 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (request_json, namespace_path=None))]
+    #[pyo3(signature = (request_json, namespace_path=None, *, exist_ok=false))]
     pub fn create_function_async(
         self_: PyRef<'_, Self>,
         request_json: String,
         namespace_path: Option<Vec<String>>,
+        exist_ok: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
-        let request = lancedb::function::FunctionRegistrationRequest::from_json(&request_json)
+        let mut request = lancedb::function::FunctionRegistrationRequest::from_json(&request_json)
             .infer_error()?;
+        request.exist_ok = exist_ok;
         let namespace_path = namespace_path.unwrap_or_default();
         future_into_py(self_.py(), async move {
             inner
