@@ -10,6 +10,7 @@ import lancedb
 import pytest
 import pyarrow as pa
 from lancedb.db import AsyncConnection
+from lancedb.exceptions import JobFailedError
 from lancedb.materialized_view import MaterializedViewDefinition
 from lancedb.remote.db import RemoteDBConnection
 from utils import start_server_thread
@@ -934,7 +935,8 @@ def test_query_with_no_data_and_invalid_query(tmp_path, background):
     create = (
         db.create_materialized_view_async if background else db.create_materialized_view
     )
-    with pytest.raises(ValueError):
+    error = JobFailedError if background else ValueError
+    with pytest.raises(error, match="unsupported clause"):
         result = create("invalid", query="SELECT * FROM people ORDER BY age")
         if background:
             result.wait()
