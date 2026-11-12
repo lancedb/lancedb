@@ -295,8 +295,16 @@ def test_parameters_reach_the_server_as_the_values_that_were_sent():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("asynchronous", [False, True])
-@pytest.mark.parametrize("exist_ok", [None, False, True])
-async def test_create_secret_exist_ok_reaches_sql(asynchronous, exist_ok):
+@pytest.mark.parametrize(
+    ("exist_ok", "status"),
+    [
+        (None, "created"),
+        (False, "created"),
+        (True, "created"),
+        (True, "already_exists"),
+    ],
+)
+async def test_create_secret_exist_ok_reaches_sql(asynchronous, exist_ok, status):
     flight = pytest.importorskip("pyarrow.flight")
 
     class SecretServer(flight.FlightServerBase):
@@ -306,7 +314,7 @@ async def test_create_secret_exist_ok_reaches_sql(asynchronous, exist_ok):
 
         def do_exchange(self, context, descriptor, reader, writer):
             self.writes.append((descriptor.command, reader.read_all()))
-            result = pa.table({"status": ["already_exists" if exist_ok else "created"]})
+            result = pa.table({"status": [status]})
             writer.begin(result.schema)
             writer.write_table(result)
             writer.close()
@@ -317,7 +325,9 @@ async def test_create_secret_exist_ok_reaches_sql(asynchronous, exist_ok):
             "host_override": "http://localhost:10024",
             "sql_host_override": f"grpc://127.0.0.1:{server.port}",
         }
-        kwargs = {} if exist_ok is None else {"exist_ok": exist_ok}
+        kwargs = {"namespace_path": ["team", "production"]}
+        if exist_ok is not None:
+            kwargs["exist_ok"] = exist_ok
         if asynchronous:
             db = await lancedb.connect_async("db://analytics", **options)
             await db.create_secret("api-key", "credential's value", **kwargs)
