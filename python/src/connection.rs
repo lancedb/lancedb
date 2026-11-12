@@ -505,7 +505,7 @@ impl Connection {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (name, source=None, projections=None, filter=None, limit=None, with_no_data=false, auto_refresh_enabled=None, auto_refresh_interval_seconds=None, *, query=None))]
+    #[pyo3(signature = (name, source=None, projections=None, filter=None, limit=None, with_no_data=false, auto_refresh_enabled=None, auto_refresh_interval_seconds=None, *, query=None, exist_ok=false))]
     pub fn create_materialized_view(
         self_: PyRef<'_, Self>,
         name: String,
@@ -514,6 +514,7 @@ impl Connection {
         filter: Option<String>,
         limit: Option<u64>,
         with_no_data: bool,
+        exist_ok: bool,
         auto_refresh_enabled: Option<bool>,
         auto_refresh_interval_seconds: Option<f64>,
         query: Option<String>,
@@ -527,7 +528,7 @@ impl Connection {
             projections.is_some() || filter.is_some() || limit.is_some(),
         )?;
         future_into_py(self_.py(), async move {
-            let mut builder = builder;
+            let mut builder = builder.exist_ok(exist_ok);
             if let Some(enabled) = auto_refresh_enabled {
                 builder = builder.auto_refresh_enabled(enabled);
             }
@@ -550,7 +551,7 @@ impl Connection {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (name, source=None, projections=None, filter=None, limit=None, with_no_data=false, auto_refresh_enabled=None, auto_refresh_interval_seconds=None, *, query=None))]
+    #[pyo3(signature = (name, source=None, projections=None, filter=None, limit=None, with_no_data=false, auto_refresh_enabled=None, auto_refresh_interval_seconds=None, *, query=None, exist_ok=false))]
     pub fn create_materialized_view_async(
         self_: PyRef<'_, Self>,
         name: String,
@@ -559,6 +560,7 @@ impl Connection {
         filter: Option<String>,
         limit: Option<u64>,
         with_no_data: bool,
+        exist_ok: bool,
         auto_refresh_enabled: Option<bool>,
         auto_refresh_interval_seconds: Option<f64>,
         query: Option<String>,
@@ -572,7 +574,7 @@ impl Connection {
             projections.is_some() || filter.is_some() || limit.is_some(),
         )?;
         future_into_py(self_.py(), async move {
-            let mut builder = builder;
+            let mut builder = builder.exist_ok(exist_ok);
             if let Some(enabled) = auto_refresh_enabled {
                 builder = builder.auto_refresh_enabled(enabled);
             }

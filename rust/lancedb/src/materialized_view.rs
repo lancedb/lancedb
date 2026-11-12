@@ -287,6 +287,8 @@ pub struct MaterializedViewInfo {
 #[doc(hidden)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct CreateMaterializedViewRequest {
+    /// Preserve an existing materialized view without refreshing it.
+    pub exist_ok: bool,
     /// Name of the new view.
     pub name: String,
     /// Namespace in which to create the view.
@@ -1586,6 +1588,7 @@ pub struct CreateMaterializedViewBuilder {
     filter: Option<String>,
     limit: Option<u64>,
     with_no_data: bool,
+    exist_ok: bool,
     auto_refresh_enabled: Option<bool>,
     auto_refresh_interval_seconds: Option<f64>,
 }
@@ -1626,6 +1629,7 @@ impl CreateMaterializedViewBuilder {
             filter: None,
             limit: None,
             with_no_data: false,
+            exist_ok: false,
             auto_refresh_enabled: None,
             auto_refresh_interval_seconds: None,
         }
@@ -1676,6 +1680,34 @@ impl CreateMaterializedViewBuilder {
     pub fn with_no_data(mut self, with_no_data: bool) -> Self {
         self.with_no_data = with_no_data;
         self
+    }
+
+    /// Preserve an existing view's definition, data and refresh settings.
+    /// Defaults to false. A skipped creation does not refresh the view.
+    ///
+    /// ```no_run
+    /// # async fn example(db: &lancedb::Connection) -> lancedb::Result<()> {
+    /// db.create_materialized_view("saved", "source").exist_ok(true).execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn exist_ok(mut self, exist_ok: bool) -> Self {
+        self.exist_ok = exist_ok;
+        self
+    }
+
+    async fn existing_view(&self) -> Result<Option<MaterializedView>> {
+        match self
+            .connection
+            .open_table(&self.name)
+            .namespace(self.namespace.clone())
+            .execute()
+            .await
+        {
+            Ok(table) => MaterializedView::from_table(table).await.map(Some),
+            Err(Error::TableNotFound { .. }) => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     /// Enable or disable automatic refresh in LanceDB Enterprise.
@@ -1759,6 +1791,7 @@ impl CreateMaterializedViewBuilder {
                 .connection
                 .database()
                 .create_materialized_view_async(CreateMaterializedViewRequest {
+                    exist_ok: self.exist_ok,
                     name: self.name.clone(),
                     namespace_path: self.namespace.clone(),
                     query: self.query()?,
@@ -1799,6 +1832,11 @@ impl CreateMaterializedViewBuilder {
                     .to_string(),
             });
         }
+        if self.exist_ok
+            && let Some(view) = self.existing_view().await?
+        {
+            return Ok(view);
+        }
         let prepared = match &self.input {
             MaterializedViewInput::Source(name) => {
                 let source = self
@@ -1826,7 +1864,15 @@ impl CreateMaterializedViewBuilder {
                 prepare_definition(&source, definition).await?
             }
         };
-        let view = prepared.create_in(&self.namespace, &self.name).await?;
+        let view = match prepared.create_in(&self.namespace, &self.name).await {
+            Ok(view) => view,
+            Err(Error::TableAlreadyExists { .. }) if self.exist_ok => {
+                return self.existing_view().await?.ok_or_else(|| Error::Runtime {
+                    message: "materialized view disappeared after concurrent creation".into(),
+                });
+            }
+            Err(error) => return Err(error),
+        };
         if !self.with_no_data {
             view.refresh().execute().await?;
         }

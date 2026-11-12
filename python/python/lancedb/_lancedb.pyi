@@ -358,6 +358,7 @@ class Connection(object):
         auto_refresh_interval_seconds: Optional[float] = None,
         *,
         query: Optional[str] = None,
+        exist_ok: bool = False,
     ) -> Table: ...
     async def create_materialized_view_async(
         self,
@@ -371,6 +372,7 @@ class Connection(object):
         auto_refresh_interval_seconds: Optional[float] = None,
         *,
         query: Optional[str] = None,
+        exist_ok: bool = False,
     ) -> Job: ...
     def list_materialized_views(
         self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
