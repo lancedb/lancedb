@@ -23,15 +23,19 @@ its LanceDB Enterprise version and configuration.
 
 <CodeGroup>
 ```sql SQL icon="database"
-CREATE MATERIALIZED VIEW [IF NOT EXISTS] <name> AS SELECT ...
+CREATE MATERIALIZED VIEW <name> AS SELECT ...
 ```
 </CodeGroup>
+
+{/* Draft for the materialized-view exist_ok release.
 
 `IF NOT EXISTS` preserves an existing materialized view's definition, data and
 refresh settings without refreshing it. The Python equivalent is
 `db.create_materialized_view("saved", "source", exist_ok=True)`. A skipped
 asynchronous creation returns a completed job without submitting a refresh job.
 Existing names are errors by default.
+
+*/}
 
 Once created, a materialized view can be queried like a table. Use the
 statements below to list, refresh and drop it. For SDK methods, see
