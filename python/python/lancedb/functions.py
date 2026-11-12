@@ -2202,7 +2202,7 @@ def _code_files(
 
 def _source_text(path) -> str:
     try:
-        return path.read_text(encoding="utf-8")
+        return path.read_bytes().decode("utf-8")
     except UnicodeDecodeError as error:
         raise ValueError(f"code= ships UTF-8 source; {path} is not UTF-8") from error
 

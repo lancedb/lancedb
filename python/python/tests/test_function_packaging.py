@@ -646,6 +646,9 @@ def test_vendored_package_resources_survive_an_isolated_import(
                     root = files("fx_vendor")
                     payload = root.joinpath("label-maps/payload.bin").read_bytes()
                     metadata = json.loads(root.joinpath("models.json").read_text())
+                    source = root.joinpath("vendor/model.py").read_bytes()
+                    source_digest = hashlib.sha256(source).hexdigest()
+                    assert source_digest == metadata["source_sha256"]
                     assert hashlib.sha256(payload).hexdigest() == metadata["sha256"]
                     return value + metadata["offset"]
             """,
@@ -656,9 +659,18 @@ def test_vendored_package_resources_survive_an_isolated_import(
     package_root = Path(package.__file__).parent
     (package_root / "label-maps").mkdir()
     (package_root / "label-maps/payload.bin").write_bytes(payload)
+    module_path = package_root / "vendor/model.py"
+    module_bytes = (
+        module_path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    )
+    module_path.write_bytes(module_bytes)
     (package_root / "models.json").write_bytes(
         json.dumps(
-            {"sha256": hashlib.sha256(payload).hexdigest(), "offset": 7}
+            {
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "source_sha256": hashlib.sha256(module_bytes).hexdigest(),
+                "offset": 7,
+            }
         ).encode()
         + b"\r\n"
     )
@@ -676,7 +688,7 @@ def test_vendored_package_resources_survive_an_isolated_import(
     for name, content in bundle["files"].items():
         target = isolated / name
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content)
+        target.write_bytes(content.encode("utf-8"))
     for name, content in bundle["resources"].items():
         target = isolated / name
         target.parent.mkdir(parents=True, exist_ok=True)
