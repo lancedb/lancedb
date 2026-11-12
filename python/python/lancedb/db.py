@@ -58,6 +58,7 @@ from lance_namespace import (
 from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
 
 from . import __version__
+from .server_info import ServerInfo
 from ._lancedb import _append_doc_url, connect as lancedb_connect  # type: ignore
 from .functions import FunctionVersion, FunctionDefinition
 from .graph import (
@@ -1465,6 +1466,22 @@ class DBConnection(EnforceOverrides):
                 "jobs",
             )
         )
+
+    def server_info(self) -> ServerInfo:
+        """Return the responding server's build and Function runtime information.
+
+        This call submits no query, Function, or job. The response is a
+        JSON-compatible dictionary, convenient to include in a bug report::
+
+            info = db.server_info()
+            print(info["query_node"])  # release, git_sha, build_date
+
+        Requires System Usage permission. Embedded connections and older
+        servers without this endpoint raise ``NotImplementedError``.
+        Different calls can reach different builds during a rolling upgrade.
+        Configured images do not identify the version of a running job.
+        """
+        raise NotImplementedError("Server build discovery requires a remote connection")
 
     def list_gpu_classes(self) -> List[GpuClass]:
         """List the operator-configured Function GPU classes.
@@ -3633,6 +3650,12 @@ class AsyncConnection(object):
         [DBConnection.open_job][lancedb.db.DBConnection.open_job].
         """
         return _opened_job(await self._inner.open_job(job_id))
+
+    async def server_info(self) -> ServerInfo:
+        """Read the responding server's build information. See
+        [DBConnection.server_info][lancedb.db.DBConnection.server_info].
+        """
+        return json.loads(await self._inner.server_info())
 
     async def list_gpu_classes(self) -> List[GpuClass]:
         """List configured Function GPU classes. See

@@ -479,6 +479,13 @@ pub trait Database:
     async fn list_gpu_classes(&self) -> Result<Vec<GpuClass>> {
         gpu_class_catalog_not_supported()
     }
+
+    /// Read the responding remote server's build identity.
+    async fn server_info(&self) -> Result<crate::server_info::ServerInfo> {
+        Err(crate::Error::NotSupported {
+            message: "Server build discovery requires a remote LanceDB connection".into(),
+        })
+    }
     /// Create a materialized view through a remote catalog and return its
     /// initial-population job. Local connections use the native declaration
     /// path directly.

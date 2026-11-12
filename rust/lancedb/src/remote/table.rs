@@ -1802,7 +1802,7 @@ fn base_media_type(content_type: &str) -> &str {
 fn unwrap_shared_error(arc: Arc<Error>) -> Error {
     match Arc::try_unwrap(arc) {
         Ok(err) => err,
-        Err(arc) => match &*arc {
+        Err(arc) => arc.clone_shared().unwrap_or_else(|| match &*arc {
             Error::TableNotFound { name, source } => Error::TableNotFound {
                 name: name.clone(),
                 source: source.to_string().into(),
@@ -1810,7 +1810,7 @@ fn unwrap_shared_error(arc: Arc<Error>) -> Error {
             _ => Error::Runtime {
                 message: arc.to_string(),
             },
-        },
+        }),
     }
 }
 
@@ -1833,17 +1833,8 @@ async fn fetch_schema<S: HttpSend>(
 
     let (request_id, response) = client.send_with_retry(request, None, true).await?;
 
-    if response.status() == StatusCode::NOT_FOUND {
-        let body = response.text().await.ok().unwrap_or_default();
-        return Err(Error::TableNotFound {
-            name: table_name.to_string(),
-            source: Box::new(Error::Http {
-                source: body.into(),
-                request_id,
-                status_code: Some(StatusCode::NOT_FOUND),
-            }),
-        });
-    }
+    let response =
+        RemoteTable::<S>::handle_table_not_found(table_name, response, &request_id).await?;
 
     let response = client.check_response(&request_id, response).await?;
     freshness_headers.observe_headers(&freshness, response.headers());
@@ -4668,6 +4659,49 @@ mod tests {
 
         let schema = table.schema().await.unwrap();
         assert_eq!(schema, expected);
+    }
+
+    #[tokio::test]
+    async fn test_server_info_survives_schema_cache_errors() {
+        let expected = crate::server_info::ServerBuildInfo {
+            release: "1.2.3".into(),
+            git_sha: "0123456789ab".into(),
+            build_date: Some("2024-01-01T00:00:00Z".into()),
+        };
+        for header_only in [false, true] {
+            let table = Table::new_with_handler("my_table", move |request| {
+                assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
+                let server = serde_json::json!({
+                    "release": "1.2.3", "git_sha": "0123456789ab",
+                    "build_date": "2024-01-01T00:00:00Z",
+                });
+                let response = http::Response::builder().status(404);
+                if header_only {
+                    response
+                        .header("x-lancedb-server-build", server.to_string())
+                        .body("missing".to_string())
+                        .unwrap()
+                } else {
+                    response
+                        .body(serde_json::json!({"error": "missing", "server": server}).to_string())
+                        .unwrap()
+                }
+            });
+            let original = Arc::new(table.schema().await.unwrap_err());
+            // Keep another reader's reference alive to exercise the shared result.
+            let shared = unwrap_shared_error(original.clone());
+            for error in [original.as_ref(), &shared] {
+                assert!(matches!(error, Error::TableNotFound { name, .. } if name == "my_table"));
+                assert_eq!(error.status_code(), Some(StatusCode::NOT_FOUND));
+                assert_eq!(
+                    error
+                        .remote_error_metadata()
+                        .and_then(|metadata| metadata.server.as_ref()),
+                    Some(&expected),
+                );
+                assert!(error.to_string().contains("0123456789ab"));
+            }
+        }
     }
 
     #[tokio::test]

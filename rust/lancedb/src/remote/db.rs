@@ -1236,14 +1236,37 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let handle = super::job::RemoteJob::new(self.client.clone(), job_id.to_string());
         match crate::job::JobHandle::describe(&handle).await {
             Ok(description) => Ok(Job::opened(Box::new(handle), description)),
-            Err(Error::Http {
-                status_code: Some(StatusCode::NOT_FOUND),
-                ..
-            }) => Err(Error::JobNotFound {
+            Err(
+                error @ Error::Http {
+                    status_code: Some(StatusCode::NOT_FOUND),
+                    ..
+                },
+            ) => Err(Error::JobNotFound {
                 job_id: job_id.to_string(),
+                source: Box::new(error),
             }),
             Err(err) => Err(err),
         }
+    }
+
+    async fn server_info(&self) -> Result<crate::server_info::ServerInfo> {
+        let req = self.client.get("/v1/server/info");
+        let (request_id, response) = self.client.send(req).await?;
+        let response = match self.client.check_response(&request_id, response).await {
+            Ok(response) => response,
+            Err(Error::Http {
+                status_code: Some(StatusCode::NOT_FOUND),
+                ..
+            }) => {
+                return Err(Error::NotSupported {
+                    message: "Server build discovery requires a newer LanceDB server; \
+                              GET /v1/server/info returned 404 Not Found"
+                        .into(),
+                });
+            }
+            Err(error) => return Err(error),
+        };
+        response.json().await.err_to_http(request_id)
     }
 
     async fn list_gpu_classes(&self) -> Result<Vec<GpuClass>> {
@@ -4005,6 +4028,106 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_server_info_preserves_remote_provenance() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::GET);
+            assert_eq!(request.url().path(), "/v1/server/info");
+            http::Response::builder().status(200).body(serde_json::json!({
+                "query_node": { "release": "1.2.3", "git_sha": "0123456789ab", "build_date": "2024-01-01T00:00:00Z" },
+                "lance_version": "5.0.0",
+                "lancedb_version": "0.42.0",
+                "function_worker_protocol_version": 25,
+                "configured_gpu_worker_image": "example.invalid/worker:configured",
+                "future_component": "ignored"
+            }).to_string()).unwrap()
+        });
+        let info = conn.server_info().await.unwrap();
+        let build = info.query_node.unwrap();
+        assert_eq!(build.release, "1.2.3");
+        assert_eq!(build.git_sha, "0123456789ab");
+        assert_eq!(build.build_date.as_deref(), Some("2024-01-01T00:00:00Z"));
+        assert_eq!(info.function_worker_protocol_version, 25);
+        assert_eq!(
+            info.configured_gpu_worker_image.as_deref(),
+            Some("example.invalid/worker:configured")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_server_info_error_provenance_survives_classification() {
+        for target in ["table", "job", "masked"] {
+            let conn = Connection::new_with_handler(move |_| {
+                let server = serde_json::json!({
+                    "release": "1.2.3", "git_sha": "0123456789ab",
+                    "build_date": "2024-01-01T00:00:00Z",
+                });
+                if target == "masked" {
+                    http::Response::builder()
+                        .status(500)
+                        .header("x-lancedb-server-build", server.to_string())
+                        .body("Internal server error".to_string())
+                        .unwrap()
+                } else {
+                    http::Response::builder()
+                        .status(404)
+                        .body(serde_json::json!({"error": "missing", "server": server}).to_string())
+                        .unwrap()
+                }
+            });
+            let error = match target {
+                "table" => conn.open_table("missing").execute().await.unwrap_err(),
+                "job" => conn.open_job("missing").await.unwrap_err(),
+                _ => conn.server_info().await.unwrap_err(),
+            };
+            match target {
+                "table" => assert!(matches!(&error, Error::TableNotFound { .. })),
+                "job" => assert!(matches!(&error, Error::JobNotFound { .. })),
+                _ => assert_eq!(
+                    error.status_code(),
+                    Some(http::StatusCode::INTERNAL_SERVER_ERROR)
+                ),
+            }
+            let server = error
+                .remote_error_metadata()
+                .unwrap()
+                .server
+                .as_ref()
+                .unwrap();
+            assert_eq!(server.git_sha, "0123456789ab");
+            assert_eq!(server.release, "1.2.3");
+            let message = error.to_string();
+            assert!(message.contains("0123456789ab"), "{message}");
+            assert!(message.contains("2024-01-01T00:00:00Z"), "{message}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_server_info_distinguishes_unsupported_from_denied() {
+        for status in [404, 403] {
+            let conn = Connection::new_with_handler(move |_| {
+                http::Response::builder()
+                    .status(status)
+                    .body("unavailable")
+                    .unwrap()
+            });
+            let error = conn.server_info().await.unwrap_err();
+            if status == 404 {
+                assert!(
+                    matches!(error, Error::NotSupported { message } if message.contains("/v1/server/info"))
+                );
+            } else {
+                assert!(matches!(
+                    error,
+                    Error::Http {
+                        status_code: Some(http::StatusCode::FORBIDDEN),
+                        ..
+                    }
+                ));
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn test_list_gpu_classes_reports_configured_hardware() {
         let conn = Connection::new_with_handler(|request| {
             assert_eq!(request.method(), &reqwest::Method::GET);
@@ -4217,7 +4340,7 @@ mod tests {
         });
         let err = conn.open_job("nope").await.unwrap_err();
         assert!(
-            matches!(&err, Error::JobNotFound { job_id } if job_id == "nope"),
+            matches!(&err, Error::JobNotFound { job_id, .. } if job_id == "nope"),
             "{err:?}"
         );
     }
