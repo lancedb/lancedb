@@ -5998,7 +5998,6 @@ async def test_remote_server_info_errors(is_async, status):
         requests.append((request.command, request.path))
         request.send_response(status)
         request.send_header("Content-Type", "application/json")
-        request.send_header("x-lancedb-error-code", "permission_denied")
         request.end_headers()
         request.wfile.write(
             json.dumps(
@@ -6025,13 +6024,13 @@ async def test_remote_server_info_errors(is_async, status):
     if status == 404:
         assert "/v1/server/info" in str(caught.value)
     else:
-        # Exercise the native classifier and Python exception conversion: neither
-        # may discard provenance when selecting the concise server error message.
+        # Permission responses do not carry the input-error classifier header.
+        # The native HTTP error and Python conversion must retain provenance.
         assert "discovery unavailable" in str(caught.value)
         assert "1.2.3" in str(caught.value)
         assert "0123456789ab" in str(caught.value)
         assert "2024-01-01T00:00:00Z" in str(caught.value)
-        assert caught.value.error_code == "permission_denied"
+        assert caught.value.status_code == 403
     assert requests == [("GET", "/v1/server/info")]
 
 

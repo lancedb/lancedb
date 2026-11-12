@@ -64,6 +64,8 @@ impl RemoteResourceIdentity {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct RemoteErrorMetadata {
+    /// Build of the executable that produced the error, when reported.
+    pub server: Option<crate::server_info::ServerBuildInfo>,
     /// Machine-readable input error code, when available.
     pub error_code: Option<String>,
     /// SQL job that failed, when the request ran in an isolated job.
@@ -84,6 +86,8 @@ impl RemoteErrorMetadata {
                 .map(str::to_owned)
         };
         Self {
+            server: header("x-lancedb-server-build")
+                .and_then(|value| serde_json::from_str(&value).ok()),
             error_code: header("x-lancedb-error-code"),
             job_id: header("x-lancedb-sql-job-id"),
             job_request_id: header("x-job-request-id"),
@@ -131,29 +135,27 @@ impl HttpErrorSource {
     pub(crate) fn new(
         message: String,
         response_body: Option<&str>,
-        metadata: RemoteErrorMetadata,
+        mut metadata: RemoteErrorMetadata,
     ) -> Self {
         let details = response_body.and_then(parse_http_error_details);
-        let message = if metadata.error_code.is_some() {
-            let body =
-                response_body.and_then(|body| serde_json::from_str::<serde_json::Value>(body).ok());
-            let mut message = body
+        let body =
+            response_body.and_then(|body| serde_json::from_str::<serde_json::Value>(body).ok());
+        if metadata.server.is_none() {
+            metadata.server = body
                 .as_ref()
+                .and_then(|body| body.get("server").cloned())
+                .and_then(|server| serde_json::from_value(server).ok());
+        }
+        let message = if metadata.error_code.is_some() {
+            body.as_ref()
                 .and_then(|body| body.get("error")?.as_str().map(str::to_owned))
-                .unwrap_or(message);
-            // Classification keeps the concise error text; retain provenance
-            // alongside it so copying the error still identifies its producer.
-            if let Some(server) =
-                body.and_then(|body| body.get("server").cloned())
-                    .and_then(|server| {
-                        serde_json::from_value::<crate::server_info::ServerBuildInfo>(server).ok()
-                    })
-            {
-                message.push_str(&format!(" [server: {server}]"));
-            }
-            message
+                .unwrap_or(message)
         } else {
             message
+        };
+        let message = match &metadata.server {
+            Some(server) => format!("{message} [server: {server}]"),
+            None => message,
         };
         Self {
             message,
@@ -330,6 +332,18 @@ impl Display for JobFailure {
     }
 }
 
+fn server_build_suffix(_source: &(dyn std::error::Error + Send + Sync + 'static)) -> String {
+    #[cfg(feature = "remote")]
+    if let Some(server) = _source
+        .downcast_ref::<Error>()
+        .and_then(Error::remote_error_metadata)
+        .and_then(|metadata| metadata.server.as_ref())
+    {
+        return format!(" [server: {server}]");
+    }
+    String::new()
+}
+
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(crate)))]
 pub enum Error {
@@ -337,7 +351,7 @@ pub enum Error {
     InvalidTableName { name: String, reason: String },
     #[snafu(display("Invalid input, {message}"))]
     InvalidInput { message: String },
-    #[snafu(display("Table '{name}' was not found"))]
+    #[snafu(display("Table '{name}' was not found{}", server_build_suffix(source.as_ref())))]
     TableNotFound { name: String, source: BoxError },
     #[snafu(display(
         "Table '{name}' exists but could not be loaded (it may be corrupt or incomplete): {source}"
@@ -398,8 +412,8 @@ pub enum Error {
     },
     #[snafu(display("Job{} was cancelled", job_id.as_ref().map(|id| format!(" {id}")).unwrap_or_default()))]
     JobCancelled { job_id: Option<String> },
-    #[snafu(display("Job '{job_id}' was not found"))]
-    JobNotFound { job_id: String },
+    #[snafu(display("Job '{job_id}' was not found{}", server_build_suffix(source.as_ref())))]
+    JobNotFound { job_id: String, source: BoxError },
 
     // 3rd party / external errors
     #[snafu(display("object_store error: {source}"))]
@@ -589,7 +603,7 @@ impl Error {
         match self {
             Self::Http { status_code, .. } => *status_code,
             Self::Retry { status_code, .. } => *status_code,
-            Self::TableNotFound { source, .. } => {
+            Self::TableNotFound { source, .. } | Self::JobNotFound { source, .. } => {
                 source.downcast_ref::<Self>().and_then(Self::status_code)
             }
             Self::JobFailed { failure, .. } => {
@@ -636,7 +650,7 @@ impl Error {
             Self::Retry { source, .. } => source
                 .downcast_ref::<Self>()
                 .and_then(Self::remote_error_metadata),
-            Self::TableNotFound { source, .. } => source
+            Self::TableNotFound { source, .. } | Self::JobNotFound { source, .. } => source
                 .downcast_ref::<Self>()
                 .and_then(Self::remote_error_metadata),
             Self::JobFailed { failure, .. } => failure

@@ -1796,6 +1796,11 @@ pub(super) fn sql_status_error(request_id: &str, status: &tonic::Status) -> Erro
             .map(str::to_owned)
     };
     let metadata = crate::error::RemoteErrorMetadata {
+        server: status
+            .metadata()
+            .get_bin("x-lancedb-server-build-bin")
+            .and_then(|value| value.to_bytes().ok())
+            .and_then(|value| serde_json::from_slice(&value).ok()),
         error_code: header("x-lancedb-error-code"),
         job_id: header(SQL_JOB_ID_METADATA_KEY),
         job_request_id: header("x-job-request-id"),
@@ -1805,14 +1810,7 @@ pub(super) fn sql_status_error(request_id: &str, status: &tonic::Status) -> Erro
     };
     let sql_job_id = metadata.job_id.clone();
     let mut message = status.message().to_owned();
-    if let Some(server) = status
-        .metadata()
-        .get_bin("x-lancedb-server-build-bin")
-        .and_then(|value| value.to_bytes().ok())
-        .and_then(|value| {
-            serde_json::from_slice::<crate::server_info::ServerBuildInfo>(&value).ok()
-        })
-    {
+    if let Some(server) = &metadata.server {
         message.push_str(&format!(" [server: {server}]"));
     }
     let error = Error::Sql {
