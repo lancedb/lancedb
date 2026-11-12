@@ -514,10 +514,10 @@ impl Connection {
         filter: Option<String>,
         limit: Option<u64>,
         with_no_data: bool,
-        exist_ok: bool,
         auto_refresh_enabled: Option<bool>,
         auto_refresh_interval_seconds: Option<f64>,
         query: Option<String>,
+        exist_ok: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         let builder = materialized_view_builder(
@@ -560,10 +560,10 @@ impl Connection {
         filter: Option<String>,
         limit: Option<u64>,
         with_no_data: bool,
-        exist_ok: bool,
         auto_refresh_enabled: Option<bool>,
         auto_refresh_interval_seconds: Option<f64>,
         query: Option<String>,
+        exist_ok: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         let builder = materialized_view_builder(
