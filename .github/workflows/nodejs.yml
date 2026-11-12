@@ -27,6 +27,8 @@ env:
 
 jobs:
   lint:
+    # TEMPORARY DIAGNOSTIC: only the real S3/DDB matrix is needed.
+    if: ${{ false }}
     name: Lint
     runs-on: ubuntu-22.04
     defaults:
@@ -148,8 +150,19 @@ jobs:
       with:
         node-version: ${{ matrix.node-version }}
     - name: Setup localstack
+      id: localstack
       working-directory: .
       run: docker compose up --detach --wait
+    # TEMPORARY DIAGNOSTIC: bind observations to the actual binary and service.
+    - name: Record DynamoDB diagnostic inputs
+      working-directory: .
+      run: |
+        git rev-parse HEAD HEAD^{tree}
+        sha256sum Cargo.lock nodejs/lancedb/*.node
+        rustc -Vv
+        node --version
+        docker inspect --format '{{.Image}} {{json .State.Health}}' "$(docker compose ps -q localstack)"
+        curl --fail --silent --show-error http://localhost:4566/_localstack/health
     - name: Test
       env:
         S3_TEST: "1"
@@ -157,8 +170,18 @@ jobs:
         NODE_OPTIONS: "--experimental-vm-modules"
       # Invoke the installed jest binary directly; the pnpm shim is set up
       # against the build-phase Node, not the version selected above.
-      run: node_modules/.bin/jest --verbose
+      # TEMPORARY DIAGNOSTIC: retain both DDB tests and preceding S3 setup tests.
+      run: node_modules/.bin/jest --verbose __test__/s3_integration.test.ts
+    - name: Collect LocalStack request timing
+      if: ${{ always() && steps.localstack.outcome == 'success' }}
+      working-directory: .
+      # Emit only timestamps, operation, status and exception class; no trace payloads.
+      run: |
+        docker compose logs --no-color --timestamps localstack |
+          sed -nE 's/^.* ([0-9]{4}-[0-9]{2}-[0-9]{2}T[^ ]+).*localstack[.]request[.]aws[[:space:]]*: (AWS (s3|dynamodb|kms)[.][A-Za-z0-9_]+ => [0-9]{3}( [(][A-Za-z0-9_]+[)])?).*$/\1 \2/p'
     - name: Test examples
+      # TEMPORARY DIAGNOSTIC: unrelated to the DDB failure.
+      if: ${{ false }}
       working-directory: ./
       env:
         OPENAI_API_KEY: test
@@ -169,6 +192,8 @@ jobs:
         cd nodejs/examples
         node_modules/.bin/jest --testEnvironment jest-environment-node-single-context --verbose
   arrow-compat:
+    # TEMPORARY DIAGNOSTIC: only the real S3/DDB matrix is needed.
+    if: ${{ false }}
     # The main jobs resolve `apache-arrow` to the version pinned in
     # devDependencies (the newest supported release). This job re-runs the
     # suite with the library itself running on each older Arrow release the
@@ -234,6 +259,8 @@ jobs:
         NODE_OPTIONS: "--experimental-vm-modules"
       run: node_modules/.bin/jest --verbose
   macos:
+    # TEMPORARY DIAGNOSTIC: only the real S3/DDB matrix is needed.
+    if: ${{ false }}
     timeout-minutes: 30
     # macos-15 ships a newer linker; the older macos-14 linker fails to insert
     # branch islands when the debug cdylib's __text section exceeds the 128 MB

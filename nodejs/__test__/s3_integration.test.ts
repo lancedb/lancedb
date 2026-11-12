@@ -271,39 +271,69 @@ maybeDescribe("DynamoDB Lock", () => {
   let bucket: S3Bucket;
   let commitTable: DynamoDBCommitTable;
 
+  // TEMPORARY DIAGNOSTIC: keep the original timeout and concurrency unchanged.
+  async function timed<T>(operation: string, action: () => Promise<T>) {
+    const started = performance.now();
+    const emit = (state: string) =>
+      process.stderr.write(
+        `[ddb-timing] ${new Date().toISOString()} ${operation} ${state} ${performance.now() - started}ms\n`,
+      );
+    emit("start");
+    try {
+      const result = await action();
+      emit("complete");
+      return result;
+    } catch (error) {
+      emit("failed");
+      throw error;
+    }
+  }
+
   beforeAll(async () => {
-    bucket = await S3Bucket.create("lancedb2");
-    commitTable = await DynamoDBCommitTable.create("commitTable");
+    bucket = await timed("setup.bucket", () => S3Bucket.create("lancedb2"));
+    commitTable = await timed("setup.commit-table", () =>
+      DynamoDBCommitTable.create("commitTable"),
+    );
   });
 
   afterAll(async () => {
-    await commitTable.delete();
-    await bucket.delete();
+    await timed("teardown.commit-table", () => commitTable.delete());
+    await timed("teardown.bucket", () => bucket.delete());
   });
 
   it("can be used to configure a DynamoDB table for commit log", async () => {
     const uri = `s3+ddb://${bucket.name}/concurrent-appends?ddbTableName=${commitTable.name}`;
-    const db = await connect(uri, {
-      storageOptions: CONFIG,
-      readConsistencyInterval: 0,
-    });
+    const db = await timed("concurrent-appends.connect", () =>
+      connect(uri, {
+        storageOptions: CONFIG,
+        readConsistencyInterval: 0,
+      }),
+    );
 
-    const table = await db.createTable("test", [{ a: 1, b: 2 }]);
+    const table = await timed("concurrent-appends.create", () =>
+      db.createTable("test", [{ a: 1, b: 2 }]),
+    );
 
     // 5 concurrent appends
-    const futs = Array.from({ length: 5 }, async () => {
+    const futs = Array.from({ length: 5 }, async (_, index) => {
       // Open a table so each append has a separate table reference. Otherwise
       // they will share the same table reference and the internal ReadWriteLock
       // will prevent any real concurrency.
-      const table = await db.openTable("test");
-      await table.add([{ a: 2, b: 3 }]);
+      const table = await timed(`concurrent-appends.${index}.open`, () =>
+        db.openTable("test"),
+      );
+      await timed(`concurrent-appends.${index}.add`, () =>
+        table.add([{ a: 2, b: 3 }]),
+      );
     });
     await Promise.all(futs);
 
-    const rowCount = await table.countRows();
+    const rowCount = await timed("concurrent-appends.count", () =>
+      table.countRows(),
+    );
     expect(rowCount).toBe(6);
 
-    await db.dropAllTables();
+    await timed("concurrent-appends.drop", () => db.dropAllTables());
   });
 
   it("clears dynamodb state after dropping all tables", async () => {
