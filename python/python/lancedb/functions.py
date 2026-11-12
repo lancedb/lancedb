@@ -44,6 +44,7 @@ from typing import (
 )
 
 import pyarrow as pa
+from packaging.requirements import Requirement
 from pydantic import (
     AfterValidator,
     BaseModel,
@@ -57,6 +58,7 @@ from pydantic import (
 from .schema import blob as _blob_field
 from .schema import is_blob_v2_field as _is_blob_v2_field
 from ._blob_reader import BlobReader
+from ._lancedb import _validate_conda_requirement
 from .secrets import EnvVarSecret
 
 _Int32 = conint(strict=True, ge=-(2**31), le=2**31 - 1)
@@ -94,6 +96,16 @@ def _validate_batch_size(value: Any) -> Optional[int]:
         raise ValueError("batch_size must be an integer")
     if not 1 <= value <= 2**32 - 1:
         raise ValueError("batch_size must be between 1 and 4294967295")
+    return value
+
+
+def _validate_max_concurrency(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("max_concurrency must be an integer")
+    if not 1 <= value <= 2**32 - 1:
+        raise ValueError("max_concurrency must be between 1 and 4294967295")
     return value
 
 
@@ -483,6 +495,35 @@ class PythonRuntimeSpec(_RemoteValue):
             object.__setattr__(self, "gpu_class", None)
         return self
 
+    @property
+    def digest(self) -> str:
+        """SHA-256 identity of the declared runtime, before building an image.
+
+        Covers Python version, environment sources, environment variables, and
+        GPU settings. Package and system-package order is ignored; conda channel
+        order is preserved. Compare with ``runtime_digest`` on
+        [FunctionVersion][lancedb.functions.FunctionVersion].
+        This identifies build inputs, not the resolved contents of unpinned
+        dependencies or the deployment's default base image.
+        """
+        if self.kind not in {"python", "python_v2"}:
+            raise ValueError(f"cannot digest unknown runtime kind {self.kind!r}")
+        value = self._known_dict()
+        if not value.get("env"):
+            value.pop("env", None)
+        environment = value["environment"]
+        for field in ("packages", "system_packages"):
+            if field in environment:
+                environment[field] = sorted(environment[field])
+        encoded = json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
 
 class FunctionImage(_RemoteValue):
     """A complete OCI Function image identified by its exact manifest digest."""
@@ -524,14 +565,24 @@ class FunctionVersion(_RemoteValue):
     of the built ``image``. Compare it with
     ``definition.registration_request.artifact.digest`` to check whether a local
     [FunctionDefinition][lancedb.functions.FunctionDefinition] has the same source.
+    It does not cover dependencies, environment variables, Python version, or
+    GPU settings. Equal source digests alone do not mean a version can be reused.
     It is ``None`` when the server does not provide a source digest.
+
+    ``runtime_digest`` identifies the declared environment inputs. Compare it
+    with ``definition.registration_request.runtime.digest`` to check whether
+    the local runtime matches. It is ``None`` for images built before runtime
+    identity was exposed. A missing digest cannot establish a match. Reusing a
+    version also requires matching the source and all other registration inputs,
+    including signature, Secret bindings, models, and execution controls.
 
     ``gpu_class`` is the operator-defined GPU pool fixed into this Function
     version, or ``None`` when registration used the deployment default.
 
-    ``batch_size``, ``row_timeout_seconds``, and ``result_stability`` retain
-    the execution controls reported by the catalog. They are ``None`` for
-    versions registered before the corresponding declaration.
+    ``batch_size``, ``max_concurrency``, ``row_timeout_seconds``, and
+    ``result_stability`` retain the execution controls reported by the
+    catalog. They are ``None`` for versions registered before the
+    corresponding declaration.
     """
 
     name: str
@@ -541,6 +592,7 @@ class FunctionVersion(_RemoteValue):
     version: _ObjectVersion
     image: FunctionImage
     source_digest: Optional[str] = None
+    runtime_digest: Optional[str] = None
     signature: FunctionSignature
     secret_bindings: tuple[SecretBinding, ...] = ()
     created_at_millis: int
@@ -548,6 +600,7 @@ class FunctionVersion(_RemoteValue):
     disabled: bool
     gpu_class: Optional[str] = None
     batch_size: Optional[int] = None
+    max_concurrency: Optional[int] = None
     row_timeout_seconds: Optional[float] = None
     result_stability: Optional[str] = None
 
@@ -555,6 +608,11 @@ class FunctionVersion(_RemoteValue):
     @classmethod
     def _validate_batch_size(cls, value):
         return _validate_batch_size(value)
+
+    @field_validator("max_concurrency", mode="before")
+    @classmethod
+    def _validate_max_concurrency(cls, value):
+        return _validate_max_concurrency(value)
 
     @field_validator("row_timeout_seconds", mode="before")
     @classmethod
@@ -691,6 +749,7 @@ class FunctionRegistrationRequest(_RemoteValue):
     signature: FunctionSignature
     runtime: PythonRuntimeSpec
     batch_size: Optional[int] = None
+    max_concurrency: Optional[int] = None
     row_timeout_seconds: Optional[float] = None
     retry_policy: Optional[FunctionRetryPolicy] = None
     secret_bindings: tuple[SecretBinding, ...] = ()
@@ -700,6 +759,11 @@ class FunctionRegistrationRequest(_RemoteValue):
     @classmethod
     def _validate_batch_size(cls, value):
         return _validate_batch_size(value)
+
+    @field_validator("max_concurrency", mode="before")
+    @classmethod
+    def _validate_max_concurrency(cls, value):
+        return _validate_max_concurrency(value)
 
     @field_validator("row_timeout_seconds", mode="before")
     @classmethod
@@ -850,17 +914,47 @@ class RefreshColumnResult(_RemoteValue):
 
     LanceDB Embedded jobs produce this value in process. LanceDB Enterprise
     decodes the same value from the durable server-job terminal payload.
+
+    Row counters describe logical rows planned for this refresh, not user-code
+    calls or retry attempts. ``rows_assigned`` counts rows successfully written
+    with an output value, ``rows_failed`` counts rows whose computation failed,
+    and ``rows_remaining`` counts planned rows neither assigned nor terminally
+    skipped. Rows already counted in ``rows_failed`` are covered and are not
+    counted again in ``rows_remaining``.
+
+    For example, a refresh over 2,001 logical rows that assigns 1,891 values and
+    fails 110 rows reports ``rows_assigned=1,891``, ``rows_failed=110``, and
+    ``rows_remaining=0``. Its failure-rate denominator is those 2,001 logical
+    rows, not the number of execution attempts.
     """
 
     rows_assigned: _UInt64
+    """Number of logical rows successfully assigned an output value by this
+    refresh. Each row counts once, regardless of retry attempts, and failed rows
+    are not included."""
+
     rows_failed: _UInt64
+    """Number of logical rows whose computation failed. Rows deferred because
+    an input was not ready are not failures."""
+
     rows_remaining: _UInt64
+    """Number of planned logical rows neither assigned nor terminally skipped.
+    Rows already counted in ``rows_failed`` are covered and are not counted
+    again."""
+
     source_version: _UInt64
+    """Exact table version the refresh read."""
+
     published_version: Optional[_UInt64] = None
+    """Table version made visible by the refresh, when one was published."""
 
     @property
     def rows_filled(self) -> int:
-        """Deprecated compatibility alias for :attr:`rows_assigned`."""
+        """Deprecated compatibility alias for :attr:`rows_assigned`.
+
+        The value is the same successful logical-row count; it does not count
+        execution attempts.
+        """
         return self.rows_assigned
 
     @property
@@ -1243,6 +1337,21 @@ def _annotation_type(annotation: Any) -> tuple[pa.DataType, bool]:
     raise TypeError(f"unsupported Function annotation: {annotation!r}")
 
 
+def _validate_callable(function: Any) -> None:
+    if hasattr(function, "__wrapped__"):
+        raise TypeError(
+            "decorated wrappers are not supported; put caching inside the function "
+            "body or use a class Function with a cache in __init__"
+        )
+    if inspect.isgeneratorfunction(function) or inspect.isasyncgenfunction(function):
+        raise TypeError(
+            "generator Functions are not supported; return a value instead of "
+            "yielding, or return a list for multiple values"
+        )
+    if inspect.isfunction(function) and function.__name__ == "<lambda>":
+        raise TypeError("lambda Functions are not supported; use a named def instead")
+
+
 def _callable_parameters(function: Callable[..., Any]) -> tuple[inspect.Parameter, ...]:
     parameters = tuple(inspect.signature(function).parameters.values())
     for parameter in parameters:
@@ -1253,7 +1362,11 @@ def _callable_parameters(function: Callable[..., Any]) -> tuple[inspect.Paramete
         ):
             raise TypeError("Function callables require named, non-variadic parameters")
         if parameter.default is not inspect.Parameter.empty:
-            raise TypeError("Function callable defaults are not supported")
+            raise TypeError(
+                f"Function callable defaults are not supported: {parameter.name!r}; "
+                "move configuration parameters to a class Function's __init__ "
+                "and pass them as binding-time initialization values"
+            )
     return parameters
 
 
@@ -1416,6 +1529,17 @@ def _infer_signature(
     return FunctionSignature(inputs=tuple(inputs), output=output)
 
 
+def _is_vectorized_callable(function: Callable[..., Any], *, method: bool) -> bool:
+    parameters = _callable_parameters(function)
+    if method:
+        parameters = parameters[1:]
+    annotations = get_type_hints(function, include_extras=True)
+    annotated = tuple(annotations.get(parameter.name) for parameter in parameters)
+    return (len(annotated) == 1 and annotated[0] is pa.RecordBatch) or (
+        bool(annotated) and all(annotation is pa.Array for annotation in annotated)
+    )
+
+
 # Both spellings strip from packaged source; `udf` is the deprecated alias.
 _DECORATOR_NAMES = frozenset({"function", "udf"})
 
@@ -1428,19 +1552,21 @@ def _is_function_decorator(node: ast.expr) -> bool:
     )
 
 
-def _literal_source(value: Any) -> str:
+def _literal_source(value: Any, name: str) -> str:
     if value is None or type(value) in (bool, int, str, bytes):
         return repr(value)
     if type(value) is float and math.isfinite(value):
         return repr(value)
     if type(value) is tuple:
-        children = ", ".join(_literal_source(child) for child in value)
+        children = ", ".join(_literal_source(child, name) for child in value)
         if len(value) == 1:
             children += ","
         return f"({children})"
     raise TypeError(
         "Function source references an unsupported global value of type "
-        f"{type(value).__name__}"
+        f"{type(value).__name__} in {name!r}. Only None, bool, int, str, bytes, "
+        "finite float, and tuples of these literals can be captured. "
+        "Define this value inside the function or class body instead."
     )
 
 
@@ -1455,10 +1581,23 @@ _NAMESPACE_MODULES = frozenset(
 )
 
 
-def _namespace_acquisition(
-    definition: ast.FunctionDef, references: set[str]
-) -> list[str]:
-    found = set(references & _DYNAMIC_NAMESPACE_ACCESS)
+_NAMESPACE_HELPER_HINT = (
+    "Move this code into an importable helper module supplied with code=, pip=, "
+    "or conda=, then import and call the helper from the Function."
+)
+
+
+def _namespace_import_error(modules: Sequence[str]) -> ValueError:
+    return ValueError(
+        f"@function cannot package imports from namespace-access modules: {modules!r}. "
+        f"Imports of {', '.join(sorted(_NAMESPACE_MODULES))} (including submodules) "
+        "are blocked because they can access names outside the packaged "
+        "Function's reconstructed module namespace. " + _NAMESPACE_HELPER_HINT
+    )
+
+
+def _namespace_imports(definition: Union[ast.FunctionDef, ast.ClassDef]) -> list[str]:
+    found: set[str] = set()
     for node in ast.walk(definition):
         if isinstance(node, ast.Import):
             found.update(
@@ -1646,6 +1785,29 @@ def _packaged_by_source(value: Any) -> bool:
     return True
 
 
+def _validate_package_requirements(kind: str, packages: Sequence[str]) -> None:
+    for index, package in enumerate(packages):
+        field = f"{kind}[{index}]"
+        if not isinstance(package, str):
+            raise TypeError(f"{field} must be a string, got {package!r}")
+        if not package or package != package.strip():
+            raise ValueError(
+                f"{field} requirement {package!r} must be non-empty and trimmed"
+            )
+        try:
+            if kind == "conda":
+                _validate_conda_requirement(package)
+            else:
+                candidate = package
+                if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", package):
+                    candidate = f"dependency @ {package}"
+                Requirement(candidate)
+        except ValueError as error:
+            raise ValueError(
+                f"invalid {field} requirement {package!r}: {error}"
+            ) from error
+
+
 def _requirement_name(requirement: str) -> str:
     requirement = requirement.rpartition("::")[2]
     match = _REQUIREMENT_NAME.match(requirement.strip())
@@ -1745,11 +1907,17 @@ class _SourcePackager:
         )
         source = ast.unparse(definition)
         references = _module_references(f"{_SOURCE_HEADER}\n\n{source}\n")
-        dynamic = _namespace_acquisition(definition, references)
+        dynamic = sorted(references & _DYNAMIC_NAMESPACE_ACCESS)
         if dynamic:
             raise ValueError(
-                f"@function cannot package dynamic namespace access: {dynamic!r}"
+                f"@function cannot package dynamic namespace access: {dynamic!r}. "
+                "These operations can access names outside the packaged "
+                "Function's reconstructed module namespace. Reference dependencies "
+                "explicitly. " + _NAMESPACE_HELPER_HINT
             )
+        namespace_imports = _namespace_imports(definition)
+        if namespace_imports:
+            raise _namespace_import_error(namespace_imports)
         self._warn_unshipped_direct_imports(definition)
         self._packaged.add(id(target))
         self._claim(target.__name__, ("definition", id(target)))
@@ -1844,10 +2012,7 @@ class _SourcePackager:
             return f"from lance_blob import BlobReader as {name}"
         if isinstance(value, types.ModuleType):
             if value.__name__.split(".")[0] in _NAMESPACE_MODULES:
-                raise ValueError(
-                    "@function cannot package dynamic namespace access: "
-                    f"{value.__name__!r}"
-                )
+                raise _namespace_import_error([value.__name__])
             try:
                 imported = importlib.import_module(value.__name__)
             except ImportError:
@@ -1875,7 +2040,7 @@ class _SourcePackager:
             if imported is value:
                 self._require_importable(module_name)
                 return f"from {module_name} import {qualname} as {name}"
-        return f"{name} = {_literal_source(value)}"
+        return f"{name} = {_literal_source(value, name)}"
 
     def _require_importable(self, module_name: str) -> None:
         """Warn about an import the Function's environment may not be able to
@@ -2121,6 +2286,7 @@ def _class_member(cls: type, name: str) -> Any:
 
 def _class_call(cls: type) -> Callable[..., Any]:
     call = _class_member(cls, "__call__")
+    _validate_callable(call)
     if not inspect.isfunction(call) or inspect.iscoroutinefunction(call):
         raise TypeError("a class Function must define a synchronous __call__ method")
     close = _class_member(cls, "close")
@@ -2147,7 +2313,9 @@ class FunctionDefinition:
     once per row. A callable whose parameters are all annotated as
     ``pyarrow.Array`` receives whole Arrow arrays and returns a
     ``pyarrow.Array`` instead. This authoring choice is independent of the
-    internal artifact adapter in the registration request.
+    internal artifact adapter in the registration request. GPU Functions should
+    use the Arrow form when the model supports batches: a scalar GPU callable is
+    invoked once per row and leaves the model's own batching unavailable.
     """
 
     def __init__(
@@ -2161,6 +2329,7 @@ class FunctionDefinition:
         env: Mapping[str, str],
         python_version: Optional[str],
         batch_size: Optional[int] = None,
+        max_concurrency: Optional[int] = None,
         row_timeout_seconds: Optional[float] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
         gpu: bool = False,
@@ -2176,16 +2345,15 @@ class FunctionDefinition:
         if not is_class and (
             not inspect.isfunction(function) or inspect.iscoroutinefunction(function)
         ):
+            _validate_callable(function)
             raise TypeError(
                 "@function requires a synchronous Python function or a class"
             )
-        function_name = name or function.__name__
-        if not _FUNCTION_NAME.fullmatch(function_name):
-            raise ValueError(f"invalid Function name: {function_name!r}")
         if pip and conda:
             raise ValueError("a Function environment is pip or conda, not both")
         if conda_channels and not conda:
             raise ValueError("conda_channels requires conda packages")
+        _validate_package_requirements("conda" if conda else "pip", conda or pip)
         gpu_marker = _normalize_gpu_marker(gpu)
         if gpu_class is not None:
             _validate_gpu_class_name(gpu_class)
@@ -2242,6 +2410,11 @@ class FunctionDefinition:
                 "model Functions reserve environment variables "
                 f"{reserved!r}; the worker sets them for the private snapshot"
             )
+        if not is_class:
+            _validate_callable(function)
+        function_name = name or function.__name__
+        if not _FUNCTION_NAME.fullmatch(function_name):
+            raise ValueError(f"invalid Function name: {function_name!r}")
         if is_class:
             if "<" in function.__qualname__ or "." in function.__qualname__:
                 raise ValueError(
@@ -2264,6 +2437,18 @@ class FunctionDefinition:
             signature = signature._copy(update={"initialization": initialization})
         else:
             signature = _infer_signature(function, input_schema, output_schema)
+        if gpu_marker is not None:
+            call = _class_call(function) if is_class else function
+            if not _is_vectorized_callable(call, method=is_class):
+                warnings.warn(
+                    f"GPU Function {function_name!r} uses a scalar callable, so each "
+                    "row invokes it separately and its model batch is not inferred. "
+                    "For GPU throughput, annotate every input as pyarrow.Array or "
+                    "take one pyarrow.RecordBatch, provide input_schema and "
+                    "output_schema, and batch inside that callable.",
+                    UserWarning,
+                    stacklevel=3,
+                )
         code_files, code_modules = _code_files(code)
         entry_source = _SourcePackager(
             code_modules, frozenset(_requirement_name(package) for package in packages)
@@ -2308,6 +2493,7 @@ class FunctionDefinition:
             signature=signature,
             runtime=runtime,
             batch_size=batch_size,
+            max_concurrency=max_concurrency,
             row_timeout_seconds=row_timeout_seconds,
             retry_policy=retry_policy,
             models=models,
@@ -2406,6 +2592,7 @@ def function(
     env: Optional[Mapping[str, str]] = None,
     python_version: Optional[str] = None,
     batch_size: Optional[int] = None,
+    max_concurrency: Optional[int] = None,
     row_timeout_seconds: Optional[float] = None,
     retry_policy: Optional[FunctionRetryPolicy] = None,
     gpu: bool = False,
@@ -2429,6 +2616,7 @@ def function(
     env: Optional[Mapping[str, str]] = None,
     python_version: Optional[str] = None,
     batch_size: Optional[int] = None,
+    max_concurrency: Optional[int] = None,
     row_timeout_seconds: Optional[float] = None,
     retry_policy: Optional[FunctionRetryPolicy] = None,
     gpu: bool = False,
@@ -2470,6 +2658,14 @@ def function(
     reuses them. An instance serves many batches of one binding, so state is
     shared across them, but not across instances or workers.
 
+    Functions and ``__call__`` methods must return a value. Generators,
+    including async generators, are not supported; return a list to produce
+    multiple values for a list output. Lambdas and decorated wrappers such as
+    ``functools.lru_cache`` are not supported. Use a named ``def`` and keep
+    caches inside the body or in a class instance initialized by ``__init__``.
+    Callable input parameters cannot have defaults; move configurable values
+    to class initialization fields instead.
+
     **Initialization.** The annotated parameters of a class's ``__init__``
     are the Function's initialization fields. Their values belong to each
     binding, not to the Function: ``function(text=col("body"), model="small")``
@@ -2486,8 +2682,8 @@ def function(
     - modules, and classes and functions importable from an installed
       package, become imports; the package must be declared in ``pip`` or
       ``conda``;
-    - literals (``None``, booleans, numbers, strings, bytes, tuples of them)
-      are inlined;
+    - literals (``None``, ``bool``, ``int``, ``str``, ``bytes``, finite
+      ``float``, and tuples containing only these literals) are inlined;
     - functions and classes defined in ``__main__``, such as notebook cells,
       are packaged by source, together with what they reference;
     - modules and packages listed in ``code`` are shipped as Python source and
@@ -2505,13 +2701,31 @@ def function(
     image. Warnings follow normal Python warning filters and may be promoted
     to errors. Declare every third-party import in ``pip`` or ``conda`` even
     when it happens to be installed on the registration host.
-    Closures, lambdas, nested definitions, mutable module-level
-    objects, code that reaches the module namespace another way
-    (``globals()``/``eval``, ``sys.modules``, ``builtins``), and a
+    Other global values, including Arrow types and schemas, lists, dictionaries,
+    sets, and NumPy arrays, cannot be captured as literals. Define them inside
+    the function or class body instead.
+    Closures, lambdas, nested definitions, mutable module-level objects, and a
     non-standard ``__builtins__`` are rejected where they can be seen and
-    otherwise unsupported. Changing any packaged source, including a module in
-    ``code``, produces a new Function version; the environment built from
-    ``pip`` or ``conda`` is reused.
+    otherwise unsupported.
+
+    **Namespace restrictions.** The packaged source cannot import ``sys``,
+    ``builtins``, ``importlib``, ``inspect``, ``gc``, ``ctypes``, or ``types``,
+    including submodules such as ``ctypes.util`` and ``importlib.metadata``.
+    Referencing a module-level alias for one of these modules is also rejected.
+    References to ``globals``, ``locals``, ``vars``, ``eval``, ``exec``,
+    ``compile``, or ``__import__`` are rejected as dynamic namespace access.
+    These restrictions are conservative: even ordinary uses such as
+    ``ctypes.util.find_library`` or ``sys.version`` are blocked because these
+    modules can reach names outside the reconstructed Function namespace.
+    Move such code into an importable helper module supplied with ``code=``,
+    ``pip=``, or ``conda=``, then import and call the helper from the Function.
+    Helpers imported normally keep their own module namespace; these checks do
+    not scan their bodies. A helper defined in ``__main__`` is packaged by source
+    and is subject to the same checks.
+
+    Changing any packaged source, including a module in ``code``, produces a
+    new Function version; the environment built from ``pip`` or ``conda`` is
+    reused.
 
     Parameters
     ----------
@@ -2533,9 +2747,12 @@ def function(
         non-nullable. Required for batch annotations. When omitted, the output
         is inferred from the return annotation.
     pip : sequence of str, optional
-        Pip requirements for the remote environment.
+        Pip requirements for the remote environment. Syntax is validated at
+        decoration time, including extras and environment markers. Named direct
+        references and bare package or git URLs are supported.
     conda : sequence of str, optional
-        Conda packages for the remote environment, instead of ``pip``.
+        Conda packages for the remote environment, instead of ``pip``. MatchSpec
+        syntax is validated at decoration time, including channels and builds.
     conda_channels : sequence of str, optional
         Conda channels in priority order; requires ``conda``.
     apt : sequence of str, optional
@@ -2559,6 +2776,11 @@ def function(
         Maximum number of input rows supplied in one execution batch. Must be
         between 1 and 4294967295. Remote execution may use smaller batches.
         When omitted, the service chooses the batch size adaptively.
+    max_concurrency : int, optional
+        Maximum user-code calls in flight for one Function within one logical
+        execution. Must be between 1 and 4294967295. A refresh can override
+        this default for that execution only. Omitting it preserves the
+        existing behavior. This is not an account-wide quota.
     row_timeout_seconds : float, optional
         Positive, finite deadline in seconds for each Python call: one row for
         scalar Functions and one batch for vectorized Functions. This does not
@@ -2695,6 +2917,7 @@ def function(
             env={} if env is None else env,
             python_version=python_version,
             batch_size=batch_size,
+            max_concurrency=max_concurrency,
             row_timeout_seconds=row_timeout_seconds,
             retry_policy=retry_policy,
             gpu=gpu,

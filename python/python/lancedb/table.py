@@ -35,11 +35,12 @@ from urllib.parse import urlparse
 from lancedb.scannable import _hf_batches, _register_optional_converters, to_scannable
 
 from . import __version__
-from ._lancedb import _parse_field_path
+from ._lancedb import FunctionColumnStatus, _parse_field_path
 from ._blob import (
     BlobFile,
     _normalize_blob_descriptor,
     _normalize_blob_row_ids,
+    _validate_blob_buffer_size,
     _wrap_blob_files,
     strip_auto_row_ids,
     validate_blob_mode,
@@ -1591,8 +1592,8 @@ class Table(ABC):
         blob_mode: str, default "lazy"
             ``"lazy"`` returns blob v2 descriptors that carry the row id
             ``fetch_blobs`` reads. ``"descriptions"`` returns them without it.
-            ``"bytes"`` returns payload bytes and raises for legacy blob columns
-            and blobs inside lists.
+            ``"bytes"`` returns payload bytes for supported row-addressable blob
+            columns and raises for blobs inside lists.
 
         Returns
         -------
@@ -2257,6 +2258,7 @@ class Table(ABC):
         progress: Optional[Union[bool, Callable, Any]] = None,
         write_parallelism: Optional[int] = None,
         allow_external_blob_outside_bases: bool = False,
+        retries: Optional[int] = None,
     ) -> AddResult:
         """Add more data to the [Table][lancedb.table.Table].
 
@@ -2317,6 +2319,10 @@ class Table(ABC):
             Store blob URIs that sit outside registered blob bases. The row
             keeps a reference, so the object has to stay readable. Local
             tables only.
+        retries: int, optional
+            Override the remote retry budget for this call (0 to 255). Zero
+            disables retries, including multipart parts. Ambiguous commits are
+            never replayed. Ignored by LanceDB Embedded.
 
         Returns
         -------
@@ -2628,6 +2634,12 @@ class Table(ABC):
         bytes. The client splits requests automatically and reads an individual
         larger blob through the Range route. This method still materializes all
         bytes in memory; for large values use :meth:`fetch_blob_files`.
+
+        The returned Arrow ``large_binary`` array contains payload bytes, not
+        SQL/query descriptor dictionaries. Use ``.to_pylist()`` to obtain
+        Python ``bytes`` or ``None`` values for copying into a blob column.
+        Select row IDs with ``search().with_row_id(True)`` first. Selection and
+        fetching are separate requests: keep the source unchanged between them.
         """
 
     @abstractmethod
@@ -2660,6 +2672,8 @@ class Table(ABC):
         self,
         column: str,
         row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
+        *,
+        buffer_size: Optional[int] = None,
     ) -> "list[Optional[BlobFile]]":
         """Open lazy, seekable :class:`~lancedb._blob.BlobFile` handles.
 
@@ -2669,6 +2683,8 @@ class Table(ABC):
         ``pyarrow.Table`` carrying row identity via ``_rowid`` or a
         ``_lance_row_id`` field on the blob descriptor. Null blob values return
         ``None``. LanceDB Enterprise requires server version 0.5.0 or newer.
+        ``buffer_size`` controls sequential read-ahead in bytes (default 512 KiB).
+        Set it to 0 for sparse reads. Explicit range reads bypass this buffer.
 
         ``_rowid`` values stay valid after compaction when the table has stable
         row ids.
@@ -2678,7 +2694,10 @@ class Table(ABC):
 
     @abstractmethod
     def open_blob_file(
-        self, descriptor: Union[dict, pa.StructScalar, None]
+        self,
+        descriptor: Union[dict, pa.StructScalar, None],
+        *,
+        buffer_size: Optional[int] = None,
     ) -> Optional[BlobFile]:
         """Open a seekable file from a SQL ``blob_descriptor`` result.
 
@@ -2687,6 +2706,7 @@ class Table(ABC):
         not change this table's checkout. Null descriptors return ``None``.
         Payload bytes load only when the returned handle is read. An external
         blob with an unspecified size may require a metadata request on opening.
+        ``buffer_size`` controls sequential read-ahead (default 512 KiB; 0 disables).
 
         ```python
         rows = db.execute_query(
@@ -2697,7 +2717,9 @@ class Table(ABC):
         ```
         """
 
-    def open_blob_files(self, descriptors: Iterable) -> Iterator[Optional[BlobFile]]:
+    def open_blob_files(
+        self, descriptors: Iterable, *, buffer_size: Optional[int] = None
+    ) -> Iterator[Optional[BlobFile]]:
         """Iterate over lazy files from descriptor dictionaries or Arrow scalars.
 
         Accepts an Arrow array/chunked array or any iterable. Opens each handle
@@ -2712,7 +2734,10 @@ class Table(ABC):
         ```
         """
         for descriptor in descriptors:
-            yield self.open_blob_file(descriptor)
+            if buffer_size is None:
+                yield self.open_blob_file(descriptor)
+            else:
+                yield self.open_blob_file(descriptor, buffer_size=buffer_size)
 
     @abstractmethod
     def _execute_query(
@@ -3081,6 +3106,7 @@ class Table(ABC):
         computed: Dict[str, str] | None = None,
         auto_refresh_enabled: bool | None = None,
         auto_refresh_interval_seconds: int | None = None,
+        auto_refresh_resource_budget: Optional[Dict[str, int]] = None,
     ):
         """
         Add new columns with defined values.
@@ -3149,6 +3175,12 @@ class Table(ABC):
             When omitted, the server determines when to refresh. Applies to every
             computed output in this call.
             Scheduling options require computed or Function columns.
+        auto_refresh_resource_budget: dict[str, int], optional
+            Aggregate CPU, memory, and GPU budget for automatic refreshes of a
+            registered Function declaration. ``cpu_millis`` and
+            ``memory_bytes`` are required; ``gpu_count`` defaults to zero.
+            This option cannot be used with SQL-expression columns. LanceDB
+            Enterprise only.
 
         Returns
         -------
@@ -3182,7 +3214,9 @@ class Table(ABC):
         *,
         where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
+        resource_budget: Optional[Dict[str, int]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -3221,21 +3255,35 @@ class Table(ABC):
             Maximum rows per Function call on the remote server. Must be
             greater than zero. None uses the server default. Has no effect on
             local expression-backed columns.
+        max_concurrency: int, optional
+            Override the registered Function's maximum concurrent user-code
+            calls for this logical execution. Must be between 1 and
+            4294967295. None uses the registration default. This is not an
+            account-wide quota. LanceDB Enterprise only; local refreshes
+            reject this option.
         publication_interval_rows: int, optional
             Opt-in publication threshold for completed Function outputs. Must
             be greater than zero. None keeps whole-fragment publication. The
             actual publication boundary can be larger than this threshold
             because it also depends on completed work and Function batching.
             LanceDB Enterprise only; local refreshes reject this option.
+        resource_budget: dict[str, int], optional
+            Aggregate resources for one registered Function refresh. The
+            ``cpu_millis`` and ``memory_bytes`` keys are required;
+            ``gpu_count`` is optional and defaults to zero, which requests a
+            CPU-only budget. This budget cannot be combined with the top-level
+            ``gpu_count`` shorthand. LanceDB Enterprise only; local refreshes
+            reject it.
         gpu_class: str, optional
             GPU class for Function workers. Must be a lowercase name of 1-63
             letters, digits, or hyphens, without a leading or trailing hyphen.
             None keeps the Function's registered class or the deployment
             default. LanceDB Enterprise only.
         gpu_count: int, optional
-            Positive aggregate GPU budget for Function workers. None leaves
-            the server's configured budget unchanged. LanceDB Enterprise
-            only.
+            Positive aggregate GPU budget for Function workers without changing
+            the deployment's CPU and memory defaults. None leaves the server's
+            configured budget unchanged. For a complete CPU and memory budget,
+            use ``resource_budget`` instead. LanceDB Enterprise only.
         retry_policy: FunctionRetryPolicy, optional
             Override retries of failed user-code calls. Only use when repeating
             partial work is safe. Set max_attempts=1 to disable retries.
@@ -3255,7 +3303,8 @@ class Table(ABC):
             Deadline for Function initialization. LanceDB Enterprise only.
         num_workers: int, optional
             Worker count for an expression column; registered Function
-            columns reject it. LanceDB Enterprise only.
+            columns reject it and use ``resource_budget`` instead. LanceDB
+            Enterprise only.
         max_executor_processes_per_worker: int, optional
             Cap on executor processes per Function worker. LanceDB
             Enterprise only.
@@ -3274,7 +3323,9 @@ class Table(ABC):
         *,
         where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
+        resource_budget: Optional[Dict[str, int]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -3312,21 +3363,35 @@ class Table(ABC):
             greater than zero. None uses the server default. Lower this for
             slow Functions to stay within the executor's per-call deadline.
             Has no effect on local expression-backed columns.
+        max_concurrency: int, optional
+            Override the registered Function's maximum concurrent user-code
+            calls for this logical execution. Must be between 1 and
+            4294967295. None uses the registration default. This is not an
+            account-wide quota. LanceDB Enterprise only; local refreshes
+            reject this option.
         publication_interval_rows: int, optional
             Opt-in publication threshold for completed Function outputs. Must
             be greater than zero. None keeps whole-fragment publication. The
             actual publication boundary can be larger than this threshold
             because it also depends on completed work and Function batching.
             LanceDB Enterprise only; local refreshes reject this option.
+        resource_budget: dict[str, int], optional
+            Aggregate resources for one registered Function refresh. The
+            ``cpu_millis`` and ``memory_bytes`` keys are required;
+            ``gpu_count`` is optional and defaults to zero, which requests a
+            CPU-only budget. This budget cannot be combined with the top-level
+            ``gpu_count`` shorthand. LanceDB Enterprise only; local refreshes
+            reject it.
         gpu_class: str, optional
             GPU class for Function workers. Must be a lowercase name of 1-63
             letters, digits, or hyphens, without a leading or trailing hyphen.
             None keeps the Function's registered class or the deployment
             default. LanceDB Enterprise only.
         gpu_count: int, optional
-            Positive aggregate GPU budget for Function workers. None leaves
-            the server's configured budget unchanged. LanceDB Enterprise
-            only.
+            Positive aggregate GPU budget for Function workers without changing
+            the deployment's CPU and memory defaults. None leaves the server's
+            configured budget unchanged. For a complete CPU and memory budget,
+            use ``resource_budget`` instead. LanceDB Enterprise only.
         retry_policy: FunctionRetryPolicy, optional
             Override retries of failed user-code calls. Only use when repeating
             partial work is safe. Set max_attempts=1 to disable retries.
@@ -3346,7 +3411,8 @@ class Table(ABC):
             Deadline for Function initialization. LanceDB Enterprise only.
         num_workers: int, optional
             Worker count for an expression column; registered Function
-            columns reject it. LanceDB Enterprise only.
+            columns reject it and use ``resource_budget`` instead. LanceDB
+            Enterprise only.
         max_executor_processes_per_worker: int, optional
             Cap on executor processes per Function worker. LanceDB
             Enterprise only.
@@ -3457,6 +3523,36 @@ class Table(ABC):
         ...     print(record.job_id, record.row_offset, record.error_message)
         >>> if errors.truncated:  # doctest: +SKIP
         ...     print("listing stopped at the limit")
+        """
+
+    @abstractmethod
+    def column_statuses(
+        self, column: Optional[str] = None
+    ) -> list[FunctionColumnStatus]:
+        """Return exact status for Function-backed output columns.
+
+        All statuses describe one server table version. ``column=None`` returns
+        every Function output. This operation is available on LanceDB
+        Enterprise tables. A table handle pinned to an exact version requests
+        that version; a latest handle retains the normal read-freshness
+        behavior.
+        """
+
+    @abstractmethod
+    def column_status(self, column: str) -> FunctionColumnStatus:
+        """Return exact status for one Function-backed output column."""
+
+    @abstractmethod
+    def wait_fresh(
+        self, column: str, timeout: Optional[timedelta] = None
+    ) -> FunctionColumnStatus:
+        """Poll until the column has no stale or never-computed rows.
+
+        Rows already failed remain visible in the returned status and do not
+        keep this method waiting. The method never submits or cancels work.
+        Transport errors and unrecoverable status-evidence errors propagate.
+        A typed finalization-pending response is retried; arbitrary failure
+        responses are not.
         """
 
     @abstractmethod
@@ -3923,13 +4019,20 @@ class LanceTable(Table):
         self,
         column: str,
         row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
+        *,
+        buffer_size: Optional[int] = None,
     ) -> "list[Optional[BlobFile]]":
-        return LOOP.run(self._table.fetch_blob_files(column, row_ids))
+        return LOOP.run(
+            self._table.fetch_blob_files(column, row_ids, buffer_size=buffer_size)
+        )
 
     def open_blob_file(
-        self, descriptor: Union[dict, pa.StructScalar, None]
+        self,
+        descriptor: Union[dict, pa.StructScalar, None],
+        *,
+        buffer_size: Optional[int] = None,
     ) -> Optional[BlobFile]:
-        return LOOP.run(self._table.open_blob_file(descriptor))
+        return LOOP.run(self._table.open_blob_file(descriptor, buffer_size=buffer_size))
 
     @property
     def tags(self) -> Tags:
@@ -4136,7 +4239,7 @@ class LanceTable(Table):
         ):
             return self.to_arrow().to_pandas(**kwargs)
 
-        if blob_mode == "bytes" and blob_v2_column_paths(self.schema):
+        if blob_mode == "bytes" and schema_has_blob_field(self.schema):
             return self.search().to_pandas(blob_mode=blob_mode, **kwargs)
 
         return self.to_lance().to_pandas(blob_mode=blob_mode, **kwargs)
@@ -4149,8 +4252,8 @@ class LanceTable(Table):
         blob_mode: str, default "lazy"
             ``"lazy"`` returns blob v2 descriptors that carry the row id
             ``fetch_blobs`` reads. ``"descriptions"`` returns them without it.
-            ``"bytes"`` returns payload bytes and raises for legacy blob columns
-            and blobs inside lists.
+            ``"bytes"`` returns payload bytes for supported row-addressable blob
+            columns and raises for blobs inside lists.
 
         Returns
         -------
@@ -4725,6 +4828,7 @@ class LanceTable(Table):
         progress: Optional[Union[bool, Callable, Any]] = None,
         write_parallelism: Optional[int] = None,
         allow_external_blob_outside_bases: bool = False,
+        retries: Optional[int] = None,
     ) -> AddResult:
         """Add data to the table.
         If vector columns are missing and the table
@@ -4756,6 +4860,10 @@ class LanceTable(Table):
         allow_external_blob_outside_bases: bool, default False
             Allow blob URIs outside registered bases. See :meth:`Table.add`.
             LanceDB Embedded only.
+        retries: int, optional
+            Override the remote retry budget for this call (0 to 255). Zero
+            disables retries, including multipart parts. Ambiguous commits are
+            never replayed. Ignored by LanceDB Embedded.
 
         Returns
         -------
@@ -4773,6 +4881,7 @@ class LanceTable(Table):
                     progress=progress,
                     write_parallelism=write_parallelism,
                     allow_external_blob_outside_bases=allow_external_blob_outside_bases,
+                    retries=retries,
                 )
             )
         finally:
@@ -5444,6 +5553,7 @@ class LanceTable(Table):
         computed: Dict[str, str] | None = None,
         auto_refresh_enabled: bool | None = None,
         auto_refresh_interval_seconds: int | None = None,
+        auto_refresh_resource_budget: Optional[Dict[str, int]] = None,
     ) -> AddColumnsResult:
         return LOOP.run(
             self._table.add_columns(
@@ -5451,6 +5561,7 @@ class LanceTable(Table):
                 computed=computed,
                 auto_refresh_enabled=auto_refresh_enabled,
                 auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+                auto_refresh_resource_budget=auto_refresh_resource_budget,
             )
         )
 
@@ -5460,7 +5571,9 @@ class LanceTable(Table):
         *,
         where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
+        resource_budget: Optional[Dict[str, int]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -5480,7 +5593,9 @@ class LanceTable(Table):
                 column,
                 where=where,
                 batch_size=batch_size,
+                max_concurrency=max_concurrency,
                 publication_interval_rows=publication_interval_rows,
+                resource_budget=resource_budget,
                 gpu_class=gpu_class,
                 gpu_count=gpu_count,
                 retry_policy=retry_policy,
@@ -5500,7 +5615,9 @@ class LanceTable(Table):
         *,
         where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
+        resource_budget: Optional[Dict[str, int]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -5522,7 +5639,9 @@ class LanceTable(Table):
                     column,
                     where=where,
                     batch_size=batch_size,
+                    max_concurrency=max_concurrency,
                     publication_interval_rows=publication_interval_rows,
+                    resource_budget=resource_budget,
                     gpu_class=gpu_class,
                     gpu_count=gpu_count,
                     retry_policy=retry_policy,
@@ -5548,6 +5667,19 @@ class LanceTable(Table):
         return LOOP.run(
             self._table.function_errors(job_id=job_id, column=column, limit=limit)
         )
+
+    def column_statuses(
+        self, column: Optional[str] = None
+    ) -> list[FunctionColumnStatus]:
+        return LOOP.run(self._table.column_statuses(column=column))
+
+    def column_status(self, column: str) -> FunctionColumnStatus:
+        return LOOP.run(self._table.column_status(column))
+
+    def wait_fresh(
+        self, column: str, timeout: Optional[timedelta] = None
+    ) -> FunctionColumnStatus:
+        return LOOP.run(self._table.wait_fresh(column, timeout))
 
     def alter_columns(
         self, *alterations: Iterable[Dict[str, str]]
@@ -6612,7 +6744,7 @@ class AsyncTable:
 
         if blob_mode == "lazy" and get_uri_scheme(await self.uri()) == "memory":
             return (await self.to_arrow()).to_pandas(**kwargs)
-        if blob_mode == "bytes" and blob_v2_column_paths(schema):
+        if blob_mode == "bytes" and schema_has_blob_field(schema):
             return await self.query().to_pandas(blob_mode=blob_mode, **kwargs)
         return (await self.to_lance()).to_pandas(blob_mode=blob_mode, **kwargs)
 
@@ -6624,8 +6756,8 @@ class AsyncTable:
         blob_mode: str, default "lazy"
             ``"lazy"`` returns blob v2 descriptors that carry the row id
             ``fetch_blobs`` reads. ``"descriptions"`` returns them without it.
-            ``"bytes"`` returns payload bytes and raises for legacy blob columns
-            and blobs inside lists.
+            ``"bytes"`` returns payload bytes for supported row-addressable blob
+            columns and raises for blobs inside lists.
 
         Returns
         -------
@@ -6964,6 +7096,7 @@ class AsyncTable:
         progress: Optional[Union[bool, Callable, Any]] = None,
         write_parallelism: Optional[int] = None,
         allow_external_blob_outside_bases: bool = False,
+        retries: Optional[int] = None,
     ) -> AddResult:
         """Add more data to the [AsyncTable][lancedb.table.AsyncTable].
 
@@ -7002,6 +7135,10 @@ class AsyncTable:
         allow_external_blob_outside_bases: bool, default False
             Allow blob URIs outside registered bases. See :meth:`Table.add`.
             LanceDB Embedded only.
+        retries: int, optional
+            Override the remote retry budget for this call (0 to 255). Zero
+            disables retries, including multipart parts. Ambiguous commits are
+            never replayed. Ignored by LanceDB Embedded.
 
         """
         schema = await self.schema()
@@ -7056,6 +7193,7 @@ class AsyncTable:
                 progress=progress,
                 write_parallelism=write_parallelism,
                 allow_external_blob_outside_bases=allow_external_blob_outside_bases,
+                retries=retries,
             )
         except RuntimeError as e:
             if "Cast error" in str(e):
@@ -7435,7 +7573,10 @@ class AsyncTable:
         if query.offset is not None:
             async_query = async_query.offset(query.offset)
         if query.columns:
-            async_query = async_query.select(query.columns)
+            columns = query.columns
+            if isinstance(columns, list) and columns and isinstance(columns[0], tuple):
+                columns = dict(columns)
+            async_query = async_query.select(columns)
         if query.filter is not None:
             async_query = async_query.where(query.filter)
         if query.fast_search:
@@ -7730,6 +7871,7 @@ class AsyncTable:
         computed: dict[str, str] | None = None,
         auto_refresh_enabled: bool | None = None,
         auto_refresh_interval_seconds: int | None = None,
+        auto_refresh_resource_budget: Optional[Dict[str, int]] = None,
     ) -> AddColumnsResult:
         """
         Add new columns with defined values.
@@ -7796,6 +7938,12 @@ class AsyncTable:
             not force recomputation. Applies to every declared computed output.
             These options cannot be used with one-time transforms or ordinary
             all-null columns.
+        auto_refresh_resource_budget: dict[str, int], optional
+            Aggregate CPU, memory, and GPU budget for automatic refreshes of
+            registered Function outputs. ``cpu_millis`` and ``memory_bytes``
+            are required; ``gpu_count`` defaults to zero. SQL-expression
+            columns do not use Function workers and reject this option.
+            LanceDB Enterprise only.
 
         Examples
         --------
@@ -7824,6 +7972,7 @@ class AsyncTable:
         options_supplied = (
             auto_refresh_enabled is not None
             or auto_refresh_interval_seconds is not None
+            or auto_refresh_resource_budget is not None
         )
         function_application = None
         function_output_name = None
@@ -7852,6 +8001,7 @@ class AsyncTable:
                 function_output_name,
                 auto_refresh_enabled,
                 auto_refresh_interval_seconds,
+                auto_refresh_resource_budget,
             )
 
         if isinstance(transforms, pa.Field):
@@ -7872,6 +8022,7 @@ class AsyncTable:
                 list(computed.items()),
                 auto_refresh_enabled,
                 auto_refresh_interval_seconds,
+                auto_refresh_resource_budget,
             )
         if options_supplied:
             raise ValueError(
@@ -7893,7 +8044,9 @@ class AsyncTable:
         *,
         where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
+        resource_budget: Optional[Dict[str, int]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -7932,21 +8085,35 @@ class AsyncTable:
             Maximum rows per Function call on the remote server. Must be
             greater than zero. None uses the server default. Has no effect on
             local expression-backed columns.
+        max_concurrency: int, optional
+            Override the registered Function's maximum concurrent user-code
+            calls for this logical execution. Must be between 1 and
+            4294967295. None uses the registration default. This is not an
+            account-wide quota. LanceDB Enterprise only; local refreshes
+            reject this option.
         publication_interval_rows: int, optional
             Opt-in publication threshold for completed Function outputs. Must
             be greater than zero. None keeps whole-fragment publication. The
             actual publication boundary can be larger than this threshold
             because it also depends on completed work and Function batching.
             LanceDB Enterprise only; local refreshes reject this option.
+        resource_budget: dict[str, int], optional
+            Aggregate resources for one registered Function refresh. The
+            ``cpu_millis`` and ``memory_bytes`` keys are required;
+            ``gpu_count`` is optional and defaults to zero, which requests a
+            CPU-only budget. This budget cannot be combined with the top-level
+            ``gpu_count`` shorthand. LanceDB Enterprise only; local refreshes
+            reject it.
         gpu_class: str, optional
             GPU class for Function workers. Must be a lowercase name of 1-63
             letters, digits, or hyphens, without a leading or trailing hyphen.
             None keeps the Function's registered class or the deployment
             default. LanceDB Enterprise only.
         gpu_count: int, optional
-            Positive aggregate GPU budget for Function workers. None leaves
-            the server's configured budget unchanged. LanceDB Enterprise
-            only.
+            Positive aggregate GPU budget for Function workers without changing
+            the deployment's CPU and memory defaults. None leaves the server's
+            configured budget unchanged. For a complete CPU and memory budget,
+            use ``resource_budget`` instead. LanceDB Enterprise only.
         retry_policy: FunctionRetryPolicy, optional
             Override retries of failed user-code calls. Only use when repeating
             partial work is safe. Set max_attempts=1 to disable retries.
@@ -7966,7 +8133,8 @@ class AsyncTable:
             Deadline for Function initialization. LanceDB Enterprise only.
         num_workers: int, optional
             Worker count for an expression column; registered Function
-            columns reject it. LanceDB Enterprise only.
+            columns reject it and use ``resource_budget`` instead. LanceDB
+            Enterprise only.
         max_executor_processes_per_worker: int, optional
             Cap on executor processes per Function worker. LanceDB
             Enterprise only.
@@ -7980,7 +8148,9 @@ class AsyncTable:
             column,
             where=where,
             batch_size=batch_size,
+            max_concurrency=max_concurrency,
             publication_interval_rows=publication_interval_rows,
+            resource_budget=resource_budget,
             gpu_class=gpu_class,
             gpu_count=gpu_count,
             retry_policy=None
@@ -8084,13 +8254,41 @@ class AsyncTable:
             job_id=job_id, column=column, limit=limit
         )
 
+    async def column_statuses(
+        self, column: Optional[str] = None
+    ) -> list[FunctionColumnStatus]:
+        """Return exact status for Function-backed output columns.
+
+        All results describe one server table version. ``column=None`` returns
+        every Function output. A handle pinned to an exact version requests
+        that version.
+        """
+        return await self._inner.column_statuses(column=column)
+
+    async def column_status(self, column: str) -> FunctionColumnStatus:
+        """Return exact status for one Function-backed output column."""
+        return await self._inner.column_status(column)
+
+    async def wait_fresh(
+        self, column: str, timeout: Optional[timedelta] = None
+    ) -> FunctionColumnStatus:
+        """Poll until no stale or never-computed rows remain.
+
+        Failed rows do not block completion. Server and transport errors are
+        not retried. Only the typed finalization-pending response is retried
+        with bounded backoff; arbitrary 500 responses surface immediately.
+        """
+        return await self._inner.wait_column_fresh(column, timeout)
+
     async def refresh_column_async(
         self,
         column: str,
         *,
         where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
+        resource_budget: Optional[Dict[str, int]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -8128,21 +8326,35 @@ class AsyncTable:
             greater than zero. None uses the server default. Lower this for
             slow Functions to stay within the executor's per-call deadline.
             Has no effect on local expression-backed columns.
+        max_concurrency: int, optional
+            Override the registered Function's maximum concurrent user-code
+            calls for this logical execution. Must be between 1 and
+            4294967295. None uses the registration default. This is not an
+            account-wide quota. LanceDB Enterprise only; local refreshes
+            reject this option.
         publication_interval_rows: int, optional
             Opt-in publication threshold for completed Function outputs. Must
             be greater than zero. None keeps whole-fragment publication. The
             actual publication boundary can be larger than this threshold
             because it also depends on completed work and Function batching.
             LanceDB Enterprise only; local refreshes reject this option.
+        resource_budget: dict[str, int], optional
+            Aggregate resources for one registered Function refresh. The
+            ``cpu_millis`` and ``memory_bytes`` keys are required;
+            ``gpu_count`` is optional and defaults to zero, which requests a
+            CPU-only budget. This budget cannot be combined with the top-level
+            ``gpu_count`` shorthand. LanceDB Enterprise only; local refreshes
+            reject it.
         gpu_class: str, optional
             GPU class for Function workers. Must be a lowercase name of 1-63
             letters, digits, or hyphens, without a leading or trailing hyphen.
             None keeps the Function's registered class or the deployment
             default. LanceDB Enterprise only.
         gpu_count: int, optional
-            Positive aggregate GPU budget for Function workers. None leaves
-            the server's configured budget unchanged. LanceDB Enterprise
-            only.
+            Positive aggregate GPU budget for Function workers without changing
+            the deployment's CPU and memory defaults. None leaves the server's
+            configured budget unchanged. For a complete CPU and memory budget,
+            use ``resource_budget`` instead. LanceDB Enterprise only.
         retry_policy: FunctionRetryPolicy, optional
             Override retries of failed user-code calls. Only use when repeating
             partial work is safe. Set max_attempts=1 to disable retries.
@@ -8162,7 +8374,8 @@ class AsyncTable:
             Deadline for Function initialization. LanceDB Enterprise only.
         num_workers: int, optional
             Worker count for an expression column; registered Function
-            columns reject it. LanceDB Enterprise only.
+            columns reject it and use ``resource_budget`` instead. LanceDB
+            Enterprise only.
         max_executor_processes_per_worker: int, optional
             Cap on executor processes per Function worker. LanceDB
             Enterprise only.
@@ -8193,7 +8406,9 @@ class AsyncTable:
                 column,
                 where=where,
                 batch_size=batch_size,
+                max_concurrency=max_concurrency,
                 publication_interval_rows=publication_interval_rows,
+                resource_budget=resource_budget,
                 gpu_class=gpu_class,
                 gpu_count=gpu_count,
                 retry_policy=None
@@ -8448,26 +8663,39 @@ class AsyncTable:
         self,
         column: str,
         row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
+        *,
+        buffer_size: Optional[int] = None,
     ) -> "list[Optional[BlobFile]]":
+        """Open handles with configurable read-ahead.
+
+        See [Table.fetch_blob_files][lancedb.table.Table.fetch_blob_files].
+        """
+        buffer_size = _validate_blob_buffer_size(buffer_size)
         handles = await self._inner.fetch_blob_files(
-            column, _normalize_blob_row_ids(row_ids, column)
+            column, _normalize_blob_row_ids(row_ids, column), buffer_size
         )
         return _wrap_blob_files(handles)
 
     async def open_blob_file(
-        self, descriptor: Union[dict, pa.StructScalar, None]
+        self,
+        descriptor: Union[dict, pa.StructScalar, None],
+        *,
+        buffer_size: Optional[int] = None,
     ) -> Optional[BlobFile]:
         """Open a snapshot-bound descriptor as a seekable file.
 
         See [Table.open_blob_file][lancedb.table.Table.open_blob_file].
         """
+        buffer_size = _validate_blob_buffer_size(buffer_size)
         descriptor = _normalize_blob_descriptor(descriptor)
         if descriptor is None:
             return None
-        return BlobFile(await self._inner.open_blob_file(json.dumps(descriptor)))
+        return BlobFile(
+            await self._inner.open_blob_file(json.dumps(descriptor), buffer_size)
+        )
 
     async def open_blob_files(
-        self, descriptors: Iterable
+        self, descriptors: Iterable, *, buffer_size: Optional[int] = None
     ) -> AsyncIterator[Optional[BlobFile]]:
         """Asynchronously iterate over files in descriptor order, preserving nulls.
 
@@ -8482,7 +8710,7 @@ class AsyncTable:
         ```
         """
         for descriptor in descriptors:
-            yield await self.open_blob_file(descriptor)
+            yield await self.open_blob_file(descriptor, buffer_size=buffer_size)
 
     @property
     def tags(self) -> AsyncTags:

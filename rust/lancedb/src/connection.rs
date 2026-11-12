@@ -51,7 +51,10 @@ pub use lance_file::version::LanceFileVersion;
 use lance_io::object_store::StorageOptions;
 use lance_io::object_store::{StorageOptionsAccessor, StorageOptionsProvider};
 
+mod create_secret;
 mod create_table;
+
+pub use create_secret::CreateSecretBuilder;
 
 pub(crate) fn merge_storage_options(
     store_params: &mut ObjectStoreParams,
@@ -668,9 +671,10 @@ impl Connection {
 
     /// Look up one exact immutable Function version in the remote catalog.
     ///
-    /// Both the logical name and server-assigned version id are required;
-    /// mutable aliases and latest-version lookup are intentionally absent.
-    /// LanceDB Embedded databases return [`Error::NotSupported`].
+    /// Both the logical name and server-assigned version id are required.
+    /// Use [`Self::get_function_latest`] when the caller wants the latest
+    /// currently visible revision. LanceDB Embedded databases return
+    /// [`Error::NotSupported`].
     pub async fn get_function(
         &self,
         name: impl AsRef<str>,
@@ -679,6 +683,22 @@ impl Connection {
     ) -> Result<crate::function::FunctionVersion> {
         self.internal
             .get_function(name.as_ref(), version.as_ref(), namespace_path)
+            .await
+    }
+
+    /// Look up the latest currently visible immutable Function version.
+    ///
+    /// The server resolves and returns one exact version document. This is a
+    /// resolution point, not a mutable alias: later registrations do not
+    /// change the returned object. LanceDB Embedded databases return
+    /// [`Error::NotSupported`].
+    pub async fn get_function_latest(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<crate::function::FunctionVersion> {
+        self.internal
+            .get_function_latest(name.as_ref(), namespace_path)
             .await
     }
 
@@ -836,20 +856,30 @@ impl Connection {
 
     /// Create a named Secret in this database.
     ///
-    /// Fails if the name is taken, so a create can never silently become a
-    /// rotation. There is no API that reads a stored credential back; the only
+    /// Fails if the name is taken unless [`CreateSecretBuilder::exist_ok`] is true,
+    /// in which case the existing value is left unchanged. There is no API that
+    /// reads a stored credential back; the only
     /// consumer is a Function that binds the Secret by name. LanceDB Embedded databases
     /// return [`Error::NotSupported`].
-    pub async fn create_secret(
+    ///
+    /// ```
+    /// # async fn example(connection: &lancedb::Connection) -> lancedb::Result<()> {
+    /// connection.create_secret("api-key", "credential", &[]).exist_ok(true).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn create_secret(
         &self,
         name: impl AsRef<str>,
         value: impl AsRef<str>,
         namespace_path: &[String],
-    ) -> Result<()> {
-        validate_secret_reference(name.as_ref(), namespace_path)?;
-        self.internal
-            .create_secret(name.as_ref(), value.as_ref(), namespace_path)
-            .await
+    ) -> CreateSecretBuilder {
+        CreateSecretBuilder::new(
+            self.internal.clone(),
+            name.as_ref().to_owned(),
+            value.as_ref().to_owned(),
+            namespace_path.to_vec(),
+        )
     }
 
     /// Replace the credential behind an existing Secret.

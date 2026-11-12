@@ -552,6 +552,14 @@ pub trait Database:
     ) -> Result<crate::function::FunctionVersion> {
         function_catalog_not_supported()
     }
+    /// Look up the latest currently visible immutable Function version.
+    async fn get_function_latest(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<crate::function::FunctionVersion> {
+        function_catalog_not_supported()
+    }
     /// Fetch one page of published immutable Function versions in one namespace.
     async fn list_functions(
         &self,
@@ -627,13 +635,14 @@ pub trait Database:
         secret_catalog_not_supported()
     }
 
-    /// Create a named Secret in this database. Fails if the name is taken, so
-    /// a create can never silently become a rotation.
+    /// Create a named Secret in this database. If the name is taken, fail unless
+    /// `exist_ok` is true, in which case the stored value is left unchanged.
     async fn create_secret(
         &self,
         _name: &str,
         _value: &str,
         _namespace_path: &[String],
+        _exist_ok: bool,
     ) -> Result<()> {
         secret_catalog_not_supported()
     }

@@ -78,6 +78,24 @@ Not every agent supports project scope; `npx plugins targets` lists what it
 found and what each target supports.
 </Accordion>
 
+## Automated prompt catalog {#automated-prompts}
+
+Explore the prompts covered by automated agent evaluations. Each prompt uses
+example data and may require existing tables,
+indexes, metadata, branches, version history, or running jobs. Replace the test
+fixtures and connection details with your own before using a prompt.
+
+The evaluations run against a LanceDB Enterprise test database, with and
+without the agent plugin. Evaluation coverage does not guarantee success for
+every agent or model.
+
+Prompts are reproduced verbatim, including the answer formats used by automated
+grading. Table names, local files, and placeholders in these prompts refer to
+test fixtures. Supply your own data, database connection, and timestamps when
+adapting them.
+
+{/* agent-eval-catalog */}
+
 ## Example prompts {#example-prompts}
 
 These prompts show the kind of work the plugin helps an agent get right on

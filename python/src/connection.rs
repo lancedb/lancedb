@@ -24,7 +24,7 @@ use lancedb::{
     connection::NamespaceClientPushdownOperation,
     database::namespace::LanceNamespaceDatabase,
     database::{CreateTableMode, Database, ReadConsistency},
-    function::GpuClass as LanceGpuClass,
+    function::{GpuClass as LanceGpuClass, RefreshColumnResult},
     graph::PropertyGraphDefinition,
 };
 use pyo3::{
@@ -854,7 +854,14 @@ impl Connection {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
             let job = inner.open_job(&job_id).await.infer_error()?;
-            Ok(crate::job::Job::new(job))
+            match job.job_type().as_deref() {
+                Some("function_refresh" | "computed_refresh" | "refresh_column") => {
+                    Ok(crate::job::Job::new_typed(
+                        job.into_typed::<RefreshColumnResult>().infer_error()?,
+                    ))
+                }
+                _ => Ok(crate::job::Job::new(job)),
+            }
         })
     }
 
@@ -877,22 +884,22 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (name, version, namespace_path=None))]
+    #[pyo3(signature = (name, version=None, namespace_path=None))]
     pub fn get_function(
         self_: PyRef<'_, Self>,
         name: String,
-        version: String,
+        version: Option<String>,
         namespace_path: Option<Vec<String>>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         let namespace_path = namespace_path.unwrap_or_default();
         future_into_py(self_.py(), async move {
-            inner
-                .get_function(name, version, &namespace_path)
-                .await
-                .infer_error()?
-                .to_canonical_json()
-                .infer_error()
+            let function = match version {
+                Some(version) => inner.get_function(name, version, &namespace_path).await,
+                None => inner.get_function_latest(name, &namespace_path).await,
+            }
+            .infer_error()?;
+            function.to_canonical_json().infer_error()
         })
     }
 
@@ -1029,18 +1036,20 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (name, value, namespace_path=None))]
+    #[pyo3(signature = (name, value, namespace_path=None, *, exist_ok=false))]
     pub fn create_secret(
         self_: PyRef<'_, Self>,
         name: String,
         value: String,
         namespace_path: Option<Vec<String>>,
+        exist_ok: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         let namespace_path = namespace_path.unwrap_or_default();
         future_into_py(self_.py(), async move {
             inner
                 .create_secret(name, value, &namespace_path)
+                .exist_ok(exist_ok)
                 .await
                 .infer_error()
         })

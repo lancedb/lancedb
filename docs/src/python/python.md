@@ -42,6 +42,18 @@ table names. `db.list_tables().tables` is a list of the first page; `limit`
 controls its page size and `page_token` resumes at a saved token. The same
 patterns apply to `list_namespaces()`. Other resource listings use `page_limit`.
 
+For existence checks, use `db.table_exists(["events"])` or `"events" in db`.
+These look up the table directly and work even when the database has more than
+100 tables. For a table in a namespace, include the namespace segments:
+
+```python
+exists = db.table_exists(["analytics", "events"])
+```
+
+When migrating from `name in db.table_names()`, use `name in db` or
+`db.table_exists([name])`. Checking `name in db.list_tables().tables` only
+searches the first page and can miss an existing table.
+
 Resource listings (`list_storage_integrations`, `list_secrets`, `list_views`, `list_jobs`, `list_functions`, and
 `list_materialized_views`) return lazy iterators. Use `list(db.list_views())` to
 collect synchronous results, or `[name async for name in db.list_views()]` with
@@ -435,6 +447,51 @@ assert scaler(3.0) == 6.0
 scaler.close()
 ```
 
+### Function packaging restrictions
+
+The decorator snapshots the Function's source and referenced globals into a new
+module. It conservatively rejects imports of `sys`, `builtins`, `importlib`,
+`inspect`, `gc`, `ctypes`, and `types`, including submodules such as `ctypes.util`
+and `importlib.metadata`. This applies to imports inside function or class bodies
+and references to module-level aliases. Even ordinary uses such as `sys.version`
+and `ctypes.util.find_library` are blocked: these modules can reach names outside
+the reconstructed Function namespace. References to `globals`, `locals`, `vars`,
+`eval`, `exec`, `compile`, and `__import__` are rejected as dynamic namespace access.
+These restrictions also apply to the deprecated `@udf` alias.
+
+For legitimate uses, move the code into an importable helper module and ship it
+with `code=`, or install its package with `pip=` or `conda=`. Imported helpers keep
+their own namespace; the packager does not scan their bodies. Helpers defined in
+`__main__` are copied by source and have the same restrictions as the Function.
+
+For example, put this helper in `native_diagnostics/__init__.py`:
+
+```python
+import ctypes.util
+
+
+def find_library(name: str) -> str:
+    return ctypes.util.find_library(name) or ""
+```
+
+Then import the helper and include its source in the Function's artifact:
+
+```python
+import native_diagnostics
+from lancedb import function
+
+
+@function(code=[native_diagnostics])
+def probe_library(name: str) -> str:
+    return native_diagnostics.find_library(name)
+```
+
+Captured literal globals support `None`, booleans, integers, strings, bytes,
+finite floats, and tuples of these values. Construct other objects, including
+PyArrow types and schemas, inside the Function or helper module instead. Values
+used only in the decorator's `input_schema` or `output_schema` are not captured
+globals and can be defined outside the Function.
+
 Annotate a blob input with `lancedb.BlobReader` for lazy, seekable access, or
 with `bytes` to materialize its contents before the Function runs. Reader
 inputs infer the Blob V2 type without an explicit input schema. Readers are
@@ -522,6 +579,14 @@ with BlobReader(read_range, len(payload)) as reader:
 ::: lancedb.FunctionErrorRecord
 
 ::: lancedb.FunctionErrorFragment
+
+::: lancedb.FunctionColumnStatus
+
+::: lancedb.FunctionColumnVersionStatus
+
+::: lancedb.FunctionColumnLastRefreshJob
+
+::: lancedb.FunctionColumnAutoRefreshStatus
 
 ::: lancedb.job.Job
 
@@ -727,6 +792,15 @@ LanceDB Embedded supports these fetch APIs for both legacy blob v1 columns
 with `search().with_row_id(True).to_arrow()` and pass the result to the fetch API.
 One missing or deleted row ID rejects the entire blob-read batch; the APIs do
 not return partial results.
+
+Local and remote `BlobFile` handles prefetch 512 KiB for sequential reads by
+default. Pass `buffer_size=0` to `fetch_blob_files`, `open_blob_file`, or
+`open_blob_files` for sparse reads, or choose another window size in bytes.
+Call `file.set_buffer_size(size)` to change it without moving the cursor;
+changing the size discards unused prefetched bytes. Explicit `read_range` and
+`read_ranges` calls always read exactly the requested intervals and leave the
+cursor unchanged. Remote prefetch consumes the HTTP response completely before
+returning, so idle handles do not hold request concurrency slots or connections.
 
 To construct inline Blob V2 arrays for ingestion in record batches, use
 [blob_array][lancedb.schema.blob_array]. It accepts bytes and `None`, preserving
@@ -1046,6 +1120,11 @@ first page, use `page = await db.list_tables()` and then `page.tables`. Reading
 the page list does not consume the iterator. `page.page_token` is the token for
 the next request; drain cached results before using it to resume in a new
 listing. The same behavior applies to namespaces.
+
+Use `await db.table_exists(["events"])` to check for a table in the root
+namespace, or `await db.table_exists(["analytics", "events"])` for a table in
+a namespace. Checking membership in an awaited listing's `.tables` attribute
+only searches one page.
 
 ::: lancedb.listing.AsyncTableListing
 

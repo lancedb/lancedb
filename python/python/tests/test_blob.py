@@ -1070,8 +1070,10 @@ def test_bytes_mode_refused_under_namespace_query_pushdown(tmp_path):
     )
     table.add([{"id": 1, "image": b"one"}])
 
-    with pytest.raises(NotImplementedError, match="stable table snapshot"):
+    with pytest.raises(NotImplementedError, match="stable table snapshot") as exc:
         table.to_arrow(blob_mode="bytes")
+    assert "fetch_blobs(column, row_ids)" in str(exc.value)
+    assert "with_row_id(True)" in str(exc.value)
     with pytest.raises(NotImplementedError, match="stable table snapshot"):
         table.search().to_list(blob_mode="bytes")
     with pytest.raises(NotImplementedError, match="stable table snapshot"):
@@ -1101,6 +1103,36 @@ async def test_async_bytes_mode_refused_under_namespace_query_pushdown(tmp_path)
         await table.query().to_list(blob_mode="bytes")
     with pytest.raises(NotImplementedError, match="stable table snapshot"):
         await table.query().to_batches(blob_mode="bytes")
+
+
+def test_copy_blob_subset_preserves_payloads_nulls_and_empty_values(tmp_path):
+    db = lancedb.connect(tmp_path)
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    rows = [
+        {"id": 1, "image": b"one"},
+        {"id": 2, "image": b""},
+        {"id": 3, "image": None},
+        {"id": 4, "image": b"excluded"},
+    ]
+    source = db.create_table("source", data=rows, schema=schema)
+    hits = (
+        source.search()
+        .where("id < 4")
+        .select(["id"])
+        .with_row_id(True)
+        .limit(100)
+        .to_arrow()
+    )
+    payloads = source.fetch_blobs("image", hits["_rowid"]).to_pylist()
+    subset = db.create_table("subset", schema=schema)
+    subset.add(
+        [
+            {"id": image_id, "image": payload}
+            for image_id, payload in zip(hits["id"].to_pylist(), payloads, strict=True)
+        ]
+    )
+    copied = subset.search().to_list(blob_mode="bytes")
+    assert sorted(copied, key=lambda row: row["id"]) == rows[:3]
 
 
 def test_fetch_blobs_round_trip():
@@ -1619,16 +1651,41 @@ def test_bytes_mode_rejects_blobs_inside_lists():
 
 
 def test_row_addressable_paths_exclude_list_children():
-    from lancedb.schema import row_addressable_blob_v2_paths
+    from lancedb.schema import (
+        row_addressable_blob_paths,
+        row_addressable_blob_v2_paths,
+    )
 
     schema = pa.schema(
         [
             pa.field("id", pa.int64()),
-            pa.field("info", pa.struct([lancedb.blob("blob")])),
+            pa.field(
+                "info",
+                pa.struct(
+                    [
+                        lancedb.blob("blob"),
+                        pa.field(
+                            "legacy",
+                            pa.large_binary(),
+                            metadata={"lance-encoding:blob": "true"},
+                        ),
+                    ]
+                ),
+            ),
+            pa.field(
+                "legacy",
+                pa.large_binary(),
+                metadata={"lance-encoding:blob": "true"},
+            ),
             pa.field("images", pa.list_(lancedb.blob("image"))),
         ]
     )
     assert blob_v2_column_paths(schema) == ["info.blob", "images.image"]
+    assert row_addressable_blob_paths(schema) == [
+        "info.blob",
+        "info.legacy",
+        "legacy",
+    ]
     assert row_addressable_blob_v2_paths(schema) == ["info.blob"]
 
 
@@ -2293,6 +2350,8 @@ async def test_async_to_batches_blob_modes(shape, blob_mode, monkeypatch):
     if blob_mode != "lazy":
         assert "_rowid" not in reader.schema.names
         assert "_lance_row_id" not in str(reader.schema)
+    else:
+        assert "_rowid" in reader.schema.names
 
 
 class _KeepAllScoresReranker(Reranker):
@@ -2336,7 +2395,7 @@ def test_bytes_mode_rejects_legacy_blob_after_reranker_drops_metadata(tmp_path):
         .rerank(_KeepAllScoresReranker())
     )
 
-    with pytest.raises(ValueError, match=r"\['blob'\].*legacy blob columns"):
+    with pytest.raises(ValueError, match=r"\['blob'\].*local plain scans"):
         query.to_arrow(blob_mode="bytes")
 
 

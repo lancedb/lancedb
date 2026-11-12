@@ -191,7 +191,10 @@ class Connection(object):
         self, request_json: str, namespace_path: Optional[List[str]] = None
     ) -> Job: ...
     async def get_function(
-        self, name: str, version: str, namespace_path: Optional[List[str]] = None
+        self,
+        name: str,
+        version: Optional[str] = None,
+        namespace_path: Optional[List[str]] = None,
     ) -> str: ...
     def list_functions(
         self,
@@ -226,7 +229,12 @@ class Connection(object):
         self, name: str, namespace_path: Optional[List[str]] = None
     ) -> None: ...
     async def create_secret(
-        self, name: str, value: str, namespace_path: Optional[List[str]] = None
+        self,
+        name: str,
+        value: str,
+        namespace_path: Optional[List[str]] = None,
+        *,
+        exist_ok: bool = False,
     ) -> None: ...
     async def alter_secret(
         self, name: str, value: str, namespace_path: Optional[List[str]] = None
@@ -390,6 +398,7 @@ class BlobFile:
     def seek(self, position: int) -> None: ...
     def tell(self) -> int: ...
     def size(self) -> int: ...
+    def set_buffer_size(self, size: int) -> None: ...
     def read_range(self, offset: int, length: int) -> bytes: ...
     def read_ranges(self, ranges: list[tuple[int, int]]) -> list[bytes]: ...
     def read_up_to(self, length: int) -> bytes: ...
@@ -410,6 +419,7 @@ class Job:
     ) -> Optional[str]: ...
     async def cancel(self) -> None: ...
     async def refresh(self) -> None: ...
+    async def timeline(self) -> str: ...
     async def events(
         self,
         *,
@@ -535,6 +545,7 @@ class Table:
         progress: Optional[Any] = None,
         write_parallelism: Optional[int] = None,
         allow_external_blob_outside_bases: bool = False,
+        retries: Optional[int] = None,
     ) -> AddResult: ...
     async def update(
         self, updates: Dict[str, str], where: Optional[str]
@@ -615,6 +626,7 @@ class Table:
         columns: list[tuple[str, str]],
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[int] = None,
+        auto_refresh_resource_budget: Optional[dict[str, int]] = None,
     ) -> AddColumnsResult: ...
     async def add_function_columns(
         self,
@@ -622,6 +634,7 @@ class Table:
         output_name: Optional[str],
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[int] = None,
+        auto_refresh_resource_budget: Optional[dict[str, int]] = None,
     ) -> AddColumnsResult: ...
     async def refresh_column(
         self,
@@ -629,7 +642,9 @@ class Table:
         *,
         where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
+        resource_budget: Optional[dict[str, int]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[str] = None,
@@ -647,7 +662,9 @@ class Table:
         *,
         where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
+        resource_budget: Optional[dict[str, int]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[str] = None,
@@ -665,6 +682,13 @@ class Table:
         column: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> FunctionErrors: ...
+    async def column_statuses(
+        self, column: Optional[str] = None
+    ) -> list[FunctionColumnStatus]: ...
+    async def column_status(self, column: str) -> FunctionColumnStatus: ...
+    async def wait_column_fresh(
+        self, column: str, timeout: Optional[timedelta] = None
+    ) -> FunctionColumnStatus: ...
     async def refresh_materialized_view(
         self,
         source_version: Optional[int] = None,
@@ -728,7 +752,12 @@ class Table:
     def take_row_ids(self, row_ids: list[int]) -> TakeQuery: ...
     async def blob_columns(self) -> list[str]: ...
     async def fetch_blobs(
-        self, column: str, row_ids: list[int]
+        self,
+        column: str,
+        row_ids: list[int],
+        *,
+        version: Optional[int] = None,
+        snapshot_identity: Optional[str] = None,
     ) -> pa.LargeBinaryArray: ...
     async def fetch_blob_ranges(
         self,
@@ -736,9 +765,11 @@ class Table:
         requests: Sequence[Sequence[int]],
     ) -> pa.LargeBinaryArray: ...
     async def fetch_blob_files(
-        self, column: str, row_ids: list[int]
+        self, column: str, row_ids: list[int], buffer_size: Optional[int] = None
     ) -> list[Optional[BlobFile]]: ...
-    async def open_blob_file(self, descriptor: str) -> BlobFile: ...
+    async def open_blob_file(
+        self, descriptor: str, buffer_size: Optional[int] = None
+    ) -> BlobFile: ...
     def vector_search(self) -> VectorQuery: ...
 
 class Tags:
@@ -1082,6 +1113,46 @@ class FunctionErrors:
     fragments: list[FunctionErrorFragment]
     truncated: bool
 
+class FunctionColumnVersionStatus:
+    name: str
+    namespace_path: list[str]
+    object_id: str
+    location: str
+    version: str
+    manifest_digest: str
+
+class FunctionColumnLastRefreshJob:
+    job_id: str
+    state: str
+    automatic: Optional[bool]
+    completed_at_millis: Optional[int]
+    failure: Optional[JobFailureInfo]
+
+class FunctionColumnAutoRefreshStatus:
+    enabled: bool
+    interval_seconds: Optional[int]
+    active_job_id: Optional[str]
+    state: str
+    failure_streak: int
+    effective_cooldown_millis: Optional[int]
+    blocked_reason: Optional[str]
+    next_run_at_millis: Optional[int]
+    next_run_at_reason: Optional[str]
+
+class FunctionColumnStatus:
+    column: str
+    binding_id: str
+    function: FunctionColumnVersionStatus
+    table_version: int
+    rows: int
+    fresh: int
+    stale: int
+    never_computed: int
+    failed: int
+    last_refresh_job: Optional[FunctionColumnLastRefreshJob]
+    last_failure_job: Optional[FunctionColumnLastRefreshJob]
+    auto_refresh: FunctionColumnAutoRefreshStatus
+
 class RefreshMaterializedViewResult:
     @staticmethod
     def from_json(value: str) -> RefreshMaterializedViewResult: ...
@@ -1173,6 +1244,7 @@ async def connect_catalog(
     sql_host_override: Optional[str] = None,
     read_consistency_interval: Optional[float] = None,
     oauth_config: Optional[Any] = None,
+    storage_options: Optional[dict[str, str]] = None,
 ) -> Catalog: ...
 
 class NameListing:
@@ -1256,3 +1328,4 @@ class AuthzObject:
     def __repr__(self) -> str: ...
 
 def validate_function_retry_policy(json: str) -> None: ...
+def _validate_conda_requirement(requirement: str) -> None: ...

@@ -37,7 +37,7 @@ import pyarrow as pa
 
 from ..common import DATA
 from lancedb.listing import Listing, NamespaceListing, TableListing
-from ..db import DBConnection, LOOP
+from ..db import DBConnection, LOOP, _normalize_function_version
 from ..functions import FunctionVersion, FunctionDefinition
 from ..graph import EdgeTable, NodeTable, PropertyGraph
 from ..job import AsyncJob, Job
@@ -214,6 +214,7 @@ class RemoteDBConnection(DBConnection):
         client_config,
         oauth_config,
         sql_host_override,
+        storage_options,
     ):
         config = (
             ClientConfig(**client_config)
@@ -233,7 +234,7 @@ class RemoteDBConnection(DBConnection):
         result.region = "us-east-1"
         result.host_override = endpoint
         result.sql_host_override = sql_host_override
-        result.storage_options = None
+        result.storage_options = storage_options
         result.client_config = replace(config, extra_headers=headers)
         result._catalog_oauth = oauth_config is not None
         result._conn = inner
@@ -430,7 +431,11 @@ class RemoteDBConnection(DBConnection):
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> TableListing:
-        """List a page of tables in this database.
+        """Iterate over all tables in this database, fetching pages as needed.
+
+        The ``tables`` attribute contains only the current page (100 names by
+        default). Iterate over the listing to visit all pages, or use
+        ``table_exists([name])`` to check for a particular table.
 
         Parameters
         ----------
@@ -468,7 +473,9 @@ class RemoteDBConnection(DBConnection):
         """List the names of all tables in the database.
 
         .. deprecated::
-            Use :meth:`list_tables` instead, which provides proper pagination support.
+            Iterate over :meth:`list_tables` to get all names, or use
+            :meth:`table_exists` to check for a particular table. The listing's
+            ``tables`` attribute contains only one page.
 
         Parameters
         ----------
@@ -488,7 +495,8 @@ class RemoteDBConnection(DBConnection):
         import warnings
 
         warnings.warn(
-            "table_names() is deprecated, use list_tables() instead",
+            "table_names() is deprecated, iterate list_tables() for all names "
+            "or use table_exists([name]) to check existence",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -985,9 +993,10 @@ class RemoteDBConnection(DBConnection):
         self,
         name: str,
         *,
-        version: str,
+        version: Optional[Union[int, str]] = None,
         namespace_path: Optional[List[str]] = None,
     ) -> FunctionVersion:
+        version = _normalize_function_version(version)
         return LOOP.run(
             self._conn.get_function(
                 name, version=version, namespace_path=namespace_path
@@ -1120,9 +1129,18 @@ class RemoteDBConnection(DBConnection):
 
     @override
     def create_secret(
-        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+        self,
+        name: str,
+        value: str,
+        *,
+        exist_ok: bool = False,
+        namespace_path: Optional[List[str]] = None,
     ) -> None:
-        LOOP.run(self._conn.create_secret(name, value, namespace_path=namespace_path))
+        LOOP.run(
+            self._conn.create_secret(
+                name, value, exist_ok=exist_ok, namespace_path=namespace_path
+            )
+        )
 
     @override
     def alter_secret(

@@ -67,7 +67,7 @@ from .graph import (
     PropertyGraph,
     _definition_json,
 )
-from .job import AsyncJob, Job, _typed_job
+from .job import AsyncJob, Job, _opened_job, _typed_job
 from .storage_integration import SecretReference, StorageIntegrationInfo
 from .sql import AsyncQuery as AsyncSqlQuery
 from .sql import Query as SqlQuery
@@ -138,6 +138,18 @@ def _view_description(
         namespace_path=namespace_path,
         default_namespace_path=default_namespace_path,
     )
+
+
+def _normalize_function_version(version: Optional[Union[int, str]]) -> Optional[str]:
+    if version is None:
+        return None
+    if isinstance(version, bool):
+        raise TypeError("version must be an int, str, or None")
+    if isinstance(version, int):
+        return str(version)
+    if isinstance(version, str):
+        return version
+    raise TypeError("version must be an int, str, or None")
 
 
 class DBConnection(EnforceOverrides):
@@ -310,6 +322,9 @@ class DBConnection(EnforceOverrides):
     def table_exists(self, table_id: List[str]) -> bool:
         """Check if a table exists.
 
+        Use this method instead of checking membership in
+        ``list_tables().tables``, which contains only one page of table names.
+
         Parameters
         ----------
         table_id: List[str]
@@ -319,12 +334,20 @@ class DBConnection(EnforceOverrides):
         Returns
         -------
         bool
-            True if the table exists, False otherwise.
+            True if the table exists, False if it is not found.
+            Other errors, including permission errors, are propagated.
 
         Raises
         ------
         NotImplementedError
-            If the connection type does not support namespace operations.
+            If the connection type does not support table existence checks.
+
+        Examples
+        --------
+        >>> def check_table(conn):
+        ...     root_exists = conn.table_exists(["events"])
+        ...     nested_exists = conn.table_exists(["analytics", "events"])
+        ...     return root_exists, nested_exists
         """
         raise NotImplementedError(
             "Namespace operations are not supported for this connection type"
@@ -336,7 +359,11 @@ class DBConnection(EnforceOverrides):
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> TableListing:
-        """List tables in this database, one page at a time.
+        """Iterate over all tables in this database, fetching pages as needed.
+
+        ``list_tables().tables`` contains only the first page (100 names by
+        default). Use ``list(list_tables())`` to collect all names, or
+        ``table_exists([name])`` to check whether a particular table exists.
 
         Parameters
         ----------
@@ -922,7 +949,7 @@ class DBConnection(EnforceOverrides):
 
     def __contains__(self, name: str) -> bool:
         """Return whether the root namespace contains the named table."""
-        return name in self._all_table_names()
+        return self.table_exists([name])
 
     def namespace_client(self) -> LanceNamespace:
         """Get the equivalent namespace client for this connection.
@@ -1027,10 +1054,15 @@ class DBConnection(EnforceOverrides):
         self,
         name: str,
         *,
-        version: str,
+        version: Optional[Union[int, str]] = None,
         namespace_path: Optional[List[str]] = None,
     ) -> FunctionVersion:
-        """Open one exact immutable Function version from the remote catalog."""
+        """Open an immutable Function version from the remote catalog.
+
+        ``version`` may be an integer or string. When omitted, the server
+        resolves the latest currently visible revision and returns that exact
+        immutable version.
+        """
         raise NotImplementedError(
             _append_doc_url(
                 "Function catalog operations are not supported "
@@ -1126,14 +1158,24 @@ class DBConnection(EnforceOverrides):
         )
 
     def create_secret(
-        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+        self,
+        name: str,
+        value: str,
+        *,
+        exist_ok: bool = False,
+        namespace_path: Optional[List[str]] = None,
     ) -> None:
         """Create a named Secret in this database.
 
-        Fails if the name is taken, so a create never silently becomes a
-        rotation. Nothing reads the value back: it is bound to a Function by
+        Fails if the name is taken unless ``exist_ok=True``, which leaves the
+        existing value unchanged. Use :meth:`alter_secret` to rotate a Secret.
+        Nothing reads the value back: it is bound to a Function by
         name and resolved by the service when that Function runs. Local
         connections raise ``NotImplementedError``.
+
+        Examples
+        --------
+        >>> db.create_secret("api-key", "credential", exist_ok=True)  # doctest: +SKIP
         """
         raise NotImplementedError(
             _append_doc_url(
@@ -1417,6 +1459,12 @@ class DBConnection(EnforceOverrides):
         The returned [Job][lancedb.job.Job] answers for its own state,
         specification, result, failure and event history, so there is no
         separate connection-level call for any of them.
+
+        For a column refresh, ``wait()`` returns a
+        [RefreshColumnResult][lancedb.functions.RefreshColumnResult], including
+        when the refresh was started through SQL. Other job types return
+        ``None`` from ``wait()``; their persisted result is available through
+        ``job.result`` after ``job.refresh()``.
 
         Raises `JobNotFoundError` when the server has no such job, the way
         `open_table` does for a missing table.
@@ -1833,13 +1881,21 @@ class LanceDBConnection(DBConnection):
         return LOOP.run(self._conn.describe_namespace(namespace_path=namespace_path))
 
     @override
+    def table_exists(self, table_id: List[str]) -> bool:
+        return LOOP.run(self._conn.table_exists(table_id))
+
+    @override
     def list_tables(
         self,
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> TableListing:
-        """List tables in this database, one page at a time.
+        """Iterate over all tables in this database, fetching pages as needed.
+
+        The ``tables`` attribute contains only the current page (100 names by
+        default). Iterate over the listing to visit all pages, or use
+        ``table_exists([name])`` to check for a particular table.
 
         Parameters
         ----------
@@ -1877,7 +1933,9 @@ class LanceDBConnection(DBConnection):
         """Get the names of all tables in the database. The names are sorted.
 
         .. deprecated::
-            Use :meth:`list_tables` instead, which provides proper pagination support.
+            Iterate over :meth:`list_tables` to get all names, or use
+            :meth:`table_exists` to check for a particular table. The listing's
+            ``tables`` attribute contains only one page.
 
         Parameters
         ----------
@@ -1897,7 +1955,8 @@ class LanceDBConnection(DBConnection):
         import warnings
 
         warnings.warn(
-            "table_names() is deprecated, use list_tables() instead",
+            "table_names() is deprecated, iterate list_tables() for all names "
+            "or use table_exists([name]) to check existence",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -2310,9 +2369,10 @@ class LanceDBConnection(DBConnection):
         self,
         name: str,
         *,
-        version: str,
+        version: Optional[Union[int, str]] = None,
         namespace_path: Optional[List[str]] = None,
     ) -> FunctionVersion:
+        version = _normalize_function_version(version)
         return LOOP.run(
             self._conn.get_function(
                 name, version=version, namespace_path=namespace_path
@@ -2442,9 +2502,18 @@ class LanceDBConnection(DBConnection):
 
     @override
     def create_secret(
-        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+        self,
+        name: str,
+        value: str,
+        *,
+        exist_ok: bool = False,
+        namespace_path: Optional[List[str]] = None,
     ) -> None:
-        LOOP.run(self._conn.create_secret(name, value, namespace_path=namespace_path))
+        LOOP.run(
+            self._conn.create_secret(
+                name, value, exist_ok=exist_ok, namespace_path=namespace_path
+            )
+        )
 
     @override
     def alter_secret(
@@ -2860,6 +2929,9 @@ class AsyncConnection(object):
     async def table_exists(self, table_id: List[str]) -> bool:
         """Check if a table exists.
 
+        Use this method instead of checking membership in an awaited listing's
+        ``tables`` attribute, which contains only one page of table names.
+
         Parameters
         ----------
         table_id: List[str]
@@ -2885,7 +2957,11 @@ class AsyncConnection(object):
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> AsyncTableListing:
-        """List tables in this database, one page at a time.
+        """Iterate over all tables in this database, fetching pages as needed.
+
+        The ``tables`` attribute contains only the current page (100 names by
+        default). Iterate over the listing to visit all pages, or use
+        ``table_exists([name])`` to check for a particular table.
 
         Parameters
         ----------
@@ -2924,7 +3000,9 @@ class AsyncConnection(object):
         """List all tables in this database, in sorted order
 
         .. deprecated::
-            Use :meth:`list_tables` instead, which provides proper pagination support.
+            Iterate over :meth:`list_tables` to get all names, or use
+            :meth:`table_exists` to check for a particular table. The listing's
+            ``tables`` attribute contains only one page.
 
         Parameters
         ----------
@@ -2948,7 +3026,8 @@ class AsyncConnection(object):
         import warnings
 
         warnings.warn(
-            "table_names() is deprecated, use list_tables() instead",
+            "table_names() is deprecated, iterate list_tables() for all names "
+            "or use table_exists([name]) to check existence",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -3572,7 +3651,7 @@ class AsyncConnection(object):
         """Open a server-side job by id. See
         [DBConnection.open_job][lancedb.db.DBConnection.open_job].
         """
-        return AsyncJob(await self._inner.open_job(job_id))
+        return _opened_job(await self._inner.open_job(job_id))
 
     async def list_gpu_classes(self) -> List[GpuClass]:
         """List configured Function GPU classes. See
@@ -3610,10 +3689,16 @@ class AsyncConnection(object):
         self,
         name: str,
         *,
-        version: str,
+        version: Optional[Union[int, str]] = None,
         namespace_path: Optional[List[str]] = None,
     ) -> FunctionVersion:
-        """Open one exact immutable Function version from the remote catalog."""
+        """Open an immutable Function version from the remote catalog.
+
+        ``version`` may be an integer or string. When omitted, the server
+        resolves the latest currently visible revision and returns that exact
+        immutable version.
+        """
+        version = _normalize_function_version(version)
         return FunctionVersion.from_json(
             await self._inner.get_function(name, version, namespace_path)
         )
@@ -3883,17 +3968,30 @@ class AsyncConnection(object):
         )
 
     async def create_secret(
-        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+        self,
+        name: str,
+        value: str,
+        *,
+        exist_ok: bool = False,
+        namespace_path: Optional[List[str]] = None,
     ) -> None:
         """Create a named Secret in this database.
 
-        Fails if the name is taken, so a create never silently becomes a
-        rotation. Nothing reads the value back.
+        Fails if the name is taken unless ``exist_ok=True``, which leaves the
+        existing value unchanged. Use :meth:`alter_secret` to rotate a Secret.
+        Nothing reads the value back.
+
+        Examples
+        --------
+        >>> await db.create_secret(  # doctest: +SKIP
+        ...     "api-key", "credential", exist_ok=True
+        ... )
         """
         await self._inner.create_secret(
             validate_secret_name(name),
             value,
             list(validate_namespace_path(namespace_path)),
+            exist_ok=exist_ok,
         )
 
     async def alter_secret(

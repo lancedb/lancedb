@@ -5995,7 +5995,12 @@ def test_refresh_column_rejects_invalid_batch_size(tmp_path, method, batch_size)
         ({"max_failed_rows": 10}, "max_failed_rows"),
         ({"row_timeout_seconds": 30}, "row_timeout_seconds"),
         ({"init_timeout_seconds": 60}, "init_timeout_seconds"),
+        ({"max_concurrency": 4}, "max_concurrency"),
         ({"publication_interval_rows": 60}, "publication_interval_rows"),
+        (
+            {"resource_budget": {"cpu_millis": 1000, "memory_bytes": 1024}},
+            "resource_budget",
+        ),
         ({"num_workers": 2}, "num_workers"),
         ({"max_executor_processes_per_worker": 2}, "max_executor_processes_per_worker"),
     ],
@@ -6029,6 +6034,16 @@ def test_function_errors_are_remote_only(tmp_path):
         NotImplementedError, match="recorded only in LanceDB Enterprise"
     ):
         table.function_errors()
+
+
+def test_function_column_status_is_remote_only(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", [{"x": 1}])
+    with pytest.raises(
+        NotImplementedError,
+        match="exact Function column status is supported only in LanceDB Enterprise",
+    ):
+        table.wait_fresh("x")
 
 
 @pytest.mark.experimental_functions
@@ -6249,6 +6264,21 @@ def test_auto_refresh_options_require_computed_columns(tmp_path):
     table = lancedb.connect(tmp_path).create_table("invalid_kind", [{"x": 1}])
     with pytest.raises(ValueError, match="require computed"):
         table.add_columns({"doubled": "x * 2"}, auto_refresh_enabled=True)
+
+
+def test_auto_refresh_resource_budget_requires_a_function(tmp_path):
+    table = lancedb.connect(tmp_path).create_table("invalid_budget", [{"x": 1}])
+    before = table.version
+    with pytest.raises(ValueError, match="registered Function"):
+        table.add_columns(
+            computed={"doubled": "x * 2"},
+            auto_refresh_resource_budget={
+                "cpu_millis": 1_000,
+                "memory_bytes": 1_024,
+            },
+        )
+    assert table.version == before
+    assert table.schema.names == ["x"]
 
 
 @pytest.mark.experimental_functions

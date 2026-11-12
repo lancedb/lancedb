@@ -60,9 +60,49 @@ columns through `col(...)`, keyed by the output column name. It commits a
 new, empty table version the same way a SQL expression does, so the usual
 [versioning](/management/table#versioning) applies.
 
-Both a Function application and a SQL expression accept the same
-`auto_refresh_enabled` and `auto_refresh_interval_seconds` options, and both
-refresh and toggle the same way; see [Auto Refresh](/enterprise/auto-refresh).
+Both a Function application and a SQL expression accept
+`auto_refresh_enabled` and `auto_refresh_interval_seconds`, and both refresh
+and toggle the same way; see [Auto Refresh](/enterprise/auto-refresh).
+
+Python and Rust Function declarations can also set
+`auto_refresh_resource_budget` to give their automatic refreshes an aggregate
+CPU, memory, and optional GPU budget. CPU and memory are required. The nested
+`gpu_count` defaults to zero, so omitting it requests CPU-only workers:
+
+<CodeGroup>
+```python Python icon="python"
+table.add_columns(
+    {"caption": version(jpeg=col("jpeg"))},
+    auto_refresh_resource_budget={
+        "cpu_millis": 8000,
+        "memory_bytes": 16 * 1024**3,
+    },
+)
+```
+
+```rust Rust icon="rust"
+table
+    .add_columns()
+    .function(function_application)
+    .computed_options(ComputedColumnOptions {
+        auto_refresh_enabled: true,
+        auto_refresh_interval_seconds: None,
+        auto_refresh_resource_budget: Some(
+            FunctionWorkerResourceBudget::new(8000, 17_179_869_184),
+        ),
+    })
+    .execute()
+    .await?;
+```
+</CodeGroup>
+
+This setting applies to every output in the Function binding. SQL-expression
+columns do not use Function workers, so they reject
+`auto_refresh_resource_budget` instead of accepting an option that has no
+effect. The separate `resource_budget` refresh option configures one explicit
+refresh and does not change this automatic-refresh declaration. The Node.js
+SDK does not currently expose a Function declaration through `addColumns`, so
+this option is not added to an unsupported surface.
 
 ## Fill a column with a SQL expression {#expressions}
 

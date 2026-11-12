@@ -235,6 +235,32 @@ impl<S: HttpSend> JobHandle for RemoteJob<S> {
         Ok(self.fetch_description().await?.1.into_description())
     }
 
+    async fn timeline(&self) -> Result<serde_json::Value> {
+        let request = self
+            .client
+            .post("/v1/jobs/timeline")
+            .json(&serde_json::json!({"job_id": self.job_id}));
+        let (request_id, response) = self.client.send(request).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        let trace: serde_json::Value =
+            serde_json::from_str(&body).map_err(|error| Error::Http {
+                source: format!("failed to parse job timeline: {error}").into(),
+                request_id: request_id.clone(),
+                status_code: None,
+            })?;
+        if !trace
+            .get("traceEvents")
+            .is_some_and(serde_json::Value::is_array)
+        {
+            return Err(Error::Http {
+                source: "server response is not Chrome Trace Event JSON; job timeline export requires server support".into(),
+                request_id, status_code: None,
+            });
+        }
+        Ok(trace)
+    }
+
     async fn events(&self, request: JobEventsRequest) -> Result<Vec<RecordBatch>> {
         let mut body = serde_json::json!({ "job_id": self.job_id });
         if let Some(limit) = request.limit {
@@ -375,6 +401,29 @@ mod tests {
                 .to_string()
                 .contains("successful typed job response did not contain a result")
         );
+    }
+
+    #[tokio::test]
+    async fn reopened_job_preserves_its_description_and_decodes_the_terminal_result() {
+        let description: DescribeJobResponse = serde_json::from_str(REFRESH_JOB).unwrap();
+        let job = Job::opened(
+            Box::new(FixtureRemoteJob(REFRESH_JOB)),
+            description.into_description(),
+        );
+        let raw_result = job.result();
+        let job = job.into_typed::<RefreshColumnResult>().unwrap();
+
+        assert_eq!(job.job_type().as_deref(), Some("refresh_function_columns"));
+        assert_eq!(job.state().as_deref(), Some("finished"));
+        assert_eq!(job.creation_ms(), Some(1787270400001));
+        assert_eq!(job.result(), raw_result);
+        assert_eq!(job.wait().await.unwrap().rows_assigned, 999_998_800);
+        assert_eq!(job.wait().await.unwrap().published_version, Some(919));
+
+        let missing = Job::new(Box::new(FixtureRemoteJob(MISSING_RESULT_JOB)))
+            .into_typed::<RefreshColumnResult>()
+            .unwrap();
+        assert!(missing.wait().await.is_err());
     }
 
     /// Five in-progress polls then done: 0.2 + 0.4 + 0.8 + 1 + 1 s of waiting.
