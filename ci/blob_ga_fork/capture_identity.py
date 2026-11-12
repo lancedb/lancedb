@@ -7,6 +7,7 @@ import importlib
 import json
 import os
 import platform
+import re
 import sys
 import sysconfig
 import zipfile
@@ -26,8 +27,61 @@ def hash_stream(stream):
     return value.hexdigest()
 
 
+def canonical_name(name):
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def compare_reference(identity, reference):
+    """Reject changed test inputs; retain installation and host differences."""
+    errors = identity["errors"]
+    differences = {}
+    for key in ("version", "executable_sha256", "libc", "platform", "cpu_count"):
+        if identity[key] != reference[key]:
+            differences[key] = {"reference": reference[key], "actual": identity[key]}
+    if identity["version"].split()[0] != reference["version"].split()[0]:
+        errors.append("Python version differs from retained experiment")
+    if identity["wheel"]["sha256"] != reference["wheel"]["sha256"]:
+        errors.append("wheel differs from retained experiment")
+    for name, expected in reference["modules"].items():
+        if identity["modules"][name]["sha256"] != expected["sha256"]:
+            errors.append(f"{name} differs from retained experiment")
+    expected = {canonical_name(p["name"]): p for p in reference["packages"]}
+    actual = {canonical_name(p["name"]): p for p in identity["packages"]}
+    if actual.keys() != expected.keys():
+        errors.append("installed package set differs from retained experiment")
+        differences["package_set"] = {
+            "missing": sorted(expected.keys() - actual.keys()),
+            "extra": sorted(actual.keys() - expected.keys()),
+        }
+    for name in sorted(actual.keys() & expected.keys()):
+        for key in ("version", "metadata_sha256", "record_sha256"):
+            if actual[name][key] != expected[name][key]:
+                differences[f"package:{name}:{key}"] = {
+                    "reference": expected[name][key],
+                    "actual": actual[name][key],
+                }
+                # RECORD includes generated scripts and installation paths.
+                if key != "record_sha256":
+                    errors.append(f"{name} {key} differs from retained experiment")
+    identity["reference_differences"] = differences
+
+
 def main():
-    output, wheel_path = map(Path, sys.argv[1:])
+    if sys.argv[1] == "--requirements":
+        reference = json.loads(Path(sys.argv[2]).read_text())
+        # Install every observed distribution, without resolving newer dependencies.
+        packages = reference["packages"]
+        assert all(re.fullmatch(r"[A-Za-z0-9_.+-]+", p["name"]) for p in packages)
+        assert all(re.fullmatch(r"[A-Za-z0-9_.+!-]+", p["version"]) for p in packages)
+        Path(sys.argv[3]).write_text(
+            "".join(
+                f"{p['name']}=={p['version']}\n"
+                for p in packages
+                if canonical_name(p["name"]) != "lancedb"
+            )
+        )
+        return
+    output, wheel_path = map(Path, sys.argv[1:3])
     modules = {}
     errors = []
     with zipfile.ZipFile(wheel_path) as wheel:
@@ -84,6 +138,8 @@ def main():
         "cpu_count": os.cpu_count(),
         "errors": errors,
     }
+    if len(sys.argv) == 4:
+        compare_reference(identity, json.loads(Path(sys.argv[3]).read_text()))
     output.write_text(json.dumps(identity, indent=2) + "\n")
     print(json.dumps(identity, indent=2))
     if errors:
