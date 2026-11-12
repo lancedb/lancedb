@@ -1,0 +1,142 @@
+name: Held remote fork diagnostic
+
+# One experiment branch only. Ordinary Python CI and its matrix remain unchanged.
+on:
+  push:
+    branches: [xuanwo/blob-ga-hosted-fork-diagnostic-20261112]
+    paths:
+      - .github/workflows/blob-ga-fork-diagnostic.yml
+      - ci/blob_ga_fork/**
+
+permissions:
+  contents: read
+
+jobs:
+  experiment:
+    name: Full Python 3.10 suite with fork diagnostics
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      PYTEST_ADDOPTS: "--color=yes"
+      FORCE_COLOR: "1"
+      PIP_EXTRA_INDEX_URL: "https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/"
+      RUST_BACKTRACE: "1"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Use the pushed candidate, never GitHub's synthetic PR merge tree.
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          lfs: true
+      - name: Verify exact feature product source
+        run: python3 ci/blob_ga_fork/capture_source.py "$RUNNER_TEMP/fork-evidence"
+      - name: Install protobuf
+        run: |
+          sudo apt update
+          sudo apt install -y protobuf-compiler
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+      - name: Build original manylinux2014 ci wheel
+        id: build
+        uses: ./.github/workflows/build_linux_wheel
+        with:
+          python-minor-version: "10"
+          args: --profile ci
+      - name: Preserve wheel before any test failure or timeout
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fork-wheel-${{ github.run_id }}
+          path: target/wheels/lancedb-*.whl
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 0
+      - name: Record build outcome and container identity
+        if: always()
+        env:
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/fork-evidence"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          outcome = os.environ["BUILD_OUTCOME"]
+          # Effective action status; raw tool exits remain in the archived job log.
+          value = {"outcome": outcome, "effective_action_exit":
+                   {"success": 0, "failure": 1}.get(outcome)}
+          Path(os.environ["RUNNER_TEMP"], "fork-evidence/build.json").write_text(json.dumps(value))
+          PY
+          docker image ls --digests --no-trunc > "$RUNNER_TEMP/fork-evidence/docker-images.txt"
+      - name: Install original wheel extras
+        run: |
+          python ci/blob_ga_fork/log_command.py "$RUNNER_TEMP/fork-evidence/install" \
+            pip3 install --extra-index-url https://pypi.fury.io/lance-format/ \
+            --extra-index-url https://pypi.fury.io/lancedb/ \
+            "$(ls target/wheels/lancedb-*.whl)[tests,dev]"
+      - name: Verify installed wheel identity
+        run: |
+          python ci/blob_ga_fork/log_command.py "$RUNNER_TEMP/fork-evidence/identity" \
+            python ci/blob_ga_fork/capture_identity.py \
+            "$RUNNER_TEMP/fork-evidence/loaded-identity.json" target/wheels/lancedb-*.whl
+      - name: Set up original localstack integration fixture
+        run: |
+          python ci/blob_ga_fork/log_command.py "$RUNNER_TEMP/fork-evidence/localstack" \
+            docker compose up --detach --wait
+      - name: Ensure native collector is available
+        run: |
+          # Do this after fixture setup; no gdb Python packages enter the test interpreter.
+          if ! command -v gdb; then
+            sudo apt install -y gdb
+          fi
+          gdb --version > "$RUNNER_TEMP/fork-evidence/gdb-version.txt"
+          sudo -n timeout --version > "$RUNNER_TEMP/fork-evidence/timeout-version.txt"
+      - name: Run original complete suite in original order
+        env:
+          FORK_PROBE_LOG: ${{ runner.temp }}/fork-evidence/hosted-stages.log
+          FORK_PROBE_IDENTITY: ${{ runner.temp }}/fork-evidence/loaded-identity.json
+        run: |
+          python ci/blob_ga_fork/log_command.py "$RUNNER_TEMP/fork-evidence/pytest" \
+            python ci/blob_ga_fork/run_pytest.py \
+            -m "not slow" -vv --durations=30 python/python/tests
+      - name: Upload diagnostics even on failure
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fork-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/fork-evidence/
+          if-no-files-found: error
+          retention-days: 30
+
+  archive-job-log:
+    name: Archive completed experiment job log
+    needs: experiment
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    steps:
+      - name: Download completed job log once
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/job-log"
+          gh api "repos/$GH_REPO/actions/runs/$RUN_ID/jobs" > "$RUNNER_TEMP/job-log/jobs.json"
+          job_id=$(jq -r '.jobs[] | select(.name == "Full Python 3.10 suite with fork diagnostics") | .id' "$RUNNER_TEMP/job-log/jobs.json")
+          set +e
+          gh api "repos/$GH_REPO/actions/jobs/$job_id/logs" > "$RUNNER_TEMP/job-log/experiment.log" 2> "$RUNNER_TEMP/job-log/download.stderr"
+          result=$?
+          set -e
+          echo "$result" > "$RUNNER_TEMP/job-log/download.exit"
+          exit "$result"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: fork-completed-job-log-${{ github.run_id }}
+          path: ${{ runner.temp }}/job-log/
+          if-no-files-found: error
+          retention-days: 30
