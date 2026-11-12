@@ -32,6 +32,12 @@ pub struct ServerInfo {
     pub lancedb_version: String,
     /// Function worker protocol supported by this server build.
     pub function_worker_protocol_version: u16,
+    /// Configured query-node image, not an independently observed digest.
+    pub configured_query_node_image: Option<String>,
+    /// Default CPU/job worker image; existing jobs can retain earlier pins.
+    pub configured_job_worker_image: Option<String>,
+    /// CLI image configured for newly launched SQL jobs.
+    pub configured_sql_job_image: Option<String>,
     /// Configured GPU worker image, not an observation of a running worker.
     pub configured_gpu_worker_image: Option<String>,
 }

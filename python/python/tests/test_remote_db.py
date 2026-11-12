@@ -5963,6 +5963,9 @@ async def test_remote_server_info(is_async, known_build):
         "lance_version": "5.0.0",
         "lancedb_version": "0.42.0",
         "function_worker_protocol_version": 25,
+        "configured_query_node_image": "example.invalid/query:configured",
+        "configured_job_worker_image": "example.invalid/cpu:configured",
+        "configured_sql_job_image": "example.invalid/cli:configured",
         "configured_gpu_worker_image": "example.invalid/worker:configured",
     }
 

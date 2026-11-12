@@ -27,4 +27,7 @@ class ServerInfo(TypedDict):
     lance_version: str
     lancedb_version: str
     function_worker_protocol_version: int
+    configured_query_node_image: Optional[str]
+    configured_job_worker_image: Optional[str]
+    configured_sql_job_image: Optional[str]
     configured_gpu_worker_image: Optional[str]
