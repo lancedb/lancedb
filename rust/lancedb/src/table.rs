@@ -1429,16 +1429,13 @@ impl Table {
     /// ranges for the same blob. The output has the same length and order as
     /// the requests. Null blobs produce null output slots; empty ranges on
     /// non-null blobs produce empty byte strings.
-    /// LanceDB Enterprise uses the batched `fetch_blob_ranges` endpoint, splitting
-    /// calls at 1024 ranges and 64 MiB of requested bytes. Individual larger ranges
-    /// are partitioned and reassembled into one result. All calls read one exact
-    /// branch and version without changing this handle's checkout. The final
-    /// materialized output still occupies memory.
-    ///
-    /// The server must support this endpoint and return `x-lancedb-version`.
-    /// There is no reliable capability/version discriminator for older servers;
-    /// their HTTP errors propagate without falling back to legacy blob routes.
-    /// Upgrade the server or explicitly use [`Self::fetch_blob_files`] instead.
+    /// LanceDB Enterprise uses the batched endpoint when the server advertises
+    /// support, splitting calls at 1024 ranges and 64 MiB of requested bytes.
+    /// Individual larger ranges are partitioned and reassembled into one result.
+    /// Older servers use descriptor queries and [`Self::fetch_blob_files`] range
+    /// reads. Both protocols read one exact branch and version without changing
+    /// this handle's checkout. The final materialized output still occupies memory.
+    /// Errors from an advertised endpoint propagate without switching protocols.
     ///
     /// `_rowid` values stay valid after compaction when the table has stable
     /// row ids. One missing or deleted row id rejects the whole request; no

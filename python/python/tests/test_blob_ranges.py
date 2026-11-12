@@ -3,15 +3,18 @@
 
 """Exercise the public sync/async range APIs over bounded loopback HTTP."""
 
+import asyncio
 import hashlib
 import json
 from pathlib import Path
 import socket
+import threading
 
 import lancedb._lancedb as native
 import pyarrow as pa
 import pytest
 
+from lancedb.remote.errors import HttpError, TableNotFoundError
 from test_remote_db import mock_lancedb_connection
 
 MIB = 1024 * 1024
@@ -29,6 +32,8 @@ class RangeServer:
         self.fault = fault
         self.calls = []
         self.fetches = []
+        self.stalled = threading.Event()
+        self.release = threading.Event()
 
     def __call__(self, request):
         request.connection.settimeout(15)
@@ -42,7 +47,9 @@ class RangeServer:
         ):
             request.send_response(200)
             request.send_header("Content-Type", "application/json")
-            request.send_header("phalanx-version", "0.5.0")
+            request.send_header("phalanx-version", "1.13.0-beta.0")
+            if request.path.endswith("/describe/"):
+                request.send_header("x-lancedb-blob-ranges", "1")
             request.end_headers()
             response = (
                 {
@@ -75,6 +82,21 @@ class RangeServer:
             for r in ranges
         ]
         fault = self.fault if len(self.fetches) > 1 else None
+        if fault == "stall" and len(self.fetches) == 2:
+            request.send_response(200)
+            request.send_header("Content-Type", "application/vnd.apache.arrow.stream")
+            request.send_header("x-lancedb-version", str(version))
+            request.end_headers()
+            request.wfile.flush()
+            self.stalled.set()
+            assert self.release.wait(15), "test did not release stalled response"
+            return
+        if fault == "structured400":
+            request.send_response(400)
+            request.send_header("x-lancedb-error-code", "invalid_input")
+            request.end_headers()
+            request.wfile.write(b'{"error":"range exceeds blob size"}')
+            return
         if isinstance(fault, int):
             request.send_response(fault)
             request.end_headers()
@@ -144,6 +166,18 @@ async def test_range_sdk_order_snapshot_and_overwrite(use_async, version):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("use_async", [False, True])
+async def test_range_sdk_cached_reopen_negotiates_capability(use_async):
+    handler = RangeServer()
+    with mock_lancedb_connection(handler) as db:
+        for version in (7, 8):
+            table = api(db, use_async)
+            result = await fetch(table, [(10, 0, 1)], use_async)
+            assert result.to_pylist() == [payload(10, 0, 1, version)]
+        assert len(handler.fetches) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
 async def test_range_sdk_large_single_and_aggregate_budget(use_async):
     handler = RangeServer()
     with mock_lancedb_connection(handler) as db:
@@ -186,22 +220,62 @@ async def test_range_sdk_large_single_and_aggregate_budget(use_async):
         401,
         403,
         404,
+        429,
         500,
     ],
 )
 async def test_range_sdk_later_failure_rejects_entire_call(use_async, fault):
     handler = RangeServer(fault=fault)
     with mock_lancedb_connection(
-        handler, retry_config={"retries": 0, "connect_retries": 0, "read_retries": 0}
+        handler, retry_config={"retries": 2, "connect_retries": 2, "read_retries": 2}
     ) as db:
         table = api(db, use_async)
-        with pytest.raises(Exception):
+        with pytest.raises(Exception) as exc:
             await fetch(table, [(10, 0, 1)] * 1025, use_async)
+        if fault == 404:
+            assert isinstance(exc.value, TableNotFoundError)
+            assert isinstance(exc.value.__cause__, HttpError)
+            assert exc.value.__cause__.status_code == 404
+        else:
+            assert not isinstance(exc.value, ValueError)
+        if isinstance(fault, int):
+            assert exc.value.status_code == fault
         assert len(handler.fetches) == 2
         assert all(
             path in ("/v1/table/test/describe/", "/v1/table/test/branches/list/", ROUTE)
             for _, path, _ in handler.calls
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
+async def test_range_sdk_structured_400_preserves_value_error(use_async):
+    handler = RangeServer(fault="structured400")
+    with mock_lancedb_connection(handler) as db:
+        table = api(db, use_async)
+        with pytest.raises(ValueError, match="range exceeds blob size"):
+            await fetch(table, [(10, 0, 1)] * 1025, use_async)
+        assert len(handler.fetches) == 2
+
+
+@pytest.mark.asyncio
+async def test_range_sdk_async_cancel_releases_only_request_permit():
+    handler = RangeServer(fault="stall")
+    with mock_lancedb_connection(handler, blob_request_concurrency=1) as db:
+        table = api(db, True)
+        pending = asyncio.create_task(fetch(table, [(10, 0, 1)] * 2049, True))
+        try:
+            assert await asyncio.to_thread(handler.stalled.wait, 10)
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+            assert len(handler.fetches) == 2
+            result = await asyncio.wait_for(fetch(table, [(10, 0, 1)], True), 5)
+            assert result.to_pylist() == [payload(10, 0, 1, 8)]
+            assert len(handler.fetches) == 3
+        finally:
+            pending.cancel()
+            handler.release.set()
 
 
 @pytest.mark.asyncio

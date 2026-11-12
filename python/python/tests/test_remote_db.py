@@ -5056,12 +5056,16 @@ def blob_descriptor_take_table():
 
 
 @contextlib.contextmanager
-def blob_remote_table(*, server_version=Version("0.5.0"), location=None):
+def blob_remote_table(
+    *, server_version=Version("0.5.0"), location=None, range_capability=None
+):
     def handler(request):
         if request.path == "/v1/table/test/describe/":
             request.send_response(200)
             request.send_header("Content-Type", "application/json")
             request.send_header("phalanx-version", str(server_version))
+            if range_capability is not None:
+                request.send_header("x-lancedb-blob-ranges", range_capability)
             request.end_headers()
             response = dict(BLOB_DESCRIBE_RESPONSE)
             if location is not None:
@@ -5121,7 +5125,10 @@ def blob_remote_table(*, server_version=Version("0.5.0"), location=None):
             request.end_headers()
             with pa.ipc.new_file(request.wfile, response_table.schema) as writer:
                 writer.write_table(response_table)
-        elif request.path == "/v1/table/test/fetch_blob_ranges/":
+        elif (
+            range_capability == "1"
+            and request.path == "/v1/table/test/fetch_blob_ranges/"
+        ):
             size = int(request.headers["Content-Length"])
             body = json.loads(request.rfile.read(size))
             payloads = {10: b"alpha", 20: None, 30: b"gamma", 40: b""}
@@ -5214,8 +5221,11 @@ def test_sync_remote_blob_pandas_avoids_storage_access(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("use_async", [False, True])
-async def test_remote_fetch_blob_ranges(use_async):
-    with blob_remote_table() as remote_table:
+@pytest.mark.parametrize("range_capability", [None, "0", "2", "1"])
+async def test_remote_fetch_blob_ranges(use_async, range_capability):
+    with blob_remote_table(
+        server_version="1.13.0-beta.0", range_capability=range_capability
+    ) as remote_table:
         table = remote_table._table if use_async else remote_table
         requests = [
             (30, 2, 3),
@@ -5232,12 +5242,12 @@ async def test_remote_fetch_blob_ranges(use_async):
         assert isinstance(result, pa.LargeBinaryArray)
         assert result.to_pylist() == [b"mma", b"lph", None, b"al", b"", b"", b"mma"]
 
-        for invalid, message, exception in [
-            ([(10, 0, 1), (99, 0, 1)], "only 1 exist", HttpError),
-            ([(10, 4, 2)], "exceeds blob size", HttpError),
-            ([(20, 2**64 - 1, 1)], "overflows u64", ValueError),
+        for invalid, message in [
+            ([(10, 0, 1), (99, 0, 1)], "only 1 exist"),
+            ([(10, 4, 2)], "exceeds blob size"),
+            ([(20, 2**64 - 1, 1)], "overflows u64"),
         ]:
-            with pytest.raises(exception, match=message):
+            with pytest.raises(ValueError, match=message):
                 result = table.fetch_blob_ranges("image", invalid)
                 if use_async:
                     await result

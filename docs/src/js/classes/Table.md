@@ -664,11 +664,11 @@ Preserves request order, duplicates, and nulls. Zero length returns an empty
 buffer for a non-null blob. Invalid ranges or missing rows reject the entire
 call. See [Table.fetchBlobs](Table.md#fetchblobs) for row-ID validity across versions.
 
-Remote tables require a server with the batched `fetch_blob_ranges` endpoint.
-Older servers' HTTP errors are propagated without a legacy-route fallback.
-Upgrade the server or explicitly use [Table.fetchBlobFiles](Table.md#fetchblobfiles) instead.
-Requests are split at 1024 ranges and 64 MiB, including individual larger
-ranges, using one exact branch and version. All output bytes occupy memory.
+Remote tables use the batched endpoint when the server advertises support,
+splitting at 1024 ranges and 64 MiB, including individual larger ranges.
+Older servers use descriptor queries and BlobFile range reads. Both protocols
+use one exact branch and version. Errors from an advertised endpoint propagate
+without switching protocols. All output bytes occupy memory.
 
 #### Parameters
 

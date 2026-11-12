@@ -40,6 +40,86 @@ fn ipc(column: &str, values: ArrayRef) -> Vec<u8> {
     body
 }
 
+fn legacy_reply(path: &str, body: &Value, takes: usize) -> Reply {
+    use arrow_array::{StructArray, UInt8Array, UInt32Array, UInt64Array};
+    let version = body["version"]
+        .as_u64()
+        .unwrap_or(if takes == 1 { 7 } else { 8 });
+    if path.ends_with("/query/") {
+        assert_eq!(body["branch"], "experiment");
+        assert_eq!(body["columns"], json!(["image"]));
+        let filter = body["filter"].as_str().unwrap();
+        let ids = filter
+            .split_once('(')
+            .unwrap()
+            .1
+            .trim_end_matches(')')
+            .split(',')
+            .map(|id| id.trim().parse::<u64>().unwrap())
+            .filter(|id| [10, 20, 30, 40].contains(id))
+            .rev()
+            .collect::<Vec<_>>();
+        let fields = lance_core::datatypes::BLOB_V2_DESC_FIELDS.clone();
+        let descriptors = StructArray::new(
+            fields,
+            vec![
+                Arc::new(UInt8Array::from(vec![0; ids.len()])),
+                Arc::new(UInt64Array::from(vec![0; ids.len()])),
+                Arc::new(UInt64Array::from(
+                    ids.iter()
+                        .map(|id| if *id == 40 { 0 } else { 5 })
+                        .collect::<Vec<_>>(),
+                )),
+                Arc::new(UInt32Array::from(vec![0; ids.len()])),
+                Arc::new(StringArray::from(vec![""; ids.len()])),
+            ],
+            Some(ids.iter().map(|id| *id != 20).collect()),
+        );
+        let batch = RecordBatch::try_from_iter([
+            ("image", Arc::new(descriptors) as ArrayRef),
+            ("_rowid", Arc::new(UInt64Array::from(ids)) as ArrayRef),
+        ])
+        .unwrap();
+        let mut bytes = Vec::new();
+        let mut writer = StreamWriter::try_new(&mut bytes, &batch.schema()).unwrap();
+        writer.write(&batch).unwrap();
+        writer.finish().unwrap();
+        drop(writer);
+        Reply {
+            status: 200,
+            version: Some(version),
+            body: bytes,
+            declared_extra: 0,
+        }
+    } else {
+        assert!(path.contains("branch=experiment"), "{path}");
+        let version = path
+            .split("version=")
+            .nth(1)
+            .unwrap()
+            .split('&')
+            .next()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        let range = body["range"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("bytes=")
+            .unwrap();
+        let (start, end) = range.split_once('-').unwrap();
+        let start = start.parse::<usize>().unwrap();
+        let end = end.parse::<usize>().unwrap();
+        let payload = if version == 8 { b"ALPHA" } else { b"alpha" };
+        Reply {
+            status: 206,
+            version: Some(version),
+            body: payload[start..=end].to_vec(),
+            declared_extra: 0,
+        }
+    }
+}
+
 fn reply(values: Vec<Option<Vec<u8>>>, version: u64) -> Reply {
     Reply {
         status: 200,
@@ -99,12 +179,20 @@ impl Drop for Server {
 
 impl Server {
     async fn new(handler: impl Fn(&Value, usize) -> Reply + Send + Sync + 'static) -> Self {
+        Self::with_capability(handler, Some("1")).await
+    }
+
+    async fn with_capability(
+        handler: impl Fn(&Value, usize) -> Reply + Send + Sync + 'static,
+        capability: Option<&'static str>,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let calls = Arc::new(Mutex::new(Vec::new()));
         let captured = calls.clone();
         let task = tokio::spawn(async move {
             let mut fetches = 0;
+            let mut takes = 0;
             loop {
                 let (socket, _) = listener.accept().await.unwrap();
                 let captured = captured.clone();
@@ -113,27 +201,34 @@ impl Server {
                     let mut line = String::new();
                     socket.read_line(&mut line).await?;
                     let path = line.split_whitespace().nth(1).unwrap().to_string();
-                    assert!(line.starts_with("POST "), "{line}");
+                    let method = line.split_whitespace().next().unwrap().to_string();
+                    let mut range = String::new();
                     let mut length = 0;
                     loop {
                         line.clear();
                         socket.read_line(&mut line).await?;
                         assert!(line.len() <= 16384);
                         if line == "\r\n" { break; }
-                        if let Some((name, value)) = line.split_once(':')
-                            && name.eq_ignore_ascii_case("content-length") {
-                            length = value.trim().parse::<usize>().unwrap();
+                        if let Some((name, value)) = line.split_once(':') {
+                            if name.eq_ignore_ascii_case("content-length") {
+                                length = value.trim().parse::<usize>().unwrap();
+                            }
+                            if name.eq_ignore_ascii_case("range") { range = value.trim().to_string(); }
                         }
                     }
                     assert!(length <= 256 * 1024);
                     let mut bytes = vec![0; length];
                     socket.read_exact(&mut bytes).await?;
-                    let body = if bytes.is_empty() { json!({}) } else { serde_json::from_slice(&bytes).unwrap() };
+                    let body = if method == "GET" { json!({"range": range}) } else if bytes.is_empty() { json!({}) } else { serde_json::from_slice(&bytes).unwrap() };
                     captured.lock().unwrap().push((path.clone(), body.clone()));
                     let response = if path == "/v1/table/test/describe/" {
                         Reply { status: 200, version: None, body: serde_json::to_vec(&json!({"version": 8, "schema": {"fields": []}})).unwrap(), declared_extra: 0 }
                     } else if path == "/v1/table/test/branches/list/" {
                         Reply { status: 200, version: None, body: br#"{"branches":{"experiment":{"parentBranch":null,"parentVersion":1,"createAt":1,"manifestSize":1}}}"#.to_vec(), declared_extra: 0 }
+                    } else if capability != Some("1") {
+                        assert_ne!(path, ROUTE, "unknown capability must select old routes first");
+                        takes += usize::from(path.ends_with("/query/"));
+                        legacy_reply(&path, &body, takes)
                     } else {
                         assert_eq!(path, ROUTE, "unexpected legacy or fallback request");
                         fetches += 1;
@@ -141,8 +236,10 @@ impl Server {
                     };
                     if response.status == 0 { return Ok::<_, std::io::Error>(()); }
                     let version = response.version.map(|v| format!("x-lancedb-version: {v}\r\n")).unwrap_or_default();
-                    let content_type = if path == ROUTE { "application/vnd.apache.arrow.stream" } else { "application/json" };
-                    let header = format!("HTTP/1.1 {} Response\r\nContent-Type: {content_type}\r\nphalanx-version: 0.5.0\r\n{version}Content-Length: {}\r\nConnection: close\r\n\r\n", response.status, response.body.len() + response.declared_extra);
+                    let capability = if path.ends_with("/describe/") { capability.map(|value| format!("x-lancedb-blob-ranges: {value}\r\n")).unwrap_or_default() } else { String::new() };
+                    let content_type = if path == ROUTE || path.ends_with("/query/") { "application/vnd.apache.arrow.stream" } else { "application/json" };
+                    let content_range = if method == "GET" { format!("Content-Range: {}/5\r\n", body["range"].as_str().unwrap().replace("bytes=", "bytes ")) } else { String::new() };
+                    let header = format!("HTTP/1.1 {} Response\r\nContent-Type: {content_type}\r\nphalanx-version: 1.13.0-beta.0\r\n{capability}{version}{content_range}Content-Length: {}\r\nConnection: close\r\n\r\n", response.status, response.body.len() + response.declared_extra);
                     socket.write_all(header.as_bytes()).await?;
                     for chunk in response.body.chunks(8192) { socket.write_all(chunk).await?; }
                     socket.shutdown().await?;
@@ -162,9 +259,9 @@ impl Server {
             .host_override(&self.url)
             .client_config(ClientConfig {
                 retry_config: RetryConfig {
-                    retries: Some(0),
-                    connect_retries: Some(0),
-                    read_retries: Some(0),
+                    retries: Some(2),
+                    connect_retries: Some(2),
+                    read_retries: Some(2),
                     ..Default::default()
                 },
                 timeout_config: TimeoutConfig {
@@ -181,6 +278,64 @@ impl Server {
             open = open.version(version);
         }
         open.execute().await.unwrap()
+    }
+}
+
+#[tokio::test]
+async fn public_ranges_work_on_old_routes_only_servers() {
+    for capability in [None, Some("0"), Some("2")] {
+        for checkout in [None, Some(3)] {
+            let server = Server::with_capability(
+                |_, _| panic!("new endpoint must not be requested"),
+                capability,
+            )
+            .await;
+            let table = server.table(checkout).await;
+            let cloned = table.clone();
+            let ranges = [
+                BlobRangeRequest::new(10, 1, 3),
+                BlobRangeRequest::new(20, 0, 1),
+                BlobRangeRequest::new(40, 0, 0),
+                BlobRangeRequest::new(10, 5, 0),
+                BlobRangeRequest::new(10, 1, 3),
+            ];
+            let result = cloned.fetch_blob_ranges("image", ranges).await.unwrap();
+            assert_eq!(
+                result,
+                LargeBinaryArray::from(vec![
+                    Some(b"lph".as_slice()),
+                    None,
+                    Some(b"".as_slice()),
+                    Some(b"".as_slice()),
+                    Some(b"lph".as_slice())
+                ])
+            );
+            let result = table
+                .fetch_blob_ranges("image", [BlobRangeRequest::new(10, 0, 1)])
+                .await
+                .unwrap();
+            assert_eq!(
+                result.value(0),
+                if checkout.is_none() { b"A" } else { b"a" }
+            );
+            for ranges in [
+                vec![BlobRangeRequest::new(10, 4, 2)],
+                vec![BlobRangeRequest::new(99, 0, 1)],
+            ] {
+                assert!(matches!(
+                    table.fetch_blob_ranges("image", ranges).await.unwrap_err(),
+                    lancedb::Error::InvalidInput { .. }
+                ));
+            }
+            assert!(
+                !server
+                    .calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|(path, _)| path == ROUTE)
+            );
+        }
     }
 }
 
@@ -281,7 +436,7 @@ async fn public_ranges_partition_bytes_and_reassemble_large_single_range() {
 
 #[tokio::test]
 async fn public_ranges_reject_malformed_responses_and_http_failures_without_fallback() {
-    for case in 0..15 {
+    for case in 0..16 {
         let server = Server::new(move |body, call| {
             let mut response = serve_ranges(body, 7);
             // Fail after one successful partition to prove no partial success.
@@ -304,11 +459,11 @@ async fn public_ranges_reject_malformed_responses_and_http_failures_without_fall
                 7 => response = reply(vec![Some(vec![])], 7),
                 8 => response.version = None,
                 9 => response.version = Some(8),
-                10..=13 => {
-                    response.status = [401, 403, 404, 500][case - 10];
+                10..=14 => {
+                    response.status = [401, 403, 404, 429, 500][case - 10];
                     response.body = b"ordinary failure".to_vec();
                 }
-                14 => response.status = 0,
+                15 => response.status = 0,
                 _ => unreachable!(),
             }
             response
@@ -355,12 +510,10 @@ async fn public_ranges_validate_locally_and_propagate_server_range_errors() {
             .contains("overflows u64")
     );
     assert_eq!(server.calls.lock().unwrap().len(), before);
-    assert!(
-        table
-            .fetch_blob_ranges("image", [BlobRangeRequest::new(10, 9, 2)])
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("range exceeds")
-    );
+    let error = table
+        .fetch_blob_ranges("image", [BlobRangeRequest::new(10, 9, 2)])
+        .await
+        .unwrap_err();
+    assert!(matches!(error, lancedb::Error::InvalidInput { .. }));
+    assert!(error.to_string().contains("range exceeds"));
 }

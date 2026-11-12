@@ -2,13 +2,20 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import { createHash } from "crypto";
+import { getEventListeners } from "events";
 import { createReadStream } from "fs";
 import * as http from "http";
 import { AddressInfo } from "net";
 import {
   Table as ArrowTable,
   Binary,
+  Field,
   LargeBinary,
+  Struct,
+  Uint8,
+  Uint32,
+  Uint64,
+  Utf8,
   tableToIPC,
   vectorFromArray,
 } from "apache-arrow";
@@ -41,7 +48,10 @@ function payload(row: number, offset: number, length: number, version: number) {
 async function withRangeServer(
   run: (db: Connection, calls: Request[], paths: string[]) => Promise<void>,
   fault?: string | number,
+  capability: string | null = "1",
+  onStall?: () => void,
 ) {
+  let takes = 0;
   const calls: Request[] = [];
   const paths: string[] = [];
   const server = http.createServer((req, res) => {
@@ -53,7 +63,10 @@ async function withRangeServer(
     ) {
       res.writeHead(200, {
         "Content-Type": "application/json",
-        "phalanx-version": "0.5.0",
+        "phalanx-version": "1.13.0-beta.0",
+        ...(req.url.endsWith("/describe/") && capability !== null
+          ? { "x-lancedb-blob-ranges": capability }
+          : {}),
       });
       const response = req.url.endsWith("branches/list/")
         ? {
@@ -70,8 +83,27 @@ async function withRangeServer(
       res.end(JSON.stringify(response));
       return;
     }
+    if (capability !== "1" && req.method === "GET") {
+      const url = new URL(req.url!, "http://localhost");
+      expect(url.searchParams.get("branch")).toBe("experiment");
+      expect(url.searchParams.get("version")).toBe("3");
+      const [start, end] = req.headers.range!.slice(6).split("-").map(Number);
+      const bytes = Buffer.from("alpha").subarray(start, end + 1);
+      res
+        .writeHead(206, {
+          "Content-Range": `bytes ${start}-${end}/5`,
+          "Content-Length": bytes.length,
+          "x-lancedb-version": "3",
+        })
+        .end(bytes);
+      return;
+    }
     expect(req.method).toBe("POST");
-    expect(req.url).toBe("/v1/table/test/fetch_blob_ranges/");
+    expect(req.url).toBe(
+      capability === "1"
+        ? "/v1/table/test/fetch_blob_ranges/"
+        : "/v1/table/test/query/",
+    );
     const chunks: Buffer[] = [];
     let size = 0;
     req.on("data", (chunk: Buffer) => {
@@ -80,6 +112,54 @@ async function withRangeServer(
       chunks.push(chunk);
     });
     req.on("end", () => {
+      if (capability !== "1") {
+        const body = JSON.parse(Buffer.concat(chunks).toString()) as {
+          branch: string;
+          version: number;
+          filter: string;
+        };
+        expect(body.branch).toBe("experiment");
+        expect(body.version).toBe(3);
+        takes++;
+        const ids = (body.filter.match(/\d+/g) ?? [])
+          .map(Number)
+          .filter((id) => [10, 20, 40].includes(id))
+          .reverse();
+        const descriptor = new Struct([
+          new Field("kind", new Uint8(), false),
+          new Field("position", new Uint64(), false),
+          new Field("size", new Uint64(), false),
+          new Field("blob_id", new Uint32(), false),
+          new Field("blob_uri", new Utf8(), false),
+        ]);
+        const arrow = new ArrowTable({
+          image: vectorFromArray(
+            ids.map((id) =>
+              id === 20
+                ? null
+                : {
+                    kind: 0,
+                    position: 0n,
+                    size: id === 40 ? 0n : 5n,
+                    // biome-ignore lint/style/useNamingConvention: Arrow descriptor field.
+                    blob_id: 0,
+                    // biome-ignore lint/style/useNamingConvention: Arrow descriptor field.
+                    blob_uri: "",
+                  },
+            ),
+            descriptor,
+          ),
+          _rowid: vectorFromArray(ids.map(BigInt), new Uint64()),
+        });
+        expect(takes).toBeGreaterThan(0);
+        res
+          .writeHead(200, {
+            "Content-Type": "application/vnd.apache.arrow.stream",
+            "x-lancedb-version": "3",
+          })
+          .end(tableToIPC(arrow, "stream"));
+        return;
+      }
       const body = JSON.parse(Buffer.concat(chunks).toString()) as Request;
       calls.push(body);
       expect(body.column).toBe("image");
@@ -90,6 +170,15 @@ async function withRangeServer(
       ).toBeLessThanOrEqual(64 * MIB);
       const version = body.version ?? (calls.length === 1 ? 7 : 8);
       const failure = calls.length > 1 ? fault : undefined;
+      if (failure === "stall" && calls.length === 2) {
+        res.writeHead(200, {
+          "Content-Type": "application/vnd.apache.arrow.stream",
+          "x-lancedb-version": "7",
+        });
+        res.flushHeaders();
+        onStall?.();
+        return;
+      }
       if (typeof failure === "number") {
         res.writeHead(failure).end("ordinary server failure");
         return;
@@ -133,7 +222,8 @@ async function withRangeServer(
     apiKey: "fake",
     hostOverride: `http://127.0.0.1:${port}`,
     clientConfig: {
-      retryConfig: { retries: 0, connectRetries: 0, readRetries: 0 },
+      retryConfig: { retries: 2, connectRetries: 2, readRetries: 2 },
+      blobRequestConcurrency: 1,
       timeoutConfig: { timeout: 20 },
     },
   });
@@ -152,6 +242,102 @@ async function open(db: Connection, version?: number): Promise<Table> {
 }
 
 describe("fetchBlobRanges", () => {
+  it.each([null, "0", "2"])(
+    "uses old routes before data requests for capability %s",
+    async (capability) => {
+      await withRangeServer(
+        async (db, calls, paths) => {
+          // Reopening exercises both the initial and cached database describe paths.
+          for (let i = 0; i < 2; i++) {
+            const table = await open(db, 3);
+            const requests = [
+              { rowId: 10n, offset: 1n, length: 3n },
+              { rowId: 20n, offset: 0n, length: 1n },
+              { rowId: 40n, offset: 0n, length: 0n },
+              { rowId: 10n, offset: 5n, length: 0n },
+              { rowId: 10n, offset: 1n, length: 3n },
+            ];
+            expect(await table.fetchBlobRanges("image", requests)).toEqual([
+              Buffer.from("lph"),
+              null,
+              Buffer.alloc(0),
+              Buffer.alloc(0),
+              Buffer.from("lph"),
+            ]);
+            for (const row of [
+              { rowId: 10n, offset: 4n, length: 2n },
+              { rowId: 99n, offset: 0n, length: 1n },
+            ])
+              await expect(
+                table.fetchBlobRanges("image", [row]),
+              ).rejects.toThrow();
+            const before = paths.length;
+            expect(await table.fetchBlobRanges("image", [])).toEqual([]);
+            expect(paths).toHaveLength(before);
+          }
+          expect(calls).toHaveLength(0);
+          expect(paths.some((path) => path.includes("fetch_blob_ranges"))).toBe(
+            false,
+          );
+        },
+        undefined,
+        capability,
+      );
+    },
+  );
+
+  it("renegotiates advertised support when reopening a cached table", async () => {
+    await withRangeServer(async (db, calls) => {
+      for (let i = 0; i < 2; i++) {
+        const table = await open(db);
+        expect(
+          await table.fetchBlobRanges("image", [
+            { rowId: 10n, offset: 0n, length: 1n },
+          ]),
+        ).toEqual([payload(10, 0, 1, i === 0 ? 7 : 8)]);
+      }
+      expect(calls).toHaveLength(2);
+    });
+  });
+
+  it("cancels while waiting for a later response body and releases the only permit", async () => {
+    let markStalled!: () => void;
+    const stalled = new Promise<void>((resolve) => {
+      markStalled = resolve;
+    });
+    await withRangeServer(
+      async (db, calls) => {
+        const table = await open(db);
+        const controller = new AbortController();
+        const pending = table.fetchBlobRanges(
+          "image",
+          Array.from({ length: 2049 }, () => ({
+            rowId: 10n,
+            offset: 0n,
+            length: 1n,
+          })),
+          { signal: controller.signal },
+        );
+        const rejected = expect(pending).rejects.toMatchObject({
+          name: "AbortError",
+        });
+        await stalled;
+        controller.abort();
+        await rejected;
+        expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
+        expect(calls).toHaveLength(2);
+        expect(
+          await table.fetchBlobRanges("image", [
+            { rowId: 10n, offset: 0n, length: 1n },
+          ]),
+        ).toEqual([payload(10, 0, 1, 8)]);
+        expect(calls).toHaveLength(3);
+      },
+      "stall",
+      "1",
+      () => markStalled(),
+    );
+  });
   it.each([undefined, 3])(
     "preserves order, nulls, duplicates and snapshot (checkout %s)",
     async (version) => {
@@ -245,6 +431,7 @@ describe("fetchBlobRanges", () => {
     401,
     403,
     404,
+    429,
     500,
   ])("rejects the whole call after a later %s failure", async (fault) => {
     await withRangeServer(async (db, calls, paths) => {
