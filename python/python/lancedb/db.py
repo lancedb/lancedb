@@ -67,7 +67,7 @@ from .graph import (
     PropertyGraph,
     _definition_json,
 )
-from .job import AsyncJob, Job, _typed_job
+from .job import AsyncJob, Job, _opened_job, _typed_job
 from .storage_integration import SecretReference, StorageIntegrationInfo
 from .sql import AsyncQuery as AsyncSqlQuery
 from .sql import Query as SqlQuery
@@ -1449,6 +1449,12 @@ class DBConnection(EnforceOverrides):
         The returned [Job][lancedb.job.Job] answers for its own state,
         specification, result, failure and event history, so there is no
         separate connection-level call for any of them.
+
+        For a column refresh, ``wait()`` returns a
+        [RefreshColumnResult][lancedb.functions.RefreshColumnResult], including
+        when the refresh was started through SQL. Other job types return
+        ``None`` from ``wait()``; their persisted result is available through
+        ``job.result`` after ``job.refresh()``.
 
         Raises `JobNotFoundError` when the server has no such job, the way
         `open_table` does for a missing table.
@@ -3626,7 +3632,7 @@ class AsyncConnection(object):
         """Open a server-side job by id. See
         [DBConnection.open_job][lancedb.db.DBConnection.open_job].
         """
-        return AsyncJob(await self._inner.open_job(job_id))
+        return _opened_job(await self._inner.open_job(job_id))
 
     async def list_gpu_classes(self) -> List[GpuClass]:
         """List configured Function GPU classes. See
