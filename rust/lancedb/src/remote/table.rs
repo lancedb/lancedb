@@ -13159,7 +13159,7 @@ mod tests {
 
     #[rstest]
     #[case("my_index-1..v2", "my_index-1..v2")]
-    #[case("café_idx", "caf%C3%A9_idx")]
+    #[case("café_idx", "caf%C3%A9_idx")] // spellchecker:disable-line
     #[case("my/index", "my%2Findex")]
     #[case("my\\index", "my%5Cindex")]
     #[case("%2e%2e", "%252e%252e")]
