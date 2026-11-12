@@ -2,7 +2,9 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from datetime import timedelta
 import json
+import warnings
 
 import pytest
 
@@ -62,6 +64,7 @@ def test_catalog_sync_scope_and_serialization(catalog_server):
         endpoint,
         api_key="secret",
         sql_host_override="invalid://localhost",
+        storage_options={"azure_storage_account_name": "catalog-account"},
         client_config={
             "extra_headers": {
                 "X-LanceDB-Database": "wrong",
@@ -80,6 +83,7 @@ def test_catalog_sync_scope_and_serialization(catalog_server):
     assert db.table_names() == []
     restored = lancedb.deserialize_conn(db.serialize())
     assert restored.sql_host_override == "invalid://localhost"
+    assert restored.storage_options == {"azure_storage_account_name": "catalog-account"}
     for connection in (db, restored):
         with pytest.raises(ValueError, match="sql_host_override must use"):
             connection.execute_query_async("SELECT 1")
@@ -98,6 +102,7 @@ def test_catalog_sync_scope_and_serialization(catalog_server):
         )
         assert "x-lancedb-database-prefix" not in headers
         assert headers["x-api-key"] == "secret"
+        assert headers["x-azure-storage-account-name"] == "catalog-account"
 
 
 @pytest.mark.asyncio
@@ -114,7 +119,9 @@ async def test_catalog_async_and_errors(catalog_server):
         ]
     )
     catalog = await lancedb.connect_catalog_async(
-        endpoint, sql_host_override="invalid://localhost"
+        endpoint,
+        sql_host_override="invalid://localhost",
+        storage_options={"account_name": "async-account"},
     )
     assert isinstance(catalog, lancedb.AsyncCatalog)
     db = await catalog.connect_database("analytics")
@@ -130,12 +137,179 @@ async def test_catalog_async_and_errors(catalog_server):
         await catalog.drop_database("full")
     await catalog.drop_database("missing", ignore_missing=True)
     assert requests[4][2] == {"mode": "Fail", "behavior": "Restrict"}
+    for _, headers, _ in requests:
+        headers = {key.lower(): value for key, value in headers.items()}
+        assert headers["x-azure-storage-account-name"] == "async-account"
 
 
 @pytest.mark.parametrize("endpoint", ["/tmp/catalog", "s3://bucket", "db://db"])
 def test_catalog_requires_remote_endpoint(endpoint):
     with pytest.raises(ValueError, match="endpoint"):
         lancedb.connect_catalog(endpoint)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("region", ["us-east-1", "not-a-region"])
+@pytest.mark.asyncio
+async def test_catalog_accepts_database_connection_settings(
+    catalog_server, asynchronous, region
+):
+    endpoint, requests, responses = catalog_server
+    responses.extend([(200, {"namespaces": []}), (200, {"tables": []})])
+    settings = {
+        "uri": "db://analytics",
+        "api_key": "shared-secret",
+        "region": region,
+        "host_override": endpoint,
+        "sql_host_override": "invalid://localhost",
+        "read_consistency_interval": timedelta(seconds=5),
+        "client_config": {"extra_headers": {"x-shared-setting": "shared"}},
+        "storage_options": {"azure_storage_account_name": "shared-account"},
+        "session": None,
+        "manifest_enabled": False,
+        "namespace_client_properties": None,
+    }
+    if not asynchronous:
+        settings.update(
+            request_thread_pool=None,
+            namespace_client_impl=None,
+            namespace_client_pushdown_operations=None,
+        )
+    with pytest.warns(
+        UserWarning, match="region is ignored by connect_catalog"
+    ) as caught:
+        catalog = (
+            await lancedb.connect_catalog_async(**settings)
+            if asynchronous
+            else lancedb.connect_catalog(**settings)
+        )
+    assert len(caught) == 1
+    assert catalog.uri == endpoint
+    assert (
+        [name async for name in catalog.list_databases()]
+        if asynchronous
+        else list(catalog.list_databases())
+    ) == []
+    db = (
+        await lancedb.connect_async(**settings)
+        if asynchronous
+        else lancedb.connect(**settings)
+    )
+    assert (await db.table_names() if asynchronous else db.table_names()) == []
+    root_headers = {key.lower(): value for key, value in requests[0][1].items()}
+    db_headers = {key.lower(): value for key, value in requests[1][1].items()}
+    for headers in (root_headers, db_headers):
+        assert headers["x-api-key"] == "shared-secret"
+        assert headers["x-shared-setting"] == "shared"
+        assert headers["x-azure-storage-account-name"] == "shared-account"
+    assert "x-lancedb-database" not in root_headers
+    assert db_headers["x-lancedb-database"] == "analytics"
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("host_only", [False, True])
+@pytest.mark.asyncio
+async def test_catalog_default_region_is_silent_and_api_key_uses_environment(
+    catalog_server, monkeypatch, asynchronous, host_only
+):
+    endpoint, requests, responses = catalog_server
+    monkeypatch.setenv("LANCEDB_API_KEY", "environment-secret")
+    responses.extend([(200, {}), (200, {"tables": []})])
+    settings = {"host_override": endpoint} if host_only else {"uri": endpoint}
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        catalog = (
+            await lancedb.connect_catalog_async(**settings)
+            if asynchronous
+            else lancedb.connect_catalog(**settings)
+        )
+    assert caught == []
+    assert catalog.uri == endpoint
+    db = (
+        await catalog.connect_database("analytics")
+        if asynchronous
+        else catalog.connect_database("analytics")
+    )
+    if not asynchronous:
+        db = lancedb.deserialize_conn(db.serialize())
+    assert (await db.table_names() if asynchronous else db.table_names()) == []
+    for _, headers, _ in requests:
+        headers = {key.lower(): value for key, value in headers.items()}
+        assert headers["x-api-key"] == "environment-secret"
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.asyncio
+async def test_catalog_host_override_selects_endpoint(catalog_server, asynchronous):
+    endpoint, _, _ = catalog_server
+    settings = {"uri": "https://unused.example", "host_override": endpoint}
+    catalog = (
+        await lancedb.connect_catalog_async(**settings)
+        if asynchronous
+        else lancedb.connect_catalog(**settings)
+    )
+    assert catalog.uri == endpoint
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize(
+    "options, message",
+    [
+        ({}, "uri or host_override is required"),
+        ({"session": object()}, "session"),
+        ({"manifest_enabled": True}, "manifest_enabled"),
+        ({"namespace_client_properties": {}}, "namespace_client_properties"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_catalog_rejects_unsupported_connection_settings(
+    catalog_server, asynchronous, options, message
+):
+    _, requests, _ = catalog_server
+    error = NotImplementedError if options else ValueError
+    with pytest.raises(error, match=message):
+        if asynchronous:
+            await lancedb.connect_catalog_async(**options)
+        else:
+            lancedb.connect_catalog(**options)
+    assert requests == []
+
+
+@pytest.mark.parametrize(
+    "options, error, message",
+    [
+        (
+            {"namespace_client_impl": "dir"},
+            NotImplementedError,
+            "namespace_client_impl",
+        ),
+        (
+            {"namespace_client_pushdown_operations": []},
+            NotImplementedError,
+            "namespace_client_pushdown_operations",
+        ),
+        ({"unknown_option": True}, ValueError, "Unknown keyword arguments"),
+    ],
+)
+def test_catalog_rejects_unsupported_sync_settings(options, error, message):
+    with pytest.raises(error, match=message):
+        lancedb.connect_catalog(**options)
+
+
+def test_catalog_accepts_deprecated_sync_settings(catalog_server):
+    endpoint, _, responses = catalog_server
+    responses.append((200, {}))
+    with pytest.warns(DeprecationWarning) as caught:
+        catalog = lancedb.connect_catalog(
+            endpoint,
+            request_thread_pool=2,
+            connection_timeout=5,
+            read_timeout=10,
+        )
+    assert len(caught) == 3
+    db = catalog.connect_database("analytics")
+    assert db.client_config.timeout_config.connect_timeout == timedelta(seconds=5)
+    assert db.client_config.timeout_config.read_timeout == timedelta(seconds=10)
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])

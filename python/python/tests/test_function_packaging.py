@@ -20,7 +20,7 @@ import pyarrow as pa
 import pytest
 
 from lancedb import col
-from lancedb.functions import FunctionDefinition, FunctionVersion, function
+from lancedb.functions import FunctionDefinition, FunctionVersion, function, udf
 
 FIXTURES = (
     Path(__file__).parents[3]
@@ -125,6 +125,108 @@ def test_function_without_initialization_keeps_its_wire_form():
     request = json.loads(double.registration_request.to_canonical_json())
     assert "initialization" not in request["signature"]
     assert request["artifact"]["kind"] == "python_callable"
+
+
+@pytest.mark.filterwarnings("ignore:lancedb.udf is deprecated:DeprecationWarning")
+@pytest.mark.parametrize("decorator", [function, udf])
+@pytest.mark.parametrize("explicit_schemas", [False, True])
+@pytest.mark.parametrize("class_function", [False, True])
+@pytest.mark.parametrize(
+    ("declaration", "statement"),
+    [
+        ("def", "yield value"),
+        ("def", "yield from [value]"),
+        ("async def", "yield value"),
+    ],
+)
+def test_generator_functions_are_rejected_at_decoration(
+    helper_package, decorator, explicit_schemas, class_function, declaration, statement
+):
+    signature = (
+        "__call__(self, value: int)" if class_function else "generates(value: int)"
+    )
+    source = f"{declaration} {signature} -> int:\n    {statement}\n"
+    if class_function:
+        source = "class generates:\n" + textwrap.indent(source, "    ")
+    module = helper_package("fx_generator", {"__init__.py": source})
+    options = (
+        {
+            "input_schema": pa.schema([pa.field("value", pa.int64(), nullable=False)]),
+            "output_schema": pa.int64(),
+        }
+        if explicit_schemas
+        else {}
+    )
+    with pytest.raises(TypeError) as error:
+        decorator(**options)(module.generates)
+    message = str(error.value)
+    assert "generator Functions are not supported" in message
+    assert "return a value" in message
+    assert "return a list" in message
+
+
+@pytest.mark.filterwarnings("ignore:lancedb.udf is deprecated:DeprecationWarning")
+@pytest.mark.parametrize("decorator", [function, udf])
+@pytest.mark.parametrize("explicit_name", [False, True])
+def test_lambda_functions_explain_the_named_alternative(decorator, explicit_name):
+    options = {"name": "double"} if explicit_name else {}
+    with pytest.raises(TypeError, match="lambda.*use a named def"):
+        decorator(**options)(lambda value: value * 2)
+
+
+@pytest.mark.parametrize("class_function", [False, True])
+@pytest.mark.parametrize("cache_decorator", ["lru_cache", "cache"])
+def test_cached_functions_explain_where_to_keep_caches(
+    helper_package, class_function, cache_decorator
+):
+    signature = "__call__(self, value: int)" if class_function else "cached(value: int)"
+    source = (
+        f"@functools.{cache_decorator}\ndef {signature} -> int:\n    return value * 2\n"
+    )
+    if class_function:
+        source = "class cached:\n" + textwrap.indent(source, "    ")
+    module = helper_package("fx_cached", {"__init__.py": "import functools\n" + source})
+    with pytest.raises(TypeError) as error:
+        function(module.cached)
+    message = str(error.value)
+    assert "decorated wrappers are not supported" in message
+    assert "inside the function body" in message
+    assert "class Function with a cache in __init__" in message
+
+
+@pytest.mark.parametrize("class_function", [False, True])
+@pytest.mark.parametrize("keyword_only", [False, True])
+def test_callable_defaults_explain_class_initialization(
+    helper_package, class_function, keyword_only
+):
+    parameters = "value: float, " + ("*, " if keyword_only else "")
+    parameters += "threshold: float = 0.5"
+    signature = (
+        f"__call__(self, {parameters})"
+        if class_function
+        else f"thresholded({parameters})"
+    )
+    source = f"def {signature} -> bool:\n    return value >= threshold\n"
+    if class_function:
+        source = "class thresholded:\n" + textwrap.indent(source, "    ")
+    module = helper_package("fx_defaults", {"__init__.py": source})
+    with pytest.raises(TypeError) as error:
+        function(module.thresholded)
+    message = str(error.value)
+    assert "defaults are not supported: 'threshold'" in message
+    assert "class Function's __init__" in message
+    assert "binding-time initialization values" in message
+
+
+def test_function_can_return_a_list_from_a_generator_expression():
+    @function
+    def many(value: int) -> list[int]:
+        return list(item * 2 for item in range(value))
+
+    namespace = {}
+    exec(compile(artifact(many), "user_function.py", "exec"), namespace)
+    assert namespace["many"](3) == [0, 2, 4]
+    assert many.registration_request.signature.output.arrow_type == "list<int64>"
 
 
 @pytest.mark.parametrize("kind", ["function", "class"])

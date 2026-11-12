@@ -44,8 +44,8 @@ use super::client::{
     ClientConfig, HeaderProvider, HttpSend, ID_DELIMITER, RequestResultExt, RestfulLanceDbClient,
     Sender,
 };
-use super::sql::SqlClient;
 use super::sql::materialized_view::quote_identifier;
+use super::sql::{SecretWriteOperation, SqlClient};
 use super::storage_integration as integration_sql;
 use super::table::RemoteTable;
 use super::util::parse_server_version;
@@ -385,7 +385,7 @@ impl RemoteDatabase {
                 sql: options.sql_host_override.clone(),
             },
             config,
-            RemoteOptions::default(),
+            StorageOptions(options.storage_options.clone()).into(),
             options.read_consistency_interval,
             super::client::ParsedDbUrl {
                 db_name: name.unwrap_or("").to_string(),
@@ -1044,11 +1044,17 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         name: &str,
         value: &str,
         namespace_path: &[String],
+        exist_ok: bool,
     ) -> Result<()> {
         crate::utils::validate_secret_name(name)?;
         validate_namespace(namespace_path)?;
         self.sql_client()?
-            .write_secret(name, value, namespace_path, true)
+            .write_secret(
+                name,
+                value,
+                namespace_path,
+                SecretWriteOperation::Create { exist_ok },
+            )
             .await
             .map_err(direct_catalog_resource_error)
     }
@@ -1056,7 +1062,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         crate::utils::validate_secret_name(name)?;
         validate_namespace(namespace_path)?;
         self.sql_client()?
-            .write_secret(name, value, namespace_path, false)
+            .write_secret(name, value, namespace_path, SecretWriteOperation::Alter)
             .await
             .map_err(direct_catalog_resource_error)
     }

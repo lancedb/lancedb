@@ -58,8 +58,8 @@ def test_legacy_table_replace_field_metadata(legacy_table):
     ]
 
 
-def respond(request, body):
-    request.send_response(200)
+def respond(request, body, status=200):
+    request.send_response(status)
     request.send_header("Content-Type", "application/json")
     request.end_headers()
     request.wfile.write(json.dumps(body).encode())
@@ -78,12 +78,20 @@ def test_remote_unsupported_properties(attribute):
 
 
 @pytest.mark.parametrize("tables", [[], ["first", "last"]])
-def test_remote_len_and_contains_follow_pages(tables):
+def test_remote_len_paginates_and_contains_looks_up_table(tables):
     requests = []
 
     def handler(request):
         requests.append(request.path)
-        query = parse_qs(urlparse(request.path).query)
+        url = urlparse(request.path)
+        if request.command == "POST":
+            name = url.path.split("/")[3]
+            assert url.path == f"/v1/table/{name}/describe/"
+            respond(request, {}, status=200 if name in tables else 404)
+            return
+        assert request.command == "GET"
+        assert url.path == "/v1/namespace/$/table/list"
+        query = parse_qs(url.query)
         if tables and "page_token" not in query:
             respond(request, {"tables": [tables[0]], "page_token": "opaque-next"})
         else:
@@ -93,11 +101,12 @@ def test_remote_len_and_contains_follow_pages(tables):
 
     with mock_lancedb_connection(handler) as db:
         assert len(db) == len(tables)
-        assert ("last" in db) == bool(tables)
-        assert "missing" not in db
+        assert len(requests) == (2 if tables else 1)
         requests.clear()
-        assert ("first" in db) == bool(tables)
-        assert len(requests) == 1
+        for name in ("last", "missing", "first"):
+            assert (name in db) is (name in tables)
+            assert requests == [f"/v1/table/{name}/describe/"]
+            requests.clear()
 
 
 @pytest.mark.parametrize("namespace", [[], ["parent", "child"]])
