@@ -495,6 +495,35 @@ class PythonRuntimeSpec(_RemoteValue):
             object.__setattr__(self, "gpu_class", None)
         return self
 
+    @property
+    def digest(self) -> str:
+        """SHA-256 identity of the declared runtime, before building an image.
+
+        Covers Python version, environment sources, environment variables, and
+        GPU settings. Package and system-package order is ignored; conda channel
+        order is preserved. Compare with ``runtime_digest`` on
+        [FunctionVersion][lancedb.functions.FunctionVersion].
+        This identifies build inputs, not the resolved contents of unpinned
+        dependencies or the deployment's default base image.
+        """
+        if self.kind not in {"python", "python_v2"}:
+            raise ValueError(f"cannot digest unknown runtime kind {self.kind!r}")
+        value = self._known_dict()
+        if not value.get("env"):
+            value.pop("env", None)
+        environment = value["environment"]
+        for field in ("packages", "system_packages"):
+            if field in environment:
+                environment[field] = sorted(environment[field])
+        encoded = json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
 
 class FunctionImage(_RemoteValue):
     """A complete OCI Function image identified by its exact manifest digest."""
@@ -536,7 +565,16 @@ class FunctionVersion(_RemoteValue):
     of the built ``image``. Compare it with
     ``definition.registration_request.artifact.digest`` to check whether a local
     [FunctionDefinition][lancedb.functions.FunctionDefinition] has the same source.
+    It does not cover dependencies, environment variables, Python version, or
+    GPU settings. Equal source digests alone do not mean a version can be reused.
     It is ``None`` when the server does not provide a source digest.
+
+    ``runtime_digest`` identifies the declared environment inputs. Compare it
+    with ``definition.registration_request.runtime.digest`` to check whether
+    the local runtime matches. It is ``None`` for images built before runtime
+    identity was exposed. A missing digest cannot establish a match. Reusing a
+    version also requires matching the source and all other registration inputs,
+    including signature, Secret bindings, models, and execution controls.
 
     ``gpu_class`` is the operator-defined GPU pool fixed into this Function
     version, or ``None`` when registration used the deployment default.
@@ -554,6 +592,7 @@ class FunctionVersion(_RemoteValue):
     version: _ObjectVersion
     image: FunctionImage
     source_digest: Optional[str] = None
+    runtime_digest: Optional[str] = None
     signature: FunctionSignature
     secret_bindings: tuple[SecretBinding, ...] = ()
     created_at_millis: int

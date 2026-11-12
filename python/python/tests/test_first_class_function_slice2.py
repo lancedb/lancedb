@@ -1891,6 +1891,29 @@ def test_annotation_and_explicit_schema_validation_fail_closed():
                 return value
 
 
+def test_default_function_runtime_matches_server_identity():
+    definition = function(python_version="3.12")(analyze_caption.__wrapped__)
+    runtime = definition.registration_request.runtime
+    assert runtime.env == {}
+    cases = json.loads((FIXTURES / "runtime_identity.json").read_text(encoding="utf-8"))
+    expected = next(
+        case["digest"] for case in cases if case["name"] == "empty-environment"
+    )
+    assert runtime.digest == expected
+
+
+def test_environment_changes_do_not_change_source_identity():
+    definition = function(
+        pip=["openai==3.46.0"],
+        env={"MODE": "test"},
+        python_version="3.12",
+    )(analyze_caption.__wrapped__)
+    previous = analyze_caption.registration_request
+    changed = definition.registration_request
+    assert previous.artifact.digest == changed.artifact.digest
+    assert previous.runtime.digest != changed.runtime.digest
+
+
 def test_local_function_catalog_operations_are_not_supported(tmp_path):
     db = lancedb.connect(tmp_path)
     message = "Function catalog operations are not supported by this database"
@@ -1950,6 +1973,7 @@ async def test_async_catalog_path_preserves_execution_controls():
         (FIXTURES / "remote_function_version.canonical.json").read_text()
     )
     definition.update(
+        runtime_digest=normalize_score.registration_request.runtime.digest,
         batch_size=12,
         row_timeout_seconds=8.0,
         result_stability="input_and_context",
@@ -1977,6 +2001,7 @@ def test_sync_catalog_path_preserves_execution_controls():
         (FIXTURES / "remote_function_version.canonical.json").read_text()
     )
     definition.update(
+        runtime_digest=normalize_score.registration_request.runtime.digest,
         batch_size=12,
         row_timeout_seconds=8.0,
         result_stability="input_and_context",
@@ -2090,6 +2115,9 @@ def _mock_remote_function_catalog():
                     )["image"],
                     "signature": body["signature"],
                     "source_digest": body["artifact"]["digest"],
+                    "runtime_digest": PythonRuntimeSpec.from_json(
+                        json.dumps(body["runtime"])
+                    ).digest,
                     "secret_bindings": body.get("secret_bindings", []),
                     "created_at_millis": 1787270400000,  # 2026-08-21T00:00:00Z
                 }
