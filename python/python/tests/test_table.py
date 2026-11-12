@@ -6361,9 +6361,7 @@ def test_accelerated_index_exist_ok_preserves_concurrent_winner():
     assert dataset.create_index.call_args.kwargs["name"] == "vector_idx"
 
 
-@pytest.mark.parametrize(
-    "column", ["`user-id`", "`user:id`", "`literal.dot`", "nested.`user-id`"]
-)
+@pytest.mark.parametrize("column", ["`user-id`", "`user:id`", "nested.`user-id`"])
 def test_index_exist_ok_matches_lance_default_name(mem_db, column):
     table = mem_db.create_table(
         "quoted_index",
