@@ -37,6 +37,7 @@ pyo3-async-runtimes = { version = "0.29", features = [
     "tokio-runtime",
 ] }
 reqwest.workspace = true
+rattler_conda_types = { version = "0.58.3", default-features = false }
 pin-project.workspace = true
 futures.workspace = true
 serde.workspace = true
