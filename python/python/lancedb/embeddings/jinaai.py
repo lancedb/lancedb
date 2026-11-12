@@ -14,9 +14,9 @@ import numpy as np
 import pyarrow as pa
 
 from ..util import attempt_import_or_raise
-from .base import EmbeddingFunction
+from .base import ImageEmbeddingFunction
 from .registry import register
-from .utils import api_key_not_found_help, TEXT, IMAGES, url_retrieve
+from .utils import api_key_not_found_help, TEXT, IMAGES
 
 if TYPE_CHECKING:
     import PIL
@@ -33,7 +33,7 @@ def is_valid_url(text):
 
 
 @register("jina")
-class JinaEmbeddings(EmbeddingFunction):
+class JinaEmbeddings(ImageEmbeddingFunction):
     """
     An embedding function that uses the Jina API
 
@@ -82,8 +82,9 @@ class JinaEmbeddings(EmbeddingFunction):
                     inputs = [inputs]
         return inputs
 
-    @staticmethod
-    def _generate_image_input_dict(image: Union[str, bytes, "PIL.Image.Image"]) -> Dict:
+    def _generate_image_input_dict(
+        self, image: Union[str, bytes, "PIL.Image.Image"]
+    ) -> Dict:
         if isinstance(image, bytes):
             image_dict = {"image": base64.b64encode(image).decode("utf-8")}
         elif isinstance(image, (str, Path)):
@@ -95,8 +96,10 @@ class JinaEmbeddings(EmbeddingFunction):
                 # A Windows drive letter parses as a one-character scheme
                 # ("C:\\img.png" -> scheme="c"), so treat it as a local path.
                 pil_image = PIL_Image.open(image if os.name == "nt" else parsed.path)
-            elif parsed.scheme.startswith("http"):
-                pil_image = PIL_Image.open(io.BytesIO(url_retrieve(image)))
+            elif parsed.scheme in ("http", "https"):
+                pil_image = PIL_Image.open(
+                    io.BytesIO(self._fetch_image_url(str(image)))
+                )
             else:
                 raise NotImplementedError("Only local and http(s) urls are supported")
             buffered = io.BytesIO()

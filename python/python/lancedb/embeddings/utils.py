@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import weakref
 import logging
@@ -376,9 +377,9 @@ def _is_non_retryable_error(error: Exception) -> bool:
     if error_type == "AuthenticationError":
         return True
 
-    # A missing API key or a missing optional dependency fails the same way on
-    # every attempt
-    if isinstance(error, (MissingApiKeyError, ImportError)):
+    # Missing credentials/dependencies and image download policy failures will
+    # fail the same way on every attempt.
+    if isinstance(error, (MissingApiKeyError, ImportError, _ImageDownloadError)):
         return True
 
     status = _get_http_status(error)
@@ -397,18 +398,76 @@ def _is_non_retryable_error(error: Exception) -> bool:
     return True
 
 
-def url_retrieve(url: str):
+class _ImageDownloadError(ValueError):
+    """A permanent failure to fetch an image under the configured policy."""
+
+
+def _validate_image_url(url: str):
+    if urllib.parse.urlsplit(url).scheme not in ("http", "https"):
+        raise _ImageDownloadError("Image downloads only support http and https URLs")
+
+
+class _HTTPOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # urllib drains redirect bodies with an unbounded read before following
+        # them. Close the HTTPResponse first so that read returns empty bytes.
+        # We do not reuse the connection or need the redirect's body.
+        fp.close()
+        _validate_image_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def url_retrieve(
+    url: str, *, timeout: float = 10.0, max_bytes: int = 50 * 1024 * 1024
+) -> bytes:
     """
+    Download an HTTP(S) image with bounded reads, including after redirects.
+
     Parameters
     ----------
     url: str
         URL to download from
+    timeout: float, default 10
+        Positive, finite socket timeout in seconds for connecting and reading.
+        This is an inactivity timeout, not a total download deadline.
+    max_bytes: int, default 52428800
+        Maximum response size in bytes (50 MiB). The response is read in chunks
+        and rejected with ValueError if it exceeds this limit, even when its
+        Content-Length header is missing or incorrect.
     """
+    _validate_image_url(url)
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise _ImageDownloadError("Image download timeout must be positive and finite")
+    if not isinstance(max_bytes, int) or max_bytes <= 0:
+        raise _ImageDownloadError("Image download max_bytes must be a positive integer")
+
+    opener = urllib.request.build_opener(_HTTPOnlyRedirectHandler())
     try:
-        with urllib.request.urlopen(url) as conn:
-            return conn.read()
-    except (socket.gaierror, urllib.error.URLError) as err:
-        raise ConnectionError("could not download {} due to {}".format(url, err))
+        with opener.open(url, timeout=timeout) as conn:
+            try:
+                content_length = int(conn.headers.get("Content-Length", ""))
+            except ValueError:
+                content_length = None
+            if content_length is not None and content_length > max_bytes:
+                raise _ImageDownloadError(
+                    f"Image download exceeds maximum size of {max_bytes} bytes"
+                )
+            data = bytearray()
+            while True:
+                chunk = conn.read(min(64 * 1024, max_bytes + 1 - len(data)))
+                if not chunk:
+                    return bytes(data)
+                data.extend(chunk)
+                if len(data) > max_bytes:
+                    raise _ImageDownloadError(
+                        f"Image download exceeds maximum size of {max_bytes} bytes"
+                    )
+    except urllib.error.HTTPError as err:
+        # Preserve the status for the embedding retry policy and close the body.
+        err.close()
+        raise
+    except (socket.gaierror, urllib.error.URLError, TimeoutError) as err:
+        raise ConnectionError("Could not download image") from err
 
 
 class MissingApiKeyError(ValueError):

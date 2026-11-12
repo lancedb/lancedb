@@ -724,6 +724,26 @@ and combined with [BooleanQuery][lancedb.query.BooleanQuery].
 
 ## Embeddings
 
+The `open-clip`, `siglip`, `jina`, and `colpali` functions share the image download
+settings documented on [ImageEmbeddingFunction][lancedb.embeddings.ImageEmbeddingFunction].
+HTTP(S) image downloads default to a 10-second connect/read inactivity timeout and
+a 50 MiB response limit. Configure these when creating the function:
+
+```python
+from lancedb.embeddings import get_registry
+
+func = get_registry().get("jina").create(
+    image_download_timeout=5.0,
+    image_download_max_bytes=10 * 1024 * 1024,
+)
+```
+
+Set `allow_image_downloads=False` to reject image URLs while continuing to accept
+local paths, bytes, and PIL images. Applications must still validate untrusted
+image references, including hosts and redirect destinations. The timeout applies
+to socket inactivity rather than the total download duration; the size limit
+applies to each response rather than the decoded image or a batch of images.
+
 ::: lancedb.embeddings
     options:
       show_root_heading: false
