@@ -247,13 +247,33 @@ never silently creates an empty table as a fallback. Encoding and input failures
 therefore issue no create request. Temporary disk usage is bounded by this budget;
 individual oversized rows can still need substantial encoding memory.
 
-For larger imports, create the schema first and upload with progress reporting:
+For larger imports, create the schema first and upload with progress reporting.
+The empty table becomes visible immediately; `add()` commits its rows atomically.
+The following examples use an existing connection `db`, an Arrow `schema`, and
+input `data` matching that schema (an Arrow reader in Rust):
 
-```python
-# The empty table becomes visible immediately; add() commits its rows atomically.
+<CodeGroup>
+```python Python icon="python"
 table = db.create_table("items", schema=schema)
 table.add(data, progress=True)
 ```
+
+```typescript TypeScript icon="square-js"
+const table = await db.createEmptyTable("items", schema);
+await table.add(data, {
+  progress: (p) => console.log(`Rows written: ${p.outputRows}`),
+});
+```
+
+```rust Rust icon="rust"
+let table = db.create_empty_table("items", schema).execute().await?;
+table
+    .add(data)
+    .progress(|p| println!("Rows written: {}", p.output_rows()))
+    .execute()
+    .await?;
+```
+</CodeGroup>
 
 ## Complete write workflow {#complete-example}
 
