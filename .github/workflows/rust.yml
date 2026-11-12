@@ -171,78 +171,10 @@ jobs:
       - name: Test build output cleanup
         run: python3 -m unittest discover -s ci/tests -p test_build_no_lock.py -v
       - name: Build all
-        shell: bash
-        env:
-          BUILD_NO_LOCK_DIAGNOSTICS_DIR: ${{ runner.temp }}/build-no-lock
         run: |
           df -h .
-          # Temporary measurements for the bounded two-job experiment.
-          mkdir -p "$BUILD_NO_LOCK_DIAGNOSTICS_DIR"
-          touch "$BUILD_NO_LOCK_DIAGNOSTICS_DIR/started"
-          {
-            date -u --iso-8601=seconds
-            git rev-parse HEAD
-            uname -a
-            lscpu
-            rustc -Vv
-            cargo -Vv
-            clang --version
-            printenv RUNNER_NAME RUNNER_OS RUNNER_ARCH ImageOS ImageVersion GITHUB_RUN_ID GITHUB_RUN_ATTEMPT GITHUB_SHA || true
-          } > "$BUILD_NO_LOCK_DIAGNOSTICS_DIR/environment.log" 2>&1
-          python3 -u - <<'PY' > "$BUILD_NO_LOCK_DIAGNOSTICS_DIR/resources.log" 2>&1 &
-          import os
-          import signal
-          import subprocess
-          import threading
-          import time
-
-          stopped = threading.Event()
-          for signum in (signal.SIGINT, signal.SIGTERM):
-              signal.signal(signum, lambda *_: stopped.set())
-          while not stopped.is_set():
-              print(f"sample_unix={time.time()}", flush=True)
-              for command in (
-                  ["free", "-b"],
-                  ["df", "-B1", ".", "/tmp", os.environ["RUNNER_TEMP"]],
-                  ["ps", "-eo", "pid,ppid,comm,pcpu,rss,etime", "--sort=-rss"],
-              ):
-                  try:
-                      result = subprocess.run(command, capture_output=True, text=True, timeout=5, check=False)
-                      lines = result.stdout.splitlines()
-                      print(" ".join(command), f"exit={result.returncode}", flush=True)
-                      print("\n".join(lines[:16]), result.stderr, flush=True)
-                  except (OSError, subprocess.TimeoutExpired) as error:
-                      print(f"sample_error={error}", flush=True)
-              stopped.wait(30)
-          PY
-          sampler_pid=$!
-          trap 'kill -TERM "$sampler_pid" 2>/dev/null || true; wait "$sampler_pid" || true' EXIT
           # Every target is linked, but this job never executes the test binaries.
-          # Explicit bash enables pipefail so tee cannot hide Cargo/cleanup failures.
-          python3 ci/build_no_lock.py 2>&1 | tee "$BUILD_NO_LOCK_DIAGNOSTICS_DIR/build.log"
-      - name: Preserve unlocked build experiment evidence
-        if: always()
-        shell: bash
-        run: |
-          diagnostics="${{ runner.temp }}/build-no-lock"
-          mkdir -p "$diagnostics/cargo-timings"
-          # Capture the lock produced by the original metadata/build sequence,
-          # including after interruption. Never copy the checked-in resolver input.
-          if [ -f "$diagnostics/started" ] && [ -f Cargo.lock ]; then
-            cp Cargo.lock "$diagnostics/Cargo.lock"
-            sha256sum "$diagnostics/Cargo.lock" > "$diagnostics/Cargo.lock.sha256"
-          fi
-          # Cargo may only finish the HTML report on exit. Exclude cached reports.
-          if [ -d target/cargo-timings ] && [ -f "$diagnostics/started" ]; then
-            find target/cargo-timings -type f -newer "$diagnostics/started" \
-              -exec cp {} "$diagnostics/cargo-timings/" \;
-          fi
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: build-no-lock-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/build-no-lock
-          if-no-files-found: warn
+          python3 ci/build_no_lock.py
       - name: Report build disk usage
         if: always()
         run: |
