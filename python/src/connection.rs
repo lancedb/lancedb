@@ -855,9 +855,11 @@ impl Connection {
         future_into_py(self_.py(), async move {
             let job = inner.open_job(&job_id).await.infer_error()?;
             match job.job_type().as_deref() {
-                Some("function_refresh" | "refresh_column") => Ok(crate::job::Job::new_typed(
-                    job.into_typed::<RefreshColumnResult>().infer_error()?,
-                )),
+                Some("function_refresh" | "computed_refresh" | "refresh_column") => {
+                    Ok(crate::job::Job::new_typed(
+                        job.into_typed::<RefreshColumnResult>().infer_error()?,
+                    ))
+                }
                 _ => Ok(crate::job::Job::new(job)),
             }
         })

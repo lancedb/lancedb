@@ -696,6 +696,6 @@ def _typed_job(
 
 
 def _opened_job(inner: "_lancedb.Job") -> AsyncJob:
-    if inner.job_type in ("function_refresh", "refresh_column"):
+    if inner.job_type in ("function_refresh", "computed_refresh", "refresh_column"):
         return _typed_job(inner, RefreshColumnResult.from_json)
     return AsyncJob(inner)

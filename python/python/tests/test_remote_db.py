@@ -2559,7 +2559,9 @@ async def test_remote_job_wait_disconnection_timeout_can_be_resumed(sync):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("sync", [False, True])
-@pytest.mark.parametrize("job_type", ["function_refresh", "refresh_column"])
+@pytest.mark.parametrize(
+    "job_type", ["function_refresh", "computed_refresh", "refresh_column"]
+)
 @pytest.mark.parametrize("running", [False, True])
 @pytest.mark.parametrize("rows_failed", [0, 8])
 async def test_reopened_refresh_job_wait_returns_typed_result(
