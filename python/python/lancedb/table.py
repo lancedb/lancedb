@@ -5808,7 +5808,7 @@ def _handle_bad_vectors(
             pending_dims = []
             for vector_column in vector_columns:
                 dim = vector_column["expected_dim"]
-                if target_schema is not None and dim is None:
+                if dim is None:
                     dim = _infer_vector_dim(batch[vector_column["name"]])
                     pending_dims.append(vector_column)
                 batch = _handle_bad_vector_column(

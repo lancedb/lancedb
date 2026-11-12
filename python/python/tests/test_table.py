@@ -2208,6 +2208,69 @@ def test_create_with_nans(mem_db: DBConnection):
     assert np.allclose(filled_vectors[22.0], np.array([5.0, 0.0]))
 
 
+def _batches_with_bad_vectors_in_later_batch():
+    # The second batch's majority dimension (3) differs from the first one's (2)
+    yield pa.RecordBatch.from_pylist(
+        [{"vector": [1.0, 2.0], "id": 0}, {"vector": [3.0, 4.0], "id": 1}]
+    )
+    yield pa.RecordBatch.from_pylist(
+        [
+            {"vector": [5.0, 6.0, 7.0], "id": 2},
+            {"vector": [8.0, 9.0, 10.0], "id": 3},
+            {"vector": [11.0, 12.0], "id": 4},
+            {"vector": [13.0], "id": 5},
+        ]
+    )
+
+
+@pytest.mark.parametrize("on_bad_vectors", ["drop", "fill", "null"])
+def test_create_from_batches_with_bad_vectors_in_later_batch(
+    mem_db: DBConnection, on_bad_vectors
+):
+    # The vector dimension guessed from the first batch must be used for
+    # later batches too, even when their own majority dimension differs.
+    table = mem_db.create_table(
+        "test",
+        data=_batches_with_bad_vectors_in_later_batch(),
+        on_bad_vectors=on_bad_vectors,
+        fill_value=42.0,
+    )
+
+    assert table.schema.field("vector").type == pa.list_(pa.float32(), 2)
+    if on_bad_vectors == "drop":
+        expected = [
+            {"vector": [1.0, 2.0], "id": 0},
+            {"vector": [3.0, 4.0], "id": 1},
+            {"vector": [11.0, 12.0], "id": 4},
+        ]
+    else:
+        # "fill" truncates vectors that are too long and pads short ones
+        fill = on_bad_vectors == "fill"
+        expected = [
+            {"vector": [1.0, 2.0], "id": 0},
+            {"vector": [3.0, 4.0], "id": 1},
+            {"vector": [5.0, 6.0] if fill else None, "id": 2},
+            {"vector": [8.0, 9.0] if fill else None, "id": 3},
+            {"vector": [11.0, 12.0], "id": 4},
+            {"vector": [13.0, 42.0] if fill else None, "id": 5},
+        ]
+    assert table.to_arrow().to_pylist() == expected
+
+
+def test_create_from_batches_errors_on_bad_vectors_in_later_batch(
+    mem_db: DBConnection,
+):
+    # Every vector in the second batch has the same, wrong, dimension
+    def batches():
+        yield pa.RecordBatch.from_pylist([{"vector": [1.0, 2.0], "id": 0}])
+        yield pa.RecordBatch.from_pylist([{"vector": [3.0, 4.0, 5.0], "id": 1}])
+
+    # The ValueError raised while reading the batches is wrapped in a
+    # RuntimeError by the writer.
+    with pytest.raises(RuntimeError, match="variable length vectors"):
+        mem_db.create_table("test", data=batches(), on_bad_vectors="error")
+
+
 def test_add_with_nans(mem_db: DBConnection):
     schema = pa.schema(
         [
