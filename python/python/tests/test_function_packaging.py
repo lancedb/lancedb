@@ -675,11 +675,20 @@ def test_vendored_package_resources_survive_an_isolated_import(
         + b"\r\n"
     )
 
-    @function(code=[package])
-    def vendored(value: int) -> int:
-        from fx_vendor import predict
+    entry = helper_package(
+        "fx_vendor_entry",
+        {
+            "__init__.py": """
+        import fx_vendor
+        from lancedb import function
 
-        return predict(value)
+        @function(code=[fx_vendor])
+        def vendored(value: int) -> int:
+            return fx_vendor.predict(value)
+    """
+        },
+    )
+    vendored = entry.vendored
 
     first_digest = vendored.registration_request.artifact.digest
     bundle = json.loads(artifact(vendored))

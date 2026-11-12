@@ -2165,8 +2165,10 @@ def _code_files(
                         continue
                     relative = path.relative_to(root)
                     key = f"{name}/{relative.as_posix()}"
-                    if path.is_symlink() or not re.fullmatch(
-                        r"[A-Za-z0-9_][A-Za-z0-9_.-]*", filename
+                    if (
+                        path.is_symlink()
+                        or not path.is_file()
+                        or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", filename)
                     ):
                         skipped.add(key)
                     elif suffix == ".py":
