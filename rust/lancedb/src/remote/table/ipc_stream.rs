@@ -212,6 +212,37 @@ mod tests {
             .collect()
     }
 
+    #[tokio::test]
+    async fn impossible_ipc_body_lengths_return_errors() {
+        let batches = batches();
+        let messages = messages(&batches[0].schema(), &batches, IpcWriteOptions::default());
+        for length in [-1, i64::MAX - 31, i64::MAX] {
+            let mut message = messages[1].clone();
+            let metadata_len = u32::from_le_bytes(message[4..8].try_into().unwrap()) as usize;
+            let metadata = arrow_ipc::root_as_message(&message[8..8 + metadata_len]).unwrap();
+            let field = metadata
+                ._tab
+                .vtable()
+                .get(arrow_ipc::Message::VT_BODYLENGTH);
+            assert_ne!(field, 0, "fixture must contain a body length field");
+            let offset = 8 + metadata._tab.loc() + field as usize;
+            message[offset..offset + 8].copy_from_slice(&length.to_le_bytes());
+            // A valid schema and message metadata followed by just one body byte.
+            message.truncate(8 + metadata_len + 1);
+            let (_, returned, error) = read(vec![
+                Ok(Bytes::copy_from_slice(&messages[0])),
+                Ok(Bytes::from(message)),
+            ])
+            .await;
+            assert!(returned.is_empty());
+            let error = error.unwrap().to_string();
+            assert!(
+                error.contains("body length") || error.contains("cannot allocate IPC message"),
+                "unexpected error for length {length}: {error}"
+            );
+        }
+    }
+
     /// The schema, the batches yielded, and the error that ended the stream.
     async fn read(
         chunks: Vec<std::io::Result<Bytes>>,

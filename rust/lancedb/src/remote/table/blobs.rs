@@ -2691,10 +2691,114 @@ mod tests {
         assert!(error.to_string().contains("206"), "got: {error}");
     }
 
+    #[tokio::test]
+    async fn impossible_range_capacity_returns_an_error() {
+        let size = isize::MAX as u64 + 1;
+        let table = RemoteTable::new_mock(
+            "videos".to_string(),
+            move |request| {
+                let range = request
+                    .headers()
+                    .get(header::RANGE)
+                    .unwrap()
+                    .to_str()
+                    .unwrap();
+                let end = if range == "bytes=0-0" { 0 } else { size - 1 };
+                http::Response::builder()
+                    .status(StatusCode::PARTIAL_CONTENT)
+                    .header(header::CONTENT_RANGE, format!("bytes 0-{end}/{size}"))
+                    .header(VERSION_HEADER, "5")
+                    .body(vec![1])
+                    .unwrap()
+            },
+            Some(Version::new(0, 5, 0)),
+        );
+        let file = table
+            .probe_files("image", &[10])
+            .await
+            .unwrap()
+            .pop()
+            .flatten()
+            .unwrap();
+        let error = file.read().await.unwrap_err();
+        assert!(
+            error.to_string().contains("cannot allocate blob range"),
+            "{error}"
+        );
+        assert_eq!(file.tell().await.unwrap(), 0);
+    }
+
+    #[derive(Debug)]
+    struct TrackedRangeBody {
+        bytes: Vec<u8>,
+        dropped: Arc<AtomicBool>,
+    }
+
+    impl AsRef<[u8]> for TrackedRangeBody {
+        fn as_ref(&self) -> &[u8] {
+            &self.bytes
+        }
+    }
+
+    impl Drop for TrackedRangeBody {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::Release);
+        }
+    }
+
+    #[tokio::test]
+    async fn close_releases_existing_cache_after_in_flight_read_ends() {
+        for cancel in [false, true] {
+            let release = Arc::new(tokio::sync::Barrier::new(2));
+            let started = Arc::new(tokio::sync::Notify::new());
+            let dropped = Arc::new(AtomicBool::new(false));
+            let file = Arc::new(RemoteBlobFile::new(
+                Arc::new(BlockingRangeRequester {
+                    release: release.clone(),
+                    started: started.clone(),
+                    block_start: 4,
+                    tracked: Some(dropped.clone()),
+                }),
+                PAYLOAD.len() as u64,
+                Some(5),
+            ));
+            file.set_buffer_size(4).await.unwrap();
+            assert_eq!(file.read_up_to(1).await.unwrap().as_ref(), &PAYLOAD[..1]);
+            file.seek(3).await.unwrap();
+            assert!(
+                !dropped.load(Ordering::Acquire),
+                "warm cache was not retained"
+            );
+            let reader = {
+                let file = file.clone();
+                tokio::spawn(async move { file.read_up_to(2).await })
+            };
+            started.notified().await;
+            tokio::time::timeout(Duration::from_millis(50), file.close())
+                .await
+                .expect("close waited for I/O")
+                .unwrap();
+            if cancel {
+                reader.abort();
+                assert!(reader.await.unwrap_err().is_cancelled());
+            } else {
+                release.wait().await;
+                let error = reader.await.unwrap().unwrap_err();
+                assert!(error.to_string().contains("already closed"), "{error}");
+            }
+            assert!(
+                dropped.load(Ordering::Acquire),
+                "closed handle retained its old window (cancel={cancel})"
+            );
+        }
+    }
+
     #[derive(Debug)]
     struct BlockingRangeRequester {
         release: Arc<tokio::sync::Barrier>,
         started: Arc<tokio::sync::Notify>,
+        block_start: usize,
+        tracked: Option<Arc<AtomicBool>>,
     }
 
     #[async_trait::async_trait]
@@ -2705,17 +2809,31 @@ mod tests {
             _mode: RangeRequestMode,
             _version: Option<u64>,
         ) -> Result<BlobRangeResponse> {
-            if range_header.starts_with("bytes=0-") {
+            let (start, end) = range_header
+                .strip_prefix("bytes=")
+                .unwrap()
+                .split_once('-')
+                .unwrap();
+            let start: usize = start.parse().unwrap();
+            let end: usize = end.parse().unwrap();
+            if start == self.block_start {
                 self.started.notify_one();
                 self.release.wait().await;
             }
+            let bytes = match &self.tracked {
+                Some(dropped) if start == 0 => Bytes::from_owner(TrackedRangeBody {
+                    bytes: PAYLOAD[start..=end].to_vec(),
+                    dropped: dropped.clone(),
+                }),
+                _ => Bytes::copy_from_slice(&PAYLOAD[start..=end]),
+            };
             let response = http::Response::builder()
                 .status(StatusCode::PARTIAL_CONTENT)
                 .header(
                     header::CONTENT_RANGE,
-                    format!("bytes 0-{}/{}", PAYLOAD.len() - 1, PAYLOAD.len()),
+                    format!("bytes {start}-{end}/{}", PAYLOAD.len()),
                 )
-                .body(PAYLOAD.to_vec())
+                .body(bytes)
                 .unwrap();
             Ok(("hung".to_string(), Response::from(response)).into())
         }
@@ -2728,6 +2846,8 @@ mod tests {
         let requester: Arc<dyn BlobRangeRequester> = Arc::new(BlockingRangeRequester {
             release: release.clone(),
             started: started.clone(),
+            block_start: 0,
+            tracked: None,
         });
         let file = Arc::new(RemoteBlobFile::new(
             requester,
