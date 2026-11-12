@@ -339,6 +339,21 @@ These fields are populated for LanceDB Embedded tables. In LanceDB Enterprise, `
 The `{column}_idx` suffix is the default naming convention. 
 Pass `name=...` to `create_index()` to override it. Once set, the custom name will be reflected in `list_indices()`, `index_stats(name)`, and `wait_for_index([name])`.
 
+{/*
+Draft for the index-name validation release (#5007). Publish this guidance
+after the SDK changes ship.
+
+Custom index names must contain 1–128 ASCII letters, digits, dashes,
+underscores, or periods, excluding `.` and `..`. These restrictions apply
+when you supply a name to `create_index()`; generated names still use the
+column name and remain usable through index operations.
+
+Remote tables reject empty names, `.` and `..` in index operations to prevent
+URL path normalization. Existing indexes named `.` or `..` require
+server-side cleanup on managed tables, or a native connection with direct
+access to the dataset. Other existing names remain usable.
+*/}
+
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
     {VectorIndexCustomName}
