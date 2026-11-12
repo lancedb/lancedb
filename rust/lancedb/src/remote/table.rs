@@ -1802,7 +1802,7 @@ fn base_media_type(content_type: &str) -> &str {
 fn unwrap_shared_error(arc: Arc<Error>) -> Error {
     match Arc::try_unwrap(arc) {
         Ok(err) => err,
-        Err(arc) => match &*arc {
+        Err(arc) => arc.clone_shared().unwrap_or_else(|| match &*arc {
             Error::TableNotFound { name, source } => Error::TableNotFound {
                 name: name.clone(),
                 source: source.to_string().into(),
@@ -1810,7 +1810,7 @@ fn unwrap_shared_error(arc: Arc<Error>) -> Error {
             _ => Error::Runtime {
                 message: arc.to_string(),
             },
-        },
+        }),
     }
 }
 
@@ -1833,17 +1833,8 @@ async fn fetch_schema<S: HttpSend>(
 
     let (request_id, response) = client.send_with_retry(request, None, true).await?;
 
-    if response.status() == StatusCode::NOT_FOUND {
-        let body = response.text().await.ok().unwrap_or_default();
-        return Err(Error::TableNotFound {
-            name: table_name.to_string(),
-            source: Box::new(Error::Http {
-                source: body.into(),
-                request_id,
-                status_code: Some(StatusCode::NOT_FOUND),
-            }),
-        });
-    }
+    let response =
+        RemoteTable::<S>::handle_table_not_found(table_name, response, &request_id).await?;
 
     let response = client.check_response(&request_id, response).await?;
     freshness_headers.observe_headers(&freshness, response.headers());

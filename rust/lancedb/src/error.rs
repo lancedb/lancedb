@@ -123,7 +123,7 @@ pub(crate) fn parse_flight_resource_identity(value: &str) -> Option<RemoteResour
 }
 
 #[cfg(feature = "remote")]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct HttpErrorSource {
     message: String,
     details: Option<HttpErrorDetails>,
@@ -662,9 +662,35 @@ impl Error {
         }
     }
 
-    /// A copy of an error that other partitions of a DataFusion plan still hold.
-    /// Only an interrupted response can be copied, because it shares its source.
-    fn clone_shared(&self) -> Option<Self> {
+    /// Copy supported errors without flattening sources retained by a shared plan
+    /// or schema cache.
+    pub(crate) fn clone_shared(&self) -> Option<Self> {
+        #[cfg(feature = "remote")]
+        match self {
+            Self::Http {
+                source,
+                request_id,
+                status_code,
+            } => {
+                return source
+                    .downcast_ref::<HttpErrorSource>()
+                    .map(|source| Self::Http {
+                        source: Box::new(source.clone()),
+                        request_id: request_id.clone(),
+                        status_code: *status_code,
+                    });
+            }
+            Self::TableNotFound { name, source } => {
+                return source
+                    .downcast_ref::<Self>()
+                    .and_then(Self::clone_shared)
+                    .map(|source| Self::TableNotFound {
+                        name: name.clone(),
+                        source: Box::new(source),
+                    });
+            }
+            _ => {}
+        }
         #[cfg(feature = "remote")]
         if let Self::ResponseInterrupted {
             request_id,
