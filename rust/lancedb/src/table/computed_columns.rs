@@ -5280,7 +5280,7 @@ mod tests {
             function_input_schema().fields().to_vec(),
             HashMap::from([(
                 FUNCTION_BINDINGS_META_KEY.to_string(),
-                r#"{"version":2,"bindings":[]}"#.to_string(),
+                r#"{"version":3,"bindings":[]}"#.to_string(),
             )]),
         );
         let err = plan_function_application(&mixed_schema, &named_struct_application("{}"), None)
