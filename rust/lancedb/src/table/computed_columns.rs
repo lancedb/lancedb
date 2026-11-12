@@ -2542,10 +2542,15 @@ pub(crate) mod test_support {
             )])
             .await
             .unwrap();
-        let inputs = ["title".to_string(), "body".to_string()];
+        let schema = dataset.schema();
         let outputs = bindings
             .iter()
             .flat_map(|binding| {
+                let inputs = binding
+                    .inputs()
+                    .iter()
+                    .map(|input| input.field_path.clone())
+                    .collect::<Vec<_>>();
                 let assignment = binding.assignment().map(|assignment| {
                     (
                         assignment.output_name.clone(),
@@ -2557,9 +2562,9 @@ pub(crate) mod test_support {
                     .iter()
                     .map(|output| (output.output_name.clone(), output.output_ordinal))
                     .chain(assignment)
-                    .map(|(name, ordinal)| {
+                    .map(move |(name, ordinal)| {
                         (
-                            dataset.schema().field(&name).unwrap().id as u32,
+                            schema.field(&name).unwrap().id as u32,
                             function_computed_column_metadata(
                                 binding.binding_id(),
                                 ordinal,
