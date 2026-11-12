@@ -1420,13 +1420,20 @@ class RemoteTable(Table):
         self,
         column: str,
         row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
+        *,
+        buffer_size: Optional[int] = None,
     ) -> "list[Optional[BlobFile]]":
-        return LOOP.run(self._table.fetch_blob_files(column, row_ids))
+        return LOOP.run(
+            self._table.fetch_blob_files(column, row_ids, buffer_size=buffer_size)
+        )
 
     def open_blob_file(
-        self, descriptor: Union[dict, pa.StructScalar, None]
+        self,
+        descriptor: Union[dict, pa.StructScalar, None],
+        *,
+        buffer_size: Optional[int] = None,
     ) -> Optional[BlobFile]:
-        return LOOP.run(self._table.open_blob_file(descriptor))
+        return LOOP.run(self._table.open_blob_file(descriptor, buffer_size=buffer_size))
 
     def head(self, n=5) -> pa.Table:
         """

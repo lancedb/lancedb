@@ -3,6 +3,10 @@
 
 //! Incremental decoding of response bodies that use Arrow IPC stream framing.
 
+mod framing;
+
+use framing::{FramingError, IpcFraming};
+
 use arrow_array::RecordBatch;
 use arrow_buffer::Buffer;
 use arrow_ipc::reader::StreamDecoder;
@@ -10,7 +14,6 @@ use bytes::Bytes;
 use datafusion_common::DataFusionError;
 use datafusion_physical_plan::SendableRecordBatchStream;
 use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
-use futures::stream::BoxStream;
 use futures::{Stream, StreamExt, TryStreamExt};
 
 use crate::error::{BoxError, Error, Result};
@@ -35,7 +38,7 @@ where
     E: Into<BoxError> + 'static,
 {
     let mut body = IpcStreamBody {
-        chunks: chunks.map_err(Into::into).boxed(),
+        framing: IpcFraming::new(chunks.map_err(Into::into).boxed()),
         chunk: Buffer::default(),
         decoder: StreamDecoder::new(),
         finished: false,
@@ -62,7 +65,7 @@ where
 }
 
 struct IpcStreamBody {
-    chunks: BoxStream<'static, std::result::Result<Bytes, BoxError>>,
+    framing: IpcFraming,
     /// The part of the current chunk that has not been decoded yet.
     chunk: Buffer,
     decoder: StreamDecoder,
@@ -80,11 +83,12 @@ impl IpcStreamBody {
     async fn next_batch(&mut self) -> Result<Option<RecordBatch>> {
         while !self.finished {
             if self.chunk.is_empty() {
-                match self.chunks.next().await {
-                    Some(Ok(chunk)) => self.chunk = chunk.into(),
-                    Some(Err(error)) => return Err(self.interrupted(error)),
-                    None if read_end_of_stream(&mut self.decoder) => self.finished = true,
-                    None => {
+                match self.framing.next_buffer().await {
+                    Ok(Some(chunk)) => self.chunk = chunk,
+                    Err(FramingError::Interrupted(error)) => return Err(self.interrupted(error)),
+                    Err(FramingError::Arrow(error)) => return Err(error.into()),
+                    Ok(None) if read_end_of_stream(&mut self.decoder) => self.finished = true,
+                    Ok(None) => {
                         return Err(self.interrupted(
                             "the response ended before the Arrow end-of-stream marker".into(),
                         ));
@@ -276,6 +280,78 @@ mod tests {
 
         assert!(error.is_none(), "{error:?}");
         assert_eq!(output, input);
+    }
+
+    #[tokio::test]
+    async fn fragmented_body_keeps_only_its_declared_allocation() {
+        use arrow_array::LargeBinaryArray;
+
+        let bytes = vec![42; 3 * 1024 * 1024 + 13];
+        let array = LargeBinaryArray::from(vec![bytes.as_slice()]);
+        let batch = RecordBatch::try_from_iter([("blob", Arc::new(array) as ArrayRef)]).unwrap();
+        let body = messages(
+            &batch.schema(),
+            &[batch.clone()],
+            IpcWriteOptions::default(),
+        )
+        .concat();
+        let (_, output, error) = read(chunks(&body, 8191)).await;
+        assert!(error.is_none(), "{error:?}");
+        assert_eq!(output, [batch]);
+        let blobs = output[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<LargeBinaryArray>()
+            .unwrap();
+        assert!(
+            blobs.values().capacity() <= bytes.len() + 256,
+            "IPC body retained {} bytes for {} value bytes",
+            blobs.values().capacity(),
+            bytes.len()
+        );
+    }
+
+    #[rstest]
+    #[case(false)]
+    #[case(true)]
+    #[tokio::test]
+    async fn zero_body_batches_and_legacy_prefixes(#[case] legacy: bool) {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let input = [vec![], vec![1, 2], vec![]]
+            .into_iter()
+            .map(|values| {
+                RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(values))])
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let options = IpcWriteOptions::try_new(8, legacy, arrow_ipc::MetadataVersion::V4).unwrap();
+        let body = messages(&schema, &input, options).concat();
+        let (_, output, error) = read(chunks(&body, 1)).await;
+        assert!(error.is_none(), "{error:?}");
+        assert_eq!(output, input);
+    }
+
+    #[tokio::test]
+    async fn partial_next_prefix_still_delivers_a_zero_body_batch() {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let empty = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(Vec::<i32>::new()))],
+        )
+        .unwrap();
+        let nonempty =
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(vec![1]))])
+                .unwrap();
+        let messages = messages(
+            &schema,
+            &[empty.clone(), nonempty],
+            IpcWriteOptions::default(),
+        );
+        let cutoff = messages[..2].concat().len() + 1;
+        let body = messages.concat();
+        let (_, output, error) = read(chunks(&body[..cutoff], 1)).await;
+        assert_eq!(output, [empty]);
+        assert_interrupted(error, 1, 0);
     }
 
     /// The server answers an empty result with the schema and the end-of-stream marker.
