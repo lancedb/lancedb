@@ -13,6 +13,7 @@ from datetime import date, datetime, time, timedelta
 from enum import Enum
 from typing import (
     TYPE_CHECKING,
+    Annotated,
     Any,
     List,
     Literal,
@@ -306,6 +307,14 @@ def _pydantic_type_to_arrow_type(tp: Any, field: FieldInfo) -> pa.DataType:
         except TypeError:
             return False
 
+    if get_origin(tp) is Annotated:
+        # Pydantic strips Annotated from a field's own annotation, but keeps it on
+        # constrained types nested inside Optional or List, e.g. List[PositiveInt].
+        inner = get_args(tp)[0]
+        unwrapped = _unwrap_optional_annotation(inner)
+        return _pydantic_type_to_arrow_type(
+            inner if unwrapped is None else unwrapped, field
+        )
     if inspect.isclass(tp):
         if _safe_issubclass(tp, pydantic.BaseModel):
             # Struct
