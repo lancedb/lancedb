@@ -271,24 +271,6 @@ maybeDescribe("DynamoDB Lock", () => {
   let bucket: S3Bucket;
   let commitTable: DynamoDBCommitTable;
 
-  // TEMPORARY DIAGNOSTIC CANDIDATE: remove before merging the isolation fix.
-  async function timed<T>(operation: string, action: () => Promise<T>) {
-    const started = performance.now();
-    console.info(`[ddb-timing] ${new Date().toISOString()} ${operation} start`);
-    try {
-      const result = await action();
-      console.info(
-        `[ddb-timing] ${new Date().toISOString()} ${operation} complete ${performance.now() - started}ms`,
-      );
-      return result;
-    } catch (error) {
-      console.info(
-        `[ddb-timing] ${new Date().toISOString()} ${operation} failed ${performance.now() - started}ms`,
-      );
-      throw error;
-    }
-  }
-
   beforeAll(async () => {
     bucket = await S3Bucket.create("lancedb2");
     commitTable = await DynamoDBCommitTable.create("commitTable");
@@ -301,75 +283,51 @@ maybeDescribe("DynamoDB Lock", () => {
 
   it("can be used to configure a DynamoDB table for commit log", async () => {
     const uri = `s3+ddb://${bucket.name}/concurrent-appends?ddbTableName=${commitTable.name}`;
-    const db = await timed("concurrent-appends.connect", () =>
-      connect(uri, {
-        storageOptions: CONFIG,
-        readConsistencyInterval: 0,
-      }),
-    );
+    const db = await connect(uri, {
+      storageOptions: CONFIG,
+      readConsistencyInterval: 0,
+    });
 
-    const table = await timed("concurrent-appends.create", () =>
-      db.createTable("test", [{ a: 1, b: 2 }]),
-    );
+    const table = await db.createTable("test", [{ a: 1, b: 2 }]);
 
     // 5 concurrent appends
-    const futs = Array.from({ length: 5 }, async (_, index) => {
+    const futs = Array.from({ length: 5 }, async () => {
       // Open a table so each append has a separate table reference. Otherwise
       // they will share the same table reference and the internal ReadWriteLock
       // will prevent any real concurrency.
-      const table = await timed(`concurrent-appends.${index}.open`, () =>
-        db.openTable("test"),
-      );
-      await timed(`concurrent-appends.${index}.add`, () =>
-        table.add([{ a: 2, b: 3 }]),
-      );
+      const table = await db.openTable("test");
+      await table.add([{ a: 2, b: 3 }]);
     });
     await Promise.all(futs);
 
-    const rowCount = await timed("concurrent-appends.count", () =>
-      table.countRows(),
-    );
+    const rowCount = await table.countRows();
     expect(rowCount).toBe(6);
 
-    await timed("concurrent-appends.drop", () => db.dropAllTables());
+    await db.dropAllTables();
   });
 
   it("clears dynamodb state after dropping all tables", async () => {
     const uri = `s3+ddb://${bucket.name}/drop-all-tables?ddbTableName=${commitTable.name}`;
-    const db = await timed("drop-all-tables.connect", () =>
-      connect(uri, {
-        storageOptions: CONFIG,
-        readConsistencyInterval: 0,
-      }),
-    );
+    const db = await connect(uri, {
+      storageOptions: CONFIG,
+      readConsistencyInterval: 0,
+    });
 
-    await timed("drop-all-tables.create-foo", () =>
-      db.createTable("foo", [{ a: 1, b: 2 }]),
-    );
-    await timed("drop-all-tables.create-bar", () =>
-      db.createTable("bar", [{ a: 1, b: 2 }]),
-    );
+    await db.createTable("foo", [{ a: 1, b: 2 }]);
+    await db.createTable("bar", [{ a: 1, b: 2 }]);
 
-    let tableNames = await timed("drop-all-tables.list-before-drop", () =>
-      db.tableNames(),
-    );
+    let tableNames = await db.tableNames();
     expect(tableNames).toEqual(["bar", "foo"]);
 
-    await timed("drop-all-tables.drop-initial", () => db.dropAllTables());
-    tableNames = await timed("drop-all-tables.list-after-drop", () =>
-      db.tableNames(),
-    );
+    await db.dropAllTables();
+    tableNames = await db.tableNames();
     expect(tableNames).toEqual([]);
 
     // We can create a new table with the same name as the one we dropped.
-    await timed("drop-all-tables.recreate-foo", () =>
-      db.createTable("foo", [{ a: 1, b: 2 }]),
-    );
-    tableNames = await timed("drop-all-tables.list-after-recreate", () =>
-      db.tableNames(),
-    );
+    await db.createTable("foo", [{ a: 1, b: 2 }]);
+    tableNames = await db.tableNames();
     expect(tableNames).toEqual(["foo"]);
 
-    await timed("drop-all-tables.drop-final", () => db.dropAllTables());
+    await db.dropAllTables();
   });
 });
