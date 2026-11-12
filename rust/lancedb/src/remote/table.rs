@@ -10842,8 +10842,32 @@ mod tests {
                 .pop();
             envelope["bindings"][0]["literal_inputs"] =
                 serde_json::json!([{"parameter": "body", "value": null}]);
+            let binding =
+                crate::function::FunctionBinding::from_json(&envelope["bindings"][0].to_string())
+                    .unwrap();
+            let fields = schema
+                .fields()
+                .iter()
+                .map(|field| {
+                    let mut field = field.as_ref().clone();
+                    if let Some(output) = binding
+                        .outputs()
+                        .iter()
+                        .find(|output| output.output_name == *field.name())
+                    {
+                        field = field.with_metadata(
+                            crate::table::computed_columns::function_computed_column_metadata(
+                                binding.binding_id(),
+                                output.output_ordinal,
+                                &["title".into()],
+                            ),
+                        );
+                    }
+                    field
+                })
+                .collect::<Vec<_>>();
             metadata.insert(key.to_string(), envelope.to_string());
-            schema = schema.with_metadata(metadata);
+            schema = Schema::new_with_metadata(fields, metadata);
         }
         let allowed_schema = schema.clone();
         let table =
