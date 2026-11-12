@@ -343,24 +343,28 @@ class Connection(object):
     async def create_materialized_view(
         self,
         name: str,
-        source: str,
+        source: Optional[str] = None,
         projections: Optional[List[Tuple[str, str]]] = None,
         filter: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        *,
+        query: Optional[str] = None,
     ) -> Table: ...
     async def create_materialized_view_async(
         self,
         name: str,
-        source: str,
+        source: Optional[str] = None,
         projections: Optional[List[Tuple[str, str]]] = None,
         filter: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        *,
+        query: Optional[str] = None,
     ) -> Job: ...
     def list_materialized_views(
         self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None

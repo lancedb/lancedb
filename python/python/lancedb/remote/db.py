@@ -789,8 +789,9 @@ class RemoteDBConnection(DBConnection):
     def create_materialized_view(
         self,
         name: str,
-        source: MaterializedViewSource,
+        source: Optional[MaterializedViewSource] = None,
         *,
+        query: Optional[str] = None,
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
@@ -804,6 +805,7 @@ class RemoteDBConnection(DBConnection):
             self._conn.create_materialized_view(
                 name,
                 source,
+                query=query,
                 select=select,
                 where=where,
                 limit=limit,
@@ -825,8 +827,9 @@ class RemoteDBConnection(DBConnection):
     def create_materialized_view_async(
         self,
         name: str,
-        source: MaterializedViewSource,
+        source: Optional[MaterializedViewSource] = None,
         *,
+        query: Optional[str] = None,
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
@@ -838,6 +841,7 @@ class RemoteDBConnection(DBConnection):
             self._conn.create_materialized_view_async(
                 name,
                 source,
+                query=query,
                 select=select,
                 where=where,
                 limit=limit,

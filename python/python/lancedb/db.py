@@ -78,6 +78,7 @@ from .materialized_view import (
     MaterializedViewSource,
     SelectArg,
     normalize_select,
+    _validate_create_materialized_view,
 )
 from .secrets import (
     EnvVarSecret,
@@ -697,8 +698,9 @@ class DBConnection(EnforceOverrides):
     def create_materialized_view(
         self,
         name: str,
-        source: MaterializedViewSource,
+        source: Optional[MaterializedViewSource] = None,
         *,
+        query: Optional[str] = None,
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
@@ -721,8 +723,12 @@ class DBConnection(EnforceOverrides):
         ----------
         name: str
             The name of the view.
-        source: str
-            The name of the source table.
+        source: str, optional
+            The name of the source table. Required when ``query`` is omitted.
+        query: str, optional
+            The complete defining SQL query, including any GROUP BY or FROM
+            Function. Mutually exclusive with ``source``, ``select``, ``where``
+            and ``limit``. Supported query shapes depend on the backend.
         select: list or dict, optional
             The view's columns: column names, ``(alias, SQL expression)``
             pairs, or a dict of the same. Omitting it selects every source
@@ -744,6 +750,13 @@ class DBConnection(EnforceOverrides):
         Returns
         -------
         MaterializedView
+
+        Examples
+        --------
+        >>> view = db.create_materialized_view(  # doctest: +SKIP
+        ...     "events_by_kind",
+        ...     query="SELECT kind, count(*) AS n FROM events GROUP BY kind",
+        ... )
         """
         raise NotImplementedError(
             _append_doc_url(
@@ -755,8 +768,9 @@ class DBConnection(EnforceOverrides):
     def create_materialized_view_async(
         self,
         name: str,
-        source: MaterializedViewSource,
+        source: Optional[MaterializedViewSource] = None,
         *,
+        query: Optional[str] = None,
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
@@ -2075,8 +2089,9 @@ class LanceDBConnection(DBConnection):
     def create_materialized_view(
         self,
         name: str,
-        source: MaterializedViewSource,
+        source: Optional[MaterializedViewSource] = None,
         *,
+        query: Optional[str] = None,
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
@@ -2111,6 +2126,7 @@ class LanceDBConnection(DBConnection):
             self._conn.create_materialized_view(
                 name,
                 source,
+                query=query,
                 select=select,
                 where=where,
                 limit=limit,
@@ -2125,8 +2141,9 @@ class LanceDBConnection(DBConnection):
     def create_materialized_view_async(
         self,
         name: str,
-        source: MaterializedViewSource,
+        source: Optional[MaterializedViewSource] = None,
         *,
+        query: Optional[str] = None,
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
@@ -2138,6 +2155,7 @@ class LanceDBConnection(DBConnection):
             self._conn.create_materialized_view_async(
                 name,
                 source,
+                query=query,
                 select=select,
                 where=where,
                 limit=limit,
@@ -3348,8 +3366,9 @@ class AsyncConnection(object):
     async def create_materialized_view(
         self,
         name: str,
-        source: MaterializedViewSource,
+        source: Optional[MaterializedViewSource] = None,
         *,
+        query: Optional[str] = None,
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
@@ -3365,9 +3384,15 @@ class AsyncConnection(object):
         See
         [DBConnection.create_materialized_view][lancedb.DBConnection.create_materialized_view].
         """
-        source, native_options = await self._materialized_view_source(
-            source, select, where, limit
-        )
+        _validate_create_materialized_view(source, query, select, where, limit)
+        if source is not None:
+            source, native_options = await self._materialized_view_source(
+                source, select, where, limit
+            )
+        else:
+            native_options = {}
+        if query is not None:
+            native_options["query"] = query
         inner = await self._inner.create_materialized_view(
             name,
             source,
@@ -3384,8 +3409,9 @@ class AsyncConnection(object):
     async def create_materialized_view_async(
         self,
         name: str,
-        source: MaterializedViewSource,
+        source: Optional[MaterializedViewSource] = None,
         *,
+        query: Optional[str] = None,
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
@@ -3399,9 +3425,15 @@ class AsyncConnection(object):
         Enterprise, creation uses SQL; ``job_type`` is ``"query"`` and ``id``
         identifies that query on this connection.
         """
-        source, native_options = await self._materialized_view_source(
-            source, select, where, limit
-        )
+        _validate_create_materialized_view(source, query, select, where, limit)
+        if source is not None:
+            source, native_options = await self._materialized_view_source(
+                source, select, where, limit
+            )
+        else:
+            native_options = {}
+        if query is not None:
+            native_options["query"] = query
         inner = await self._inner.create_materialized_view_async(
             name,
             source,

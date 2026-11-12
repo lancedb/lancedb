@@ -1070,6 +1070,60 @@ async fn catalog_connections_use_explicit_sql_endpoint_and_database_scope() {
 }
 
 #[tokio::test]
+async fn remote_query_builder_sends_the_complete_query() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let incoming = futures::stream::try_unfold(listener, |listener| async {
+        let (socket, _) = listener.accept().await?;
+        Ok::<_, std::io::Error>(Some((socket, listener)))
+    });
+    let service = TestSqlService {
+        adaptive: true,
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(
+        tonic::transport::Server::builder()
+            .add_service(FlightServiceServer::new(service))
+            .serve_with_incoming_shutdown(incoming, async {
+                let _ = shutdown_rx.await;
+            }),
+    );
+    let connection = crate::connect("db://analytics")
+        .api_key("test-key")
+        .host_override("http://127.0.0.1:1")
+        .sql_host_override(&format!("grpc://{address}"))
+        .execute()
+        .await
+        .unwrap();
+    for query in [
+        "SELECT kind, count(*) AS n FROM events GROUP BY kind",
+        "SELECT id, c.text FROM docs, chunk(body) AS c",
+        "SELECT id, tag FROM events, UNNEST(tags) AS tag",
+        "SELECT a.id FROM a JOIN b ON a.id = b.id",
+    ] {
+        connection
+            .create_materialized_view_from_query("result", query)
+            .auto_refresh_enabled(false)
+            .execute_async()
+            .await
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        assert_eq!(
+            statements.lock().unwrap().last().unwrap(),
+            &format!(
+                "CREATE MATERIALIZED VIEW \"result\" WITH (auto_refresh_enabled = false) AS {query}"
+            )
+        );
+    }
+    shutdown_tx.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn remote_create_uses_sql_and_preserves_options_and_namespace() {
     for defer in [false, true] {
         let service = TestSqlService {

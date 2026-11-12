@@ -570,6 +570,20 @@ remain available, as do LanceDB Enterprise operations. The same feature
 requirement applies to LanceDB Embedded SQL computed-column declaration and refresh; ordinary
 eager `add_columns` transforms remain available.
 
+Pass a complete defining SQL query with `query=` to use grouping, Functions
+in `FROM`, or `UNNEST`:
+
+```python
+view = db.create_materialized_view(
+    "events_by_kind",
+    query="SELECT kind, count(*) AS n FROM events GROUP BY kind",
+)
+```
+
+`query` is mutually exclusive with `source`, `select`, `where`, and `limit`.
+It is also accepted by asynchronous connections and `create_materialized_view_async`.
+The backend SQL parser determines which query shapes are supported.
+
 In LanceDB Enterprise, creation accepts `auto_refresh_enabled` and
 `auto_refresh_interval_seconds`:
 
