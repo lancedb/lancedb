@@ -32,6 +32,7 @@ CREATE STORAGE INTEGRATION [IF NOT EXISTS] <name>
 storage prefix, credential references and external ID. In the Python SDK, pass
 `exist_ok=True` to `create_storage_integration`. The default reports an error when
 the name already exists.
+Returning an existing integration requires `USAGE` on that integration.
 
 `STORAGE_PROVIDER` and `STORAGE_PREFIX` are required for every provider.
 `STORAGE_PREFIX` is the URI prefix the integration covers -- a query only
