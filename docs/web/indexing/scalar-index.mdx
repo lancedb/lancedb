@@ -221,11 +221,16 @@ Lance unchanged, and the plugin validates them and the column. Plugin names are
 case-insensitive. Parameters are a JSON object, given as a dict or object or as
 a JSON string, and use the plugin's own parameter names.
 
+Creating an index by name works only for a plugin that can build the index
+from the column's data, which Lance calls a basic trainer. Lance's built-in
+plugins all have one. A plugin can also be registered only to read indexes
+built some other way; creating one of those by name fails, with an error that
+the index type does not support basic training.
+
 Lance's built-in plugins are `btree`, `bitmap`, `labellist`, `ngram`, `zonemap`,
-`bloomfilter`, `inverted`, `json`, `fm` and `minhashlsh`. A newer plugin, such
-as a `listelement` index over list elements, needs a LanceDB release built on a
-Lance version that includes it. Prefer a dedicated config such as `BTree` when
-one exists.
+`bloomfilter`, `inverted`, `json`, `fm` and `minhashlsh`. A plugin added in a
+newer Lance version needs a LanceDB release built on that version. Prefer a
+dedicated config such as `BTree` when one exists.
 
 <CodeGroup>
 ```python Python icon="python"

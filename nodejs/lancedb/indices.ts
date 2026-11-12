@@ -847,11 +847,17 @@ export class Index {
    * `zonemap`, `bloomfilter`, `inverted`, `json`, `fm` and `minhashlsh`.
    * Plugin names can differ from LanceDB's type names, e.g. `labellist`
    * rather than `LABEL_LIST`. A plugin newer than the Lance version in your
-   * LanceDB release, such as a `listelement` index, is available only once
-   * LanceDB depends on a Lance version that includes it.
+   * LanceDB release is available only once LanceDB depends on a Lance version
+   * that includes it.
    *
-   * An unknown plugin name, a column the plugin cannot index, or parameters
-   * it rejects cause `createIndex` to fail. `listIndices` reports the type
+   * The plugin must be able to build the index from the column's data, which
+   * Lance calls a basic trainer. Lance's built-in plugins all can. A plugin
+   * registered only to read indexes built some other way cannot be created
+   * by name.
+   *
+   * An unknown plugin name, a plugin without a basic trainer, a column the
+   * plugin cannot index, or parameters it rejects cause `createIndex` to
+   * fail. `listIndices` reports the type
    * Lance records for the index: for example `"BloomFilter"` for
    * `bloomfilter`, or the plugin's own name, such as `"MinHashLsh"`, when
    * LanceDB has no type for it.

@@ -221,9 +221,15 @@ impl RTreeIndexBuilder {
 /// `labellist`, not `LABEL_LIST`. Names are case-insensitive, as in Lance, so
 /// the builder trims and lower-cases the name: `"ZoneMap"` selects `zonemap`.
 ///
+/// The plugin must be able to build the index from the column's data, which
+/// Lance calls a basic trainer. Lance's built-in plugins all can. A plugin
+/// registered only to read indexes built some other way cannot be created by
+/// name.
+///
 /// Parameters are optional and, if given, must be a JSON object. They use the
-/// plugin's own parameter names. Lance reports an unknown plugin name, or
-/// parameters the plugin rejects, when the index is built.
+/// plugin's own parameter names. Lance reports an unknown plugin name, a
+/// plugin without a basic trainer, or parameters the plugin rejects, when the
+/// index is built.
 ///
 /// Remote tables need a server that supports plugin indexes; see
 /// [`Index::Plugin`](crate::index::Index::Plugin).
