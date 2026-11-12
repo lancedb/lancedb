@@ -17,7 +17,12 @@ import {
   tableFromIPC,
 } from "./arrow";
 
-import { BlobFile, BlobReadOptions, runWithSignal } from "./blob";
+import {
+  BlobFile,
+  BlobRangeRequest,
+  BlobReadOptions,
+  runWithSignal,
+} from "./blob";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { IndexOptions } from "./indices";
 import { Job } from "./job";
@@ -673,6 +678,31 @@ export abstract class Table {
   abstract fetchBlobs(
     column: string,
     rowIds: readonly (bigint | number)[],
+    options?: BlobReadOptions,
+  ): Promise<(Buffer | null)[]>;
+
+  /**
+   * Materializes row-specific byte ranges at the table's current checkout.
+   * Preserves request order, duplicates, and nulls. Zero length returns an empty
+   * buffer for a non-null blob. Invalid ranges or missing rows reject the entire
+   * call. See {@link Table.fetchBlobs} for row-ID validity across versions.
+   *
+   * Remote tables require a server with the batched `fetch_blob_ranges` endpoint.
+   * Older servers' HTTP errors are propagated without a legacy-route fallback.
+   * Upgrade the server or explicitly use {@link Table.fetchBlobFiles} instead.
+   * Requests are split at 1024 ranges and 64 MiB, including individual larger
+   * ranges, using one exact branch and version. All output bytes occupy memory.
+   *
+   * @example
+   * ```ts
+   * const bytes = await table.fetchBlobRanges("image", [
+   *   { rowId: 10n, offset: 0n, length: 1024n },
+   * ]);
+   * ```
+   */
+  abstract fetchBlobRanges(
+    column: string,
+    requests: readonly BlobRangeRequest[],
     options?: BlobReadOptions,
   ): Promise<(Buffer | null)[]>;
 
@@ -1491,6 +1521,23 @@ export class LocalTable extends Table {
       this.inner.fetchBlobs(column, rowIdsToBigInts(rowIds), signal),
     );
     // N-API Option maps missing values to undefined. Collapse those to null.
+    return values.map((value) => value ?? null);
+  }
+
+  async fetchBlobRanges(
+    column: string,
+    requests: readonly BlobRangeRequest[],
+    options?: BlobReadOptions,
+  ): Promise<(Buffer | null)[]> {
+    const rowIds = rowIdsToBigInts(requests.map((request) => request.rowId));
+    const ranges = requests.map((request, i) => ({
+      rowId: rowIds[i],
+      offset: request.offset,
+      length: request.length,
+    }));
+    const values = await runWithSignal(options?.signal, (signal) =>
+      this.inner.fetchBlobRanges(column, ranges, signal),
+    );
     return values.map((value) => value ?? null);
   }
 

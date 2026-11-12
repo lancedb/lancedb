@@ -5121,6 +5121,38 @@ def blob_remote_table(*, server_version=Version("0.5.0"), location=None):
             request.end_headers()
             with pa.ipc.new_file(request.wfile, response_table.schema) as writer:
                 writer.write_table(response_table)
+        elif request.path == "/v1/table/test/fetch_blob_ranges/":
+            size = int(request.headers["Content-Length"])
+            body = json.loads(request.rfile.read(size))
+            payloads = {10: b"alpha", 20: None, 30: b"gamma", 40: b""}
+            values = []
+            for item in body["ranges"]:
+                row, offset, length = (
+                    item[key] for key in ("row_id", "offset", "length")
+                )
+                error = None
+                if row not in payloads:
+                    error = "only 1 exist"
+                elif payloads[row] is not None and offset + length > len(payloads[row]):
+                    error = "range exceeds blob size"
+                if error:
+                    request.send_response(400)
+                    request.end_headers()
+                    request.wfile.write(error.encode())
+                    return
+                payload = payloads[row]
+                values.append(
+                    None if payload is None else payload[offset : offset + length]
+                )
+            response_table = pa.table(
+                {"value": pa.array(values, type=pa.large_binary())}
+            )
+            request.send_response(200)
+            request.send_header("Content-Type", "application/vnd.apache.arrow.stream")
+            request.send_header("x-lancedb-version", "1")
+            request.end_headers()
+            with pa.ipc.new_stream(request.wfile, response_table.schema) as writer:
+                writer.write_table(response_table)
         elif request.path == "/v1/table/test/fetch_blobs/":
             content_len = int(request.headers.get("Content-Length", 0))
             body = json.loads(request.rfile.read(content_len))
@@ -5200,12 +5232,12 @@ async def test_remote_fetch_blob_ranges(use_async):
         assert isinstance(result, pa.LargeBinaryArray)
         assert result.to_pylist() == [b"mma", b"lph", None, b"al", b"", b"", b"mma"]
 
-        for invalid, message in [
-            ([(10, 0, 1), (99, 0, 1)], "only 1 exist"),
-            ([(10, 4, 2)], "exceeds blob size"),
-            ([(20, 2**64 - 1, 1)], "overflows u64"),
+        for invalid, message, exception in [
+            ([(10, 0, 1), (99, 0, 1)], "only 1 exist", HttpError),
+            ([(10, 4, 2)], "exceeds blob size", HttpError),
+            ([(20, 2**64 - 1, 1)], "overflows u64", ValueError),
         ]:
-            with pytest.raises(ValueError, match=message):
+            with pytest.raises(exception, match=message):
                 result = table.fetch_blob_ranges("image", invalid)
                 if use_async:
                     await result
