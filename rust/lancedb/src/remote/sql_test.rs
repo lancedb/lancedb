@@ -3219,24 +3219,42 @@ async fn secret_writes_bind_credentials_and_never_put_them_in_sql() {
             panic!("unexpected REST request: {}", request.url().path());
         })
         .with_sql_client(client);
-        db.create_secret("api-key", "credential's value", &["team".into()])
+        let connection = Connection::new(
+            Arc::new(db),
+            Arc::new(crate::embeddings::MemoryRegistry::new()),
+        );
+        connection
+            .create_secret("api-key", "credential's value", &["team".into()])
             .await
             .unwrap();
-        db.alter_secret("api-key", "rotated-value", &["team".into()])
+        connection
+            .create_secret("api-key", "ignored-value", &["team".into()])
+            .exist_ok(true)
             .await
             .unwrap();
-        db.drop_secret("api-key", &["team".into()]).await.unwrap();
+        connection
+            .alter_secret("api-key", "rotated-value", &["team".into()])
+            .await
+            .unwrap();
+        connection
+            .drop_secret("api-key", &["team".into()])
+            .await
+            .unwrap();
         assert_eq!(
             statements.lock().unwrap().as_slice(),
             ["DROP SECRET IF EXISTS \"api-key\""]
         );
         let seen = exchanges.lock().unwrap();
-        assert_eq!(seen.len(), 2);
+        assert_eq!(seen.len(), 3);
         assert_eq!(
             seen[0].0,
             "CREATE SECRET \"api-key\" TYPE = GENERIC_STRING SECRET_STRING = $1"
         );
-        assert_eq!(seen[1].0, "ALTER SECRET \"api-key\" SET SECRET_STRING = $1");
+        assert_eq!(
+            seen[1].0,
+            "CREATE SECRET IF NOT EXISTS \"api-key\" TYPE = GENERIC_STRING SECRET_STRING = $1"
+        );
+        assert_eq!(seen[2].0, "ALTER SECRET \"api-key\" SET SECRET_STRING = $1");
         assert_eq!(
             seen[0]
                 .1
@@ -3250,7 +3268,7 @@ async fn secret_writes_bind_credentials_and_never_put_them_in_sql() {
             "credential's value"
         );
         assert_eq!(
-            seen[1]
+            seen[2]
                 .1
                 .as_ref()
                 .unwrap()

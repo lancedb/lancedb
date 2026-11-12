@@ -40,6 +40,7 @@ mod function;
 pub(super) mod materialized_view;
 mod objects;
 mod secret;
+pub(super) use secret::SecretWriteOperation;
 mod stream;
 mod view;
 
