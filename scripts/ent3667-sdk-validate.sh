@@ -6,7 +6,7 @@ set -euo pipefail
 
 source_repo=${1:?provide the product checkout}
 evidence=${2:?provide an absolute evidence directory}
-expected_source=057ede76976bf0b54a6b411234e984fe73ab8b0c
+expected_source=a42d6800fe5ea5bef4eb64a9b51e8df2c2584249
 driver_repo=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
 mkdir -p "$evidence"
 test ! -e "$evidence/run.log"
@@ -26,6 +26,8 @@ for selector in \
     test_literal_function_binding_requires_complete_input_schema; do
     grep -Fq "tests::$selector ... ok" "$evidence/rust.log"
 done
+cargo test --locked -p lancedb --features remote --lib remote::table::tests::test_add_scalar_function_column_sends_atomic_null_declaration -- --nocapture 2>&1 | tee "$evidence/transport.log"
+grep -q 'test result: ok. 4 passed; 0 failed;' "$evidence/transport.log"
 cd python
 uv sync --locked --no-install-project --extra tests --extra dev
 uv run --no-sync maturin develop --locked --extras tests,dev 2>&1 | tee "$evidence/native-python-build.log"
