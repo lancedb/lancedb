@@ -6,7 +6,7 @@ set -euo pipefail
 
 source_repo=${1:?provide the product checkout}
 evidence=${2:?provide an absolute evidence directory}
-expected_source=a42d6800fe5ea5bef4eb64a9b51e8df2c2584249
+expected_source=53ff80a2d09ff1189f48a758e08864af379814e6
 driver_repo=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
 mkdir -p "$evidence"
 test ! -e "$evidence/run.log"
@@ -19,6 +19,14 @@ test "$(cat "$evidence/commit")" = "$expected_source"
 test -z "$(git status --porcelain)"
 export CARGO_BUILD_JOBS=2
 date -u +%FT%TZ
+if [ "${3:-all}" = lint ]; then
+    cargo test --locked -p lancedb --features remote --lib table::computed_columns::tests::test_literal_function_metadata_survives_schema_mutation_guards -- --exact --nocapture >"$evidence/test.log" 2>&1
+    grep -q 'test result: ok. 1 passed; 0 failed;' "$evidence/test.log"
+    cargo clippy --locked -p lancedb --features remote --lib --tests --no-deps -- -D warnings >"$evidence/clippy.log" 2>&1
+    git diff --exit-code
+    git diff --cached --exit-code
+    exit 0
+fi
 cargo test --locked -p lancedb --features remote --lib table::computed_columns::tests -- --nocapture 2>&1 | tee "$evidence/rust.log"
 for selector in \
     test_literal_function_application_keeps_only_column_dependencies \
