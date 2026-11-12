@@ -377,9 +377,7 @@ impl<S: HttpSend + 'static> PartRequestCtx<'_, S> {
         tracker: Option<Arc<WriteProgressTracker>>,
     ) -> DataFusionResult<()> {
         let schema = input.schema();
-        let max_batch_bytes = (max_bytes as usize)
-            .min(crate::remote::util::IPC_BATCH_BYTES)
-            .max(1);
+        let max_batch_bytes = (max_bytes as usize).clamp(1, crate::remote::util::IPC_BATCH_BYTES);
         let stream = input.flat_map(move |batch| {
             futures::stream::iter(match batch {
                 Ok(batch) => crate::remote::util::split_batch(batch, max_batch_bytes)
@@ -403,7 +401,6 @@ impl<S: HttpSend + 'static> PartRequestCtx<'_, S> {
             };
             if self
                 .send_one_part(
-                    &schema,
                     max_bytes,
                     max_duration,
                     first,
@@ -470,7 +467,6 @@ impl<S: HttpSend + 'static> PartRequestCtx<'_, S> {
     /// with exactly the same transaction ID and bytes.
     async fn send_one_part(
         &self,
-        schema: &arrow_schema::SchemaRef,
         max_bytes: u64,
         max_duration: Option<Duration>,
         first: RecordBatch,
@@ -478,11 +474,12 @@ impl<S: HttpSend + 'static> PartRequestCtx<'_, S> {
         queued: &mut std::collections::VecDeque<RecordBatch>,
         tracker: &Option<Arc<WriteProgressTracker>>,
     ) -> DataFusionResult<bool> {
+        let schema = input.schema();
         let options = arrow_ipc::writer::IpcWriteOptions::default()
             .try_with_compression(Some(CompressionType::LZ4_FRAME))?;
         let mut writer = arrow_ipc::writer::StreamWriter::try_new_with_options(
             Vec::new(),
-            schema,
+            &schema,
             options.clone(),
         )?;
         let started = Instant::now();
@@ -516,7 +513,7 @@ impl<S: HttpSend + 'static> PartRequestCtx<'_, S> {
                     pending = Some(batch.slice(0, middle));
                     writer = arrow_ipc::writer::StreamWriter::try_new_with_options(
                         Vec::new(),
-                        schema,
+                        &schema,
                         options.clone(),
                     )?;
                     continue;
