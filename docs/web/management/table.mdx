@@ -708,6 +708,25 @@ table changes while the query runs, the query runs again, up to three times:
     </CodeBlock>
 </CodeGroup>
 
+{/* Draft for the Enterprise TypeScript bytes release. Replace the retry guidance above only after SDK and serving-node rollout.
+
+Local queries retry up to three times if the table changes while they run.
+Remote queries instead bind payload fetches to the version and immutable
+snapshot identity from the executed query response. They do not rerun the query
+against a newer version to recover missing payloads. Both `toArray()` and
+`toArrow()` discover Blob fields from that response, including fields added
+after the table handle was opened.
+
+Every serving node must support `x-lancedb-query-version` and
+`x-lancedb-query-snapshot`, enforce the requested identity when fetching bytes,
+and echo it in the fetch response. Proxies must forward these headers. Missing
+or mismatched provenance fails explicitly; use `blobMode: "descriptions"` until
+the rollout is complete. Keep queried versions available for deferred reads:
+snapshot identities do not prevent version deletion. Dropping and recreating a
+table cannot substitute the replacement's bytes, even if its version is reused.
+Hybrid byte queries require matching snapshot provenance from both responses.
+*/}
+
 #### Read blobs on demand {#multimodal-read-blobs}
 
 Query the rows you want and pass their `_rowid` values to a fetch method.
