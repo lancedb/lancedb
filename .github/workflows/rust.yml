@@ -154,6 +154,8 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: "stable"
+          # The explicit cache below runs after lock removal and only saves on main.
+          cache: false
       # Remove cargo.lock to force a fresh build
       - name: Remove Cargo.lock
         run: rm -f Cargo.lock
