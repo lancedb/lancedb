@@ -5224,6 +5224,8 @@ def blob_remote_table(
 @pytest.mark.parametrize("framing", ["file", "stream"])
 @pytest.mark.parametrize("method", ["to_arrow", "to_list", "to_pandas", "to_batches"])
 async def test_remote_blob_bytes_conversion(use_async, framing, method):
+    if method == "to_pandas":
+        pytest.importorskip("pandas")
     requests = []
     with blob_remote_table(framing=framing, requests=requests) as remote_table:
         table = remote_table._table if use_async else remote_table
