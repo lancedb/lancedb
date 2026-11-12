@@ -47,7 +47,7 @@ async def test_exist_ok_preserves_materialized_data(
         )
         source = db.create_table("source", [{"id": 1}])
         original = db.create_materialized_view("saved", "source", exist_ok=True)
-        definition = original.definition()
+        definition = original.definition
         version = original.table.version
         source.add([{"id": 2}])
         if background:
@@ -56,7 +56,7 @@ async def test_exist_ok_preserves_materialized_data(
             kept = db.open_materialized_view("saved")
         else:
             kept = db.create_materialized_view("saved", "missing", exist_ok=True)
-        assert kept.definition().query == definition.query
+        assert kept.definition.query == definition.query
         assert kept.table.version == version
         assert kept.table.to_arrow().to_pylist() == [{"id": 1}]
         with pytest.raises(ValueError, match="already exists"):
