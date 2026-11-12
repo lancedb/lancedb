@@ -258,9 +258,7 @@ fn source_field(expr: &Arc<dyn PhysicalExpr>, fields: &[Option<String>]) -> Opti
         return fields.get(column.index()).cloned().flatten();
     }
     let call = expr.downcast_ref::<ScalarFunctionExpr>()?;
-    if call.fun().inner().downcast_ref::<GetFieldFunc>().is_none() {
-        return None;
-    }
+    call.fun().inner().downcast_ref::<GetFieldFunc>()?;
     let (root, path) = call.args().split_first()?;
     let mut source = source_field(root, fields)?;
     for component in path {
