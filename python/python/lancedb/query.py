@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
@@ -835,10 +836,13 @@ class FullTextSearchQuery(pydantic.BaseModel):
     query: str | FullTextQuery
         If a string, it is treated as a MatchQuery.
         If a FullTextQuery object, it is used directly.
+    wand_factor: Optional[float]
+        Factor for dynamic pruning in WAND (Weak AND) search.
     """
 
     columns: Optional[List[str]] = None
     query: Union[str, FullTextQuery]
+    wand_factor: Optional[float] = None
 
 
 class Query(pydantic.BaseModel):
@@ -1086,6 +1090,7 @@ class Query(pydantic.BaseModel):
             query.full_text_query = FullTextSearchQuery(
                 columns=None,
                 query=req.full_text_search,
+                wand_factor=getattr(req, "wand_factor", None),
             )
         return query
 
@@ -2515,6 +2520,27 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         if isinstance(fts_columns, str):
             fts_columns = [fts_columns]
         self._fts_columns = fts_columns
+        self._wand_factor = None
+
+    def wand_factor(self, wand_factor: Optional[float]) -> LanceFtsQueryBuilder:
+        """Set the WAND factor for full text search.
+
+        Parameters
+        ----------
+        wand_factor: Optional[float]
+            The WAND factor to use, or ``None`` to restore the default.
+
+        Returns
+        -------
+        LanceFtsQueryBuilder
+            The LanceFtsQueryBuilder object.
+        """
+        if wand_factor is not None and (
+            wand_factor < 0 or not math.isfinite(wand_factor)
+        ):
+            raise ValueError("wand_factor must be finite and non-negative")
+        self._wand_factor = wand_factor
+        return self
 
     def phrase_query(self, phrase_query: bool = True) -> LanceFtsQueryBuilder:
         """Set whether to use phrase query.
@@ -2572,7 +2598,9 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             fragment_ids=self._fragment_ids,
             use_rte=self._use_rte,
             full_text_query=FullTextSearchQuery(
-                query=self._query_with_phrase_semantics(), columns=self._fts_columns
+                query=self._query_with_phrase_semantics(),
+                columns=self._fts_columns,
+                wand_factor=self._wand_factor,
             ),
             offset=self._offset,
             fast_search=self._fast_search,
@@ -2731,6 +2759,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._refine_factor = None
         self._distance_type = None
         self._phrase_query = None
+        self._wand_factor = None
         self._lower_bound = None
         self._upper_bound = None
         # WAL-PK-FUSION: delete both, and the `with_row_id` override below.
@@ -2792,6 +2821,26 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             The LanceHybridQueryBuilder object.
         """
         self._phrase_query = phrase_query
+        return self
+
+    def wand_factor(self, wand_factor: Optional[float]) -> LanceHybridQueryBuilder:
+        """Set the WAND factor for the full text search component.
+
+        Parameters
+        ----------
+        wand_factor: Optional[float]
+            The WAND factor to use, or ``None`` to restore the default.
+
+        Returns
+        -------
+        LanceHybridQueryBuilder
+            The LanceHybridQueryBuilder object.
+        """
+        if wand_factor is not None and (
+            wand_factor < 0 or not math.isfinite(wand_factor)
+        ):
+            raise ValueError("wand_factor must be finite and non-negative")
+        self._wand_factor = wand_factor
         return self
 
     def to_query_object(self) -> Query:
@@ -3448,6 +3497,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._fts_query.use_rte(self._use_rte)
         if self._phrase_query:
             self._fts_query.phrase_query(True)
+        if self._wand_factor is not None:
+            self._fts_query.wand_factor(self._wand_factor)
         if self._distance_type:
             self._vector_query.metric(self._distance_type)
         if self._nprobes is not None:
@@ -4413,6 +4464,29 @@ class AsyncFTSQuery(AsyncStandardQuery):
     def get_query(self) -> str:
         return self._inner.get_query()
 
+    def wand_factor(self, wand_factor: Optional[float]) -> AsyncFTSQuery:
+        """Set the WAND factor for full text search.
+
+        Parameters
+        ----------
+        wand_factor: Optional[float]
+            The WAND factor to use, or ``None`` to restore the default.
+
+        Returns
+        -------
+        AsyncFTSQuery
+            The AsyncFTSQuery object.
+        """
+        if wand_factor is not None and (
+            wand_factor < 0 or not math.isfinite(wand_factor)
+        ):
+            raise ValueError("wand_factor must be finite and non-negative")
+        self._inner.wand_factor(wand_factor)
+        return self
+
+    def get_wand_factor(self) -> Optional[float]:
+        return self._inner.get_wand_factor()
+
     def rerank(
         self,
         reranker: Reranker = RRFReranker(),
@@ -4889,6 +4963,29 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         self._reranker = reranker
 
         return self
+
+    def wand_factor(self, wand_factor: Optional[float]) -> AsyncHybridQuery:
+        """Set the WAND factor for the full text search component.
+
+        Parameters
+        ----------
+        wand_factor: Optional[float]
+            The WAND factor to use, or ``None`` to restore the default.
+
+        Returns
+        -------
+        AsyncHybridQuery
+            The AsyncHybridQuery object.
+        """
+        if wand_factor is not None and (
+            wand_factor < 0 or not math.isfinite(wand_factor)
+        ):
+            raise ValueError("wand_factor must be finite and non-negative")
+        self._inner.wand_factor(wand_factor)
+        return self
+
+    def get_wand_factor(self) -> Optional[float]:
+        return self._inner.get_wand_factor()
 
     async def _blob_output_schema(self) -> pa.Schema:
         vector_query = AsyncVectorQuery(self._inner.to_vector_query(), self._table)

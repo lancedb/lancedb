@@ -118,10 +118,18 @@ async fn can_execute_namespace_query(table: &NativeTable, query: &AnyQuery) -> R
 }
 
 fn requires_local_namespace_execution(query: &AnyQuery) -> bool {
-    // The namespace QueryTable request cannot represent approx_mode, search_effort or use_rte.
+    // The namespace QueryTable request cannot represent approx_mode, search_effort, use_rte, or wand_factor.
     // For use_rte that is worse than a tuning miss: RTE read routing lives only
     // in `create_plan`, so a pushed-down query would return stale base-only data.
-    if query.base().use_rte.is_some() || query.base().has_take() {
+    if query.base().use_rte.is_some()
+        || query.base().has_take()
+        || query
+            .base()
+            .full_text_search
+            .as_ref()
+            .and_then(|fts| fts.wand_factor)
+            .is_some()
+    {
         return true;
     }
     matches!(
@@ -1335,6 +1343,44 @@ mod tests {
         let request = convert_to_namespace_query(&explicitly_unbounded_query).unwrap();
         assert_eq!(request.nprobes, Some(8));
         assert_eq!(request.maximum_nprobes, Some(0));
+    }
+
+    #[test]
+    fn test_namespace_query_wand_factor_pushdown_compatibility() {
+        let fts = lance_index::scalar::FullTextSearchQuery::new("test".into());
+        let default_query = AnyQuery::Query(QueryRequest {
+            full_text_search: Some(fts),
+            ..Default::default()
+        });
+        assert!(!requires_local_namespace_execution(&default_query));
+
+        let mut fts_with_wand = lance_index::scalar::FullTextSearchQuery::new("test".into());
+        fts_with_wand.wand_factor = Some(1.5);
+        let wand_query = AnyQuery::Query(QueryRequest {
+            full_text_search: Some(fts_with_wand.clone()),
+            ..Default::default()
+        });
+        assert!(requires_local_namespace_execution(&wand_query));
+
+        let default_hybrid = AnyQuery::VectorQuery(VectorQueryRequest {
+            base: QueryRequest {
+                full_text_search: Some(lance_index::scalar::FullTextSearchQuery::new(
+                    "test".into(),
+                )),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        assert!(!requires_local_namespace_execution(&default_hybrid));
+
+        let wand_hybrid = AnyQuery::VectorQuery(VectorQueryRequest {
+            base: QueryRequest {
+                full_text_search: Some(fts_with_wand),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        assert!(requires_local_namespace_execution(&wand_hybrid));
     }
 
     #[test]
