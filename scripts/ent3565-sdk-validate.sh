@@ -15,7 +15,7 @@ git -C "$repo" diff --cached --exit-code
 date -u +%FT%TZ
 cd "$repo"
 cargo test --quiet -p lancedb --features remote --lib server_info -- --nocapture 2>&1 | tee "$evidence/rust.log"
-grep -q 'test result: ok. 2 passed; 0 failed;' "$evidence/rust.log"
+grep -q 'test result: ok. 3 passed; 0 failed;' "$evidence/rust.log"
 date -u +%FT%TZ
 cd "$repo/python"
 uv run --extra tests --extra dev maturin develop --extras tests,dev
