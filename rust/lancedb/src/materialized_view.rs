@@ -1686,6 +1686,7 @@ impl CreateMaterializedViewBuilder {
     /// Defaults to false. A skipped creation does not refresh the view.
     ///
     /// ```no_run
+    /// # #![recursion_limit = "256"]
     /// # async fn example(db: &lancedb::Connection) -> lancedb::Result<()> {
     /// db.create_materialized_view("saved", "source").exist_ok(true).execute().await?;
     /// # Ok(())
