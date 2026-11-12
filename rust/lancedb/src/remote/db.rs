@@ -31,7 +31,7 @@ use crate::job::Job;
 use crate::listing::{ListingOptions, ListingPage};
 use crate::materialized_view::CreateMaterializedViewRequest;
 use crate::remote::job::{PauseJobResponse, RemoteJob, ResumeJobResponse, job_state_to_client};
-use crate::remote::util::stream_as_body;
+use crate::remote::util::create_body;
 use crate::secrets::SecretInfo;
 use crate::table::BaseTable;
 use crate::utils::{
@@ -1497,7 +1497,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             }
         }
         let data_schema = request.data.schema();
-        let body = stream_as_body(request.data.scan_as_stream())?;
+        let body = create_body(request.data.scan_as_stream()).await?;
 
         let identifier = build_table_identifier(&request.name, &request.namespace_path)?;
         let req = self
@@ -2621,6 +2621,147 @@ mod tests {
         .unwrap();
         let table = conn.create_table("table1", data).execute().await.unwrap();
         assert_eq!(table.name(), "table1");
+    }
+
+    #[tokio::test]
+    async fn test_create_table_over_budget_never_reaches_server() {
+        use rand::{RngCore, SeedableRng, rngs::SmallRng};
+        let mut bytes = vec![0u8; 8 * 1024 * 1024];
+        SmallRng::seed_from_u64(42).fill_bytes(&mut bytes);
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "payload",
+                DataType::LargeBinary,
+                true,
+            )])),
+            vec![Arc::new(arrow_array::LargeBinaryArray::from(vec![Some(
+                bytes.as_slice(),
+            )]))],
+        )
+        .unwrap();
+        for overwrite in [false, true] {
+            let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let seen = requests.clone();
+            let conn = Connection::new_with_handler(move |_| {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                http::Response::builder().status(200).body("").unwrap()
+            });
+            let input: Box<dyn arrow_array::RecordBatchReader + Send> =
+                Box::new(arrow_array::RecordBatchIterator::new(
+                    (0..34).map(|_| Ok(batch.clone())).collect::<Vec<_>>(),
+                    batch.schema(),
+                ));
+            let mut create = conn.create_table("table1", input);
+            if overwrite {
+                create = create.mode(CreateTableMode::Overwrite);
+            }
+            let error = create.execute().await.unwrap_err();
+            let message = error.to_string();
+            assert!(message.contains("single-request budget"), "{message}");
+            assert!(
+                message.contains("schema=") && message.contains("progress=True"),
+                "{message}"
+            );
+            // The same assertion covers a new half-table and damage to an
+            // existing table under overwrite: neither mode sends a request.
+            assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_table_slices_large_batches_in_one_atomic_request() {
+        let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = requests.clone();
+        let conn = Connection::new_with_handler(move |request| {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let bytes = request.body().unwrap().as_bytes().unwrap();
+            let batches =
+                arrow_ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)
+                    .unwrap()
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .unwrap();
+            assert!(batches.len() > 1);
+            assert_eq!(
+                batches.iter().map(|b| b.num_rows()).sum::<usize>(),
+                4_000_000
+            );
+            http::Response::builder().status(200).body("").unwrap()
+        });
+        let input = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from_iter_values(0..4_000_000))],
+        )
+        .unwrap();
+        conn.create_table("table1", input).execute().await.unwrap();
+        assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_create_table_compacts_dictionary_slices_in_one_atomic_request() {
+        use arrow_array::{Array, DictionaryArray, StringArray, cast::AsArray, types::Int32Type};
+        use rand::{RngCore, SeedableRng, rngs::SmallRng};
+
+        let mut bytes = vec![0; 128 * 72 * 1024];
+        SmallRng::seed_from_u64(4977).fill_bytes(&mut bytes);
+        let strings: Vec<String> = bytes
+            .chunks_exact(72 * 1024)
+            .map(|chunk| chunk.iter().map(|b| char::from(b'!' + b % 90)).collect())
+            .collect();
+        let mut batches = Vec::new();
+        for values in [strings.clone(), strings.iter().rev().cloned().collect()] {
+            let dict = DictionaryArray::<Int32Type>::new(
+                Int32Array::from_iter_values(0..128),
+                Arc::new(StringArray::from(values)),
+            );
+            let schema = Arc::new(Schema::new(vec![Field::new(
+                "category",
+                dict.data_type().clone(),
+                false,
+            )]));
+            batches.push(RecordBatch::try_new(schema, vec![Arc::new(dict)]).unwrap());
+        }
+        let schema = batches[0].schema();
+        let expected = strings
+            .iter()
+            .chain(strings.iter().rev())
+            .cloned()
+            .collect::<Vec<_>>();
+        let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = requests.clone();
+        let wire_schema = schema.clone();
+        let conn = Connection::new_with_handler(move |request| {
+            assert_eq!(request.url().path(), "/v1/table/table1/create/");
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let reader =
+                arrow_ipc::reader::StreamReader::try_new(std::io::Cursor::new(body), None).unwrap();
+            assert_eq!(reader.schema(), wire_schema);
+            let batches = reader.collect::<std::result::Result<Vec<_>, _>>().unwrap();
+            assert!(
+                (2..=8).contains(&batches.len()),
+                "dictionary produced {} encoding slices",
+                batches.len()
+            );
+            let actual = batches
+                .iter()
+                .flat_map(|batch| {
+                    let values = arrow_cast::cast(batch.column(0), &DataType::Utf8).unwrap();
+                    values
+                        .as_string::<i32>()
+                        .iter()
+                        .map(|s| s.unwrap().to_owned())
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected);
+            assert!(body.len() < 2 * bytes.len() + 64 * 1024);
+            http::Response::builder().status(200).body("").unwrap()
+        });
+        let input: Box<dyn arrow_array::RecordBatchReader + Send> = Box::new(
+            arrow_array::RecordBatchIterator::new(batches.into_iter().map(Ok), schema),
+        );
+        conn.create_table("table1", input).execute().await.unwrap();
+        assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

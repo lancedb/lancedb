@@ -40,6 +40,7 @@ from ._blob import (
     BlobFile,
     _normalize_blob_descriptor,
     _normalize_blob_row_ids,
+    _validate_blob_buffer_size,
     _wrap_blob_files,
     strip_auto_row_ids,
     validate_blob_mode,
@@ -2255,6 +2256,7 @@ class Table(ABC):
         progress: Optional[Union[bool, Callable, Any]] = None,
         write_parallelism: Optional[int] = None,
         allow_external_blob_outside_bases: bool = False,
+        retries: Optional[int] = None,
     ) -> AddResult:
         """Add more data to the [Table][lancedb.table.Table].
 
@@ -2315,6 +2317,10 @@ class Table(ABC):
             Store blob URIs that sit outside registered blob bases. The row
             keeps a reference, so the object has to stay readable. Local
             tables only.
+        retries: int, optional
+            Override the remote retry budget for this call (0 to 255). Zero
+            disables retries, including multipart parts. Ambiguous commits are
+            never replayed. Ignored by LanceDB Embedded.
 
         Returns
         -------
@@ -2664,6 +2670,8 @@ class Table(ABC):
         self,
         column: str,
         row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
+        *,
+        buffer_size: Optional[int] = None,
     ) -> "list[Optional[BlobFile]]":
         """Open lazy, seekable :class:`~lancedb._blob.BlobFile` handles.
 
@@ -2673,6 +2681,8 @@ class Table(ABC):
         ``pyarrow.Table`` carrying row identity via ``_rowid`` or a
         ``_lance_row_id`` field on the blob descriptor. Null blob values return
         ``None``. LanceDB Enterprise requires server version 0.5.0 or newer.
+        ``buffer_size`` controls sequential read-ahead in bytes (default 512 KiB).
+        Set it to 0 for sparse reads. Explicit range reads bypass this buffer.
 
         ``_rowid`` values stay valid after compaction when the table has stable
         row ids.
@@ -2682,7 +2692,10 @@ class Table(ABC):
 
     @abstractmethod
     def open_blob_file(
-        self, descriptor: Union[dict, pa.StructScalar, None]
+        self,
+        descriptor: Union[dict, pa.StructScalar, None],
+        *,
+        buffer_size: Optional[int] = None,
     ) -> Optional[BlobFile]:
         """Open a seekable file from a SQL ``blob_descriptor`` result.
 
@@ -2691,6 +2704,7 @@ class Table(ABC):
         not change this table's checkout. Null descriptors return ``None``.
         Payload bytes load only when the returned handle is read. An external
         blob with an unspecified size may require a metadata request on opening.
+        ``buffer_size`` controls sequential read-ahead (default 512 KiB; 0 disables).
 
         ```python
         rows = db.execute_query(
@@ -2701,7 +2715,9 @@ class Table(ABC):
         ```
         """
 
-    def open_blob_files(self, descriptors: Iterable) -> Iterator[Optional[BlobFile]]:
+    def open_blob_files(
+        self, descriptors: Iterable, *, buffer_size: Optional[int] = None
+    ) -> Iterator[Optional[BlobFile]]:
         """Iterate over lazy files from descriptor dictionaries or Arrow scalars.
 
         Accepts an Arrow array/chunked array or any iterable. Opens each handle
@@ -2716,7 +2732,10 @@ class Table(ABC):
         ```
         """
         for descriptor in descriptors:
-            yield self.open_blob_file(descriptor)
+            if buffer_size is None:
+                yield self.open_blob_file(descriptor)
+            else:
+                yield self.open_blob_file(descriptor, buffer_size=buffer_size)
 
     @abstractmethod
     def _execute_query(
@@ -3998,13 +4017,20 @@ class LanceTable(Table):
         self,
         column: str,
         row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
+        *,
+        buffer_size: Optional[int] = None,
     ) -> "list[Optional[BlobFile]]":
-        return LOOP.run(self._table.fetch_blob_files(column, row_ids))
+        return LOOP.run(
+            self._table.fetch_blob_files(column, row_ids, buffer_size=buffer_size)
+        )
 
     def open_blob_file(
-        self, descriptor: Union[dict, pa.StructScalar, None]
+        self,
+        descriptor: Union[dict, pa.StructScalar, None],
+        *,
+        buffer_size: Optional[int] = None,
     ) -> Optional[BlobFile]:
-        return LOOP.run(self._table.open_blob_file(descriptor))
+        return LOOP.run(self._table.open_blob_file(descriptor, buffer_size=buffer_size))
 
     @property
     def tags(self) -> Tags:
@@ -4800,6 +4826,7 @@ class LanceTable(Table):
         progress: Optional[Union[bool, Callable, Any]] = None,
         write_parallelism: Optional[int] = None,
         allow_external_blob_outside_bases: bool = False,
+        retries: Optional[int] = None,
     ) -> AddResult:
         """Add data to the table.
         If vector columns are missing and the table
@@ -4831,6 +4858,10 @@ class LanceTable(Table):
         allow_external_blob_outside_bases: bool, default False
             Allow blob URIs outside registered bases. See :meth:`Table.add`.
             LanceDB Embedded only.
+        retries: int, optional
+            Override the remote retry budget for this call (0 to 255). Zero
+            disables retries, including multipart parts. Ambiguous commits are
+            never replayed. Ignored by LanceDB Embedded.
 
         Returns
         -------
@@ -4848,6 +4879,7 @@ class LanceTable(Table):
                     progress=progress,
                     write_parallelism=write_parallelism,
                     allow_external_blob_outside_bases=allow_external_blob_outside_bases,
+                    retries=retries,
                 )
             )
         finally:
@@ -7059,6 +7091,7 @@ class AsyncTable:
         progress: Optional[Union[bool, Callable, Any]] = None,
         write_parallelism: Optional[int] = None,
         allow_external_blob_outside_bases: bool = False,
+        retries: Optional[int] = None,
     ) -> AddResult:
         """Add more data to the [AsyncTable][lancedb.table.AsyncTable].
 
@@ -7097,6 +7130,10 @@ class AsyncTable:
         allow_external_blob_outside_bases: bool, default False
             Allow blob URIs outside registered bases. See :meth:`Table.add`.
             LanceDB Embedded only.
+        retries: int, optional
+            Override the remote retry budget for this call (0 to 255). Zero
+            disables retries, including multipart parts. Ambiguous commits are
+            never replayed. Ignored by LanceDB Embedded.
 
         """
         schema = await self.schema()
@@ -7151,6 +7188,7 @@ class AsyncTable:
                 progress=progress,
                 write_parallelism=write_parallelism,
                 allow_external_blob_outside_bases=allow_external_blob_outside_bases,
+                retries=retries,
             )
         except RuntimeError as e:
             if "Cast error" in str(e):
@@ -8620,26 +8658,39 @@ class AsyncTable:
         self,
         column: str,
         row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
+        *,
+        buffer_size: Optional[int] = None,
     ) -> "list[Optional[BlobFile]]":
+        """Open handles with configurable read-ahead.
+
+        See [Table.fetch_blob_files][lancedb.table.Table.fetch_blob_files].
+        """
+        buffer_size = _validate_blob_buffer_size(buffer_size)
         handles = await self._inner.fetch_blob_files(
-            column, _normalize_blob_row_ids(row_ids, column)
+            column, _normalize_blob_row_ids(row_ids, column), buffer_size
         )
         return _wrap_blob_files(handles)
 
     async def open_blob_file(
-        self, descriptor: Union[dict, pa.StructScalar, None]
+        self,
+        descriptor: Union[dict, pa.StructScalar, None],
+        *,
+        buffer_size: Optional[int] = None,
     ) -> Optional[BlobFile]:
         """Open a snapshot-bound descriptor as a seekable file.
 
         See [Table.open_blob_file][lancedb.table.Table.open_blob_file].
         """
+        buffer_size = _validate_blob_buffer_size(buffer_size)
         descriptor = _normalize_blob_descriptor(descriptor)
         if descriptor is None:
             return None
-        return BlobFile(await self._inner.open_blob_file(json.dumps(descriptor)))
+        return BlobFile(
+            await self._inner.open_blob_file(json.dumps(descriptor), buffer_size)
+        )
 
     async def open_blob_files(
-        self, descriptors: Iterable
+        self, descriptors: Iterable, *, buffer_size: Optional[int] = None
     ) -> AsyncIterator[Optional[BlobFile]]:
         """Asynchronously iterate over files in descriptor order, preserving nulls.
 
@@ -8654,7 +8705,7 @@ class AsyncTable:
         ```
         """
         for descriptor in descriptors:
-            yield await self.open_blob_file(descriptor)
+            yield await self.open_blob_file(descriptor, buffer_size=buffer_size)
 
     @property
     def tags(self) -> AsyncTags:

@@ -375,8 +375,16 @@ file, up to 64 KiB by default, and larger values are stored outside it.
 A `blob` column keeps metadata separate from the payload bytes, so queries can
 filter rows without loading the blobs.
 
-Most queries return descriptors, which contain metadata about the blob instead
-of its bytes. You can
+{/* Draft for Blob v2 GA. Confirm release status before removing Early access.
+
+Blob v2 GA supports standard tables. Tables with Realtime or MemWAL enabled
+are outside the GA support scope.
+*/}
+
+SDK queries return descriptors by default, which contain metadata about the
+blob instead of its bytes. Enterprise SQL queries return payload bytes by
+default; use `blob_descriptor(column)` to select metadata instead. With an SDK,
+you can
 [read the bytes in the query results](#multimodal-blob-query-results) or
 [fetch them by row ID](#multimodal-read-blobs).
 
@@ -500,14 +508,41 @@ the default `"lazy"` mode because it would open `BlobFile` handles. Query with
 `blob_mode="descriptions"`, then read bytes with `fetch_blobs` or
 `fetch_blob_files`.
 
+{/* Draft for the Enterprise Python bytes release. Replace the released instructions above only after SDK and serving-node rollout.
+
+`blob_mode="bytes"` also supports Enterprise queries. The SDK locks all blob
+fetches, including streaming batches, to both the version in
+`x-lancedb-query-version` and the incarnation/revision identity in
+`x-lancedb-query-snapshot`, captured from the same query response. Every payload
+request verifies that identity against the actual opened dataset before reading
+rows. Concurrent writes therefore preserve the selected payloads. Dropping and
+recreating a table, even at the same location and version, cannot substitute the
+replacement's bytes: the original snapshot is served or the read fails explicitly.
+
+Upgrade the SDK and every serving node to support snapshot identities. A server
+that reports only a numeric query version, a legacy `x-lancedb-version` watermark,
+or Arrow schema metadata does not enable deferred bytes. Missing or unsupported
+identities raise `NotImplementedError`; use `"descriptions"` until the upgrade is
+complete. Ordinary queries, descriptors, and independent `fetch_blobs` calls keep
+working. Old SDKs keep their existing behavior and do not gain this protection
+from a server-only upgrade. Realtime/MemWAL and historical manifests without a
+native transaction identity do not support deferred bytes. Snapshot identities
+do not retain old versions; deleting the selected version still fails explicitly.
+In-memory tables and namespace `QueryTable` pushdown do not support bytes mode.
+On an Enterprise table, sync `Table.to_pandas()` and `Table.to_arrow()` are not
+supported; use `table.search()` instead. A query's `to_pandas()` also raises in
+the default `"lazy"` mode because remote lazy handles are not supported.
+*/}
+
 ###### Copy a subset of blob rows {#multimodal-copy-subset}
 
-Blob query results describe the stored payload; they are not the bytes to
-insert into another table. These APIs return different values:
+SDK descriptors identify stored payloads; materialize the bytes before inserting
+them into another table. These APIs return different values:
 
 | Read path | Value |
 | --- | --- |
-| SQL or an Arrow query in `"descriptions"` mode | Descriptor struct identifying the stored blob. Treat it as opaque. |
+| Enterprise SQL | Raw payload bytes by default. |
+| An SDK Arrow query in `"descriptions"` mode | Descriptor struct identifying the stored blob. Treat it as opaque. |
 | `table.fetch_blobs(column, row_ids)` | Arrow `large_binary` array; `.to_pylist()` gives `bytes` or `None` in the requested order. |
 | A Function parameter annotated `lancedb.BlobReader` | Lazy, seekable reader over the input blob, available inside the Function. |
 
@@ -545,6 +580,50 @@ Empty blobs remain `b""` and null blobs remain `None`. Fetch bounded batches
 for larger subsets; `fetch_blobs` materializes all requested bytes in memory.
 For incremental decoding, use `fetch_blob_files` instead.
 
+{/* Draft for the Enterprise Python bytes release. Replace the copy example above when snapshot-bound remote bytes are released.
+
+For Enterprise tables, prefer server-side `CREATE TABLE AS SELECT` or
+`INSERT INTO ... SELECT` to copy blobs without a client round trip:
+
+```sql
+CREATE TABLE image_subset AS SELECT id, image FROM images WHERE id < 100;
+-- To append to an existing destination:
+INSERT INTO image_subset SELECT id, image FROM images WHERE id >= 100 AND id < 200;
+```
+
+For SDK copies, query with `blob_mode="bytes"` to bind selection and payload
+reads to one snapshot. The following example copies up to 100 rows from an
+existing `images` table with an integer `id` and a blob `image` column.
+
+```python
+import lancedb
+import pyarrow as pa
+
+source = db.open_table("images")
+hits = (
+    source.search()
+    .where("id < 100")
+    .select(["id", "image"])
+    .limit(100)
+    .to_arrow(blob_mode="bytes")
+)
+subset = db.create_table(
+    "image_subset",
+    schema=pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")]),
+)
+if hits.num_rows:
+    subset.add(hits)
+```
+
+Empty blobs remain `b""` and null blobs remain `None`. Fetch bounded batches
+for larger subsets; `fetch_blobs` materializes all requested bytes in memory.
+For incremental decoding, use `fetch_blob_files` instead.
+
+Remote bytes mode requires a server that supports snapshot-bound Blob reads.
+Older servers and Realtime/MemWAL tables can still return descriptors, but
+bytes mode raises an explicit unsupported-operation error before fetching payloads.
+*/}
+
 `blob_mode="bytes"` materializes top-level and struct-nested blob columns. It
 raises `ValueError` when the selected columns include blobs
 inside a list. Select those columns with `blob_mode="descriptions"`, or leave
@@ -578,6 +657,19 @@ bytes are limited to eligible local plain scans. If concurrent writers can
 overwrite the table, use a separate reader checked out to a fixed version
 before querying. Otherwise, an overwrite can invalidate the row IDs used to
 fetch bytes and raise `ValueError`.
+
+{/* Draft for the Enterprise Python bytes release. Replace the streaming restrictions above after release.
+
+Bytes mode has the same restrictions as `to_arrow(blob_mode="bytes")`,
+including no blobs inside lists, namespace `QueryTable` pushdown, or query
+shapes that cannot preserve their row results. Enterprise queries require a
+valid `x-lancedb-query-version` and `x-lancedb-query-snapshot` response headers.
+Legacy v1 bytes are limited to
+eligible local plain scans. For local queries, if concurrent writers can
+overwrite the table, use a separate reader checked out to a fixed version
+before querying. Otherwise, an overwrite can invalidate the row IDs used to
+fetch bytes and raise `ValueError`.
+*/}
 
 ###### Optional pandas examples {#multimodal-blob-pandas}
 

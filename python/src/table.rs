@@ -1243,6 +1243,15 @@ impl PyBlobFile {
             .map_err(|e| blob_file_error("tell", e))
     }
 
+    fn set_buffer_size(self_: PyRef<'_, Self>, size: usize) -> PyResult<()> {
+        self_.ensure_open()?;
+        let inner = self_.inner.clone();
+        self_
+            .py()
+            .detach(move || block_on(async move { inner.set_buffer_size(size).await }))
+            .map_err(|e| blob_file_error("set_buffer_size", e))
+    }
+
     fn size(self_: PyRef<'_, Self>) -> u64 {
         self_.inner.size()
     }
@@ -1462,7 +1471,7 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (data, mode, progress=None, write_parallelism=None, allow_external_blob_outside_bases=false))]
+    #[pyo3(signature = (data, mode, progress=None, write_parallelism=None, allow_external_blob_outside_bases=false, retries=None))]
     pub fn add<'a>(
         self_: PyRef<'a, Self>,
         data: PyScannable,
@@ -1470,6 +1479,7 @@ impl Table {
         progress: Option<Py<PyAny>>,
         write_parallelism: Option<usize>,
         allow_external_blob_outside_bases: bool,
+        retries: Option<u8>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let mut op = self_
             .inner_ref()?
@@ -1481,6 +1491,9 @@ impl Table {
             op = op.mode(AddDataMode::Overwrite);
         } else {
             return Err(PyValueError::new_err(format!("Invalid mode: {}", mode)));
+        }
+        if let Some(retries) = retries {
+            op = op.retries(retries);
         }
         if let Some(write_parallelism) = write_parallelism {
             op = op.write_parallelism(write_parallelism);
@@ -1965,14 +1978,28 @@ impl Table {
     }
 
     /// Read blob bytes for `row_ids` from blob v2 column `column`.
-    #[pyo3(signature = (column, row_ids))]
+    #[pyo3(signature = (column, row_ids, *, version=None, snapshot_identity=None))]
     pub fn fetch_blobs(
         self_: PyRef<'_, Self>,
         column: String,
         row_ids: Vec<u64>,
+        version: Option<u64>,
+        snapshot_identity: Option<String>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
+            let inner = match (version, snapshot_identity) {
+                (None, None) => inner,
+                (Some(version), Some(identity)) => inner
+                    .query_snapshot_with_identity(version, &identity)
+                    .await
+                    .infer_error()?,
+                _ => {
+                    return Err(PyValueError::new_err(
+                        "deferred blob reads require both query version and snapshot identity",
+                    ));
+                }
+            };
             let blobs: LargeBinaryArray = inner
                 .fetch_blobs(column.as_str(), &row_ids)
                 .await
@@ -2019,11 +2046,12 @@ impl Table {
     }
 
     /// Open lazy blob handles for `row_ids` from blob v2 column `column`.
-    #[pyo3(signature = (column, row_ids))]
+    #[pyo3(signature = (column, row_ids, buffer_size=None))]
     pub fn fetch_blob_files(
         self_: PyRef<'_, Self>,
         column: String,
         row_ids: Vec<u64>,
+        buffer_size: Option<usize>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
@@ -2031,6 +2059,13 @@ impl Table {
                 .fetch_blob_files(column.as_str(), &row_ids)
                 .await
                 .infer_error()?;
+            if let Some(size) = buffer_size {
+                for file in handles.iter().flatten() {
+                    file.set_buffer_size(size)
+                        .await
+                        .map_err(|e| blob_file_error("set_buffer_size", e))?;
+                }
+            }
             Ok(handles
                 .into_iter()
                 .map(|handle| {
@@ -2043,16 +2078,22 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (descriptor))]
+    #[pyo3(signature = (descriptor, buffer_size=None))]
     pub fn open_blob_file<'py>(
         self_: PyRef<'py, Self>,
         descriptor: &str,
+        buffer_size: Option<usize>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let descriptor: BlobDescriptor = serde_json::from_str(descriptor)
             .map_err(|error| PyValueError::new_err(format!("invalid blob descriptor: {error}")))?;
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let file = inner.open_blob_file(&descriptor).await.infer_error()?;
+            if let Some(size) = buffer_size {
+                file.set_buffer_size(size)
+                    .await
+                    .map_err(|e| blob_file_error("set_buffer_size", e))?;
+            }
             Ok(PyBlobFile {
                 inner: Arc::new(file),
                 closed: AtomicBool::new(false),

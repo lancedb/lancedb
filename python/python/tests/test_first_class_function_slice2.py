@@ -18,6 +18,7 @@ import subprocess
 import sys
 import typing
 import urllib.parse
+import warnings
 from typing import Optional
 
 import pyarrow as pa
@@ -658,9 +659,11 @@ def test_function_image_requires_digest_reference(image):
 
 
 def test_function_gpu_marker_uses_gpu_runtime():
-    @function(pip=["cupy-cuda12x"], gpu=True, gpu_class="a10g")
-    def double_on_gpu(value: int) -> int:
-        return value * 2
+    with pytest.warns(UserWarning, match="uses a scalar callable"):
+
+        @function(pip=["cupy-cuda12x"], gpu=True, gpu_class="a10g")
+        def double_on_gpu(value: int) -> int:
+            return value * 2
 
     request = json.loads(double_on_gpu.registration_request.to_canonical_json())
     assert request["runtime"]["kind"] == "python_v2"
@@ -708,6 +711,60 @@ def test_function_gpu_marker_uses_gpu_runtime():
         PythonRuntimeSpec.model_validate(
             {**base_runtime, "gpu": True, "gpu_class": "H100"}
         )
+
+
+class _GpuScalarFunction:
+    def __call__(self, value: str) -> int:
+        return len(value)
+
+
+class _GpuArrayFunction:
+    def __call__(self, value: pa.Array) -> pa.Array:
+        return value
+
+
+def test_gpu_scalar_warning_names_the_vectorized_alternative():
+    with pytest.warns(UserWarning, match="model batch is not inferred"):
+
+        @function(gpu=True)
+        def scalar_embedding(value: str) -> list[int]:
+            return [len(value)]
+
+    input_schema = pa.schema([pa.field("value", pa.string(), nullable=False)])
+    with pytest.warns(UserWarning, match="uses a scalar callable"):
+        class_scalar = function(_GpuScalarFunction, gpu=True)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+
+        @function(
+            gpu=True, input_schema=input_schema, output_schema=pa.list_(pa.int64())
+        )
+        def array_embedding(value: pa.Array) -> pa.Array:
+            return value
+
+        @function(
+            gpu=True, input_schema=input_schema, output_schema=pa.list_(pa.int64())
+        )
+        def record_batch_embedding(value: pa.RecordBatch) -> pa.Array:
+            return value.column(0)
+
+        @function
+        def cpu_scalar(value: str) -> int:
+            return len(value)
+
+        class_embedding = function(
+            _GpuArrayFunction,
+            gpu=True,
+            input_schema=input_schema,
+            output_schema=pa.list_(pa.int64()),
+        )
+
+    assert not caught
+    assert array_embedding.registration_request.batch_size is None
+    assert record_batch_embedding.registration_request.batch_size is None
+    assert cpu_scalar.registration_request.batch_size is None
+    assert class_scalar.registration_request.batch_size is None
+    assert class_embedding.registration_request.batch_size is None
 
 
 def test_unknown_runtime_discards_payload_before_known_field_validation():
@@ -888,7 +945,7 @@ def test_function_rejects_a_module_level_namespace_alias(tmp_path):
     spec = importlib.util.spec_from_file_location("aliasing_udfs", module_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    with pytest.raises(ValueError, match="dynamic namespace access"):
+    with pytest.raises(ValueError, match="imports from namespace-access modules"):
         function(module.score)
 
 
@@ -899,7 +956,6 @@ def test_function_rejects_a_module_level_namespace_alias(tmp_path):
         "eval('THRESHOLD')",
         "(lambda g: g()['THRESHOLD'])(globals)",
         "__import__('sys').modules[__name__].THRESHOLD",
-        "sys.modules[__name__].THRESHOLD",
     ],
 )
 def test_function_rejects_dynamic_namespace_access(access):
@@ -911,9 +967,7 @@ def test_function_rejects_dynamic_namespace_access(access):
     )
     with pytest.raises(ValueError, match="dynamic namespace access"):
         _package_from_text(
-            "def score(value: int) -> int:\n"
-            "    import sys\n"
-            f"    return value + {access}\n"
+            f"def score(value: int) -> int:\n    return value + {access}\n"
         )
 
 

@@ -26,6 +26,7 @@ pub struct UpdateBuilder {
     parent: Arc<dyn BaseTable>,
     pub(crate) filter: Option<String>,
     pub(crate) columns: Vec<(String, String)>,
+    pub(crate) retries: Option<u8>,
 }
 
 impl UpdateBuilder {
@@ -34,7 +35,15 @@ impl UpdateBuilder {
             parent,
             filter: None,
             columns: Vec::new(),
+            retries: None,
         }
+    }
+
+    /// Override the remote retry budget for this call. `0` disables retries.
+    /// Ambiguous write results are never replayed. Ignored by embedded tables.
+    pub fn retries(mut self, retries: u8) -> Self {
+        self.retries = Some(retries);
+        self
     }
 
     /// Limits the update operation to rows matching the given filter

@@ -137,6 +137,13 @@ export interface AddDataOptions {
    * when the blob is read later.
    */
   allowExternalBlobOutsideBases?: boolean;
+
+  /**
+   * Override the remote retry budget for this call (0 to 255). Zero disables
+   * retries, including multipart parts. Ambiguous commits are never replayed.
+   * Ignored by LanceDB Embedded.
+   */
+  retries?: number;
 }
 
 export interface UpdateOptions {
@@ -1320,6 +1327,14 @@ export class LocalTable extends Table {
   }
 
   async add(data: Data, options?: Partial<AddDataOptions>): Promise<AddResult> {
+    if (
+      options?.retries !== undefined &&
+      (!Number.isInteger(options.retries) ||
+        options.retries < 0 ||
+        options.retries > 255)
+    ) {
+      throw new Error("retries must be an integer between 0 and 255");
+    }
     const mode = options?.mode ?? "append";
     const schema = await this.schema();
 
@@ -1342,6 +1357,7 @@ export class LocalTable extends Table {
       mode,
       progress,
       options?.allowExternalBlobOutsideBases,
+      options?.retries,
     );
   }
 
