@@ -95,6 +95,34 @@ const MIN_VERSION_HEADER: HeaderName = HeaderName::from_static("x-lancedb-min-ve
 const MIN_TIMESTAMP_HEADER: HeaderName = HeaderName::from_static("x-lancedb-min-timestamp");
 const MIN_READ_VERSION_HEADER: HeaderName = HeaderName::from_static("x-lancedb-min-read-version");
 const VERSION_HEADER: HeaderName = HeaderName::from_static("x-lancedb-version");
+const QUERY_SNAPSHOT_HEADER: &str = "x-lancedb-query-snapshot";
+
+fn valid_query_snapshot_identity(value: &str) -> bool {
+    value.strip_prefix("v1:").is_some_and(|digest| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
+}
+
+fn check_query_snapshot_response(
+    expected: Option<&str>,
+    response: &reqwest::Response,
+) -> Result<()> {
+    if let Some(expected) = expected
+        && response
+            .headers()
+            .get(QUERY_SNAPSHOT_HEADER)
+            .and_then(|value| value.to_str().ok())
+            != Some(expected)
+    {
+        return Err(Error::NotSupported { message: "Blob response did not verify the query snapshot identity; upgrade every serving node".into() });
+    }
+    Ok(())
+}
+
+const QUERY_VERSION_HEADER: HeaderName = HeaderName::from_static("x-lancedb-query-version");
 /// Asks for stream framing, which is decoded as it arrives. Servers that do not
 /// stream query results ignore this and answer with file framing.
 const QUERY_ACCEPT: &str =
@@ -613,6 +641,7 @@ pub struct RemoteTable<S: HttpSend = Sender> {
     /// Stamped onto every branch-accepting request so reads and writes resolve
     /// on the branch's own version chain rather than main's.
     branch: Option<String>,
+    expected_query_snapshot: Option<String>,
 }
 
 impl<S: HttpSend> std::fmt::Debug for RemoteTable<S> {
@@ -855,6 +884,7 @@ impl<S: HttpSend> RemoteTable<S> {
             wal_pk_fusion: PkFusionMemory::default(),
             freshness: Arc::new(Mutex::new(FreshnessState::default())),
             branch: None,
+            expected_query_snapshot: None,
         }
     }
 
@@ -891,6 +921,7 @@ impl<S: HttpSend> RemoteTable<S> {
             wal_pk_fusion: PkFusionMemory::default(),
             freshness: Arc::new(Mutex::new(FreshnessState::default())),
             branch,
+            expected_query_snapshot: None,
         }
     }
 
@@ -1170,20 +1201,37 @@ impl<S: HttpSend> RemoteTable<S> {
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
         let framing = resolve_arrow_ipc_framing(content_type.as_deref(), request_id)?;
+        let table_version = response
+            .headers()
+            .get(&VERSION_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|version| *version > 0);
 
-        match framing {
+        // Legacy version headers are freshness watermarks, not proof that the
+        // query and a later Blob read use the same immutable dataset.
+        let query_version = response
+            .headers()
+            .get(&QUERY_VERSION_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|version| *version > 0);
+
+        let query_identity = response
+            .headers()
+            .get(QUERY_SNAPSHOT_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| valid_query_snapshot_identity(value))
+            .map(str::to_owned);
+
+        let stream = match framing {
             ArrowIpcFraming::Stream => {
-                let table_version = response
-                    .headers()
-                    .get(&VERSION_HEADER)
-                    .and_then(|value| value.to_str().ok())
-                    .and_then(|value| value.parse().ok());
                 ipc_stream::read_ipc_stream(
                     response.bytes_stream(),
                     request_id.to_string(),
                     table_version,
                 )
-                .await
+                .await?
             }
             ArrowIpcFraming::File => {
                 // File framing keeps its footer at the end, so the whole body is
@@ -1192,9 +1240,21 @@ impl<S: HttpSend> RemoteTable<S> {
                 let reader = FileReader::try_new(Cursor::new(body), None)?;
                 let schema = reader.schema();
                 let stream = futures::stream::iter(reader).map_err(DataFusionError::from);
-                Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
+                Box::pin(RecordBatchStreamAdapter::new(schema, stream)) as SendableRecordBatchStream
             }
+        };
+        // Bind subsequent blob reads to the response's snapshot, never to a
+        // version sampled from the live table before or after the query.
+        let mut metadata = stream.schema().metadata().clone();
+        metadata.remove("lancedb:query_version");
+        metadata.remove("lancedb:query_snapshot");
+        if let Some(identity) = query_identity {
+            metadata.insert("lancedb:query_snapshot".into(), identity);
         }
+        if let Some(version) = query_version {
+            metadata.insert("lancedb:query_version".into(), version.to_string());
+        }
+        Ok(with_stream_metadata(stream, metadata))
     }
 
     fn apply_query_params(
@@ -1620,9 +1680,37 @@ impl<S: HttpSend> RemoteTable<S> {
             streams.await?
         };
 
+        if let Some(first) = streams.first() {
+            let schema = first.schema();
+            if streams.iter().skip(1).any(|stream| {
+                stream.schema().metadata().get("lancedb:query_version")
+                    != schema.metadata().get("lancedb:query_version")
+            }) {
+                return Err(Error::Runtime {
+                    message: "Remote query responses refer to different table snapshots; retry the query against a fixed version".into(),
+                });
+            }
+        }
+
+        let identities_agree = streams.first().is_none_or(|first| {
+            streams.iter().skip(1).all(|stream| {
+                stream.schema().metadata().get("lancedb:query_snapshot")
+                    == first.schema().metadata().get("lancedb:query_snapshot")
+            })
+        });
         Ok(streams
             .into_iter()
             .map(|stream| {
+                // Ordinary descriptor queries remain usable during an upgrade.
+                // Deferred bytes require every leg's identity, so never preserve
+                // the first leg's capability when another leg lacks or differs.
+                let stream = if identities_agree {
+                    stream
+                } else {
+                    let mut metadata = stream.schema().metadata().clone();
+                    metadata.remove("lancedb:query_snapshot");
+                    with_stream_metadata(stream, metadata)
+                };
                 let stream = restore_projection_order(stream, &query.base().select);
                 match deadline {
                     Some((deadline, timeout)) => {
@@ -1671,6 +1759,26 @@ impl<S: HttpSend> RemoteTable<S> {
             self.invalidate_schema_cache();
         }
     }
+}
+
+fn with_stream_metadata(
+    stream: SendableRecordBatchStream,
+    metadata: HashMap<String, String>,
+) -> SendableRecordBatchStream {
+    let schema = Arc::new(
+        stream
+            .schema()
+            .as_ref()
+            .clone()
+            .with_metadata(metadata.clone()),
+    );
+    let batches = stream.map(move |batch| {
+        batch.map(|mut batch| {
+            batch.schema_metadata_mut().clone_from(&metadata);
+            batch
+        })
+    });
+    Box::pin(RecordBatchStreamAdapter::new(schema, batches))
 }
 
 fn restore_projection_order(
@@ -1921,6 +2029,7 @@ mod test_utils {
                 wal_pk_fusion: PkFusionMemory::default(),
                 freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
+                expected_query_snapshot: None,
             }
         }
 
@@ -1948,6 +2057,7 @@ mod test_utils {
                 wal_pk_fusion: PkFusionMemory::default(),
                 freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
+                expected_query_snapshot: None,
             }
         }
 
@@ -1984,6 +2094,7 @@ mod test_utils {
                 wal_pk_fusion: PkFusionMemory::default(),
                 freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
+                expected_query_snapshot: None,
             }
         }
     }
@@ -2570,6 +2681,23 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             }
         }
     }
+    async fn query_snapshot_with_identity(
+        &self,
+        version: u64,
+        identity: &str,
+    ) -> Result<Arc<dyn BaseTable>> {
+        if version == 0 || !valid_query_snapshot_identity(identity) {
+            return Err(Error::InvalidInput {
+                message: "invalid or unsupported query snapshot identity".into(),
+            });
+        }
+        let mut snapshot = self.with_branch(self.branch.clone());
+        *snapshot.version.write().await = Some(version);
+        snapshot.reset_freshness(None, true);
+        snapshot.expected_query_snapshot = Some(identity.to_owned());
+        Ok(Arc::new(snapshot))
+    }
+
     async fn query_snapshot(&self) -> Result<Arc<dyn BaseTable>> {
         let description = self.describe().await?;
         let TableDescription {
@@ -6704,8 +6832,15 @@ mod tests {
         assert_eq!(request_sizes.lock().unwrap().as_slice(), &[1024, 1]);
     }
 
+    #[rstest::rstest]
+    #[case(false)]
+    #[case(true)]
     #[tokio::test]
-    async fn test_fetch_blobs_splits_byte_limited_requests_and_reads_large_blob_by_range() {
+    async fn test_fetch_blobs_splits_byte_limited_requests_and_reads_large_blob_by_range(
+        #[case] guarded: bool,
+    ) {
+        const IDENTITY: &str =
+            "v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         // Simulate a lower byte cap so this test exercises the same 400 response
         // without allocating 64 MiB of blob data.
         let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -6714,8 +6849,15 @@ mod tests {
             "my_table",
             semver::Version::new(0, 5, 0),
             move |request| {
+                if guarded {
+                    assert_eq!(request.headers()[QUERY_SNAPSHOT_HEADER], IDENTITY);
+                }
                 let path = request.url().path();
                 if path == "/v1/table/my_table/describe/" {
+                    assert!(
+                        !guarded,
+                        "a later describe cannot establish the producing identity"
+                    );
                     return http::Response::builder()
                         .status(200)
                         .body(br#"{"version":42,"schema":{"fields":[]}}"#.to_vec())
@@ -6766,6 +6908,7 @@ mod tests {
                     return http::Response::builder()
                         .status(200)
                         .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+                        .header(QUERY_SNAPSHOT_HEADER, IDENTITY)
                         .body(write_ipc_stream_uncompressed(&batch))
                         .unwrap();
                 }
@@ -6781,12 +6924,14 @@ mod tests {
                 match range {
                     "bytes=0-0" => http::Response::builder()
                         .status(206)
+                        .header(QUERY_SNAPSHOT_HEADER, IDENTITY)
                         .header(reqwest::header::CONTENT_RANGE, "bytes 0-0/10")
                         .header(VERSION_HEADER, "42")
                         .body(b"0".to_vec())
                         .unwrap(),
                     "bytes=0-9" => http::Response::builder()
                         .status(206)
+                        .header(QUERY_SNAPSHOT_HEADER, IDENTITY)
                         .header(reqwest::header::CONTENT_RANGE, "bytes 0-9/10")
                         .body(b"0123456789".to_vec())
                         .unwrap(),
@@ -6795,6 +6940,14 @@ mod tests {
             },
         );
 
+        let table = if guarded {
+            table
+                .query_snapshot_with_identity(42, IDENTITY)
+                .await
+                .unwrap()
+        } else {
+            table
+        };
         let blobs = table
             .fetch_blobs("image", &[10, 20, 30, 40, 20])
             .await

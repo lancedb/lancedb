@@ -749,7 +749,12 @@ class Table:
     def take_row_ids(self, row_ids: list[int]) -> TakeQuery: ...
     async def blob_columns(self) -> list[str]: ...
     async def fetch_blobs(
-        self, column: str, row_ids: list[int]
+        self,
+        column: str,
+        row_ids: list[int],
+        *,
+        version: Optional[int] = None,
+        snapshot_identity: Optional[str] = None,
     ) -> pa.LargeBinaryArray: ...
     async def fetch_blob_ranges(
         self,
