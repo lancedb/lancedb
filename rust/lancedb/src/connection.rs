@@ -51,7 +51,10 @@ pub use lance_file::version::LanceFileVersion;
 use lance_io::object_store::StorageOptions;
 use lance_io::object_store::{StorageOptionsAccessor, StorageOptionsProvider};
 
+mod create_secret;
 mod create_table;
+
+pub use create_secret::CreateSecretBuilder;
 
 pub(crate) fn merge_storage_options(
     store_params: &mut ObjectStoreParams,
@@ -853,20 +856,30 @@ impl Connection {
 
     /// Create a named Secret in this database.
     ///
-    /// Fails if the name is taken, so a create can never silently become a
-    /// rotation. There is no API that reads a stored credential back; the only
+    /// Fails if the name is taken unless [`CreateSecretBuilder::exist_ok`] is true,
+    /// in which case the existing value is left unchanged. There is no API that
+    /// reads a stored credential back; the only
     /// consumer is a Function that binds the Secret by name. LanceDB Embedded databases
     /// return [`Error::NotSupported`].
-    pub async fn create_secret(
+    ///
+    /// ```
+    /// # async fn example(connection: &lancedb::Connection) -> lancedb::Result<()> {
+    /// connection.create_secret("api-key", "credential", &[]).exist_ok(true).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn create_secret(
         &self,
         name: impl AsRef<str>,
         value: impl AsRef<str>,
         namespace_path: &[String],
-    ) -> Result<()> {
-        validate_secret_reference(name.as_ref(), namespace_path)?;
-        self.internal
-            .create_secret(name.as_ref(), value.as_ref(), namespace_path)
-            .await
+    ) -> CreateSecretBuilder {
+        CreateSecretBuilder::new(
+            self.internal.clone(),
+            name.as_ref().to_owned(),
+            value.as_ref().to_owned(),
+            namespace_path.to_vec(),
+        )
     }
 
     /// Replace the credential behind an existing Secret.

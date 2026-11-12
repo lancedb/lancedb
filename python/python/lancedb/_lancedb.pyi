@@ -228,7 +228,12 @@ class Connection(object):
         self, name: str, namespace_path: Optional[List[str]] = None
     ) -> None: ...
     async def create_secret(
-        self, name: str, value: str, namespace_path: Optional[List[str]] = None
+        self,
+        name: str,
+        value: str,
+        namespace_path: Optional[List[str]] = None,
+        *,
+        exist_ok: bool = False,
     ) -> None: ...
     async def alter_secret(
         self, name: str, value: str, namespace_path: Optional[List[str]] = None
@@ -539,6 +544,7 @@ class Table:
         progress: Optional[Any] = None,
         write_parallelism: Optional[int] = None,
         allow_external_blob_outside_bases: bool = False,
+        retries: Optional[int] = None,
     ) -> AddResult: ...
     async def update(
         self, updates: Dict[str, str], where: Optional[str]
@@ -1235,6 +1241,7 @@ async def connect_catalog(
     sql_host_override: Optional[str] = None,
     read_consistency_interval: Optional[float] = None,
     oauth_config: Optional[Any] = None,
+    storage_options: Optional[dict[str, str]] = None,
 ) -> Catalog: ...
 
 class NameListing:
@@ -1318,3 +1325,4 @@ class AuthzObject:
     def __repr__(self) -> str: ...
 
 def validate_function_retry_policy(json: str) -> None: ...
+def _validate_conda_requirement(requirement: str) -> None: ...

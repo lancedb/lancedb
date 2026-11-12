@@ -75,6 +75,7 @@ pub struct MergeInsertBuilder {
     pub(crate) when_not_matched_by_source_delete: bool,
     pub(crate) when_not_matched_by_source_delete_filt: Option<MergeFilter>,
     pub(crate) timeout: Option<Duration>,
+    pub(crate) retries: Option<u8>,
     pub(crate) use_index: bool,
     pub(crate) use_rte: Option<bool>,
     pub(crate) validate_single_shard: bool,
@@ -91,10 +92,19 @@ impl MergeInsertBuilder {
             when_not_matched_by_source_delete: false,
             when_not_matched_by_source_delete_filt: None,
             timeout: None,
+            retries: None,
             use_index: true,
             use_rte: None,
             validate_single_shard: true,
         }
+    }
+
+    /// Override the remote transport retry budget for this operation. `0`
+    /// disables retries. Ambiguous write results are never replayed. This is
+    /// independent of local transaction conflict retries.
+    pub fn retries(&mut self, retries: u8) -> &mut Self {
+        self.retries = Some(retries);
+        self
     }
 
     /// Rows that exist in both the source table (new data) and

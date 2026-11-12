@@ -42,6 +42,18 @@ table names. `db.list_tables().tables` is a list of the first page; `limit`
 controls its page size and `page_token` resumes at a saved token. The same
 patterns apply to `list_namespaces()`. Other resource listings use `page_limit`.
 
+For existence checks, use `db.table_exists(["events"])` or `"events" in db`.
+These look up the table directly and work even when the database has more than
+100 tables. For a table in a namespace, include the namespace segments:
+
+```python
+exists = db.table_exists(["analytics", "events"])
+```
+
+When migrating from `name in db.table_names()`, use `name in db` or
+`db.table_exists([name])`. Checking `name in db.list_tables().tables` only
+searches the first page and can miss an existing table.
+
 Resource listings (`list_storage_integrations`, `list_secrets`, `list_views`, `list_jobs`, `list_functions`, and
 `list_materialized_views`) return lazy iterators. Use `list(db.list_views())` to
 collect synchronous results, or `[name async for name in db.list_views()]` with
@@ -434,6 +446,51 @@ scaler = Scale(factor=2.0)
 assert scaler(3.0) == 6.0
 scaler.close()
 ```
+
+### Function packaging restrictions
+
+The decorator snapshots the Function's source and referenced globals into a new
+module. It conservatively rejects imports of `sys`, `builtins`, `importlib`,
+`inspect`, `gc`, `ctypes`, and `types`, including submodules such as `ctypes.util`
+and `importlib.metadata`. This applies to imports inside function or class bodies
+and references to module-level aliases. Even ordinary uses such as `sys.version`
+and `ctypes.util.find_library` are blocked: these modules can reach names outside
+the reconstructed Function namespace. References to `globals`, `locals`, `vars`,
+`eval`, `exec`, `compile`, and `__import__` are rejected as dynamic namespace access.
+These restrictions also apply to the deprecated `@udf` alias.
+
+For legitimate uses, move the code into an importable helper module and ship it
+with `code=`, or install its package with `pip=` or `conda=`. Imported helpers keep
+their own namespace; the packager does not scan their bodies. Helpers defined in
+`__main__` are copied by source and have the same restrictions as the Function.
+
+For example, put this helper in `native_diagnostics/__init__.py`:
+
+```python
+import ctypes.util
+
+
+def find_library(name: str) -> str:
+    return ctypes.util.find_library(name) or ""
+```
+
+Then import the helper and include its source in the Function's artifact:
+
+```python
+import native_diagnostics
+from lancedb import function
+
+
+@function(code=[native_diagnostics])
+def probe_library(name: str) -> str:
+    return native_diagnostics.find_library(name)
+```
+
+Captured literal globals support `None`, booleans, integers, strings, bytes,
+finite floats, and tuples of these values. Construct other objects, including
+PyArrow types and schemas, inside the Function or helper module instead. Values
+used only in the decorator's `input_schema` or `output_schema` are not captured
+globals and can be defined outside the Function.
 
 Annotate a blob input with `lancedb.BlobReader` for lazy, seekable access, or
 with `bytes` to materialize its contents before the Function runs. Reader
@@ -1063,6 +1120,11 @@ first page, use `page = await db.list_tables()` and then `page.tables`. Reading
 the page list does not consume the iterator. `page.page_token` is the token for
 the next request; drain cached results before using it to resume in a new
 listing. The same behavior applies to namespaces.
+
+Use `await db.table_exists(["events"])` to check for a table in the root
+namespace, or `await db.table_exists(["analytics", "events"])` for a table in
+a namespace. Checking membership in an awaited listing's `.tables` attribute
+only searches one page.
 
 ::: lancedb.listing.AsyncTableListing
 

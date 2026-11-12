@@ -134,7 +134,7 @@ impl Table {
 
     #[napi(
         catch_unwind,
-        ts_args_type = "buf: Buffer, mode: string, progressCallback?: (progress: WriteProgressInfo) => void, allowExternalBlobOutsideBases?: boolean"
+        ts_args_type = "buf: Buffer, mode: string, progressCallback?: (progress: WriteProgressInfo) => void, allowExternalBlobOutsideBases?: boolean, retries?: number"
     )]
     pub async fn add(
         &self,
@@ -142,6 +142,7 @@ impl Table {
         mode: String,
         progress_callback: Option<ProgressFn>,
         allow_external_blob_outside_bases: Option<bool>,
+        retries: Option<u32>,
     ) -> napi::Result<AddResult> {
         let batches = ipc_file_to_batches(buf.to_vec())
             .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC file: {}", e)))?;
@@ -157,6 +158,11 @@ impl Table {
             })
             .collect::<Result<Vec<_>>>()?;
         let mut op = self.inner_ref()?.add(batches);
+        if let Some(retries) = retries {
+            let retries = u8::try_from(retries)
+                .map_err(|_| napi::Error::from_reason("retries must be between 0 and 255"))?;
+            op = op.retries(retries);
+        }
 
         op = if mode == "append" {
             op.mode(AddDataMode::Append)

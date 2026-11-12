@@ -71,3 +71,15 @@ await table.add(data, {
   },
 });
 ```
+
+***
+
+### retries?
+
+```ts
+optional retries: number;
+```
+
+Override the remote retry budget for this call (0 to 255). Zero disables
+retries, including multipart parts. Ambiguous commits are never replayed.
+Ignored by LanceDB Embedded.

@@ -20,7 +20,7 @@ import pyarrow as pa
 import pytest
 
 from lancedb import col
-from lancedb.functions import FunctionDefinition, FunctionVersion, function
+from lancedb.functions import FunctionDefinition, FunctionVersion, function, udf
 
 FIXTURES = (
     Path(__file__).parents[3]
@@ -125,6 +125,108 @@ def test_function_without_initialization_keeps_its_wire_form():
     request = json.loads(double.registration_request.to_canonical_json())
     assert "initialization" not in request["signature"]
     assert request["artifact"]["kind"] == "python_callable"
+
+
+@pytest.mark.filterwarnings("ignore:lancedb.udf is deprecated:DeprecationWarning")
+@pytest.mark.parametrize("decorator", [function, udf])
+@pytest.mark.parametrize("explicit_schemas", [False, True])
+@pytest.mark.parametrize("class_function", [False, True])
+@pytest.mark.parametrize(
+    ("declaration", "statement"),
+    [
+        ("def", "yield value"),
+        ("def", "yield from [value]"),
+        ("async def", "yield value"),
+    ],
+)
+def test_generator_functions_are_rejected_at_decoration(
+    helper_package, decorator, explicit_schemas, class_function, declaration, statement
+):
+    signature = (
+        "__call__(self, value: int)" if class_function else "generates(value: int)"
+    )
+    source = f"{declaration} {signature} -> int:\n    {statement}\n"
+    if class_function:
+        source = "class generates:\n" + textwrap.indent(source, "    ")
+    module = helper_package("fx_generator", {"__init__.py": source})
+    options = (
+        {
+            "input_schema": pa.schema([pa.field("value", pa.int64(), nullable=False)]),
+            "output_schema": pa.int64(),
+        }
+        if explicit_schemas
+        else {}
+    )
+    with pytest.raises(TypeError) as error:
+        decorator(**options)(module.generates)
+    message = str(error.value)
+    assert "generator Functions are not supported" in message
+    assert "return a value" in message
+    assert "return a list" in message
+
+
+@pytest.mark.filterwarnings("ignore:lancedb.udf is deprecated:DeprecationWarning")
+@pytest.mark.parametrize("decorator", [function, udf])
+@pytest.mark.parametrize("explicit_name", [False, True])
+def test_lambda_functions_explain_the_named_alternative(decorator, explicit_name):
+    options = {"name": "double"} if explicit_name else {}
+    with pytest.raises(TypeError, match="lambda.*use a named def"):
+        decorator(**options)(lambda value: value * 2)
+
+
+@pytest.mark.parametrize("class_function", [False, True])
+@pytest.mark.parametrize("cache_decorator", ["lru_cache", "cache"])
+def test_cached_functions_explain_where_to_keep_caches(
+    helper_package, class_function, cache_decorator
+):
+    signature = "__call__(self, value: int)" if class_function else "cached(value: int)"
+    source = (
+        f"@functools.{cache_decorator}\ndef {signature} -> int:\n    return value * 2\n"
+    )
+    if class_function:
+        source = "class cached:\n" + textwrap.indent(source, "    ")
+    module = helper_package("fx_cached", {"__init__.py": "import functools\n" + source})
+    with pytest.raises(TypeError) as error:
+        function(module.cached)
+    message = str(error.value)
+    assert "decorated wrappers are not supported" in message
+    assert "inside the function body" in message
+    assert "class Function with a cache in __init__" in message
+
+
+@pytest.mark.parametrize("class_function", [False, True])
+@pytest.mark.parametrize("keyword_only", [False, True])
+def test_callable_defaults_explain_class_initialization(
+    helper_package, class_function, keyword_only
+):
+    parameters = "value: float, " + ("*, " if keyword_only else "")
+    parameters += "threshold: float = 0.5"
+    signature = (
+        f"__call__(self, {parameters})"
+        if class_function
+        else f"thresholded({parameters})"
+    )
+    source = f"def {signature} -> bool:\n    return value >= threshold\n"
+    if class_function:
+        source = "class thresholded:\n" + textwrap.indent(source, "    ")
+    module = helper_package("fx_defaults", {"__init__.py": source})
+    with pytest.raises(TypeError) as error:
+        function(module.thresholded)
+    message = str(error.value)
+    assert "defaults are not supported: 'threshold'" in message
+    assert "class Function's __init__" in message
+    assert "binding-time initialization values" in message
+
+
+def test_function_can_return_a_list_from_a_generator_expression():
+    @function
+    def many(value: int) -> list[int]:
+        return list(item * 2 for item in range(value))
+
+    namespace = {}
+    exec(compile(artifact(many), "user_function.py", "exec"), namespace)
+    assert namespace["many"](3) == [0, 2, 4]
+    assert many.registration_request.signature.output.arrow_type == "list<int64>"
 
 
 @pytest.mark.parametrize("kind", ["function", "class"])
@@ -362,6 +464,126 @@ def test_nested_class_and_closure_are_rejected_with_the_reason():
         @function
         def closes_over(value: int) -> int:
             return value * factor
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "sys",
+        "builtins",
+        "importlib",
+        "inspect",
+        "gc",
+        "ctypes",
+        "types",
+        "ctypes.util",
+        "importlib.metadata",
+    ],
+)
+@pytest.mark.parametrize("import_style", ["import", "from", "global"])
+@pytest.mark.parametrize("class_function", [False, True])
+def test_namespace_module_errors_explain_the_rule_and_remedy(
+    helper_package, module_name, import_style, class_function
+):
+    statement = f"import {module_name} as namespace_module"
+    body = f"{statement}\nreturn value\n"
+    preamble = ""
+    if import_style == "from":
+        body = f"from {module_name} import __name__\nreturn value\n"
+    elif import_style == "global":
+        preamble = statement + "\n"
+        body = "return str(namespace_module)\n"
+    if class_function:
+        definition = "class blocked:\n    def __call__(self, value: str) -> str:\n"
+        source = preamble + definition + textwrap.indent(body, "        ")
+    else:
+        definition = "def blocked(value: str) -> str:\n"
+        source = preamble + definition + textwrap.indent(body, "    ")
+    module = helper_package("fx_namespace_import", {"__init__.py": source})
+
+    with pytest.raises(ValueError) as error:
+        function(module.blocked)
+    message = str(error.value)
+    assert "imports from namespace-access modules" in message
+    assert repr(module_name) in message
+    assert "builtins, ctypes, gc, importlib, inspect, sys, types" in message
+    assert "including submodules" in message
+    assert "reconstructed module namespace" in message
+    assert "importable helper module" in message
+    assert "code=, pip=, or conda=" in message
+    assert "dynamic namespace access" not in message
+
+
+@pytest.mark.filterwarnings("ignore:lancedb.udf is deprecated:DeprecationWarning")
+def test_udf_namespace_import_error_explains_the_helper_alternative():
+    with pytest.raises(ValueError, match="ctypes.util.*importable helper module"):
+
+        @udf
+        def probe(value: str) -> str:
+            import ctypes.util
+
+            return str(ctypes.util.find_library(value))
+
+
+@pytest.mark.parametrize(
+    "operation", ["globals", "locals", "vars", "eval", "exec", "compile", "__import__"]
+)
+def test_dynamic_namespace_errors_name_the_operation_and_remedy(
+    helper_package, operation
+):
+    module = helper_package(
+        "fx_namespace_operation",
+        {
+            "__init__.py": (
+                f"def blocked(value: str) -> str:\n    return str({operation})\n"
+            )
+        },
+    )
+    with pytest.raises(ValueError) as error:
+        function(module.blocked)
+    message = str(error.value)
+    assert f"dynamic namespace access: ['{operation}']" in message
+    assert "Reference dependencies explicitly" in message
+    assert "importable helper module" in message
+
+
+@pytest.mark.parametrize("ship_source", [False, True])
+def test_namespace_access_in_importable_helpers_keeps_its_module_namespace(
+    helper_package, ship_source
+):
+    helpers = helper_package(
+        "fx_namespace_helper",
+        {
+            "__init__.py": """
+                import ctypes.util
+
+                def module_name():
+                    return ctypes.util.__name__
+            """,
+        },
+    )
+    entry = helper_package(
+        "fx_namespace_entry",
+        {
+            "__init__.py": """
+                from fx_namespace_helper import module_name
+
+                def probe(value: str) -> str:
+                    return module_name() + value
+            """,
+        },
+    )
+    options = {"code": [helpers]} if ship_source else {"pip": ["fx-namespace-helper"]}
+    definition = function(**options)(entry.probe)
+    if ship_source:
+        files = bundle_files(definition)
+        assert "import ctypes.util" in files["fx_namespace_helper/__init__.py"]
+        source = files["user_function.py"]
+    else:
+        source = artifact(definition).decode()
+    namespace = {}
+    exec(compile(source, "user_function.py", "exec"), namespace)
+    assert namespace["probe"]("!") == "ctypes.util!"
 
 
 def test_binding_passes_initialization_as_constants():

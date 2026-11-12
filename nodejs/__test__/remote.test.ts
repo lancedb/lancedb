@@ -483,6 +483,65 @@ describe("remote connection", () => {
     expect(insertRequests).toBe(2);
   });
 
+  it.each([
+    { status: 429, retries: undefined, attempts: 2 },
+    { status: 429, retries: 0, attempts: 1 },
+    { status: 504, retries: undefined, attempts: 1 },
+    { status: 504, retries: 0, attempts: 1 },
+  ])("applies per-call add retries: %j", async (scenario) => {
+    let attempts = 0;
+    await withMockDatabase(
+      (req, res) => {
+        if (req.url?.endsWith("/describe/")) {
+          res.writeHead(200).end(
+            JSON.stringify({
+              version: 1,
+              schema: {
+                fields: [
+                  { name: "id", type: { type: "int64" }, nullable: true },
+                ],
+              },
+            }),
+          );
+          return;
+        }
+        expect(req.url).toContain("/insert/");
+        req.resume();
+        req.on("end", () => {
+          attempts++;
+          res
+            .writeHead(attempts === 1 ? scenario.status : 200)
+            .end('{"version":2}');
+        });
+      },
+      async (db) => {
+        const table = await db.openTable("items");
+        const result = table.add([{ id: 1n }], { retries: scenario.retries });
+        if (scenario.attempts === 2) {
+          await expect(result).resolves.toMatchObject({ version: 2 });
+        } else {
+          await expect(result).rejects.toThrow();
+        }
+        for (const retries of [-1, 256, 1.5]) {
+          await expect(table.add([{ id: 2n }], { retries })).rejects.toThrow(
+            "retries must be an integer between 0 and 255",
+          );
+        }
+      },
+      {
+        clientConfig: {
+          retryConfig: {
+            retries: 3,
+            statuses: [429, 504],
+            backoffFactor: 0,
+            backoffJitter: 0,
+          },
+        },
+      },
+    );
+    expect(attempts).toBe(scenario.attempts);
+  });
+
   it("should accept partial connection options", async () => {
     await connect("db://test", {
       apiKey: "fake",

@@ -201,7 +201,7 @@ setting. See [Limits](/basics/limits#schema).
 <CodeGroup>
 ```python Python icon="python"
 tbl = db.open_table("documents")
-db.table_names()
+names = list(db.list_tables())
 ```
 
 ```typescript TypeScript icon="square-js"
@@ -229,6 +229,27 @@ listing. A missing table raises `ValueError` on a local directory and
 `lance_namespace.TableNotFoundError` on a connection from `connect_namespace`.
 A listing returns one page of names at a time, so check every page. TypeScript
 has no `tableExists`.
+
+{/*
+Draft for the table-existence lookup release (#4974). Once released, replace
+the two table-existence paragraphs above with this guidance:
+
+For Python local, remote, and namespace connections, use
+`db.table_exists(["documents"])` or `"documents" in db` to check whether a root
+table exists. For an async connection, use
+`await db.table_exists(["documents"])`. Include namespace segments before the
+table name, for example `["analytics", "documents"]`. These checks return
+`False` when the table is missing and propagate other errors, including
+permission errors. They look up the table directly, regardless of the number
+of tables in the database.
+
+When migrating from `name in db.table_names()`, use `name in db` or
+`db.table_exists([name])`. To collect every table name, use
+`list(db.list_tables())`, or `[name async for name in db.list_tables()]` on an
+async connection. The `.tables` attribute holds only one page (100 names by
+default), so membership checks against it can miss existing tables. TypeScript
+has no `tableExists`.
+*/}
 
 ## Rename and clone tables {#rename-clone}
 

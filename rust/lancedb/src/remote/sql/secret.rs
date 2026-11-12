@@ -13,6 +13,12 @@ use arrow_array::{Array, Int64Array, RecordBatch, StringArray};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures::TryStreamExt;
 use std::sync::Arc;
+
+pub(in crate::remote) enum SecretWriteOperation {
+    Create { exist_ok: bool },
+    Alter,
+}
+
 fn secret_info(batches: Vec<RecordBatch>) -> Result<SecretInfo> {
     if batches.iter().map(RecordBatch::num_rows).sum::<usize>() != 1 {
         return Err(Error::Runtime {
@@ -47,10 +53,21 @@ impl SqlClient {
         name: &str,
         value: &str,
         namespace: &[String],
-        create: bool,
+        operation: SecretWriteOperation,
     ) -> Result<()> {
         validate_secret_name(name)?;
         validate_namespace(namespace)?;
+        let (prefix, assignment) = match operation {
+            SecretWriteOperation::Create { exist_ok } => (
+                if exist_ok {
+                    "CREATE SECRET IF NOT EXISTS"
+                } else {
+                    "CREATE SECRET"
+                },
+                "TYPE = GENERIC_STRING ",
+            ),
+            SecretWriteOperation::Alter => ("ALTER SECRET", "SET "),
+        };
         let parameters = RecordBatch::try_from_iter(vec![(
             "",
             Arc::new(StringArray::from(vec![value])) as arrow_array::ArrayRef,
@@ -61,14 +78,10 @@ impl SqlClient {
         self.object_job(
             ExecuteQueryRequest {
                 query: format!(
-                    "{} SECRET {} {}SECRET_STRING = $1",
-                    if create { "CREATE" } else { "ALTER" },
+                    "{} {} {}SECRET_STRING = $1",
+                    prefix,
                     quote_identifier(name),
-                    if create {
-                        "TYPE = GENERIC_STRING "
-                    } else {
-                        "SET "
-                    }
+                    assignment
                 ),
                 default_namespace_path: namespace.to_vec(),
                 parameters: Some(parameters),

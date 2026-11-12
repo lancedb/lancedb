@@ -130,7 +130,8 @@ jobs:
         run: pytest --doctest-modules python/lancedb
   linux:
     name: "Linux: python-3.${{ matrix.python-minor-version }}"
-    timeout-minutes: 30
+    # A cold native build plus both test passes can exhaust 30 minutes.
+    timeout-minutes: 60
     strategy:
       matrix:
         python-minor-version: ["10", "13"]

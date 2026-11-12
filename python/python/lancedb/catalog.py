@@ -3,13 +3,17 @@
 
 """Remote catalogs manage databases."""
 
-from functools import cached_property
+import os
+import warnings
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
+from functools import cached_property
 from typing import Any, AsyncIterator, Iterator, Optional, Union
 
 from . import _lancedb
 from .background_loop import LOOP
 from .authz import AsyncAuthorization, Authorization
+from .common import URI, sanitize_uri
 from .db import AsyncConnection, DBConnection
 from .remote import ClientConfig, OAuthConfig
 from .remote.db import RemoteDBConnection
@@ -163,12 +167,14 @@ class Catalog:
         client_config=None,
         sql_host_override: Optional[str] = None,
         oauth_config: Optional[OAuthConfig] = None,
+        storage_options: Optional[dict[str, str]] = None,
     ):
         self._inner = inner
         self._api_key = api_key
         self._client_config = client_config
         self._sql_host_override = sql_host_override
         self._oauth_config = oauth_config
+        self._storage_options = storage_options
 
     @cached_property
     def authz(self) -> Authorization:
@@ -198,6 +204,7 @@ class Catalog:
             self._client_config,
             self._oauth_config,
             self._sql_host_override,
+            self._storage_options,
         )
 
     def list_databases(
@@ -227,28 +234,71 @@ class Catalog:
 
 
 async def connect_catalog_async(
-    endpoint: str,
+    uri: Optional[URI] = None,
     *,
     api_key: Optional[str] = None,
-    client_config: Optional[Union[ClientConfig, dict[str, Any]]] = None,
+    region: Optional[str] = None,
+    host_override: Optional[str] = None,
     sql_host_override: Optional[str] = None,
     read_consistency_interval: Optional[timedelta] = None,
+    client_config: Optional[Union[ClientConfig, dict[str, Any]]] = None,
+    storage_options: Optional[dict[str, str]] = None,
+    session: Optional[_lancedb.Session] = None,
+    manifest_enabled: bool = False,
+    namespace_client_properties: Optional[dict[str, str]] = None,
     oauth_config: Optional[OAuthConfig] = None,
 ) -> AsyncCatalog:
-    """Connect to an HTTP(S) server's root catalog.
+    """Connect to a server's root catalog using database connection settings.
+
+    ``host_override`` selects the HTTP(S) catalog endpoint when provided; otherwise
+    ``uri`` must be an HTTP(S) endpoint. A ``db://`` URI can be shared with
+    [connect_async][lancedb.connect_async] when ``host_override`` is set: the URI's
+    database is ignored and requests target the root catalog.
+
+    ``region`` is ignored with a warning when supplied. Catalog connections use
+    the explicit endpoint rather than a region-derived Cloud (legacy) endpoint.
+    ``api_key`` defaults to the ``LANCEDB_API_KEY`` environment variable.
+    Embedded-only ``session``, ``manifest_enabled`` and
+    ``namespace_client_properties`` are not supported.
 
     Root requests omit database-selection headers. API key, client configuration,
-    OAuth, and table read consistency settings are inherited by opened databases.
+    OAuth, storage options, and table read consistency settings are inherited by
+    opened databases.
     Database names containing slashes remain single logical names.
     Set ``sql_host_override`` to the SQL service endpoint to execute SQL through
     returned connections when the catalog endpoint uses HTTPS.
     """
+    if region is not None:
+        warnings.warn(
+            "region is ignored by connect_catalog_async; the catalog endpoint "
+            "is selected by host_override or uri.",
+            UserWarning,
+            stacklevel=2,
+        )
+    for name, value in (
+        ("session", session),
+        ("manifest_enabled", manifest_enabled or None),
+        ("namespace_client_properties", namespace_client_properties),
+    ):
+        if value is not None:
+            raise NotImplementedError(
+                f"{name} is not supported for catalog connections"
+            )
+    endpoint = host_override if host_override is not None else uri
+    if endpoint is None:
+        raise ValueError("uri or host_override is required for catalog connections")
     if isinstance(client_config, dict):
         client_config = ClientConfig(**client_config)
     if client_config is None:
         client_config = ClientConfig()
+    if (
+        api_key is None
+        and oauth_config is None
+        and client_config.header_provider is None
+    ):
+        api_key = os.environ.get("LANCEDB_API_KEY")
     inner = await _lancedb.connect_catalog(
-        endpoint,
+        sanitize_uri(endpoint),
         api_key=api_key,
         client_config=client_config,
         sql_host_override=sql_host_override,
@@ -258,32 +308,115 @@ async def connect_catalog_async(
             else None
         ),
         oauth_config=oauth_config,
+        storage_options=storage_options,
     )
     return AsyncCatalog(inner)
 
 
 def connect_catalog(
-    endpoint: str,
+    uri: Optional[URI] = None,
     *,
     api_key: Optional[str] = None,
-    client_config: Optional[Union[ClientConfig, dict[str, Any]]] = None,
+    region: Optional[str] = None,
+    host_override: Optional[str] = None,
     sql_host_override: Optional[str] = None,
     read_consistency_interval: Optional[timedelta] = None,
+    request_thread_pool: Optional[Union[int, ThreadPoolExecutor]] = None,
+    client_config: Optional[Union[ClientConfig, dict[str, Any]]] = None,
+    storage_options: Optional[dict[str, str]] = None,
+    session: Optional[_lancedb.Session] = None,
+    manifest_enabled: bool = False,
+    namespace_client_impl: Optional[str] = None,
+    namespace_client_properties: Optional[dict[str, str]] = None,
+    namespace_client_pushdown_operations: Optional[list[str]] = None,
     oauth_config: Optional[OAuthConfig] = None,
+    **kwargs: Any,
 ) -> Catalog:
-    """Connect synchronously to an HTTP(S) server's root catalog.
+    """Connect synchronously to a root catalog using database connection settings.
 
     See [connect_catalog_async][lancedb.connect_catalog_async] for options.
+    The inputs match [connect][lancedb.connect]; ``region`` is ignored with a
+    warning when supplied. Namespace client options and embedded session settings
+    are not supported. ``request_thread_pool`` is deprecated and unused, as in
+    ``connect``.
     Local filesystem and object-store catalogs are not supported.
+
+    Examples
+    --------
+    ```python
+    settings = {"api_key": "secret", "host_override": "https://my-server.example"}
+    catalog = lancedb.connect_catalog("db://analytics", **settings)
+    db = lancedb.connect("db://analytics", **settings)
+    ```
     """
+    unknown_kwargs = {
+        key: value
+        for key, value in kwargs.items()
+        if key not in ("connection_timeout", "read_timeout")
+    }
+    if unknown_kwargs:
+        raise ValueError(f"Unknown keyword arguments: {unknown_kwargs}")
+    for name, value in (
+        ("namespace_client_impl", namespace_client_impl),
+        ("namespace_client_pushdown_operations", namespace_client_pushdown_operations),
+    ):
+        if value is not None:
+            raise NotImplementedError(
+                f"{name} is not supported for catalog connections"
+            )
+    if region is not None:
+        warnings.warn(
+            "region is ignored by connect_catalog; the catalog endpoint "
+            "is selected by host_override or uri.",
+            UserWarning,
+            stacklevel=2,
+        )
+    if request_thread_pool is not None:
+        warnings.warn(
+            "request_thread_pool is no longer used and will be removed in "
+            "a future release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    if isinstance(client_config, dict):
+        client_config = ClientConfig(**client_config)
+    if client_config is None:
+        client_config = ClientConfig()
+    for name, field in (
+        ("connection_timeout", "connect_timeout"),
+        ("read_timeout", "read_timeout"),
+    ):
+        if kwargs.get(name) is not None:
+            warnings.warn(
+                f"{name} is deprecated and will be removed in a future release. "
+                f"Please use client_config.timeout_config.{field} instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            setattr(
+                client_config.timeout_config,
+                field,
+                timedelta(seconds=kwargs[name]),
+            )
+    if (
+        api_key is None
+        and oauth_config is None
+        and client_config.header_provider is None
+    ):
+        api_key = os.environ.get("LANCEDB_API_KEY")
     return Catalog(
         LOOP.run(
             connect_catalog_async(
-                endpoint,
+                uri,
                 api_key=api_key,
+                host_override=host_override,
                 client_config=client_config,
                 sql_host_override=sql_host_override,
                 read_consistency_interval=read_consistency_interval,
+                storage_options=storage_options,
+                session=session,
+                manifest_enabled=manifest_enabled,
+                namespace_client_properties=namespace_client_properties,
                 oauth_config=oauth_config,
             )
         ),
@@ -291,4 +424,5 @@ def connect_catalog(
         client_config=client_config,
         sql_host_override=sql_host_override,
         oauth_config=oauth_config,
+        storage_options=storage_options,
     )
