@@ -200,7 +200,8 @@ impl ExecutionPlan for MetadataEraserExec {
 pub enum BlobSchema {
     /// Expose Blob v2 descriptors (`kind`, `position`, `size`, `blob_id`, `blob_uri`)
     /// and legacy v1 descriptors (`position`, `size`). Scans support all blob fields;
-    /// SQL INSERT SELECT materializes descriptors from a single source snapshot.
+    /// SQL INSERT SELECT materializes descriptors from a single native-table
+    /// snapshot; remote and Realtime/MemWAL sources are not supported.
     #[default]
     Read,
     /// Expose Blob v2 write inputs (`data`, `uri`, `position`, `size`) and legacy
@@ -215,13 +216,15 @@ pub enum BlobSchema {
 /// Defaults to [`BlobSchema::Read`], matching the descriptor schema produced by
 /// scans without fetching blob bytes. Use [`Self::with_blob_schema`] to enable
 /// SQL INSERT with logical blob inputs. In read mode, INSERT SELECT can copy
-/// Blob v2 descriptors from a single source table snapshot into target-owned
+/// Blob v2 descriptors from a single native-table snapshot into target-owned
 /// payloads, including projections, filters, sorting, and limits. JOIN, UNION,
 /// aggregation, and computed descriptors fail during planning because their
 /// source row addresses cannot be established safely. Legacy v1 blobs expose
 /// descriptors in read mode and `LargeBinary` inputs in write mode; write-mode
 /// descriptor scans fail with a schema mismatch. Tables without blob columns
 /// behave the same in both modes.
+/// Descriptor copying requires a native source table; remote and Realtime/MemWAL
+/// sources are not supported by this materialization path.
 ///
 /// With read adapters registered as `source` and `target`, copying blobs needs
 /// no payload UDF or explicit system columns:
@@ -234,6 +237,11 @@ pub enum BlobSchema {
 /// compaction or deletion. External URI references retain their external
 /// storage semantics and remain subject to the target's registered external
 /// bases; copying a descriptor does not authorize a new external location.
+///
+/// Materialization allocates payload bytes for each input batch outside the
+/// DataFusion memory pool. For large blobs, configure a conservative
+/// `SessionConfig::with_batch_size`; the pool limit alone does not bound these
+/// allocations, and a single blob can still exceed that limit.
 #[derive(Debug)]
 pub struct BaseTableAdapter {
     table: Arc<dyn BaseTable>,
