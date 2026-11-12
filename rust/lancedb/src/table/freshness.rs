@@ -1879,6 +1879,8 @@ pub async fn preserve_function_freshness(
             pending_fill.retain(|id, _| live.contains(id));
             state.signatures.retain(|id, _| live.contains(id));
             state.row_state.retain(|id, _| live.contains(id));
+            state.failure_coverage.retain(|id, _| live.contains(id));
+            state.failed_rows.retain(|id, _| live.contains(id));
             state.basis.clear();
             let reference = write_sidecar(dataset, &state.normalize()?).await?;
             let fill_reference = if pending_fill.is_empty() {
