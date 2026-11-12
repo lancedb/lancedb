@@ -27,6 +27,7 @@ catalog removal; physical cleanup can continue afterward.
 view's stored query and schema unchanged. Without `IF NOT EXISTS`, an existing
 name is an error. In Python, use `db.create_view(name, query, exist_ok=True)`;
 in Rust, use `db.create_view(name, query, &namespace).exist_ok(true).await?`.
+Returning an existing view requires `SELECT` on that view.
 
 <CodeGroup>
 ```sql SQL icon="database"
