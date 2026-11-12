@@ -257,7 +257,11 @@ jobs:
         node-version: 24
         cache: 'pnpm'
         cache-dependency-path: nodejs/pnpm-lock.yaml
-    - uses: dtolnay/rust-toolchain@stable
+    # Use the same pinned compiler for cache selection and the native build.
+    - uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        cache: false
+        rustflags: ""
     - uses: Swatinem/rust-cache@v2
       with:
         # Restore everywhere, but only save from main. Per-PR saves are
