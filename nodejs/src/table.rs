@@ -349,6 +349,31 @@ impl Table {
         Ok(Query::new(self.inner_ref()?.query()))
     }
 
+    /// Whether this handle reads an in-process dataset.
+    #[napi]
+    pub fn is_native(&self) -> napi::Result<bool> {
+        Ok(self.inner_ref()?.as_native().is_some())
+    }
+
+    /// Constrain deferred blob reads by the producing query response.
+    #[napi(catch_unwind)]
+    pub async fn query_snapshot_with_identity(
+        &self,
+        version: String,
+        identity: String,
+    ) -> napi::Result<Self> {
+        // Keep u64 query versions exact across the JavaScript boundary.
+        let version = version
+            .parse::<u64>()
+            .map_err(|_| napi::Error::from_reason("Invalid query snapshot version"))?;
+        let snapshot = self
+            .inner_ref()?
+            .query_snapshot_with_identity(version, &identity)
+            .await
+            .default_error()?;
+        Ok(Self::new(snapshot))
+    }
+
     /// Return a read-only table handle pinned to the current query revision.
     #[napi(catch_unwind)]
     pub async fn query_snapshot(&self) -> napi::Result<Self> {
