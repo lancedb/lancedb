@@ -128,6 +128,7 @@ impl DatabaseNames {
 }
 
 #[pyfunction]
+#[allow(clippy::too_many_arguments)]
 #[pyo3(signature = (endpoint, *, api_key=None, client_config=None, sql_host_override=None, read_consistency_interval=None, oauth_config=None, storage_options=None))]
 pub fn connect_catalog(
     py: Python<'_>,
