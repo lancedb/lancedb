@@ -457,6 +457,7 @@ impl Connection {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (target_table_name, source_uri, target_namespace_path=None, source_version=None, source_tag=None, is_shallow=true, *, exist_ok=false))]
     pub fn clone_table(
         self_: PyRef<'_, Self>,
