@@ -17,7 +17,7 @@ import {
   tableFromIPC,
   vectorFromArray,
 } from "./arrow";
-import { isBlobField } from "./blob";
+import { isBlobDescriptorField, isBlobField } from "./blob";
 import { Expr } from "./expr";
 import { type IvfPqOptions } from "./indices";
 import {
@@ -160,7 +160,7 @@ function projectedBlobSources(
     const source =
       projection?.find(([output]) => output === field.name)?.[1] ?? field.name;
     const visit = (child: Field, path: string[]) => {
-      if (isBlobField(child)) {
+      if (isBlobField(child) || isBlobDescriptorField(child)) {
         sources.push({
           output: field.name,
           path,

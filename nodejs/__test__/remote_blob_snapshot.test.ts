@@ -13,6 +13,8 @@ import {
   RecordBatch,
   Schema,
   Struct,
+  Uint8,
+  Uint32,
   Uint64,
   Utf8,
   makeArrowTable,
@@ -25,11 +27,18 @@ const IDENTITY_B = `v1:${"b".repeat(64)}`;
 const image = new Field(
   "image",
   new Struct([
+    new Field("kind", new Uint8(), false),
     new Field("position", new Uint64(), true),
     new Field("size", new Uint64(), true),
+    new Field("blob_id", new Uint32(), false),
+    new Field("blob_uri", new Utf8(), false),
   ]),
   true,
-  new Map([["ARROW:extension:name", "lance.blob.v2"]]),
+  // Native descriptor scans replace the logical extension metadata.
+  new Map([
+    ["lance-encoding:blob", "true"],
+    ["lance-encoding:packed", "true"],
+  ]),
 );
 const schema = new Schema([new Field("label", new Utf8(), false), image]);
 const description = {
@@ -59,6 +68,7 @@ type Request = {
 };
 
 interface ServerOptions {
+  queryBlob?: Field;
   describeBlobName?: string | null;
   nestedBlob?: boolean;
   queryVersion?: string | null;
@@ -80,12 +90,13 @@ async function withSnapshotServer(
 ) {
   const requests: Request[] = [];
   let changed = false;
+  const queryBlob = options.queryBlob ?? image;
   const queryOutputSchema = options.nestedBlob
     ? new Schema([
         schema.fields[0],
-        new Field("extra", new Struct([image]), true),
+        new Field("extra", new Struct([queryBlob]), true),
       ])
-    : schema;
+    : new Schema([schema.fields[0], queryBlob]);
   const server = createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on("data", (chunk) => chunks.push(chunk));
@@ -158,7 +169,15 @@ async function withSnapshotServer(
               const descriptor =
                 value === null
                   ? null
-                  : { position: 0n, size: BigInt(value.length) };
+                  : {
+                      kind: 0,
+                      position: 0n,
+                      size: BigInt(value.length),
+                      // biome-ignore lint/style/useNamingConvention: Native Arrow field name.
+                      blob_id: 0,
+                      // biome-ignore lint/style/useNamingConvention: Native Arrow field name.
+                      blob_uri: "",
+                    };
               row[output] =
                 source === "image"
                   ? descriptor
@@ -290,6 +309,46 @@ const keepFtsReranker = {
 };
 
 describe("remote blob query snapshot", () => {
+  it.each([
+    image.clone({ metadata: new Map() }),
+    new Field(
+      "image",
+      new Struct(image.type.children.slice(1, 3)),
+      true,
+      image.metadata,
+    ),
+  ])(
+    "leaves plain structs and v1 descriptors unchanged: %s",
+    async (queryBlob) => {
+      await withSnapshotServer(
+        "overwrite",
+        async (table, requests) => {
+          const result = await table.query().toArrow({ blobMode: "bytes" });
+          expect(DataType.isStruct(result.getChild("image")!.type)).toBe(true);
+          expect(result.toArray()[0].image.size).toBe(1n);
+          expect(fetchRequests(requests)).toHaveLength(0);
+        },
+        { queryBlob },
+      );
+    },
+  );
+
+  it("still recognizes extension-marked Blob results", async () => {
+    await withSnapshotServer(
+      "overwrite",
+      async (table, requests) => {
+        const rows = await table.query().toArray({ blobMode: "bytes" });
+        expect(Buffer.from(rows[0].image).toString()).toBe("A");
+        expect(fetchRequests(requests)).toHaveLength(1);
+      },
+      {
+        queryBlob: image.clone({
+          metadata: new Map([["ARROW:extension:name", "lance.blob.v2"]]),
+        }),
+      },
+    );
+  });
+
   it.each([
     [null, false],
     [null, true],
