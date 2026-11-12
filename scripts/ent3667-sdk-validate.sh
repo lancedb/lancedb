@@ -6,7 +6,7 @@ set -euo pipefail
 
 source_repo=${1:?provide the product checkout}
 evidence=${2:?provide an absolute evidence directory}
-expected_source=2b6113ff264edca198f742375b967e0ac765c499
+expected_source=993fae7d9a7cf5420b8914ffebd03ec9457629be
 driver_repo=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
 mkdir -p "$evidence"
 test ! -e "$evidence/run.log"
