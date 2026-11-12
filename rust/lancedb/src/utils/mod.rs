@@ -139,7 +139,7 @@ pub fn validate_table_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Validate a custom index name before creation or use as a remote path segment.
+/// Validate a custom index name before creation.
 pub(crate) fn validate_index_name(name: &str) -> Result<()> {
     validate_view_or_namespace_or_secret(name, "index name", MAX_INDEX_NAME_CHARS)
 }

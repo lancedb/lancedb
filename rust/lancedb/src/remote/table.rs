@@ -83,6 +83,7 @@ use lance_core::datatypes::Schema as LanceSchema;
 use lance_datafusion::exec::{OneShotExec, execute_plan};
 use reqwest::{RequestBuilder, Response};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::pin::Pin;
@@ -96,6 +97,18 @@ const MIN_TIMESTAMP_HEADER: HeaderName = HeaderName::from_static("x-lancedb-min-
 const MIN_READ_VERSION_HEADER: HeaderName = HeaderName::from_static("x-lancedb-min-read-version");
 const VERSION_HEADER: HeaderName = HeaderName::from_static("x-lancedb-version");
 const QUERY_SNAPSHOT_HEADER: &str = "x-lancedb-query-snapshot";
+
+/// Encode an existing or server-generated name without applying custom creation rules.
+fn encode_index_name(name: &str) -> Result<Cow<'_, str>> {
+    // Percent-encoding preserves dot segments, which URL parsing would normalize
+    // into another route. All other name characters are safe after encoding.
+    if matches!(name, "" | "." | "..") {
+        return Err(Error::InvalidInput {
+            message: format!("Illegal index name '{name}' in remote route."),
+        });
+    }
+    Ok(urlencoding::encode(name))
+}
 
 fn valid_query_snapshot_identity(value: &str) -> bool {
     value.strip_prefix("v1:").is_some_and(|digest| {
@@ -2421,11 +2434,8 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
         index_name: &str,
         read_snapshot: ReadSnapshot,
     ) -> Result<Option<IndexStatistics>> {
-        // Percent-encoding alone leaves dot segments intact, and URL parsing
-        // would normalize them into a different route. This also guards the
-        // stats requests made while listing indices on legacy servers.
-        validate_index_name(index_name)?;
-        let encoded_name = urlencoding::encode(index_name);
+        // This also guards the stats requests made while listing indices on legacy servers.
+        let encoded_name = encode_index_name(index_name)?;
         let mut body = serde_json::json!({ "version": read_snapshot.version });
         self.apply_branch_body(&mut body);
         let request = self
@@ -4519,8 +4529,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     async fn drop_index(&self, index_name: &str) -> Result<()> {
-        validate_index_name(index_name)?;
-        let encoded_name = urlencoding::encode(index_name);
+        let encoded_name = encode_index_name(index_name)?;
         let request = self.apply_branch_query(self.client.post(&format!(
             "/v1/table/{}/index/{encoded_name}/drop/",
             self.identifier
@@ -4536,8 +4545,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     async fn prewarm_index(&self, index_name: &str) -> Result<()> {
-        validate_index_name(index_name)?;
-        let encoded_name = urlencoding::encode(index_name);
+        let encoded_name = encode_index_name(index_name)?;
         let request = self.client.post(&format!(
             "/v1/table/{}/index/{encoded_name}/prewarm/",
             self.identifier
@@ -12997,7 +13005,92 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_invalid_index_names_never_send_requests() {
+    async fn test_generated_index_name_remains_addressable() {
+        let conn = crate::connect("memory://").execute().await.unwrap();
+        let batch = record_batch!(("café", Int32, [1])).unwrap();
+        let schema = batch.schema();
+        let native = conn
+            .create_table("my_table", batch)
+            .execute()
+            .await
+            .unwrap();
+        native
+            .create_index(&["café"], Index::Auto)
+            .execute()
+            .await
+            .unwrap();
+        let generated_name = native.list_indices().await.unwrap()[0].name.clone();
+        assert_eq!(generated_name, "café_idx");
+
+        for enriched in [true, false] {
+            let schema = schema.clone();
+            let table = Table::new_with_handler("my_table", move |request| {
+                let body = match request.url().path() {
+                    "/v1/table/my_table/describe/" => describe_response(&schema),
+                    "/v1/table/my_table/create_index/" => {
+                        let body: serde_json::Value =
+                            serde_json::from_slice(request.body().unwrap().as_bytes().unwrap())
+                                .unwrap();
+                        assert!(body.get("name").is_none());
+                        "{}".to_string()
+                    }
+                    "/v1/table/my_table/index/list/" => {
+                        let mut entry = json!({"index_name": "café_idx", "columns": ["café"]});
+                        if enriched {
+                            entry["index_type"] = json!("BTREE");
+                        }
+                        json!({"indexes": [entry]}).to_string()
+                    }
+                    "/v1/table/my_table/index/caf%C3%A9_idx/stats/" => json!({
+                        "num_indexed_rows": 1,
+                        "num_unindexed_rows": 0,
+                        "index_type": "BTREE"
+                    })
+                    .to_string(),
+                    "/v1/table/my_table/index/caf%C3%A9_idx/drop/"
+                    | "/v1/table/my_table/index/caf%C3%A9_idx/prewarm/" => "{}".to_string(),
+                    path => panic!("Unexpected request: {path}"),
+                };
+                http::Response::builder().status(200).body(body).unwrap()
+            });
+            table
+                .create_index(&["café"], Index::Auto)
+                .execute()
+                .await
+                .unwrap();
+            assert_eq!(table.list_indices().await.unwrap()[0].name, generated_name);
+            assert!(table.index_stats(&generated_name).await.unwrap().is_some());
+            table.prewarm_index(&generated_name).await.unwrap();
+            table
+                .wait_for_index(&[&generated_name], Duration::from_secs(1))
+                .await
+                .unwrap();
+            table.drop_index(&generated_name).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn test_unsafe_index_paths_never_send_requests() {
+        let table = Table::new_with_handler("my_table", |request| -> http::Response<String> {
+            panic!("Unsafe index name sent a request to {}", request.url());
+        });
+
+        for name in ["..", ".", ""] {
+            for result in [
+                table.drop_index(name).await,
+                table.prewarm_index(name).await,
+                table.index_stats(name).await.map(|_| ()),
+            ] {
+                assert!(
+                    matches!(result, Err(Error::InvalidInput { .. })),
+                    "Expected invalid input for {name:?}, got {result:?}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_invalid_custom_index_names_never_send_requests() {
         let table = Table::new_with_handler("my_table", |request| -> http::Response<String> {
             panic!("Invalid index name sent a request to {}", request.url());
         });
@@ -13010,11 +13103,9 @@ mod tests {
             "my\\index",
             "%2e%2e",
             "my/index?a#b c",
+            "café_idx",
         ] {
             for result in [
-                table.drop_index(name).await,
-                table.prewarm_index(name).await,
-                table.index_stats(name).await.map(|_| ()),
                 table
                     .create_index(&["a"], Index::BTree(Default::default()))
                     .name(name.to_string())
@@ -13066,37 +13157,41 @@ mod tests {
         }
     }
 
+    #[rstest]
+    #[case("my_index-1..v2", "my_index-1..v2")]
+    #[case("café_idx", "caf%C3%A9_idx")]
+    #[case("my/index", "my%2Findex")]
+    #[case("my\\index", "my%5Cindex")]
+    #[case("%2e%2e", "%252e%252e")]
+    #[case("my/index?a#b c", "my%2Findex%3Fa%23b%20c")]
     #[tokio::test]
-    async fn test_per_index_paths_preserve_valid_names() {
-        const NAME: &str = "my_index-1..v2";
-        const PREFIX: &str = "/v1/table/my_table/index/my_index-1..v2";
-
-        let table = Table::new_with_handler("my_table", |request| {
-            assert_eq!(request.url().path(), format!("{PREFIX}/stats/"));
-            let body = serde_json::json!({
-              "num_indexed_rows": 1,
-              "num_unindexed_rows": 0,
-              "index_type": "IVF_PQ",
-              "distance_type": "l2"
-            });
+    async fn test_per_index_paths_preserve_existing_names(
+        #[case] name: &str,
+        #[case] encoded_name: &str,
+    ) {
+        let prefix = format!("/v1/table/my_table/index/{encoded_name}");
+        let table = Table::new_with_handler("my_table", move |request| {
+            let path = request.url().path();
+            let suffix = path
+                .strip_prefix(&prefix)
+                .unwrap_or_else(|| panic!("Unexpected index route: {path}"));
+            let body = match suffix {
+                "/stats/" => json!({
+                    "num_indexed_rows": 1,
+                    "num_unindexed_rows": 0,
+                    "index_type": "BTREE"
+                }),
+                "/drop/" | "/prewarm/" => json!({}),
+                _ => panic!("Unexpected index route: {path}"),
+            };
             http::Response::builder()
                 .status(200)
-                .body(serde_json::to_string(&body).unwrap())
+                .body(body.to_string())
                 .unwrap()
         });
-        assert!(table.index_stats(NAME).await.unwrap().is_some());
-
-        let table = Table::new_with_handler("my_table", |request| {
-            assert_eq!(request.url().path(), format!("{PREFIX}/drop/"));
-            http::Response::builder().status(200).body("{}").unwrap()
-        });
-        table.drop_index(NAME).await.unwrap();
-
-        let table = Table::new_with_handler("my_table", |request| {
-            assert_eq!(request.url().path(), format!("{PREFIX}/prewarm/"));
-            http::Response::builder().status(200).body("{}").unwrap()
-        });
-        table.prewarm_index(NAME).await.unwrap();
+        assert!(table.index_stats(name).await.unwrap().is_some());
+        table.prewarm_index(name).await.unwrap();
+        table.drop_index(name).await.unwrap();
     }
 
     #[tokio::test]

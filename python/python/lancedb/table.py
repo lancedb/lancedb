@@ -1917,7 +1917,9 @@ class Table(ABC):
             LanceDB Enterprise only: how long to wait for the index build to finish.
             If not set, the call returns once the build is scheduled.
         name : str, optional
-            Custom name for the index.
+            Custom name for the index: 1–128 ASCII letters, digits, dashes,
+            underscores, or periods, excluding ``.`` and ``..``. If omitted,
+            a default name is generated from the column name.
         train : bool, default True
             Whether to train the index with existing data.
 
@@ -2024,6 +2026,11 @@ class Table(ABC):
 
         Use [list_indices][lancedb.table.Table.list_indices] to find the names of
         the indices.
+
+        Remote tables reject empty names, ``.`` and ``..`` to prevent URL path
+        normalization. Existing indices named ``.`` or ``..`` require server-side
+        cleanup on managed tables, or a native connection with direct access to
+        the dataset. Other existing and generated names remain addressable.
         """
         raise NotImplementedError("drop_index is not supported for this table type")
 
@@ -2076,6 +2083,8 @@ class Table(ABC):
             The timeout to wait if indexing is asynchronous.
         name: str, optional
             The name of the index. If not provided, a default name will be generated.
+            Custom names must contain 1–128 ASCII letters, digits, dashes,
+            underscores, or periods, excluding ``.`` and ``..``.
         Examples
         --------
 
@@ -2234,6 +2243,8 @@ class Table(ABC):
             The timeout to wait if indexing is asynchronous.
         name: str, optional
             The name of the index. If not provided, a default name will be generated.
+            Custom names must contain 1–128 ASCII letters, digits, dashes,
+            underscores, or periods, excluding ``.`` and ``..``.
 
         Notes
         -----
@@ -4396,7 +4407,9 @@ class LanceTable(Table):
         wait_timeout : timedelta, optional
             Timeout to wait for async indexing to complete.
         name : str, optional
-            Custom name for the index.
+            Custom name for the index: 1–128 ASCII letters, digits, dashes,
+            underscores, or periods, excluding ``.`` and ``..``. If omitted,
+            a default name is generated from the column name.
         train : bool, default True
             Whether to train the index with existing data.
 
@@ -6832,6 +6845,8 @@ class AsyncTable:
             If not set, the call returns once the build is scheduled.
         name: str, optional
             The name of the index. If not provided, a default name will be generated.
+            Custom names must contain 1–128 ASCII letters, digits, dashes,
+            underscores, or periods, excluding ``.`` and ``..``.
         train: bool, default True
             Whether to train the index with existing data. Vector indices always train
             with existing data.
@@ -6965,6 +6980,11 @@ class AsyncTable:
 
         Use [list_indices][lancedb.table.AsyncTable.list_indices] to find the names
         of the indices.
+
+        Remote tables reject empty names, ``.`` and ``..`` to prevent URL path
+        normalization. Existing indices named ``.`` or ``..`` require server-side
+        cleanup on managed tables, or a native connection with direct access to
+        the dataset. Other existing and generated names remain addressable.
         """
         await self._inner.drop_index(name)
 
