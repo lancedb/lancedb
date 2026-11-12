@@ -607,7 +607,15 @@ impl FlightService for TestSqlService {
             ));
         }
         if query == "SELECT exchange stall" {
-            return Ok(Response::new(futures::stream::pending().boxed()));
+            let dropped = DropSignal(self.exchange_drops.clone());
+            return Ok(Response::new(
+                futures::stream::pending()
+                    .map(move |message| {
+                        let _dropped = &dropped;
+                        message
+                    })
+                    .boxed(),
+            ));
         }
         let rows =
             parameters.ok_or_else(|| Status::invalid_argument("exchange without parameters"))?;
@@ -990,13 +998,26 @@ async fn an_abandoned_reader_leaves_the_rows_for_the_next_one() {
 async fn a_reader_that_times_out_reports_the_failure() {
     let mut client_config = ClientConfig::default();
     client_config.timeout_config.timeout = Some(Duration::from_millis(200));
-    let (client, _shutdown) = start_sql_service(TestSqlService::default(), client_config).await;
+    let service = TestSqlService::default();
+    let drops = service.exchange_drops.clone();
+    let (client, _shutdown) = start_sql_service(service, client_config).await;
 
-    let stalled = client
-        .execute(parameterized("SELECT exchange stall", parameter_row()))
-        .await
-        .unwrap();
+    // Real loopback I/O must finish before the clock can advance to the timeout.
+    // A blocking task inhibits Tokio's automatic clock advance during submission.
+    tokio::time::pause();
+    let submission_client = client.clone();
+    let stalled = tokio::task::spawn_blocking(move || {
+        tokio::runtime::Handle::current().block_on(
+            submission_client.execute(parameterized("SELECT exchange stall", parameter_row())),
+        )
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
     assert_overall_timeout(stalled.reader().await, "result");
+    tokio::time::resume();
+    wait_for(&drops, 1, "a timed-out reader must end the call").await;
     let Err(retried) = stalled.reader().await else {
         panic!("the rows are gone, so a second reader cannot succeed");
     };
