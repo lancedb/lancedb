@@ -3129,8 +3129,13 @@ mod tests {
     #[tokio::test]
     async fn input_update_dirties_only_the_updated_rows_and_retains_outputs() {
         let table = fresh_function_table().await;
-        let result = table.update().only_if("title = 'a'").column("body", "'changed'")
-            .execute().await.unwrap();
+        let result = table
+            .update()
+            .only_if("title = 'a'")
+            .column("body", "'changed'")
+            .execute()
+            .await
+            .unwrap();
         assert_eq!(result.rows_updated, 1);
         let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
         for output in ["search_text", "search_token_count"] {
@@ -3138,8 +3143,18 @@ mod tests {
             let mut dirty_rows = 0;
             for fragment in dataset.get_fragments() {
                 if stale.needs_recompute(fragment.id() as u32) {
-                    let batch = fragment.scan().project(&["title"]).unwrap().try_into_batch().await.unwrap();
-                    let titles = batch.column(0).as_any().downcast_ref::<arrow_array::StringArray>().unwrap();
+                    let batch = fragment
+                        .scan()
+                        .project(&["title"])
+                        .unwrap()
+                        .try_into_batch()
+                        .await
+                        .unwrap();
+                    let titles = batch
+                        .column(0)
+                        .as_any()
+                        .downcast_ref::<arrow_array::StringArray>()
+                        .unwrap();
                     assert!(titles.iter().all(|title| title == Some("a")), "{stale:?}");
                     dirty_rows += batch.num_rows();
                 }
