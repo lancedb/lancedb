@@ -2646,6 +2646,8 @@ mod tests {
     use lance_file::version::ConcreteFileVersion;
     use lance_table::format::overlay::{DataOverlayFile, OverlayCoverage};
 
+    use crate::table::computed_columns::test_support::{stamp_bindings, text_features_binding};
+
     const COLUMN: &str = "doubled";
     const EXPRESSION: &str = "value * 2";
 
@@ -3166,7 +3168,6 @@ mod tests {
 
     #[tokio::test]
     async fn input_update_keeps_an_independent_function_binding_fresh() {
-        use crate::table::computed_columns::test_support::{stamp_bindings, text_features_binding};
         let batch = arrow_array::record_batch!(
             ("title", Utf8, ["a", "b", "c", "d"]),
             ("body", Utf8, ["x", "y", "z", "w"]),
