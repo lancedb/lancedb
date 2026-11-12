@@ -203,25 +203,40 @@ class _TwoPhaseSplitReader:
 
         # Last plan position (inclusive) at which each block is still
         # needed, so it can be evicted as soon as we've read past it.
-        self._block_last_pos: dict[int, int] = {}
-        for pos, bp in enumerate(self._plan_block_pos.tolist()):
-            self._block_last_pos[bp] = pos
+        # Computed with numpy (first occurrence in the reversed plan) rather
+        # than a per-row Python loop: materializing the whole split's plan
+        # as a Python list briefly costs about twice the plan arrays' memory.
+        plan_len = len(self._plan_block_pos)
+        if plan_len:
+            visited, rev_first = np.unique(
+                self._plan_block_pos[::-1], return_index=True
+            )
+            last_pos = plan_len - 1 - rev_first
+            self._block_last_pos: dict[int, int] = dict(
+                zip(visited.tolist(), last_pos.tolist())
+            )
+        else:
+            self._block_last_pos = {}
 
         # Distinct blocks in the order the plan first needs them. Prefetch
         # walks this (one entry per block) instead of rescanning raw plan
         # positions, which costs one Python step per *row* scanned and
         # dominates read time once max_shuffle_distance is large.
-        if len(self._plan_block_pos):
+        if plan_len:
             _, first_pos = np.unique(self._plan_block_pos, return_index=True)
             self._block_visit_order = self._plan_block_pos[np.sort(first_pos)].tolist()
         else:
             self._block_visit_order = []
+        # Prefetch's starting point in _block_visit_order. Every entry
+        # before it is a block whose last use is already behind the read
+        # watermark, so rescanning that ever-growing prefix on each top-up
+        # would make prefetch cost quadratic in the split's block count.
+        self._visit_cursor = 0
 
     def __getitems__(self, indices) -> pa.RecordBatch:
         # Fancy-indexed (not sliced) so this also supports non-contiguous
-        # index lists, e.g. the sparse random sampling used by
-        # _estimate_blocks_per_epoch, not just the contiguous
-        # range(start, start + fetch) that the main I/O pipeline requests.
+        # index lists, not just the contiguous range(start, start + fetch)
+        # that the main I/O pipeline requests.
         idx_arr = np.asarray(indices, dtype=np.int64)
         with self._lock:
             block_pos_slice = self._plan_block_pos[idx_arr]
@@ -275,9 +290,17 @@ class _TwoPhaseSplitReader:
             # the (by then finished) result above instead of blocking.
             room = self._prefetch_depth - len(self._pending)
             if room > 0:
-                for bp in self._block_visit_order:
+                visit_order = self._block_visit_order
+                while (
+                    self._visit_cursor < len(visit_order)
+                    and self._block_last_pos[visit_order[self._visit_cursor]]
+                    <= watermark
+                ):
+                    self._visit_cursor += 1
+                for i in range(self._visit_cursor, len(visit_order)):
                     if room == 0:
                         break
+                    bp = visit_order[i]
                     if bp in self._loaded or bp in self._pending:
                         continue
                     if self._block_last_pos.get(bp, -1) <= watermark:
@@ -1293,6 +1316,17 @@ class StreamingDataset(IterableDataset):
         order = pc.sort_indices(block.column("_rowoffset"))
         return block.take(order).drop_columns(["_rowoffset"])
 
+    def _split_block_ids(self, split_idx: int) -> list[int]:
+        """Block ids assigned to one split, in the split's read order.
+
+        Split k owns the k-th contiguous chunk of ``_block_perm``; the
+        surplus ``num_blocks % num_splits`` blocks are dropped so every
+        split is the same length.
+        """
+        blocks_per_split = self._num_blocks // self._num_splits
+        start = split_idx * blocks_per_split
+        return self._block_perm[start : start + blocks_per_split]
+
     def _make_two_phase_reader(
         self,
         split_idx: int,
@@ -1302,17 +1336,10 @@ class StreamingDataset(IterableDataset):
     ) -> "_TwoPhaseSplitReader":
         """Build the 2-phase reader for one split's assigned blocks.
 
-        Shared by ``_iter_owned`` (the real read path) and
-        ``_estimate_blocks_per_epoch`` (which samples token lengths through
-        the same interface, so its estimate reflects 2-phase's actual block
-        assignment and shuffle bound rather than a separate approximation).
         ``skip`` resumes from a saved absolute position within the split's
         own deterministic read order (see ``_TwoPhaseSplitReader``).
         """
-        blocks_per_split = self._num_blocks // self._num_splits
-        start = split_idx * blocks_per_split
-        end = start + blocks_per_split
-        block_ids = self._block_perm[start:end]
+        block_ids = self._split_block_ids(split_idx)
         live_counts = [self._block_live_counts[bid] for bid in block_ids]
         sigma_seed = (
             self._shuffle_seed
@@ -1356,52 +1383,64 @@ class StreamingDataset(IterableDataset):
             "pass an explicit value for exact epoch sizing",
         )
 
-        pinned_table = (
-            self._open_pinned_table() if self._block_size is not None else None
-        )
-        for split in range(self._num_splits):
-            if self._block_size is not None:
-                # Sample through the same 2-phase reader used at read time,
-                # so the estimate reflects 2-phase's actual block
-                # assignment and shuffle bound rather than a separate,
-                # unrelated approximation.
-                permutation = self._make_two_phase_reader(
-                    split, pinned_table, [token_column]
+        def _sampled_token_count(column: Union[pa.Array, pa.ChunkedArray]) -> int:
+            lengths = pc.list_value_length(column)
+            if lengths.null_count:
+                raise ValueError("pack_sequences does not support null token lists")
+            return int(pc.sum(lengths).as_py())
+
+        def _sample_size(split_rows: int) -> int:
+            # Sample roughly 1% from each logical split, with at least one row
+            # per split and a global target cap of 100,000 rows.
+            return min(
+                split_rows,
+                max(1, min((split_rows + 99) // 100, sample_cap_per_split)),
+            )
+
+        if self._block_size is not None:
+            # Sample whole blocks rather than scattered rows: a row sample
+            # spread over a split touches nearly every block, so it would
+            # read the entire token column just to estimate it.  Every
+            # block holds exactly block_size live rows, so a uniform
+            # sample of the split's own blocks still gives an unbiased
+            # per-row mean over exactly the rows that split will serve.
+            pinned_table = self._open_pinned_table()
+            for split in range(self._num_splits):
+                split_blocks = self._split_block_ids(split)
+                split_rows = len(split_blocks) * self._block_size
+                num_sample_blocks = min(
+                    len(split_blocks),
+                    -(-_sample_size(split_rows) // self._block_size),
                 )
-            else:
+                for block_id in rng.sample(split_blocks, num_sample_blocks):
+                    block = self._read_block(pinned_table, block_id, [token_column])
+                    sampled_tokens += _sampled_token_count(block.column(0))
+                total_sampled += num_sample_blocks * self._block_size
+                total_rows += split_rows
+        else:
+            for split in range(self._num_splits):
                 permutation = Permutation.from_tables(
                     self._table, self._perm_table, split=split
                 )
                 permutation = permutation.select_columns([token_column])
                 permutation = permutation.with_transform(Transforms.arrow2arrow)
-            split_rows = permutation.num_rows
-            if split_rows == 0:
-                raise ValueError(
-                    "blocks_per_epoch='auto' cannot estimate an empty dataset"
-                )
+                split_rows = permutation.num_rows
+                if split_rows == 0:
+                    raise ValueError(
+                        "blocks_per_epoch='auto' cannot estimate an empty dataset"
+                    )
 
-            # Sample roughly 1% from each logical split, with at least one row
-            # per split and a global target cap of 100,000 rows.
-            sample_rows = min(
-                split_rows,
-                max(1, min((split_rows + 99) // 100, sample_cap_per_split)),
-            )
-            sample_offsets = sorted(rng.sample(range(split_rows), sample_rows))
-            sample_batch_size = max(1, self._read_batch_size)
-            for start in range(0, sample_rows, sample_batch_size):
-                batch = permutation.__getitems__(
-                    sample_offsets[start : start + sample_batch_size]
-                )
-                lengths = pc.list_value_length(batch.column(0))
-                if lengths.null_count:
-                    raise ValueError("pack_sequences does not support null token lists")
-                sampled_tokens += int(pc.sum(lengths).as_py())
+                sample_rows = _sample_size(split_rows)
+                sample_offsets = sorted(rng.sample(range(split_rows), sample_rows))
+                sample_batch_size = max(1, self._read_batch_size)
+                for start in range(0, sample_rows, sample_batch_size):
+                    batch = permutation.__getitems__(
+                        sample_offsets[start : start + sample_batch_size]
+                    )
+                    sampled_tokens += _sampled_token_count(batch.column(0))
 
-            if self._block_size is not None:
-                permutation.close()
-
-            total_sampled += sample_rows
-            total_rows += split_rows
+                total_sampled += sample_rows
+                total_rows += split_rows
 
         # Pool the samples into one global average. Each document contributes
         # one EOS token.

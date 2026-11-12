@@ -3653,6 +3653,112 @@ def test_two_phase_reader_plan_arrays_are_int32(lance_table):
     assert reader._plan_local_offset.max() < 10  # block_size
 
 
+class _LookupCountingDict(dict):
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.lookups = 0
+
+    def __getitem__(self, key):
+        self.lookups += 1
+        return super().__getitem__(key)
+
+    def get(self, key, default=None):
+        self.lookups += 1
+        return super().get(key, default)
+
+
+@pytest.mark.parametrize(
+    "skip", [pytest.param(0, id="fresh"), pytest.param(1500, id="resumed")]
+)
+def test_two_phase_reader_sequential_read_is_linear_in_blocks(skip):
+    """A sequential read must fetch each block once and keep per-call
+    bookkeeping bounded by the resident window, not by how many blocks the
+    split has already passed -- otherwise prefetch cost grows quadratically
+    with split size."""
+    num_blocks, block_size, batch = 400, 8, 8
+    block_ids = list(range(1000, 1000 + num_blocks))
+    reads = []
+
+    def read_block(block_id):
+        reads.append(block_id)
+        return pa.table({"block": [block_id] * block_size, "row": range(block_size)})
+
+    reader = streaming._TwoPhaseSplitReader(
+        block_ids=block_ids,
+        block_live_counts=[block_size] * num_blocks,
+        shuffle=True,
+        max_shuffle_distance=4 * block_size,
+        seed=SHUFFLE_SEED,
+        read_block_fn=read_block,
+        columns=None,
+        skip=skip,
+        prefetch_depth=2,
+    )
+    try:
+        # Later positions overwrite earlier ones, leaving each block's last.
+        expected_last_pos = {
+            bp: pos for pos, bp in enumerate(reader._plan_block_pos.tolist())
+        }
+        assert reader._block_last_pos == expected_last_pos
+
+        reader._block_last_pos = _LookupCountingDict(reader._block_last_pos)
+        rows = []
+        num_calls = 0
+        for start in range(0, reader.num_rows, batch):
+            out = reader.__getitems__(range(start, min(start + batch, reader.num_rows)))
+            rows.extend(
+                zip(out.column("block").to_pylist(), out.column("row").to_pylist())
+            )
+            num_calls += 1
+    finally:
+        reader.close()
+
+    expected_rows = [
+        (block_ids[bp], off)
+        for bp, off in zip(
+            reader._plan_block_pos.tolist(), reader._plan_local_offset.tolist()
+        )
+    ]
+    assert rows == expected_rows
+    if skip == 0:
+        assert sorted(rows) == [
+            (bid, off) for bid in block_ids for off in range(block_size)
+        ]
+    needed_blocks = {block_ids[bp] for bp in expected_last_pos}
+    assert sorted(reads) == sorted(needed_blocks)
+    # Rescanning every already-passed block on each prefetch top-up grows
+    # quadratically (~29k lookups fresh here); a bounded walk stays linear
+    # (~2k).
+    assert reader._block_last_pos.lookups < 10 * (num_calls + num_blocks)
+
+
+def test_two_phase_auto_blocks_per_epoch_reads_only_sampled_blocks(
+    tmp_path, monkeypatch
+):
+    """blocks_per_epoch='auto' must sample whole blocks: a scattered row
+    sample touches nearly every block and so reads the whole token column."""
+    table = _create_token_table(tmp_path, [[1, 2, 3]] * 1000)
+    reads = []
+    read_block = StreamingDataset._read_block
+
+    def counting_read_block(self, pinned_table, block_id, columns):
+        reads.append(block_id)
+        return read_block(self, pinned_table, block_id, columns)
+
+    monkeypatch.setattr(StreamingDataset, "_read_block", counting_read_block)
+    with pytest.warns(UserWarning, match="approximate token-count sample"):
+        dataset = _packed_dataset(
+            table, 4, blocks_per_epoch="auto", num_splits=2, block_size=10
+        )
+
+    # 1% of each 500-row split rounds up to a single 10-row block per split.
+    assert len(reads) == 2
+    assert reads[0] in dataset._split_block_ids(0)
+    assert reads[1] in dataset._split_block_ids(1)
+    # Every document is 3 tokens plus EOS, so the sample is exact: 4000 / 4.
+    assert dataset.state_dict()["blocks_per_epoch"] == 1000
+
+
 def test_two_phase_rejects_rte_write_spec_table(tmp_path):
     """An RTE write spec means some acknowledged writes live only in the
     MemWAL, invisible to a version-pinned read; block_size must refuse the
