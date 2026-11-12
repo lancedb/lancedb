@@ -1891,6 +1891,17 @@ def test_annotation_and_explicit_schema_validation_fail_closed():
                 return value
 
 
+def test_default_function_runtime_matches_server_identity():
+    definition = function(python_version="3.12")(analyze_caption.__wrapped__)
+    runtime = definition.registration_request.runtime
+    assert runtime.env == {}
+    cases = json.loads((FIXTURES / "runtime_identity.json").read_text())
+    expected = next(
+        case["digest"] for case in cases if case["name"] == "empty-environment"
+    )
+    assert runtime.digest == expected
+
+
 def test_environment_changes_do_not_change_source_identity():
     definition = function(
         pip=["openai==3.46.0"],

@@ -507,6 +507,8 @@ class PythonRuntimeSpec(_RemoteValue):
         if self.kind not in {"python", "python_v2"}:
             raise ValueError(f"cannot digest unknown runtime kind {self.kind!r}")
         value = self._known_dict()
+        if not value.get("env"):
+            value.pop("env", None)
         environment = value["environment"]
         for field in ("packages", "system_packages"):
             if field in environment:

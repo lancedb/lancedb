@@ -237,5 +237,33 @@
       }
     },
     "digest": "sha256:a3d52daa7573e7fc6d052e0bf05b5189b9413ad8e136c10bc48f6dedc3add047"
+  },
+  {
+    "name": "explicit-empty-env",
+    "runtime": {
+      "kind": "python",
+      "python_version": "3.12",
+      "environment": {
+        "kind": "pip"
+      },
+      "env": {}
+    },
+    "digest": "sha256:a3d52daa7573e7fc6d052e0bf05b5189b9413ad8e136c10bc48f6dedc3add047"
+  },
+  {
+    "name": "explicit-empty-fields",
+    "runtime": {
+      "kind": "python",
+      "python_version": "3.12",
+      "environment": {
+        "kind": "pip",
+        "packages": [],
+        "channels": [],
+        "modules": [],
+        "system_packages": []
+      },
+      "env": {}
+    },
+    "digest": "sha256:a3d52daa7573e7fc6d052e0bf05b5189b9413ad8e136c10bc48f6dedc3add047"
   }
 ]
