@@ -235,12 +235,12 @@ async function withSnapshotServer(
             tableToIPC(
               makeArrowTable(
                 (body.row_ids as number[]).map((id) => ({
-                  image:
+                  [String(body.column)]:
                     payloads[id] === null ? null : Buffer.from(payloads[id]!),
                 })),
                 {
                   schema: new Schema([
-                    new Field("image", new LargeBinary(), true),
+                    new Field(String(body.column), new LargeBinary(), true),
                   ]),
                 },
               ),
