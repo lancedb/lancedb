@@ -166,8 +166,8 @@ jobs:
         NODE_OPTIONS: "--experimental-vm-modules"
       # Invoke the installed jest binary directly; the pnpm shim is set up
       # against the build-phase Node, not the version selected above.
-      # TEMPORARY DIAGNOSTIC: retain both DDB tests and preceding S3 setup tests.
-      run: node_modules/.bin/jest --verbose __test__/s3_integration.test.ts
+      # TEMPORARY DIAGNOSTIC: restore full-suite contention with stage timing.
+      run: node_modules/.bin/jest --verbose
     - name: Collect DynamoDB diagnostic evidence
       if: ${{ always() && steps.localstack.outcome == 'success' }}
       working-directory: .
