@@ -579,12 +579,15 @@ class LanceNamespaceDBConnection(DBConnection):
         If limit is None, return all table names; zero returns an empty list.
 
         .. deprecated::
-            Use :meth:`list_tables` instead, which provides proper pagination support.
+            Iterate over :meth:`list_tables` to get all names, or use
+            :meth:`table_exists` to check for a particular table. The listing's
+            ``tables`` attribute contains only one page.
         """
         import warnings
 
         warnings.warn(
-            "table_names() is deprecated, use list_tables() instead",
+            "table_names() is deprecated, iterate list_tables() for all names "
+            "or use table_exists([name]) to check existence",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -1030,7 +1033,11 @@ class LanceNamespaceDBConnection(DBConnection):
         limit: Optional[int] = None,
     ) -> TableListing:
         """
-        List all tables in this database with pagination support.
+        Iterate over all tables in this database, fetching pages as needed.
+
+        The ``tables`` attribute contains only the current page (100 names by
+        default). Iterate over the listing to visit all pages, or use
+        ``table_exists([name])`` to check for a particular table.
 
         Parameters
         ----------
@@ -1227,12 +1234,15 @@ class AsyncLanceNamespaceDBConnection:
         If limit is None, return all table names; zero returns an empty list.
 
         .. deprecated::
-            Use :meth:`list_tables` instead, which provides proper pagination support.
+            Iterate over :meth:`list_tables` to get all names, or use
+            :meth:`table_exists` to check for a particular table. The listing's
+            ``tables`` attribute contains only one page.
         """
         import warnings
 
         warnings.warn(
-            "table_names() is deprecated, use list_tables() instead",
+            "table_names() is deprecated, iterate list_tables() for all names "
+            "or use table_exists([name]) to check existence",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -1628,7 +1638,11 @@ class AsyncLanceNamespaceDBConnection:
         limit: Optional[int] = None,
     ) -> AsyncTableListing:
         """
-        List all tables in this database with pagination support.
+        Iterate over all tables in this database, fetching pages as needed.
+
+        The ``tables`` attribute contains only the current page (100 names by
+        default). Iterate over the listing to visit all pages, or use
+        ``table_exists([name])`` to check for a particular table.
 
         Parameters
         ----------
