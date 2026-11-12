@@ -443,13 +443,12 @@ mod tests {
             .stats()
             .await
             .unwrap_err();
-        assert!(matches!(
-            error,
-            crate::Error::Http {
-                status_code: Some(404),
-                ..
+        match error {
+            crate::Error::Http { status_code, .. } => {
+                assert_eq!(status_code, Some(reqwest::StatusCode::NOT_FOUND));
             }
-        ));
+            other => panic!("expected HTTP 404, got {other:?}"),
+        }
     }
 
     struct FixtureRemoteJob(&'static str);
