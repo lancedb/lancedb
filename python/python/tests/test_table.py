@@ -6359,3 +6359,18 @@ def test_accelerated_index_exist_ok_preserves_concurrent_winner():
         )
     assert dataset.create_index.call_args.kwargs["replace"] is False
     assert dataset.create_index.call_args.kwargs["name"] == "vector_idx"
+
+
+@pytest.mark.parametrize(
+    "column", ["`user-id`", "`user:id`", "`literal.dot`", "nested.`user-id`"]
+)
+def test_index_exist_ok_matches_lance_default_name(mem_db, column):
+    table = mem_db.create_table(
+        "quoted_index",
+        [{"user-id": 1, "user:id": 2, "literal.dot": 3, "nested": {"user-id": 4}}],
+    )
+    table.create_index(column, config=BTree())
+    before = table.version
+    table.create_index(column, config=BTree(), exist_ok=True)
+    assert table.version == before
+    assert len(table.list_indices()) == 1

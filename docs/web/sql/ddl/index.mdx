@@ -15,7 +15,6 @@ availability:
 ```sql SQL icon="database"
 CREATE INDEX ON documents USING btree (title)
 CREATE INDEX text_search ON documents USING fts (text)
-CREATE INDEX IF NOT EXISTS text_search ON documents USING fts (text)
 ```
 </CodeGroup>
 
@@ -39,6 +38,12 @@ runs as `create_` followed by the algorithm instead. See
 [Incremental Indexing](/indexing/incremental-indexing).
 </Note>
 
+{/* Draft for the index exist_ok release.
+
+```sql
+CREATE INDEX IF NOT EXISTS text_search ON documents USING fts (text)
+```
+
 Use `IF NOT EXISTS` to preserve the existing index with the same name. Without an
 explicit name, the name is derived from the column (`title_idx`, or
 `title_list_element_idx` for list-element FTS). Existing definitions and builds
@@ -54,9 +59,24 @@ from lancedb.index import BTree
 table.create_index("title", config=BTree(), name="title_idx", exist_ok=True)
 ```
 
+```rust
+use lancedb::index::Index;
+
+table.create_index(&["title"], Index::BTree(Default::default()))
+    .name("title_idx".to_string())
+    .exist_ok(true)
+    .execute()
+    .await?;
+```
+
+The SDK option is available in Python and Rust. TypeScript support is a separate
+follow-up. Remote use requires a server that supports the option.
+
 An existing background build continues running. A completed submission handle
 for a skipped creation does not wait for that build; use `wait_for_index` when
 its completion is required.
+
+*/}
 
 ## DROP INDEX {#drop}
 

@@ -170,7 +170,11 @@ def _validate_index_accelerator(accelerator: Any) -> None:
 
 def _create_accelerated_index(dataset, *, exist_ok=False, name=None, **options):
     if exist_ok:
-        name = name or f"{options['column']}_idx"
+        parts = _parse_field_path(options["column"])
+        default_name = (
+            options["column"] if any("." in part for part in parts) else ".".join(parts)
+        )
+        name = name or f"{default_name}_idx"
         dataset.checkout_latest()
         if any(index["name"] == name for index in dataset.list_indices()):
             return
@@ -1935,6 +1939,9 @@ class Table(ABC):
             BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, FTS.
         replace : bool, default True
             Whether to replace an existing index on this column.
+        exist_ok : bool, default False
+            Preserve the existing index with the requested or derived name.
+            Takes precedence over replace and keeps its definition and build.
         wait_timeout : timedelta, optional
             LanceDB Enterprise only: how long to wait for the index build to finish.
             If not set, the call returns once the build is scheduled.
@@ -4425,6 +4432,9 @@ class LanceTable(Table):
             BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, FTS.
         replace : bool, default True
             Whether to replace an existing index on this column.
+        exist_ok : bool, default False
+            Preserve the existing index with the requested or derived name.
+            Takes precedence over replace and keeps its definition and build.
         wait_timeout : timedelta, optional
             Timeout to wait for async indexing to complete.
         name : str, optional

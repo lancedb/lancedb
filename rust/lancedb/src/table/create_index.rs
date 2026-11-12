@@ -150,12 +150,27 @@ impl NativeTable {
     ) -> Result<()> {
         let (column, lance_idx_params, index_type) = prepared;
         let mut dataset = (*self.dataset.get().await?).clone();
-        let guarded_name = opts.exist_ok.then(|| opts.name.clone().unwrap_or_else(|| {
-            let suffix = if matches!(&opts.index, Index::FTS(params) if params.get_document_granularity().is_list_element()) {
-                "_list_element_idx"
-            } else { "_idx" };
-            format!("{column}{suffix}")
-        }));
+        let guarded_name = if opts.exist_ok {
+            Some(if let Some(name) = &opts.name {
+                name.clone()
+            } else {
+                let names = lance_core::datatypes::parse_field_path(&column)?;
+                let default_name = if names.iter().any(|name| name.contains('.')) {
+                    column.clone()
+                } else {
+                    names.join(".")
+                };
+                let suffix = if matches!(&opts.index, Index::FTS(params) if params.get_document_granularity().is_list_element())
+                {
+                    "_list_element_idx"
+                } else {
+                    "_idx"
+                };
+                format!("{default_name}{suffix}")
+            })
+        } else {
+            None
+        };
         if let Some(name) = &guarded_name
             && dataset
                 .load_indices()
