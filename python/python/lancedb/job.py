@@ -678,7 +678,7 @@ class Job(Generic[T]):
     def stats(self) -> Optional[str]:
         """Return a printable Function job run report.
 
-        See :meth:`AsyncJob.stats` for metrics and availability.
+        See [AsyncJob.stats][lancedb.job.AsyncJob.stats] for metrics and availability.
 
         Examples
         --------
