@@ -63,7 +63,7 @@ impl<'a> RetryCounter<'a> {
     /// Increment the appropriate failure counter based on the error type.
     ///
     /// For `Error::Http` whose source is a connect error, increments
-    /// `connect_failures`. For read errors (`is_body` or `is_decode`),
+    /// `connect_failures`. For read errors (`is_timeout`, `is_body` or `is_decode`),
     /// increments `read_failures`. For all other errors, increments
     /// `request_failures`. Calls `check_out_of_retries` to enforce global limits.
     pub fn increment_from_error(&mut self, source: crate::Error) -> crate::Result<()> {
@@ -74,7 +74,7 @@ impl<'a> RetryCounter<'a> {
 
         if reqwest_err.is_some_and(|e| e.is_connect()) {
             self.connect_failures += 1;
-        } else if reqwest_err.is_some_and(|e| e.is_body() || e.is_decode()) {
+        } else if reqwest_err.is_some_and(|e| e.is_timeout() || e.is_body() || e.is_decode()) {
             self.read_failures += 1;
         } else {
             self.request_failures += 1;
@@ -185,6 +185,37 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn test_increment_from_error_read_timeout() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let _ = tokio::io::copy(&mut socket, &mut tokio::io::sink()).await;
+        });
+        let err = reqwest::Client::builder()
+            .read_timeout(Duration::from_millis(100))
+            .build()
+            .unwrap()
+            .get(format!("http://{address}/"))
+            .send()
+            .await
+            .unwrap_err();
+        assert!(err.is_timeout() && !err.is_connect());
+        let config = test_config();
+        let mut counter = RetryCounter::new(&config, "part-1".into());
+        counter
+            .increment_from_error(Error::Http {
+                request_id: "part-1".into(),
+                status_code: None,
+                source: Box::new(err),
+            })
+            .unwrap();
+        assert_eq!(counter.read_failures, 1);
+        assert_eq!(counter.request_failures, 0);
+        server.abort();
     }
 
     #[test]

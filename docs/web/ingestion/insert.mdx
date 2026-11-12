@@ -150,6 +150,10 @@ Python and TypeScript report elapsed time in seconds; Rust returns a `Duration`.
 The expected row count may be unknown for streaming input. On the final update,
 it falls back to the number of rows written.
 
+For remote multipart writes, rows count input scanning, while bytes count
+acknowledged IPC parts. Bytes start at zero and a retried part is counted once,
+after acknowledgement. Scanned rows and staged bytes do not imply a commit.
+
 Keep callbacks short and use the write operation's result to determine success.
 The final `done` update means progress reporting has ended; it can also occur
 after a write fails or is cancelled. Input errors before writing starts may
@@ -164,11 +168,29 @@ from a TypeScript callback are logged and do not abort the write.
 Wait for the write operation's result, then check the expected records.
 Progress callbacks describe activity; they do not establish that a write
 succeeded. If a request fails after the server may have committed it, blindly
-repeating an append can duplicate rows. The client's automatic retries can do
-the same: on an Enterprise table, the Python and TypeScript 0.40.0 clients resend an
-append after a retryable status such as `504`, even when the server had already
-committed it, and `add()` still returns success. Reconcile using your record
-IDs, or choose an upsert policy designed for replay.
+repeating an append can duplicate rows. Current clients do not automatically
+replay non-idempotent writes after `500`, `502`, `503`, or `504`, or after a
+response is lost. A plain `503` does not prove that a write was rejected before
+commit. Connection failures before sending, `409` transaction conflicts, and
+explicit `429` rate-limit rejections may be retried within `RetryConfig` limits. Idempotent multipart
+parts have a separate retry policy described below.
+
+If multipart completion times out, loses its response, or receives a `5xx`, the
+error reports **commit outcome unknown**. The client neither aborts the upload
+nor resends completion or the input under
+a new upload ID: aborting at this point could delete already committed data.
+Check the table using your record IDs before retrying the operation.
+
+Configure connection-wide limits with `client_config.retry_config` in Python
+(`lancedb.remote.RetryConfig`) or `clientConfig.retryConfig` in TypeScript.
+Override the budget for one `add()` with Python `table.add(data, retries=0)`
+or TypeScript `table.add(data, { retries: 0 })`. The value must be an integer
+between 0 and 255. Rust write builders also provide a per-call override, for
+example `table.add(data).retries(0).execute().await?`,
+`table.update().retries(0)`, and `table.merge_insert(&["id"]).retries(0)`.
+This disables transport retries for that operation, including multipart part
+retries; it does not change local transaction conflict handling. Increasing a
+retry budget never makes ambiguous commits safe to replay.
 
 ## Configure large uploads {#bulk-ingests-into-a-remote-table}
 
@@ -176,32 +198,82 @@ IDs, or choose an upsert policy designed for replay.
 
 This section applies only to LanceDB Enterprise tables (`db://` connections). LanceDB Embedded writes are unaffected.
 
-When you write to a LanceDB Enterprise table, the client sends the write as one HTTP `insert` request unless it splits the data into more than one partition, which it does for a large input it can measure or when you set [`write_parallelism`](#write-parallelism). A partitioned write goes up as a multipart write: the client cuts each partition into one or more `insert` parts and uploads them under a single upload id. Each part is streamed. Its size and duration still affect resource use and
-timeouts: it has to finish within the client read timeout while the server writes it to object storage, so on very large ingests an oversized part can run past that timeout and surface as:
+Large measured inputs, unknown-length streams, and explicit parallel uploads use
+multipart writes when the server supports them. The client slices large batches
+before IPC encoding and buffers each part for replay. A disconnected request,
+read timeout, or configured retryable staging status retries exactly the same
+upload ID, part ID, and IPC bytes. `RetryConfig.statuses` controls status retries;
+an empty list disables them. The default includes `500`, `502`, `503`, and `504`.
+The server replaces that part's staged transaction, so losing
+its response does not append the rows twice. Exhausting the part retry budget
+aborts the uncommitted session; it does not restart the entire upload.
+A complete request rejected with a transaction conflict (`409`) or rate limit
+(`429`) also triggers best-effort cleanup. Cleanup uses the call's retry budget;
+its failure does not replace the original error. Ambiguous completion outcomes
+never trigger cleanup or replay.
 
-```text
-lancedb.remote.errors.HttpError: operation timed out
-```
+Part size still affects memory and HTTP timeouts. A single blob row cannot be
+split across Arrow batches; a very large row may require a larger timeout and
+more memory. No connection-pool or keepalive setting guarantees that a write
+response will arrive.
 
 Two environment variables control how a multipart write's parts are cut. Both are picked up automatically by the Python and TypeScript clients, for clients that support these settings:
 
 | Variable | Default | What it controls |
 |----------|---------|------------------|
-| `LANCE_CLIENT_MAX_BYTES_PER_REQUEST` | 8 GiB | Maximum size of a single insert part, in LZ4-compressed Arrow IPC bytes. Set to `0` to disable splitting and send one request per partition. |
-| `LANCE_CLIENT_MAX_REQUEST_DURATION` | Half the read timeout | Maximum wall-clock time, in whole seconds, that any one insert part may stay open. Set to `0` to disable the time-based cut. |
+| `LANCE_CLIENT_MAX_BYTES_PER_REQUEST` | 64 MiB | Target LZ4-compressed IPC bytes per replayable part. A single indivisible row and its IPC schema may exceed the target. `0` disables byte-based cuts and can require buffering a whole partition. |
+| `LANCE_CLIENT_MAX_REQUEST_DURATION` | Half the read timeout | Time spent filling a replayable payload, in whole seconds. `0` disables time-based cuts. HTTP deadlines are configured separately in `timeout_config`. |
 
-A part is cut after the input batch that reaches either limit, so cuts fall between batches. Lower the byte budget, with smaller input batches, when large ingests hit the read timeout; lower the duration when uploads are slow or throttled and the byte budget isn't the limiting factor.
+A part is cut after an encoding slice reaches either limit. Input batches are
+sliced to approximately 8 MiB before encoding, preserving row order. Peak
+additional memory scales with active writers and the part budget. Lower
+`write_parallelism` or the byte budget to reduce memory use.
 
 <CodeGroup>
 ```bash Bash icon="terminal"
-export LANCE_CLIENT_MAX_BYTES_PER_REQUEST=1073741824  # 1 GiB
-export LANCE_CLIENT_MAX_REQUEST_DURATION=120          # 2 minutes
+export LANCE_CLIENT_MAX_BYTES_PER_REQUEST=33554432  # 32 MiB
+export LANCE_CLIENT_MAX_REQUEST_DURATION=30        # payload preparation budget
 ```
 </CodeGroup>
 
 Splitting into more parts does not change the final table. The server stages the parts under their shared upload ID before committing
 the write. This upload protocol is separate from repeating an application-level
 `add()` after a timeout.
+
+Remote `create_table(name, data)` remains one atomic request, including overwrite
+and `exist_ok` modes. The client encodes into an automatically removed temporary
+file before sending, rejects payloads larger than 256 MiB of compressed IPC, and
+never silently creates an empty table as a fallback. Encoding and input failures
+therefore issue no create request. Temporary disk usage is bounded by this budget;
+individual oversized rows can still need substantial encoding memory.
+
+For larger imports, create the schema first and upload with progress reporting.
+The empty table becomes visible immediately; `add()` commits its rows atomically.
+The following examples use an existing connection `db`, an Arrow `schema`, and
+input `data` matching that schema (an Arrow reader in Rust):
+
+<CodeGroup>
+```python Python icon="python"
+table = db.create_table("items", schema=schema)
+table.add(data, progress=True)
+```
+
+```typescript TypeScript icon="square-js"
+const table = await db.createEmptyTable("items", schema);
+await table.add(data, {
+  progress: (p) => console.log(`Rows written: ${p.outputRows}`),
+});
+```
+
+```rust Rust icon="rust"
+let table = db.create_empty_table("items", schema).execute().await?;
+table
+    .add(data)
+    .progress(|p| println!("Rows written: {}", p.output_rows()))
+    .execute()
+    .await?;
+```
+</CodeGroup>
 
 ## Complete write workflow {#complete-example}
 
