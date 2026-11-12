@@ -432,8 +432,12 @@ class DBConnection(EnforceOverrides):
         azure_client_secret_secret: Optional[Union[str, SecretReference]] = None,
         gcp_credentials_json_secret: Optional[Union[str, SecretReference]] = None,
         huggingface_token_secret: Optional[Union[str, SecretReference]] = None,
+        exist_ok: bool = False,
         namespace_path: Optional[List[str]] = None,
     ) -> StorageIntegrationInfo:
+        """Register storage access, preserving existing configuration with
+        ``exist_ok=True``. Existing names are errors by default.
+        """
         raise NotImplementedError
 
     def describe_storage_integration(
@@ -2482,6 +2486,7 @@ class LanceDBConnection(DBConnection):
         azure_client_secret_secret: Optional[Union[str, SecretReference]] = None,
         gcp_credentials_json_secret: Optional[Union[str, SecretReference]] = None,
         huggingface_token_secret: Optional[Union[str, SecretReference]] = None,
+        exist_ok: bool = False,
         namespace_path: Optional[List[str]] = None,
     ) -> StorageIntegrationInfo:
         return LOOP.run(
@@ -2499,6 +2504,7 @@ class LanceDBConnection(DBConnection):
                 azure_client_secret_secret=azure_client_secret_secret,
                 gcp_credentials_json_secret=gcp_credentials_json_secret,
                 huggingface_token_secret=huggingface_token_secret,
+                exist_ok=exist_ok,
                 namespace_path=namespace_path,
             )
         )
@@ -3856,6 +3862,7 @@ class AsyncConnection(object):
         azure_client_secret_secret: Optional[Union[str, SecretReference]] = None,
         gcp_credentials_json_secret: Optional[Union[str, SecretReference]] = None,
         huggingface_token_secret: Optional[Union[str, SecretReference]] = None,
+        exist_ok: bool = False,
         namespace_path: Optional[List[str]] = None,
     ) -> StorageIntegrationInfo:
         """Register cloud storage access using database-owned credential Secrets.
@@ -3870,6 +3877,10 @@ class AsyncConnection(object):
         optionally set ``huggingface_token_secret`` to a Secret containing the
         token; omitting it selects anonymous access at the default rate limits.
         Registration returns setup instructions without verifying storage access.
+
+        ``exist_ok=True`` returns the stored configuration unchanged when the
+        integration exists, preserving its provider, prefix and credential
+        bindings. Existing names are errors by default.
         """
         azure_options = (
             azure_tenant_id_secret,
@@ -3978,6 +3989,8 @@ class AsyncConnection(object):
             "aws_access_key_id_secret": reference(aws_access_key_id_secret),
             "aws_secret_access_key_secret": reference(aws_secret_access_key_secret),
         }
+        if exist_ok:
+            request["exist_ok"] = True
         info = await self._inner.create_storage_integration(
             validate_secret_name(name),
             json.dumps(request),

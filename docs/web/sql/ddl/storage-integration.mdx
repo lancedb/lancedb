@@ -21,12 +21,17 @@ with a nested namespace path `$`-joined into that middle part.
 
 <CodeGroup>
 ```sql SQL icon="database"
-CREATE STORAGE INTEGRATION <name>
+CREATE STORAGE INTEGRATION [IF NOT EXISTS] <name>
     STORAGE_PROVIDER = 'S3' | 'AZURE' | 'GCP' | 'HUGGINGFACE'
     STORAGE_PREFIX = '<uri-prefix>'
     [ <provider option> = <value> [...] ]
 ```
 </CodeGroup>
+
+`IF NOT EXISTS` returns an existing integration unchanged, including its provider,
+storage prefix, credential references and external ID. In the Python SDK, pass
+`exist_ok=True` to `create_storage_integration`. The default reports an error when
+the name already exists.
 
 `STORAGE_PROVIDER` and `STORAGE_PREFIX` are required for every provider.
 `STORAGE_PREFIX` is the URI prefix the integration covers -- a query only
