@@ -5067,6 +5067,7 @@ def blob_remote_table(
     empty=False,
     schema_version=None,
     search_scores=False,
+    snapshot_supported=True,
 ):
     if state is None:
         state = {"version": 1}
@@ -5169,6 +5170,8 @@ def blob_remote_table(
             )
             if header is not None:
                 request.send_header("x-lancedb-version", header)
+                if snapshot_supported:
+                    request.send_header("x-lancedb-query-version", header)
             request.end_headers()
             writer_factory = pa.ipc.new_file if framing == "file" else pa.ipc.new_stream
             with writer_factory(request.wfile, response_table.schema) as writer:
@@ -5305,7 +5308,7 @@ async def test_remote_blob_bytes_invalid_snapshot(use_async, version_header):
     ) as remote_table:
         table = remote_table._table if use_async else remote_table
         query = table.query() if use_async else table.search()
-        with pytest.raises(NotImplementedError, match="x-lancedb-version"):
+        with pytest.raises(NotImplementedError, match="x-lancedb-query-version"):
             result = query.to_arrow(blob_mode="bytes")
             if use_async:
                 await result
@@ -5403,7 +5406,9 @@ async def test_remote_blob_bytes_hybrid_rejects_different_snapshots(use_async):
                 .vector([1.0, 2.0])
                 .text("hello")
             )
-        with pytest.raises(NotImplementedError, match="inconsistent x-lancedb-version"):
+        with pytest.raises(
+            NotImplementedError, match="inconsistent x-lancedb-query-version"
+        ):
             result = query.select(["id", "image"]).to_arrow(blob_mode="bytes")
             if use_async:
                 await result
@@ -5463,7 +5468,7 @@ def test_sync_remote_blob_pandas_avoids_storage_access(
             ) as exc:
                 query.to_pandas(blob_mode=blob_mode)
             if blob_mode == "bytes":
-                assert "x-lancedb-version" in str(exc.value)
+                assert "x-lancedb-query-version" in str(exc.value)
             else:
                 assert "fetch_blobs(column, row_ids)" in str(exc.value)
                 assert "with_row_id(True)" in str(exc.value)
@@ -5586,7 +5591,7 @@ def test_remote_search_bytes_requires_response_version(method):
         )
         assert "_lance_row_id" not in images[0]
 
-        with pytest.raises(NotImplementedError, match="x-lancedb-version"):
+        with pytest.raises(NotImplementedError, match="x-lancedb-query-version"):
             getattr(query, method)(blob_mode="bytes")
         with pytest.raises(ValueError, match="blob_mode must be one of"):
             table.to_pandas(blob_mode="handles")
@@ -5602,7 +5607,7 @@ async def test_async_remote_to_arrow_bytes_requires_response_version(monkeypatch
 
         monkeypatch.setattr(table, "fetch_blobs", fail_fetch)
         query = table.query().select(["id", "image"])
-        with pytest.raises(NotImplementedError, match="x-lancedb-version"):
+        with pytest.raises(NotImplementedError, match="x-lancedb-query-version"):
             await query.to_arrow(blob_mode="bytes")
         with pytest.raises(NotImplementedError, match="stable table snapshot"):
             await table.to_arrow(blob_mode="bytes")
@@ -6759,3 +6764,30 @@ def test_remote_optimize_rejects_explicit_pruning_before_submitting():
             table.optimize(delete_unverified=True)
 
     assert server.tickets == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
+@pytest.mark.parametrize("framing", ["file", "stream"])
+async def test_remote_blob_bytes_rejects_legacy_watermark(use_async, framing):
+    requests = []
+    with blob_remote_table(
+        framing=framing,
+        snapshot_supported=False,
+        version_header="1",
+        schema_version="1",
+        requests=requests,
+    ) as remote_table:
+        table = remote_table._table if use_async else remote_table
+        query = table.query() if use_async else table.search()
+        descriptors = query.to_arrow(blob_mode="descriptions")
+        if use_async:
+            descriptors = await descriptors
+        assert descriptors.num_rows == 3
+        assert pa.types.is_struct(descriptors.schema.field("image").type)
+        query = table.query() if use_async else table.search()
+        with pytest.raises(NotImplementedError, match="x-lancedb-query-version"):
+            result = query.to_arrow(blob_mode="bytes")
+            if use_async:
+                await result
+    assert not any(path == "fetch_blobs" for path, _ in requests)

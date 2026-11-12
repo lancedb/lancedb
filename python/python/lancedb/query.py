@@ -209,8 +209,8 @@ def _remote_blob_version(schema: pa.Schema) -> int:
     if not value.isdigit() or not 0 < int(value) < 2**64:
         raise NotImplementedError(
             "blob_mode='bytes' requires a stable table snapshot: the query response "
-            "has a missing, invalid, or inconsistent x-lancedb-version header. "
-            "Upgrade the server or query a fixed version, or use "
+            "has a missing, invalid, or inconsistent x-lancedb-query-version header. "
+            "Upgrade the server and use a table without Realtime/MemWAL, or use "
             "blob_mode='descriptions'."
         )
     return int(value)

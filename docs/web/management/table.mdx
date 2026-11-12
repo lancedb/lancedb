@@ -533,6 +533,10 @@ Empty blobs remain `b""` and null blobs remain `None`. Fetch bounded batches
 for larger subsets; `fetch_blobs` materializes all requested bytes in memory.
 For incremental decoding, use `fetch_blob_files` instead.
 
+Remote bytes mode requires a server that supports snapshot-bound Blob reads.
+Older servers and Realtime/MemWAL tables can still return descriptors, but
+bytes mode raises an explicit unsupported-operation error before fetching payloads.
+
 `blob_mode="bytes"` materializes top-level and struct-nested blob columns. It
 raises `ValueError` when the selected columns include blobs
 inside a list. Select those columns with `blob_mode="descriptions"`, or leave

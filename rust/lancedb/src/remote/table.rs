@@ -93,6 +93,7 @@ const MIN_VERSION_HEADER: HeaderName = HeaderName::from_static("x-lancedb-min-ve
 const MIN_TIMESTAMP_HEADER: HeaderName = HeaderName::from_static("x-lancedb-min-timestamp");
 const MIN_READ_VERSION_HEADER: HeaderName = HeaderName::from_static("x-lancedb-min-read-version");
 const VERSION_HEADER: HeaderName = HeaderName::from_static("x-lancedb-version");
+const QUERY_VERSION_HEADER: HeaderName = HeaderName::from_static("x-lancedb-query-version");
 /// Asks for stream framing, which is decoded as it arrives. Servers that do not
 /// stream query results ignore this and answer with file framing.
 const QUERY_ACCEPT: &str =
@@ -1175,6 +1176,15 @@ impl<S: HttpSend> RemoteTable<S> {
             .and_then(|value| value.parse::<u64>().ok())
             .filter(|version| *version > 0);
 
+        // Legacy version headers are freshness watermarks, not proof that the
+        // query and a later Blob read use the same immutable dataset.
+        let query_version = response
+            .headers()
+            .get(&QUERY_VERSION_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|version| *version > 0);
+
         let stream = match framing {
             ArrowIpcFraming::Stream => {
                 ipc_stream::read_ipc_stream(
@@ -1198,7 +1208,7 @@ impl<S: HttpSend> RemoteTable<S> {
         // version sampled from the live table before or after the query.
         let mut metadata = stream.schema().metadata().clone();
         metadata.remove("lancedb:query_version");
-        if let Some(version) = table_version {
+        if let Some(version) = query_version {
             metadata.insert("lancedb:query_version".into(), version.to_string());
         }
         let schema = Arc::new(stream.schema().as_ref().clone().with_metadata(metadata));
