@@ -296,8 +296,9 @@ async fn multipart_retries_sixth_part_after_reused_connection_closes() {
                 .map(|batch| batch.unwrap().num_rows())
                 .sum::<usize>();
             assert_eq!(rows, 1, "one scanned batch must split into six parts");
+            let reported = *during_request.lock().unwrap().last().unwrap();
             assert_eq!(
-                *during_request.lock().unwrap().last().unwrap(),
+                reported,
                 (n, acknowledged_bytes),
                 "progress must exclude the unacknowledged part"
             );
@@ -318,8 +319,9 @@ async fn multipart_retries_sixth_part_after_reused_connection_closes() {
         drop(socket);
         let (mut socket, _) = listener.accept().await.unwrap();
         let (path, body) = read_request(&mut socket).await;
+        let reported = *during_request.lock().unwrap().last().unwrap();
         assert_eq!(
-            *during_request.lock().unwrap().last().unwrap(),
+            reported,
             (5, acknowledged_bytes),
             "retry must not report the lost acknowledgement"
         );
@@ -415,12 +417,7 @@ async fn multipart_rejections_preserve_progress_and_cleanup_boundaries() {
                     } else if path.ends_with("/insert/") {
                         let progress = during_request.lock().unwrap();
                         assert!(!progress.is_empty(), "must execute the scan tracker");
-                        assert!(
-                            progress
-                                .iter()
-                                .all(|p: &(usize, usize, bool)| p.0 == 0 && p.1 == 0),
-                            "scan is not an acknowledgement"
-                        );
+                        assert!(progress.iter().all(|p: &(usize, usize, bool)| p.1 == 0));
                         (stage_status, "{}")
                     } else if path.ends_with("/complete") {
                         (complete_status, complete_body)
@@ -473,6 +470,11 @@ async fn multipart_rejections_preserve_progress_and_cleanup_boundaries() {
             let progress = progress.lock().unwrap();
             let last = progress.last().unwrap();
             assert!(last.2);
+            assert_eq!(
+                progress.first().unwrap().0,
+                0,
+                "scan is not an acknowledgement"
+            );
             assert_eq!(last.0, if stage_status == 200 { 2 } else { 0 });
             if stage_status != 200 {
                 assert!(
