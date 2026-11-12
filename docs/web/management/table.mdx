@@ -685,6 +685,10 @@ Until that SDK release is available, use `fetchBlobFiles` and `readRanges`.
 Server-side batching requires a deployment with the validated range capability;
 older servers continue using the descriptor and Range path selected before the
 read. An error from the selected batched endpoint is returned without fallback.
+A batched call keeps the native snapshot identity from its first range response
+across every partition and requires each serving node to verify it. Missing identity
+support or a replaced/deleted snapshot fails the whole call; upgrade all serving
+nodes before selecting the batched endpoint with a new SDK.
 Custom TypeScript `Table` subclasses must implement the new abstract method.
 </Info>
 */}

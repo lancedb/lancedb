@@ -18,6 +18,7 @@ from lancedb.remote.errors import HttpError, TableNotFoundError
 from test_remote_db import mock_lancedb_connection
 
 MIB = 1024 * 1024
+IDENTITY = "v1:" + "a" * 64
 ROUTE = "/v1/table/test/fetch_blob_ranges/"
 
 
@@ -32,6 +33,7 @@ class RangeServer:
         self.fault = fault
         self.calls = []
         self.fetches = []
+        self.identities = []
         self.stalled = threading.Event()
         self.release = threading.Event()
 
@@ -69,6 +71,7 @@ class RangeServer:
             return
         assert (request.command, request.path) == ("POST", ROUTE)
         self.fetches.append(body)
+        self.identities.append(request.headers.get("x-lancedb-query-snapshot"))
         assert body["column"] == "image"
         assert body["branch"] == "experiment"
         ranges = body["ranges"]
@@ -81,11 +84,23 @@ class RangeServer:
             else payload(r["row_id"], r["offset"], r["length"], version)
             for r in ranges
         ]
-        fault = self.fault if len(self.fetches) > 1 else None
+        fault = (
+            self.fault
+            if len(self.fetches) > 1 or str(self.fault).startswith("first-")
+            else None
+        )
+        if fault in ("recreated", "gone"):
+            request.send_response(400 if fault == "recreated" else 404)
+            request.end_headers()
+            request.wfile.write(
+                b"query snapshot identity mismatch: source gone or replaced"
+            )
+            return
         if fault == "stall" and len(self.fetches) == 2:
             request.send_response(200)
             request.send_header("Content-Type", "application/vnd.apache.arrow.stream")
             request.send_header("x-lancedb-version", str(version))
+            request.send_header("x-lancedb-query-snapshot", IDENTITY)
             request.end_headers()
             request.wfile.flush()
             self.stalled.set()
@@ -124,6 +139,15 @@ class RangeServer:
         request.send_header("Content-Type", "application/vnd.apache.arrow.stream")
         if fault != "version":
             request.send_header("x-lancedb-version", str(version))
+        if fault not in ("missing-identity", "first-missing-identity"):
+            identity = (
+                "broken"
+                if fault == "first-invalid-identity"
+                else "v1:" + "b" * 64
+                if fault == "wrong-identity"
+                else IDENTITY
+            )
+            request.send_header("x-lancedb-query-snapshot", identity)
         request.send_header(
             "Content-Length", str(len(ipc) + (10 if fault == "transport" else 0))
         )
@@ -309,3 +333,48 @@ def test_range_sdk_loaded_artifact_identity():
             digest.update(chunk)
     print(f"loaded native artifact={artifact} sha256={digest.hexdigest()}")
     assert artifact.is_file()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
+@pytest.mark.parametrize(
+    "fault", ["missing-identity", "wrong-identity", "recreated", "gone"]
+)
+@pytest.mark.parametrize("huge", [False, True])
+async def test_range_sdk_original_identity_survives_every_partition(
+    use_async, fault, huge
+):
+    handler = RangeServer(fault=fault)
+    with mock_lancedb_connection(handler) as db:
+        table = api(db, use_async)
+        requests = [(10, 0, 64 * MIB + 1)] if huge else [(10, 0, 1)] * 1025
+        error = (
+            ValueError
+            if fault == "recreated"
+            else TableNotFoundError
+            if fault == "gone"
+            else NotImplementedError
+        )
+        with pytest.raises(
+            error, match="snapshot identity" if fault != "gone" else None
+        ):
+            await fetch(table, requests, use_async)
+        assert handler.identities == [None, IDENTITY]
+        assert len(handler.fetches) == 2
+        assert [body["version"] for body in handler.fetches] == [None, 7]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
+@pytest.mark.parametrize("fault", ["first-missing-identity", "first-invalid-identity"])
+async def test_range_sdk_bulk_requires_identity_before_payload_acceptance(
+    use_async, fault
+):
+    handler = RangeServer(fault=fault)
+    with mock_lancedb_connection(handler) as db:
+        table = api(db, use_async)
+        before = len(handler.calls)
+        with pytest.raises(NotImplementedError, match="snapshot identity"):
+            await fetch(table, [(10, 0, 1)] * 1025, use_async)
+        assert len(handler.fetches) == 1
+        assert len(handler.calls) == before + 1

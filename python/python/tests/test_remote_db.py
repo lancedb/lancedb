@@ -5223,6 +5223,7 @@ def blob_remote_table(
             request.send_response(200)
             request.send_header("Content-Type", "application/vnd.apache.arrow.stream")
             request.send_header("x-lancedb-version", "1")
+            request.send_header("x-lancedb-query-snapshot", "v1:" + "a" * 64)
             request.end_headers()
             with pa.ipc.new_stream(request.wfile, response_table.schema) as writer:
                 writer.write_table(response_table)

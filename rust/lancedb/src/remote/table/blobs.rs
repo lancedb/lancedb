@@ -35,6 +35,7 @@ use crate::table::{AnyQuery, BaseTable};
 use super::{
     FreshnessHeaders, FreshnessState, QUERY_SNAPSHOT_HEADER, ReadSnapshot, RemoteTable,
     VERSION_HEADER, check_query_snapshot_response, freshness_headers_snapshot,
+    valid_query_snapshot_identity,
 };
 
 // The Cloud route rejects larger row-id lists. Its separate 64 MiB byte limit
@@ -751,6 +752,7 @@ impl<S: HttpSend> RemoteTable<S> {
         // Select the protocol before issuing data requests. An advertised endpoint
         // failing in a mixed deployment must fail truthfully, without fallback.
         let mut snapshot = self.snapshot_read_state().await;
+        let mut identity = self.expected_query_snapshot.clone();
         let mut index = 0;
         let mut consumed = 0;
         let mut ranges = Vec::new();
@@ -786,7 +788,7 @@ impl<S: HttpSend> RemoteTable<S> {
                 }
             }
             let array = self
-                .fetch_blob_ranges_chunk(column, &ranges, &mut snapshot)
+                .fetch_blob_ranges_chunk(column, &ranges, &mut snapshot, &mut identity)
                 .await?;
             // A null has no bytes to partition. Avoid sending arbitrarily many
             // empty fragments for a null with a very large requested length.
@@ -834,6 +836,7 @@ impl<S: HttpSend> RemoteTable<S> {
         column: &str,
         ranges: &[BlobRangeRequest],
         snapshot: &mut ReadSnapshot,
+        identity: &mut Option<String>,
     ) -> Result<LargeBinaryArray> {
         let _permit = self
             .client
@@ -852,6 +855,11 @@ impl<S: HttpSend> RemoteTable<S> {
             .client
             .post(&format!("/v1/table/{}/fetch_blob_ranges/", self.identifier))
             .json(&body);
+        let request = if let Some(expected) = identity.as_deref() {
+            request.header(super::QUERY_SNAPSHOT_HEADER, expected)
+        } else {
+            request
+        };
         let (request_id, response) = self
             .send_with_freshness(request, false, snapshot.freshness)
             .await?;
@@ -889,6 +897,18 @@ impl<S: HttpSend> RemoteTable<S> {
                 "response version {version} differs from requested version {:?}",
                 snapshot.version
             )));
+        }
+        // Do not decode or accept any payload before establishing/verifying the
+        // identity. A later partition can never replace the original expectation.
+        check_query_snapshot_response(identity.as_deref(), &response)?;
+        if identity.is_none() {
+            let actual = response.headers().get(super::QUERY_SNAPSHOT_HEADER)
+                .and_then(|value| value.to_str().ok())
+                .filter(|value| valid_query_snapshot_identity(value))
+                .ok_or_else(|| Error::NotSupported {
+                    message: "Batched Blob ranges require a snapshot identity; upgrade every serving node".into(),
+                })?;
+            *identity = Some(actual.to_owned());
         }
         snapshot.version = Some(version);
         // This endpoint's contract is stream framing. Keep the bounded, fallible
@@ -1886,6 +1906,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn remote_blob_ranges_keep_producing_query_identity_from_first_request() {
+        const IDENTITY: &str =
+            "v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let calls = Arc::new(StdMutex::new(Vec::new()));
+        let captured = calls.clone();
+        let table = RemoteTable::new_mock(
+            "my_table".into(),
+            move |request| {
+                assert_eq!(
+                    request.url().path(),
+                    "/v1/table/my_table/fetch_blob_ranges/"
+                );
+                assert_eq!(
+                    request.headers()[super::super::QUERY_SNAPSHOT_HEADER],
+                    IDENTITY
+                );
+                let body: serde_json::Value =
+                    serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+                assert_eq!(body["version"], 42);
+                let rows = body["ranges"].as_array().unwrap().len();
+                captured.lock().unwrap().push(rows);
+                let batch = RecordBatch::try_from_iter([(
+                    "value",
+                    Arc::new(LargeBinaryArray::from(vec![Some(b"A".as_slice()); rows]))
+                        as Arc<dyn Array>,
+                )])
+                .unwrap();
+                let mut bytes = Vec::new();
+                let mut writer =
+                    arrow_ipc::writer::StreamWriter::try_new(&mut bytes, &batch.schema()).unwrap();
+                writer.write(&batch).unwrap();
+                writer.finish().unwrap();
+                drop(writer);
+                http::Response::builder()
+                    .status(200)
+                    .header("content-type", "application/vnd.apache.arrow.stream")
+                    .header(VERSION_HEADER, "42")
+                    .header(super::super::QUERY_SNAPSHOT_HEADER, IDENTITY)
+                    .body(bytes)
+                    .unwrap()
+            },
+            Some(Version::new(1, 13, 0)),
+        );
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-lancedb-blob-ranges", "1".parse().unwrap());
+        table.seed_blob_ranges_capability(&headers);
+        let snapshot = table
+            .query_snapshot_with_identity(42, IDENTITY)
+            .await
+            .unwrap();
+        let ranges = snapshot
+            .fetch_blob_ranges("image", &[BlobRangeRequest::new(10, 0, 1); 1025])
+            .await
+            .unwrap();
+        assert_eq!(
+            ranges,
+            LargeBinaryArray::from(vec![Some(b"A".as_slice()); 1025])
+        );
+        assert_eq!(*calls.lock().unwrap(), [1024, 1]);
+        assert!(table.snapshot_read_state().await.version.is_none());
+    }
+
+    #[tokio::test]
     async fn remote_blob_ranges_cancel_releases_the_only_request_permit() {
         use std::sync::atomic::AtomicUsize;
         let entered = Arc::new(tokio::sync::Notify::new());
@@ -1902,6 +1985,10 @@ mod tests {
                         .status(200)
                         .header("content-type", "application/vnd.apache.arrow.stream")
                         .header(VERSION_HEADER, "7")
+                        .header(
+                            super::super::QUERY_SNAPSHOT_HEADER,
+                            format!("v1:{}", "a".repeat(64)),
+                        )
                         .body(reqwest::Body::wrap_stream(futures::stream::pending::<
                             std::result::Result<Bytes, std::io::Error>,
                         >()))

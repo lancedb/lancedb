@@ -23,6 +23,7 @@ import { BlobRangeRequest, Connection, Table, connect } from "../lancedb";
 
 jest.setTimeout(30000);
 
+const IDENTITY = `v1:${"a".repeat(64)}`;
 const MIB = 1024 * 1024;
 type Range = {
   // biome-ignore lint/style/useNamingConvention: Matches the server JSON contract.
@@ -35,6 +36,7 @@ type Request = {
   branch: string | null;
   version: number | null;
   ranges: Range[];
+  identity?: string;
 };
 
 function payload(row: number, offset: number, length: number, version: number) {
@@ -161,6 +163,9 @@ async function withRangeServer(
         return;
       }
       const body = JSON.parse(Buffer.concat(chunks).toString()) as Request;
+      body.identity = req.headers["x-lancedb-query-snapshot"] as
+        | string
+        | undefined;
       calls.push(body);
       expect(body.column).toBe("image");
       expect(body.branch).toBe("experiment");
@@ -169,11 +174,21 @@ async function withRangeServer(
         body.ranges.reduce((sum, range) => sum + range.length, 0),
       ).toBeLessThanOrEqual(64 * MIB);
       const version = body.version ?? (calls.length === 1 ? 7 : 8);
-      const failure = calls.length > 1 ? fault : undefined;
+      const failure =
+        calls.length > 1 || String(fault).startsWith("first-")
+          ? fault
+          : undefined;
+      if (failure === "recreated" || failure === "gone") {
+        res
+          .writeHead(failure === "recreated" ? 400 : 404)
+          .end("query snapshot identity mismatch: source gone or replaced");
+        return;
+      }
       if (failure === "stall" && calls.length === 2) {
         res.writeHead(200, {
           "Content-Type": "application/vnd.apache.arrow.stream",
           "x-lancedb-version": "7",
+          "x-lancedb-query-snapshot": IDENTITY,
         });
         res.flushHeaders();
         onStall?.();
@@ -208,6 +223,18 @@ async function withRangeServer(
         connection: "close",
         "Content-Length": ipc.length + (failure === "transport" ? 10 : 0),
         ...(failure === "version" ? {} : { "x-lancedb-version": version }),
+        ...(["missing-identity", "first-missing-identity"].includes(
+          String(failure),
+        )
+          ? {}
+          : {
+              "x-lancedb-query-snapshot":
+                failure === "wrong-identity"
+                  ? `v1:${"b".repeat(64)}`
+                  : failure === "first-invalid-identity"
+                    ? "broken"
+                    : IDENTITY,
+            }),
       });
       // Fragment the generated IPC payload across actual HTTP writes.
       for (let i = 0; i < ipc.length; i += 8192)
@@ -457,6 +484,54 @@ describe("fetchBlobRanges", () => {
       ).toBe(true);
     }, fault);
   });
+
+  it.each(["missing-identity", "wrong-identity", "recreated", "gone"])(
+    "retains original identity through row and byte partitions (%s)",
+    async (fault) => {
+      for (const huge of [false, true]) {
+        await withRangeServer(async (db, calls) => {
+          const table = await open(db);
+          const requests = huge
+            ? [{ rowId: 10n, offset: 0n, length: BigInt(64 * MIB + 1) }]
+            : Array.from({ length: 1025 }, () => ({
+                rowId: 10n,
+                offset: 0n,
+                length: 1n,
+              }));
+          await expect(
+            table.fetchBlobRanges("image", requests),
+          ).rejects.toThrow();
+          expect(calls.map((call) => call.identity)).toEqual([
+            undefined,
+            IDENTITY,
+          ]);
+          expect(calls.map((call) => call.version)).toEqual([null, 7]);
+        }, fault);
+      }
+    },
+  );
+
+  it.each(["first-missing-identity", "first-invalid-identity"])(
+    "requires a first authoritative bulk identity (%s)",
+    async (fault) => {
+      await withRangeServer(async (db, calls, paths) => {
+        const table = await open(db);
+        const before = paths.length;
+        await expect(
+          table.fetchBlobRanges(
+            "image",
+            Array.from({ length: 1025 }, () => ({
+              rowId: 10n,
+              offset: 0n,
+              length: 1n,
+            })),
+          ),
+        ).rejects.toThrow(/snapshot identity/);
+        expect(calls).toHaveLength(1);
+        expect(paths).toHaveLength(before + 1);
+      }, fault);
+    },
+  );
 
   it("validates integers, overflow and cancellation and leaves empty calls at zero I/O", async () => {
     await withRangeServer(async (db, calls, paths) => {

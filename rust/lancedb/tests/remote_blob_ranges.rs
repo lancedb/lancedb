@@ -16,6 +16,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 
 const MIB: u64 = 1024 * 1024;
+const IDENTITY: &str = "v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const ROUTE: &str = "/v1/table/test/fetch_blob_ranges/";
 
 struct Reply {
@@ -23,6 +24,7 @@ struct Reply {
     version: Option<u64>,
     body: Vec<u8>,
     declared_extra: usize,
+    identity: Option<&'static str>,
 }
 
 fn ipc(column: &str, values: ArrayRef) -> Vec<u8> {
@@ -90,6 +92,7 @@ fn legacy_reply(path: &str, body: &Value, takes: usize) -> Reply {
             version: Some(version),
             body: bytes,
             declared_extra: 0,
+            identity: Some(IDENTITY),
         }
     } else {
         assert!(path.contains("branch=experiment"), "{path}");
@@ -116,6 +119,7 @@ fn legacy_reply(path: &str, body: &Value, takes: usize) -> Reply {
             version: Some(version),
             body: payload[start..=end].to_vec(),
             declared_extra: 0,
+            identity: Some(IDENTITY),
         }
     }
 }
@@ -131,6 +135,7 @@ fn reply(values: Vec<Option<Vec<u8>>>, version: u64) -> Reply {
             )),
         ),
         declared_extra: 0,
+        identity: Some(IDENTITY),
     }
 }
 
@@ -169,6 +174,7 @@ struct Server {
     url: String,
     calls: Arc<Mutex<Vec<(String, Value)>>>,
     task: tokio::task::JoinHandle<()>,
+    identities: Arc<Mutex<Vec<Option<String>>>>,
 }
 
 impl Drop for Server {
@@ -190,6 +196,8 @@ impl Server {
         let url = format!("http://{}", listener.local_addr().unwrap());
         let calls = Arc::new(Mutex::new(Vec::new()));
         let captured = calls.clone();
+        let identities = Arc::new(Mutex::new(Vec::new()));
+        let captured_identities = identities.clone();
         let task = tokio::spawn(async move {
             let mut fetches = 0;
             let mut takes = 0;
@@ -204,6 +212,7 @@ impl Server {
                     let method = line.split_whitespace().next().unwrap().to_string();
                     let mut range = String::new();
                     let mut length = 0;
+                    let mut identity = None;
                     loop {
                         line.clear();
                         socket.read_line(&mut line).await?;
@@ -213,6 +222,7 @@ impl Server {
                             if name.eq_ignore_ascii_case("content-length") {
                                 length = value.trim().parse::<usize>().unwrap();
                             }
+                            if name.eq_ignore_ascii_case("x-lancedb-query-snapshot") { identity = Some(value.trim().to_owned()); }
                             if name.eq_ignore_ascii_case("range") { range = value.trim().to_string(); }
                         }
                     }
@@ -222,9 +232,9 @@ impl Server {
                     let body = if method == "GET" { json!({"range": range}) } else if bytes.is_empty() { json!({}) } else { serde_json::from_slice(&bytes).unwrap() };
                     captured.lock().unwrap().push((path.clone(), body.clone()));
                     let response = if path == "/v1/table/test/describe/" {
-                        Reply { status: 200, version: None, body: serde_json::to_vec(&json!({"version": 8, "schema": {"fields": []}})).unwrap(), declared_extra: 0 }
+                        Reply { status: 200, version: None, body: serde_json::to_vec(&json!({"version": 8, "schema": {"fields": []}})).unwrap(), declared_extra: 0, identity: None }
                     } else if path == "/v1/table/test/branches/list/" {
-                        Reply { status: 200, version: None, body: br#"{"branches":{"experiment":{"parentBranch":null,"parentVersion":1,"createAt":1,"manifestSize":1}}}"#.to_vec(), declared_extra: 0 }
+                        Reply { status: 200, version: None, body: br#"{"branches":{"experiment":{"parentBranch":null,"parentVersion":1,"createAt":1,"manifestSize":1}}}"#.to_vec(), declared_extra: 0, identity: None }
                     } else if capability != Some("1") {
                         assert_ne!(path, ROUTE, "unknown capability must select old routes first");
                         takes += usize::from(path.ends_with("/query/"));
@@ -232,6 +242,7 @@ impl Server {
                     } else {
                         assert_eq!(path, ROUTE, "unexpected legacy or fallback request");
                         fetches += 1;
+                        captured_identities.lock().unwrap().push(identity);
                         handler(&body, fetches)
                     };
                     if response.status == 0 { return Ok::<_, std::io::Error>(()); }
@@ -239,7 +250,8 @@ impl Server {
                     let capability = if path.ends_with("/describe/") { capability.map(|value| format!("x-lancedb-blob-ranges: {value}\r\n")).unwrap_or_default() } else { String::new() };
                     let content_type = if path == ROUTE || path.ends_with("/query/") { "application/vnd.apache.arrow.stream" } else { "application/json" };
                     let content_range = if method == "GET" { format!("Content-Range: {}/5\r\n", body["range"].as_str().unwrap().replace("bytes=", "bytes ")) } else { String::new() };
-                    let header = format!("HTTP/1.1 {} Response\r\nContent-Type: {content_type}\r\nphalanx-version: 1.13.0-beta.0\r\n{capability}{version}{content_range}Content-Length: {}\r\nConnection: close\r\n\r\n", response.status, response.body.len() + response.declared_extra);
+                    let identity = if path == ROUTE { response.identity.map(|id| format!("x-lancedb-query-snapshot: {id}\r\n")).unwrap_or_default() } else { String::new() };
+                    let header = format!("HTTP/1.1 {} Response\r\nContent-Type: {content_type}\r\nphalanx-version: 1.13.0-beta.0\r\n{capability}{version}{identity}{content_range}Content-Length: {}\r\nConnection: close\r\n\r\n", response.status, response.body.len() + response.declared_extra);
                     socket.write_all(header.as_bytes()).await?;
                     for chunk in response.body.chunks(8192) { socket.write_all(chunk).await?; }
                     socket.shutdown().await?;
@@ -249,7 +261,12 @@ impl Server {
                 assert!(result.is_ok(), "loopback request timed out");
             }
         });
-        Self { url, calls, task }
+        Self {
+            url,
+            calls,
+            task,
+            identities,
+        }
     }
 
     async fn table(&self, version: Option<u64>) -> Table {
@@ -496,6 +513,7 @@ async fn public_ranges_validate_locally_and_propagate_server_range_errors() {
         version: None,
         body: b"range exceeds blob size or missing row".to_vec(),
         declared_extra: 0,
+        identity: Some(IDENTITY),
     })
     .await;
     let table = server.table(None).await;
@@ -516,4 +534,101 @@ async fn public_ranges_validate_locally_and_propagate_server_range_errors() {
         .unwrap_err();
     assert!(matches!(error, lancedb::Error::InvalidInput { .. }));
     assert!(error.to_string().contains("range exceeds"));
+}
+
+#[tokio::test]
+async fn public_ranges_require_original_identity_on_every_partition() {
+    for huge in [false, true] {
+        for case in 0..5 {
+            let server = Server::new(move |body, call| {
+                let mut response = serve_ranges(body, 7);
+                if call == 2 {
+                    response.identity = match case {
+                        0 => None, // Old serving node ignores the precondition.
+                        1 => Some("invalid"),
+                        _ => Some(
+                            "v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                        ),
+                    };
+                    if case == 3 || case == 4 {
+                        response.status = if case == 3 { 400 } else { 404 };
+                        response.body =
+                            b"query snapshot identity mismatch: gone or replaced".to_vec();
+                    } else {
+                        // Identity verification must win over malformed payload.
+                        response.body = b"not Arrow".to_vec();
+                    }
+                }
+                response
+            })
+            .await;
+            let table = server.table(None).await;
+            let requests = if huge {
+                vec![BlobRangeRequest::new(10, 0, 64 * MIB + 1)]
+            } else {
+                vec![BlobRangeRequest::new(10, 0, 1); 1025]
+            };
+            let error = table
+                .fetch_blob_ranges("image", requests)
+                .await
+                .unwrap_err();
+            if case < 3 {
+                assert!(
+                    matches!(error, lancedb::Error::NotSupported { .. }),
+                    "{error}"
+                );
+                assert!(error.to_string().contains("snapshot identity"), "{error}");
+            } else if case == 3 {
+                assert!(
+                    matches!(error, lancedb::Error::InvalidInput { .. }),
+                    "{error}"
+                );
+            } else {
+                assert!(
+                    matches!(error, lancedb::Error::TableNotFound { .. }),
+                    "{error}"
+                );
+            }
+            assert_eq!(
+                *server.identities.lock().unwrap(),
+                [None, Some(IDENTITY.into())]
+            );
+            assert_eq!(
+                server
+                    .calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|(path, _)| path == ROUTE)
+                    .count(),
+                2
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn public_ranges_cannot_establish_identity_from_numeric_version_or_describe() {
+    for identity in [None, Some("invalid"), Some("v2:unsupported")] {
+        let server = Server::new(move |_, call| {
+            assert_eq!(call, 1, "no failure fallback, replay or second partition");
+            let mut response = reply(vec![Some(b"A".to_vec()); 1024], 7);
+            response.identity = identity;
+            response.body = b"not Arrow".to_vec();
+            response
+        })
+        .await;
+        let table = server.table(None).await;
+        let before = server.calls.lock().unwrap().len();
+        let error = table
+            .fetch_blob_ranges("image", vec![BlobRangeRequest::new(10, 0, 1); 1025])
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, lancedb::Error::NotSupported { .. }),
+            "{error}"
+        );
+        assert!(error.to_string().contains("snapshot identity"), "{error}");
+        assert_eq!(server.calls.lock().unwrap().len(), before + 1);
+    }
 }
