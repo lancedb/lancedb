@@ -90,7 +90,12 @@ Updating the table data (adding, deleting, or modifying records) requires that y
 </CodeGroup>
 
 <Note title="LanceDB Enterprise">
-New data added after creating the scalar index will still appear in search results if optimize is not used, but with increased latency due to a flat search on the unindexed portion. LanceDB Enterprise does not support `optimize()`; instead it adds new rows to `BTREE`, `BITMAP` and `LABEL_LIST` indexes in the background once enough have accumulated. It does not update `FM` indexes automatically.
+New data added after creating the scalar index remains searchable through a
+slower flat scan of the unindexed rows. LanceDB Enterprise adds new rows to
+`BTREE`, `BITMAP`, and `LABEL_LIST` indexes in the background once enough have
+accumulated. It does not update `FM` indexes automatically. The Enterprise
+[manual `optimize()` path](/maintenance/compaction#enterprise-manual-compaction)
+submits compaction only and does not trigger this index maintenance.
 </Note>
 
 ### 4\. Run Indexed Searches
