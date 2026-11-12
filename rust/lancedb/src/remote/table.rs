@@ -10824,19 +10824,40 @@ mod tests {
 
     /// Only a column the binding uses is refused, and it is refused before
     /// any request goes out; the rest reach the server as usual.
+    #[rstest]
+    #[case::column_only(false)]
+    #[case::literal(true)]
     #[tokio::test]
-    async fn test_add_columns_scopes_to_the_columns_a_binding_uses() {
-        let table = Table::new_with_handler("my_table", |request| match request.url().path() {
-            "/v1/table/my_table/describe/" => http::Response::builder()
-                .status(200)
-                .body(describe_response(&fixture_bound_schema()))
-                .unwrap(),
-            "/v1/table/my_table/add_columns/" => http::Response::builder()
-                .status(200)
-                .body(r#"{"version":10}"#.to_string())
-                .unwrap(),
-            path => panic!("Unexpected path: {path}"),
-        });
+    async fn test_add_columns_scopes_to_the_columns_a_binding_uses(#[case] literal: bool) {
+        let mut schema = fixture_bound_schema();
+        if literal {
+            let key = crate::table::computed_columns::FUNCTION_BINDINGS_META_KEY;
+            let mut metadata = schema.metadata().clone();
+            let mut envelope: serde_json::Value =
+                serde_json::from_str(metadata.get(key).unwrap()).unwrap();
+            envelope["version"] = serde_json::json!(2);
+            envelope["bindings"][0]["inputs"]
+                .as_array_mut()
+                .unwrap()
+                .pop();
+            envelope["bindings"][0]["literal_inputs"] =
+                serde_json::json!([{"parameter": "body", "value": null}]);
+            metadata.insert(key.to_string(), envelope.to_string());
+            schema = schema.with_metadata(metadata);
+        }
+        let allowed_schema = schema.clone();
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_response(&allowed_schema))
+                    .unwrap(),
+                "/v1/table/my_table/add_columns/" => http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version":10}"#.to_string())
+                    .unwrap(),
+                path => panic!("Unexpected path: {path}"),
+            });
         table
             .add_columns()
             .computed("doubled", "spare * 2")
@@ -10853,13 +10874,14 @@ mod tests {
             .await
             .unwrap();
 
-        let table = Table::new_with_handler("my_table", |request| match request.url().path() {
-            "/v1/table/my_table/describe/" => http::Response::builder()
-                .status(200)
-                .body(describe_response(&fixture_bound_schema()))
-                .unwrap(),
-            path => panic!("mutation request must not be sent: {path}"),
-        });
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_response(&schema))
+                    .unwrap(),
+                path => panic!("mutation request must not be sent: {path}"),
+            });
         for name in ["title", "search_text"] {
             let err = table
                 .add_columns()
@@ -11217,7 +11239,7 @@ mod tests {
             "/v1/table/my_table/describe/" => http::Response::builder()
                 .status(200)
                 .body(
-                    r#"{"version":1,"schema":{"fields":[{"name":"x","nullable":true,"type":{"type":"int32"}}],"metadata":{"lancedb::function_bindings":"{\"version\":2,\"bindings\":[]}"}}}"#,
+                    r#"{"version":1,"schema":{"fields":[{"name":"x","nullable":true,"type":{"type":"int32"}}],"metadata":{"lancedb::function_bindings":"{\"version\":3,\"bindings\":[]}"}}}"#,
                 )
                 .unwrap(),
             path => panic!("mutation request must not be sent: {path}"),

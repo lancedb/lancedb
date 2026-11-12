@@ -58,6 +58,7 @@ def assert_no_secret_values(value):
 
 
 def test_public_function_values_are_in_api_reference():
+    assert "LiteralInputBinding" in functions.__all__
     docs = Path(__file__).parents[3] / "docs" / "src" / "python" / "python.md"
     rendered = docs.read_text()
     for name in functions.__all__:

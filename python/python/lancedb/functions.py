@@ -2995,6 +2995,7 @@ __all__ = [
     "FunctionVersionRef",
     "HuggingFaceModel",
     "InputBinding",
+    "LiteralInputBinding",
     "OutputMapping",
     "PythonEnvironmentSpec",
     "PythonAdapterSpec",
