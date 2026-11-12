@@ -158,6 +158,24 @@ list, create and drop databases across the whole deployment. Its
 `connect_database(name)` and `create_database(name)` then return the same
 kind of database connection `lancedb.connect()` does.
 
+In Python, `connect_catalog` and `connect_catalog_async` accept the same
+connection settings as their database counterparts. Use `host_override` to
+share settings that include a `db://` URI; the catalog connection targets
+the root of that deployment and ignores the database name. An explicitly
+supplied `region` is ignored with a warning, since the HTTP(S) endpoint
+selects the deployment. Embedded-only storage and namespace settings are
+unsupported.
+
+```python
+settings = {
+    "uri": "db://analytics",
+    "api_key": "secret",
+    "host_override": "https://my-server.example",
+}
+db = lancedb.connect(**settings)
+catalog = lancedb.connect_catalog(**settings)
+```
+
 This connection is for database administration, not table or query work:
 list, create and drop databases through it, then switch to a **database**
 connection for everything else -- tables, queries, and SQL all run within a
