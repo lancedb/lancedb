@@ -8,7 +8,7 @@ from types import MappingProxyType
 
 import pytest
 
-from lancedb import col
+from lancedb import col, lit
 import lancedb.functions as functions
 from lancedb.functions import (
     FunctionApplication,
@@ -284,6 +284,67 @@ def test_function_version_binding_validates_names_and_direct_columns():
         version(text=col("text"), body=col("body"))
     with pytest.raises(TypeError, match="direct col"):
         version(text=col("text").lower())
+
+
+@pytest.mark.parametrize("constant", [16, 8, True, "prompt", None, 2**64 - 1])
+def test_function_version_binds_direct_literals_without_changing_identity(constant):
+    value = job_result("remote_function_job.json")
+    value["signature"]["inputs"].append(
+        {
+            "name": "option",
+            "arrow_type": "bool"
+            if type(constant) is bool
+            else "utf8"
+            if isinstance(constant, str)
+            else "uint64"
+            if constant == 2**64 - 1
+            else "int64",
+            "nullable": True,
+        }
+    )
+    version = FunctionVersion.from_json(json.dumps(value))
+    expression = lit(constant)
+    application = version(text=col("body"), option=expression)
+    encoded = json.loads(application.to_canonical_json())
+    assert encoded["inputs"] == [
+        {"parameter": "text", "kind": "column", "value": {"path": "body"}},
+        {"parameter": "option", "kind": "literal", "value": constant},
+    ]
+    assert application.function.version == version.version
+    assert application.function.object_id == version.object_id
+    assert application.function.manifest_digest == version.image.manifest_digest
+    assert FunctionApplication.from_json(application.to_canonical_json()) == application
+    if constant is None:
+        assert expression.to_sql() == "NULL"
+    if type(constant) is int:
+        assert expression.to_sql() == str(constant)
+
+
+def test_function_literals_reject_expressions_and_unsupported_values():
+    version = FunctionVersion.from_json(
+        json.dumps(job_result("remote_function_job.json"))
+    )
+    with pytest.raises(TypeError, match="direct col"):
+        version(text=lit(16) + lit(8))
+    with pytest.raises(ValueError, match="floating-point Function literals"):
+        version(text=lit(1.5))
+    with pytest.raises(TypeError, match="unsupported Function literal type"):
+        version(text=lit(b"data"))
+
+
+def test_function_literal_binding_preserves_null_and_rejects_duplicate_parameters():
+    value = json.loads((FIXTURES / "remote_function_binding.json").read_text())
+    value["inputs"] = value["inputs"][:1]
+    value["literal_inputs"] = [{"parameter": "body", "value": None}]
+    binding = FunctionBinding.from_json(json.dumps(value))
+    assert binding.literal_inputs[0].value is None
+    assert json.loads(binding.to_canonical_json())["literal_inputs"] == [
+        {"parameter": "body", "value": None}
+    ]
+    assert FunctionBinding.from_json(binding.to_canonical_json()) == binding
+    value["literal_inputs"][0]["parameter"] = "title"
+    with pytest.raises(ValueError, match="input parameters must be unique"):
+        FunctionBinding.from_json(json.dumps(value))
 
 
 def test_function_version_keeps_named_struct_outputs_in_one_application():
