@@ -23,6 +23,11 @@ catalog removal; physical cleanup can continue afterward.
 
 ## CREATE VIEW {#create}
 
+`CREATE VIEW IF NOT EXISTS` creates a missing view and returns an existing
+view's stored query and schema unchanged. Without `IF NOT EXISTS`, an existing
+name is an error. In Python, use `db.create_view(name, query, exist_ok=True)`;
+in Rust, use `db.create_view(name, query, &namespace).exist_ok(true).await?`.
+
 <CodeGroup>
 ```sql SQL icon="database"
 CREATE VIEW "recent_matches" AS

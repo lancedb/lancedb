@@ -1158,18 +1158,20 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (name, query, namespace_path=None))]
+    #[pyo3(signature = (name, query, namespace_path=None, *, exist_ok=false))]
     pub fn create_view(
         self_: PyRef<'_, Self>,
         name: String,
         query: String,
         namespace_path: Option<Vec<String>>,
+        exist_ok: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         let namespace_path = namespace_path.unwrap_or_default();
         future_into_py(self_.py(), async move {
             let view = inner
                 .create_view(name, query, &namespace_path)
+                .exist_ok(exist_ok)
                 .await
                 .infer_error()?;
             view_description_to_py(view)
