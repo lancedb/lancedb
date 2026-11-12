@@ -58,18 +58,122 @@ import pyarrow as pa
 from utils import start_server_thread
 
 
-def make_mock_http_handler(handler):
+def make_mock_http_handler(handler, *, buffer_body=True):
     class MockLanceDBHandler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
             handler(self)
 
         def do_POST(self):
-            handler(self)
+            if not buffer_body:
+                handler(self)
+                return
 
-        def do_PUT(self):
-            handler(self)
+            # HTTP/1.0 closes after the response. Leaving a streamed upload unread
+            # can reset the connection while the client is still writing its body.
+            # Keep the original framing so handlers can inspect the actual request.
+            source = self.rfile
+            body = bytearray()
+            if self.headers.get("Transfer-Encoding") == "chunked":
+                while True:
+                    line = source.readline()
+                    assert line.endswith(b"\r\n")
+                    body.extend(line)
+                    size = int(line.split(b";")[0], 16)
+                    if size == 0:
+                        while True:
+                            line = source.readline()
+                            assert line.endswith(b"\r\n")
+                            body.extend(line)
+                            if line == b"\r\n":
+                                break
+                        break
+                    chunk = source.read(size + 2)
+                    assert len(chunk) == size + 2 and chunk[-2:] == b"\r\n"
+                    body.extend(chunk)
+            else:
+                size = int(self.headers.get("Content-Length", 0))
+                body.extend(source.read(size))
+                assert len(body) == size
+            self.rfile = io.BytesIO(body)
+            try:
+                handler(self)
+            finally:
+                self.rfile.close()
+                self.rfile = source
+
+        do_PUT = do_POST
 
     return MockLanceDBHandler
+
+
+@pytest.mark.parametrize("chunked", [False, True])
+@pytest.mark.parametrize("read_body", [False, True])
+def test_mock_http_handler_waits_for_body(chunked, read_body):
+    body = (
+        b"7;ext=value\r\npayload\r\n0\r\nX-Trailer: value\r\n\r\n"
+        if chunked
+        else b"payload"
+    )
+    received = []
+
+    def handler(request):
+        if read_body:
+            assert (request.headers.get("Transfer-Encoding") == "chunked") == chunked
+            received.append(request.rfile.read(len(body)))
+        request.send_response(200)
+        request.end_headers()
+
+    with http.server.HTTPServer(
+        ("127.0.0.1", 0), make_mock_http_handler(handler)
+    ) as server:
+        thread = start_server_thread(server)
+        try:
+            with socket.create_connection(server.server_address, timeout=2) as client:
+                framing = (
+                    "Transfer-Encoding: chunked" if chunked else "Content-Length: 7"
+                )
+                client.sendall(
+                    f"POST / HTTP/1.0\r\nHost: localhost\r\n{framing}\r\n\r\n".encode()
+                )
+                client.settimeout(0.1)
+                with pytest.raises(TimeoutError):
+                    client.recv(1024)
+                client.settimeout(2)
+                client.sendall(body)
+                assert client.recv(1024).startswith(b"HTTP/1.0 200")
+        finally:
+            server.shutdown()
+            thread.join()
+    assert received == ([body] if read_body else [])
+
+
+@pytest.mark.parametrize("disconnect", [False, True])
+def test_mock_http_handler_allows_early_failure(disconnect):
+    def handler(request):
+        if disconnect:
+            request.connection.shutdown(socket.SHUT_RDWR)
+            request.close_connection = True
+        else:
+            request.send_response(413)
+            request.end_headers()
+
+    with http.server.HTTPServer(
+        ("127.0.0.1", 0), make_mock_http_handler(handler, buffer_body=False)
+    ) as server:
+        thread = start_server_thread(server)
+        try:
+            with socket.create_connection(server.server_address, timeout=2) as client:
+                client.sendall(
+                    b"POST / HTTP/1.0\r\nHost: localhost\r\nContent-Length: 7\r\n\r\n"
+                )
+                response = client.recv(1024)
+                if disconnect:
+                    assert response == b""
+                else:
+                    assert response.startswith(b"HTTP/1.0 413")
+        finally:
+            server.shutdown()
+            thread.join()
 
 
 @pytest.mark.parametrize("db_name", ["a" * 64, "invalid..database"])
@@ -79,9 +183,9 @@ def test_connect_rejects_invalid_cloud_dns_hostname(db_name):
 
 
 @contextlib.contextmanager
-def mock_lancedb_connection(handler, **client_config):
+def mock_lancedb_connection(handler, *, buffer_body=True, **client_config):
     with http.server.ThreadingHTTPServer(
-        ("127.0.0.1", 0), make_mock_http_handler(handler)
+        ("127.0.0.1", 0), make_mock_http_handler(handler, buffer_body=buffer_body)
     ) as server:
         port = server.server_address[1]
         handle = start_server_thread(server)
@@ -107,9 +211,9 @@ def mock_lancedb_connection(handler, **client_config):
 
 
 @contextlib.asynccontextmanager
-async def mock_lancedb_connection_async(handler, **client_config):
+async def mock_lancedb_connection_async(handler, *, buffer_body=True, **client_config):
     with http.server.HTTPServer(
-        ("127.0.0.1", 0), make_mock_http_handler(handler)
+        ("127.0.0.1", 0), make_mock_http_handler(handler, buffer_body=buffer_body)
     ) as server:
         port = server.server_address[1]
         handle = start_server_thread(server)
@@ -1292,7 +1396,7 @@ async def test_create_table_timeout_is_actionable(timeout_config):
         request.close_connection = True
 
     async with mock_lancedb_connection_async(
-        handler, timeout_config=timeout_config
+        handler, buffer_body=False, timeout_config=timeout_config
     ) as db:
         batch = pa.record_batch({"id": [1, 2]})
         reader = pa.RecordBatchReader.from_batches(batch.schema, [batch])
@@ -4982,10 +5086,14 @@ def test_remote_schema_restores_blob_extensions(use_async, with_pylance, nested)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("use_async", [False, True])
-@pytest.mark.parametrize("mode", ["merge", "overwrite"])
+@pytest.mark.parametrize(
+    "mode,part_status",
+    [("merge", 200), ("overwrite", 200), ("overwrite", 503)],
+    ids=["merge", "overwrite", "overwrite-retry"],
+)
 @pytest.mark.parametrize("target_with_ranges", [False, True])
 async def test_remote_writes_normalize_blob_layouts(
-    use_async, mode, target_with_ranges
+    use_async, mode, part_status, target_with_ranges, mem_db
 ):
     description = json.loads(json.dumps(BLOB_DESCRIBE_RESPONSE))
     if target_with_ranges:
@@ -4994,29 +5102,77 @@ async def test_remote_writes_normalize_blob_layouts(
             for name in ("position", "size")
         )
     received = []
+    paths = []
+    staged = {}
+    part_attempts = []
+    published = mem_db.create_table(
+        "published",
+        [{"id": 0, "image": b"before"}],
+        schema=pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")]),
+    )
 
     def handler(request):
-        if request.path == "/v1/table/test/describe/":
+        path = urlparse(request.path).path
+        query = parse_qs(urlparse(request.path).query)
+        status = 200
+        if path == "/v1/table/test/describe/":
             response = description
         else:
-            expected = "merge_insert" if mode == "merge" else "insert"
-            assert urlparse(request.path).path == f"/v1/table/test/{expected}/"
-            if request.headers.get("Transfer-Encoding") == "chunked":
-                body = bytearray()
-                while size := int(request.rfile.readline().split(b";")[0], 16):
-                    body.extend(request.rfile.read(size))
-                    assert request.rfile.read(2) == b"\r\n"
-                assert request.rfile.read(2) == b"\r\n"
+            paths.append(path.removeprefix("/v1/table/test/"))
+            body = request.rfile.read()
+            if path == "/v1/table/test/multipart_write/create":
+                assert mode == "overwrite"
+                assert paths == ["multipart_write/create"]
+                assert not query and not body
+                response = {"upload_id": "blob-overwrite"}
+            elif path == "/v1/table/test/insert/":
+                assert mode == "overwrite"
+                assert query["mode"] == ["overwrite"]
+                assert query["upload_id"] == ["blob-overwrite"]
+                part_id = query["upload_part_id"][0]
+                assert str(uuid.UUID(part_id)) == part_id
+                part_attempts.append((part_id, body))
+                assert published.version == 1
+                assert published.search().select(["id"]).to_list() == [{"id": 0}]
+                if staged:
+                    assert staged == {part_id: body}
+                else:
+                    staged[part_id] = body
+                    assert body[-8:] == b"\xff\xff\xff\xff\x00\x00\x00\x00"
+                    received.append(pa.ipc.open_stream(body).read_all())
+                status = part_status if len(part_attempts) == 1 else 200
+                response = {}
+            elif path == "/v1/table/test/multipart_write/complete":
+                assert mode == "overwrite"
+                assert query == {"upload_id": ["blob-overwrite"]} and not body
+                expected_attempts = 2 if part_status == 503 else 1
+                assert paths == ["multipart_write/create"] + [
+                    "insert/"
+                ] * expected_attempts + ["multipart_write/complete"]
+                assert len(staged) == len(received) == 1
+                assert part_attempts == [part_attempts[0]] * expected_attempts
+                assert published.version == 1
+                published.add(received[0], mode="overwrite")
+                response = {"version": published.version}
             else:
-                body = request.rfile.read(int(request.headers["Content-Length"]))
-            received.append(pa.ipc.open_stream(body).read_all())
-            response = {
-                "version": 2,
-                "num_updated_rows": 0,
-                "num_inserted_rows": 2,
-                "num_deleted_rows": 0,
-            }
-        request.send_response(200)
+                assert mode == "merge"
+                assert path == "/v1/table/test/merge_insert/"
+                # merge_insert still streams a chunked body; preserve its framing.
+                if request.headers.get("Transfer-Encoding") == "chunked":
+                    stream = io.BytesIO(body)
+                    body = bytearray()
+                    while size := int(stream.readline().split(b";")[0], 16):
+                        body.extend(stream.read(size))
+                        assert stream.read(2) == b"\r\n"
+                    assert stream.read(2) == b"\r\n"
+                received.append(pa.ipc.open_stream(body).read_all())
+                response = {
+                    "version": 2,
+                    "num_updated_rows": 0,
+                    "num_inserted_rows": 2,
+                    "num_deleted_rows": 0,
+                }
+        request.send_response(status)
         request.send_header("Content-Type", "application/json")
         request.send_header("phalanx-version", "0.5.0")
         request.end_headers()
@@ -5049,7 +5205,23 @@ async def test_remote_writes_normalize_blob_layouts(
         else:
             result = table.add(data, mode="overwrite")
         if use_async:
-            await result
+            result = await result
+        assert result.version == 2
+
+    if mode == "overwrite":
+        assert published.version == 2
+        hits = published.search().select(["id"]).with_row_id(True).to_arrow()
+        by_id = dict(zip(hits["id"].to_pylist(), hits["_rowid"].to_pylist()))
+        assert set(by_id) == {1, 2}
+        row_ids = [by_id[1], by_id[2]]
+        assert published.fetch_blobs("image", row_ids).to_pylist() == [b"payload", None]
+        payload, null = published.fetch_blob_files("image", row_ids)
+        assert null is None
+        with payload:
+            assert payload.read_range(1, 3) == b"ayl"
+            assert payload.read() == b"payload"
+    else:
+        assert paths == ["merge_insert/"]
 
     assert len(received) == 1
     images = received[0]["image"].combine_chunks()
