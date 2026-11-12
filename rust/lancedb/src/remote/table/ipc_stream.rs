@@ -322,7 +322,7 @@ mod tests {
         let batch = RecordBatch::try_from_iter([("blob", Arc::new(array) as ArrayRef)]).unwrap();
         let body = messages(
             &batch.schema(),
-            &[batch.clone()],
+            std::slice::from_ref(&batch),
             IpcWriteOptions::default(),
         )
         .concat();
