@@ -90,6 +90,11 @@ pub(crate) trait JobHandle: Send + Sync {
         job_detail_not_supported("job timeline export")
     }
 
+    /// A printable report of recorded Function job metrics.
+    async fn stats(&self) -> Result<Option<String>> {
+        job_detail_not_supported("job statistics")
+    }
+
     /// The job's recorded lifecycle events.
     async fn events(&self, _request: JobEventsRequest) -> Result<Vec<RecordBatch>> {
         job_detail_not_supported("job event history")
@@ -528,6 +533,28 @@ where
         match &self.inner {
             JobInner::Handle { handle, .. } => handle.timeline().await,
             JobInner::Completed(_) => job_detail_not_supported("job timeline export"),
+        }
+    }
+
+    /// Fetch a printable run report for a server-side Function job.
+    ///
+    /// The report includes recorded phase timings, worker utilization, latency
+    /// and throughput. Returns `None` for running jobs or when no recorded
+    /// profile is available, without waiting for completion. Requires server
+    /// support; local operations and SQL query handles do not support reports.
+    ///
+    /// ```no_run
+    /// # async fn report(job: &lancedb::job::Job) -> Result<(), Box<dyn std::error::Error>> {
+    /// if let Some(report) = job.stats().await? {
+    ///     println!("{report}");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn stats(&self) -> Result<Option<String>> {
+        match &self.inner {
+            JobInner::Handle { handle, .. } => handle.stats().await,
+            JobInner::Completed(_) => job_detail_not_supported("job statistics"),
         }
     }
 

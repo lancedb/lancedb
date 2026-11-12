@@ -2733,6 +2733,50 @@ async def test_remote_job_wait_disconnection_timeout_can_be_resumed(sync):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("sync", [False, True])
+async def test_remote_job_stats_returns_native_optional_report(sync):
+    report = "Function job: finished\nWorker utilization: unavailable\n"
+    paths = []
+
+    def handler(request):
+        payload = json.loads(request.rfile.read(int(request.headers["Content-Length"])))
+        assert payload == {"job_id": "refresh-1"}
+        paths.append(request.path)
+        if request.path == "/v1/jobs/describe":
+            response = {
+                "job_id": "refresh-1",
+                "job_type": "function_refresh",
+                "job_state": "IN_PROGRESS",
+                "creation_ms": 1000,
+            }
+        elif request.path == "/v1/jobs/stats":
+            available = paths.count("/v1/jobs/stats") > 1
+            response = {
+                "job_id": "refresh-1",
+                "profile": {"future_field": True} if available else None,
+                "report": report if available else None,
+            }
+        else:
+            raise AssertionError(f"unexpected request: {request.path}")
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(response).encode())
+
+    if sync:
+        with mock_lancedb_connection(handler) as db:
+            job = db.open_job("refresh-1")
+            assert job.stats() is None
+            assert job.stats() == report
+    else:
+        async with mock_lancedb_connection_async(handler) as db:
+            job = await db.open_job("refresh-1")
+            assert await job.stats() is None
+            assert await job.stats() == report
+    assert paths == ["/v1/jobs/describe", "/v1/jobs/stats", "/v1/jobs/stats"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync", [False, True])
 @pytest.mark.parametrize(
     "job_type", ["function_refresh", "computed_refresh", "refresh_column"]
 )

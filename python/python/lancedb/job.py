@@ -425,6 +425,31 @@ class AsyncJob(Generic[T]):
         description = self._inner._description if self._inner is not None else None
         return getattr(description, name) if description is not None else None
 
+    async def stats(self) -> Optional[str]:
+        """Return a printable run report for this Function job.
+
+        The report includes recorded phase timings, worker utilization, split
+        and batch latency, and throughput. Each call fetches a fresh snapshot.
+        Returns ``None`` while the job is running or if no recorded profile is
+        available, without waiting for completion. Missing measurements remain
+        unavailable rather than becoming zero. The server formats the report;
+        the SDK returns it verbatim.
+
+        Requires a server-side Function job and a server supporting run reports.
+        Local operations and SQL query handles do not support this operation.
+        Unsupported operations raise ``NotImplementedError`` or a server error.
+        This method returns text; use ``print`` to display it.
+
+        Examples
+        --------
+        >>> print(await job.stats())  # doctest: +SKIP
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "job statistics require a server-side Function job"
+            )
+        return await self._inner.stats()
+
     async def export_timeline(self, path: str | PathLike[str]) -> None:
         """Write a fresh recorded Function job timeline as Chrome trace JSON.
 
@@ -648,6 +673,21 @@ class Job(Generic[T]):
 
     def _field(self, name: str) -> Optional[Any]:
         return getattr(self._inner, name) if self._inner is not None else None
+
+    def stats(self) -> Optional[str]:
+        """Return a printable Function job run report.
+
+        See :meth:`AsyncJob.stats` for metrics and availability.
+
+        Examples
+        --------
+        >>> print(job.stats())  # doctest: +SKIP
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "job statistics require a server-side Function job"
+            )
+        return LOOP.run(self._inner.stats())
 
     def export_timeline(self, path: str | PathLike[str]) -> None:
         """Write Chrome trace JSON for this Function job.
