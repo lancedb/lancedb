@@ -282,7 +282,7 @@ maybeDescribe("DynamoDB Lock", () => {
   });
 
   it("can be used to configure a DynamoDB table for commit log", async () => {
-    const uri = `s3+ddb://${bucket.name}/test?ddbTableName=${commitTable.name}`;
+    const uri = `s3+ddb://${bucket.name}/concurrent-appends?ddbTableName=${commitTable.name}`;
     const db = await connect(uri, {
       storageOptions: CONFIG,
       readConsistencyInterval: 0,
@@ -307,7 +307,7 @@ maybeDescribe("DynamoDB Lock", () => {
   });
 
   it("clears dynamodb state after dropping all tables", async () => {
-    const uri = `s3+ddb://${bucket.name}/test?ddbTableName=${commitTable.name}`;
+    const uri = `s3+ddb://${bucket.name}/drop-all-tables?ddbTableName=${commitTable.name}`;
     const db = await connect(uri, {
       storageOptions: CONFIG,
       readConsistencyInterval: 0,
