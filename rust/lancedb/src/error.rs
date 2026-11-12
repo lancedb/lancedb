@@ -149,12 +149,7 @@ impl HttpErrorSource {
                         serde_json::from_value::<crate::server_info::ServerBuildInfo>(server).ok()
                     })
             {
-                message.push_str(&format!(
-                    " [server: {} (git {}, built {})]",
-                    server.release,
-                    server.git_sha,
-                    server.build_date.as_deref().unwrap_or("unknown")
-                ));
+                message.push_str(&format!(" [server: {server}]"));
             }
             message
         } else {

@@ -4,6 +4,7 @@
 //! Remote server provenance for diagnostics without submitting a query or job.
 
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 /// Immutable identity compiled into a server executable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -15,6 +16,18 @@ pub struct ServerBuildInfo {
     pub git_sha: String,
     /// UTC RFC 3339 build timestamp, when known.
     pub build_date: Option<String>,
+}
+
+impl fmt::Display for ServerBuildInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} (git {}, built {})",
+            self.release,
+            self.git_sha,
+            self.build_date.as_deref().unwrap_or("unknown")
+        )
+    }
 }
 
 /// Identity of the query node that answered a discovery request.

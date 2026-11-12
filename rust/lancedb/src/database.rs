@@ -482,7 +482,7 @@ pub trait Database:
 
     /// Read the responding remote server's build identity.
     async fn server_info(&self) -> Result<crate::server_info::ServerInfo> {
-        Err(Error::NotSupported {
+        Err(crate::Error::NotSupported {
             message: "Server build discovery requires a remote LanceDB connection".into(),
         })
     }
