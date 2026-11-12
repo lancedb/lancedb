@@ -10,6 +10,12 @@ Use the `lancedb` command-line client to open an interactive SQL shell, run a
 statement, or execute a SQL file. SQL requires a running deployment with an
 [Arrow Flight SQL endpoint](/basics/sql#sql-is-remote).
 
+This public client exposes `auth`, `profile`, and `sql`. Commands such as
+`lancedb admin ...` and `lancedb job ...` require the Enterprise administrative
+CLI from your deployment administrator; the public client archive and source
+installation below do not include them. Use `lancedb sql --command` for SQL
+statements supported by your deployment.
+
 ## Install
 
 Download a CLI archive and `SHA256SUMS` from the
