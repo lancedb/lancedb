@@ -719,6 +719,7 @@ class RemoteTable(Table):
         progress: Optional[Union[bool, Callable, Any]] = None,
         write_parallelism: Optional[int] = None,
         allow_external_blob_outside_bases: bool = False,
+        retries: Optional[int] = None,
     ) -> AddResult:
         """Add more data to the [Table][lancedb.table.Table].
 
@@ -753,6 +754,9 @@ class RemoteTable(Table):
             using too much memory.
         allow_external_blob_outside_bases: bool, default False
             Not supported in LanceDB Enterprise. Setting this raises.
+        retries: int, optional
+            Override the retry budget for this call (0 to 255). Zero disables
+            retries, including multipart parts. Ambiguous commits are never replayed.
 
         Returns
         -------
@@ -770,6 +774,7 @@ class RemoteTable(Table):
                     progress=progress,
                     write_parallelism=write_parallelism,
                     allow_external_blob_outside_bases=allow_external_blob_outside_bases,
+                    retries=retries,
                 )
             )
         finally:

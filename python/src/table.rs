@@ -1462,7 +1462,7 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (data, mode, progress=None, write_parallelism=None, allow_external_blob_outside_bases=false))]
+    #[pyo3(signature = (data, mode, progress=None, write_parallelism=None, allow_external_blob_outside_bases=false, retries=None))]
     pub fn add<'a>(
         self_: PyRef<'a, Self>,
         data: PyScannable,
@@ -1470,6 +1470,7 @@ impl Table {
         progress: Option<Py<PyAny>>,
         write_parallelism: Option<usize>,
         allow_external_blob_outside_bases: bool,
+        retries: Option<u8>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let mut op = self_
             .inner_ref()?
@@ -1481,6 +1482,9 @@ impl Table {
             op = op.mode(AddDataMode::Overwrite);
         } else {
             return Err(PyValueError::new_err(format!("Invalid mode: {}", mode)));
+        }
+        if let Some(retries) = retries {
+            op = op.retries(retries);
         }
         if let Some(write_parallelism) = write_parallelism {
             op = op.write_parallelism(write_parallelism);

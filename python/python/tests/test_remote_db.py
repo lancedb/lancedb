@@ -134,6 +134,76 @@ async def mock_lancedb_connection_async(handler, **client_config):
             handle.join()
 
 
+@pytest.mark.parametrize("sync_api", [False, True])
+@pytest.mark.parametrize("retries", [None, 0])
+@pytest.mark.parametrize("status", [429, 504])
+@pytest.mark.asyncio
+async def test_add_retry_override(sync_api, retries, status):
+    attempts = 0
+
+    def handler(request):
+        nonlocal attempts
+        if request.path.endswith("/describe/"):
+            payload = {
+                "version": 1,
+                "schema": {
+                    "fields": [
+                        {"name": "id", "type": {"type": "int64"}, "nullable": True}
+                    ]
+                },
+            }
+            request.send_response(200)
+            request.end_headers()
+            request.wfile.write(json.dumps(payload).encode())
+            return
+        assert request.path.endswith("/insert/")
+        body = bytearray()
+        if request.headers.get("Transfer-Encoding") == "chunked":
+            while True:
+                size = int(request.rfile.readline().strip(), 16)
+                if size == 0:
+                    request.rfile.readline()
+                    break
+                body.extend(request.rfile.read(size))
+                request.rfile.read(2)
+        else:
+            body.extend(
+                request.rfile.read(int(request.headers.get("Content-Length", 0)))
+            )
+        assert pa.ipc.open_stream(body).read_all().to_pylist() == [{"id": 1}]
+        attempts += 1
+        request.send_response(status if attempts == 1 else 200)
+        request.end_headers()
+        request.wfile.write(b'{"version": 2}')
+
+    config = {
+        "retry_config": {
+            "retries": 3,
+            "statuses": [429, 504],
+            "backoff_factor": 0,
+            "backoff_jitter": 0,
+        }
+    }
+    expected_success = status == 429 and retries is None
+    if sync_api:
+        with mock_lancedb_connection(handler, **config) as db:
+            table = db.open_table("test")
+            if expected_success:
+                assert table.add([{"id": 1}], retries=retries).version == 2
+            else:
+                with pytest.raises((HttpError, RetryError)):
+                    table.add([{"id": 1}], retries=retries)
+    else:
+        async with mock_lancedb_connection_async(handler, **config) as db:
+            table = await db.open_table("test")
+            if expected_success:
+                assert (await table.add([{"id": 1}], retries=retries)).version == 2
+            else:
+                with pytest.raises((HttpError, RetryError)):
+                    await table.add([{"id": 1}], retries=retries)
+    assert attempts == (2 if expected_success else 1)
+
+
 @pytest.fixture
 def missing_table_handler(cached, namespace_path):
     request_ids = []

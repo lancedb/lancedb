@@ -5,6 +5,8 @@ pub mod blobs;
 pub mod insert;
 mod ipc_stream;
 mod optimize;
+#[cfg(test)]
+mod write_tests;
 
 use self::insert::{RemoteWriteExec, WriteOp};
 use super::client::RequestResultExt;
@@ -1420,13 +1422,18 @@ impl<S: HttpSend> RemoteTable<S> {
         Ok(bodies)
     }
 
-    async fn create_multipart_write(&self) -> Result<String> {
+    async fn create_multipart_write(&self, retries: Option<u8>) -> Result<String> {
         let request = self.apply_branch_query(self.client.post(&format!(
             "/v1/table/{}/multipart_write/create",
             self.identifier
         )));
-        let (request_id, response) = self.send(request, true).await?;
+        let client = self.client.with_retries(retries);
+        let freshness_request = self.snapshot_freshness_headers();
+        let (request_id, response) = client
+            .send_with_retry(freshness_request.apply(request), None, true)
+            .await?;
         let response = self.check_table_response(&request_id, response).await?;
+        freshness_request.observe_headers(&self.freshness, response.headers());
         let body = response.text().await.err_to_http(request_id.clone())?;
         let parsed: serde_json::Value = serde_json::from_str(&body).map_err(|e| Error::Http {
             source: format!("Failed to parse multipart create response: {}", e).into(),
@@ -1452,7 +1459,7 @@ impl<S: HttpSend> RemoteTable<S> {
                 ))
                 .query(&[("upload_id", upload_id)]),
         );
-        let (request_id, response) = self.send(request, true).await?;
+        let (request_id, response) = self.send(request, false).await?;
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
         let parsed: serde_json::Value = serde_json::from_str(&body).map_err(|e| Error::Http {
@@ -1975,29 +1982,81 @@ mod test_utils {
     }
 }
 
+#[derive(Debug)]
+struct UnknownWriteOutcome {
+    upload_id: String,
+    source: Error,
+}
+
+impl std::fmt::Display for UnknownWriteOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Multipart write {} commit outcome unknown; no abort or replay was attempted. Check the table before retrying: {}",
+            self.upload_id, self.source
+        )
+    }
+}
+
+impl std::error::Error for UnknownWriteOutcome {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
 impl<S: HttpSend + 'static> RemoteTable<S> {
     fn is_retryable_write_error(&self, err: &Error) -> bool {
+        // Transaction conflicts and explicit rate limits reject the write.
+        // A gateway 5xx says nothing about whether its manifest was committed.
+        let safe_status = |status| {
+            matches!(status, StatusCode::CONFLICT | StatusCode::TOO_MANY_REQUESTS)
+                && self.client.retry_config.statuses.contains(&status)
+        };
         match err {
             Error::Http {
                 source,
                 status_code,
                 ..
             } => {
-                // Don't retry read errors (is_body/is_decode): the
-                // server may have committed the write already, and
-                // without an idempotency key we'd duplicate data.
                 source
                     .downcast_ref::<reqwest::Error>()
                     .is_some_and(|e| e.is_connect())
-                    || status_code.is_some_and(|s| self.client.retry_config.statuses.contains(&s))
+                    || status_code.is_some_and(safe_status)
             }
-            // send_with_retry exhausted its internal retries on a retryable
-            // status. The outer loop can still retry the whole operation with
-            // a fresh session.
-            Error::Retry { status_code, .. } => {
-                status_code.is_some_and(|s| self.client.retry_config.statuses.contains(&s))
-            }
+            Error::Retry { status_code, .. } => status_code.is_some_and(safe_status),
             _ => false,
+        }
+    }
+
+    async fn send_write_request(
+        &self,
+        request: RequestBuilder,
+        freshness: FreshnessHeaders,
+        retries: Option<u8>,
+    ) -> Result<(String, Response)> {
+        let client = self.client.with_retries(retries);
+        let mut counter = crate::remote::retry::RetryCounter::new(
+            &client.retry_config,
+            uuid::Uuid::new_v4().to_string(),
+        );
+        loop {
+            let req = request.try_clone().ok_or_else(|| Error::Runtime {
+                message: "Write request cannot be replayed".into(),
+            })?;
+            let result = async {
+                let (id, response) = client.send(freshness.apply(req)).await?;
+                let response = self.check_table_response(&id, response).await?;
+                freshness.observe_headers(&self.freshness, response.headers());
+                Ok((id, response))
+            }
+            .await;
+            match result {
+                Err(err) if self.is_retryable_write_error(&err) => {
+                    counter.increment_from_error(err)?;
+                    tokio::time::sleep(counter.next_sleep_time()).await;
+                }
+                result => return result,
+            }
         }
     }
 
@@ -2005,13 +2064,14 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
         use crate::remote::retry::RetryCounter;
 
         let _guard = output.tracker.as_ref().map(|t| t.track_task());
+        let client = self.client.with_retries(output.retries);
         let freshness_request = self.snapshot_freshness_headers();
 
         let mut insert: Arc<dyn ExecutionPlan> = Arc::new(
             RemoteWriteExec::new(
                 self.name.clone(),
                 self.identifier.clone(),
-                self.client.clone(),
+                client.clone(),
                 output.plan,
                 WriteOp::Insert {
                     overwrite: output.overwrite,
@@ -2026,7 +2086,7 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
         );
 
         let mut retry_counter =
-            RetryCounter::new(&self.client.retry_config, uuid::Uuid::new_v4().to_string());
+            RetryCounter::new(&client.retry_config, uuid::Uuid::new_v4().to_string());
 
         loop {
             let stream = execute_plan(insert.clone(), Default::default())?;
@@ -2062,61 +2122,53 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
         output: PreprocessingOutput,
         num_partitions: usize,
     ) -> Result<AddResult> {
-        use crate::remote::retry::RetryCounter;
-
-        let mut retry_counter =
-            RetryCounter::new(&self.client.retry_config, uuid::Uuid::new_v4().to_string());
-
-        loop {
-            let freshness_request = self.snapshot_freshness_headers();
-            let upload_id = self.create_multipart_write().await?;
-
-            let result = self
-                .execute_multipart_inserts(&upload_id, &output, num_partitions)
-                .await;
-
-            match result {
-                Ok(()) => match self.complete_multipart_write(&upload_id).await {
-                    Ok(result) => {
-                        if output.overwrite {
-                            self.invalidate_schema_cache();
-                        }
-                        self.track_write_version(freshness_request, result.version);
-                        return Ok(result);
-                    }
-                    Err(e) => {
-                        if let Err(abort_err) = self.abort_multipart_write(&upload_id).await {
-                            log::warn!(
-                                "Failed to abort multipart write {}: {}",
-                                upload_id,
-                                abort_err
-                            );
-                        }
-                        if output.rescannable && self.is_retryable_write_error(&e) {
-                            retry_counter.increment_from_error(e)?;
-                            tokio::time::sleep(retry_counter.next_sleep_time()).await;
-                            continue;
-                        }
-                        return Err(e);
-                    }
-                },
-                Err(e) => {
-                    if let Err(abort_err) = self.abort_multipart_write(&upload_id).await {
-                        log::warn!(
-                            "Failed to abort multipart write {}: {}",
-                            upload_id,
-                            abort_err
-                        );
-                    }
-                    if output.rescannable && self.is_retryable_write_error(&e) {
-                        retry_counter.increment_from_error(e)?;
-                        tokio::time::sleep(retry_counter.next_sleep_time()).await;
-                        continue;
-                    }
-                    return Err(e);
-                }
+        let freshness_request = self.snapshot_freshness_headers();
+        let upload_id = self.create_multipart_write(output.retries).await?;
+        if let Err(err) = self
+            .execute_multipart_inserts(&upload_id, &output, num_partitions)
+            .await
+        {
+            if let Err(abort_err) = self.abort_multipart_write(&upload_id).await {
+                log::warn!(
+                    "Failed to abort multipart write {}: {}",
+                    upload_id,
+                    abort_err
+                );
             }
+            return Err(err);
         }
+        // A lost complete response can mean a successful commit. Neither repeat
+        // complete nor start a new upload session without a server commit token.
+        let result = self.complete_multipart_write(&upload_id).await.map_err(|err| {
+            let ambiguous = match &err {
+                Error::Http { status_code, .. } | Error::Retry { status_code, .. } => {
+                    status_code.is_none_or(|status| status.is_server_error())
+                }
+                _ => false,
+            };
+            if !ambiguous {
+                return err;
+            }
+            log::warn!("Multipart write {} completion failed; commit outcome may be unknown: {}. Check the table before retrying.", upload_id, err);
+            let request_id = match &err {
+                Error::Http { request_id, .. } | Error::Retry { request_id, .. } => request_id.clone(),
+                _ => String::new(),
+            };
+            let status_code = match &err {
+                Error::Http { status_code, .. } | Error::Retry { status_code, .. } => *status_code,
+                _ => None,
+            };
+            Error::Http {
+                request_id,
+                status_code,
+                source: Box::new(UnknownWriteOutcome { upload_id: upload_id.clone(), source: err }),
+            }
+        })?;
+        if output.overwrite {
+            self.invalidate_schema_cache();
+        }
+        self.track_write_version(freshness_request, result.version);
+        Ok(result)
     }
 
     async fn execute_multipart_inserts(
@@ -2125,10 +2177,7 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
         output: &PreprocessingOutput,
         num_partitions: usize,
     ) -> Result<()> {
-        debug_assert!(
-            output.rescannable,
-            "multipart inserts require rescannable input for retry support"
-        );
+        let client = self.client.with_retries(output.retries);
 
         let plan = Arc::new(
             datafusion_physical_plan::repartition::RepartitionExec::try_new(
@@ -2141,7 +2190,7 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
             RemoteWriteExec::new_multipart(
                 self.name.clone(),
                 self.identifier.clone(),
-                self.client.clone(),
+                client,
                 plan,
                 output.overwrite,
                 upload_id.to_string(),
@@ -3000,6 +3049,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         crate::table::computed_columns::ensure_supported_function_metadata(table_schema.as_ref())?;
         let table_def = TableDefinition::try_from_rich_schema(table_schema.clone())?;
 
+        let mut use_multipart = false;
         let num_partitions = if self.server_version.support_multipart_write() {
             // Peek at the first batch to estimate write partitions (same as
             // NativeTable) and, regardless of `write_parallelism`, to detect a
@@ -3012,20 +3062,29 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             // sends one schema-only request.
             let mut peeked = PeekedScannable::new(add.data);
             let n = match peeked.peek().await {
-                Some(first_batch) => match add.write_parallelism {
-                    Some(parallelism) if parallelism > 1 => parallelism,
-                    Some(_) => 1,
-                    None => {
-                        let max_partitions =
-                            lance_core::utils::tokio::get_num_compute_intensive_cpus();
-                        estimate_write_partitions(
-                            first_batch.get_array_memory_size(),
-                            first_batch.num_rows(),
-                            peeked.num_rows(),
-                            max_partitions,
-                        )
+                Some(first_batch) => {
+                    let estimated_bytes = peeked.num_rows().map(|rows| {
+                        first_batch.get_array_memory_size().saturating_mul(rows)
+                            / first_batch.num_rows().max(1)
+                    });
+                    // Unknown-length streams also need bounded requests, even
+                    // when they cannot be rescanned or only use one writer.
+                    use_multipart = estimated_bytes.is_none_or(|bytes| bytes > 64 * 1024 * 1024);
+                    match add.write_parallelism {
+                        Some(parallelism) if parallelism > 1 => parallelism,
+                        Some(_) => 1,
+                        None => {
+                            let max_partitions =
+                                lance_core::utils::tokio::get_num_compute_intensive_cpus();
+                            estimate_write_partitions(
+                                first_batch.get_array_memory_size(),
+                                first_batch.num_rows(),
+                                peeked.num_rows(),
+                                max_partitions,
+                            )
+                        }
                     }
-                },
+                }
                 None => 1,
             };
             add.data = Box::new(peeked);
@@ -3041,7 +3100,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         }
         let _finish = FinishOnDrop(output.tracker.clone());
 
-        if num_partitions > 1 {
+        if use_multipart || num_partitions > 1 {
             self.add_multipart(output, num_partitions).await
         } else {
             self.add_single_partition(output).await
@@ -3278,7 +3337,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         let freshness_request = self.snapshot_freshness_headers();
         let (request_id, response) = self
-            .send_with_freshness(request, true, freshness_request)
+            .send_write_request(request, freshness_request, update.retries)
             .await?;
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
@@ -3316,7 +3375,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .json(&body);
         let freshness_request = self.snapshot_freshness_headers();
         let (request_id, response) = self
-            .send_with_freshness(request, true, freshness_request)
+            .send_write_request(request, freshness_request, None)
             .await?;
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
@@ -3363,6 +3422,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         self.check_mutable().await?;
 
         let timeout = params.timeout;
+        let client = self.client.with_retries(params.retries);
         let query = MergeInsertRequest::try_from(params)?;
 
         // Drive merge_insert through the same RemoteWriteExec streaming path as
@@ -3407,7 +3467,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             RemoteWriteExec::new(
                 self.name.clone(),
                 self.identifier.clone(),
-                self.client.clone(),
+                client.clone(),
                 input,
                 WriteOp::MergeInsert { query, timeout },
                 None,
@@ -3420,7 +3480,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         );
 
         let mut retry_counter = crate::remote::retry::RetryCounter::new(
-            &self.client.retry_config,
+            &client.retry_config,
             uuid::Uuid::new_v4().to_string(),
         );
 
@@ -14748,41 +14808,116 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_add_retries_on_retryable_status() {
-        // Verify that rescannable data retries on retryable status codes (e.g. 502)
-        // and eventually succeeds.
-        let batch = record_batch!(("a", Int32, [1, 2, 3])).unwrap();
-        let describe_body = describe_response(&batch.schema());
-
-        let attempt = Arc::new(AtomicUsize::new(0));
-        let attempt_clone = attempt.clone();
-
-        let table =
-            Table::new_with_handler("my_table", move |request| match request.url().path() {
-                "/v1/table/my_table/describe/" => http::Response::builder()
-                    .status(200)
-                    .body(describe_body.clone())
-                    .unwrap(),
-                "/v1/table/my_table/insert/" => {
-                    let n = attempt_clone.fetch_add(1, Ordering::SeqCst);
-                    if n < 2 {
-                        http::Response::builder()
-                            .status(502)
-                            .body("bad gateway".to_string())
-                            .unwrap()
-                    } else {
-                        http::Response::builder()
+    async fn test_add_write_retry_policy_and_override() {
+        for status in [429, 500, 502, 503, 504] {
+            for retries in [None, Some(0)] {
+                let batch = record_batch!(("a", Int32, [1, 2, 3])).unwrap();
+                let describe = describe_response(&batch.schema());
+                let attempts = Arc::new(AtomicUsize::new(0));
+                let observed = attempts.clone();
+                let table = Table::new_with_handler("my_table", move |req| {
+                    if req.url().path().ends_with("describe/") {
+                        return http::Response::builder()
                             .status(200)
-                            .body(r#"{"version": 3}"#.to_string())
-                            .unwrap()
+                            .body(describe.clone())
+                            .unwrap();
                     }
+                    let n = observed.fetch_add(1, Ordering::SeqCst);
+                    http::Response::builder()
+                        .status(if n == 0 { status } else { 200 })
+                        .body(r#"{"version":3}"#.to_string())
+                        .unwrap()
+                });
+                let mut add = table.add(batch);
+                if let Some(retries) = retries {
+                    add = add.retries(retries);
                 }
-                path => panic!("Unexpected request path: {}", path),
-            });
+                let result = add.execute().await;
+                let safe_retry = status == 429 && retries.is_none();
+                assert_eq!(
+                    result.is_ok(),
+                    safe_retry,
+                    "{status}, {retries:?}: {result:?}"
+                );
+                assert_eq!(
+                    attempts.load(Ordering::SeqCst),
+                    if safe_retry { 2 } else { 1 }
+                );
+            }
+        }
+    }
 
-        let result = table.add(batch).execute().await.unwrap();
-        assert_eq!(result.version, 3);
-        assert_eq!(attempt.load(Ordering::SeqCst), 3);
+    #[tokio::test]
+    async fn test_mutations_do_not_replay_gateway_failures() {
+        for status in [500, 502, 503, 504] {
+            for op in ["update", "delete", "merge_insert"] {
+                let batch = record_batch!(("id", Int32, [1, 2])).unwrap();
+                let describe = describe_response(&batch.schema());
+                let attempts = Arc::new(AtomicUsize::new(0));
+                let observed = attempts.clone();
+                let table = Table::new_with_handler("my_table", move |req| {
+                    if req.url().path().ends_with("describe/") {
+                        return http::Response::builder()
+                            .status(200)
+                            .body(describe.clone())
+                            .unwrap();
+                    }
+                    assert!(req.url().path().contains(op));
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    http::Response::builder()
+                        .status(status)
+                        .body("gateway fault".to_string())
+                        .unwrap()
+                });
+                let result = match op {
+                    "update" => table
+                        .update()
+                        .column("id", "id + 1")
+                        .execute()
+                        .await
+                        .map(|_| ()),
+                    "delete" => table.delete("true").await.map(|_| ()),
+                    _ => {
+                        let reader =
+                            RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema());
+                        let mut merge = table.merge_insert(&["id"]);
+                        merge.when_not_matched_insert_all();
+                        merge.execute(Box::new(reader)).await.map(|_| ())
+                    }
+                };
+                assert!(result.is_err(), "{op}, {status}");
+                assert_eq!(attempts.load(Ordering::SeqCst), 1, "{op}, {status}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_write_retry_policy_for_both_error_variants() {
+        let table = RemoteTable::new_mock_with_config(
+            "my_table".into(),
+            |_| http::Response::builder().body("").unwrap(),
+            ClientConfig {
+                retry_config: RetryConfig {
+                    retries: Some(1),
+                    statuses: Some(vec![429, 500, 502, 503, 504]),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        for status in [429, 500, 502, 503, 504] {
+            let err = Error::Http {
+                request_id: "test".into(),
+                status_code: Some(StatusCode::from_u16(status).unwrap()),
+                source: "gateway response".into(),
+            };
+            assert_eq!(table.is_retryable_write_error(&err), status == 429);
+            let mut counter =
+                crate::remote::retry::RetryCounter::new(&table.client.retry_config, "test".into());
+            let exhausted = counter.increment_request_failures(err).unwrap_err();
+            assert!(matches!(exhausted, Error::Retry { .. }));
+            assert_eq!(table.is_retryable_write_error(&exhausted), status == 429);
+        }
     }
 
     #[tokio::test]
@@ -14931,7 +15066,7 @@ mod tests {
 
         let batch = record_batch!(("id", Int32, [1, 2, 3])).unwrap();
         let result = table
-            .add(vec![batch])
+            .add(vec![batch.clone(), batch])
             .write_parallelism(2)
             .execute()
             .await
@@ -15335,7 +15470,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_multipart_write_abort_on_complete_failure() {
+    async fn test_multipart_write_does_not_abort_on_complete_failure() {
         let abort_count = Arc::new(AtomicUsize::new(0));
         let abort_count_c = abort_count.clone();
 
@@ -15386,7 +15521,7 @@ mod tests {
         let result = table.add(vec![batch]).write_parallelism(2).execute().await;
 
         assert!(result.is_err());
-        assert_eq!(abort_count.load(Ordering::SeqCst), 1);
+        assert_eq!(abort_count.load(Ordering::SeqCst), 0);
     }
 
     fn retry_config_no_backoff() -> ClientConfig {
@@ -15405,9 +15540,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_multipart_write_retry_on_partition_failure() {
-        // All inserts for the first upload session return 503 (retryable).
-        // After exhausting internal retries, the outer loop retries with a
-        // new session and succeeds.
+        // A staging failure is retried in the same upload session.
+        let insert_count = Arc::new(AtomicUsize::new(0));
+        let insert_count_c = insert_count.clone();
         let create_count = Arc::new(AtomicUsize::new(0));
         let complete_count = Arc::new(AtomicUsize::new(0));
         let abort_count = Arc::new(AtomicUsize::new(0));
@@ -15435,7 +15570,9 @@ mod tests {
 
                 if path == "/v1/table/my_table/insert/" {
                     // Fail all inserts for the first session
-                    if query.contains("upload_id=upload-1") {
+                    assert!(query.contains("upload_id=upload-1"));
+                    assert!(query.contains("upload_part_id="));
+                    if insert_count_c.fetch_add(1, Ordering::SeqCst) == 0 {
                         return http::Response::builder()
                             .status(503)
                             .body("Service Unavailable".to_string())
@@ -15477,14 +15614,16 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.version, 7);
-        assert_eq!(create_count.load(Ordering::SeqCst), 2);
-        assert_eq!(abort_count.load(Ordering::SeqCst), 1);
+        assert_eq!(create_count.load(Ordering::SeqCst), 1);
+        assert_eq!(abort_count.load(Ordering::SeqCst), 0);
         assert_eq!(complete_count.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
-    async fn test_multipart_write_retry_on_complete_failure() {
-        // Complete returns 503 for the first session, succeeds for the second.
+    async fn test_multipart_complete_unknown_outcome_never_aborts_or_replays() {
+        // A gateway failure may hide a committed write. No abort or replay is safe.
+        let complete_count = Arc::new(AtomicUsize::new(0));
+        let complete_count_c = complete_count.clone();
         let create_count = Arc::new(AtomicUsize::new(0));
         let abort_count = Arc::new(AtomicUsize::new(0));
 
@@ -15516,6 +15655,7 @@ mod tests {
                 }
 
                 if path == "/v1/table/my_table/multipart_write/complete" {
+                    complete_count_c.fetch_add(1, Ordering::SeqCst);
                     // Fail complete for first session
                     if query.contains("upload_id=upload-1") {
                         return http::Response::builder()
@@ -15548,11 +15688,12 @@ mod tests {
             .write_parallelism(2)
             .execute()
             .await
-            .unwrap();
+            .unwrap_err();
 
-        assert_eq!(result.version, 9);
-        assert_eq!(create_count.load(Ordering::SeqCst), 2);
-        assert_eq!(abort_count.load(Ordering::SeqCst), 1);
+        assert!(result.to_string().contains("commit outcome unknown"));
+        assert_eq!(complete_count.load(Ordering::SeqCst), 1);
+        assert_eq!(create_count.load(Ordering::SeqCst), 1);
+        assert_eq!(abort_count.load(Ordering::SeqCst), 0);
     }
 
     // ---- Read freshness header tests ------------------------------------
