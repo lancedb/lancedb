@@ -793,6 +793,15 @@ with `search().with_row_id(True).to_arrow()` and pass the result to the fetch AP
 One missing or deleted row ID rejects the entire blob-read batch; the APIs do
 not return partial results.
 
+Local and remote `BlobFile` handles prefetch 512 KiB for sequential reads by
+default. Pass `buffer_size=0` to `fetch_blob_files`, `open_blob_file`, or
+`open_blob_files` for sparse reads, or choose another window size in bytes.
+Call `file.set_buffer_size(size)` to change it without moving the cursor;
+changing the size discards unused prefetched bytes. Explicit `read_range` and
+`read_ranges` calls always read exactly the requested intervals and leave the
+cursor unchanged. Remote prefetch consumes the HTTP response completely before
+returning, so idle handles do not hold request concurrency slots or connections.
+
 To construct inline Blob V2 arrays for ingestion in record batches, use
 [blob_array][lancedb.schema.blob_array]. It accepts bytes and `None`, preserving
 the distinction between an empty blob (`b""`) and a null blob:
