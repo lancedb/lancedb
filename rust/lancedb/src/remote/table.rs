@@ -4671,6 +4671,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_server_info_survives_schema_cache_errors() {
+        let expected = crate::server_info::ServerBuildInfo {
+            release: "1.2.3".into(),
+            git_sha: "0123456789ab".into(),
+            build_date: Some("2024-01-01T00:00:00Z".into()),
+        };
+        for header_only in [false, true] {
+            let table = Table::new_with_handler("my_table", move |request| {
+                assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
+                let server = serde_json::json!({
+                    "release": "1.2.3", "git_sha": "0123456789ab",
+                    "build_date": "2024-01-01T00:00:00Z",
+                });
+                let response = http::Response::builder().status(404);
+                if header_only {
+                    response
+                        .header("x-lancedb-server-build", server.to_string())
+                        .body("missing".to_string())
+                        .unwrap()
+                } else {
+                    response
+                        .body(serde_json::json!({"error": "missing", "server": server}).to_string())
+                        .unwrap()
+                }
+            });
+            let original = Arc::new(table.schema().await.unwrap_err());
+            // Keep another reader's reference alive to exercise the shared result.
+            let shared = unwrap_shared_error(original.clone());
+            for error in [original.as_ref(), &shared] {
+                assert!(matches!(error, Error::TableNotFound { name, .. } if name == "my_table"));
+                assert_eq!(error.status_code(), Some(StatusCode::NOT_FOUND));
+                assert_eq!(
+                    error
+                        .remote_error_metadata()
+                        .and_then(|metadata| metadata.server.as_ref()),
+                    Some(&expected),
+                );
+                assert!(error.to_string().contains("0123456789ab"));
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn test_count_rows() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
