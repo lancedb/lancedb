@@ -10,6 +10,7 @@ import lancedb
 import pytest
 import pyarrow as pa
 from lancedb.db import AsyncConnection
+from lancedb.exceptions import JobFailedError
 from lancedb.materialized_view import MaterializedViewDefinition
 from lancedb.remote.db import RemoteDBConnection
 from utils import start_server_thread
@@ -175,7 +176,8 @@ async def test_remote_refresh_reports_unknown_metrics(
         assert not any("count_rows" in path for path in requests)
 
 
-def test_sync_remote_create_uses_public_async_connection():
+@pytest.mark.parametrize("query", [None, "SELECT name FROM people WHERE age >= 18"])
+def test_sync_remote_create_uses_public_async_connection(query):
     calls = []
 
     class StubAsyncTable:
@@ -190,6 +192,7 @@ def test_sync_remote_create_uses_public_async_connection():
             name,
             source,
             *,
+            query=None,
             select=None,
             where=None,
             limit=None,
@@ -201,6 +204,7 @@ def test_sync_remote_create_uses_public_async_connection():
                 (
                     name,
                     source,
+                    query,
                     select,
                     where,
                     limit,
@@ -219,18 +223,24 @@ def test_sync_remote_create_uses_public_async_connection():
     db.db_name = "example"
     db.serialize = lambda: "{}"
 
-    view = db.create_materialized_view(
-        "adults",
-        "people",
-        select=["name"],
-        where="age >= 18",
-        limit=10,
-        with_no_data=True,
-        auto_refresh_enabled=True,
-        auto_refresh_interval_seconds=0.5,
-    )
+    if query is None:
+        view = db.create_materialized_view(
+            "adults",
+            "people",
+            select=["name"],
+            where="age >= 18",
+            limit=10,
+            with_no_data=True,
+            auto_refresh_enabled=True,
+            auto_refresh_interval_seconds=0.5,
+        )
+        assert calls == [
+            ("adults", "people", None, ["name"], "age >= 18", 10, True, True, 0.5)
+        ]
+    else:
+        view = db.create_materialized_view("adults", query=query)
+        assert calls == [("adults", None, query, None, None, None, False, None, None)]
     assert view.name == "adults"
-    assert calls == [("adults", "people", ["name"], "age >= 18", 10, True, True, 0.5)]
 
     db.drop_materialized_view("adults", namespace_path=["analytics"])
     assert calls[-1] == ("drop", "adults", ["analytics"])
@@ -790,3 +800,144 @@ def test_embedded_explicitly_disabled_refresh_is_supported(tmp_path):
     db = make_db(tmp_path)
     view = db.create_materialized_view("mv", "people", auto_refresh_enabled=False)
     assert view.table.count_rows() == 3
+
+
+@pytest.mark.experimental_functions
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync", [False, True])
+@pytest.mark.parametrize("namespace", [False, True])
+@pytest.mark.parametrize("background", [False, True])
+@pytest.mark.parametrize(
+    "query, expected",
+    [
+        (
+            "SELECT kind, count(*) AS n FROM events GROUP BY kind",
+            [{"kind": "a", "n": 2}, {"kind": "b", "n": 1}],
+        ),
+        (
+            "SELECT id, tag FROM events, UNNEST(tags) AS tag",
+            [{"id": 1, "tag": "x"}, {"id": 1, "tag": "y"}, {"id": 3, "tag": "z"}],
+        ),
+    ],
+)
+async def test_query_defined_materialized_view(
+    tmp_path, sync, namespace, background, query, expected
+):
+    if namespace:
+        connect = lancedb.connect_namespace if sync else lancedb.connect_namespace_async
+        db = connect("dir", {"root": str(tmp_path)}, storage_options=STABLE_ROW_IDS)
+    elif sync:
+        db = lancedb.connect(tmp_path, storage_options=STABLE_ROW_IDS)
+    else:
+        db = await lancedb.connect_async(tmp_path, storage_options=STABLE_ROW_IDS)
+    rows = [
+        {"id": 1, "kind": "a", "tags": ["x", "y"]},
+        {"id": 2, "kind": "a", "tags": []},
+        {"id": 3, "kind": "b", "tags": ["z"]},
+    ]
+    if sync:
+        db.create_table("events", rows, storage_options=STABLE_ROW_IDS)
+        if background:
+            db.create_materialized_view_async("result", query=query).wait()
+            view = db.open_materialized_view("result")
+        else:
+            view = db.create_materialized_view("result", query=query)
+        actual = view.table.to_arrow().to_pylist()
+        assert view.definition.query == query
+        view.refresh()
+        refreshed = view.table.to_arrow().to_pylist()
+    else:
+        await db.create_table("events", rows, storage_options=STABLE_ROW_IDS)
+        if background:
+            job = await db.create_materialized_view_async("result", query=query)
+            await job.wait()
+            view = await db.open_materialized_view("result")
+        else:
+            view = await db.create_materialized_view("result", query=query)
+        actual = (await view.table.to_arrow()).to_pylist()
+        assert (await view.definition()).query == query
+        await view.refresh()
+        refreshed = (await view.table.to_arrow()).to_pylist()
+    assert sorted(actual, key=str) == sorted(expected, key=str)
+    assert sorted(refreshed, key=str) == sorted(expected, key=str)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync", [False, True])
+@pytest.mark.parametrize("background", [False, True])
+@pytest.mark.parametrize(
+    "clauses",
+    [{"source": "people"}, {"select": []}, {"select": {}}, {"where": ""}, {"limit": 0}],
+)
+async def test_query_rejects_source_clauses_before_submission(
+    sync, background, clauses
+):
+    connect = lancedb.connect if sync else lancedb.connect_async
+    db = connect("db://dev", api_key="fake", host_override="http://127.0.0.1:1")
+    if not sync:
+        db = await db
+    create = (
+        db.create_materialized_view_async if background else db.create_materialized_view
+    )
+    with pytest.raises(ValueError, match="query cannot be combined"):
+        if sync:
+            create("invalid", query="SELECT * FROM people", **clauses)
+        else:
+            await create("invalid", query="SELECT * FROM people", **clauses)
+    with pytest.raises(ValueError, match="either source or query"):
+        if sync:
+            create("missing")
+        else:
+            await create("missing")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync", [False, True])
+@pytest.mark.parametrize(
+    "query",
+    [
+        "SELECT kind, count(*) AS n FROM events GROUP BY kind",
+        "SELECT id, c.text FROM docs, chunk(body) AS c",
+        "SELECT id, tag FROM events, UNNEST(tags) AS tag",
+        "SELECT a.id FROM a JOIN b ON a.id = b.id",
+    ],
+)
+async def test_remote_create_forwards_defining_query(sync, query):
+    native = CapturingCreateConnection()
+    db = AsyncConnection(native)
+    if sync:
+        remote = RemoteDBConnection.__new__(RemoteDBConnection)
+        remote._conn = db
+        job = remote.create_materialized_view_async("result", query=query)
+        job.wait()
+    else:
+        job = await db.create_materialized_view_async("result", query=query)
+        await job.wait()
+    assert native.calls[0][0:2] == ("result", None)
+    assert native.calls[0][2]["query"] == query
+
+
+@pytest.mark.experimental_functions
+@pytest.mark.parametrize("background", [False, True])
+def test_query_with_no_data_and_invalid_query(tmp_path, background):
+    db = make_db(tmp_path)
+    query = "SELECT name FROM people WHERE age >= 18"
+    if background:
+        db.create_materialized_view_async(
+            "adults", query=query, with_no_data=True
+        ).wait()
+        view = db.open_materialized_view("adults")
+    else:
+        view = db.create_materialized_view("adults", query=query, with_no_data=True)
+    assert view.table.count_rows() == 0
+    view.refresh()
+    assert view.table.count_rows() == 2
+    create = (
+        db.create_materialized_view_async if background else db.create_materialized_view
+    )
+    error = JobFailedError if background else ValueError
+    with pytest.raises(error, match="unsupported clause"):
+        result = create("invalid", query="SELECT * FROM people ORDER BY age")
+        if background:
+            result.wait()
+    assert "invalid" not in db.table_names()
