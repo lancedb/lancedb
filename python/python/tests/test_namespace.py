@@ -34,6 +34,27 @@ PUSHDOWN_DATA = pa.table(
 )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("table_id", [["events"], ["analytics", "events"], ["missing"]])
+async def test_custom_namespace_table_exists_uses_namespace_api(table_id):
+    class ExistenceNamespace(LanceNamespace):
+        def namespace_id(self):
+            return "existence-test"
+
+        def table_exists(self, request):
+            if request.id == ["missing"]:
+                raise TableNotFoundError("Table not found")
+
+        def describe_table(self, request):
+            raise AssertionError("Custom existence checks must not open tables")
+
+    namespace = ExistenceNamespace()
+    db = LanceNamespaceDBConnection(namespace)
+    adb = lancedb.AsyncLanceNamespaceDBConnection(namespace)
+    assert db.table_exists(table_id) is (table_id != ["missing"])
+    assert await adb.table_exists(table_id) is (table_id != ["missing"])
+
+
 class TestNamespaceCreateTableOptions:
     @pytest.mark.parametrize("version", ["legacy", "stable"])
     @pytest.mark.parametrize("empty", [False, True])
@@ -411,8 +432,16 @@ class TestNamespaceConnection:
         assert "test_ns" in db.list_namespaces().namespaces
 
         schema = pa.schema([pa.field("id", pa.int64())])
+        db.create_table("root_table", schema=schema)
+        assert db.table_exists(["root_table"]) is True
+        assert "root_table" in db
+        assert db.table_exists(["missing"]) is False
+        assert "missing" not in db
         table = db.create_table("test_table", schema=schema, namespace_path=["test_ns"])
         assert table.namespace == ["test_ns"]
+        assert db.table_exists(["test_ns", "test_table"]) is True
+        assert db.table_exists(["test_ns", "missing"]) is False
+        assert "test_table" not in db
         assert "test_table" in db.table_names(namespace_path=["test_ns"])
         assert "test_table" in db.list_tables(namespace_path=["test_ns"]).tables
 
@@ -420,7 +449,10 @@ class TestNamespaceConnection:
         assert opened.namespace == ["test_ns"]
 
         db.drop_table("test_table", namespace_path=["test_ns"])
+        assert db.table_exists(["test_ns", "test_table"]) is False
         assert db.list_tables(namespace_path=["test_ns"]).tables == []
+        db.drop_table("root_table")
+        assert "root_table" not in db
         db.drop_namespace(["test_ns"])
         assert "test_ns" not in db.list_namespaces().namespaces
 
@@ -942,12 +974,18 @@ class TestAsyncNamespaceConnection:
         assert "test_ns" in (await db.list_namespaces()).namespaces
 
         schema = pa.schema([pa.field("id", pa.int64())])
+        await db.create_table("root_table", schema=schema)
+        assert await db.table_exists(["root_table"]) is True
+        assert await db.table_exists(["missing"]) is False
         table = await db.create_table(
             "test_table", schema=schema, namespace_path=["test_ns"]
         )
         assert table._namespace_path == ["test_ns"]
         assert table._namespace_client is None
         assert table._route_pushdown_to_rust is True
+        assert await db.table_exists(["test_ns", "test_table"]) is True
+        assert await db.table_exists(["test_ns", "missing"]) is False
+        assert await db.table_exists(["test_table"]) is False
         assert "test_table" in await db.table_names(namespace_path=["test_ns"])
         assert "test_table" in (await db.list_tables(namespace_path=["test_ns"])).tables
 
@@ -955,7 +993,10 @@ class TestAsyncNamespaceConnection:
         assert opened._namespace_path == ["test_ns"]
 
         await db.drop_table("test_table", namespace_path=["test_ns"])
+        assert await db.table_exists(["test_ns", "test_table"]) is False
         assert (await db.list_tables(namespace_path=["test_ns"])).tables == []
+        await db.drop_table("root_table")
+        assert await db.table_exists(["root_table"]) is False
         await db.drop_namespace(["test_ns"])
         assert "test_ns" not in (await db.list_namespaces()).namespaces
 
