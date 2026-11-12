@@ -135,10 +135,28 @@ impl HttpErrorSource {
     ) -> Self {
         let details = response_body.and_then(parse_http_error_details);
         let message = if metadata.error_code.is_some() {
-            response_body
-                .and_then(|body| serde_json::from_str::<serde_json::Value>(body).ok())
+            let body =
+                response_body.and_then(|body| serde_json::from_str::<serde_json::Value>(body).ok());
+            let mut message = body
+                .as_ref()
                 .and_then(|body| body.get("error")?.as_str().map(str::to_owned))
-                .unwrap_or(message)
+                .unwrap_or(message);
+            // Classification keeps the concise error text; retain provenance
+            // alongside it so copying the error still identifies its producer.
+            if let Some(server) =
+                body.and_then(|body| body.get("server").cloned())
+                    .and_then(|server| {
+                        serde_json::from_value::<crate::server_info::ServerBuildInfo>(server).ok()
+                    })
+            {
+                message.push_str(&format!(
+                    " [server: {} (git {}, built {})]",
+                    server.release,
+                    server.git_sha,
+                    server.build_date.as_deref().unwrap_or("unknown")
+                ));
+            }
+            message
         } else {
             message
         };

@@ -37,6 +37,18 @@ embedding_functions`. Prefer keyword arguments for optional parameters.
 
 ::: lancedb.db.DBConnection
 
+Use `db.server_info()` (or `await db.server_info()` on an asynchronous connection)
+to include the responding server's release, Git revision, build date and Function
+runtime information in a bug report. It returns a JSON-compatible dictionary and
+does not submit a query or job. Configured images are distinct from the version
+of an already running job. During a rolling upgrade, successive requests can
+reach different query-node builds. Embedded connections and older servers without
+the endpoint raise `NotImplementedError`.
+
+::: lancedb.server_info.ServerBuildInfo
+
+::: lancedb.server_info.ServerInfo
+
 Resource listings return iterators. Use `list(db.list_tables())` to collect all
 table names. `db.list_tables().tables` is a list of the first page; `limit`
 controls its page size and `page_token` resumes at a saved token. The same

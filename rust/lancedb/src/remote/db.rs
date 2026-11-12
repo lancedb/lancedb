@@ -1246,6 +1246,26 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         }
     }
 
+    async fn server_info(&self) -> Result<crate::server_info::ServerInfo> {
+        let req = self.client.get("/v1/server/info");
+        let (request_id, response) = self.client.send(req).await?;
+        let response = match self.client.check_response(&request_id, response).await {
+            Ok(response) => response,
+            Err(Error::Http {
+                status_code: Some(StatusCode::NOT_FOUND),
+                ..
+            }) => {
+                return Err(Error::NotSupported {
+                    message: "Server build discovery requires a newer LanceDB server; \
+                              GET /v1/server/info returned 404 Not Found"
+                        .into(),
+                });
+            }
+            Err(error) => return Err(error),
+        };
+        response.json().await.err_to_http(request_id)
+    }
+
     async fn list_gpu_classes(&self) -> Result<Vec<GpuClass>> {
         #[derive(serde::Deserialize)]
         struct Response {
@@ -4000,6 +4020,58 @@ mod tests {
                     check(conn.list_property_graphs(&namespace, options), count).await
                 }
                 _ => check(conn.list_jobs(options), count).await,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_server_info_preserves_remote_provenance() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::GET);
+            assert_eq!(request.url().path(), "/v1/server/info");
+            http::Response::builder().status(200).body(serde_json::json!({
+                "query_node": { "release": "1.2.3", "git_sha": "0123456789ab", "build_date": "2024-01-01T00:00:00Z" },
+                "lance_version": "5.0.0",
+                "lancedb_version": "0.42.0",
+                "function_worker_protocol_version": 25,
+                "configured_gpu_worker_image": "example.invalid/worker:configured",
+                "future_component": "ignored"
+            }).to_string()).unwrap()
+        });
+        let info = conn.server_info().await.unwrap();
+        let build = info.query_node.unwrap();
+        assert_eq!(build.release, "1.2.3");
+        assert_eq!(build.git_sha, "0123456789ab");
+        assert_eq!(build.build_date.as_deref(), Some("2024-01-01T00:00:00Z"));
+        assert_eq!(info.function_worker_protocol_version, 25);
+        assert_eq!(
+            info.configured_gpu_worker_image.as_deref(),
+            Some("example.invalid/worker:configured")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_server_info_distinguishes_unsupported_from_denied() {
+        for status in [404, 403] {
+            let conn = Connection::new_with_handler(move |_| {
+                http::Response::builder()
+                    .status(status)
+                    .body("unavailable")
+                    .unwrap()
+            });
+            let error = conn.server_info().await.unwrap_err();
+            if status == 404 {
+                assert!(
+                    matches!(error, Error::NotSupported { message } if message.contains("/v1/server/info"))
+                );
+            } else {
+                assert!(matches!(
+                    error,
+                    Error::Http {
+                        status_code: Some(StatusCode::FORBIDDEN),
+                        ..
+                    }
+                ));
             }
         }
     }
