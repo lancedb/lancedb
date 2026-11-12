@@ -3,7 +3,7 @@
 
 //! Frame IPC bodies before decoding, avoiding StreamDecoder's growing scratch buffer.
 
-use arrow_buffer::{Buffer, MutableBuffer};
+use arrow_buffer::Buffer;
 use arrow_schema::ArrowError;
 use bytes::Bytes;
 use futures::StreamExt;
@@ -135,16 +135,22 @@ impl IpcFraming {
             self.chunk.advance(length);
             return Ok(buffer);
         }
-        // Arrow rounds to its alignment, but never grows this allocation. Feeding
-        // the complete body lets StreamDecoder slice it without another copy.
-        let mut buffer = MutableBuffer::new(length);
+        // The declared length is untrusted. Arrow's infallible aligned allocator
+        // can panic on its layout or abort on OOM; Vec exposes both as errors.
+        // StreamDecoder handles any array-specific alignment when decoding.
+        let mut buffer = Vec::new();
+        buffer.try_reserve_exact(length).map_err(|error| {
+            FramingError::Arrow(ArrowError::IpcError(format!(
+                "cannot allocate IPC message of {length} bytes: {error}"
+            )))
+        })?;
         while buffer.len() < length {
             self.fill_chunk().await?;
             let take = self.chunk.len().min(length - buffer.len());
             buffer.extend_from_slice(&self.chunk[..take]);
             self.chunk.advance(take);
         }
-        Ok(buffer.into())
+        Ok(Buffer::from_vec(buffer))
     }
 
     async fn fill_chunk(&mut self) -> Result<(), FramingError> {

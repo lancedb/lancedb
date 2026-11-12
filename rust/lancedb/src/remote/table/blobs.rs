@@ -17,7 +17,7 @@ use std::time::Duration;
 use arrow_array::builder::LargeBinaryBuilder;
 use arrow_array::{Array, LargeBinaryArray, StructArray, UInt8Array, UInt64Array};
 use arrow_schema::DataType;
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use datafusion_expr::{col, lit};
 use futures::{StreamExt, TryStreamExt};
 use lance::dataset::ROW_ID;
@@ -168,8 +168,6 @@ impl<S: HttpSend> BlobRangeRequester for TableBlobRangeRequester<S> {
 struct RemoteBlobState {
     cursor: u64,
     buffer_size: usize,
-    buffer_start: u64,
-    buffer: Bytes,
 }
 
 impl Default for RemoteBlobState {
@@ -177,10 +175,14 @@ impl Default for RemoteBlobState {
         Self {
             cursor: 0,
             buffer_size: BlobFile::DEFAULT_READ_BUFFER_SIZE,
-            buffer_start: 0,
-            buffer: Bytes::new(),
         }
     }
+}
+
+#[derive(Debug, Default)]
+struct RemoteBlobBuffer {
+    start: u64,
+    bytes: Bytes,
 }
 
 /// Seekable Cloud blob handle over HTTP Range.
@@ -190,6 +192,9 @@ impl Default for RemoteBlobState {
 pub struct RemoteBlobFile {
     requester: Arc<dyn BlobRangeRequester>,
     state: Mutex<RemoteBlobState>,
+    // Never held across I/O: close can release cached bytes even while a read
+    // holds the cursor lock. A reader may retain its own prefix until it ends.
+    buffer: std::sync::Mutex<RemoteBlobBuffer>,
     closed: AtomicBool,
     size: u64,
     version: Option<u64>,
@@ -200,6 +205,7 @@ impl RemoteBlobFile {
         Self {
             requester,
             state: Mutex::new(RemoteBlobState::default()),
+            buffer: std::sync::Mutex::new(RemoteBlobBuffer::default()),
             closed: AtomicBool::new(false),
             size,
             version,
@@ -209,9 +215,7 @@ impl RemoteBlobFile {
     /// Close the handle without waiting for an in-flight read.
     pub(crate) async fn close(&self) -> lance_core::Result<()> {
         self.closed.store(true, Ordering::Release);
-        if let Ok(mut state) = self.state.try_lock() {
-            state.buffer = Bytes::new();
-        }
+        self.buffer.lock().unwrap().bytes = Bytes::new();
         Ok(())
     }
 
@@ -221,7 +225,7 @@ impl RemoteBlobFile {
         self.ensure_open()?;
         if state.buffer_size != size {
             state.buffer_size = size;
-            state.buffer = Bytes::new();
+            self.buffer.lock().unwrap().bytes = Bytes::new();
         }
         Ok(())
     }
@@ -301,12 +305,12 @@ impl RemoteBlobFile {
         // Joining a small cached prefix to a large tail would copy the entire
         // blob while both allocations are live. Match the native reader's
         // bounded reuse rule for whole-blob reads.
-        let held_len = cached_prefix(&state, remaining).len();
+        let held_len = cached_prefix(&self.buffer.lock().unwrap(), state.cursor, remaining).len();
         if remaining > held_len.saturating_mul(2) {
-            state.buffer = Bytes::new();
+            self.buffer.lock().unwrap().bytes = Bytes::new();
         }
         let bytes = self.read_up_to_locked(&mut state, remaining).await?;
-        state.buffer = Bytes::new();
+        self.buffer.lock().unwrap().bytes = Bytes::new();
         Ok(bytes)
     }
 
@@ -328,7 +332,7 @@ impl RemoteBlobFile {
             return Ok(Bytes::new());
         }
 
-        let prefix = cached_prefix(state, target_len);
+        let prefix = cached_prefix(&self.buffer.lock().unwrap(), state.cursor, target_len);
         if prefix.len() == target_len {
             state.cursor += target_len as u64;
             return Ok(prefix);
@@ -350,16 +354,26 @@ impl RemoteBlobFile {
         let result = if prefix.is_empty() {
             tail
         } else {
-            let mut joined = Vec::with_capacity(target_len);
+            let mut joined = Vec::new();
+            joined.try_reserve_exact(target_len).map_err(|error| {
+                remote_blob_error(format!(
+                    "cannot allocate blob read of {target_len} bytes: {error}"
+                ))
+            })?;
             joined.extend_from_slice(&prefix);
             joined.extend_from_slice(&tail);
             Bytes::from(joined)
         };
-        if state.buffer_size != 0 {
-            state.buffer_start = fetch_start;
-            state.buffer = data;
-        } else {
-            state.buffer = Bytes::new();
+        {
+            let mut buffer = self.buffer.lock().unwrap();
+            // Serialize publishing a new window with close clearing the cache.
+            self.ensure_open()?;
+            if state.buffer_size != 0 {
+                buffer.start = fetch_start;
+                buffer.bytes = data;
+            } else {
+                buffer.bytes = Bytes::new();
+            }
         }
         state.cursor += target_len as u64;
         Ok(result)
@@ -422,7 +436,12 @@ async fn read_blob_body(
         }
         return Ok(first);
     }
-    let mut bytes = BytesMut::with_capacity(expected);
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(expected).map_err(|error| {
+        remote_blob_error(format!(
+            "cannot allocate blob range of {expected} bytes: {error}"
+        ))
+    })?;
     bytes.extend_from_slice(&first);
     drop(first);
     while let Some(chunk) = chunks
@@ -440,21 +459,21 @@ async fn read_blob_body(
     if bytes.len() != expected {
         return Err(length_error(bytes.len()));
     }
-    Ok(bytes.freeze())
+    Ok(Bytes::from(bytes))
 }
 
-fn cached_prefix(state: &RemoteBlobState, length: usize) -> Bytes {
-    let Some(offset) = state.cursor.checked_sub(state.buffer_start) else {
+fn cached_prefix(buffer: &RemoteBlobBuffer, cursor: u64, length: usize) -> Bytes {
+    let Some(offset) = cursor.checked_sub(buffer.start) else {
         return Bytes::new();
     };
     let Ok(offset) = usize::try_from(offset) else {
         return Bytes::new();
     };
-    if offset >= state.buffer.len() {
+    if offset >= buffer.bytes.len() {
         return Bytes::new();
     }
-    let end = offset.saturating_add(length).min(state.buffer.len());
-    state.buffer.slice(offset..end)
+    let end = offset.saturating_add(length).min(buffer.bytes.len());
+    buffer.bytes.slice(offset..end)
 }
 
 fn remote_blob_error(error: impl std::fmt::Display) -> lance_core::Error {
