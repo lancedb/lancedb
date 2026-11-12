@@ -645,7 +645,8 @@ impl Connection {
     /// Creates a new table by cloning from an existing source table.
     /// By default, this performs a shallow clone where the new table shares
     /// the underlying data files with the source table.
-    /// The target table name must be unused. An existing table is left unchanged.
+    /// The target table name must be unused by default. Use
+    /// [`CloneTableBuilder::exist_ok`] to open an existing target unchanged.
     ///
     /// # Parameters
     /// - `target_table_name`: The name of the new table to create
