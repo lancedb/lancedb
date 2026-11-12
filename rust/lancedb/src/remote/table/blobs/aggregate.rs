@@ -32,7 +32,7 @@ impl BlobAccumulator {
             .map_err(allocation_error)?;
         offsets.push(0);
         let mut validity = Vec::new();
-        let validity_bytes = rows / 8 + usize::from(rows % 8 != 0);
+        let validity_bytes = rows / 8 + usize::from(!rows.is_multiple_of(8));
         validity
             .try_reserve_exact(validity_bytes)
             .map_err(allocation_error)?;
