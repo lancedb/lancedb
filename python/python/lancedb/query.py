@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
@@ -204,7 +205,7 @@ def _supports_blob_fetch(
     )
 
 
-def _remote_blob_version(schema: pa.Schema) -> int:
+def _remote_blob_snapshot(schema: pa.Schema) -> tuple[int, str]:
     value = (schema.metadata or {}).get(b"lancedb:query_version", b"")
     if not value.isdigit() or not 0 < int(value) < 2**64:
         raise NotImplementedError(
@@ -213,20 +214,29 @@ def _remote_blob_version(schema: pa.Schema) -> int:
             "Upgrade the server and use a table without Realtime/MemWAL, or use "
             "blob_mode='descriptions'."
         )
-    return int(value)
+    identity = (schema.metadata or {}).get(b"lancedb:query_snapshot", b"")
+    if not re.fullmatch(rb"v1:[0-9a-f]{64}", identity):
+        raise NotImplementedError(
+            "blob_mode='bytes' requires a trustworthy query snapshot identity: "
+            "missing or unsupported x-lancedb-query-snapshot. Upgrade the server "
+            "on every serving node, or use blob_mode='descriptions'."
+        )
+    return int(value), identity.decode("ascii")
 
 
 def _merge_query_snapshot(result: pa.Table, *sources: pa.Table) -> pa.Table:
-    """Preserve a snapshot only when every query leg used the same version."""
-    versions = {
-        (source.schema.metadata or {}).get(b"lancedb:query_version")
+    """Preserve a snapshot only when every query leg used the same identity."""
+    keys = (b"lancedb:query_version", b"lancedb:query_snapshot")
+    snapshots = {
+        tuple((source.schema.metadata or {}).get(key) for key in keys)
         for source in sources
     }
     metadata = dict(result.schema.metadata or {})
-    metadata.pop(b"lancedb:query_version", None)
-    version = next(iter(versions)) if len(versions) == 1 else None
-    if version is not None:
-        metadata[b"lancedb:query_version"] = version
+    for key in keys:
+        metadata.pop(key, None)
+    snapshot = next(iter(snapshots)) if len(snapshots) == 1 else None
+    if snapshot is not None and all(value is not None for value in snapshot):
+        metadata.update(zip(keys, snapshot))
     return result.replace_schema_metadata(metadata)
 
 
@@ -1703,11 +1713,11 @@ class LanceQueryBuilder(ABC):
             return strip_auto_row_ids(tbl, blob_sources)
         reject_unmatched_blob_outputs(tbl.schema, blob_sources)
         if _is_remote_query_table(self._table) and blob_sources:
-            version = _remote_blob_version(tbl.schema)
+            version, identity = _remote_blob_snapshot(tbl.schema)
 
             async def fetch_at_version(column, row_ids):
                 return await self._table._table._inner.fetch_blobs(
-                    column, row_ids, version=version
+                    column, row_ids, version=version, snapshot_identity=identity
                 )
 
             def fetch_blobs(column, row_ids):
@@ -3840,11 +3850,11 @@ class AsyncQueryBase(object):
             and not self._table._inner._is_native()
             and blob_sources
         ):
-            version = _remote_blob_version(tbl.schema)
+            version, identity = _remote_blob_snapshot(tbl.schema)
 
             async def fetch_blobs(column, row_ids):
                 return await self._table._inner.fetch_blobs(
-                    column, row_ids, version=version
+                    column, row_ids, version=version, snapshot_identity=identity
                 )
         else:
             fetch_blobs = self._table.fetch_blobs

@@ -5068,6 +5068,8 @@ def blob_remote_table(
     schema_version=None,
     search_scores=False,
     snapshot_supported=True,
+    identity_header="v1:" + "a" * 64,
+    verify_identity=True,
 ):
     if state is None:
         state = {"version": 1}
@@ -5159,7 +5161,10 @@ def blob_remote_table(
                 response_table = response_table.slice(0, 0)
             if schema_version is not None:
                 response_table = response_table.replace_schema_metadata(
-                    {b"lancedb:query_version": schema_version.encode()}
+                    {
+                        b"lancedb:query_version": schema_version.encode(),
+                        b"lancedb:query_snapshot": ("v1:" + "f" * 64).encode(),
+                    }
                 )
             request.send_response(200)
             request.send_header(
@@ -5172,6 +5177,13 @@ def blob_remote_table(
                 request.send_header("x-lancedb-version", header)
                 if snapshot_supported:
                     request.send_header("x-lancedb-query-version", header)
+                    identity = (
+                        identity_header(body)
+                        if callable(identity_header)
+                        else identity_header
+                    )
+                    if identity is not None:
+                        request.send_header("x-lancedb-query-snapshot", identity)
             request.end_headers()
             writer_factory = pa.ipc.new_file if framing == "file" else pa.ipc.new_stream
             with writer_factory(request.wfile, response_table.schema) as writer:
@@ -5195,6 +5207,11 @@ def blob_remote_table(
             )
             request.send_response(200)
             request.send_header("Content-Type", "application/vnd.apache.arrow.stream")
+            if verify_identity and request.headers.get("x-lancedb-query-snapshot"):
+                request.send_header(
+                    "x-lancedb-query-snapshot",
+                    request.headers["x-lancedb-query-snapshot"],
+                )
             request.end_headers()
             with pa.ipc.new_stream(request.wfile, response_table.schema) as writer:
                 writer.write_table(response_table)
@@ -6790,6 +6807,78 @@ async def test_remote_blob_bytes_rejects_legacy_watermark(use_async, framing):
         query = table.query() if use_async else table.search()
         with pytest.raises(NotImplementedError, match="x-lancedb-query-version"):
             result = query.to_arrow(blob_mode="bytes")
+            if use_async:
+                await result
+    assert not any(path == "fetch_blobs" for path, _ in requests)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
+@pytest.mark.parametrize("identity_header", [None, "", "v2:" + "a" * 64, "v1:broken"])
+async def test_remote_blob_bytes_requires_trustworthy_identity(
+    use_async, identity_header
+):
+    requests = []
+    with blob_remote_table(
+        identity_header=identity_header, schema_version="1", requests=requests
+    ) as remote_table:
+        table = remote_table._table if use_async else remote_table
+        query = table.query() if use_async else table.search()
+        # Ordinary descriptors still work, even with forged Arrow schema metadata.
+        result = query.to_arrow(blob_mode="descriptions")
+        if use_async:
+            result = await result
+        assert result.num_rows == 3
+        with pytest.raises(NotImplementedError, match="x-lancedb-query-snapshot"):
+            result = query.to_arrow(blob_mode="bytes")
+            if use_async:
+                await result
+    assert not any(path == "fetch_blobs" for path, _ in requests)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
+async def test_remote_blob_bytes_rejects_unverified_serving_node(use_async):
+    with blob_remote_table(verify_identity=False) as remote_table:
+        table = remote_table._table if use_async else remote_table
+        query = table.query() if use_async else table.search()
+        with pytest.raises(
+            NotImplementedError, match="did not verify the query snapshot identity"
+        ):
+            result = query.to_arrow(blob_mode="bytes")
+            if use_async:
+                await result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
+async def test_remote_blob_bytes_hybrid_rejects_same_version_different_incarnations(
+    use_async,
+):
+    requests = []
+
+    def identity(body):
+        return "v1:" + ("b" if body.get("full_text_query") else "a") * 64
+
+    with blob_remote_table(
+        search_scores=True, identity_header=identity, requests=requests
+    ) as remote_table:
+        if use_async:
+            query = (
+                remote_table._table.query()
+                .nearest_to([1.0, 2.0])
+                .nearest_to_text("hello")
+            )
+        else:
+            query = (
+                remote_table.search(query_type="hybrid", vector_column_name="vector")
+                .vector([1.0, 2.0])
+                .text("hello")
+            )
+        with pytest.raises(
+            NotImplementedError, match="inconsistent x-lancedb-query-version"
+        ):
+            result = query.select(["id", "image"]).to_arrow(blob_mode="bytes")
             if use_async:
                 await result
     assert not any(path == "fetch_blobs" for path, _ in requests)

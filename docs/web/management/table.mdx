@@ -475,11 +475,23 @@ pylance. `to_arrow()`, `to_list()`, `to_batches()`, and the fetch methods do
 not require pylance for supported local queries.
 
 `blob_mode="bytes"` also supports Enterprise queries. The SDK locks all blob
-fetches, including streaming batches, to the version reported by the query's
-`x-lancedb-query-version` response header. Concurrent writes therefore do not change
-the payloads returned for that query. Older servers that do not report a valid
-query snapshot version raise `NotImplementedError`; use `"descriptions"` or upgrade
-the server. The legacy `x-lancedb-version` watermark alone does not enable bytes mode.
+fetches, including streaming batches, to both the version in
+`x-lancedb-query-version` and the incarnation/revision identity in
+`x-lancedb-query-snapshot`, captured from the same query response. Every payload
+request verifies that identity against the actual opened dataset before reading
+rows. Concurrent writes therefore preserve the selected payloads. Dropping and
+recreating a table, even at the same location and version, cannot substitute the
+replacement's bytes: the original snapshot is served or the read fails explicitly.
+
+Upgrade the SDK and every serving node to support snapshot identities. A server
+that reports only a numeric query version, a legacy `x-lancedb-version` watermark,
+or Arrow schema metadata does not enable deferred bytes. Missing or unsupported
+identities raise `NotImplementedError`; use `"descriptions"` until the upgrade is
+complete. Ordinary queries, descriptors, and independent `fetch_blobs` calls keep
+working. Old SDKs keep their existing behavior and do not gain this protection
+from a server-only upgrade. Realtime/MemWAL and historical manifests without a
+native transaction identity do not support deferred bytes. Snapshot identities
+do not retain old versions; deleting the selected version still fails explicitly.
 In-memory tables and namespace `QueryTable` pushdown do not support bytes mode.
 On an Enterprise table, sync `Table.to_pandas()` and `Table.to_arrow()` are not
 supported; use `table.search()` instead. A query's `to_pandas()` also raises in
@@ -567,7 +579,8 @@ IDs; explicitly requested row IDs remain visible.
 Bytes mode has the same restrictions as `to_arrow(blob_mode="bytes")`,
 including no blobs inside lists, namespace `QueryTable` pushdown, or query
 shapes that cannot preserve their row results. Enterprise queries require a
-valid `x-lancedb-query-version` response header. Legacy v1 bytes are limited to
+valid `x-lancedb-query-version` and `x-lancedb-query-snapshot` response headers.
+Legacy v1 bytes are limited to
 eligible local plain scans. For local queries, if concurrent writers can
 overwrite the table, use a separate reader checked out to a fixed version
 before querying. Otherwise, an overwrite can invalidate the row IDs used to

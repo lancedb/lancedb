@@ -28,8 +28,8 @@ use crate::remote::client::{HttpSend, RequestResultExt, RestfulLanceDbClient};
 use crate::table::{AnyQuery, BaseTable};
 
 use super::{
-    FreshnessHeaders, FreshnessState, ReadSnapshot, RemoteTable, VERSION_HEADER,
-    freshness_headers_snapshot,
+    FreshnessHeaders, FreshnessState, QUERY_SNAPSHOT_HEADER, ReadSnapshot, RemoteTable,
+    VERSION_HEADER, check_query_snapshot_response, freshness_headers_snapshot,
 };
 
 // The Cloud route rejects larger row-id lists. Its separate 64 MiB byte limit
@@ -88,6 +88,7 @@ struct TableBlobRangeRequester<S: HttpSend> {
     version: Option<u64>,
     branch: Option<String>,
     source_uri: Option<String>,
+    expected_query_snapshot: Option<String>,
     source_commit_micros: Option<u64>,
     row_is_address: bool,
     freshness: Arc<std::sync::Mutex<FreshnessState>>,
@@ -120,6 +121,9 @@ impl<S: HttpSend> BlobRangeRequester for TableBlobRangeRequester<S> {
                 .apply(self.client.get(&self.path))
                 .header(header::RANGE, range_header)
         };
+        if let Some(identity) = &self.expected_query_snapshot {
+            request = request.header(QUERY_SNAPSHOT_HEADER, identity);
+        }
         if let Some(version) = version.or(self.version) {
             request = request.query(&[("version", version)]);
         }
@@ -135,6 +139,10 @@ impl<S: HttpSend> BlobRangeRequester for TableBlobRangeRequester<S> {
             request = request.query(&[("source_commit_micros", timestamp)]);
         }
         let (request_id, response) = self.client.send_with_retry(request, None, true).await?;
+        if response.status().is_success() || response.status() == StatusCode::RANGE_NOT_SATISFIABLE
+        {
+            check_query_snapshot_response(self.expected_query_snapshot.as_deref(), &response)?;
+        }
         // Preserve 416 size-probe responses so the caller can detect empty blobs.
         if response.status() == StatusCode::RANGE_NOT_SATISFIABLE
             && matches!(mode, RangeRequestMode::SizeProbe)
@@ -381,7 +389,11 @@ impl<S: HttpSend> RemoteTable<S> {
         // A dotted path needs client-side validation because the server may
         // report an internal type mismatch when the path crosses a list. Use
         // an already cached schema for top-level list fields as well.
-        if column.contains('.') || self.schema_cache.try_get().is_some() {
+        // Guarded readers must validate the producing identity on the server
+        // before consulting any schema resolved from a later logical binding.
+        if self.expected_query_snapshot.is_none()
+            && (column.contains('.') || self.schema_cache.try_get().is_some())
+        {
             let schema = self.schema().await?;
             crate::blob::reject_list_blob_column(schema.as_ref(), column)?;
         }
@@ -389,6 +401,9 @@ impl<S: HttpSend> RemoteTable<S> {
     }
 
     async fn explain_list_blob_bad_request(&self, column: &str, error: Error) -> Error {
+        if self.expected_query_snapshot.is_some() {
+            return error;
+        }
         let is_bad_request = match &error {
             Error::Http {
                 status_code: Some(code),
@@ -494,9 +509,17 @@ impl<S: HttpSend> RemoteTable<S> {
             .client
             .post(&format!("/v1/table/{}/fetch_blobs/", self.identifier))
             .json(&body);
+        let request = if let Some(identity) = &self.expected_query_snapshot {
+            request.header(QUERY_SNAPSHOT_HEADER, identity)
+        } else {
+            request
+        };
         let (request_id, response) = self
             .send_with_freshness(request, true, read_snapshot.freshness)
             .await?;
+        if response.status().is_success() {
+            check_query_snapshot_response(self.expected_query_snapshot.as_deref(), &response)?;
+        }
         let mut stream = match self.read_arrow_response(&request_id, response).await {
             Ok(stream) => stream,
             Err(error) => return Err(self.explain_list_blob_bad_request(column, error).await),
@@ -878,6 +901,7 @@ impl<S: HttpSend> RemoteTable<S> {
             version: read_snapshot.version,
             branch: source.map_or_else(|| self.branch.clone(), |source| source.branch.clone()),
             source_uri: source.map(|source| source.uri.clone()),
+            expected_query_snapshot: self.expected_query_snapshot.clone(),
             source_commit_micros: source.map(|source| source.committed_at_micros),
             row_is_address: source.is_some_and(|source| source.row_is_address),
             freshness: Arc::new(std::sync::Mutex::new(read_snapshot.freshness_state)),
