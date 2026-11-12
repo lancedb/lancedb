@@ -1091,6 +1091,7 @@ async fn remote_query_builder_sends_the_complete_query() {
             }),
     );
     let connection = crate::connect("db://analytics")
+        .region("us-east-1")
         .api_key("test-key")
         .host_override("http://127.0.0.1:1")
         .sql_host_override(&format!("grpc://{address}"))
