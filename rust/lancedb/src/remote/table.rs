@@ -52,7 +52,7 @@ use crate::utils::background_cache::BackgroundCache;
 use crate::utils::{
     MaxBatchLengthStream, TimeoutStream, public_fts_field_path_by_id, resolve_arrow_field_path,
     resolve_arrow_fts_field_path, supported_btree_data_type, supported_vector_data_type,
-    validate_fts_field,
+    validate_fts_field, validate_index_name,
 };
 use crate::{DistanceType, Error};
 use crate::{
@@ -697,6 +697,9 @@ impl<S: HttpSend> RemoteTable<S> {
     }
 
     async fn submit_create_index(&self, mut index: IndexBuilder) -> Result<Option<String>> {
+        if let Some(name) = &index.name {
+            validate_index_name(name)?;
+        }
         self.check_mutable().await?;
         let request = self
             .client
@@ -2418,6 +2421,10 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
         index_name: &str,
         read_snapshot: ReadSnapshot,
     ) -> Result<Option<IndexStatistics>> {
+        // Percent-encoding alone leaves dot segments intact, and URL parsing
+        // would normalize them into a different route. This also guards the
+        // stats requests made while listing indices on legacy servers.
+        validate_index_name(index_name)?;
         let encoded_name = urlencoding::encode(index_name);
         let mut body = serde_json::json!({ "version": read_snapshot.version });
         self.apply_branch_body(&mut body);
@@ -4512,6 +4519,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     async fn drop_index(&self, index_name: &str) -> Result<()> {
+        validate_index_name(index_name)?;
         let encoded_name = urlencoding::encode(index_name);
         let request = self.apply_branch_query(self.client.post(&format!(
             "/v1/table/{}/index/{encoded_name}/drop/",
@@ -4528,6 +4536,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     async fn prewarm_index(&self, index_name: &str) -> Result<()> {
+        validate_index_name(index_name)?;
         let encoded_name = urlencoding::encode(index_name);
         let request = self.client.post(&format!(
             "/v1/table/{}/index/{encoded_name}/prewarm/",
@@ -8861,7 +8870,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_index_forwards_replace_false_on_existing_route() {
+    async fn test_create_index_forwards_name_and_replace_false_on_existing_route() {
         let table = Table::new_with_handler("my_table", move |request| {
             assert_eq!(request.method(), "POST");
             match request.url().path() {
@@ -8876,6 +8885,7 @@ mod tests {
                     let body = request.body().unwrap().as_bytes().unwrap();
                     let body: serde_json::Value = serde_json::from_slice(body).unwrap();
                     assert_eq!(body["replace"], json!(false));
+                    assert_eq!(body["name"], json!("a_idx-1..v2"));
 
                     http::Response::builder()
                         .status(200)
@@ -8889,6 +8899,7 @@ mod tests {
         table
             .create_index(&["a"], Index::BTree(Default::default()))
             .replace(false)
+            .name("a_idx-1..v2".to_string())
             .execute()
             .await
             .unwrap();
@@ -12985,12 +12996,80 @@ mod tests {
         assert!(matches!(e, Error::IndexNotFound { .. }));
     }
 
-    /// Index names are unvalidated, so reserved characters must be
-    /// percent-encoded or they restructure the request path.
     #[tokio::test]
-    async fn test_per_index_paths_encode_reserved_characters() {
-        const NAME: &str = "my/index?a#b c";
-        const PREFIX: &str = "/v1/table/my_table/index/my%2Findex%3Fa%23b%20c";
+    async fn test_invalid_index_names_never_send_requests() {
+        let table = Table::new_with_handler("my_table", |request| -> http::Response<String> {
+            panic!("Invalid index name sent a request to {}", request.url());
+        });
+
+        for name in [
+            "..",
+            ".",
+            "",
+            "my/index",
+            "my\\index",
+            "%2e%2e",
+            "my/index?a#b c",
+        ] {
+            for result in [
+                table.drop_index(name).await,
+                table.prewarm_index(name).await,
+                table.index_stats(name).await.map(|_| ()),
+                table
+                    .create_index(&["a"], Index::BTree(Default::default()))
+                    .name(name.to_string())
+                    .execute()
+                    .await,
+                table
+                    .create_index(&["a"], Index::BTree(Default::default()))
+                    .name(name.to_string())
+                    .execute_async()
+                    .await
+                    .map(|_| ()),
+            ] {
+                assert!(
+                    matches!(result, Err(Error::InvalidInput { .. })),
+                    "Expected invalid input for {name:?}, got {result:?}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_list_indices_with_legacy_index_name() {
+        for enriched in [false, true] {
+            let table = Table::new_with_handler("my_table", move |request| {
+                let body = match request.url().path() {
+                    "/v1/table/my_table/describe/" => {
+                        let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
+                        describe_response(&schema)
+                    }
+                    "/v1/table/my_table/index/list/" => {
+                        let mut entry = json!({"index_name": "..", "columns": ["a"]});
+                        if enriched {
+                            entry["index_type"] = json!("BTREE");
+                        }
+                        json!({"indexes": [entry]}).to_string()
+                    }
+                    path => panic!("Legacy index name caused an unexpected request to {path}"),
+                };
+                http::Response::builder().status(200).body(body).unwrap()
+            });
+            let result = table.list_indices().await;
+            if enriched {
+                // Names from the server remain discoverable when no per-index
+                // stats request is needed.
+                assert_eq!(result.unwrap()[0].name, "..");
+            } else {
+                assert!(matches!(result, Err(Error::InvalidInput { .. })));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_per_index_paths_preserve_valid_names() {
+        const NAME: &str = "my_index-1..v2";
+        const PREFIX: &str = "/v1/table/my_table/index/my_index-1..v2";
 
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.url().path(), format!("{PREFIX}/stats/"));

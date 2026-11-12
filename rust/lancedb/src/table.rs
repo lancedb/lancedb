@@ -2915,6 +2915,7 @@ impl Table {
 
     /// Get statistics about an index.
     /// Returns None if the index does not exist.
+    /// Remote tables require a name valid for [`IndexBuilder::name`].
     pub async fn index_stats(
         &self,
         index_name: impl AsRef<str>,
@@ -2924,7 +2925,10 @@ impl Table {
 
     /// Drop an index from the table.
     ///
-    /// Note: This is not yet available in LanceDB Enterprise.
+    /// Remote tables reject names that are not valid for [`IndexBuilder::name`].
+    /// Legacy indices with such names can still be dropped through a native
+    /// connection with direct access to the dataset. On managed remote tables,
+    /// these indices require server-side cleanup.
     ///
     /// This does not delete the index from disk, it just removes it from the table.
     /// To delete the index, run [`Self::optimize()`] after dropping the index.
@@ -2948,6 +2952,7 @@ impl Table {
     /// indices will silently ignore the request.
     ///
     /// Use [`Self::list_indices()`] to find the names of the indices.
+    /// Remote tables require a name valid for [`IndexBuilder::name`].
     pub async fn prewarm_index(&self, name: &str) -> Result<()> {
         self.inner.prewarm_index(name).await
     }
