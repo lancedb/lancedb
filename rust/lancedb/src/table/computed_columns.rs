@@ -1757,10 +1757,20 @@ pub(crate) fn ensure_not_written<'a>(
     schema: &ArrowSchema,
     written: impl IntoIterator<Item = &'a str>,
 ) -> Result<()> {
-    let declared: Vec<String> = computed_columns(schema)
+    ensure_supported_function_metadata(schema)?;
+    let mut declared: Vec<String> = computed_columns(schema)
         .into_iter()
         .map(|declaration| declaration.name)
         .collect();
+    declared.extend(
+        function_bindings(schema)?
+            .into_iter()
+            .filter_map(|binding| {
+                binding
+                    .assignment()
+                    .map(|assignment| assignment.output_name.clone())
+            }),
+    );
     for name in written {
         if declared.iter().any(|declared| *declared == root(name)) {
             return Err(Error::InvalidInput {
@@ -4142,6 +4152,37 @@ mod tests {
             );
         }
         ArrowSchema::new(fields)
+    }
+
+    #[test]
+    fn input_writes_preserve_the_assignment_column_guard() {
+        let mut raw: Value = serde_json::to_value(test_support::text_features_binding("")).unwrap();
+        raw["assignment"] = serde_json::json!({
+            "output_name": "__function_assignment_fb_01K3TEXT", "output_field_id": -1,
+        });
+        raw["outputs"][0]["nullable"] = Value::Bool(true);
+        raw["outputs"][1]["nullable"] = Value::Bool(true);
+        raw["output_schema"]["fields"].as_array_mut().unwrap().push(serde_json::json!({
+            "name": "__function_assignment_fb_01K3TEXT", "nullable": true, "type": {"type": "bool"},
+        }));
+        let binding: FunctionBinding = serde_json::from_value(raw).unwrap();
+        let schema = ArrowSchema::new_with_metadata(
+            valid_function_binding_schema(true, true, &binding)
+                .fields()
+                .to_vec(),
+            HashMap::from([(
+                FUNCTION_BINDINGS_META_KEY.into(),
+                function_bindings_metadata(&[binding]).unwrap(),
+            )]),
+        );
+        ensure_not_written(&schema, ["title", "body"]).unwrap();
+        for output in [
+            "search_text",
+            "search_token_count",
+            "__function_assignment_fb_01K3TEXT",
+        ] {
+            assert!(ensure_not_written(&schema, [output]).is_err(), "{output}");
+        }
     }
 
     #[test]
