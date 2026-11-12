@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from lancedb.server_info import ServerInfo
+
 from dataclasses import replace
 from datetime import timedelta
 import json
@@ -965,6 +967,13 @@ class RemoteDBConnection(DBConnection):
         [DBConnection.open_job][lancedb.db.DBConnection.open_job].
         """
         return Job(LOOP.run(self._conn.open_job(job_id)))
+
+    @override
+    def server_info(self) -> ServerInfo:
+        """Read the responding server's build information. See
+        [DBConnection.server_info][lancedb.db.DBConnection.server_info].
+        """
+        return LOOP.run(self._conn.server_info())
 
     @override
     def list_gpu_classes(self) -> List[GpuClass]:

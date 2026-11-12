@@ -6540,6 +6540,93 @@ def test_remote_job_handle_reports_its_own_detail():
 
 
 @pytest.mark.parametrize("is_async", [False, True])
+@pytest.mark.parametrize("known_build", [False, True])
+@pytest.mark.asyncio
+async def test_remote_server_info(is_async, known_build):
+    requests = []
+    expected = {
+        "query_node": {
+            "release": "1.2.3",
+            "git_sha": "0123456789ab",
+            "build_date": "2024-01-01T00:00:00Z",
+        }
+        if known_build
+        else None,
+        "lance_version": "5.0.0",
+        "lancedb_version": "0.42.0",
+        "function_worker_protocol_version": 25,
+        "configured_query_node_image": "example.invalid/query:configured",
+        "configured_job_worker_image": "example.invalid/cpu:configured",
+        "configured_sql_job_image": "example.invalid/cli:configured",
+        "configured_gpu_worker_image": "example.invalid/worker:configured",
+    }
+
+    def handler(request):
+        requests.append((request.command, request.path))
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(expected).encode())
+
+    if is_async:
+        async with mock_lancedb_connection_async(handler) as db:
+            actual = await db.server_info()
+    else:
+        with mock_lancedb_connection(handler) as db:
+            actual = db.server_info()
+
+    assert actual == expected
+    assert json.loads(json.dumps(actual)) == expected
+    assert requests == [("GET", "/v1/server/info")]
+
+
+@pytest.mark.parametrize("is_async", [False, True])
+@pytest.mark.parametrize("status", [404, 403])
+@pytest.mark.asyncio
+async def test_remote_server_info_errors(is_async, status):
+    requests = []
+
+    def handler(request):
+        requests.append((request.command, request.path))
+        request.send_response(status)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(
+            json.dumps(
+                {
+                    "error": "discovery unavailable",
+                    "server": {
+                        "release": "1.2.3",
+                        "git_sha": "0123456789ab",
+                        "build_date": "2024-01-01T00:00:00Z",
+                    },
+                }
+            ).encode()
+        )
+
+    expected_error = NotImplementedError if status == 404 else HttpError
+    with pytest.raises(expected_error) as caught:
+        if is_async:
+            async with mock_lancedb_connection_async(handler) as db:
+                await db.server_info()
+        else:
+            with mock_lancedb_connection(handler) as db:
+                db.server_info()
+
+    if status == 404:
+        assert "/v1/server/info" in str(caught.value)
+    else:
+        # Permission responses do not carry the input-error classifier header.
+        # The native HTTP error and Python conversion must retain provenance.
+        assert "discovery unavailable" in str(caught.value)
+        assert "1.2.3" in str(caught.value)
+        assert "0123456789ab" in str(caught.value)
+        assert "2024-01-01T00:00:00Z" in str(caught.value)
+        assert caught.value.status_code == 403
+    assert requests == [("GET", "/v1/server/info")]
+
+
+@pytest.mark.parametrize("is_async", [False, True])
 @pytest.mark.asyncio
 async def test_remote_list_gpu_classes(is_async):
     requests = []

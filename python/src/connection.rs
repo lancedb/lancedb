@@ -1285,6 +1285,14 @@ impl Connection {
         ))
     }
 
+    pub fn server_info(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let info = inner.server_info().await.infer_error()?;
+            serde_json::to_string(&info).map_err(|error| PyValueError::new_err(error.to_string()))
+        })
+    }
+
     pub fn list_gpu_classes(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
