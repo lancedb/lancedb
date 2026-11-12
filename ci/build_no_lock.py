@@ -8,9 +8,11 @@ executables while retaining normal binaries, libraries and build-script outputs.
 """
 
 import json
+import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -54,10 +56,13 @@ def main() -> int:
         ["cargo", "metadata", "--format-version=1", "--no-deps", "--all-features"],
         stdout=subprocess.PIPE,
         text=True,
+        check=False,
     )
     if metadata.returncode:
         return metadata.returncode
     target_dir = Path(json.loads(metadata.stdout)["target_directory"])
+    # Temporary hosted-run diagnostics for the two-job experiment.
+    diagnostics = os.environ.get("BUILD_NO_LOCK_DIAGNOSTICS_DIR")
     command = [
         "cargo",
         "build",
@@ -66,11 +71,13 @@ def main() -> int:
         "--benches",
         "--all-features",
         "--tests",
-        # Bound simultaneous compiler/linker temporary outputs as well as retained files.
+        # Bound simultaneous compiler/linker temporary outputs and retained files.
         "--jobs",
-        "1",
+        "2",
         "--message-format=json,json-diagnostic-rendered-ansi",
     ]
+    if diagnostics:
+        command.append("--timings")
     cleanup_failed = False
     with subprocess.Popen(command, stdout=subprocess.PIPE, text=True) as process:
         assert process.stdout is not None
@@ -90,6 +97,21 @@ def main() -> int:
                 )
                 sys.stderr.flush()
             elif message.get("reason") == "compiler-artifact":
+                if diagnostics:
+                    print(
+                        json.dumps(
+                            {
+                                "artifact_completed_unix": time.time(),
+                                "package_id": message["package_id"],
+                                "target": message["target"]["name"],
+                                "kind": message["target"]["kind"],
+                                "test": message["profile"]["test"],
+                                "fresh": message["fresh"],
+                                "executable": message.get("executable"),
+                            }
+                        ),
+                        flush=True,
+                    )
                 try:
                     discard_test_executable(message, target_dir)
                 except (OSError, ValueError) as error:
@@ -104,6 +126,11 @@ def main() -> int:
             }:
                 print(line, end="", flush=True)
         result = process.wait()
+    if diagnostics:
+        print(
+            json.dumps({"cargo_exit_code": result, "cleanup_failed": cleanup_failed}),
+            flush=True,
+        )
     return result if result else int(cleanup_failed)
 
 
