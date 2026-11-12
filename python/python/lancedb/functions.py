@@ -499,7 +499,8 @@ class PythonRuntimeSpec(_RemoteValue):
 
         Covers Python version, environment sources, environment variables, and
         GPU settings. Package and system-package order is ignored; conda channel
-        order is preserved. Compare with :attr:`FunctionVersion.runtime_digest`.
+        order is preserved. Compare with ``runtime_digest`` on
+        [FunctionVersion][lancedb.functions.FunctionVersion].
         This identifies build inputs, not the resolved contents of unpinned
         dependencies or the deployment's default base image.
         """

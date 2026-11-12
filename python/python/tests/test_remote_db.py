@@ -6278,6 +6278,8 @@ def test_remote_function_registration_transports_max_concurrency():
     def registered(value: float) -> float:
         return value
 
+    definition["runtime_digest"] = registered.registration_request.runtime.digest
+
     class RegistrationServer(flight.FlightServerBase):
         def __init__(self):
             super().__init__("grpc://127.0.0.1:0")
@@ -6296,6 +6298,7 @@ def test_remote_function_registration_transports_max_concurrency():
     assert len(server.tickets) == 1
     assert b'"max_concurrency":4' in server.tickets[0]
     assert version.max_concurrency == 4
+    assert version.runtime_digest == registered.registration_request.runtime.digest
 
 
 @pytest.mark.asyncio
