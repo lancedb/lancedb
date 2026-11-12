@@ -1,0 +1,241 @@
+[
+  {
+    "name": "pip",
+    "runtime": {
+      "kind": "python",
+      "python_version": "3.12",
+      "environment": {
+        "kind": "pip",
+        "packages": [
+          "openai==3.40.0",
+          "numpy==2.2.0"
+        ]
+      },
+      "env": {
+        "MODE": "test",
+        "LABEL": "你好"
+      }
+    },
+    "digest": "sha256:e2891a0af2567af2798c7de67a2f91b031088ef2a7015b501022892995eaca1c"
+  },
+  {
+    "name": "reordered-packages",
+    "runtime": {
+      "kind": "python",
+      "python_version": "3.12",
+      "environment": {
+        "kind": "pip",
+        "packages": [
+          "numpy==2.2.0",
+          "openai==3.40.0"
+        ]
+      },
+      "env": {
+        "MODE": "test",
+        "LABEL": "你好"
+      }
+    },
+    "digest": "sha256:e2891a0af2567af2798c7de67a2f91b031088ef2a7015b501022892995eaca1c"
+  },
+  {
+    "name": "changed-pin",
+    "runtime": {
+      "kind": "python",
+      "python_version": "3.12",
+      "environment": {
+        "kind": "pip",
+        "packages": [
+          "openai==3.46.0",
+          "numpy==2.2.0"
+        ]
+      },
+      "env": {
+        "MODE": "test",
+        "LABEL": "你好"
+      }
+    },
+    "digest": "sha256:43da49cfcf8ecd47becb5be20b9eff06c5267f9244c18e751b230c624f5ad12a"
+  },
+  {
+    "name": "changed-env",
+    "runtime": {
+      "kind": "python",
+      "python_version": "3.12",
+      "environment": {
+        "kind": "pip",
+        "packages": [
+          "openai==3.40.0",
+          "numpy==2.2.0"
+        ]
+      },
+      "env": {
+        "MODE": "prod",
+        "LABEL": "你好"
+      }
+    },
+    "digest": "sha256:9b305e9188f4ddda5a0b72d2235c2c46ba50de9bf82c699f5060b02e4aa0820d"
+  },
+  {
+    "name": "changed-python",
+    "runtime": {
+      "kind": "python",
+      "python_version": "3.11",
+      "environment": {
+        "kind": "pip",
+        "packages": [
+          "openai==3.40.0",
+          "numpy==2.2.0"
+        ]
+      },
+      "env": {
+        "MODE": "test",
+        "LABEL": "你好"
+      }
+    },
+    "digest": "sha256:8fa58561581414b02d0619e466e3720828d1820d8211b0e73c90ec4b0d3ecd0c"
+  },
+  {
+    "name": "gpu",
+    "runtime": {
+      "kind": "python_v2",
+      "python_version": "3.12",
+      "environment": {
+        "kind": "pip",
+        "packages": [
+          "openai==3.40.0",
+          "numpy==2.2.0"
+        ]
+      },
+      "env": {
+        "MODE": "test",
+        "LABEL": "你好"
+      },
+      "gpu": true
+    },
+    "digest": "sha256:3ea9354ff101038937b1f5a3b6639c4cc6dcb88ee975dcb8e1a5dee2500c283c"
+  },
+  {
+    "name": "gpu-class",
+    "runtime": {
+      "kind": "python_v2",
+      "python_version": "3.12",
+      "environment": {
+        "kind": "pip",
+        "packages": [
+          "openai==3.40.0",
+          "numpy==2.2.0"
+        ]
+      },
+      "env": {
+        "MODE": "test",
+        "LABEL": "你好"
+      },
+      "gpu": true,
+      "gpu_class": "a100"
+    },
+    "digest": "sha256:253f0641ef029aed8337bbcb210f7769147d671747406f7ce4fa5dc40d5c5efc"
+  },
+  {
+    "name": "conda",
+    "runtime": {
+      "kind": "python",
+      "python_version": "3.12",
+      "environment": {
+        "kind": "conda",
+        "packages": [
+          "numpy=2.2.0",
+          "scipy=1.15.0"
+        ],
+        "channels": [
+          "conda-forge",
+          "defaults"
+        ]
+      },
+      "env": {
+        "MODE": "test",
+        "LABEL": "你好"
+      }
+    },
+    "digest": "sha256:9246f88a6b1daceb3090c51930650ea967947142cdc70737c847a6bf72c85d30"
+  },
+  {
+    "name": "reordered-channels",
+    "runtime": {
+      "kind": "python",
+      "python_version": "3.12",
+      "environment": {
+        "kind": "conda",
+        "packages": [
+          "numpy=2.2.0",
+          "scipy=1.15.0"
+        ],
+        "channels": [
+          "defaults",
+          "conda-forge"
+        ]
+      },
+      "env": {
+        "MODE": "test",
+        "LABEL": "你好"
+      }
+    },
+    "digest": "sha256:12ef13a6f5b8730a719288ab2406e7f6c13634b14dbef2390f0bbe62f847e18d"
+  },
+  {
+    "name": "system-packages",
+    "runtime": {
+      "kind": "python",
+      "python_version": "3.12",
+      "environment": {
+        "kind": "pip",
+        "packages": [
+          "openai==3.40.0",
+          "numpy==2.2.0"
+        ],
+        "system_packages": [
+          "zlib1g",
+          "ffmpeg"
+        ]
+      },
+      "env": {
+        "MODE": "test",
+        "LABEL": "你好"
+      }
+    },
+    "digest": "sha256:129706ec54d8bf5fe36f89a9cf9131b37b2293028e03da7d686c77c3c483d958"
+  },
+  {
+    "name": "reordered-system-packages",
+    "runtime": {
+      "kind": "python",
+      "python_version": "3.12",
+      "environment": {
+        "kind": "pip",
+        "packages": [
+          "openai==3.40.0",
+          "numpy==2.2.0"
+        ],
+        "system_packages": [
+          "ffmpeg",
+          "zlib1g"
+        ]
+      },
+      "env": {
+        "MODE": "test",
+        "LABEL": "你好"
+      }
+    },
+    "digest": "sha256:129706ec54d8bf5fe36f89a9cf9131b37b2293028e03da7d686c77c3c483d958"
+  },
+  {
+    "name": "empty-environment",
+    "runtime": {
+      "kind": "python",
+      "python_version": "3.12",
+      "environment": {
+        "kind": "pip"
+      }
+    },
+    "digest": "sha256:a3d52daa7573e7fc6d052e0bf05b5189b9413ad8e136c10bc48f6dedc3add047"
+  }
+]

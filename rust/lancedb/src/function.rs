@@ -594,6 +594,8 @@ pub struct FunctionVersion {
     image: FunctionImage,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime_digest: Option<String>,
     signature: FunctionSignature,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     secret_bindings: Vec<SecretBinding>,
@@ -665,7 +667,9 @@ impl FunctionVersion {
     /// Digest of the registered source artifact, when provided by the server.
     ///
     /// Compare this with [`FunctionArtifactRequest::digest`] to identify matching
-    /// source, independently of the built image's manifest digest.
+    /// source, independently of the built image's manifest digest. It excludes
+    /// dependencies, environment variables, Python version, and GPU settings;
+    /// matching source alone does not establish that a version can be reused.
     ///
     /// ```
     /// use lancedb::function::{FunctionArtifactRequest, FunctionVersion};
@@ -676,6 +680,15 @@ impl FunctionVersion {
     /// ```
     pub fn source_digest(&self) -> Option<&str> {
         self.source_digest.as_deref()
+    }
+
+    /// Digest of canonical runtime inputs, when provided by the server.
+    ///
+    /// Includes Python version, environment sources, variables, and GPU settings.
+    /// A missing digest cannot establish that a local runtime matches. Reusing a
+    /// version also requires matching its source and other registration inputs.
+    pub fn runtime_digest(&self) -> Option<&str> {
+        self.runtime_digest.as_deref()
     }
 
     /// Operator-defined GPU class declared at registration.
@@ -1328,6 +1341,30 @@ mod conda_environment_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn function_version_preserves_runtime_digest() {
+        const VERSION: &str = include_str!(
+            "../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
+        );
+        let mut document: Value = serde_json::from_str(VERSION).unwrap();
+        let legacy = FunctionVersion::from_json(VERSION).unwrap();
+        assert_eq!(legacy.runtime_digest(), None);
+        assert_eq!(legacy.to_canonical_json().unwrap(), VERSION.trim_end());
+        for digest in [Value::Null, serde_json::json!("sha256:runtime-inputs")] {
+            document["runtime_digest"] = digest.clone();
+            let version = FunctionVersion::from_json(&document.to_string()).unwrap();
+            assert_eq!(version.runtime_digest(), digest.as_str());
+            let encoded = version.to_canonical_json().unwrap();
+            let encoded_value: Value = serde_json::from_str(&encoded).unwrap();
+            if digest.is_null() {
+                assert!(encoded_value.get("runtime_digest").is_none());
+            } else {
+                assert_eq!(encoded_value["runtime_digest"], digest);
+            }
+            assert_eq!(FunctionVersion::from_json(&encoded).unwrap(), version);
+        }
+    }
 
     #[test]
     fn function_version_preserves_source_digest() {
