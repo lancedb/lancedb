@@ -17,6 +17,7 @@ import {
   tableFromIPC,
   vectorFromArray,
 } from "./arrow";
+import { isBlobField } from "./blob";
 import { Expr } from "./expr";
 import { type IvfPqOptions } from "./indices";
 import {
@@ -146,6 +147,34 @@ async function readBlobBytes(
       .map((field) => field.name)
       .filter((name) => name !== "_rowid"),
   );
+}
+
+// Discover descriptors from the executed query, not the live table's cached
+// schema. Projection names are literal aliases; only source paths use dots.
+function projectedBlobSources(
+  schema: Schema,
+  projection: [string, string][] | undefined,
+): BlobSource[] {
+  const sources: BlobSource[] = [];
+  for (const field of schema.fields) {
+    const source =
+      projection?.find(([output]) => output === field.name)?.[1] ?? field.name;
+    const visit = (child: Field, path: string[]) => {
+      if (isBlobField(child)) {
+        sources.push({
+          output: field.name,
+          path,
+          source: [source, ...path].join("."),
+        });
+      } else if (DataType.isStruct(child.type)) {
+        for (const nested of child.type.children) {
+          visit(nested, [...path, nested.name]);
+        }
+      }
+    };
+    visit(field, []);
+  }
+  return sources;
 }
 
 function withBinaryColumns(
@@ -502,15 +531,20 @@ export class QueryBase<
       return this.collect(options, false);
     }
     if (!context.table.isNative()) {
-      const sources = blobSources(
-        await context.table.blobColumns(),
-        context.projection,
-      );
-      if (sources.length === 0) {
-        return this.collect(options, false);
-      }
+      // Request row IDs in the same query so newly added Blob columns can be
+      // fetched without rerunning the query against a different snapshot.
       const addRowId = !context.withRowId;
       const table = await this.collect(options, addRowId);
+      const sources = projectedBlobSources(table.schema, context.projection);
+      if (sources.length === 0) {
+        return addRowId
+          ? table.select(
+              table.schema.fields
+                .map((field) => field.name)
+                .filter((name) => name !== "_rowid"),
+            )
+          : table;
+      }
       const version = table.schema.metadata.get("lancedb:query_version");
       const identity = table.schema.metadata.get("lancedb:query_snapshot");
       if (version === undefined || identity === undefined) {
