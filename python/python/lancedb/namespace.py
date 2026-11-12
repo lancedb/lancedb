@@ -1018,6 +1018,8 @@ class LanceNamespaceDBConnection(DBConnection):
         bool
             True if the table exists, False otherwise.
         """
+        if self._route_pushdown_to_rust:
+            return LOOP.run(self._inner.table_exists(table_id))
         request = TableExistsRequest(id=table_id)
         try:
             self._namespace_client.table_exists(request)
@@ -1624,6 +1626,8 @@ class AsyncLanceNamespaceDBConnection:
         bool
             True if the table exists, False otherwise.
         """
+        if self._route_pushdown_to_rust:
+            return await self._inner.table_exists(table_id)
         request = TableExistsRequest(id=table_id)
         try:
             self._namespace_client.table_exists(request)
