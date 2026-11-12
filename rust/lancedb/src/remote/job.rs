@@ -403,6 +403,29 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn reopened_job_preserves_its_description_and_decodes_the_terminal_result() {
+        let description: DescribeJobResponse = serde_json::from_str(REFRESH_JOB).unwrap();
+        let job = Job::opened(
+            Box::new(FixtureRemoteJob(REFRESH_JOB)),
+            description.into_description(),
+        );
+        let raw_result = job.result();
+        let job = job.into_typed::<RefreshColumnResult>().unwrap();
+
+        assert_eq!(job.job_type().as_deref(), Some("refresh_function_columns"));
+        assert_eq!(job.state().as_deref(), Some("finished"));
+        assert_eq!(job.creation_ms(), Some(1787270400001));
+        assert_eq!(job.result(), raw_result);
+        assert_eq!(job.wait().await.unwrap().rows_assigned, 999_998_800);
+        assert_eq!(job.wait().await.unwrap().published_version, Some(919));
+
+        let missing = Job::new(Box::new(FixtureRemoteJob(MISSING_RESULT_JOB)))
+            .into_typed::<RefreshColumnResult>()
+            .unwrap();
+        assert!(missing.wait().await.is_err());
+    }
+
     /// Five in-progress polls then done: 0.2 + 0.4 + 0.8 + 1 + 1 s of waiting.
     /// Under the old 5 s cap the same job would have waited 10 s.
     #[tokio::test(start_paused = true)]

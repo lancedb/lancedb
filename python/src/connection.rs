@@ -24,7 +24,7 @@ use lancedb::{
     connection::NamespaceClientPushdownOperation,
     database::namespace::LanceNamespaceDatabase,
     database::{CreateTableMode, Database, ReadConsistency},
-    function::GpuClass as LanceGpuClass,
+    function::{GpuClass as LanceGpuClass, RefreshColumnResult},
     graph::PropertyGraphDefinition,
 };
 use pyo3::{
@@ -854,7 +854,14 @@ impl Connection {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
             let job = inner.open_job(&job_id).await.infer_error()?;
-            Ok(crate::job::Job::new(job))
+            match job.job_type().as_deref() {
+                Some("function_refresh" | "computed_refresh" | "refresh_column") => {
+                    Ok(crate::job::Job::new_typed(
+                        job.into_typed::<RefreshColumnResult>().infer_error()?,
+                    ))
+                }
+                _ => Ok(crate::job::Job::new(job)),
+            }
         })
     }
 

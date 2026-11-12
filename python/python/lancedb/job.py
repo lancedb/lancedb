@@ -17,6 +17,7 @@ from lancedb.background_loop import LOOP
 
 from . import _lancedb
 from ._lancedb import JobDescription, JobFailureInfo, JobInfo, _append_doc_url
+from .functions import RefreshColumnResult
 from .remote.errors import HttpError, RetryError
 
 T = TypeVar("T")
@@ -692,3 +693,9 @@ def _typed_job(
 ) -> AsyncJob[T]:
     """Bind an internal JSON-producing job to its public result model."""
     return AsyncJob(inner, result_decoder)
+
+
+def _opened_job(inner: "_lancedb.Job") -> AsyncJob:
+    if inner.job_type in ("function_refresh", "computed_refresh", "refresh_column"):
+        return _typed_job(inner, RefreshColumnResult.from_json)
+    return AsyncJob(inner)
