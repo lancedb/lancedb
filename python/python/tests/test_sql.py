@@ -334,7 +334,7 @@ async def test_create_secret_exist_ok_reaches_sql(asynchronous, exist_ok, status
         else:
             db = lancedb.connect("db://analytics", **options)
             db.create_secret("api-key", "credential's value", **kwargs)
-        (command, parameters) = server.writes
+        ((command, parameters),) = server.writes
 
     prefix = "CREATE SECRET IF NOT EXISTS" if exist_ok else "CREATE SECRET"
     sql = f'{prefix} "api-key" TYPE = GENERIC_STRING SECRET_STRING = $1'
