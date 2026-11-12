@@ -4068,7 +4068,7 @@ mod tests {
                 assert!(matches!(
                     error,
                     Error::Http {
-                        status_code: Some(StatusCode::FORBIDDEN),
+                        status_code: Some(http::StatusCode::FORBIDDEN),
                         ..
                     }
                 ));
