@@ -167,12 +167,14 @@ class Catalog:
         client_config=None,
         sql_host_override: Optional[str] = None,
         oauth_config: Optional[OAuthConfig] = None,
+        storage_options: Optional[dict[str, str]] = None,
     ):
         self._inner = inner
         self._api_key = api_key
         self._client_config = client_config
         self._sql_host_override = sql_host_override
         self._oauth_config = oauth_config
+        self._storage_options = storage_options
 
     @cached_property
     def authz(self) -> Authorization:
@@ -202,6 +204,7 @@ class Catalog:
             self._client_config,
             self._oauth_config,
             self._sql_host_override,
+            self._storage_options,
         )
 
     def list_databases(
@@ -255,11 +258,12 @@ async def connect_catalog_async(
     ``region`` is ignored with a warning when supplied. Catalog connections use
     the explicit endpoint rather than a region-derived Cloud (legacy) endpoint.
     ``api_key`` defaults to the ``LANCEDB_API_KEY`` environment variable.
-    Embedded-only ``storage_options``, ``session``, ``manifest_enabled`` and
+    Embedded-only ``session``, ``manifest_enabled`` and
     ``namespace_client_properties`` are not supported.
 
     Root requests omit database-selection headers. API key, client configuration,
-    OAuth, and table read consistency settings are inherited by opened databases.
+    OAuth, storage options, and table read consistency settings are inherited by
+    opened databases.
     Database names containing slashes remain single logical names.
     Set ``sql_host_override`` to the SQL service endpoint to execute SQL through
     returned connections when the catalog endpoint uses HTTPS.
@@ -272,7 +276,6 @@ async def connect_catalog_async(
             stacklevel=2,
         )
     for name, value in (
-        ("storage_options", storage_options),
         ("session", session),
         ("manifest_enabled", manifest_enabled or None),
         ("namespace_client_properties", namespace_client_properties),
@@ -305,6 +308,7 @@ async def connect_catalog_async(
             else None
         ),
         oauth_config=oauth_config,
+        storage_options=storage_options,
     )
     return AsyncCatalog(inner)
 
@@ -332,7 +336,7 @@ def connect_catalog(
 
     See [connect_catalog_async][lancedb.connect_catalog_async] for options.
     The inputs match [connect][lancedb.connect]; ``region`` is ignored with a
-    warning when supplied. Namespace client options and embedded storage settings
+    warning when supplied. Namespace client options and embedded session settings
     are not supported. ``request_thread_pool`` is deprecated and unused, as in
     ``connect``.
     Local filesystem and object-store catalogs are not supported.
@@ -420,4 +424,5 @@ def connect_catalog(
         client_config=client_config,
         sql_host_override=sql_host_override,
         oauth_config=oauth_config,
+        storage_options=storage_options,
     )

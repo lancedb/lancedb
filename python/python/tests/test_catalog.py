@@ -64,6 +64,7 @@ def test_catalog_sync_scope_and_serialization(catalog_server):
         endpoint,
         api_key="secret",
         sql_host_override="invalid://localhost",
+        storage_options={"azure_storage_account_name": "catalog-account"},
         client_config={
             "extra_headers": {
                 "X-LanceDB-Database": "wrong",
@@ -82,6 +83,7 @@ def test_catalog_sync_scope_and_serialization(catalog_server):
     assert db.table_names() == []
     restored = lancedb.deserialize_conn(db.serialize())
     assert restored.sql_host_override == "invalid://localhost"
+    assert restored.storage_options == {"azure_storage_account_name": "catalog-account"}
     for connection in (db, restored):
         with pytest.raises(ValueError, match="sql_host_override must use"):
             connection.execute_query_async("SELECT 1")
@@ -100,6 +102,7 @@ def test_catalog_sync_scope_and_serialization(catalog_server):
         )
         assert "x-lancedb-database-prefix" not in headers
         assert headers["x-api-key"] == "secret"
+        assert headers["x-azure-storage-account-name"] == "catalog-account"
 
 
 @pytest.mark.asyncio
@@ -116,7 +119,9 @@ async def test_catalog_async_and_errors(catalog_server):
         ]
     )
     catalog = await lancedb.connect_catalog_async(
-        endpoint, sql_host_override="invalid://localhost"
+        endpoint,
+        sql_host_override="invalid://localhost",
+        storage_options={"account_name": "async-account"},
     )
     assert isinstance(catalog, lancedb.AsyncCatalog)
     db = await catalog.connect_database("analytics")
@@ -132,6 +137,9 @@ async def test_catalog_async_and_errors(catalog_server):
         await catalog.drop_database("full")
     await catalog.drop_database("missing", ignore_missing=True)
     assert requests[4][2] == {"mode": "Fail", "behavior": "Restrict"}
+    for _, headers, _ in requests:
+        headers = {key.lower(): value for key, value in headers.items()}
+        assert headers["x-azure-storage-account-name"] == "async-account"
 
 
 @pytest.mark.parametrize("endpoint", ["/tmp/catalog", "s3://bucket", "db://db"])
@@ -156,7 +164,7 @@ async def test_catalog_accepts_database_connection_settings(
         "sql_host_override": "invalid://localhost",
         "read_consistency_interval": timedelta(seconds=5),
         "client_config": {"extra_headers": {"x-shared-setting": "shared"}},
-        "storage_options": None,
+        "storage_options": {"azure_storage_account_name": "shared-account"},
         "session": None,
         "manifest_enabled": False,
         "namespace_client_properties": None,
@@ -193,6 +201,7 @@ async def test_catalog_accepts_database_connection_settings(
     for headers in (root_headers, db_headers):
         assert headers["x-api-key"] == "shared-secret"
         assert headers["x-shared-setting"] == "shared"
+        assert headers["x-azure-storage-account-name"] == "shared-account"
     assert "x-lancedb-database" not in root_headers
     assert db_headers["x-lancedb-database"] == "analytics"
 
@@ -247,7 +256,6 @@ async def test_catalog_host_override_selects_endpoint(catalog_server, asynchrono
     "options, message",
     [
         ({}, "uri or host_override is required"),
-        ({"storage_options": {"region": "us-east-1"}}, "storage_options"),
         ({"session": object()}, "session"),
         ({"manifest_enabled": True}, "manifest_enabled"),
         ({"namespace_client_properties": {}}, "namespace_client_properties"),

@@ -30,6 +30,8 @@ pub struct RemoteCatalogOptions {
     pub api_key: Option<String>,
     /// Shared transport and authentication settings.
     pub client_config: ClientConfig,
+    /// Storage options supported by remote database connections.
+    pub storage_options: HashMap<String, String>,
     /// SQL service endpoint used by returned database connections.
     /// Required for SQL when the catalog endpoint uses HTTPS.
     pub sql_host_override: Option<String>,

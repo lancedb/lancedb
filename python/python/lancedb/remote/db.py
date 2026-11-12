@@ -214,6 +214,7 @@ class RemoteDBConnection(DBConnection):
         client_config,
         oauth_config,
         sql_host_override,
+        storage_options,
     ):
         config = (
             ClientConfig(**client_config)
@@ -233,7 +234,7 @@ class RemoteDBConnection(DBConnection):
         result.region = "us-east-1"
         result.host_override = endpoint
         result.sql_host_override = sql_host_override
-        result.storage_options = None
+        result.storage_options = storage_options
         result.client_config = replace(config, extra_headers=headers)
         result._catalog_oauth = oauth_config is not None
         result._conn = inner
