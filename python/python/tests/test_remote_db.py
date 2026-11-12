@@ -45,6 +45,7 @@ from lancedb.query import (
     LanceVectorQueryBuilder,
     MatchQuery,
 )
+from lancedb.index import BTree
 from lancedb.remote import ClientConfig
 from lancedb.remote.errors import (
     AlreadyExistsError,
@@ -7427,8 +7428,6 @@ async def test_remote_blob_bytes_hybrid_rejects_same_version_different_incarnati
 @pytest.mark.parametrize("background", [False, True])
 @pytest.mark.parametrize("kwargs", [{}, {"exist_ok": False}, {"exist_ok": True}])
 async def test_remote_index_exist_ok_wire(is_async, background, kwargs):
-    from lancedb.index import BTree
-
     received = []
 
     def handler(request):
