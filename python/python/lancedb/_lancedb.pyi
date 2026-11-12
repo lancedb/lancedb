@@ -229,7 +229,12 @@ class Connection(object):
         self, name: str, namespace_path: Optional[List[str]] = None
     ) -> None: ...
     async def create_secret(
-        self, name: str, value: str, namespace_path: Optional[List[str]] = None
+        self,
+        name: str,
+        value: str,
+        namespace_path: Optional[List[str]] = None,
+        *,
+        exist_ok: bool = False,
     ) -> None: ...
     async def alter_secret(
         self, name: str, value: str, namespace_path: Optional[List[str]] = None

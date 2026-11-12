@@ -1570,10 +1570,23 @@ _NAMESPACE_MODULES = frozenset(
 )
 
 
-def _namespace_acquisition(
-    definition: ast.FunctionDef, references: set[str]
-) -> list[str]:
-    found = set(references & _DYNAMIC_NAMESPACE_ACCESS)
+_NAMESPACE_HELPER_HINT = (
+    "Move this code into an importable helper module supplied with code=, pip=, "
+    "or conda=, then import and call the helper from the Function."
+)
+
+
+def _namespace_import_error(modules: Sequence[str]) -> ValueError:
+    return ValueError(
+        f"@function cannot package imports from namespace-access modules: {modules!r}. "
+        f"Imports of {', '.join(sorted(_NAMESPACE_MODULES))} (including submodules) "
+        "are blocked because they can access names outside the packaged "
+        "Function's reconstructed module namespace. " + _NAMESPACE_HELPER_HINT
+    )
+
+
+def _namespace_imports(definition: Union[ast.FunctionDef, ast.ClassDef]) -> list[str]:
+    found: set[str] = set()
     for node in ast.walk(definition):
         if isinstance(node, ast.Import):
             found.update(
@@ -1883,11 +1896,17 @@ class _SourcePackager:
         )
         source = ast.unparse(definition)
         references = _module_references(f"{_SOURCE_HEADER}\n\n{source}\n")
-        dynamic = _namespace_acquisition(definition, references)
+        dynamic = sorted(references & _DYNAMIC_NAMESPACE_ACCESS)
         if dynamic:
             raise ValueError(
-                f"@function cannot package dynamic namespace access: {dynamic!r}"
+                f"@function cannot package dynamic namespace access: {dynamic!r}. "
+                "These operations can access names outside the packaged "
+                "Function's reconstructed module namespace. Reference dependencies "
+                "explicitly. " + _NAMESPACE_HELPER_HINT
             )
+        namespace_imports = _namespace_imports(definition)
+        if namespace_imports:
+            raise _namespace_import_error(namespace_imports)
         self._warn_unshipped_direct_imports(definition)
         self._packaged.add(id(target))
         self._claim(target.__name__, ("definition", id(target)))
@@ -1982,10 +2001,7 @@ class _SourcePackager:
             return f"from lance_blob import BlobReader as {name}"
         if isinstance(value, types.ModuleType):
             if value.__name__.split(".")[0] in _NAMESPACE_MODULES:
-                raise ValueError(
-                    "@function cannot package dynamic namespace access: "
-                    f"{value.__name__!r}"
-                )
+                raise _namespace_import_error([value.__name__])
             try:
                 imported = importlib.import_module(value.__name__)
             except ImportError:
@@ -2663,13 +2679,28 @@ def function(
     Other global values, including Arrow types and schemas, lists, dictionaries,
     sets, and NumPy arrays, cannot be captured as literals. Define them inside
     the function or class body instead.
-    Closures, lambdas, nested definitions, mutable module-level
-    objects, code that reaches the module namespace another way
-    (``globals()``/``eval``, ``sys.modules``, ``builtins``), and a
+    Closures, lambdas, nested definitions, mutable module-level objects, and a
     non-standard ``__builtins__`` are rejected where they can be seen and
-    otherwise unsupported. Changing any packaged source, including a module in
-    ``code``, produces a new Function version; the environment built from
-    ``pip`` or ``conda`` is reused.
+    otherwise unsupported.
+
+    **Namespace restrictions.** The packaged source cannot import ``sys``,
+    ``builtins``, ``importlib``, ``inspect``, ``gc``, ``ctypes``, or ``types``,
+    including submodules such as ``ctypes.util`` and ``importlib.metadata``.
+    Referencing a module-level alias for one of these modules is also rejected.
+    References to ``globals``, ``locals``, ``vars``, ``eval``, ``exec``,
+    ``compile``, or ``__import__`` are rejected as dynamic namespace access.
+    These restrictions are conservative: even ordinary uses such as
+    ``ctypes.util.find_library`` or ``sys.version`` are blocked because these
+    modules can reach names outside the reconstructed Function namespace.
+    Move such code into an importable helper module supplied with ``code=``,
+    ``pip=``, or ``conda=``, then import and call the helper from the Function.
+    Helpers imported normally keep their own module namespace; these checks do
+    not scan their bodies. A helper defined in ``__main__`` is packaged by source
+    and is subject to the same checks.
+
+    Changing any packaged source, including a module in ``code``, produces a
+    new Function version; the environment built from ``pip`` or ``conda`` is
+    reused.
 
     Parameters
     ----------

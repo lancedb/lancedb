@@ -1159,14 +1159,24 @@ class DBConnection(EnforceOverrides):
         )
 
     def create_secret(
-        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+        self,
+        name: str,
+        value: str,
+        *,
+        exist_ok: bool = False,
+        namespace_path: Optional[List[str]] = None,
     ) -> None:
         """Create a named Secret in this database.
 
-        Fails if the name is taken, so a create never silently becomes a
-        rotation. Nothing reads the value back: it is bound to a Function by
+        Fails if the name is taken unless ``exist_ok=True``, which leaves the
+        existing value unchanged. Use :meth:`alter_secret` to rotate a Secret.
+        Nothing reads the value back: it is bound to a Function by
         name and resolved by the service when that Function runs. Local
         connections raise ``NotImplementedError``.
+
+        Examples
+        --------
+        >>> db.create_secret("api-key", "credential", exist_ok=True)  # doctest: +SKIP
         """
         raise NotImplementedError(
             _append_doc_url(
@@ -2509,9 +2519,18 @@ class LanceDBConnection(DBConnection):
 
     @override
     def create_secret(
-        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+        self,
+        name: str,
+        value: str,
+        *,
+        exist_ok: bool = False,
+        namespace_path: Optional[List[str]] = None,
     ) -> None:
-        LOOP.run(self._conn.create_secret(name, value, namespace_path=namespace_path))
+        LOOP.run(
+            self._conn.create_secret(
+                name, value, exist_ok=exist_ok, namespace_path=namespace_path
+            )
+        )
 
     @override
     def alter_secret(
@@ -3972,17 +3991,30 @@ class AsyncConnection(object):
         )
 
     async def create_secret(
-        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+        self,
+        name: str,
+        value: str,
+        *,
+        exist_ok: bool = False,
+        namespace_path: Optional[List[str]] = None,
     ) -> None:
         """Create a named Secret in this database.
 
-        Fails if the name is taken, so a create never silently becomes a
-        rotation. Nothing reads the value back.
+        Fails if the name is taken unless ``exist_ok=True``, which leaves the
+        existing value unchanged. Use :meth:`alter_secret` to rotate a Secret.
+        Nothing reads the value back.
+
+        Examples
+        --------
+        >>> await db.create_secret(  # doctest: +SKIP
+        ...     "api-key", "credential", exist_ok=True
+        ... )
         """
         await self._inner.create_secret(
             validate_secret_name(name),
             value,
             list(validate_namespace_path(namespace_path)),
+            exist_ok=exist_ok,
         )
 
     async def alter_secret(
