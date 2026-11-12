@@ -22,6 +22,7 @@ import symtable
 import json
 import linecache
 import math
+import os
 import re
 import sys
 import textwrap
@@ -29,6 +30,7 @@ import types
 import warnings
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime
+from pathlib import Path
 from typing import (
     Annotated,
     Any,
@@ -2104,18 +2106,12 @@ class _SourcePackager:
                 self._require_importable(node.module)
 
 
-def _code_files(modules: Sequence[Any]) -> tuple[dict[str, str], frozenset[str]]:
-    """The Python source files of the modules and packages in ``code=``,
-    keyed by their path on the Function's import path.
-
-    Package resources are not part of the source artifact. Warn about files
-    and excluded directories that the walk leaves behind instead of silently
-    producing a Function that will fail later on the worker.
-    """
-    import os
-    from pathlib import Path
-
+def _code_files(
+    modules: Sequence[Any],
+) -> tuple[dict[str, str], dict[str, str], frozenset[str]]:
+    """Source and byte-preserving package resources on the Function import path."""
     files: dict[str, str] = {}
+    resources: dict[str, str] = {}
     names: set[str] = set()
     for module in modules:
         if not isinstance(module, types.ModuleType):
@@ -2149,35 +2145,48 @@ def _code_files(modules: Sequence[Any]) -> tuple[dict[str, str], frozenset[str]]
             sources = []
             skipped = set()
             for directory, subdirectories, filenames in os.walk(root):
-                # Only importable modules travel: data files, caches, and
-                # directories that are not identifiers cannot be imported.
                 kept = []
                 for child in sorted(subdirectories):
-                    if child == "__pycache__":
+                    path = Path(directory) / child
+                    if child == "__pycache__" or child.startswith("."):
                         continue
-                    if _SOURCE_PATH_COMPONENT.fullmatch(child):
+                    if not path.is_symlink() and re.fullmatch(
+                        r"[A-Za-z0-9_][A-Za-z0-9_.-]*", child
+                    ):
                         kept.append(child)
                     else:
-                        relative = (Path(directory) / child).relative_to(root)
+                        relative = path.relative_to(root)
                         skipped.add(f"{name}/{relative.as_posix()}/")
                 subdirectories[:] = kept
                 for filename in sorted(filenames):
+                    path = Path(directory) / filename
                     stem, suffix = os.path.splitext(filename)
-                    if suffix in {".pyc", ".pyo"}:
+                    if suffix in {".pyc", ".pyo"} or filename.startswith("."):
                         continue
-                    if suffix == ".py" and _SOURCE_PATH_COMPONENT.fullmatch(stem):
-                        sources.append(Path(directory) / filename)
+                    relative = path.relative_to(root)
+                    key = f"{name}/{relative.as_posix()}"
+                    if path.is_symlink() or not re.fullmatch(
+                        r"[A-Za-z0-9_][A-Za-z0-9_.-]*", filename
+                    ):
+                        skipped.add(key)
+                    elif suffix == ".py":
+                        if all(
+                            _SOURCE_PATH_COMPONENT.fullmatch(part)
+                            for part in relative.with_suffix("").parts
+                        ):
+                            sources.append(path)
+                        else:
+                            skipped.add(key)
                     else:
-                        relative = (Path(directory) / filename).relative_to(root)
-                        skipped.add(f"{name}/{relative.as_posix()}")
+                        resources[key] = base64.b64encode(path.read_bytes()).decode(
+                            "ascii"
+                        )
             if skipped:
-                skipped_paths = ", ".join(sorted(skipped))
                 warnings.warn(
-                    f"code= ships Python .py modules only; package {name!r} "
-                    f"will not include: {skipped_paths}. Install a package that "
-                    "includes the required resources with pip= or conda=, and "
-                    f"remove {name!r} from code= so the copied package cannot "
-                    "shadow the installed distribution.",
+                    "code= cannot ship these package paths: "
+                    f"{', '.join(sorted(skipped))}. "
+                    "Use regular files with safe relative names and importable "
+                    "Python module names.",
                     UserWarning,
                 )
             for path in sources:
@@ -2188,7 +2197,7 @@ def _code_files(modules: Sequence[Any]) -> tuple[dict[str, str], frozenset[str]]
             if not file or not file.endswith(".py"):
                 raise ValueError(f"code= ships Python source; module {name!r} has none")
             files[f"{name}.py"] = _source_text(Path(file))
-    return files, frozenset(names)
+    return files, resources, frozenset(names)
 
 
 def _source_text(path) -> str:
@@ -2449,14 +2458,17 @@ class FunctionDefinition:
                     UserWarning,
                     stacklevel=3,
                 )
-        code_files, code_modules = _code_files(code)
+        code_files, code_resources, code_modules = _code_files(code)
         entry_source = _SourcePackager(
             code_modules, frozenset(_requirement_name(package) for package in packages)
         ).package(function, signature)
         if code_files:
             kind = _PYTHON_BUNDLE_ARTIFACT
+            bundle = {"files": {**code_files, _SOURCE_ENTRY_FILE: entry_source}}
+            if code_resources:
+                bundle["resources"] = code_resources
             source = json.dumps(
-                {"files": {**code_files, _SOURCE_ENTRY_FILE: entry_source}},
+                bundle,
                 ensure_ascii=False,
                 sort_keys=True,
                 separators=(",", ":"),
@@ -2802,13 +2814,15 @@ def function(
         immutable Function version; per-refresh aggregate GPU budgets are
         selected through ``refresh_column`` instead of registration.
     code : sequence of module, optional
-        Top-level modules or packages whose importable ``.py`` files ship
-        with the Function and are importable by their own names. Package data
-        files are not copied. To use a package that includes required data
-        resources, install it with ``pip=`` or ``conda=`` and remove that
-        package from ``code=`` so the copied Python package cannot shadow the
-        installed distribution. ``@function`` warns when it skips files from a
-        package in ``code=``.
+        Top-level modules or packages shipped with the Function and importable
+        by their own names. Package resources, including binary data and
+        vendored subpackages, retain their relative paths and exact bytes.
+        Source and resource changes both create a new Function version.
+        Caches and hidden paths are excluded. Symlinks and unsafe paths are
+        skipped with a warning. Compiled dependencies must match the remote
+        runtime; use ``pip=`` or ``conda=`` for platform-specific distributions
+        and ``models=`` for large model snapshots. Resource bundles require
+        server support for the ``python_bundle.resources`` field.
     models : sequence of HuggingFaceModel, optional
         Immutable Hugging Face repository snapshots prepared in the worker
         node cache before user code starts. A Function may declare a
