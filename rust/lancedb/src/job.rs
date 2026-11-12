@@ -538,8 +538,9 @@ where
 
     /// Fetch a printable run report for a server-side Function job.
     ///
-    /// The report includes recorded phase timings, worker utilization, latency
-    /// and throughput. Returns `None` for running jobs or when no recorded
+    /// The server report includes recorded phase timings, finishing-supervisor
+    /// slot occupancy, all-attempt split execution and batch latency, and
+    /// accepted-row throughput. Returns `None` for running jobs or when no recorded
     /// profile is available, without waiting for completion. Requires server
     /// support; local operations and SQL query handles do not support reports.
     ///

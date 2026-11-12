@@ -428,8 +428,9 @@ class AsyncJob(Generic[T]):
     async def stats(self) -> Optional[str]:
         """Return a printable run report for this Function job.
 
-        The report includes recorded phase timings, worker utilization, split
-        and batch latency, and throughput. Each call fetches a fresh snapshot.
+        The report includes recorded phase timings, finishing-supervisor slot
+        occupancy, all-attempt split execution and batch latency, and accepted-row
+        throughput. Each call reads the current server report.
         Returns ``None`` while the job is running or if no recorded profile is
         available, without waiting for completion. Missing measurements remain
         unavailable rather than becoming zero. The server formats the report;
