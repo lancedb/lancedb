@@ -4548,10 +4548,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
     async fn prewarm_index(&self, index_name: &str) -> Result<()> {
         let encoded_name = urlencoding::encode(index_name);
-        let request = self.client.post(&format!(
+        let request = self.apply_branch_query(self.client.post(&format!(
             "/v1/table/{}/index/{encoded_name}/prewarm/",
             self.identifier
-        ));
+        )));
         let (request_id, response) = self.send(request, true).await?;
         if response.status() == StatusCode::NOT_FOUND {
             return Err(Error::IndexNotFound {
@@ -4567,9 +4567,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             "/v1/table/{}/page_cache/prewarm/",
             self.identifier
         ));
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "columns": columns.unwrap_or_default(),
         });
+        self.apply_branch_body(&mut body);
         request = request.json(&body);
         let (request_id, response) = self.send(request, true).await?;
         self.check_table_response(&request_id, response).await?;
@@ -13016,6 +13017,70 @@ mod tests {
             .prewarm_data(Some(vec!["col_a".into(), "col_b".into()]))
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_prewarm_data_sends_the_checked_out_branch() {
+        use lance::dataset::refs::Ref;
+
+        let table =
+            Table::new_with_handler_version("my_table", semver::Version::new(0, 5, 0), |request| {
+                match request.url().path() {
+                    "/v1/table/my_table/branches/create/" => {
+                        http::Response::builder().status(200).body("{}").unwrap()
+                    }
+                    "/v1/table/my_table/page_cache/prewarm/" => {
+                        let body = request_body_json(&request);
+                        assert_eq!(body["branch"], "dev");
+                        assert_eq!(body["columns"], json!(["payload"]));
+                        http::Response::builder()
+                            .status(202)
+                            .body(r#"{"job_id":"prewarm-job"}"#)
+                            .unwrap()
+                    }
+                    path => panic!("unexpected request path: {path}"),
+                }
+            });
+        let branch = table
+            .create_branch("dev", Ref::Version(None, None))
+            .await
+            .unwrap();
+        branch
+            .prewarm_data(Some(vec!["payload".into()]))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_prewarm_index_sends_the_checked_out_branch() {
+        use lance::dataset::refs::Ref;
+
+        let table =
+            Table::new_with_handler_version("my_table", semver::Version::new(0, 5, 0), |request| {
+                match request.url().path() {
+                    "/v1/table/my_table/branches/create/" => {
+                        http::Response::builder().status(200).body("{}").unwrap()
+                    }
+                    "/v1/table/my_table/index/my_index/prewarm/" => {
+                        let branch = request
+                            .url()
+                            .query_pairs()
+                            .find(|(key, _)| key == "branch")
+                            .map(|(_, value)| value.into_owned());
+                        assert_eq!(branch.as_deref(), Some("feature/dev"));
+                        http::Response::builder()
+                            .status(202)
+                            .body(r#"{"job_id":"prewarm-job"}"#)
+                            .unwrap()
+                    }
+                    path => panic!("unexpected request path: {path}"),
+                }
+            });
+        let branch = table
+            .create_branch("feature/dev", Ref::Version(None, None))
+            .await
+            .unwrap();
+        branch.prewarm_index("my_index").await.unwrap();
     }
 
     #[tokio::test]
