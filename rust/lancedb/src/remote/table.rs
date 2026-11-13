@@ -2788,6 +2788,17 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         Ok(())
     }
+    async fn checkout_latest_if_latest(&self) -> Result<()> {
+        let write_guard = self.version.write().await;
+        if write_guard.is_some() || self.expected_query_snapshot.is_some() {
+            return Ok(());
+        }
+        // Keep the selector check and the freshness reset under the same
+        // lock so a concurrent checkout cannot be silently unpinned.
+        self.reset_freshness(Some(SystemTime::now()), false);
+        self.invalidate_schema_cache();
+        Ok(())
+    }
     async fn snapshot_at_current_version(&self) -> Result<Option<Arc<dyn BaseTable>>> {
         // A checked-out handle already names its snapshot. Otherwise resolve
         // latest exactly once before creating the independent pinned handle.
@@ -4744,8 +4755,8 @@ impl TryFrom<MergeInsertBuilder> for MergeInsertRequest {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use std::{collections::HashMap, pin::Pin};
 
@@ -11932,6 +11943,179 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("corrupt freshness evidence"));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_function_column_observes_latest_publications_without_checkout() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed_headers = Arc::new(Mutex::new(Vec::new()));
+        let table = Table::new_with_handler("my_table", {
+            let calls = calls.clone();
+            let observed_headers = observed_headers.clone();
+            move |request| {
+                assert_eq!(request.method(), "GET");
+                assert_eq!(
+                    request.url().path(),
+                    "/v1/table/my_table/function_columns/status"
+                );
+                let query: std::collections::BTreeMap<_, _> = request.url().query_pairs().collect();
+                assert_eq!(
+                    query.get("column").map(|value| value.as_ref()),
+                    Some("embedding")
+                );
+                assert!(
+                    query.get("version").is_none(),
+                    "a latest status poll must not use an explicit version"
+                );
+
+                let min_timestamp = request
+                    .headers()
+                    .get("x-lancedb-min-timestamp")
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_owned);
+                let min_read_version = request
+                    .headers()
+                    .get("x-lancedb-min-read-version")
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_owned);
+                observed_headers
+                    .lock()
+                    .unwrap()
+                    .push((min_timestamp.clone(), min_read_version));
+
+                let call = calls.fetch_add(1, Ordering::SeqCst);
+                let (version, fresh, never_computed) = if call > 0 && min_timestamp.is_some() {
+                    (11, 2, 0)
+                } else {
+                    (4, 0, 2)
+                };
+                http::Response::builder()
+                    .status(200)
+                    .header("x-lancedb-version", version.to_string())
+                    .body(format!(
+                        r#"[{{
+                            "column":"embedding",
+                            "binding_id":"fb_01",
+                            "function":{{
+                                "name":"embed",
+                                "object_id":"embed",
+                                "location":"objects/embed",
+                                "version":"7",
+                                "manifest_digest":"sha256:abc"
+                            }},
+                            "table_version":{version},
+                            "rows":2,
+                            "fresh":{fresh},
+                            "stale":0,
+                            "never_computed":{never_computed},
+                            "failed":0,
+                            "auto_refresh":{{
+                                "enabled":false,
+                                "state":"disabled",
+                                "failure_streak":0,
+                                "next_run_at_millis":null
+                            }}
+                        }}]"#,
+                    ))
+                    .unwrap()
+            }
+        });
+
+        let status = table
+            .wait_for_function_column("embedding", Some(Duration::from_secs(2)))
+            .await
+            .unwrap();
+        assert_eq!(status.table_version, 11);
+        assert_eq!(status.fresh, 2);
+        assert_eq!(status.never_computed, 0);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        let observed_headers = observed_headers.lock().unwrap();
+        assert_eq!(observed_headers.len(), 2);
+        assert!(
+            observed_headers[0].0.is_some(),
+            "the first latest poll must establish a current timestamp baseline"
+        );
+        assert!(
+            observed_headers[1].0.is_some(),
+            "each latest poll must advance the timestamp baseline"
+        );
+        assert!(
+            observed_headers[1].1.is_none(),
+            "the latest poll must clear the stale min-read-version fence"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_function_column_does_not_unpin_a_pinned_handle() {
+        let status_calls = Arc::new(AtomicUsize::new(0));
+        let table = Table::new_with_handler("my_table", {
+            let status_calls = status_calls.clone();
+            move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    assert_eq!(request_body_json(&request)["version"], 42);
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version":42,"schema":{"fields":[]}}"#.to_string())
+                        .unwrap()
+                }
+                "/v1/table/my_table/function_columns/status" => {
+                    let query: std::collections::BTreeMap<_, _> =
+                        request.url().query_pairs().collect();
+                    assert_eq!(
+                        query.get("column").map(|value| value.as_ref()),
+                        Some("embedding")
+                    );
+                    assert_eq!(query.get("version").map(|value| value.as_ref()), Some("42"));
+                    assert!(
+                        !request.headers().contains_key("x-lancedb-min-timestamp"),
+                        "a pinned status poll must not carry latest freshness headers"
+                    );
+                    let call = status_calls.fetch_add(1, Ordering::SeqCst);
+                    let (fresh, never_computed) = if call == 0 { (0, 2) } else { (2, 0) };
+                    http::Response::builder()
+                        .status(200)
+                        .header("x-lancedb-version", "42")
+                        .body(format!(
+                            r#"[{{
+                                "column":"embedding",
+                                "binding_id":"fb_01",
+                                "function":{{
+                                    "name":"embed",
+                                    "object_id":"embed",
+                                    "location":"objects/embed",
+                                    "version":"7",
+                                    "manifest_digest":"sha256:abc"
+                                }},
+                                "table_version":42,
+                                "rows":2,
+                                "fresh":{fresh},
+                                "stale":0,
+                                "never_computed":{never_computed},
+                                "failed":0,
+                                "auto_refresh":{{
+                                    "enabled":false,
+                                    "state":"disabled",
+                                    "failure_streak":0,
+                                    "next_run_at_millis":null
+                                }}
+                            }}]"#,
+                        ))
+                        .unwrap()
+                }
+                path => panic!("unexpected request path: {path}"),
+            }
+        });
+        table.checkout(42).await.unwrap();
+
+        let status = table
+            .wait_for_function_column("embedding", Some(Duration::from_secs(2)))
+            .await
+            .unwrap();
+        assert_eq!(status.table_version, 42);
+        assert_eq!(status.fresh, 2);
+        assert_eq!(status.never_computed, 0);
+        assert_eq!(status_calls.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
