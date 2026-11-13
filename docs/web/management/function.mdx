@@ -499,13 +499,20 @@ def caption(jpeg: bytes) -> str:
 </CodeGroup>
 
 Each module in `code` is captured and shipped the same way the function
-itself is: as source, snapshotted at registration. Only `.py` source files are
-included; package data such as JSON, YAML, prompt, or tokenizer files is not
-copied. `@function` warns before registration when it skips such files from a
-package in `code`, naming the affected paths. To use a package that includes
-the required resources, install it with `pip=` or `conda=` and remove that
-package from `code`; otherwise the Python-only copied package shadows the
-installed distribution.
+itself is: as source, snapshotted at registration. Packages also include regular
+data files such as JSON, YAML, prompts, and tokenizer files, including resources
+inside vendored subpackages. Resource paths and bytes are preserved for
+`importlib.resources` and package integrity checks. Changing a resource changes
+the Function artifact's identity. Caches, hidden paths, symlinks, and unsafe
+paths are excluded.
+
+Package resources require matching SDK and server support. Upgrade query nodes
+and Function image-building workers before registering resource bundles; older
+servers reject them. Older SDKs ship only Python source and warn when excluding
+package data. On deployments without resource-bundle support, install the
+package with `pip=` or `conda=` and omit it from `code` so the copied package does
+not shadow the installed distribution. Use environment dependencies for
+platform-specific packages and `models=` for large model snapshots.
 
 ## Drop it {#drop}
 
