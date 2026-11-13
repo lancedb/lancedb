@@ -622,7 +622,10 @@ mod tests {
             });
             let job = RemoteJob::new(client, "job-1".to_string());
             let description = job.describe().await.unwrap();
-            assert_eq!(description.result, Some(result));
+            assert_eq!(
+                description.result.as_ref(),
+                (!result.is_null()).then_some(&result)
+            );
             assert_eq!(
                 description.failure.unwrap().message.as_deref(),
                 Some("ValueError: corrupt frame at frame_index=207")
