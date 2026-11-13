@@ -1452,8 +1452,13 @@ impl Table {
     /// ranges for the same blob. The output has the same length and order as
     /// the requests. Null blobs produce null output slots; empty ranges on
     /// non-null blobs produce empty byte strings.
-    /// LanceDB Enterprise tables read through version-pinned [`BlobFile`] handles using
-    /// HTTP byte-range requests.
+    /// LanceDB Enterprise uses the batched endpoint when the server advertises
+    /// support, splitting calls at 1024 ranges and 64 MiB of requested bytes.
+    /// Individual larger ranges are partitioned and reassembled into one result.
+    /// Older servers use descriptor queries and [`Self::fetch_blob_files`] range
+    /// reads. Both protocols read one exact branch and version without changing
+    /// this handle's checkout. The final materialized output still occupies memory.
+    /// Errors from an advertised endpoint propagate without switching protocols.
     ///
     /// `_rowid` values stay valid after compaction when the table has stable
     /// row ids. One missing or deleted row id rejects the whole request; no
@@ -1486,10 +1491,14 @@ impl Table {
         column: impl AsRef<str>,
         requests: impl IntoIterator<Item = BlobRangeRequest>,
     ) -> Result<LargeBinaryArray> {
-        let requests = requests.into_iter().collect::<Vec<_>>();
-        self.inner
-            .fetch_blob_ranges(column.as_ref(), &requests)
-            .await
+        let mut ranges = Vec::new();
+        for request in requests {
+            ranges.try_reserve(1).map_err(|error| Error::InvalidInput {
+                message: format!("cannot allocate blob range requests: {error}"),
+            })?;
+            ranges.push(request);
+        }
+        self.inner.fetch_blob_ranges(column.as_ref(), &ranges).await
     }
 
     /// Open lazy [`BlobFile`] handles for the given row ids.

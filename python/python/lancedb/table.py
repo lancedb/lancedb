@@ -2672,8 +2672,12 @@ class Table(ABC):
         results are returned.
 
         Row IDs can be obtained from a query with ``with_row_id(True)``.
-        LanceDB Enterprise reads the requested ranges through version-pinned blob
-        handles using HTTP byte-range requests.
+        LanceDB Enterprise uses the batched endpoint when the server advertises
+        support, partitioning at 1024 ranges and 64 MiB, including individual
+        larger ranges. Older servers use descriptor queries and BlobFile range
+        reads. Both protocols read one exact branch and version without changing
+        the table's checkout. Errors from an advertised endpoint propagate without
+        switching protocols. The final output occupies memory.
         """
 
     @abstractmethod
@@ -8672,6 +8676,10 @@ class AsyncTable:
         column: str,
         requests: Sequence[Sequence[int]],
     ) -> pa.LargeBinaryArray:
+        """Materialize row-specific byte ranges.
+
+        See [Table.fetch_blob_ranges][lancedb.table.Table.fetch_blob_ranges].
+        """
         return await self._inner.fetch_blob_ranges(column, list(requests))
 
     async def fetch_blob_files(

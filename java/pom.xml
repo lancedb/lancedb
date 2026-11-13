@@ -319,6 +319,15 @@
             </build>
         </profile>
         <profile>
+            <id>deploy-to-fury</id>
+            <distributionManagement>
+                <repository>
+                    <id>fury</id>
+                    <url>https://maven.fury.io/lancedb/</url>
+                </repository>
+            </distributionManagement>
+        </profile>
+        <profile>
             <id>deploy-to-ossrh</id>
             <build>
                 <plugins>

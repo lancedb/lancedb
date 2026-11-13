@@ -87,6 +87,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use tokio::sync::RwLock;
@@ -647,6 +648,8 @@ pub struct RemoteTable<S: HttpSend = Sender> {
     version: Arc<RwLock<Option<u64>>>,
     location: RwLock<Option<String>>,
     schema_cache: BackgroundCache<SchemaRef, Error>,
+    // Only a successful describe can opt into the batched range protocol.
+    blob_ranges_supported: Arc<AtomicBool>,
     // WAL-PK-FUSION: delete, with its initializers below.
     wal_pk_fusion: PkFusionMemory,
     freshness: Arc<Mutex<FreshnessState>>,
@@ -897,11 +900,21 @@ impl<S: HttpSend> RemoteTable<S> {
             version: Arc::new(RwLock::new(None)),
             location: RwLock::new(None),
             schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
+            blob_ranges_supported: Arc::new(AtomicBool::new(false)),
             wal_pk_fusion: PkFusionMemory::default(),
             freshness: Arc::new(Mutex::new(FreshnessState::default())),
             branch: None,
             expected_query_snapshot: None,
         }
+    }
+
+    pub(super) fn seed_blob_ranges_capability(&self, headers: &http::HeaderMap) {
+        self.blob_ranges_supported.store(
+            headers
+                .get("x-lancedb-blob-ranges")
+                .is_some_and(|value| value == "1"),
+            AtomicOrdering::Relaxed,
+        );
     }
 
     /// Seed the schema cache from a `describe` body the caller already fetched.
@@ -934,6 +947,7 @@ impl<S: HttpSend> RemoteTable<S> {
             version: Arc::new(RwLock::new(None)),
             location: RwLock::new(None),
             schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
+            blob_ranges_supported: self.blob_ranges_supported.clone(),
             wal_pk_fusion: PkFusionMemory::default(),
             freshness: Arc::new(Mutex::new(FreshnessState::default())),
             branch,
@@ -1083,6 +1097,7 @@ impl<S: HttpSend> RemoteTable<S> {
         };
 
         let response = self.check_table_response(&request_id, response).await?;
+        self.seed_blob_ranges_capability(response.headers());
 
         match response.text().await {
             Ok(body) => {
@@ -1940,7 +1955,7 @@ fn base_media_type(content_type: &str) -> &str {
 fn unwrap_shared_error(arc: Arc<Error>) -> Error {
     match Arc::try_unwrap(arc) {
         Ok(err) => err,
-        Err(arc) => match &*arc {
+        Err(arc) => arc.clone_shared().unwrap_or_else(|| match &*arc {
             Error::TableNotFound { name, source } => Error::TableNotFound {
                 name: name.clone(),
                 source: source.to_string().into(),
@@ -1948,7 +1963,7 @@ fn unwrap_shared_error(arc: Arc<Error>) -> Error {
             _ => Error::Runtime {
                 message: arc.to_string(),
             },
-        },
+        }),
     }
 }
 
@@ -1959,6 +1974,7 @@ async fn fetch_schema<S: HttpSend>(
     read_snapshot: ReadSnapshot,
     branch: Option<String>,
     freshness: Arc<Mutex<FreshnessState>>,
+    blob_ranges_supported: Arc<AtomicBool>,
 ) -> Result<SchemaRef> {
     let mut body = serde_json::json!({ "version": read_snapshot.version });
     if let Some(branch) = &branch {
@@ -1971,20 +1987,18 @@ async fn fetch_schema<S: HttpSend>(
 
     let (request_id, response) = client.send_with_retry(request, None, true).await?;
 
-    if response.status() == StatusCode::NOT_FOUND {
-        let body = response.text().await.ok().unwrap_or_default();
-        return Err(Error::TableNotFound {
-            name: table_name.to_string(),
-            source: Box::new(Error::Http {
-                source: body.into(),
-                request_id,
-                status_code: Some(StatusCode::NOT_FOUND),
-            }),
-        });
-    }
+    let response =
+        RemoteTable::<S>::handle_table_not_found(table_name, response, &request_id).await?;
 
     let response = client.check_response(&request_id, response).await?;
     freshness_headers.observe_headers(&freshness, response.headers());
+    blob_ranges_supported.store(
+        response
+            .headers()
+            .get("x-lancedb-blob-ranges")
+            .is_some_and(|value| value == "1"),
+        AtomicOrdering::Relaxed,
+    );
     let body = response.text().await.map_err(|e| {
         let status_code = e.status();
         Error::Http {
@@ -2042,6 +2056,7 @@ mod test_utils {
                 version: Arc::new(RwLock::new(None)),
                 location: RwLock::new(None),
                 schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
+                blob_ranges_supported: Arc::new(AtomicBool::new(false)),
                 wal_pk_fusion: PkFusionMemory::default(),
                 freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
@@ -2070,6 +2085,7 @@ mod test_utils {
                 version: Arc::new(RwLock::new(None)),
                 location: RwLock::new(None),
                 schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
+                blob_ranges_supported: Arc::new(AtomicBool::new(false)),
                 wal_pk_fusion: PkFusionMemory::default(),
                 freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
@@ -2107,6 +2123,7 @@ mod test_utils {
                 version: Arc::new(RwLock::new(None)),
                 location: RwLock::new(None),
                 schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
+                blob_ranges_supported: Arc::new(AtomicBool::new(false)),
                 wal_pk_fusion: PkFusionMemory::default(),
                 freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
@@ -2902,6 +2919,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             let table_name = self.name.clone();
             let branch = self.branch.clone();
             let freshness = self.freshness.clone();
+            let blob_ranges_supported = self.blob_ranges_supported.clone();
 
             match self
                 .schema_cache
@@ -2913,6 +2931,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                         read_snapshot,
                         branch,
                         freshness,
+                        blob_ranges_supported,
                     )
                     .await
                 })
@@ -4546,10 +4565,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
     async fn prewarm_index(&self, index_name: &str) -> Result<()> {
         let encoded_name = encode_index_name(index_name)?;
-        let request = self.client.post(&format!(
+        let request = self.apply_branch_query(self.client.post(&format!(
             "/v1/table/{}/index/{encoded_name}/prewarm/",
             self.identifier
-        ));
+        )));
         let (request_id, response) = self.send(request, true).await?;
         if response.status() == StatusCode::NOT_FOUND {
             return Err(Error::IndexNotFound {
@@ -4565,9 +4584,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             "/v1/table/{}/page_cache/prewarm/",
             self.identifier
         ));
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "columns": columns.unwrap_or_default(),
         });
+        self.apply_branch_body(&mut body);
         request = request.json(&body);
         let (request_id, response) = self.send(request, true).await?;
         self.check_table_response(&request_id, response).await?;
@@ -4909,6 +4929,49 @@ mod tests {
 
         let schema = table.schema().await.unwrap();
         assert_eq!(schema, expected);
+    }
+
+    #[tokio::test]
+    async fn test_server_info_survives_schema_cache_errors() {
+        let expected = crate::server_info::ServerBuildInfo {
+            release: "1.2.3".into(),
+            git_sha: "0123456789ab".into(),
+            build_date: Some("2024-01-01T00:00:00Z".into()),
+        };
+        for header_only in [false, true] {
+            let table = Table::new_with_handler("my_table", move |request| {
+                assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
+                let server = serde_json::json!({
+                    "release": "1.2.3", "git_sha": "0123456789ab",
+                    "build_date": "2024-01-01T00:00:00Z",
+                });
+                let response = http::Response::builder().status(404);
+                if header_only {
+                    response
+                        .header("x-lancedb-server-build", server.to_string())
+                        .body("missing".to_string())
+                        .unwrap()
+                } else {
+                    response
+                        .body(serde_json::json!({"error": "missing", "server": server}).to_string())
+                        .unwrap()
+                }
+            });
+            let original = Arc::new(table.schema().await.unwrap_err());
+            // Keep another reader's reference alive to exercise the shared result.
+            let shared = unwrap_shared_error(original.clone());
+            for error in [original.as_ref(), &shared] {
+                assert!(matches!(error, Error::TableNotFound { name, .. } if name == "my_table"));
+                assert_eq!(error.status_code(), Some(StatusCode::NOT_FOUND));
+                assert_eq!(
+                    error
+                        .remote_error_metadata()
+                        .and_then(|metadata| metadata.server.as_ref()),
+                    Some(&expected),
+                );
+                assert!(error.to_string().contains("0123456789ab"));
+            }
+        }
     }
 
     #[tokio::test]
@@ -12973,6 +13036,79 @@ mod tests {
             .prewarm_data(Some(vec!["col_a".into(), "col_b".into()]))
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_prewarm_data_sends_the_checked_out_branch() {
+        use lance::dataset::refs::Ref;
+
+        let table =
+            Table::new_with_handler_version("my_table", semver::Version::new(0, 5, 0), |request| {
+                match request.url().path() {
+                    "/v1/table/my_table/branches/create/" => {
+                        http::Response::builder().status(200).body("{}").unwrap()
+                    }
+                    "/v1/table/my_table/page_cache/prewarm/" => {
+                        let body = request_body_json(&request);
+                        assert_eq!(body["branch"], "dev");
+                        assert_eq!(body["columns"], json!(["payload"]));
+                        http::Response::builder()
+                            .status(202)
+                            .body(r#"{"job_id":"prewarm-job"}"#)
+                            .unwrap()
+                    }
+                    path => panic!("unexpected request path: {path}"),
+                }
+            });
+        let branch = table
+            .create_branch("dev", Ref::Version(None, None))
+            .await
+            .unwrap();
+        branch
+            .prewarm_data(Some(vec!["payload".into()]))
+            .await
+            .unwrap();
+    }
+
+    #[rstest]
+    #[case("my_index", "my_index")]
+    #[case("café_idx", "caf%C3%A9_idx")] // spellchecker:disable-line
+    #[case("my/index", "my%2Findex")]
+    #[tokio::test]
+    async fn test_prewarm_index_sends_the_checked_out_branch(
+        #[case] index_name: &str,
+        #[case] encoded_name: &str,
+    ) {
+        use lance::dataset::refs::Ref;
+
+        let expected_path = format!("/v1/table/my_table/index/{encoded_name}/prewarm/");
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 5, 0),
+            move |request| match request.url().path() {
+                "/v1/table/my_table/branches/create/" => {
+                    http::Response::builder().status(200).body("{}").unwrap()
+                }
+                path if path == expected_path => {
+                    let branch = request
+                        .url()
+                        .query_pairs()
+                        .find(|(key, _)| key == "branch")
+                        .map(|(_, value)| value.into_owned());
+                    assert_eq!(branch.as_deref(), Some("feature/dev"));
+                    http::Response::builder()
+                        .status(202)
+                        .body(r#"{"job_id":"prewarm-job"}"#)
+                        .unwrap()
+                }
+                path => panic!("unexpected request path: {path}"),
+            },
+        );
+        let branch = table
+            .create_branch("feature/dev", Ref::Version(None, None))
+            .await
+            .unwrap();
+        branch.prewarm_index(index_name).await.unwrap();
     }
 
     #[tokio::test]

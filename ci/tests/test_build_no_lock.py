@@ -88,9 +88,11 @@ class BuildNoLockTest(unittest.TestCase):
             self.assertTrue((target / "fixture_cli").is_file())
             # Cargo guarantees this binary for test execution, not compile-time reads.
             subprocess.run([str(target / "fixture_cli")], check=True)
-            self.assertTrue(list((target / "deps").glob("libartifact_fixture*.rlib")))
-            self.assertTrue(list((target / "build").glob("*/build-script-build")))
-            self.assertTrue(list((target / "build").glob("*/out/generated.rs")))
+            # Cargo 1.100 nests compiler inputs in per-unit build directories and
+            # names the build-script executable build_script_build.
+            self.assertTrue(list(target.rglob("libartifact_fixture*.rlib")))
+            self.assertTrue(list((target / "build").rglob("build[-_]script[-_]build")))
+            self.assertTrue(list((target / "build").rglob("out/generated.rs")))
 
     def test_link_failure_preserves_cargo_status_and_diagnostic(self):
         with tempfile.TemporaryDirectory(prefix=".no-lock-", dir=SCRIPT.parent) as temp:
