@@ -200,6 +200,48 @@ function application keeps its scalar or named-struct result in the named
 column. A bare named-struct application expands its result fields as one atomic
 binding, with aliases from `rename(columns=...)`.
 
+### Bind a constant input {#literal-inputs}
+
+<Note>
+Literal inputs require an SDK that supports binding metadata version 2 and an
+Enterprise deployment with matching literal declaration and execution support.
+Upgrading the SDK alone does not enable this server capability. Older clients
+reject version 2 bindings; column-only bindings continue to use version 1.
+</Note>
+
+Use `lit(...)` to pass the same value for every row while another parameter
+reads a column. For example, using the table above:
+
+<CodeGroup>
+```python Python icon="python"
+from lancedb import col, function, lit
+
+
+@function
+def multiply(value: float, factor: int) -> float:
+    return value * factor
+
+
+multiplier = db.create_function_async(multiply).wait()
+table.add_columns(
+    {"scaled": multiplier(value=col("value"), factor=lit(16))},
+    auto_refresh_enabled=False,
+)
+```
+</CodeGroup>
+
+Supported scalar constants are booleans, strings, integers from `-(2**63)`
+through `2**64 - 1`, and `None` for a nullable parameter. Each value must match
+the parameter's declared type. Floating-point, binary, date, datetime and
+decimal constants are not supported in Function input bindings, even though
+`lit(...)` accepts them in other SQL expressions. Bind a direct literal;
+expressions such as `lit(16) + lit(8)` are not supported here.
+
+The constant belongs to the column binding, so the Function version and its
+image stay the same. Only column inputs contribute table dependencies. Refresh
+`scaled` to fill it. To change the constant to `lit(8)`, drop and redeclare the
+column using the same `multiplier` version; the new binding needs a refresh.
+
 ### Bind more than one input, or fill more than one column {#multi}
 
 Parameters bind by name, so a function that takes several arguments binds
