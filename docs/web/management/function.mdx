@@ -95,6 +95,7 @@ def normalize(
 `UTC`, `America/New_York`, or `+08:00`. The canonical signature uses
 `{"type":"timestamp:<unit>:<timezone>"}`, with `-` for no timezone; the
 microsecond/no-timezone case keeps the legacy `{"type":"timestamp"}` shape.
+A timezone string of `-` is reserved for "no timezone" and is rejected.
 
 `pa.duration` accepts the same four units and uses
 `{"type":"duration:<unit>"}`; the microsecond case keeps the legacy
