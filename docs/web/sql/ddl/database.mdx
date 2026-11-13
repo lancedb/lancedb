@@ -57,15 +57,21 @@ properties and requires system `USAGE`.
 
 ## SHOW DATABASES {#show}
 
-<CodeGroup>
-```sql SQL icon="database"
-SHOW DATABASES
+```sql
+SHOW DATABASES LIMIT 100;
+SHOW DATABASES LIMIT 100 FROM '<page-token>';
 ```
-</CodeGroup>
 
-Returns a sorted `name` column containing the databases the caller has
-`USAGE` on, including `system` when permitted. `LIKE` and `WHERE` filters
-are unsupported.
+Returns one non-null `name` column, sorted by database name and filtered to
+databases the caller has `USAGE` on, including `system` when permitted.
+Databases are above namespaces, so this command does not accept `IN` or
+return a `namespace_path` column.
+
+Page through results using `LIMIT n [FROM '<page-token>']`. Read the opaque
+`lancedb.next_page_token` from the Arrow result schema metadata and pass it back
+unchanged with the same object type and scope. Stop when no token is returned;
+a short or empty page can still carry a continuation. See
+[catalog listing pagination](/sql/pagination).
 
 ## ATTACH DATABASE {#attach}
 

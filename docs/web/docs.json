@@ -542,6 +542,7 @@
             "group": "SQL Reference",
             "pages": [
               "sql/index",
+              "sql/pagination",
               "sql/data-types",
               {
                 "group": "DDL",

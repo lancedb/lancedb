@@ -6,11 +6,80 @@ use crate::{
     database::ExecuteQueryRequest,
     error::{Error, Result},
     job::Job,
+    listing::{ListingOptions, ListingPage},
+    utils::validate_namespace,
 };
 use arrow_array::{Array, ListArray, RecordBatch, StringArray};
 use futures::TryStreamExt;
 use serde::{Serialize, de::DeserializeOwned};
 use std::sync::Arc;
+
+const DEFAULT_SQL_LISTING_LIMIT: u32 = 1_000;
+const MAX_SQL_LISTING_LIMIT: u32 = 10_000;
+const NEXT_PAGE_TOKEN_METADATA_KEY: &str = "lancedb.next_page_token";
+
+impl SqlClient {
+    pub(in crate::remote) async fn listing_page(
+        &self,
+        statement: &str,
+        namespace: &[String],
+        options: ListingOptions,
+    ) -> Result<(Vec<RecordBatch>, Option<String>)> {
+        validate_namespace(namespace)?;
+        let limit = options.page_limit.unwrap_or(DEFAULT_SQL_LISTING_LIMIT);
+        if limit > MAX_SQL_LISTING_LIMIT {
+            return Err(Error::InvalidInput {
+                message: format!("page limit must be between 0 and {MAX_SQL_LISTING_LIMIT}"),
+            });
+        }
+        if options.page_token.as_ref().is_some_and(String::is_empty) {
+            return Err(Error::InvalidInput {
+                message: "page token must not be empty".into(),
+            });
+        }
+        if limit == 0 {
+            return Ok((Vec::new(), None));
+        }
+        let mut statement = format!("{statement} LIMIT {limit}");
+        if let Some(token) = options.page_token {
+            statement.push_str(&format!(" FROM {}", literal(&token)));
+        }
+        let query = self
+            .execute(ExecuteQueryRequest {
+                query: statement,
+                default_namespace_path: namespace.to_vec(),
+                parameters: None,
+            })
+            .await?;
+        let reader = query.reader().await?;
+        let token = reader
+            .schema()
+            .metadata()
+            .get(NEXT_PAGE_TOKEN_METADATA_KEY)
+            .cloned()
+            .filter(|token| !token.is_empty());
+        let batches = reader.try_collect::<Vec<_>>().await?;
+        if batches.iter().map(RecordBatch::num_rows).sum::<usize>() > limit as usize {
+            return Err(Error::Runtime {
+                message: "SQL listing exceeded its requested page size".into(),
+            });
+        }
+        Ok((batches, token))
+    }
+
+    pub(in crate::remote) async fn list_names(
+        &self,
+        statement: &str,
+        namespace: &[String],
+        options: ListingOptions,
+    ) -> Result<ListingPage<String>> {
+        let (batches, page_token) = self.listing_page(statement, namespace, options).await?;
+        Ok(ListingPage {
+            items: strings(&batches, "name")?,
+            page_token,
+        })
+    }
+}
 
 pub(super) fn literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))

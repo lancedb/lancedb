@@ -126,27 +126,31 @@ Requires `USAGE` on the database and the namespace.
 
 ## SHOW SCHEMAS and SHOW NAMESPACES {#show}
 
-<CodeGroup>
-```sql SQL icon="database"
-SHOW SCHEMAS
-SHOW NAMESPACES
-SHOW NAMESPACES IN analytics.team
+```sql
+SHOW SCHEMAS LIMIT 100;
+SHOW SCHEMAS LIMIT 100 FROM '<page-token>';
+SHOW NAMESPACES IN analytics.team LIMIT 100;
+SHOW NAMESPACES IN analytics.team LIMIT 100 FROM '<page-token>';
 ```
-</CodeGroup>
 
-`SHOW SCHEMAS` returns complete paths in the current database, recursively,
-including `public` when the caller can use it. It does not accept `IN`.
+Both commands return two non-null string columns: `namespace_path`, the
+parent path as a compact JSON array, and `name`, the unqualified child name.
+Results are ordered by parent path components, then name, and omit namespaces
+the caller cannot use.
 
-`SHOW NAMESPACES` lists only immediate child names under the session's
-current schema. `IN` selects a different parent schema, optionally in
-another database -- use `IN public` for the current database's root, or
-`IN analytics.public` for another database's root. A missing parent is an
-error.
+`SHOW SCHEMAS` lists recursively in the current database and includes the
+implicit root alias as `namespace_path=[]`, `name=public` when visible. It
+does not accept `IN`. `SHOW NAMESPACES` lists immediate children of the session
+namespace; `IN` selects another parent, optionally in another database. Use
+`IN public` for the current database root or `IN analytics.public` for another
+database root. A missing parent is an error. Recursive traversal is limited
+to 32 levels; larger result sets are fetched in pages.
 
-Both forms return a sorted `name` column and omit namespaces the caller
-cannot use. Large listings that exceed 10,000 namespaces, or recursive
-listings deeper than 32 levels, return an error suggesting a narrower
-listing.
+Page through results using `LIMIT n [FROM '<page-token>']`. Read the opaque
+`lancedb.next_page_token` from the Arrow result schema metadata and pass it back
+unchanged with the same object type and scope. Stop when no token is returned;
+a short or empty page can still carry a continuation. See
+[catalog listing pagination](/sql/pagination).
 
 ## DROP SCHEMA and DROP NAMESPACE {#drop}
 
