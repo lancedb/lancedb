@@ -2804,7 +2804,7 @@ def function(
         call must be safe; completed calls are not repeated. For batch Functions,
         skip after exhaustion applies to the whole failed call.
     gpu : str, optional
-        Select an operator-configured class and minimum GPUs per worker with
+        Select an operator-configured class and GPUs per worker with
         ``"A10G:2"`` or ``"H100:4"``.
         A class alone requests one GPU. Class names are normalized to lowercase.
         All requested devices are allocated to one worker, allowing tensor
