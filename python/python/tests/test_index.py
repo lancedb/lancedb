@@ -647,3 +647,19 @@ async def test_index_exist_ok_preserves_existing_index(
     assert [(i.name, i.index_type) for i in await some_table.list_indices()] == [
         (i.name, i.index_type) for i in original
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("background", [False, True])
+async def test_named_index_exist_ok_checks_before_column_validation(
+    some_table, background
+):
+    await some_table.create_index("id", config=BTree(), name="kept")
+    version = await some_table.version()
+    method = some_table.create_index_async if background else some_table.create_index
+    result = await method("missing", config=BTree(), name="kept", exist_ok=True)
+    if background:
+        assert result.id is None
+        await result.wait()
+    assert await some_table.version() == version
+    assert [index.name for index in await some_table.list_indices()] == ["kept"]

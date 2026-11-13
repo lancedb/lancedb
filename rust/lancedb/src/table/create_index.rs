@@ -115,14 +115,24 @@ impl NativeTable {
     pub(super) async fn prepare_index(
         &self,
         opts: &crate::index::IndexBuilder,
-    ) -> Result<PreparedIndex> {
+    ) -> Result<Option<PreparedIndex>> {
+        self.dataset.ensure_mutable()?;
+        let dataset = self.dataset.get().await?;
+        if opts.exist_ok
+            && let Some(name) = &opts.name
+            && dataset
+                .load_indices()
+                .await?
+                .iter()
+                .any(|index| &index.name == name)
+        {
+            return Ok(None);
+        }
         if opts.columns.len() != 1 {
             return Err(Error::Schema {
                 message: "Multi-column (composite) indices are not yet supported".to_string(),
             });
         }
-        self.dataset.ensure_mutable()?;
-        let dataset = self.dataset.get().await?;
         let (column, field) = if let Index::FTS(params) = &opts.index {
             let resolved = resolve_lance_fts_field_path(dataset.schema(), &opts.columns[0])?;
             if params.get_document_granularity().is_list_element() && resolved.list_depth == 0 {
@@ -137,28 +147,33 @@ impl NativeTable {
         } else {
             Self::resolve_index_field(dataset.schema(), &opts.columns[0])?
         };
+        if let Some(name) = Self::guarded_index_name(opts, &column)?
+            && dataset
+                .load_indices()
+                .await?
+                .iter()
+                .any(|index| index.name == name)
+        {
+            return Ok(None);
+        }
         let params = self.make_index_params(&field, opts.index.clone()).await?;
         let index_type = self.get_index_type_for_field(&field, &opts.index);
-        Ok((column, params, index_type))
+        Ok(Some((column, params, index_type)))
     }
 
-    /// Builds a prepared index and publishes the new dataset version.
-    pub(super) async fn build_index(
-        &self,
-        opts: crate::index::IndexBuilder,
-        prepared: PreparedIndex,
-    ) -> Result<()> {
-        let (column, lance_idx_params, index_type) = prepared;
-        let mut dataset = (*self.dataset.get().await?).clone();
-        let guarded_name = if opts.exist_ok {
+    fn guarded_index_name(
+        opts: &crate::index::IndexBuilder,
+        column: &str,
+    ) -> Result<Option<String>> {
+        let name = if opts.exist_ok {
             Some(if let Some(name) = &opts.name {
                 name.clone()
             } else {
-                let names = lance_core::datatypes::parse_field_path(&column)?;
+                let names = lance_core::datatypes::parse_field_path(column)?;
                 let default_name = if matches!(&opts.index, Index::FTS(_))
                     || names.iter().any(|name| name.contains('.'))
                 {
-                    column.clone()
+                    column.to_string()
                 } else {
                     names.join(".")
                 };
@@ -173,6 +188,18 @@ impl NativeTable {
         } else {
             None
         };
+        Ok(name)
+    }
+
+    /// Builds a prepared index and publishes the new dataset version.
+    pub(super) async fn build_index(
+        &self,
+        opts: crate::index::IndexBuilder,
+        prepared: PreparedIndex,
+    ) -> Result<()> {
+        let (column, lance_idx_params, index_type) = prepared;
+        let mut dataset = (*self.dataset.get().await?).clone();
+        let guarded_name = Self::guarded_index_name(&opts, &column)?;
         if let Some(name) = &guarded_name
             && dataset
                 .load_indices()
