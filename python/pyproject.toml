@@ -64,7 +64,7 @@ tests = [
     "polars>=0.19, <=1.32.3",
     "pyarrow>=16",
     "pyarrow-stubs>=16.0",
-    "pylance==15.0.0b18",
+    "pylance==15.0.0b20",
     "requests>=2.31.0",
     "datafusion>=54,<55",
     "opentelemetry-sdk>=1.30.0",
