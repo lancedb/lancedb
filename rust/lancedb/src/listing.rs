@@ -20,8 +20,9 @@ pub struct ListingOptions {
     pub page_token: Option<String>,
     /// Maximum results per request, not a limit on the entire listing.
     /// `None` uses the backend default. SQL-backed catalog listings default to
-    /// 1,000 rows and accept at most 10,000; zero returns an empty page without
-    /// making a request. Other backends may impose different limits.
+    /// 1,000 rows and accept 1 through 10,000. The public listing API rejects
+    /// zero; SQL statements can separately use `LIMIT 0`. Other backends may
+    /// impose different limits.
     pub page_limit: Option<u32>,
 }
 
@@ -34,7 +35,7 @@ impl ListingOptions {
 
     /// Set the maximum number of results requested per page.
     ///
-    /// SQL-backed catalog listings accept 0 through 10,000. A server can return
+    /// SQL-backed catalog listings accept 1 through 10,000. A server can return
     /// fewer rows, including none, with a continuation token.
     pub fn page_limit(mut self, limit: u32) -> Self {
         self.page_limit = Some(limit);
