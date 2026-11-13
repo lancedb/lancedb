@@ -3076,7 +3076,7 @@ async fn storage_integration_methods_use_sql_with_namespace_and_typed_metadata()
         let statements = statements.lock().unwrap();
         assert!(statements[0].contains("STORAGE_AWS_REGION = 'us-east-1'"));
         assert_eq!(statements[1], "DESCRIBE STORAGE INTEGRATION \"raw\"");
-        assert_eq!(statements[2], "SHOW STORAGE INTEGRATIONS");
+        assert_eq!(statements[2], "SHOW STORAGE INTEGRATIONS LIMIT 1000");
         assert_eq!(statements[3], "DROP STORAGE INTEGRATION \"raw\"");
         assert!(statements[4].contains(
             "STORAGE_AWS_ACCESS_KEY_ID_SECRET = \"platform/raw\".\"credentials\".\"key\""
@@ -3526,6 +3526,69 @@ async fn secret_listing_uses_server_continuation_tokens() {
         assert_eq!(
             *statements.lock().unwrap(),
             ["SHOW SECRETS LIMIT 2", next_sql]
+        );
+        for header in headers.lock().unwrap().iter() {
+            assert_eq!(header.database, "analytics");
+            assert_eq!(header.database_prefix, "tenant/production");
+            assert_eq!(header.namespace_path, "team$reports");
+        }
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn storage_integration_listing_uses_server_continuation_tokens() {
+    for defer in [false, true] {
+        let token = "server'opaque:token";
+        let next_sql = "SHOW STORAGE INTEGRATIONS LIMIT 2 FROM 'server''opaque:token'";
+        let service = TestSqlService {
+            adaptive: true,
+            defer,
+            result_overrides: Arc::new(std::sync::Mutex::new(HashMap::from([
+                (
+                    "SHOW STORAGE INTEGRATIONS LIMIT 2".to_owned(),
+                    sql_listing_batch("name", &["a", "b"], Some(token)),
+                ),
+                (next_sql.to_owned(), sql_listing_batch("name", &["z"], None)),
+            ]))),
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let headers = service.headers.clone();
+        let (client, shutdown) = start_sql_service_with_prefix(
+            service,
+            ClientConfig::default(),
+            Some("tenant/production"),
+        )
+        .await;
+        let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
+            panic!("unexpected REST request")
+        })
+        .with_sql_client(client);
+        let namespace = vec!["team".to_owned(), "reports".to_owned()];
+        let first = db
+            .list_storage_integrations(
+                &namespace,
+                crate::listing::ListingOptions::default().page_limit(2),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.items, ["a", "b"]);
+        assert_eq!(first.page_token.as_deref(), Some(token));
+        let second = db
+            .list_storage_integrations(
+                &namespace,
+                crate::listing::ListingOptions::default()
+                    .page_limit(2)
+                    .page_token(first.page_token.unwrap()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(second.items, ["z"]);
+        assert!(second.page_token.is_none());
+        assert_eq!(
+            *statements.lock().unwrap(),
+            ["SHOW STORAGE INTEGRATIONS LIMIT 2", next_sql]
         );
         for header in headers.lock().unwrap().iter() {
             assert_eq!(header.database, "analytics");

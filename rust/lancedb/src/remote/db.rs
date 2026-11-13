@@ -1000,30 +1000,9 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         namespace_path: &[String],
         options: ListingOptions,
     ) -> Result<ListingPage<String>> {
-        validate_namespace(namespace_path)?;
-        let result = self
-            .execute_query_async(ExecuteQueryRequest {
-                query: "SHOW STORAGE INTEGRATIONS".into(),
-                default_namespace_path: namespace_path.to_vec(),
-                parameters: None,
-            })
-            .await?;
-        let mut names =
-            integration_sql::decode_names(&result.reader().await?.try_collect::<Vec<_>>().await?)?;
-        if let Some(token) = options.page_token {
-            names.retain(|name| name > &token);
-        }
-        let mut page_token = None;
-        if let Some(limit) = options.page_limit
-            && names.len() > limit as usize
-        {
-            names.truncate(limit as usize);
-            page_token = names.last().cloned();
-        }
-        Ok(ListingPage {
-            items: names,
-            page_token,
-        })
+        self.sql_client()?
+            .list_names("SHOW STORAGE INTEGRATIONS", namespace_path, options)
+            .await
     }
 
     async fn drop_storage_integration(&self, name: &str, namespace_path: &[String]) -> Result<()> {
