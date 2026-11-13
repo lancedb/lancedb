@@ -10,7 +10,7 @@ keywords: ["multimodal lakehouse", "training", "feature engineering", "search", 
 layer for search and retrieval, curation, feature engineering, and model training. It is built on [Lance](/basics/lance), an
 open-source columnar format for multimodal AI data.
 
-LanceDB depends only on object storage for its primary state, and NVME/memory for caching in the serving
+LanceDB Enterprise depends only on object storage for its primary state, and NVME/memory for caching in the serving
 layer, giving it the latency profile of an in-memory database with the petabyte scalability and cost profile
 of S3. LanceDB is intended for use as a single solution in your org, giving your team one system to
 become expert in and removing the need for multiple database systems and synchronization pipelines
@@ -23,7 +23,7 @@ between them. Core features include:
 - [**Time travel and versioning**](/management/table#versioning) to pin and revisit datasets
 - **Search**: [vector](/search/vector-search), [full-text](/search/full-text-search), and
   [hybrid](/search/hybrid-search), with [filters](/search/filtering) and [reranking](/reranking)
-- [**Python UDFs**](/curation/create-function) for custom transformations and model inference (Enterprise, early access)
+- [**Functions**](/curation/create-function) for custom transformations and model inference (Enterprise, early access)
 - [**Row-level random access**](/basics/lance#capabilities) for retrieval and training
 - [**Column additions**](/management/table#schema-add-new-columns) without rewriting existing columns
 
@@ -35,7 +35,7 @@ Draft until branching reaches early access. Add this item to the list above, aft
 LanceDB stores images, video, audio, text, embeddings, and metadata in
 [schema-enforced tables](/management/table#multimodal). In LanceDB Enterprise, these features let you build
 declarative ML data pipelines: ingest raw data and metadata, enrich it incrementally with computed columns and
-Python UDFs, and organize it into [curated datasets](/curation) with materialized views. Add features without
+Functions, and organize it into [curated datasets](/curation) with materialized views. Add features without
 rewriting existing columns, then train from those datasets using row-level random access and sampling.
 
 LanceDB provides [SDKs](/basics/sdk) for Python, TypeScript, and Rust, plus a
@@ -60,7 +60,7 @@ locally with Embedded, then move to Enterprise for distributed scale, feature en
 See [Embedded vs Enterprise](/basics/embedded-vs-enterprise) for a feature-by-feature comparison, including
 architecture, latency, throughput, and day-to-day usage differences.
 
-## Projects using LanceDB
+## Projects using LanceDB {#projects-using-lancedb}
 
 Teams use LanceDB for world-model and robotics training, as in
 [stable-worldmodel](https://github.com/galilai-group/stable-worldmodel) and
