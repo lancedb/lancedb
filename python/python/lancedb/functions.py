@@ -30,6 +30,7 @@ import types
 import warnings
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import (
     Annotated,
@@ -1214,6 +1215,13 @@ def _exact_arrow_type(
     for candidate, name in _GRAMMAR_PRIMITIVES:
         if data_type == candidate:
             return {"type": name}
+    if pa.types.is_decimal128(data_type) or pa.types.is_decimal256(data_type):
+        return {
+            "type": (
+                "decimal128" if pa.types.is_decimal128(data_type) else "decimal256"
+            ),
+            "length": data_type.precision * 1000 + data_type.scale,
+        }
     if pa.types.is_struct(data_type):
         fields = list(data_type)
         names = [field.name for field in fields]
@@ -1269,8 +1277,29 @@ def _exact_arrow_type(
         if pa.types.is_fixed_size_list(data_type):
             value["length"] = data_type.list_size
         return value
-    if pa.types.is_map(data_type) and _data_type_has_blob_v2(data_type):
-        raise TypeError(_NESTED_BLOB_COLLECTION_ERROR)
+    if pa.types.is_map(data_type):
+        if data_type.keys_sorted:
+            raise TypeError(
+                "unsupported Arrow type for Function signature: map keys_sorted=true "
+                "is not supported"
+            )
+        key_field = data_type.key_field
+        if key_field.nullable or key_field.type != pa.string():
+            raise TypeError(
+                "unsupported Arrow type for Function signature: map keys must be "
+                "non-nullable utf8"
+            )
+        if _data_type_has_blob_v2(data_type):
+            raise TypeError(_NESTED_BLOB_COLLECTION_ERROR)
+        return {
+            "type": "map",
+            "fields": [
+                _exact_arrow_field(
+                    data_type.field(0),
+                    inside_collection=True,
+                )
+            ],
+        }
     raise TypeError(f"unsupported Arrow type for Function signature: {data_type}")
 
 
@@ -1299,9 +1328,9 @@ def _annotation_type(annotation: Any) -> tuple[pa.DataType, bool]:
             raise TypeError(
                 "Annotated Function types require exactly one PyArrow DataType"
             )
-        # A struct value is written as a dict, which has no Arrow type of its
-        # own; the Annotated metadata supplies it.
-        if base is dict or get_origin(base) is dict:
+        # A struct value is written as a dict, and a Decimal has no precision
+        # or scale on its own; the Annotated metadata supplies both types.
+        if base is dict or get_origin(base) is dict or base is Decimal:
             base_nullable = False
         else:
             _, base_nullable = _annotation_type(base)
@@ -1328,6 +1357,13 @@ def _annotation_type(annotation: Any) -> tuple[pa.DataType, bool]:
         return pa.date32(), nullable
     if annotation is datetime:
         return pa.timestamp("us"), nullable
+    if annotation is Decimal:
+        raise TypeError(
+            "Decimal Function annotations require precision and scale; use "
+            "Annotated[Decimal, pyarrow.decimal128(precision, scale)], "
+            "Annotated[Decimal, pyarrow.decimal256(precision, scale)], or an "
+            "explicit schema"
+        )
     if get_origin(annotation) is list:
         arguments = get_args(annotation)
         if len(arguments) != 1:
@@ -1336,6 +1372,21 @@ def _annotation_type(annotation: Any) -> tuple[pa.DataType, bool]:
         if value_nullable:
             raise TypeError("nullable Function list elements are not supported")
         return _list_of(value_type), nullable
+    if get_origin(annotation) is dict:
+        arguments = get_args(annotation)
+        if len(arguments) != 2:
+            raise TypeError(f"unsupported dict annotation: {annotation!r}")
+        key_type, value_annotation = arguments
+        if key_type is not str:
+            raise TypeError("Function map keys must be str")
+        value_type, value_nullable = _annotation_type(value_annotation)
+        return (
+            pa.map_(
+                pa.string(),
+                pa.field("value", value_type, nullable=value_nullable),
+            ),
+            nullable,
+        )
     raise TypeError(f"unsupported Function annotation: {annotation!r}")
 
 
@@ -2653,6 +2704,12 @@ def function(
     both; the one omitted is inferred. Scalar outputs must be non-nullable.
     Every named-struct field may be nullable; Enterprise preserves the
     struct's validity when the result is expanded into sibling columns.
+    ``dict[str, T]`` declares an Arrow map with a non-nullable utf8 key; the
+    value is non-nullable for ``T`` and nullable for ``Optional[T]``. A bare
+    ``Decimal`` has no precision or scale; use
+    ``Annotated[Decimal, pyarrow.decimal128(precision, scale)]``,
+    ``Annotated[Decimal, pyarrow.decimal256(precision, scale)]``, or an
+    explicit schema.
 
     **Large values.** A ``bytes`` parameter receives the whole value, which
     is held in memory with its row and counts against the server's per-row
@@ -2758,7 +2815,9 @@ def function(
         the parameter annotations.
     output_schema : pyarrow.DataType, pyarrow.Field, or pyarrow.Schema, optional
         Explicit scalar or named-struct output. Scalar outputs must be
-        non-nullable. Required for batch annotations. When omitted, the output
+        non-nullable. Map and decimal fields use canonical Arrow JSON; a map
+        key must be non-nullable utf8 and its value field keeps the declared
+        nullability. Required for batch annotations. When omitted, the output
         is inferred from the return annotation.
     pip : sequence of str, optional
         Pip requirements for the remote environment. Syntax is validated at

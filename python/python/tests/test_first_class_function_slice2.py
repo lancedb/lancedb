@@ -19,7 +19,8 @@ import sys
 import typing
 import urllib.parse
 import warnings
-from typing import Optional
+from decimal import Decimal
+from typing import Annotated, Optional
 
 import pyarrow as pa
 import pytest
@@ -28,6 +29,7 @@ import lancedb
 from lancedb import BlobReader
 from lancedb.db import AsyncConnection
 from lancedb.functions import (
+    FunctionSignature,
     FunctionVersion,
     HuggingFaceModel,
     PythonRuntimeSpec,
@@ -884,7 +886,6 @@ def test_canonical_arrow_type_prefers_the_compact_grammar():
     )
     for outside in [
         pa.timestamp("us"),
-        pa.decimal128(10, 2),
         pa.binary(4),
         pa.duration("s"),
         pa.list_(pa.float32(), 0),
@@ -1212,6 +1213,157 @@ def test_explicit_arrow_schema_is_deterministic():
     assert signature.inputs[0].nullable is True
     assert signature.output.arrow_type == "fixed_size_list<float32, 3>"
     assert signature.output.nullable is False
+
+
+def test_map_annotation_and_explicit_schema_serialization():
+    @function
+    def map_round_trip(values: dict[str, int]) -> dict[str, int]:
+        return values
+
+    signature = map_round_trip.registration_request.signature
+    expected = {
+        "type": "map",
+        "fields": [
+            {
+                "name": "entries",
+                "nullable": False,
+                "type": {
+                    "type": "struct",
+                    "fields": [
+                        {
+                            "name": "key",
+                            "nullable": False,
+                            "type": {"type": "utf8"},
+                        },
+                        {
+                            "name": "value",
+                            "nullable": False,
+                            "type": {"type": "int64"},
+                        },
+                    ],
+                },
+            }
+        ],
+    }
+    assert json.loads(signature.inputs[0].arrow_type) == expected
+    assert json.loads(signature.output.arrow_type) == expected
+    round_trip = FunctionSignature.from_json(signature.to_canonical_json())
+    assert round_trip.inputs[0].arrow_type == signature.inputs[0].arrow_type
+    assert round_trip.output.arrow_type == signature.output.arrow_type
+
+    @function
+    def nullable_values(
+        values: dict[str, Optional[int]],
+    ) -> dict[str, Optional[int]]:
+        return values
+
+    nullable_signature = nullable_values.registration_request.signature
+    nullable_map = json.loads(nullable_signature.inputs[0].arrow_type)
+    assert nullable_map["fields"][0]["type"]["fields"][1] == {
+        "name": "value",
+        "nullable": True,
+        "type": {"type": "int64"},
+    }
+
+    input_schema = pa.schema(
+        [
+            pa.field(
+                "values",
+                pa.map_(pa.string(), pa.field("custom", pa.int64(), nullable=True)),
+                nullable=False,
+            )
+        ]
+    )
+    output_schema = pa.field(
+        "result",
+        pa.map_(pa.string(), pa.field("value", pa.int64(), nullable=False)),
+        nullable=False,
+    )
+
+    @function(input_schema=input_schema, output_schema=output_schema)
+    def explicit(values):
+        return {}
+
+    explicit_signature = explicit.registration_request.signature
+    explicit_input = json.loads(explicit_signature.inputs[0].arrow_type)
+    assert explicit_input["fields"][0]["type"]["fields"][1] == {
+        "name": "custom",
+        "nullable": True,
+        "type": {"type": "int64"},
+    }
+    explicit_output = json.loads(explicit_signature.output.arrow_type)
+    assert explicit_output["fields"][0]["type"]["fields"][1]["nullable"] is False
+
+
+def test_map_rejects_unsupported_boundaries():
+    with pytest.raises(TypeError, match="map keys_sorted=true"):
+        _canonical_arrow_type(pa.map_(pa.string(), pa.int64(), keys_sorted=True))
+    with pytest.raises(TypeError, match="map keys must be non-nullable utf8"):
+        _canonical_arrow_type(pa.map_(pa.int64(), pa.int64()))
+    with pytest.raises(TypeError, match="Blob v2 fields nested under"):
+        _canonical_arrow_type(pa.map_(pa.string(), lancedb.blob("image").type))
+    with pytest.raises(TypeError, match="map keys must be str"):
+
+        @function
+        def invalid_keys(values: dict[int, int]) -> int:
+            return 0
+
+
+def test_decimal_annotation_and_explicit_schema_serialization():
+    @function
+    def price(
+        amount: Annotated[Decimal, pa.decimal128(10, 2)],
+    ) -> Annotated[Decimal, pa.decimal256(50, 4)]:
+        return Decimal("1.0000")
+
+    signature = price.registration_request.signature
+    assert json.loads(signature.inputs[0].arrow_type) == {
+        "type": "decimal128",
+        "length": 10002,
+    }
+    assert json.loads(signature.output.arrow_type) == {
+        "type": "decimal256",
+        "length": 50004,
+    }
+    round_trip = FunctionSignature.from_json(signature.to_canonical_json())
+    assert round_trip.inputs[0].arrow_type == signature.inputs[0].arrow_type
+    assert round_trip.output.arrow_type == signature.output.arrow_type
+    assert json.loads(_canonical_arrow_type(pa.decimal128(10, -2))) == {
+        "type": "decimal128",
+        "length": 9998,
+    }
+    decimal_map = json.loads(
+        _canonical_arrow_type(pa.map_(pa.string(), pa.decimal128(10, 2)))
+    )
+    assert decimal_map["fields"][0]["type"]["fields"][1]["type"] == {
+        "type": "decimal128",
+        "length": 10002,
+    }
+
+    input_schema = pa.schema([pa.field("amount", pa.decimal128(12, 2), nullable=False)])
+    output_schema = pa.field("result", pa.decimal256(60, 6), nullable=False)
+
+    @function(input_schema=input_schema, output_schema=output_schema)
+    def explicit(amount: Decimal) -> Decimal:
+        return amount
+
+    explicit_signature = explicit.registration_request.signature
+    assert json.loads(explicit_signature.inputs[0].arrow_type) == {
+        "type": "decimal128",
+        "length": 12002,
+    }
+    assert json.loads(explicit_signature.output.arrow_type) == {
+        "type": "decimal256",
+        "length": 60006,
+    }
+
+    with pytest.raises(
+        TypeError, match="Decimal Function annotations require precision and scale"
+    ):
+
+        @function
+        def missing(amount: Decimal) -> Decimal:
+            return amount
 
 
 def test_blob_fields_use_the_scalar_function_semantic_type():
