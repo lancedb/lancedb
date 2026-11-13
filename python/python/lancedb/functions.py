@@ -101,6 +101,12 @@ def _validate_batch_size(value: Any) -> Optional[int]:
     return value
 
 
+def _validate_refresh_lock(value: Any) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError("refresh_lock must be a boolean")
+    return value
+
+
 def _validate_max_concurrency(value: Any) -> Optional[int]:
     if value is None:
         return None
@@ -744,6 +750,9 @@ class FunctionRegistrationRequest(_RemoteValue):
     Credential values deliberately have no field here. The only secret-shaped
     thing a client sends is ``secret_bindings``: the name of a Secret the
     database already holds, which the remote service resolves at execution.
+    ``refresh_lock`` is a per-registration action, not part of the Function's
+    source or runtime identity; its false default is omitted from canonical
+    JSON.
     """
 
     name: str
@@ -756,6 +765,7 @@ class FunctionRegistrationRequest(_RemoteValue):
     retry_policy: Optional[FunctionRetryPolicy] = None
     secret_bindings: tuple[SecretBinding, ...] = ()
     models: tuple[HuggingFaceModel, ...] = ()
+    refresh_lock: bool = False
 
     @field_validator("batch_size", mode="before")
     @classmethod
@@ -771,6 +781,18 @@ class FunctionRegistrationRequest(_RemoteValue):
     @classmethod
     def _validate_row_timeout(cls, value):
         return _validate_row_timeout(value)
+
+    @field_validator("refresh_lock", mode="before")
+    @classmethod
+    def _validate_refresh_lock(cls, value):
+        return _validate_refresh_lock(value)
+
+    def with_refresh_lock(self, refresh_lock: bool) -> FunctionRegistrationRequest:
+        """Return this request with the registration-time refresh action set."""
+        refresh_lock = _validate_refresh_lock(refresh_lock)
+        if self.refresh_lock == refresh_lock:
+            return self
+        return self._copy(update={"refresh_lock": refresh_lock})
 
 
 class FunctionVersionRef(_OpenRemoteValue):

@@ -1005,6 +1005,7 @@ class DBConnection(EnforceOverrides):
         *,
         secrets: Optional[Sequence[EnvVarSecret]] = None,
         namespace_path: Optional[List[str]] = None,
+        refresh_lock: bool = False,
     ) -> FunctionVersion:
         """Build and register a scalar Python function, then return its version.
 
@@ -1024,6 +1025,9 @@ class DBConnection(EnforceOverrides):
         namespace_path : list of str, optional
             The namespace holding the Function. None or an empty list is the
             root namespace.
+        refresh_lock : bool, default False
+            Ask the server to resolve a fresh environment lock instead of
+            reusing the published version's lock.
 
         Examples
         --------
@@ -1040,7 +1044,10 @@ class DBConnection(EnforceOverrides):
         ```
         """
         return self.create_function_async(
-            definition, secrets=secrets, namespace_path=namespace_path
+            definition,
+            secrets=secrets,
+            namespace_path=namespace_path,
+            refresh_lock=refresh_lock,
         ).wait()
 
     def create_function_async(
@@ -1049,6 +1056,7 @@ class DBConnection(EnforceOverrides):
         *,
         secrets: Optional[Sequence[EnvVarSecret]] = None,
         namespace_path: Optional[List[str]] = None,
+        refresh_lock: bool = False,
     ) -> Job[FunctionVersion]:
         """Submit a scalar Python function for building and registration.
 
@@ -1056,6 +1064,9 @@ class DBConnection(EnforceOverrides):
         artifact. The returned job has type ``query`` and the SQL query UUID as
         its ID. Waiting on it returns the immutable Function version.
         LanceDB Embedded connections raise ``NotImplementedError``.
+
+        ``refresh_lock`` asks the server to resolve a fresh environment lock
+        instead of reusing the published version's lock.
         """
         raise NotImplementedError(
             _append_doc_url(
@@ -2391,10 +2402,14 @@ class LanceDBConnection(DBConnection):
         *,
         secrets: Optional[Sequence[EnvVarSecret]] = None,
         namespace_path: Optional[List[str]] = None,
+        refresh_lock: bool = False,
     ) -> Job[FunctionVersion]:
         job = LOOP.run(
             self._conn.create_function_async(
-                definition, secrets=secrets, namespace_path=namespace_path
+                definition,
+                secrets=secrets,
+                namespace_path=namespace_path,
+                refresh_lock=refresh_lock,
             )
         )
         return Job(job)
@@ -3720,6 +3735,7 @@ class AsyncConnection(object):
         *,
         secrets: Optional[Sequence[EnvVarSecret]] = None,
         namespace_path: Optional[List[str]] = None,
+        refresh_lock: bool = False,
     ) -> AsyncJob[FunctionVersion]:
         """Submit a scalar Python function for building and registration.
 
@@ -3731,10 +3747,12 @@ class AsyncConnection(object):
         the environment variable its value arrives in. ``namespace_path`` is
         the namespace the Function is registered in; None or an empty list is
         the root. LanceDB Embedded connections raise ``NotImplementedError``.
+        ``refresh_lock`` asks the server to resolve a fresh environment lock
+        instead of reusing the published version's lock.
         """
         if not isinstance(definition, FunctionDefinition):
             raise TypeError("create_function_async requires a @function definition")
-        request = definition.bind_secrets(secrets)
+        request = definition.bind_secrets(secrets).with_refresh_lock(refresh_lock)
         inner = await self._inner.create_function_async(
             request.to_canonical_json(), namespace_path
         )

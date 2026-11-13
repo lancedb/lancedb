@@ -111,6 +111,13 @@ with `db.get_function(name, version=...)`. The version may be an integer or
 its string form. Omit `version` to resolve and return the latest currently
 visible revision.
 
+Re-registering unchanged code reuses the published version and its resolved
+environment lock. Pass `refresh_lock=True` to `create_function` or
+`create_function_async` to request a fresh lock for this registration. It is a
+registration action, not part of the Function's source or runtime identity.
+A deployment must support the field; an older server rejects the unknown
+field rather than silently reusing the old lock.
+
 <Note>
 The SQL command submits an internal `create_function` image-build job and
 waits for publication. The SDK returns the SQL query handle. Query handles

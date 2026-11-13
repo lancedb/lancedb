@@ -26,8 +26,9 @@ import pytest
 
 import lancedb
 from lancedb import BlobReader
-from lancedb.db import AsyncConnection
+from lancedb.db import AsyncConnection, DBConnection, LanceDBConnection
 from lancedb.functions import (
+    FunctionRegistrationRequest,
     FunctionVersion,
     HuggingFaceModel,
     PythonRuntimeSpec,
@@ -95,6 +96,98 @@ def test_scalar_function_matches_shared_registration_golden_and_remains_callable
         "kind": "scalar_to_arrow_batch",
         "version": 1,
     }
+
+
+def test_refresh_lock_is_a_registration_option_not_part_of_identity():
+    default = normalize_score.registration_request
+    old_json = default.to_canonical_json()
+    assert "refresh_lock" not in json.loads(old_json)
+
+    refreshed = default.with_refresh_lock(True)
+    payload = json.loads(refreshed.to_canonical_json())
+    assert payload["refresh_lock"] is True
+    assert (
+        FunctionRegistrationRequest.from_json(
+            refreshed.to_canonical_json()
+        ).refresh_lock
+        is True
+    )
+    assert refreshed.artifact.digest == default.artifact.digest
+    assert refreshed.runtime.digest == default.runtime.digest
+    assert default.with_refresh_lock(False).to_canonical_json() == old_json
+    with pytest.raises(ValueError, match="refresh_lock must be a boolean"):
+        default.with_refresh_lock(1)
+
+
+@pytest.mark.asyncio
+async def test_async_create_function_forwards_refresh_lock():
+    calls = []
+
+    class Inner:
+        async def create_function_async(self, request_json, namespace_path=None):
+            calls.append((json.loads(request_json), namespace_path))
+            return object()
+
+    connection = object.__new__(AsyncConnection)
+    connection._inner = Inner()
+    await connection.create_function_async(normalize_score)
+    await connection.create_function_async(
+        normalize_score, refresh_lock=True, namespace_path=["team"]
+    )
+    with pytest.raises(ValueError, match="refresh_lock must be a boolean"):
+        await connection.create_function_async(normalize_score, refresh_lock=1)
+
+    assert len(calls) == 2
+    assert "refresh_lock" not in calls[0][0]
+    assert calls[0][1] is None
+    assert calls[1][0]["refresh_lock"] is True
+    assert calls[1][1] == ["team"]
+
+
+def test_sync_create_function_paths_forward_refresh_lock():
+    calls = []
+
+    class AsyncInner:
+        async def create_function_async(
+            self, definition, *, secrets=None, namespace_path=None, refresh_lock=False
+        ):
+            calls.append(("wrapped", refresh_lock, namespace_path))
+            return object()
+
+    for connection_type in (LanceDBConnection, RemoteDBConnection):
+        connection = object.__new__(connection_type)
+        connection._conn = AsyncInner()
+        connection.create_function_async(
+            normalize_score, refresh_lock=True, namespace_path=["team"]
+        )
+
+    class BlockingConnection:
+        def create_function_async(
+            self, definition, *, secrets=None, namespace_path=None, refresh_lock=False
+        ):
+            calls.append(("blocking", refresh_lock, namespace_path))
+
+            class ImmediateJob:
+                def wait(self):
+                    return "version"
+
+            return ImmediateJob()
+
+    blocking = BlockingConnection()
+    assert (
+        DBConnection.create_function(
+            blocking,
+            normalize_score,
+            refresh_lock=True,
+            namespace_path=["team"],
+        )
+        == "version"
+    )
+    assert calls == [
+        ("wrapped", True, ["team"]),
+        ("wrapped", True, ["team"]),
+        ("blocking", True, ["team"]),
+    ]
 
 
 def test_function_declares_pinned_hugging_face_models():

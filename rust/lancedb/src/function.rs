@@ -827,6 +827,10 @@ fn validate_row_timeout_value(value: Option<f64>) -> std::result::Result<(), &'s
     Ok(())
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// Stable request envelope for remote immutable Function registration.
 ///
 /// Credential values deliberately have no field here. The only secret-shaped
@@ -874,6 +878,10 @@ pub struct FunctionRegistrationRequest {
     /// Model snapshots prepared by the service before user code runs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub models: Vec<HuggingFaceModel>,
+    /// Ask the service to resolve a fresh environment lock for this request
+    /// instead of reusing the published version's lock. Omitted when false.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub refresh_lock: bool,
 }
 
 impl FunctionRegistrationRequest {

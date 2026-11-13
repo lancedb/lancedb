@@ -993,10 +993,14 @@ class RemoteDBConnection(DBConnection):
         *,
         secrets: Optional[Sequence[EnvVarSecret]] = None,
         namespace_path: Optional[List[str]] = None,
+        refresh_lock: bool = False,
     ) -> Job[FunctionVersion]:
         job = LOOP.run(
             self._conn.create_function_async(
-                definition, secrets=secrets, namespace_path=namespace_path
+                definition,
+                secrets=secrets,
+                namespace_path=namespace_path,
+                refresh_lock=refresh_lock,
             )
         )
         return Job(job)

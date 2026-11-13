@@ -3219,6 +3219,58 @@ async fn function_creation_and_description_use_sql_query_handles() {
 }
 
 #[tokio::test]
+async fn function_creation_refresh_lock_is_forwarded_only_when_true() {
+    const VERSION: &str = include_str!(
+        "../../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
+    );
+    const REQUEST: &str = include_str!(
+        "../../tests/fixtures/first_class_functions/v1/remote_function_registration_request.json"
+    );
+    for (refresh_lock, expect_field) in [(false, false), (true, true)] {
+        let mut request_json: serde_json::Value = serde_json::from_str(REQUEST).unwrap();
+        if refresh_lock {
+            request_json["refresh_lock"] = serde_json::json!(true);
+        }
+        let request =
+            crate::function::FunctionRegistrationRequest::from_json(&request_json.to_string())
+                .unwrap();
+        assert_eq!(request.refresh_lock, refresh_lock);
+        let result = RecordBatch::try_from_iter(vec![(
+            "definition",
+            Arc::new(StringArray::from(vec![VERSION.to_string()])) as ArrayRef,
+        )])
+        .unwrap();
+        let service = TestSqlService {
+            adaptive: true,
+            defer: false,
+            result,
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let db = RemoteDatabase::new_mock(|request| -> http::Response<String> {
+            panic!("unexpected REST request: {}", request.url().path());
+        })
+        .with_sql_client(client.clone());
+        let job = db.create_function_async(request, &[]).await.unwrap();
+        job.wait().await.unwrap();
+        let seen = statements.lock().unwrap();
+        let encoded = seen[0]
+            .strip_prefix(r#"CREATE FUNCTION "normalize_score" FROM '"#)
+            .unwrap()
+            .strip_suffix('\'')
+            .unwrap();
+        let sent: serde_json::Value = serde_json::from_str(&encoded.replace("''", "'")).unwrap();
+        assert_eq!(sent.get("refresh_lock").is_some(), expect_field);
+        if expect_field {
+            assert_eq!(sent["refresh_lock"], serde_json::json!(true));
+        }
+        drop(seen);
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
 async fn function_creation_rejects_invalid_execution_controls_before_sql() {
     const REQUEST: &str = include_str!(
         "../../tests/fixtures/first_class_functions/v1/remote_function_controlled_registration_request.json"
