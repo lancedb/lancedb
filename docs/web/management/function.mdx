@@ -94,11 +94,9 @@ scalar:
 ```
 
 <Note>
-A deployment must accept `nullable: true` for a scalar output. An older
-Enterprise server rejects the registration. Declaring the output is not by
-itself an end-to-end change: the server must also record a computed `NULL` as
-assigned rather than pending. Until it does, a computed `NULL` and a row that
-has not been computed are not distinguishable through the declared signature.
+Nullable scalar outputs require an Enterprise server that supports them;
+older servers reject the registration. On a supporting server, a computed
+`NULL` counts as a filled result, independently of its stored value.
 </Note>
 
 A named-struct output may declare nullable fields: whether a row has a result
