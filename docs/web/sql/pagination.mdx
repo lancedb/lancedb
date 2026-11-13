@@ -37,8 +37,10 @@ token. Pages observe the live catalog; continuation does not create a snapshot.
 ## Page size and ordering
 
 The default page limit is 1,000, with a maximum of 10,000. `LIMIT 0` returns
-no rows. Object identifiers are ordered by namespace path components and
-unqualified name; database names are ordered by name. Function history uses
+no rows. Object catalogs order identifiers by namespace path components and
+unqualified name; database names are ordered by name. Table page boundaries
+follow native catalog order, which may differ from logical name order for
+directory-backed tables; table names are sorted within each returned page. Function history uses
 numeric revision order within each name. The token preserves that complete
 position, including when names repeat in different namespaces.
 

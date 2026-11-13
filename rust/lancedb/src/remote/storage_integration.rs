@@ -254,29 +254,6 @@ pub(super) fn decode_info(batches: &[RecordBatch]) -> Result<StorageIntegrationI
         .map_err(|error| invalid(format!("Invalid storage integration SQL result: {error}")))
 }
 
-pub(super) fn decode_names(batches: &[RecordBatch]) -> Result<Vec<String>> {
-    let mut names = Vec::new();
-    for batch in batches {
-        let column = batch
-            .column_by_name("name")
-            .ok_or_else(|| invalid("SQL storage integration listing is missing names"))?;
-        for row in 0..batch.num_rows() {
-            if column.is_null(row) {
-                return Err(invalid("SQL storage integration name cannot be null"));
-            }
-            names.push(
-                string_value(column.as_ref(), row)
-                    .ok_or_else(|| {
-                        invalid("SQL storage integration listing requires string names")
-                    })?
-                    .to_string(),
-            );
-        }
-    }
-    names.sort();
-    Ok(names)
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;

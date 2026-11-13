@@ -10,7 +10,6 @@ use crate::{
     utils::{validate_namespace, validate_secret_name},
 };
 use arrow_array::{Array, Int64Array, RecordBatch, StringArray};
-use futures::TryStreamExt;
 use std::sync::Arc;
 
 pub(in crate::remote) enum SecretWriteOperation {

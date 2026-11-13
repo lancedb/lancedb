@@ -9,7 +9,6 @@ use crate::{
     utils::{validate_namespace, validate_view_name},
     view::ViewDescription,
 };
-use futures::TryStreamExt;
 use lance_namespace::models::JsonArrowSchema;
 use std::sync::Arc;
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
