@@ -637,7 +637,7 @@ mod tests {
             }
             expected.push_str(" (in function_refresh_attempt_failed)");
             assert_eq!(error.to_string(), expected);
-            let Error::JobFailed { job_id, failure } = error else {
+            let crate::error::Error::JobFailed { job_id, failure } = error else {
                 panic!("expected JobFailed");
             };
             assert_eq!(job_id.as_deref(), Some("job-1"));
