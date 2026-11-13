@@ -315,7 +315,7 @@ pub enum PythonRuntimeSpec {
         env: BTreeMap<String, String>,
         /// Operator-defined GPU class; absent uses the deployment default.
         gpu_class: Option<String>,
-        /// Minimum GPUs allocated together to each worker.
+        /// GPUs allocated together to each worker.
         gpus_per_worker: Option<std::num::NonZeroU32>,
     },
     /// A runtime kind introduced by a newer server.
@@ -376,7 +376,7 @@ impl PythonRuntimeSpec {
         }
     }
 
-    /// Minimum GPUs allocated to one worker; zero for CPU runtimes.
+    /// GPUs allocated to one worker; zero for CPU runtimes.
     pub fn gpus_per_worker(&self) -> u32 {
         match self {
             Self::PythonV2 {
