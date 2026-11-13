@@ -345,6 +345,16 @@ export async function runWithSignal<T>(
   }
 }
 
+/** One row-specific range for {@link Table.fetchBlobRanges}. */
+export type BlobRangeRequest = {
+  /** A row ID from a query with row IDs enabled. */
+  rowId: bigint | number;
+  /** Byte offset from the beginning of the logical blob, as a uint64. */
+  offset: bigint;
+  /** Number of bytes to read, as a uint64. Zero returns an empty non-null value. */
+  length: bigint;
+};
+
 /** A half-open byte range `[start, end)` for {@link BlobFile.readRanges}. */
 export type BlobRange = {
   start: bigint;

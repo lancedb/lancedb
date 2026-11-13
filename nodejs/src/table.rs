@@ -17,7 +17,7 @@ use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
-use crate::blob::{BlobFile, copy_blob_buffers, parse_row_ids, spawn_abortable};
+use crate::blob::{BlobFile, BlobRangeRequest, copy_blob_buffers, parse_row_ids, spawn_abortable};
 use crate::error::NapiErrorExt;
 use crate::index::Index;
 use crate::job::JobFailureInfo;
@@ -445,7 +445,32 @@ impl Table {
                 .fetch_blobs(column.as_str(), &row_ids)
                 .await
                 .default_error()?;
-            Ok(copy_blob_buffers(array))
+            copy_blob_buffers(array)
+        })
+    }
+
+    #[napi(catch_unwind)]
+    pub fn fetch_blob_ranges<'env>(
+        &self,
+        env: &'env Env,
+        column: String,
+        requests: Vec<BlobRangeRequest>,
+        signal: Option<AbortSignal>,
+    ) -> napi::Result<PromiseRaw<'env, Vec<Option<Buffer>>>> {
+        let mut ranges = Vec::new();
+        ranges.try_reserve_exact(requests.len()).map_err(|error| {
+            napi::Error::from_reason(format!("cannot allocate blob range requests: {error}"))
+        })?;
+        for request in requests {
+            ranges.push(request.parse()?);
+        }
+        let table = self.inner_ref()?.clone();
+        spawn_abortable(env, signal, async move {
+            let array = table
+                .fetch_blob_ranges(column.as_str(), ranges)
+                .await
+                .default_error()?;
+            copy_blob_buffers(array)
         })
     }
 
