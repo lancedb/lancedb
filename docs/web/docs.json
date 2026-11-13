@@ -81,7 +81,7 @@
     },
     {
       "source": "/basics/offerings",
-      "destination": "/#architecture"
+      "destination": "/basics/embedded-vs-enterprise"
     },
     {
       "source": "/enterprise/deployment",
