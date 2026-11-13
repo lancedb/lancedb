@@ -41,7 +41,8 @@ def remote_server(text_type=pa.string()):
             calls.append(command)
             if b"SHOW STORAGE INTEGRATIONS" in command:
                 match = re.search(
-                    rb"SHOW STORAGE INTEGRATIONS LIMIT (\d+)(?: FROM '([^']+)')?",
+                    rb'SHOW STORAGE INTEGRATIONS IN "public" '
+                    rb"LIMIT (\d+)(?: FROM '([^']+)')?",
                     command,
                 )
                 assert match is not None, command
@@ -220,7 +221,7 @@ def test_sync_storage_integration_lifecycle_and_aws_information(text_type):
     assert b'DROP STORAGE INTEGRATION "raw"' in calls[-1]
     listings = [call for call in calls if b"SHOW STORAGE INTEGRATIONS" in call]
     assert len(listings) == 2
-    assert b"SHOW STORAGE INTEGRATIONS LIMIT 1" in listings[0]
+    assert b'SHOW STORAGE INTEGRATIONS IN "public" LIMIT 1' in listings[0]
     assert b"FROM 'server-storage-page'" in listings[1]
 
 

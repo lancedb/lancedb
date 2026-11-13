@@ -2881,13 +2881,14 @@ fn sql_listing_batch(column: &str, values: &[&str], token: Option<&str>) -> Reco
 async fn remote_mv_listing_uses_server_continuation_tokens() {
     for defer in [false, true] {
         let token = "server'opaque:token";
-        let next_sql = "SHOW MATERIALIZED VIEWS LIMIT 2 FROM 'server''opaque:token'";
+        let next_sql =
+            "SHOW MATERIALIZED VIEWS IN \"team$reports\" LIMIT 2 FROM 'server''opaque:token'";
         let service = TestSqlService {
             adaptive: true,
             defer,
             result_overrides: Arc::new(std::sync::Mutex::new(HashMap::from([
                 (
-                    "SHOW MATERIALIZED VIEWS LIMIT 2".to_owned(),
+                    "SHOW MATERIALIZED VIEWS IN \"team$reports\" LIMIT 2".to_owned(),
                     sql_listing_batch("name", &["a", "b"], Some(token)),
                 ),
                 (next_sql.to_owned(), sql_listing_batch("name", &["z"], None)),
@@ -2929,7 +2930,10 @@ async fn remote_mv_listing_uses_server_continuation_tokens() {
         assert!(second.page_token.is_none());
         assert_eq!(
             *statements.lock().unwrap(),
-            ["SHOW MATERIALIZED VIEWS LIMIT 2", next_sql]
+            [
+                "SHOW MATERIALIZED VIEWS IN \"team$reports\" LIMIT 2",
+                next_sql
+            ]
         );
         for header in headers.lock().unwrap().iter() {
             assert_eq!(header.database, "analytics");
@@ -3076,7 +3080,10 @@ async fn storage_integration_methods_use_sql_with_namespace_and_typed_metadata()
         let statements = statements.lock().unwrap();
         assert!(statements[0].contains("STORAGE_AWS_REGION = 'us-east-1'"));
         assert_eq!(statements[1], "DESCRIBE STORAGE INTEGRATION \"raw\"");
-        assert_eq!(statements[2], "SHOW STORAGE INTEGRATIONS LIMIT 1000");
+        assert_eq!(
+            statements[2],
+            "SHOW STORAGE INTEGRATIONS IN \"platform$aws\" LIMIT 1000"
+        );
         assert_eq!(statements[3], "DROP STORAGE INTEGRATION \"raw\"");
         assert!(statements[4].contains(
             "STORAGE_AWS_ACCESS_KEY_ID_SECRET = \"platform/raw\".\"credentials\".\"key\""
@@ -3477,13 +3484,13 @@ async fn secret_description_uses_the_sql_metadata_projection() {
 async fn secret_listing_uses_server_continuation_tokens() {
     for defer in [false, true] {
         let token = "server'opaque:token";
-        let next_sql = "SHOW SECRETS LIMIT 2 FROM 'server''opaque:token'";
+        let next_sql = "SHOW SECRETS IN \"team$reports\" LIMIT 2 FROM 'server''opaque:token'";
         let service = TestSqlService {
             adaptive: true,
             defer,
             result_overrides: Arc::new(std::sync::Mutex::new(HashMap::from([
                 (
-                    "SHOW SECRETS LIMIT 2".to_owned(),
+                    "SHOW SECRETS IN \"team$reports\" LIMIT 2".to_owned(),
                     sql_listing_batch("name", &["a", "b"], Some(token)),
                 ),
                 (next_sql.to_owned(), sql_listing_batch("name", &["z"], None)),
@@ -3525,7 +3532,7 @@ async fn secret_listing_uses_server_continuation_tokens() {
         assert!(second.page_token.is_none());
         assert_eq!(
             *statements.lock().unwrap(),
-            ["SHOW SECRETS LIMIT 2", next_sql]
+            ["SHOW SECRETS IN \"team$reports\" LIMIT 2", next_sql]
         );
         for header in headers.lock().unwrap().iter() {
             assert_eq!(header.database, "analytics");
@@ -3540,13 +3547,14 @@ async fn secret_listing_uses_server_continuation_tokens() {
 async fn storage_integration_listing_uses_server_continuation_tokens() {
     for defer in [false, true] {
         let token = "server'opaque:token";
-        let next_sql = "SHOW STORAGE INTEGRATIONS LIMIT 2 FROM 'server''opaque:token'";
+        let next_sql =
+            "SHOW STORAGE INTEGRATIONS IN \"team$reports\" LIMIT 2 FROM 'server''opaque:token'";
         let service = TestSqlService {
             adaptive: true,
             defer,
             result_overrides: Arc::new(std::sync::Mutex::new(HashMap::from([
                 (
-                    "SHOW STORAGE INTEGRATIONS LIMIT 2".to_owned(),
+                    "SHOW STORAGE INTEGRATIONS IN \"team$reports\" LIMIT 2".to_owned(),
                     sql_listing_batch("name", &["a", "b"], Some(token)),
                 ),
                 (next_sql.to_owned(), sql_listing_batch("name", &["z"], None)),
@@ -3588,7 +3596,10 @@ async fn storage_integration_listing_uses_server_continuation_tokens() {
         assert!(second.page_token.is_none());
         assert_eq!(
             *statements.lock().unwrap(),
-            ["SHOW STORAGE INTEGRATIONS LIMIT 2", next_sql]
+            [
+                "SHOW STORAGE INTEGRATIONS IN \"team$reports\" LIMIT 2",
+                next_sql
+            ]
         );
         for header in headers.lock().unwrap().iter() {
             assert_eq!(header.database, "analytics");
@@ -3606,11 +3617,11 @@ async fn secret_listing_preserves_empty_continuations_and_validates_page_options
         defer: true,
         result_overrides: Arc::new(std::sync::Mutex::new(HashMap::from([
             (
-                "SHOW SECRETS LIMIT 2".to_owned(),
+                "SHOW SECRETS IN \"team$reports\" LIMIT 2".to_owned(),
                 sql_listing_batch("name", &[], Some("continue-empty")),
             ),
             (
-                "SHOW SECRETS LIMIT 2 FROM 'continue-empty'".to_owned(),
+                "SHOW SECRETS IN \"team$reports\" LIMIT 2 FROM 'continue-empty'".to_owned(),
                 sql_listing_batch("name", &["last"], None),
             ),
         ]))),
@@ -3691,11 +3702,11 @@ async fn function_listing_uses_server_tokens_for_numeric_revision_pages() {
             defer,
             result_overrides: Arc::new(std::sync::Mutex::new(HashMap::from([
                 (
-                    "SHOW FUNCTIONS HISTORY LIMIT 2".to_owned(),
+                    "SHOW FUNCTIONS HISTORY IN \"team\" LIMIT 2".to_owned(),
                     sql_listing_batch("definition", &[VERSION, &second], Some("revision-cursor")),
                 ),
                 (
-                    "SHOW FUNCTIONS HISTORY LIMIT 2 FROM 'revision-cursor'".to_owned(),
+                    "SHOW FUNCTIONS HISTORY IN \"team\" LIMIT 2 FROM 'revision-cursor'".to_owned(),
                     sql_listing_batch("definition", &[&tenth], None),
                 ),
             ]))),
@@ -3738,8 +3749,8 @@ async fn function_listing_uses_server_tokens_for_numeric_revision_pages() {
         assert_eq!(
             *statements.lock().unwrap(),
             [
-                "SHOW FUNCTIONS HISTORY LIMIT 2",
-                "SHOW FUNCTIONS HISTORY LIMIT 2 FROM 'revision-cursor'"
+                "SHOW FUNCTIONS HISTORY IN \"team\" LIMIT 2",
+                "SHOW FUNCTIONS HISTORY IN \"team\" LIMIT 2 FROM 'revision-cursor'"
             ]
         );
         shutdown.send(()).unwrap();
@@ -3831,13 +3842,13 @@ async fn view_drop_uses_a_repeatable_query_job() {
 async fn view_listing_uses_server_continuation_tokens() {
     for defer in [false, true] {
         let token = "server'opaque:token";
-        let next_sql = "SHOW VIEWS LIMIT 2 FROM 'server''opaque:token'";
+        let next_sql = "SHOW VIEWS IN \"team$reports\" LIMIT 2 FROM 'server''opaque:token'";
         let service = TestSqlService {
             adaptive: true,
             defer,
             result_overrides: Arc::new(std::sync::Mutex::new(HashMap::from([
                 (
-                    "SHOW VIEWS LIMIT 2".to_owned(),
+                    "SHOW VIEWS IN \"team$reports\" LIMIT 2".to_owned(),
                     sql_listing_batch("name", &["a", "b"], Some(token)),
                 ),
                 (next_sql.to_owned(), sql_listing_batch("name", &["z"], None)),
@@ -3879,7 +3890,7 @@ async fn view_listing_uses_server_continuation_tokens() {
         assert!(second.page_token.is_none());
         assert_eq!(
             *statements.lock().unwrap(),
-            ["SHOW VIEWS LIMIT 2", next_sql]
+            ["SHOW VIEWS IN \"team$reports\" LIMIT 2", next_sql]
         );
         for header in headers.lock().unwrap().iter() {
             assert_eq!(header.database, "analytics");

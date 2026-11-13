@@ -17,7 +17,7 @@ backtick-quoted identifier with `$` between components, such as
 one path component, relative to an explicit parent schema or the session's
 current schema -- it cannot contain `$` or be qualified with a database.
 
-`SCHEMA` never accepts `IN`. `NAMESPACE` accepts `IN` followed by a complete
+For single-object commands, `SCHEMA` never accepts `IN`. `NAMESPACE` accepts `IN` followed by a complete
 schema identifier. Names are lowercased unless quoted.
 
 ## CREATE SCHEMA and CREATE NAMESPACE {#create}
@@ -138,13 +138,12 @@ parent path as a compact JSON array, and `name`, the unqualified child name.
 Results are ordered by parent path components, then name, and omit namespaces
 the caller cannot use.
 
-`SHOW SCHEMAS` lists recursively in the current database and includes the
-implicit root alias as `namespace_path=[]`, `name=public` when visible. It
-does not accept `IN`. `SHOW NAMESPACES` lists immediate children of the session
-namespace; `IN` selects another parent, optionally in another database. Use
-`IN public` for the current database root or `IN analytics.public` for another
-database root. A missing parent is an error. Recursive traversal is limited
-to 32 levels; larger result sets are fetched in pages.
+`SHOW SCHEMAS` and `SHOW NAMESPACES` are equivalent listings. Without `IN`,
+both list recursively in the current database, include the implicit `public`
+root, and ignore the session namespace. With `IN`, both list immediate children
+of the selected parent. A schema path can appear directly: `IN team$features`;
+a database qualifier is optional. `IN public` selects the current database root,
+and `IN analytics.public` selects another database's root.
 
 Page through results using `LIMIT n [FROM '<page-token>']`. Read the opaque
 `lancedb.next_page_token` from the Arrow result schema metadata and pass it back
@@ -191,7 +190,6 @@ with `IF EXISTS`. Inspect a cascade drop's child jobs with
 | `CREATE SCHEMA child IN parent` | `CREATE NAMESPACE child IN parent` or `` CREATE SCHEMA `parent$child` `` |
 | `` DESCRIBE NAMESPACE `parent$child` `` | `` DESCRIBE SCHEMA `parent$child` `` or `DESCRIBE NAMESPACE child IN parent` |
 | `DROP NAMESPACE analytics.child` | `DROP NAMESPACE child IN analytics.public` |
-| `SHOW SCHEMAS IN parent` | `SHOW NAMESPACES IN parent` |
 
 ## What to read next {#next}
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use super::SqlClient;
+use super::{SqlClient, materialized_view::quote_identifier};
 use crate::{
     database::ExecuteQueryRequest,
     error::{Error, Result},
@@ -40,7 +40,12 @@ impl SqlClient {
         if limit == 0 {
             return Ok((Vec::new(), None));
         }
-        let mut statement = format!("{statement} LIMIT {limit}");
+        let schema = if namespace.is_empty() {
+            "public".to_owned()
+        } else {
+            namespace.join("$")
+        };
+        let mut statement = format!("{statement} IN {} LIMIT {limit}", quote_identifier(&schema));
         if let Some(token) = options.page_token {
             statement.push_str(&format!(" FROM {}", literal(&token)));
         }

@@ -13,10 +13,30 @@ This applies to tables, views, materialized views, functions and function
 history, secrets, storage integrations, namespaces/schemas, and databases.
 
 ```sql
-SHOW TABLES IN analytics.`team$ml` LIMIT 100;
-SHOW TABLES IN analytics.`team$ml` LIMIT 100 FROM '<page-token>';
+SHOW TABLES LIMIT 100;
+SHOW TABLES IN team$ml LIMIT 100;
+SHOW TABLES IN team$ml LIMIT 100 FROM '<page-token>';
+SHOW TABLES IN analytics.team$ml LIMIT 100;
 SHOW DATABASES LIMIT 100 FROM '<page-token>';
 ```
+
+## Namespace scope
+
+`IN` is optional. Without it, listings include root and every authorized
+namespace in the current database, regardless of the session's default namespace.
+With `IN`, objects are listed only in that exact namespace. The scope accepts a
+schema directly: `IN team$ml` means the absolute namespace path `["team", "ml"]`
+in the current database. Use `IN public` for root, or `IN other_db.team$ml` to
+select a different database. Quote schema identifiers containing punctuation or
+mixed case, for example `IN "Team$ML"`.
+
+`SHOW SCHEMAS` and `SHOW NAMESPACES` use the same rules: without `IN` they
+include all namespace paths and the public root; with `IN` they list the
+selected parent's immediate children. `SHOW DATABASES` remains global and
+does not accept `IN`.
+
+SDK APIs that take a namespace send an explicit `IN` clause and continue to
+list that one namespace.
 
 ## Continuation metadata
 

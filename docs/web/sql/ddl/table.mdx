@@ -268,7 +268,8 @@ SHOW TABLES IN analytics.`team$ml` LIMIT 100 FROM '<page-token>';
 
 Returns two non-null string columns: `namespace_path`, a compact JSON array
 of parent namespace components (`[]` for root), and `name`, the unqualified
-object name. An omitted `IN` uses the session namespace; `IN public` selects
+object name. Omitting `IN` lists all authorized namespaces in the current database;
+`IN team$ml` selects that exact path without a database qualifier; `IN public` selects
 the current database's root. Listings require the relevant database and
 namespace `USAGE` privileges.
 
