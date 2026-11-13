@@ -368,7 +368,8 @@ impl PythonRuntimeSpec {
         matches!(self, Self::PythonV2 { .. })
     }
 
-    /// Operator-defined GPU class, or `None` to use the deployment default.
+    /// Requested GPU class, `"any"` for any eligible class, or `None` for the
+    /// deployment default. This does not identify the hardware selected for execution.
     pub fn gpu_class(&self) -> Option<&str> {
         match self {
             Self::PythonV2 { gpu_class, .. } => gpu_class.as_deref(),
