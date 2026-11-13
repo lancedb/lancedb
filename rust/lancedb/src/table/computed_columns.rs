@@ -1438,13 +1438,12 @@ fn ensure_binding_matches_schema(schema: &ArrowSchema, binding: &FunctionBinding
             .outputs()
             .iter()
             .find(|output| output.result_field == WHOLE_RESULT_FIELD)
+            && (binding.outputs().len() != 1 || !nullable_scalar_allows_assignment(whole_result)?)
         {
-            if binding.outputs().len() != 1 || !nullable_scalar_allows_assignment(whole_result)? {
-                return Err(invalid_function(format!(
-                    "Function binding '{}' cannot attach an assignment column to a whole result; only a single nullable scalar output permits one",
-                    binding.binding_id()
-                )));
-            }
+            return Err(invalid_function(format!(
+                "Function binding '{}' cannot attach an assignment column to a whole result; only a single nullable scalar output permits one",
+                binding.binding_id()
+            )));
         }
         // Servers may include the internal assignment in the persisted output
         // schema while omitting it from describe. Compare only user outputs.
