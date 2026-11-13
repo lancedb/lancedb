@@ -20,19 +20,19 @@ In SQL this is [`CREATE MATERIALIZED VIEW`](/sql/ddl/materialized-view#create).
 ## Create a view {#create}
 
 A materialized view is defined by a SQL query, so it is created with one.
-From Python, run the statement on an [Enterprise connection](/basics/catalog#enterprise)
-with [`execute_query`](/basics/sql#sql-from-python); the SQL is the same
-either way:
+From Python, pass the defining query to `create_materialized_view` on an
+[Enterprise connection](/basics/catalog#enterprise):
 
 <CodeGroup>
 ```python Python icon="python"
-db.execute_query("""
-    CREATE MATERIALIZED VIEW frames_captioned AS
-    SELECT frame_id, video_id, ts, caption
-    FROM frames
-    WHERE selected = true
-""").read_all()
-view = db.open_materialized_view("frames_captioned")
+view = db.create_materialized_view(
+    "frames_captioned",
+    query="""
+        SELECT frame_id, video_id, ts, caption
+        FROM frames
+        WHERE selected = true
+    """,
+)
 ```
 
 ```sql SQL icon="database"
@@ -43,9 +43,11 @@ WHERE selected = true
 ```
 </CodeGroup>
 
-`execute_query` returns once the result stream is readable, not once the
-statement has finished, so `.read_all()` waits out the full creation before
-the next line opens it.
+`create_materialized_view` waits for creation and initial population, then
+returns the view handle. Use `create_materialized_view_async` to submit a job
+and wait for it separately. Both methods accept `query=` on synchronous and
+asynchronous connections. `query` cannot be combined with `source`, `select`,
+`where`, or `limit`; put those clauses in the query itself.
 
 The query defines the view: here, the `frames` table's `frame_id`,
 `video_id`, `ts` and `caption` columns, filtered to the frames selected for

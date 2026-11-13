@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from lancedb.server_info import ServerInfo
+
 from dataclasses import replace
 from datetime import timedelta
 import json
@@ -790,8 +792,9 @@ class RemoteDBConnection(DBConnection):
     def create_materialized_view(
         self,
         name: str,
-        source: MaterializedViewSource,
+        source: Optional[MaterializedViewSource] = None,
         *,
+        query: Optional[str] = None,
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
@@ -805,6 +808,7 @@ class RemoteDBConnection(DBConnection):
             self._conn.create_materialized_view(
                 name,
                 source,
+                query=query,
                 select=select,
                 where=where,
                 limit=limit,
@@ -826,8 +830,9 @@ class RemoteDBConnection(DBConnection):
     def create_materialized_view_async(
         self,
         name: str,
-        source: MaterializedViewSource,
+        source: Optional[MaterializedViewSource] = None,
         *,
+        query: Optional[str] = None,
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
@@ -839,6 +844,7 @@ class RemoteDBConnection(DBConnection):
             self._conn.create_materialized_view_async(
                 name,
                 source,
+                query=query,
                 select=select,
                 where=where,
                 limit=limit,
@@ -965,6 +971,13 @@ class RemoteDBConnection(DBConnection):
         [DBConnection.open_job][lancedb.db.DBConnection.open_job].
         """
         return Job(LOOP.run(self._conn.open_job(job_id)))
+
+    @override
+    def server_info(self) -> ServerInfo:
+        """Read the responding server's build information. See
+        [DBConnection.server_info][lancedb.db.DBConnection.server_info].
+        """
+        return LOOP.run(self._conn.server_info())
 
     @override
     def list_gpu_classes(self) -> List[GpuClass]:

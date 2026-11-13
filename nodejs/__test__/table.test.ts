@@ -3019,6 +3019,43 @@ describe("when dealing with blob columns", () => {
     expect(bytes.map((b) => b?.toString())).toEqual(["new", "hi"]);
   });
 
+  it("fetchBlobRanges reads local ranges with order, duplicates, nulls and validation", async () => {
+    const { table, rowIds } = await openBlobTable();
+    const [alphaId, betaId, nullId] = rowIds;
+    const requests = [
+      { rowId: betaId, offset: 1n, length: 3n },
+      { rowId: alphaId, offset: 0n, length: 2n },
+      { rowId: nullId, offset: 0n, length: 1n },
+      { rowId: alphaId, offset: 5n, length: 0n },
+      { rowId: betaId, offset: 1n, length: 3n },
+    ];
+    expect(await table.fetchBlobRanges("image", requests)).toEqual([
+      Buffer.from("eta"),
+      Buffer.from("al"),
+      null,
+      Buffer.alloc(0),
+      Buffer.from("eta"),
+    ]);
+    expect(await table.fetchBlobRanges("image", [])).toEqual([]);
+    await expect(
+      table.fetchBlobRanges("image", [
+        { rowId: alphaId, offset: 4n, length: 2n },
+      ]),
+    ).rejects.toThrow();
+    await expect(
+      table.fetchBlobRanges("image", [
+        { rowId: (1n << 63n) - 1n, offset: 0n, length: 1n },
+      ]),
+    ).rejects.toThrow();
+    const controller = new AbortController();
+    expect(
+      await table.fetchBlobRanges("image", requests, {
+        signal: controller.signal,
+      }),
+    ).toHaveLength(5);
+    expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
+  });
+
   it("discovers blob columns", async () => {
     const { table } = await openBlobTable();
     expect(await table.blobColumns()).toEqual(["image"]);

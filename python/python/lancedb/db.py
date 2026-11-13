@@ -58,6 +58,7 @@ from lance_namespace import (
 from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
 
 from . import __version__
+from .server_info import ServerInfo
 from ._lancedb import _append_doc_url, connect as lancedb_connect  # type: ignore
 from .functions import FunctionVersion, FunctionDefinition
 from .graph import (
@@ -78,6 +79,7 @@ from .materialized_view import (
     MaterializedViewSource,
     SelectArg,
     normalize_select,
+    _validate_create_materialized_view,
 )
 from .secrets import (
     EnvVarSecret,
@@ -697,8 +699,9 @@ class DBConnection(EnforceOverrides):
     def create_materialized_view(
         self,
         name: str,
-        source: MaterializedViewSource,
+        source: Optional[MaterializedViewSource] = None,
         *,
+        query: Optional[str] = None,
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
@@ -721,8 +724,12 @@ class DBConnection(EnforceOverrides):
         ----------
         name: str
             The name of the view.
-        source: str
-            The name of the source table.
+        source: str, optional
+            The name of the source table. Required when ``query`` is omitted.
+        query: str, optional
+            The complete defining SQL query, including any GROUP BY or FROM
+            Function. Mutually exclusive with ``source``, ``select``, ``where``
+            and ``limit``. Supported query shapes depend on the backend.
         select: list or dict, optional
             The view's columns: column names, ``(alias, SQL expression)``
             pairs, or a dict of the same. Omitting it selects every source
@@ -744,6 +751,13 @@ class DBConnection(EnforceOverrides):
         Returns
         -------
         MaterializedView
+
+        Examples
+        --------
+        >>> view = db.create_materialized_view(  # doctest: +SKIP
+        ...     "events_by_kind",
+        ...     query="SELECT kind, count(*) AS n FROM events GROUP BY kind",
+        ... )
         """
         raise NotImplementedError(
             _append_doc_url(
@@ -755,8 +769,9 @@ class DBConnection(EnforceOverrides):
     def create_materialized_view_async(
         self,
         name: str,
-        source: MaterializedViewSource,
+        source: Optional[MaterializedViewSource] = None,
         *,
+        query: Optional[str] = None,
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
@@ -1476,6 +1491,22 @@ class DBConnection(EnforceOverrides):
             )
         )
 
+    def server_info(self) -> ServerInfo:
+        """Return the responding server's build and Function runtime information.
+
+        This call submits no query, Function, or job. The response is a
+        JSON-compatible dictionary, convenient to include in a bug report::
+
+            info = db.server_info()
+            print(info["query_node"])  # release, git_sha, build_date
+
+        Requires System Usage permission. Embedded connections and older
+        servers without this endpoint raise ``NotImplementedError``.
+        Different calls can reach different builds during a rolling upgrade.
+        Configured images do not identify the version of a running job.
+        """
+        raise NotImplementedError("Server build discovery requires a remote connection")
+
     def list_gpu_classes(self) -> List[GpuClass]:
         """List the operator-configured Function GPU classes.
 
@@ -2091,8 +2122,9 @@ class LanceDBConnection(DBConnection):
     def create_materialized_view(
         self,
         name: str,
-        source: MaterializedViewSource,
+        source: Optional[MaterializedViewSource] = None,
         *,
+        query: Optional[str] = None,
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
@@ -2127,6 +2159,7 @@ class LanceDBConnection(DBConnection):
             self._conn.create_materialized_view(
                 name,
                 source,
+                query=query,
                 select=select,
                 where=where,
                 limit=limit,
@@ -2141,8 +2174,9 @@ class LanceDBConnection(DBConnection):
     def create_materialized_view_async(
         self,
         name: str,
-        source: MaterializedViewSource,
+        source: Optional[MaterializedViewSource] = None,
         *,
+        query: Optional[str] = None,
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
@@ -2154,6 +2188,7 @@ class LanceDBConnection(DBConnection):
             self._conn.create_materialized_view_async(
                 name,
                 source,
+                query=query,
                 select=select,
                 where=where,
                 limit=limit,
@@ -3373,8 +3408,9 @@ class AsyncConnection(object):
     async def create_materialized_view(
         self,
         name: str,
-        source: MaterializedViewSource,
+        source: Optional[MaterializedViewSource] = None,
         *,
+        query: Optional[str] = None,
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
@@ -3390,9 +3426,15 @@ class AsyncConnection(object):
         See
         [DBConnection.create_materialized_view][lancedb.DBConnection.create_materialized_view].
         """
-        source, native_options = await self._materialized_view_source(
-            source, select, where, limit
-        )
+        _validate_create_materialized_view(source, query, select, where, limit)
+        if source is not None:
+            source, native_options = await self._materialized_view_source(
+                source, select, where, limit
+            )
+        else:
+            native_options = {}
+        if query is not None:
+            native_options["query"] = query
         inner = await self._inner.create_materialized_view(
             name,
             source,
@@ -3409,8 +3451,9 @@ class AsyncConnection(object):
     async def create_materialized_view_async(
         self,
         name: str,
-        source: MaterializedViewSource,
+        source: Optional[MaterializedViewSource] = None,
         *,
+        query: Optional[str] = None,
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
@@ -3424,9 +3467,15 @@ class AsyncConnection(object):
         Enterprise, creation uses SQL; ``job_type`` is ``"query"`` and ``id``
         identifies that query on this connection.
         """
-        source, native_options = await self._materialized_view_source(
-            source, select, where, limit
-        )
+        _validate_create_materialized_view(source, query, select, where, limit)
+        if source is not None:
+            source, native_options = await self._materialized_view_source(
+                source, select, where, limit
+            )
+        else:
+            native_options = {}
+        if query is not None:
+            native_options["query"] = query
         inner = await self._inner.create_materialized_view_async(
             name,
             source,
@@ -3652,6 +3701,12 @@ class AsyncConnection(object):
         [DBConnection.open_job][lancedb.db.DBConnection.open_job].
         """
         return _opened_job(await self._inner.open_job(job_id))
+
+    async def server_info(self) -> ServerInfo:
+        """Read the responding server's build information. See
+        [DBConnection.server_info][lancedb.db.DBConnection.server_info].
+        """
+        return json.loads(await self._inner.server_info())
 
     async def list_gpu_classes(self) -> List[GpuClass]:
         """List configured Function GPU classes. See

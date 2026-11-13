@@ -33,6 +33,53 @@ use crate::remote::table::RemoteTable;
 use crate::storage_integration::{CreateStorageIntegrationRequest, SecretReference};
 use crate::table::BaseTable;
 
+#[test]
+fn server_info_survives_flight_error_and_job_wrapping() {
+    for with_job in [false, true] {
+        let mut status = tonic::Status::invalid_argument("invalid query");
+        status
+            .metadata_mut()
+            .insert("x-lancedb-error-code", "invalid_query".parse().unwrap());
+        let build = serde_json::json!({
+            "release": "1.2.3", "git_sha": "0123456789ab", "build_date": "2024-01-01T00:00:00Z"
+        })
+        .to_string();
+        status.metadata_mut().insert_bin(
+            "x-lancedb-server-build-bin",
+            tonic::metadata::MetadataValue::from_bytes(build.as_bytes()),
+        );
+        if with_job {
+            status
+                .metadata_mut()
+                .insert(SQL_JOB_ID_METADATA_KEY, "job-original".parse().unwrap());
+        }
+        let error = sql_status_error("request-original", &status);
+        let text = error.to_string();
+        assert!(text.contains("invalid query"), "{text}");
+        assert!(text.contains("1.2.3"), "{text}");
+        assert!(text.contains("0123456789ab"), "{text}");
+        assert!(text.contains("2024-01-01T00:00:00Z"), "{text}");
+        assert_eq!(
+            error.remote_error_metadata().unwrap().error_code.as_deref(),
+            Some("invalid_query")
+        );
+        match error {
+            Error::JobFailed { job_id, .. } if with_job => {
+                assert_eq!(job_id.as_deref(), Some("job-original"))
+            }
+            Error::Sql {
+                grpc_code,
+                request_id,
+                ..
+            } if !with_job => {
+                assert_eq!(grpc_code, tonic::Code::InvalidArgument as i32);
+                assert_eq!(request_id, "request-original");
+            }
+            other => panic!("unexpected error classification: {other}"),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct DelayedHeaderProvider {
     delay_next: AtomicBool,
@@ -1085,6 +1132,61 @@ async fn catalog_connections_use_explicit_sql_endpoint_and_database_scope() {
             assert_eq!(header.namespace_path, "public");
             assert!(header.database_prefix.is_empty());
         }
+    }
+    shutdown_tx.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn remote_query_builder_sends_the_complete_query() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let incoming = futures::stream::try_unfold(listener, |listener| async {
+        let (socket, _) = listener.accept().await?;
+        Ok::<_, std::io::Error>(Some((socket, listener)))
+    });
+    let service = TestSqlService {
+        adaptive: true,
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(
+        tonic::transport::Server::builder()
+            .add_service(FlightServiceServer::new(service))
+            .serve_with_incoming_shutdown(incoming, async {
+                let _ = shutdown_rx.await;
+            }),
+    );
+    let connection = crate::connect("db://analytics")
+        .region("us-east-1")
+        .api_key("test-key")
+        .host_override("http://127.0.0.1:1")
+        .sql_host_override(&format!("grpc://{address}"))
+        .execute()
+        .await
+        .unwrap();
+    for query in [
+        "SELECT kind, count(*) AS n FROM events GROUP BY kind",
+        "SELECT id, c.text FROM docs, chunk(body) AS c",
+        "SELECT id, tag FROM events, UNNEST(tags) AS tag",
+        "SELECT a.id FROM a JOIN b ON a.id = b.id",
+    ] {
+        connection
+            .create_materialized_view_from_query("result", query)
+            .auto_refresh_enabled(false)
+            .execute_async()
+            .await
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        assert_eq!(
+            statements.lock().unwrap().last().unwrap(),
+            &format!(
+                "CREATE MATERIALIZED VIEW \"result\" WITH (auto_refresh_enabled = false) AS {query}"
+            )
+        );
     }
     shutdown_tx.send(()).unwrap();
     server.await.unwrap().unwrap();
