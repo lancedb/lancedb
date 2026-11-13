@@ -364,7 +364,7 @@ describe("fetchBlobRanges", () => {
           expect(handle!.isClosed()).toBe(false);
           expect(await handle!.tell()).toBe(0n);
           // The single request permit must also be released by cancellation.
-          expect(await handle!.readRange(0n, 4n)).toEqual(Buffer.from("alph"));
+          expect(await handle!.readRange(0n, 5n)).toEqual(Buffer.from("alpha"));
         } finally {
           controller.abort();
           await handle!.close();
