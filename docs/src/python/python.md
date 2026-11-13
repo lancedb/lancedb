@@ -564,6 +564,14 @@ with BlobReader(read_range, len(payload)) as reader:
 
 ::: lancedb.functions.FunctionVersion
 
+::: lancedb.functions.FunctionEnvironment
+
+::: lancedb.functions.ResolvedEnvironment
+
+::: lancedb.functions.ResolvedPackage
+
+::: lancedb.functions.ResolvedEnvironmentProvenance
+
 ::: lancedb.functions.HuggingFaceModel
 
 ::: lancedb.functions.PythonRuntimeSpec

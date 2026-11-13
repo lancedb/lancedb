@@ -36,6 +36,7 @@ from typing import (
     Any,
     Callable,
     Literal,
+    NamedTuple,
     Optional,
     TYPE_CHECKING,
     Union,
@@ -542,6 +543,68 @@ class FunctionImage(_RemoteValue):
     models: tuple[HuggingFaceModel, ...] = ()
 
 
+class ResolvedPackage(_RemoteValue):
+    """One installed Python distribution measured from a baked environment.
+
+    ``version`` is the complete version reported by package metadata,
+    including local labels such as ``+cu130``. ``source`` is present only when
+    the submitted lock retained a per-package source; absent means unknown, not
+    an inferred index.
+    """
+
+    name: str
+    version: str
+    source: Optional[str] = None
+
+
+class ResolvedEnvironmentProvenance(_RemoteValue):
+    """Sanitized source and accelerator provenance for a resolved environment.
+
+    ``configured_index_urls`` and ``configured_find_links`` record build
+    inputs. ``resolved_indexes`` records indexes visible in the submitted lock,
+    so a configured source is not by itself evidence that a package came from
+    it. Empty lists and absent fields remain absent; the client does not
+    synthesize them.
+    """
+
+    configured_index_urls: tuple[str, ...] = ()
+    configured_find_links: tuple[str, ...] = ()
+    resolved_indexes: tuple[str, ...] = ()
+    cuda_toolkit: Optional[str] = None
+    torch_version: Optional[str] = None
+
+
+class ResolvedEnvironment(_RemoteValue):
+    """Actual installed distributions and registration warnings.
+
+    A missing value on [FunctionVersion][lancedb.functions.FunctionVersion]
+    means the version or environment cache predates measurement. It is unknown
+    data, not an empty installed-package list. Versions are retained verbatim,
+    including local labels; package ``source`` is retained only when the
+    producer recorded it.
+    """
+
+    packages: tuple[ResolvedPackage, ...]
+    provenance: Optional[ResolvedEnvironmentProvenance] = None
+    warnings: tuple[str, ...] = ()
+
+
+class FunctionEnvironment(NamedTuple):
+    """Requested and measured environment view for a Function version.
+
+    This is a view over
+    [FunctionVersion.runtime][lancedb.functions.FunctionVersion.runtime]
+    and
+    [FunctionVersion.resolved_environment][lancedb.functions.FunctionVersion.resolved_environment].
+    It adds no wire field and performs no second parse. ``requested`` is the
+    runtime specification supplied at registration; ``resolved`` is measured
+    data and is ``None`` when unknown.
+    """
+
+    requested: Optional[PythonRuntimeSpec]
+    resolved: Optional[ResolvedEnvironment]
+
+
 def _validate_object_version(value: str) -> str:
     if int(value) > 2**64 - 1:
         raise ValueError("Function version exceeds uint64")
@@ -591,6 +654,14 @@ class FunctionVersion(_RemoteValue):
     ``result_stability`` retain the execution controls reported by the
     catalog. They are ``None`` for versions registered before the
     corresponding declaration.
+
+    ``runtime`` is the runtime specification requested at registration. It is
+    not evidence of what was installed. ``resolved_environment`` is measured
+    data: actual package names and complete versions, optional per-package
+    source, provenance, and registration warnings. ``None`` for either field
+    means the server or environment cache predates exposure, not an empty
+    value. ``environment`` is a convenience view with ``requested`` and
+    ``resolved`` members over the same fields.
     """
 
     name: str
@@ -611,6 +682,8 @@ class FunctionVersion(_RemoteValue):
     max_concurrency: Optional[int] = None
     row_timeout_seconds: Optional[float] = None
     result_stability: Optional[str] = None
+    runtime: Optional[PythonRuntimeSpec] = None
+    resolved_environment: Optional[ResolvedEnvironment] = None
 
     @field_validator("batch_size", mode="before")
     @classmethod
@@ -626,6 +699,14 @@ class FunctionVersion(_RemoteValue):
     @classmethod
     def _validate_row_timeout(cls, value):
         return _validate_row_timeout(value)
+
+    @property
+    def environment(self) -> FunctionEnvironment:
+        """Requested and measured environment without adding a second parser."""
+        return FunctionEnvironment(
+            requested=self.runtime,
+            resolved=self.resolved_environment,
+        )
 
     def __call__(self, **arguments: Any) -> FunctionApplication:
         """Bind this exact version to named table columns.
@@ -2981,6 +3062,7 @@ __all__ = [
     "FunctionArtifactContent",
     "FunctionArtifactRequest",
     "FunctionBinding",
+    "FunctionEnvironment",
     "FunctionOutput",
     "FunctionParameter",
     "FunctionRegistrationRequest",
@@ -2996,6 +3078,9 @@ __all__ = [
     "PythonEnvironmentSpec",
     "PythonAdapterSpec",
     "PythonRuntimeSpec",
+    "ResolvedEnvironment",
+    "ResolvedEnvironmentProvenance",
+    "ResolvedPackage",
     "RefreshColumnResult",
     "FunctionDefinition",
 ]

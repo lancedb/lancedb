@@ -521,6 +521,60 @@ pub struct HuggingFaceModel {
     pub revision: String,
 }
 
+/// One installed Python distribution as measured from a Function's baked
+/// environment.
+///
+/// `version` is the complete version string reported by the package metadata,
+/// including local labels such as `+cu130`. `source` is present only when the
+/// submitted lock retained a per-package source; a missing value is unknown and
+/// must not be inferred from other package indexes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedPackage {
+    pub name: String,
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+/// Sanitized source and accelerator provenance retained with a resolved
+/// environment.
+///
+/// `configured_*` records what the build was asked to use. `resolved_indexes`
+/// records indexes visible in the submitted lock, so a configured source is
+/// not mistaken for evidence that a package came from it. Empty lists and
+/// absent fields remain absent rather than being synthesized by the client.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedEnvironmentProvenance {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub configured_index_urls: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub configured_find_links: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resolved_indexes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cuda_toolkit: Option<String>,
+    /// The fully resolved `torch==<version>` when torch was installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub torch_version: Option<String>,
+}
+
+/// Actual installed distributions and registration warnings for one immutable
+/// Function version.
+///
+/// A missing `resolved_environment` on [`FunctionVersion`] means the version or
+/// environment cache predates measurement. It is unknown data, not an empty
+/// installed-package list. The field keeps the complete versions and only the
+/// provenance the producer recorded; SDK readers do not recompute package
+/// policy.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedEnvironment {
+    pub packages: Vec<ResolvedPackage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<ResolvedEnvironmentProvenance>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
 /// A complete OCI Function image. Its digest is independent of catalog names.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionImage {
@@ -626,6 +680,19 @@ pub struct FunctionVersion {
     /// Result-stability value declared at registration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     result_stability: Option<String>,
+    /// The runtime requested at registration, with submitted lock bytes omitted.
+    ///
+    /// This is a specification, not the measured installation. Compare it with
+    /// [`Self::resolved_environment`] when the caller needs actual package
+    /// versions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime: Option<PythonRuntimeSpec>,
+    /// Actual installed distributions, provenance, and registration warnings.
+    ///
+    /// `None` means the version or environment cache predates measurement; it
+    /// does not mean that the environment contained no packages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resolved_environment: Option<ResolvedEnvironment>,
 }
 
 impl FunctionVersion {
@@ -714,6 +781,24 @@ impl FunctionVersion {
     /// Result-stability value declared at registration, when present.
     pub fn result_stability(&self) -> Option<&str> {
         self.result_stability.as_deref()
+    }
+
+    /// The runtime specification requested at registration, when exposed by the
+    /// server.
+    ///
+    /// This is the requested configuration, not evidence of what was installed.
+    pub fn runtime(&self) -> Option<&PythonRuntimeSpec> {
+        self.runtime.as_ref()
+    }
+
+    /// Actual installed distributions and registration warnings, when measured
+    /// by the server.
+    ///
+    /// `None` is unknown, not an empty environment. Package versions are
+    /// retained verbatim, including local labels such as `+cu130`; `source`
+    /// remains absent when the producer did not retain it.
+    pub fn resolved_environment(&self) -> Option<&ResolvedEnvironment> {
+        self.resolved_environment.as_ref()
     }
 
     pub fn signature(&self) -> &FunctionSignature {
@@ -1412,6 +1497,85 @@ mod tests {
         assert_eq!(encoded["max_concurrency"], 4);
 
         document["max_concurrency"] = serde_json::json!(0);
+        assert!(FunctionVersion::from_json(&document.to_string()).is_err());
+    }
+
+    #[test]
+    fn function_version_preserves_requested_and_resolved_environments() {
+        const VERSION: &str = include_str!(
+            "../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
+        );
+        let mut document: Value = serde_json::from_str(VERSION).unwrap();
+        let legacy = FunctionVersion::from_json(VERSION).unwrap();
+        assert!(legacy.runtime().is_none());
+        assert!(legacy.resolved_environment().is_none());
+
+        document["runtime"] = serde_json::json!({
+            "kind": "python",
+            "python_version": "3.12",
+            "environment": {
+                "kind": "pip",
+                "packages": ["vllm==0.11.0"]
+            }
+        });
+        document["resolved_environment"] = serde_json::json!({
+            "packages": [
+                {
+                    "name": "torch",
+                    "version": "2.9.0+cu130",
+                    "source": "https://packages.example/simple"
+                },
+                {
+                    "name": "transformers",
+                    "version": "4.57.1"
+                }
+            ],
+            "provenance": {
+                "configured_index_urls": ["https://packages.example/simple"],
+                "configured_find_links": ["https://downloads.example/wheels"],
+                "resolved_indexes": ["https://packages.example/simple"],
+                "cuda_toolkit": "12.8",
+                "torch_version": "torch==2.9.0+cu130"
+            },
+            "warnings": [
+                "transformers resolved to transformers==4.57.1 but is not pinned exactly; add transformers==4.57.1 to pin it."
+            ]
+        });
+
+        let version = FunctionVersion::from_json(&document.to_string()).unwrap();
+        assert_eq!(version.runtime().unwrap().kind(), "python");
+        let resolved = version.resolved_environment().unwrap();
+        assert_eq!(resolved.packages[0].version, "2.9.0+cu130");
+        assert_eq!(
+            resolved.packages[0].source.as_deref(),
+            Some("https://packages.example/simple")
+        );
+        assert_eq!(resolved.packages[1].source, None);
+        assert_eq!(
+            resolved
+                .provenance
+                .as_ref()
+                .unwrap()
+                .torch_version
+                .as_deref(),
+            Some("torch==2.9.0+cu130")
+        );
+        assert_eq!(resolved.warnings.len(), 1);
+
+        let encoded = version.to_canonical_json().unwrap();
+        let encoded_value: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(
+            encoded_value["resolved_environment"]["packages"][0]["version"],
+            "2.9.0+cu130"
+        );
+        assert!(
+            encoded_value["resolved_environment"]["packages"][1]
+                .get("source")
+                .is_none()
+        );
+        assert_eq!(FunctionVersion::from_json(&encoded).unwrap(), version);
+
+        document["resolved_environment"] = serde_json::json!({"warnings": []});
         assert!(FunctionVersion::from_json(&document.to_string()).is_err());
     }
 

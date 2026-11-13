@@ -154,6 +154,29 @@ def _normalize_function_version(version: Optional[Union[int, str]]) -> Optional[
     raise TypeError("version must be an int, str, or None")
 
 
+def _function_registration_decoder():
+    """Parse a registration result and emit its server warnings once.
+
+    The warnings are part of the registration job result, not a new client-side
+    package policy. Catalog get/list readbacks use ``FunctionVersion.from_json``
+    directly and therefore do not replay them.
+    """
+    warned = False
+
+    def decode(payload: str) -> FunctionVersion:
+        nonlocal warned
+        version = FunctionVersion.from_json(payload)
+        if not warned:
+            resolved = version.resolved_environment
+            if resolved is not None:
+                for message in resolved.warnings:
+                    warnings.warn(message, UserWarning, stacklevel=3)
+            warned = True
+        return version
+
+    return decode
+
+
 class DBConnection(EnforceOverrides):
     """An active LanceDB connection interface.
 
@@ -1029,6 +1052,10 @@ class DBConnection(EnforceOverrides):
             Ask the server to resolve a fresh environment lock instead of
             reusing the published version's lock.
 
+        When the registration job resolves, each resolved-environment warning
+        reported by the server is emitted as a Python ``UserWarning``. Catalog
+        reads do not replay those registration warnings.
+
         Examples
         --------
         ```python
@@ -1066,7 +1093,9 @@ class DBConnection(EnforceOverrides):
         LanceDB Embedded connections raise ``NotImplementedError``.
 
         ``refresh_lock`` asks the server to resolve a fresh environment lock
-        instead of reusing the published version's lock.
+        instead of reusing the published version's lock. Waiting on the job
+        emits the server's resolved-environment warnings as Python warnings;
+        reading the same version later does not repeat them.
         """
         raise NotImplementedError(
             _append_doc_url(
@@ -3756,7 +3785,7 @@ class AsyncConnection(object):
         inner = await self._inner.create_function_async(
             request.to_canonical_json(), namespace_path
         )
-        return _typed_job(inner, FunctionVersion.from_json)
+        return _typed_job(inner, _function_registration_decoder())
 
     async def get_function(
         self,

@@ -3101,6 +3101,30 @@ async fn function_creation_and_description_use_sql_query_handles() {
         version_json["max_concurrency"] = serde_json::json!(4);
         version_json["row_timeout_seconds"] = serde_json::json!(8.0);
         version_json["result_stability"] = serde_json::json!("input_and_context");
+        version_json["runtime"] = request_json["runtime"].clone();
+        version_json["resolved_environment"] = serde_json::json!({
+            "packages": [
+                {
+                    "name": "torch",
+                    "version": "2.9.0+cu130",
+                    "source": "https://packages.example/simple"
+                },
+                {
+                    "name": "transformers",
+                    "version": "4.57.1"
+                }
+            ],
+            "provenance": {
+                "configured_index_urls": ["https://packages.example/simple"],
+                "configured_find_links": [],
+                "resolved_indexes": ["https://packages.example/simple"],
+                "cuda_toolkit": "12.8",
+                "torch_version": "torch==2.9.0+cu130"
+            },
+            "warnings": [
+                "transformers resolved to transformers==4.57.1 but is not pinned exactly; add transformers==4.57.1 to pin it."
+            ]
+        });
         if with_models {
             let models = serde_json::json!([{
                 "repo": "sentence-transformers/all-MiniLM-L6-v2",
@@ -3145,6 +3169,11 @@ async fn function_creation_and_description_use_sql_query_handles() {
         assert_eq!(created.max_concurrency(), Some(4));
         assert_eq!(created.row_timeout_seconds(), Some(8.0));
         assert_eq!(created.result_stability(), Some("input_and_context"));
+        assert_eq!(created.runtime().unwrap().kind(), "python");
+        assert_eq!(
+            created.resolved_environment().unwrap().packages[0].version,
+            "2.9.0+cu130"
+        );
         // Assert the actual SQL body, after the same native JSON decode used
         // by the Python binding, rather than only the Python declaration.
         {
@@ -3166,6 +3195,15 @@ async fn function_creation_and_description_use_sql_query_handles() {
         assert_eq!(created_json["row_timeout_seconds"], 8.0);
         assert_eq!(created_json["result_stability"], "input_and_context");
         assert_eq!(
+            created_json["resolved_environment"]["packages"][0]["version"],
+            "2.9.0+cu130"
+        );
+        assert!(
+            created_json["resolved_environment"]["packages"][1]
+                .get("source")
+                .is_none()
+        );
+        assert_eq!(
             client.describe(id).await.unwrap().status,
             QueryStatus::Finished
         );
@@ -3178,6 +3216,18 @@ async fn function_creation_and_description_use_sql_query_handles() {
         assert_eq!(described.max_concurrency(), Some(4));
         assert_eq!(described.row_timeout_seconds(), Some(8.0));
         assert_eq!(described.result_stability(), Some("input_and_context"));
+        assert_eq!(described.runtime().unwrap().kind(), "python");
+        assert_eq!(
+            described
+                .resolved_environment()
+                .unwrap()
+                .provenance
+                .as_ref()
+                .unwrap()
+                .torch_version
+                .as_deref(),
+            Some("torch==2.9.0+cu130")
+        );
         let described_json: serde_json::Value =
             serde_json::from_str(&described.to_canonical_json().unwrap()).unwrap();
         assert_eq!(described_json["image"].get("models"), expected_models);
@@ -3203,6 +3253,15 @@ async fn function_creation_and_description_use_sql_query_handles() {
         assert_eq!(
             listed.items[0].result_stability(),
             Some("input_and_context")
+        );
+        assert_eq!(listed.items[0].runtime().unwrap().kind(), "python");
+        assert_eq!(
+            listed.items[0]
+                .resolved_environment()
+                .unwrap()
+                .warnings
+                .len(),
+            1
         );
         let listed_json: serde_json::Value =
             serde_json::from_str(&listed.items[0].to_canonical_json().unwrap()).unwrap();

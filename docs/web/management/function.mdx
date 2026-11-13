@@ -173,6 +173,65 @@ are not included; list each namespace separately. A version's
 `created_at_millis`, `metadata`, `disabled` flag, and `secret_bindings` are
 all readable this way without applying or calling the function.
 
+### Inspect the resolved environment {#resolved-environment}
+
+The version keeps the requested runtime separate from what the server actually
+installed. `version.runtime` is the specification sent at registration.
+`version.resolved_environment` is measured data from the built image:
+
+```python
+version = db.get_function("double")
+print(version.runtime)                    # requested runtime, or None for legacy
+print(version.environment.resolved)       # measured environment, or None for legacy
+
+if version.environment.resolved is not None:
+    for package in version.environment.resolved.packages:
+        print(package.name, package.version)  # versions keep labels such as +cu130
+```
+
+`version.environment.requested` and `version.environment.resolved` are
+convenience members over the same canonical fields; they do not add another
+wire shape. The canonical JSON exposes top-level `runtime` and
+`resolved_environment`. A missing `resolved_environment` means the version or
+environment cache predates measurement; it is unknown, not an empty installed
+package list. A package's `source` is present only when the submitted lock
+retained it, and provenance fields are reported without client-side guessing.
+
+The corresponding canonical payload has this shape:
+
+```json
+{
+  "runtime": {
+    "kind": "python",
+    "python_version": "3.12",
+    "environment": {"kind": "pip", "packages": ["vllm==0.11.0"]}
+  },
+  "resolved_environment": {
+    "packages": [
+      {
+        "name": "torch",
+        "version": "2.9.0+cu130",
+        "source": "https://packages.example/simple"
+      }
+    ],
+    "provenance": {
+      "configured_index_urls": ["https://packages.example/simple"],
+      "resolved_indexes": ["https://packages.example/simple"],
+      "cuda_toolkit": "12.8",
+      "torch_version": "torch==2.9.0+cu130"
+    },
+    "warnings": [
+      "torch resolved to torch==2.9.0+cu130 but is not pinned exactly; add torch==2.9.0+cu130 to pin it."
+    ]
+  }
+}
+```
+
+Environment warnings are part of the registration result. Waiting on
+`create_function_async(...)` (or calling `create_function`) emits each server
+warning as a Python `UserWarning`; `get_function` and `list_functions`
+read the same version but do not replay those registration warnings.
+
 ## Try it in SQL {#try-sql}
 
 A registered function is callable in SQL by its name, the same as any other
