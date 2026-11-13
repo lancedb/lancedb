@@ -2793,9 +2793,12 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         if write_guard.is_some() || self.expected_query_snapshot.is_some() {
             return Ok(());
         }
-        // Keep the selector check and the freshness reset under the same
-        // lock so a concurrent checkout cannot be silently unpinned.
-        self.reset_freshness(Some(SystemTime::now()), false);
+        // Poll within the same timeline: in-flight writes must still advance
+        // its watermarks. Only an explicit checkout changes the generation.
+        let mut state = self.freshness.lock().unwrap();
+        let now = SystemTime::now();
+        state.checkout_baseline = Some(state.checkout_baseline.map_or(now, |t| t.max(now)));
+        drop(state);
         self.invalidate_schema_cache();
         Ok(())
     }
@@ -12040,9 +12043,108 @@ mod tests {
             observed_headers[1].0.is_some(),
             "each latest poll must advance the timestamp baseline"
         );
-        assert!(
-            observed_headers[1].1.is_none(),
-            "the latest poll must clear the stale min-read-version fence"
+        assert_eq!(
+            observed_headers[1].1.as_deref(),
+            Some("4"),
+            "the latest poll must retain the monotonic read watermark"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_wait_for_function_column_preserves_inflight_write_fence() {
+        let (arrived_tx, arrived_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let release_rx = std::sync::Arc::new(std::sync::Mutex::new(release_rx));
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = requests.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            match request.url().path() {
+                "/v1/table/my_table/update/" => {
+                    arrived_tx.send(()).unwrap();
+                    release_rx
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(std::time::Duration::from_secs(15))
+                        .unwrap();
+                    http::Response::builder()
+                        .status(200)
+                        .header("x-lancedb-version", "5")
+                        .body(r#"{"rows_updated":2,"version":5}"#.to_string())
+                        .unwrap()
+                }
+                "/v1/table/my_table/function_columns/status" => {
+                    // This node caches version 4 during the status request,
+                    // after its timestamp fence and before the write commits.
+                    assert!(request.headers().contains_key("x-lancedb-min-timestamp"));
+                    http::Response::builder()
+                        .status(200)
+                        .header("x-lancedb-version", "4")
+                        .body(
+                            r#"[{"column":"embedding","binding_id":"fb_01",
+                            "function":{"name":"embed","object_id":"embed",
+                                "location":"objects/embed","version":"7",
+                                "manifest_digest":"sha256:abc"},
+                            "table_version":4,"rows":2,"fresh":2,"stale":0,
+                            "never_computed":0,"failed":0,
+                            "auto_refresh":{"enabled":false,"state":"disabled",
+                                "failure_streak":0,"next_run_at_millis":null}}]"#
+                                .to_string(),
+                        )
+                        .unwrap()
+                }
+                "/v1/table/my_table/count_rows/" => {
+                    captured.lock().unwrap().push(request.headers().clone());
+                    // The timestamp still admits the cached pre-write view.
+                    // The write-version fence is what must force a refresh.
+                    let count = if request
+                        .headers()
+                        .get("x-lancedb-min-version")
+                        .and_then(|v| v.to_str().ok())
+                        == Some("5")
+                    {
+                        "2"
+                    } else {
+                        "1"
+                    };
+                    http::Response::builder()
+                        .status(200)
+                        .body(count.to_string())
+                        .unwrap()
+                }
+                path => panic!("unexpected path: {path}"),
+            }
+        });
+        let update = tokio::spawn({
+            let table = table.clone();
+            async move { table.update().column("a", "a + 1").execute().await }
+        });
+        tokio::task::spawn_blocking(move || {
+            arrived_rx
+                .recv_timeout(std::time::Duration::from_secs(15))
+                .unwrap()
+        })
+        .await
+        .unwrap();
+        table
+            .wait_for_function_column("embedding", Some(std::time::Duration::from_secs(2)))
+            .await
+            .unwrap();
+        release_tx.send(()).unwrap();
+        assert_eq!(update.await.unwrap().unwrap().version, 5);
+        // With initial values [0, 1], a += 1 changes a > 0 from one row to two.
+        let count = table.count_rows(Some("a > 0".to_string())).await.unwrap();
+        let requests = requests.lock().unwrap();
+        let headers = &requests[0];
+        assert_eq!(
+            headers
+                .get("x-lancedb-min-version")
+                .and_then(|v| v.to_str().ok()),
+            Some("5"),
+            "polling must not discard an in-flight write's returned version"
+        );
+        assert_eq!(
+            count, 2,
+            "read after completed write must observe the write"
         );
     }
 
