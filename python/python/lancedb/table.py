@@ -1960,6 +1960,42 @@ class Table(ABC):
         """
         raise NotImplementedError("create_index is not supported for this table type")
 
+    def prewarm_data_async(
+        self,
+        columns: Optional[List[str]] = None,
+        *,
+        filter: Optional[str] = None,
+        concurrency: Optional[int] = None,
+    ) -> Job[None]:
+        """Submit a remote data-cache prewarm and return its durable job.
+
+        Requires a compatible SQL PREWARM server and Flight SQL connectivity.
+        The table handle supplies the branch and namespace. ``columns`` uses
+        Lance field paths; an omitted/empty list warms all columns. ``filter``
+        is one SQL predicate for conservative metadata pruning, not a row scan.
+        ``concurrency`` is a positive per-executor integer. Historical-version
+        handles are unsupported; call ``checkout_latest()`` first.
+
+        Submission requires table Select and database/namespace Usage under
+        Standard authorization. Status/wait use the generic HTTP job API;
+        events and cancellation have their own privileges. Unsupported servers
+        are not retried through REST or with settings removed.
+
+        Returns once accepted. ``job.wait()`` waits for warming to finish and
+        returns None. Save ``job.id`` to resume with ``db.open_job(id)``. A wait
+        timeout does not cancel the operation. After ``job.refresh()``,
+        ``job.spec["table_version"]`` identifies the pinned source version.
+
+        Examples
+        --------
+        >>> job = table.prewarm_data_async(  # doctest: +SKIP
+        ...     ["video"], filter="quality > 0.7", concurrency=4)
+        >>> job.wait()  # doctest: +SKIP
+        """
+        raise NotImplementedError(
+            "data prewarm jobs are only supported on remote tables"
+        )
+
     def create_index_async(
         self,
         column: str,
@@ -4614,7 +4650,8 @@ class LanceTable(Table):
         Currently only supported in LanceDB Enterprise.
 
         This call initiates prewarming and returns once the request is accepted.
-        It is idempotent and safe to call from multiple clients concurrently.
+        Uses SQL PREWARM and requires Flight SQL connectivity. To track the
+        durable warming job, use ``prewarm_data_async()``.
 
         This operation has a large upfront cost but can speed up future queries
         that need to fetch the given columns.  Large columns such as embeddings
@@ -4627,6 +4664,21 @@ class LanceTable(Table):
             The columns to prewarm. If None, all columns are prewarmed.
         """
         return LOOP.run(self._table.prewarm_data(columns))
+
+    def prewarm_data_async(
+        self,
+        columns: Optional[List[str]] = None,
+        *,
+        filter: Optional[str] = None,
+        concurrency: Optional[int] = None,
+    ) -> Job[None]:
+        return Job(
+            LOOP.run(
+                self._table.prewarm_data_async(
+                    columns, filter=filter, concurrency=concurrency
+                )
+            )
+        )
 
     def wait_for_index(
         self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)
@@ -7003,7 +7055,8 @@ class AsyncTable:
         Currently only supported in LanceDB Enterprise.
 
         This call initiates prewarming and returns once the request is accepted.
-        It is idempotent and safe to call from multiple clients concurrently.
+        Uses SQL PREWARM and requires Flight SQL connectivity. To track the
+        durable warming job, use ``prewarm_data_async()``.
 
         This operation has a large upfront cost but can speed up future queries
         that need to fetch the given columns.  Large columns such as embeddings
@@ -7016,6 +7069,31 @@ class AsyncTable:
             The columns to prewarm. If None, all columns are prewarmed.
         """
         await self._inner.prewarm_data(columns)
+
+    async def prewarm_data_async(
+        self,
+        columns: Optional[List[str]] = None,
+        *,
+        filter: Optional[str] = None,
+        concurrency: Optional[int] = None,
+    ) -> AsyncJob[None]:
+        """Submit data prewarm and return a durable handle after acceptance.
+
+        See [Table.prewarm_data_async][lancedb.table.Table.prewarm_data_async]
+        for options, permissions, and compatibility. Awaiting this method does
+        not wait for warming; use ``await job.wait()`` for completion.
+
+        Examples
+        --------
+        >>> job = await table.prewarm_data_async(  # doctest: +SKIP
+        ...     ["video"], filter="quality > 0.7", concurrency=4)
+        >>> await job.wait()  # doctest: +SKIP
+        """
+        return AsyncJob(
+            await self._inner.prewarm_data_async(
+                columns, filter=filter, concurrency=concurrency
+            )
+        )
 
     async def wait_for_index(
         self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)

@@ -165,6 +165,16 @@ export interface UpdateOptions {
   where: string;
 }
 
+/** Settings for submitting a durable remote data-cache prewarm job. */
+export interface PrewarmDataOptions {
+  /** Lance field paths to warm; omitted or empty means every column. */
+  columns?: string[];
+  /** A single SQL predicate for conservative metadata pruning. */
+  filter?: string;
+  /** Positive per-executor concurrency, at most 4294967295. */
+  concurrency?: number;
+}
+
 /** Per-invocation compaction settings. Values must be safe integers. */
 export interface CompactionOptions {
   /** Positive target rows per output fragment; also affects candidate selection. */
@@ -567,8 +577,8 @@ export abstract class Table {
    * This will load the column data into the page cache so that future queries that
    * read those columns avoid the initial cold-start latency.  This call initiates
    * prewarming and returns once the request is accepted; the warming itself may
-   * continue in the background.  Calling it on already-prewarmed columns is a
-   * no-op on the server.
+   * continue in the background. Submission uses SQL PREWARM and needs Flight
+   * SQL connectivity. Use {@link prewarmDataAsync} to retain the job handle.
    *
    * Prewarming is generally useful for columns used in filters or projections.
    * Large columns (e.g. high-dimensional vectors or binary data) may not be
@@ -577,6 +587,28 @@ export abstract class Table {
    * This feature is currently only supported in LanceDB Enterprise.
    */
   abstract prewarmData(columns?: string[]): Promise<void>;
+
+  /**
+   * Submit data prewarm through SQL and return its durable warming-job handle.
+   *
+   * The table handle supplies the branch and namespace. Requires a compatible
+   * SQL PREWARM server and Flight SQL connectivity. Standard authorization
+   * requires table Select and database/namespace Usage. Status/wait use generic
+   * HTTP job APIs; events and cancellation retain their own privileges.
+   * No REST fallback or option-dropping retry is performed. Historical-version
+   * handles are unsupported; call `checkoutLatest()` first.
+   *
+   * Submission returns after acceptance. Use `job.wait()` for completion, or
+   * save `job.id` and reopen it with `db.openJob(id)`. A timeout does not cancel
+   * the job. After `job.refresh()`, `job.spec.table_version` is the pinned version.
+   *
+   * @example
+   * const job = await table.prewarmDataAsync({
+   *   columns: ["video"], filter: "quality > 0.7", concurrency: 4,
+   * });
+   * await job.wait();
+   */
+  abstract prewarmDataAsync(options?: PrewarmDataOptions): Promise<Job>;
 
   /**
    * Waits for asynchronous indexing to complete on the table.
@@ -1501,6 +1533,15 @@ export class LocalTable extends Table {
 
   async prewarmData(columns?: string[]): Promise<void> {
     await this.inner.prewarmData(columns);
+  }
+
+  async prewarmDataAsync(options?: PrewarmDataOptions): Promise<Job> {
+    for (const key of Object.keys(options ?? {})) {
+      if (!["columns", "filter", "concurrency"].includes(key)) {
+        throw new Error(`Unsupported data prewarm option: ${key}`);
+      }
+    }
+    return new Job(await this.inner.prewarmDataAsync(options));
   }
 
   async waitForIndex(

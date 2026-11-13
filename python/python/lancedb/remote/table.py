@@ -1356,7 +1356,8 @@ class RemoteTable(Table):
         Currently only supported in LanceDB Enterprise.
 
         This call initiates prewarming and returns once the request is accepted.
-        It is idempotent and safe to call from multiple clients concurrently.
+        Uses SQL PREWARM and requires Flight SQL connectivity. To track the
+        durable warming job, use ``prewarm_data_async()``.
 
         This operation has a large upfront cost but can speed up future queries
         that need to fetch the given columns.  Large columns such as embeddings
@@ -1369,6 +1370,21 @@ class RemoteTable(Table):
             The columns to prewarm. If None, all columns are prewarmed.
         """
         return LOOP.run(self._table.prewarm_data(columns))
+
+    def prewarm_data_async(
+        self,
+        columns: Optional[List[str]] = None,
+        *,
+        filter: Optional[str] = None,
+        concurrency: Optional[int] = None,
+    ) -> Job[None]:
+        return Job(
+            LOOP.run(
+                self._table.prewarm_data_async(
+                    columns, filter=filter, concurrency=concurrency
+                )
+            )
+        )
 
     def wait_for_index(
         self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)

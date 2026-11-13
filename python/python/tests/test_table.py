@@ -6292,3 +6292,21 @@ async def test_async_computed_auto_refresh_uses_server_interval(tmp_path):
     metadata = (await table.schema()).field("doubled").metadata
     assert metadata[b"computed_column.auto_refresh_enabled"] == b"true"
     assert b"computed_column.auto_refresh_interval_seconds" not in metadata
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_data_prewarm_job_is_unsupported_locally(tmp_path, asynchronous):
+    if asynchronous:
+        db = await lancedb.connect_async(tmp_path)
+        table = await db.create_table("prewarm", [{"id": 1}])
+        with pytest.raises(
+            NotImplementedError, match="only supported on remote tables"
+        ):
+            await table.prewarm_data_async(filter="id > 0", concurrency=2)
+    else:
+        table = lancedb.connect(tmp_path).create_table("prewarm", [{"id": 1}])
+        with pytest.raises(
+            NotImplementedError, match="only supported on remote tables"
+        ):
+            table.prewarm_data_async(filter="id > 0", concurrency=2)
