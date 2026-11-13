@@ -7076,10 +7076,10 @@ def _create_table_handler(request):
 
 
 @contextlib.contextmanager
-def _mock_remote_sql_connection(flight_server):
+def _mock_remote_sql_connection(flight_server, handler=_create_table_handler):
     """Connection arguments for mock REST and Flight SQL servers."""
     with http.server.ThreadingHTTPServer(
-        ("127.0.0.1", 0), make_mock_http_handler(_create_table_handler)
+        ("127.0.0.1", 0), make_mock_http_handler(handler)
     ) as rest_server:
         rest_port = rest_server.server_address[1]
         handle = start_server_thread(rest_server)
@@ -7420,3 +7420,146 @@ async def test_remote_blob_bytes_hybrid_rejects_same_version_different_incarnati
             if use_async:
                 await result
     assert not any(path == "fetch_blobs" for path, _ in requests)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_remote_data_prewarm_sql_receipt_and_durable_job(asynchronous, legacy):
+    flight = pytest.importorskip("pyarrow.flight")
+    polls = []
+
+    class PrewarmServer(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.tickets = []
+
+        def do_get(self, context, ticket):
+            self.tickets.append(ticket.ticket)
+            return flight.RecordBatchStream(
+                pa.table(
+                    {
+                        "job_id": ["warming-job"],
+                        "table_version": pa.array([42], pa.uint64()),
+                    }
+                )
+            )
+
+    def handler(request):
+        if request.path == "/v1/jobs/describe":
+            body = json.loads(
+                request.rfile.read(int(request.headers["Content-Length"]))
+            )
+            assert body == {"job_id": "warming-job"}
+            polls.append(body)
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                json.dumps(
+                    {
+                        "job_id": "warming-job",
+                        "job_type": "prewarm_page_cache",
+                        "job_state": "DONE",
+                        "creation_ms": 1,
+                        "spec": {"table_version": 42},
+                    }
+                ).encode()
+            )
+        else:
+            # No operation-specific REST prewarm endpoint is accepted.
+            _create_table_handler(request)
+
+    server = PrewarmServer()
+    with _mock_remote_sql_connection(server, handler) as kwargs:
+        if asynchronous:
+            db = await lancedb.connect_async(**kwargs)
+            table = await db.create_table("test", [{"id": 1}])
+            if legacy:
+                assert await table.prewarm_data(["payload"]) is None
+            else:
+                job = await table.prewarm_data_async(
+                    ["attrs.score"], filter="id >= 8", concurrency=4
+                )
+                assert job.id == "warming-job"
+                assert not polls
+                assert await job.wait() is None
+                await job.refresh()
+                assert job.spec["table_version"] == 42
+                reopened = await db.open_job(job.id)
+                assert await reopened.wait() is None
+        else:
+            db = lancedb.connect(**kwargs)
+            table = db.create_table("test", [{"id": 1}])
+            if legacy:
+                assert table.prewarm_data(["payload"]) is None
+            else:
+                job = table.prewarm_data_async(
+                    ["attrs.score"], filter="id >= 8", concurrency=4
+                )
+                assert job.id == "warming-job"
+                assert not polls
+                assert job.wait() is None
+                job.refresh()
+                assert job.spec["table_version"] == 42
+                assert db.open_job(job.id).wait() is None
+    assert len(server.tickets) == 1
+    assert b"PREWARM" in server.tickets[0]
+    if legacy:
+        assert not polls
+        assert b'"payload"' in server.tickets[0]
+    else:
+        assert b'"attrs"."score"' in server.tickets[0]
+        assert b"concurrency = 4" in server.tickets[0]
+        assert b"id >= 8" in server.tickets[0]
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"filter": ""},
+        {"filter": "id > 0; DROP TABLE test"},
+        {"filter": "id > 0 LIMIT 1"},
+        {"concurrency": 0},
+        {"concurrency": -1},
+        {"concurrency": 2**32},
+        {"concurrency": True},
+        {"concurrency": 1.5},
+    ],
+)
+def test_remote_data_prewarm_validates_before_submission(options):
+    flight = pytest.importorskip("pyarrow.flight")
+
+    class UnusedServer(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.tickets = []
+
+        def do_get(self, context, ticket):
+            self.tickets.append(ticket.ticket)
+            raise AssertionError("invalid options must not submit SQL")
+
+    server = UnusedServer()
+    with _mock_remote_table_with_sql(server) as table:
+        with pytest.raises(ValueError):
+            table.prewarm_data_async(**options)
+    assert not server.tickets
+
+
+def test_remote_data_prewarm_malformed_receipt_is_not_retried():
+    flight = pytest.importorskip("pyarrow.flight")
+
+    class MalformedServer(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.tickets = []
+
+        def do_get(self, context, ticket):
+            self.tickets.append(ticket.ticket)
+            return flight.RecordBatchStream(pa.table({"job_id": ["warming-job"]}))
+
+    server = MalformedServer()
+    with _mock_remote_table_with_sql(server) as table:
+        with pytest.raises(Exception, match="inspect jobs before retrying"):
+            table.prewarm_data_async()
+    assert len(server.tickets) == 1

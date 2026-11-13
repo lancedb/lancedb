@@ -143,6 +143,8 @@ struct TestSqlService {
     result_overrides: Arc<std::sync::Mutex<HashMap<String, RecordBatch>>>,
     materialized_view_job_handle_supported: bool,
     optimize_error: Option<Status>,
+    prewarm_error: Option<Status>,
+    prewarm_azure_supported: bool,
     /// How many exchange responses have been dropped, finished or not.
     exchange_drops: Arc<AtomicUsize>,
     result: RecordBatch,
@@ -318,6 +320,8 @@ impl Default for TestSqlService {
             result_overrides: Arc::new(std::sync::Mutex::new(HashMap::new())),
             materialized_view_job_handle_supported: false,
             optimize_error: None,
+            prewarm_error: None,
+            prewarm_azure_supported: false,
             exchange_drops: Arc::new(AtomicUsize::new(0)),
             result,
             large_result,
@@ -352,9 +356,30 @@ impl FlightService for TestSqlService {
 
     async fn get_flight_info(
         &self,
-        _request: Request<FlightDescriptor>,
+        request: Request<FlightDescriptor>,
     ) -> std::result::Result<Response<FlightInfo>, Status> {
-        Err(Status::unimplemented("get_flight_info"))
+        self.capture_headers(request.metadata());
+        assert!(
+            request
+                .metadata()
+                .get("x-azure-storage-account-name")
+                .is_some()
+        );
+        let schema = if self.prewarm_azure_supported {
+            self.result
+                .schema()
+                .as_ref()
+                .clone()
+                .with_metadata(HashMap::from([(
+                    "lancedb.prewarm.azure_storage_account_name".into(),
+                    "true".into(),
+                )]))
+        } else {
+            self.result.schema().as_ref().clone()
+        };
+        Ok(Response::new(
+            FlightInfo::new().try_with_schema(&schema).unwrap(),
+        ))
     }
 
     async fn poll_flight_info(
@@ -490,6 +515,11 @@ impl FlightService for TestSqlService {
             self.statements.lock().unwrap().push(command.query.clone());
             if command.query.starts_with("OPTIMIZE ")
                 && let Some(error) = &self.optimize_error
+            {
+                return Err(error.clone());
+            }
+            if command.query.starts_with("PREWARM")
+                && let Some(error) = &self.prewarm_error
             {
                 return Err(error.clone());
             }
@@ -4214,5 +4244,311 @@ async fn remote_optimize_branch_options_are_not_dropped() {
         *statements.lock().unwrap(),
         ["OPTIMIZE \"events\" REWRITE DATA WITH (branch = 'exp', io_buffer_size = 0)"]
     );
+    shutdown.send(()).unwrap();
+}
+
+fn prewarm_result() -> RecordBatch {
+    RecordBatch::try_from_iter([
+        (
+            "job_id",
+            Arc::new(StringArray::from(vec!["warming-job"])) as ArrayRef,
+        ),
+        (
+            "table_version",
+            Arc::new(arrow_array::UInt64Array::from(vec![42])) as ArrayRef,
+        ),
+    ])
+    .unwrap()
+}
+
+#[tokio::test]
+async fn remote_prewarm_data_returns_the_durable_job_without_polling() {
+    use crate::table::PrewarmDataOptions;
+    for branch in [None, Some("experiment"), Some("o'brien")] {
+        let service = TestSqlService {
+            adaptive: true,
+            result: prewarm_result(),
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let headers = service.headers.clone();
+        let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let polls = Arc::new(AtomicUsize::new(0));
+        let observed = polls.clone();
+        let client = client_with_handler(move |request| -> http::Response<String> {
+            assert_eq!(request.url().path(), "/v1/jobs/describe");
+            let value: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(value["job_id"], "warming-job");
+            observed.fetch_add(1, Ordering::SeqCst);
+            http::Response::builder()
+                .status(200)
+                .body(
+                    serde_json::json!({
+                "job_id":"warming-job", "job_type":"prewarm_page_cache", "job_state":"DONE",
+                "creation_ms":1,"spec":{"table_version":42}})
+                    .to_string(),
+                )
+                .unwrap()
+        });
+        let table = RemoteTable::new_with_sql_client(
+            client,
+            "analytics".into(),
+            "clip\"name".into(),
+            vec!["team".into(), "inner".into()],
+            "team$inner$clip\"name".into(),
+            Default::default(),
+            Some(sql),
+        )
+        .with_branch(branch.map(str::to_string));
+        let job = table
+            .prewarm_data_async(
+                PrewarmDataOptions::new()
+                    .columns(["attrs.score", "`caption.text`", "attrs.score"])
+                    .filter("quality > 0.7")
+                    .concurrency(4),
+            )
+            .await
+            .unwrap();
+        assert_eq!(job.id(), Some("warming-job"));
+        assert_eq!(
+            polls.load(Ordering::SeqCst),
+            0,
+            "acceptance must not eagerly poll HTTP"
+        );
+        let branch_sql = branch
+            .map(|b| format!("branch = '{}', ", b.replace('\'', "''")))
+            .unwrap_or_default();
+        assert_eq!(
+            *statements.lock().unwrap(),
+            [format!(
+                "PREWARM WITH ({branch_sql}concurrency = 4) AS SELECT \"attrs\".\"score\", \"caption.text\" FROM \"clip\"\"name\" WHERE quality > 0.7"
+            )]
+        );
+        assert!(
+            headers
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|h| h.namespace_path == "team$inner" && h.database == "analytics")
+        );
+        job.wait().await.unwrap();
+        assert_eq!(polls.load(Ordering::SeqCst), 1);
+        job.refresh().await.unwrap();
+        assert_eq!(job.spec().unwrap()["table_version"], 42);
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn remote_legacy_prewarm_data_submits_sql_and_returns_on_acceptance() {
+    for columns in [None, Some(vec![]), Some(vec!["payload".into()])] {
+        let service = TestSqlService {
+            adaptive: true,
+            result: prewarm_result(),
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let table = RemoteTable::new_with_sql_client(
+            client_with_handler(|r| -> http::Response<String> {
+                panic!(
+                    "legacy prewarm must neither submit nor poll REST: {}",
+                    r.url()
+                );
+            }),
+            "analytics".into(),
+            "clips".into(),
+            vec![],
+            "clips".into(),
+            Default::default(),
+            Some(sql),
+        );
+        table.prewarm_data(columns.clone()).await.unwrap();
+        let projection = if columns.as_ref().is_some_and(|c| !c.is_empty()) {
+            "\"payload\""
+        } else {
+            "*"
+        };
+        assert_eq!(
+            *statements.lock().unwrap(),
+            [format!("PREWARM AS SELECT {projection} FROM \"clips\"")]
+        );
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn remote_prewarm_data_rejects_bad_receipts_without_resubmission() {
+    let service = TestSqlService {
+        adaptive: true,
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let table = RemoteTable::new_with_sql_client(
+        client_with_handler(|r| -> http::Response<String> {
+            panic!("must not retry malformed receipt through REST: {}", r.url());
+        }),
+        "analytics".into(),
+        "clips".into(),
+        vec![],
+        "clips".into(),
+        Default::default(),
+        Some(sql),
+    );
+    let error = table.prewarm_data(None).await.unwrap_err();
+    assert!(error.to_string().contains("inspect jobs before retrying"));
+    assert_eq!(statements.lock().unwrap().len(), 1);
+    shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
+async fn remote_prewarm_errors_preserve_diagnostics_and_never_fall_back() {
+    for (status, unsupported) in [
+        (
+            Status::invalid_argument("Unknown PREWARM option 'branch'"),
+            true,
+        ),
+        (Status::permission_denied("source Select denied"), false),
+        (
+            Status::invalid_argument("ParserError: expected expression, found invalid_filter"),
+            false,
+        ),
+    ] {
+        let service = TestSqlService {
+            adaptive: true,
+            prewarm_error: Some(status),
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let table = RemoteTable::new_with_sql_client(
+            client_with_handler(|r| -> http::Response<String> {
+                panic!("must not retry through REST: {}", r.url());
+            }),
+            "analytics".into(),
+            "clips".into(),
+            vec![],
+            "clips".into(),
+            Default::default(),
+            Some(sql),
+        );
+        let error = table.prewarm_data(None).await.unwrap_err();
+        assert_eq!(
+            matches!(error, Error::NotSupported { .. }),
+            unsupported,
+            "{error}"
+        );
+        assert_eq!(statements.lock().unwrap().len(), 1);
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn remote_prewarm_requires_azure_ack_before_execution() {
+    for supported in [false, true] {
+        let service = TestSqlService {
+            adaptive: true,
+            result: prewarm_result(),
+            prewarm_azure_supported: supported,
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let mut config = ClientConfig::default();
+        config.extra_headers.insert(
+            "x-azure-storage-account-name".into(),
+            "sourceaccount".into(),
+        );
+        let (sql, shutdown) = start_sql_service(service, config).await;
+        let table = RemoteTable::new_with_sql_client(
+            client_with_handler(|r| -> http::Response<String> {
+                panic!("must not use REST: {}", r.url());
+            }),
+            "analytics".into(),
+            "clips".into(),
+            vec![],
+            "clips".into(),
+            Default::default(),
+            Some(sql),
+        );
+        let result = table.prewarm_data(None).await;
+        assert_eq!(result.is_ok(), supported, "{result:?}");
+        assert_eq!(statements.lock().unwrap().len(), usize::from(supported));
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn remote_prewarm_wait_surfaces_warming_job_failure_or_cancellation() {
+    for state in ["FAILED", "CANCELLED"] {
+        let service = TestSqlService {
+            adaptive: true,
+            result: prewarm_result(),
+            ..Default::default()
+        };
+        let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let client = client_with_handler(move |r| -> http::Response<String> {
+            assert_eq!(r.url().path(), "/v1/jobs/describe");
+            http::Response::builder()
+                .status(200)
+                .body(
+                    serde_json::json!({
+                "job_id":"warming-job","job_type":"prewarm_page_cache","job_state":state,
+                "creation_ms":1,"spec":{"table_version":42}})
+                    .to_string(),
+                )
+                .unwrap()
+        });
+        let table = RemoteTable::new_with_sql_client(
+            client,
+            "analytics".into(),
+            "clips".into(),
+            vec![],
+            "clips".into(),
+            Default::default(),
+            Some(sql),
+        );
+        let job = table.prewarm_data_async(Default::default()).await.unwrap();
+        assert_eq!(job.id(), Some("warming-job"));
+        let error = job.wait().await.unwrap_err();
+        if state == "FAILED" {
+            assert!(matches!(error, Error::JobFailed { .. }), "{error}");
+        } else {
+            assert!(matches!(error, Error::JobCancelled { .. }), "{error}");
+        }
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn remote_prewarm_rejects_historical_checkout_without_submitting() {
+    let service = TestSqlService {
+        adaptive: true,
+        result: prewarm_result(),
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let table = RemoteTable::new_with_sql_client(
+        client_with_handler(|r| -> http::Response<String> {
+            assert_eq!(r.url().path(), "/v1/table/clips/describe/");
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"version":7,"schema":{"fields":[]}}"#.to_string())
+                .unwrap()
+        }),
+        "analytics".into(),
+        "clips".into(),
+        vec![],
+        "clips".into(),
+        Default::default(),
+        Some(sql),
+    );
+    table.checkout(7).await.unwrap();
+    let error = table.prewarm_data(None).await.unwrap_err();
+    assert!(matches!(error, Error::NotSupported { .. }));
+    assert!(error.to_string().contains("historical version 7"));
+    assert!(statements.lock().unwrap().is_empty());
     shutdown.send(()).unwrap();
 }

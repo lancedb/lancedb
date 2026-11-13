@@ -1741,6 +1741,24 @@ impl Table {
         })
     }
 
+    #[pyo3(signature = (columns=None, *, filter=None, concurrency=None))]
+    pub fn prewarm_data_async<'py>(
+        self_: PyRef<'py, Self>,
+        columns: Option<Vec<String>>,
+        filter: Option<String>,
+        concurrency: Option<&Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        let mut options =
+            lancedb::table::PrewarmDataOptions::new().columns(columns.unwrap_or_default());
+        options.filter = filter;
+        options.concurrency = positive_u32_integer(concurrency, "concurrency")?;
+        future_into_py(self_.py(), async move {
+            let job = inner.prewarm_data_async(options).await.infer_error()?;
+            Ok(crate::job::Job::new(job))
+        })
+    }
+
     pub fn list_indices(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {

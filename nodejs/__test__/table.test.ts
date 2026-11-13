@@ -4711,6 +4711,36 @@ describe.each(arrowVersions)(
       );
     });
 
+    test("prewarmDataAsync validates options and rejects local tables", async () => {
+      const db = await connect(tmpDir.name);
+      const table = await db.createTable("prewarm_job", [{ id: 1 }]);
+      await expect(table.prewarmDataAsync()).rejects.toThrow(
+        "only supported on remote tables",
+      );
+      await expect(
+        table.prewarmDataAsync({
+          columns: ["id"],
+          filter: "id > 0",
+          concurrency: 2,
+        }),
+      ).rejects.toThrow("only supported on remote tables");
+      await expect(
+        table.prewarmDataAsync({ unsupported: 1 } as never),
+      ).rejects.toThrow("Unsupported data prewarm option: unsupported");
+      for (const concurrency of [
+        0,
+        -1,
+        1.5,
+        Number.NaN,
+        Number.POSITIVE_INFINITY,
+        4294967296,
+      ]) {
+        await expect(table.prewarmDataAsync({ concurrency })).rejects.toThrow(
+          "concurrency must be an integer",
+        );
+      }
+    });
+
     test("full text index on list", async () => {
       const db = await connect(tmpDir.name);
       const data = [

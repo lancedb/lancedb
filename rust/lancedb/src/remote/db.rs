@@ -410,14 +410,6 @@ impl RemoteDatabase {
         read_consistency_interval: Option<std::time::Duration>,
         parsed: super::client::ParsedDbUrl,
     ) -> Result<Self> {
-        let sql_client = SqlClient::new(
-            parsed.db_name.clone(),
-            parsed.db_prefix.clone(),
-            api_key.to_string(),
-            host_overrides.rest.clone(),
-            host_overrides.sql,
-            client_config.clone(),
-        );
         let header_map = RestfulLanceDbClient::<Sender>::default_headers(
             api_key,
             region,
@@ -428,6 +420,27 @@ impl RemoteDatabase {
             &client_config,
         )?;
 
+        // Preserve the resolved source-account hint when table operations use SQL.
+        let mut sql_config = client_config.clone();
+        if let Some(account) = header_map.get("x-azure-storage-account-name") {
+            sql_config.extra_headers.insert(
+                "x-azure-storage-account-name".into(),
+                account
+                    .to_str()
+                    .map_err(|error| Error::InvalidInput {
+                        message: error.to_string(),
+                    })?
+                    .into(),
+            );
+        }
+        let sql_client = SqlClient::new(
+            parsed.db_name.clone(),
+            parsed.db_prefix.clone(),
+            api_key.to_string(),
+            host_overrides.rest.clone(),
+            host_overrides.sql,
+            sql_config,
+        );
         let namespace_headers: HashMap<String, String> = header_map
             .iter()
             .filter_map(|(k, v)| {

@@ -86,6 +86,8 @@ pub mod freshness;
 pub mod function_column_status;
 pub mod merge;
 pub mod optimize;
+mod prewarm;
+pub use prewarm::PrewarmDataOptions;
 pub(crate) mod primary_key;
 pub mod query;
 pub mod refresh;
@@ -685,6 +687,13 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// Currently only supported in LanceDB Enterprise.
     /// If `columns` is `None`, all columns are prewarmed.
     async fn prewarm_data(&self, columns: Option<Vec<String>>) -> Result<()>;
+
+    /// Submit a data-cache prewarm and return its durable job handle.
+    async fn prewarm_data_async(&self, _options: PrewarmDataOptions) -> Result<Job> {
+        Err(Error::NotSupported {
+            message: "data prewarm jobs are only supported on remote tables".into(),
+        })
+    }
     /// Get statistics about the index.
     async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>>;
     /// Merge insert new records into the table.
@@ -2969,8 +2978,9 @@ impl Table {
     /// supported in LanceDB Enterprise.
     ///
     /// This call initiates prewarming and returns once the request is accepted.
-    /// It is idempotent and safe to call from multiple clients concurrently —
-    /// calling it on already-prewarmed columns is a no-op on the server.
+    /// Remote tables use SQL PREWARM and require Flight SQL connectivity.
+    /// Use [`Self::prewarm_data_async`] to retain the durable job handle.
+    /// Repeated submissions can create distinct jobs; warming cached data is safe.
     ///
     /// This operation has a large upfront cost but can speed up future queries
     /// that need to fetch the given columns.  Large columns such as embeddings
@@ -2980,6 +2990,38 @@ impl Table {
     /// If `columns` is `None`, all columns are prewarmed.
     pub async fn prewarm_data(&self, columns: Option<Vec<String>>) -> Result<()> {
         self.inner.prewarm_data(columns).await
+    }
+
+    /// Submit a durable data-cache prewarm job through SQL and return when accepted.
+    ///
+    /// The handle tracks the warming job, rather than the SQL submission. Use
+    /// [`Job::wait`] to wait for warming to finish, or save [`Job::id`] and
+    /// reopen it through [`crate::Connection::open_job`]. A wait timeout or
+    /// dropping the handle does not cancel the job. No terminal payload is
+    /// defined: waiting succeeds with `()`.
+    ///
+    /// Requires a compatible remote server with SQL PREWARM support and Flight
+    /// SQL connectivity. Under Standard authorization, submission requires
+    /// Select on the table and Usage on its database and namespace hierarchy.
+    /// Status and waiting use the generic HTTP job APIs; events and cancellation
+    /// retain their separate privileges. Unsupported servers are not retried
+    /// through REST or with requested settings removed. Local tables are unsupported.
+    /// Historical-version checkouts are unsupported; use `checkout_latest()` first.
+    /// After [`Job::refresh`], the pinned source version is in [`Job::spec`].
+    ///
+    /// ```no_run
+    /// # async fn warm(table: &lancedb::Table) -> lancedb::Result<()> {
+    /// use lancedb::table::PrewarmDataOptions;
+    /// let job = table.prewarm_data_async(PrewarmDataOptions::new()
+    ///     .columns(["video"])
+    ///     .filter("quality > 0.7")
+    ///     .concurrency(4)).await?;
+    /// job.wait().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn prewarm_data_async(&self, options: PrewarmDataOptions) -> Result<Job> {
+        self.inner.prewarm_data_async(options).await
     }
 
     /// Poll until the columns are fully indexed. Will return Error::Timeout if the columns

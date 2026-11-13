@@ -172,6 +172,7 @@ export {
   UpdateOptions,
   OptimizeOptions,
   CompactionOptions,
+  PrewarmDataOptions,
   Version,
   WriteProgress,
   FtsToken,
