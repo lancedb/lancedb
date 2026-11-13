@@ -37,6 +37,18 @@ embedding_functions`. Prefer keyword arguments for optional parameters.
 
 ::: lancedb.db.DBConnection
 
+Use `db.server_info()` (or `await db.server_info()` on an asynchronous connection)
+to include the responding server's release, Git revision, build date and Function
+runtime information in a bug report. It returns a JSON-compatible dictionary and
+does not submit a query or job. Configured images are distinct from the version
+of an already running job. During a rolling upgrade, successive requests can
+reach different query-node builds. Embedded connections and older servers without
+the endpoint raise `NotImplementedError`.
+
+::: lancedb.server_info.ServerBuildInfo
+
+::: lancedb.server_info.ServerInfo
+
 Resource listings return iterators. Use `list(db.list_tables())` to collect all
 table names. `db.list_tables().tables` is a list of the first page; `limit`
 controls its page size and `page_token` resumes at a saved token. The same
@@ -614,6 +626,20 @@ packages leave it disabled. Opening, reading, listing and dropping existing view
 remain available, as do LanceDB Enterprise operations. The same feature
 requirement applies to LanceDB Embedded SQL computed-column declaration and refresh; ordinary
 eager `add_columns` transforms remain available.
+
+Pass a complete defining SQL query with `query=` to use grouping, Functions
+in `FROM`, or `UNNEST`:
+
+```python
+view = db.create_materialized_view(
+    "events_by_kind",
+    query="SELECT kind, count(*) AS n FROM events GROUP BY kind",
+)
+```
+
+`query` is mutually exclusive with `source`, `select`, `where`, and `limit`.
+It is also accepted by asynchronous connections and `create_materialized_view_async`.
+The backend SQL parser determines which query shapes are supported.
 
 In LanceDB Enterprise, creation accepts `auto_refresh_enabled` and
 `auto_refresh_interval_seconds`:
