@@ -157,9 +157,9 @@ before running it over the whole table. Register `caption_quality` first:
 
 <CodeGroup>
 ```python Python icon="python"
-from lancedb import udf
+from lancedb import function
 
-@udf
+@function
 def caption_quality(caption: str) -> float:
     ...  # score the caption, e.g. with a lightweight heuristic or model
 
