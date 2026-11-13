@@ -153,7 +153,9 @@ let latest = connection.get_function_latest("double", &[]).await?;
 <CodeGroup>
 ```sql SQL icon="database"
 SHOW FUNCTIONS
-SHOW FUNCTIONS IN "analytics" WITH (name = 'double', limit = 100)
+SHOW FUNCTIONS IN "analytics" LIMIT 100
+SHOW FUNCTIONS HISTORY IN "analytics" LIMIT 100
+SHOW FUNCTIONS HISTORY IN "analytics" LIMIT 100 FROM '<page-token>'
 
 DESCRIBE FUNCTION double WITH (version = '1')
 DESCRIBE FUNCTION double

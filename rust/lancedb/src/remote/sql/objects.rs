@@ -9,7 +9,7 @@ use crate::{
     listing::{ListingOptions, ListingPage},
     utils::validate_namespace,
 };
-use arrow_array::{Array, ListArray, RecordBatch, StringArray};
+use arrow_array::{Array, LargeStringArray, ListArray, RecordBatch, StringArray, StringViewArray};
 use futures::TryStreamExt;
 use serde::{Serialize, de::DeserializeOwned};
 use std::sync::Arc;
@@ -85,27 +85,29 @@ pub(super) fn literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 pub(super) fn strings(batches: &[RecordBatch], name: &str) -> Result<Vec<String>> {
-    batches
-        .iter()
-        .map(|batch| {
-            let values = batch
-                .column_by_name(name)
-                .and_then(|column| column.as_any().downcast_ref::<StringArray>())
-                .ok_or_else(|| Error::Runtime {
-                    message: format!("SQL result is missing UTF-8 column '{name}'"),
-                })?;
-            if values.null_count() != 0 {
-                return Err(Error::Runtime {
-                    message: format!("SQL result contains null '{name}'"),
-                });
-            }
-            Ok(values
-                .iter()
-                .map(|value| value.unwrap().to_owned())
-                .collect::<Vec<_>>())
-        })
-        .collect::<Result<Vec<_>>>()
-        .map(|rows| rows.into_iter().flatten().collect())
+    let mut result = Vec::new();
+    for batch in batches {
+        let column = batch.column_by_name(name).ok_or_else(|| Error::Runtime {
+            message: format!("SQL result is missing string column '{name}'"),
+        })?;
+        if column.null_count() != 0 {
+            return Err(Error::Runtime {
+                message: format!("SQL result contains null '{name}'"),
+            });
+        }
+        if let Some(values) = column.as_any().downcast_ref::<StringArray>() {
+            result.extend(values.iter().map(|value| value.unwrap().to_owned()));
+        } else if let Some(values) = column.as_any().downcast_ref::<LargeStringArray>() {
+            result.extend(values.iter().map(|value| value.unwrap().to_owned()));
+        } else if let Some(values) = column.as_any().downcast_ref::<StringViewArray>() {
+            result.extend(values.iter().map(|value| value.unwrap().to_owned()));
+        } else {
+            return Err(Error::Runtime {
+                message: format!("SQL result column '{name}' is not a string"),
+            });
+        }
+    }
+    Ok(result)
 }
 
 /// Read an optional `List<Utf8>` column. Older servers do not return the
@@ -193,6 +195,24 @@ mod tests {
             DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
             true,
         )]))
+    }
+
+    #[test]
+    fn listing_strings_accept_all_arrow_string_representations() {
+        for values in [
+            Arc::new(StringArray::from(vec!["a", "z"])) as ArrayRef,
+            Arc::new(LargeStringArray::from(vec!["a", "z"])) as ArrayRef,
+            Arc::new(StringViewArray::from(vec!["a", "z"])) as ArrayRef,
+        ] {
+            let batch = RecordBatch::try_from_iter(vec![("name", values)]).unwrap();
+            assert_eq!(strings(&[batch], "name").unwrap(), ["a", "z"]);
+        }
+        let batch = RecordBatch::try_from_iter(vec![(
+            "name",
+            Arc::new(StringViewArray::from(vec![Some("a"), None])) as ArrayRef,
+        )])
+        .unwrap();
+        assert!(strings(&[batch], "name").is_err());
     }
 
     #[test]
