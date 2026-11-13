@@ -356,7 +356,7 @@ impl BlobFile {
 ///
 /// `row_id` is obtained from a query with row ids enabled.
 /// `offset` and `length` are relative to the beginning of the logical blob.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct BlobRangeRequest {
     /// Row id of the blob value to read.
     pub row_id: u64,

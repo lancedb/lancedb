@@ -169,6 +169,7 @@
 - [BlobMode](type-aliases/BlobMode.md)
 - [BlobOptions](type-aliases/BlobOptions.md)
 - [BlobRange](type-aliases/BlobRange.md)
+- [BlobRangeRequest](type-aliases/BlobRangeRequest.md)
 - [BlobReadOptions](type-aliases/BlobReadOptions.md)
 - [BlobUri](type-aliases/BlobUri.md)
 - [Data](type-aliases/Data.md)
