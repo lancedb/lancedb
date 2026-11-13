@@ -4580,9 +4580,13 @@ mod tests {
                 "type": {"type": "bool"},
             }));
         let binding: FunctionBinding = serde_json::from_value(raw).unwrap();
-        let output = full_blob_field("thumbnail", true).with_metadata(
-            function_computed_column_metadata(binding.binding_id(), 0, &["image".into()]),
-        );
+        let mut metadata = full_blob_field("thumbnail", true).metadata().clone();
+        metadata.extend(function_computed_column_metadata(
+            binding.binding_id(),
+            0,
+            &["image".into()],
+        ));
+        let output = full_blob_field("thumbnail", true).with_metadata(metadata);
         let assignment = ArrowField::new(assignment_name, DataType::Boolean, true).with_metadata(
             function_computed_column_metadata(
                 binding.binding_id(),
