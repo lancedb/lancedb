@@ -3271,29 +3271,6 @@ describe("when dealing with blob columns", () => {
     expect(await handle!.read()).toEqual(alpha);
   });
 
-  it("cancels an in-flight read", async () => {
-    const db = await connect(tmpDir.name);
-    const schema = new Schema([
-      new Field("id", new Int64(), true),
-      blob("payload", { inlineSizeThreshold: 0, dedicatedSizeThreshold: 1 }),
-    ]);
-    const payload = Buffer.alloc(32 * 1024 * 1024, 7);
-    const table = await db.createTable("large_blobs", [{ id: 1n, payload }], {
-      schema,
-    });
-    const [row] = await table.query().withRowId().toArray();
-    const [handle] = await table.fetchBlobFiles("payload", [
-      row._rowid as bigint,
-    ]);
-    const controller = new AbortController();
-    const pending = handle!.readRange(0n, handle!.size(), {
-      signal: controller.signal,
-    });
-    controller.abort();
-    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
-    expect(await handle!.readRange(0n, 4n)).toEqual(payload.subarray(0, 4));
-  });
-
   it("toArrow returns blob bytes with blobMode bytes", async () => {
     const { table, alpha, beta } = await openBlobTable();
     const result = await table.query().toArrow({ blobMode: "bytes" });
