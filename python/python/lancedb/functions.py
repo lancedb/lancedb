@@ -447,8 +447,10 @@ class PythonRuntimeSpec(_RemoteValue):
 
     V1 supports ``kind="python"``. Newer runtime kinds remain readable, while
     their unknown payload fields are intentionally not retained by the client.
-    ``kind="python_v2"`` requires ``gpu=True`` and may name an operator-defined
-    ``gpu_class``.
+    ``kind="python_v2"`` requires ``gpu=True``. Its ``gpu_class`` records the
+    requested operator-defined class or ``"any"`` for any eligible class;
+    omitting it requests the deployment default. It does not identify the
+    hardware selected for execution.
     """
 
     kind: str
