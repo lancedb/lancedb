@@ -29,7 +29,7 @@ import textwrap
 import types
 import warnings
 from collections.abc import Mapping, Sequence
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import (
     Annotated,
@@ -998,6 +998,7 @@ _GRAMMAR_PRIMITIVES = (
     (pa.date32(), "date32"),
     (pa.date64(), "date64"),
 )
+_FUNCTION_TIMEUNITS = ("s", "ms", "us", "ns")
 
 
 def _canonical_arrow_type(
@@ -1214,6 +1215,26 @@ def _exact_arrow_type(
     for candidate, name in _GRAMMAR_PRIMITIVES:
         if data_type == candidate:
             return {"type": name}
+    if pa.types.is_timestamp(data_type):
+        unit = data_type.unit
+        if unit not in _FUNCTION_TIMEUNITS:
+            raise TypeError(f"unsupported Function timestamp unit: {unit!r}")
+        timezone = data_type.tz
+        if timezone == "-":
+            raise TypeError(
+                "unsupported Function timestamp timezone: '-' is reserved for "
+                "no timezone"
+            )
+        if unit == "us" and timezone is None:
+            return {"type": "timestamp"}
+        return {"type": f"timestamp:{unit}:{timezone if timezone is not None else '-'}"}
+    if pa.types.is_duration(data_type):
+        unit = data_type.unit
+        if unit not in _FUNCTION_TIMEUNITS:
+            raise TypeError(f"unsupported Function duration unit: {unit!r}")
+        if unit == "us":
+            return {"type": "duration"}
+        return {"type": f"duration:{unit}"}
     if pa.types.is_struct(data_type):
         fields = list(data_type)
         names = [field.name for field in fields]
@@ -1299,9 +1320,9 @@ def _annotation_type(annotation: Any) -> tuple[pa.DataType, bool]:
             raise TypeError(
                 "Annotated Function types require exactly one PyArrow DataType"
             )
-        # A struct value is written as a dict, which has no Arrow type of its
-        # own; the Annotated metadata supplies it.
-        if base is dict or get_origin(base) is dict:
+        # A struct value is written as a dict, and timedelta has no unit of
+        # its own; the Annotated metadata supplies those types.
+        if base is dict or get_origin(base) is dict or base is timedelta:
             base_nullable = False
         else:
             _, base_nullable = _annotation_type(base)
@@ -1327,7 +1348,14 @@ def _annotation_type(annotation: Any) -> tuple[pa.DataType, bool]:
     if annotation is date:
         return pa.date32(), nullable
     if annotation is datetime:
+        # Existing default: microsecond precision, no timezone. Other units
+        # and timezones require Annotated or an explicit schema.
         return pa.timestamp("us"), nullable
+    if annotation is timedelta:
+        raise TypeError(
+            "timedelta Function annotations require an explicit unit; use "
+            "Annotated[timedelta, pyarrow.duration(unit)] or an explicit schema"
+        )
     if get_origin(annotation) is list:
         arguments = get_args(annotation)
         if len(arguments) != 1:
@@ -2653,6 +2681,11 @@ def function(
     both; the one omitted is inferred. Scalar outputs must be non-nullable.
     Every named-struct field may be nullable; Enterprise preserves the
     struct's validity when the result is expanded into sibling columns.
+    Bare ``datetime`` keeps its existing ``timestamp[us]`` default without a
+    timezone; other units and timezones require
+    ``Annotated[datetime, pyarrow.timestamp(unit, tz=...)]`` or an explicit
+    schema. A bare ``timedelta`` has no unit and is rejected; use
+    ``Annotated[timedelta, pyarrow.duration(unit)]`` or an explicit schema.
 
     **Large values.** A ``bytes`` parameter receives the whole value, which
     is held in memory with its row and counts against the server's per-row
@@ -2758,8 +2791,10 @@ def function(
         the parameter annotations.
     output_schema : pyarrow.DataType, pyarrow.Field, or pyarrow.Schema, optional
         Explicit scalar or named-struct output. Scalar outputs must be
-        non-nullable. Required for batch annotations. When omitted, the output
-        is inferred from the return annotation.
+        non-nullable. Temporal fields use canonical Arrow JSON; the
+        microsecond/no-timezone case keeps the legacy timestamp/duration
+        shape. Required for batch annotations. When omitted, the output is
+        inferred from the return annotation.
     pip : sequence of str, optional
         Pip requirements for the remote environment. Syntax is validated at
         decoration time, including extras and environment markers. Named direct
