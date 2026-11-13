@@ -11964,7 +11964,7 @@ mod tests {
                     Some("embedding")
                 );
                 assert!(
-                    query.get("version").is_none(),
+                    !query.contains_key("version"),
                     "a latest status poll must not use an explicit version"
                 );
 
