@@ -413,6 +413,38 @@ mod tests {
 
     #[tokio::test]
     #[rstest::rstest]
+    #[case::non_nullable_list_item(DataType::new_fixed_size_list(DataType::Float32, 2, false))]
+    #[case::renamed_list_item(DataType::FixedSizeList(
+        Arc::new(Field::new("element", DataType::Float32, true)),
+        2
+    ))]
+    #[case::string_view(DataType::Utf8View)]
+    async fn test_create_table_exist_ok_with_lance_normalized_type(#[case] data_type: DataType) {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let db = connect(uri).execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("x", data_type.clone(), false)]));
+        db.create_empty_table("test", schema.clone())
+            .execute()
+            .await
+            .unwrap();
+        db.create_empty_table("test", schema)
+            .mode(CreateTableMode::exist_ok(|req| req))
+            .execute()
+            .await
+            .unwrap();
+
+        let nullable_schema = Arc::new(Schema::new(vec![Field::new("x", data_type, true)]));
+        let result = db
+            .create_empty_table("test", nullable_schema)
+            .mode(CreateTableMode::exist_ok(|req| req))
+            .execute()
+            .await;
+        assert!(matches!(result, Err(Error::Schema { .. })));
+    }
+
+    #[tokio::test]
+    #[rstest::rstest]
     #[case(LanceFileVersion::Legacy)]
     #[case(LanceFileVersion::Stable)]
     async fn test_create_table_with_storage_version(
