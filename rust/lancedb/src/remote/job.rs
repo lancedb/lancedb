@@ -565,4 +565,69 @@ mod tests {
         assert_eq!(failure.retryable, Some(true));
         assert_eq!(failure.sql_job_id.as_deref(), Some("job-1"));
     }
+
+    #[tokio::test]
+    async fn wait_failure_uses_persisted_terminal_build() {
+        let server = serde_json::json!({
+            "release": "1.13.0-beta.0",
+            "git_sha": "2a7874ecd589",
+            "build_date": "2026-11-12T22:45:43Z"
+        });
+        for result in [
+            serde_json::Value::Null,
+            serde_json::json!({"terminal_server": null}),
+            serde_json::json!({"terminal_server": {"release": "incomplete"}}),
+            serde_json::json!({"terminal_server": server}),
+        ] {
+            let known_build = result["terminal_server"] == server;
+            let response = serde_json::json!({
+                "job_id": "job-1",
+                "job_state": "FAILED",
+                "failure": {
+                    "phase": "function_refresh_attempt_failed",
+                    "message": "ValueError: corrupt frame at frame_index=207",
+                    "traceback": "Traceback: original user code",
+                    "retryable": false
+                },
+                "result": result
+            });
+            let client = client_with_handler(move |request| {
+                assert_eq!(request.url().path(), "/v1/jobs/describe");
+                http::Response::builder()
+                    .status(200)
+                    .header(
+                        "x-lancedb-server-build",
+                        r#"{"release":"2.0.0","git_sha":"new-query-node"}"#,
+                    )
+                    .body(response.to_string())
+                    .unwrap()
+            });
+            let job = RemoteJob::new(client, "job-1".to_string());
+            let description = job.describe().await.unwrap();
+            assert_eq!(description.result, Some(result));
+            assert_eq!(
+                description.failure.unwrap().message.as_deref(),
+                Some("ValueError: corrupt frame at frame_index=207")
+            );
+            let error = job.wait().await.err().expect("failed job");
+            let mut expected =
+                "Job job-1 failed: ValueError: corrupt frame at frame_index=207".to_string();
+            if known_build {
+                expected.push_str(
+                    " [server: 1.13.0-beta.0 (git 2a7874ecd589, built 2026-11-12T22:45:43Z)]",
+                );
+            }
+            expected.push_str(" (in function_refresh_attempt_failed)");
+            assert_eq!(error.to_string(), expected);
+            let Error::JobFailed { job_id, failure } = error else {
+                panic!("expected JobFailed");
+            };
+            assert_eq!(job_id.as_deref(), Some("job-1"));
+            assert_eq!(
+                failure.traceback.as_deref(),
+                Some("Traceback: original user code")
+            );
+            assert_eq!(failure.retryable, Some(false));
+        }
+    }
 }
