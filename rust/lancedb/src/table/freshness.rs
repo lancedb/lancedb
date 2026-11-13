@@ -1879,6 +1879,8 @@ pub async fn preserve_function_freshness(
             pending_fill.retain(|id, _| live.contains(id));
             state.signatures.retain(|id, _| live.contains(id));
             state.row_state.retain(|id, _| live.contains(id));
+            state.failure_coverage.retain(|id, _| live.contains(id));
+            state.failed_rows.retain(|id, _| live.contains(id));
             state.basis.clear();
             let reference = write_sidecar(dataset, &state.normalize()?).await?;
             let fill_reference = if pending_fill.is_empty() {
@@ -3026,6 +3028,101 @@ mod tests {
                     .pending_fill
                     .is_empty()
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn function_write_prunes_outcomes_for_replaced_fragments() {
+        let table = fresh_function_table().await;
+        let mut dataset = table
+            .as_native()
+            .unwrap()
+            .dataset
+            .get()
+            .await
+            .unwrap()
+            .as_ref()
+            .clone();
+        let inputs = fields_for_paths(dataset.schema(), &["title".into(), "body".into()]).unwrap();
+        let signatures = signatures_for(&dataset, &[0, 1], &inputs).unwrap();
+        let failures = FailureEvidence {
+            known_rows: BTreeMap::from([
+                (0, RoaringBitmap::from_iter([0, 1])),
+                (1, RoaringBitmap::from_iter([0, 1])),
+            ]),
+            failed_rows: BTreeMap::from([(1, RoaringBitmap::from_iter([1]))]),
+        };
+        for column in ["search_text", "search_token_count"] {
+            record_freshness_with_failures(
+                &mut dataset,
+                None,
+                column,
+                "fb_01K3TEXT",
+                &inputs,
+                signatures.clone(),
+                &failures,
+            )
+            .await
+            .unwrap();
+        }
+
+        // Replace all of fragment 0, insert one uncomputed row, and leave
+        // fragment 1 (including its retained failure evidence) untouched.
+        let source = arrow_array::record_batch!(
+            ("title", Utf8, ["a", "b", "e"]),
+            ("spare", Int32, [1, 1, 1])
+        )
+        .unwrap();
+        let mut merge =
+            MergeInsertBuilder::try_new(Arc::new(dataset), vec!["title".into()]).unwrap();
+        merge.when_matched(WhenMatched::UpdateAll);
+        merge.when_not_matched(WhenNotMatched::InsertAll);
+        let (merged, stats) = merge
+            .try_build()
+            .unwrap()
+            .execute_reader(Box::new(RecordBatchIterator::new(
+                [Ok(source.clone())],
+                source.schema(),
+            )))
+            .await
+            .unwrap();
+        let mut dataset = merged.as_ref().clone();
+        assert!(!dataset.get_fragments().iter().any(|f| f.id() == 0));
+        assert!(dataset.get_fragments().iter().any(|f| f.id() == 1));
+        preserve_function_freshness(
+            &mut dataset,
+            FunctionWrite::Merge {
+                source_schema: &source.schema(),
+                on: &["title".into()],
+                num_inserted_rows: stats.num_inserted_rows,
+            },
+        )
+        .await
+        .unwrap();
+
+        let reopened = dataset
+            .checkout_version(dataset.version().version)
+            .await
+            .unwrap();
+        for column in ["search_text", "search_token_count"] {
+            let StrictFreshness::Certified {
+                staleness,
+                failures,
+            } = strict_freshness_against(&reopened, column, "fb_01K3TEXT", &inputs)
+                .await
+                .unwrap()
+            else {
+                panic!("the preserved sidecar should retain failure evidence");
+            };
+            assert_eq!(
+                failures.known_rows,
+                BTreeMap::from([(1, RoaringBitmap::from_iter([0, 1]))])
+            );
+            assert_eq!(
+                failures.failed_rows,
+                BTreeMap::from([(1, RoaringBitmap::from_iter([1]))])
+            );
+            assert_eq!(staleness.pending_fill.len(), 1);
         }
     }
 

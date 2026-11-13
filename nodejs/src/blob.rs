@@ -21,6 +21,25 @@ pub struct BlobRange {
     pub end: BigInt,
 }
 
+#[napi(object)]
+pub struct BlobRangeRequest {
+    pub row_id: BigInt,
+    pub offset: BigInt,
+    pub length: BigInt,
+}
+
+impl BlobRangeRequest {
+    pub(crate) fn parse(self) -> napi::Result<lancedb::blob::BlobRangeRequest> {
+        let row_id = parse_u64(self.row_id, "row id")?;
+        let offset = parse_u64(self.offset, "offset")?;
+        let length = parse_u64(self.length, "length")?;
+        offset
+            .checked_add(length)
+            .ok_or_else(|| napi::Error::from_reason("blob range offset + length overflows u64"))?;
+        Ok(lancedb::blob::BlobRangeRequest::new(row_id, offset, length))
+    }
+}
+
 #[napi]
 pub struct BlobFile {
     inner: Arc<LanceBlobFile>,
@@ -205,14 +224,25 @@ pub fn parse_row_ids(row_ids: Vec<BigInt>) -> napi::Result<Vec<u64>> {
         .collect()
 }
 
-pub fn copy_blob_buffers(array: LargeBinaryArray) -> Vec<Option<Buffer>> {
-    (0..array.len())
-        .map(|i| {
-            if array.is_null(i) {
-                None
-            } else {
-                Some(Buffer::from(array.value(i).to_vec()))
-            }
-        })
-        .collect()
+pub fn copy_blob_buffers(array: LargeBinaryArray) -> napi::Result<Vec<Option<Buffer>>> {
+    let allocation_error =
+        |error| napi::Error::from_reason(format!("cannot allocate blob result: {error}"));
+    let mut result = Vec::new();
+    result
+        .try_reserve_exact(array.len())
+        .map_err(allocation_error)?;
+    for value in array.iter() {
+        let buffer = value
+            .map(|value| {
+                let mut bytes = Vec::new();
+                bytes
+                    .try_reserve_exact(value.len())
+                    .map_err(allocation_error)?;
+                bytes.extend_from_slice(value);
+                Ok::<_, napi::Error>(Buffer::from(bytes))
+            })
+            .transpose()?;
+        result.push(buffer);
+    }
+    Ok(result)
 }

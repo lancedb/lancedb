@@ -185,6 +185,7 @@ class Connection(object):
         limit: Optional[int],
     ) -> list[str]: ...  # Deprecated: Use list_tables instead
     async def open_job(self, job_id: str) -> Job: ...
+    async def server_info(self) -> str: ...
     async def list_gpu_classes(self) -> list[GpuClass]: ...
     async def create_function_async(
         self, request_json: str, namespace_path: Optional[List[str]] = None
@@ -348,24 +349,28 @@ class Connection(object):
     async def create_materialized_view(
         self,
         name: str,
-        source: str,
+        source: Optional[str] = None,
         projections: Optional[List[Tuple[str, str]]] = None,
         filter: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        *,
+        query: Optional[str] = None,
     ) -> Table: ...
     async def create_materialized_view_async(
         self,
         name: str,
-        source: str,
+        source: Optional[str] = None,
         projections: Optional[List[Tuple[str, str]]] = None,
         filter: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        *,
+        query: Optional[str] = None,
     ) -> Job: ...
     def list_materialized_views(
         self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
