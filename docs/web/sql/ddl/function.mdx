@@ -66,7 +66,7 @@ version is unaffected.
 | `LANGUAGE` other than `python` | refused |
 | `pip` and `conda` together | refused (pick one) |
 | `conda_channels` without `conda` | refused |
-| `gpu` set to anything but `'true'` | refused |
+| An invalid `gpu` class/count string, zero count, or a count above the configured class limit | refused; use a configured class such as `'A10G:2'` |
 | An empty body | refused |
 | Any other option | refused, and the message lists what is supported |
 
