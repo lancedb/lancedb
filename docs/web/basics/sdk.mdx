@@ -53,7 +53,7 @@ without a LanceDB SDK. For SQL queries, connect through
 LanceDB's Java client builds on this Lance Namespace Java core: table creation,
 listing and most other catalog operations go through the generated
 `LanceNamespace` interface talking to Enterprise's Namespace endpoint.
-The [real time engine](/tables/realtime-engine) is the one area with its own,
+The [Realtime Engine](/tables/realtime-engine) is the one area with its own,
 LanceDB-specific Java client on top, since RTE's LSM write path is not part of
 the Lance Namespace Client SDK Specification.
 

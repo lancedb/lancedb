@@ -176,7 +176,7 @@ ALTER TABLE t UNSET RTE
 ```
 </CodeGroup>
 
-The [real time engine](/tables/realtime-engine) puts a write-ahead log in front
+The [Realtime Engine](/tables/realtime-engine) puts a write-ahead log in front
 of the table, making small frequent writes cheap by batching them out of the
 commit path. `sharding` and `buckets` spread the log so concurrent writers do
 not contend on one place; `bucket` sharding names its `column`, which must be
