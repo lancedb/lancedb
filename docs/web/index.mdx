@@ -6,24 +6,26 @@ icon: "/static/assets/logo/lancedb-icon-gray.svg"
 keywords: ["multimodal lakehouse", "training", "feature engineering", "search", "open source", "oss"]
 ---
 
-**LanceDB** is a [multimodal lakehouse](https://lancedb.com/blog/multimodal-lakehouse/) for AI. It gives you one data
-layer for search and retrieval, curation, feature engineering, and model training. It is built on [Lance](/basics/lance), an
-open-source columnar format for multimodal AI data.
+**LanceDB Enterprise** is a distributed multimodal lakehouse for AI. It gives you one data layer for search and
+retrieval, curation, feature engineering, and model training. It is built on [Lance](/basics/lance), an open-source
+columnar format for multimodal AI data. For the open-source retrieval library that runs inside your application,
+see [LanceDB Embedded](/basics/lancedb-embedded).
 
-LanceDB Enterprise depends only on object storage for its primary state, and NVME/memory for caching in the serving
-layer, giving it the latency profile of an in-memory database with the petabyte scalability and cost profile
-of S3. LanceDB is intended for use as a single solution in your org, giving your team one system to
-become expert in and removing the need for multiple database systems and synchronization pipelines
-between them. Core features include:
+LanceDB Enterprise depends only on object storage for its primary state, and NVMe/memory for caching in the serving
+layer, giving it the latency profile of an in-memory database with the petabyte scalability and cost profile of S3.
+It brings these workloads into one system, giving your team one system to become expert in and removing the need
+for multiple database systems and synchronization pipelines between them.
 
-- [**SQL**](/basics/sql) powered by Apache DataFusion (Enterprise)
+Core features include:
+
+- [**SQL**](/basics/sql) powered by Apache DataFusion
 - [**Secondary indexes**](/indexing) for vector search, full-text search, and scalar filters
-- [**Computed columns**](/feature-engineering/add-computed-column) with on-demand or scheduled refresh (Enterprise)
-- [**Materialized views**](/feature-engineering/materialized-views) with on-demand or scheduled refresh (Enterprise)
+- [**Computed columns**](/feature-engineering/add-computed-column) with on-demand or scheduled refresh
+- [**Materialized views**](/feature-engineering/materialized-views) with on-demand or scheduled refresh
 - [**Time travel and versioning**](/management/table#versioning) to pin and revisit datasets
 - **Search**: [vector](/search/vector-search), [full-text](/search/full-text-search), and
   [hybrid](/search/hybrid-search), with [filters](/search/filtering) and [reranking](/reranking)
-- [**Functions**](/curation/create-function) for custom transformations and model inference (Enterprise, early access)
+- [**Functions**](/curation/create-function) for custom transformations and model inference (early access)
 - [**Row-level random access**](/basics/lance#capabilities) for retrieval and training
 - [**Column additions**](/management/table#schema-add-new-columns) without rewriting existing columns
 
@@ -32,33 +34,22 @@ Draft until branching reaches early access. Add this item to the list above, aft
 - [**Copy-on-write branching**](/tables/branching) that gives each experiment or agent a writable fork of a table to review before it reaches `main`
 */}
 
-LanceDB stores images, video, audio, text, embeddings, and metadata in
-[schema-enforced tables](/management/table#multimodal). In LanceDB Enterprise, these features let you build
+LanceDB Enterprise stores images, video, audio, text, embeddings, and metadata in
+[schema-enforced tables](/management/table#multimodal). These features let you build
 declarative ML data pipelines: ingest raw data and metadata, enrich it incrementally with computed columns and
 Functions, and organize it into [curated datasets](/curation) with materialized views. Add features without
 rewriting existing columns, then train from those datasets using row-level random access and sampling.
 
-LanceDB provides [SDKs](/basics/sdk) for Python, TypeScript, and Rust, plus a
+Connect through [SDKs](/basics/sdk) for Python, TypeScript, and Rust, and use the
 [PyTorch data loader](/training/data-loading) for reproducible shuffling and streaming batches.
 
 ## Architecture {#architecture}
 
-LanceDB ships as two offerings on the same Lance format and table model, so moving between them requires no data conversion. Start 
-locally with Embedded, then move to Enterprise for distributed scale, feature engineering, managed infrastructure, and enterprise support.
+Queries and feature engineering run across a cluster, with background indexing and maintenance. Deploy
+LanceDB Enterprise in your cloud or use a LanceDB-managed deployment.
 
-<CardGroup cols={2}>
-  <Card title="LanceDB Embedded" icon="cube" href="/basics/lancedb-embedded">
-    An open-source, embedded retrieval library that runs inside your application process, with no separate
-    database server to deploy.
-  </Card>
-  <Card title="LanceDB Enterprise" icon="server" href="/enterprise/index">
-    Runs queries and feature engineering across a cluster, with background indexing and maintenance.
-    Deploy it in your cloud or use a LanceDB-managed deployment.
-  </Card>
-</CardGroup>
-
-See [Embedded vs Enterprise](/basics/embedded-vs-enterprise) for a feature-by-feature comparison, including
-architecture, latency, throughput, and day-to-day usage differences.
+Your application connects to the service through an SDK or [SQL client](/basics/sql). The cluster executes queries,
+refreshes derived data, and maintains tables and indexes outside your application.
 
 ## Projects using LanceDB {#projects-using-lancedb}
 
@@ -69,4 +60,5 @@ Teams use LanceDB for world-model and robotics training, as in
 [Cognee](https://github.com/topoteretes/cognee), and
 [OpenClaw](https://docs.openclaw.ai/plugins/memory-lancedb).
 
-To get started, see the [quickstart](/quickstart).
+To get started, [connect to your Enterprise database](/basics/catalog#enterprise) and follow the
+[quickstart](/quickstart). For a new deployment, [contact the LanceDB team](https://www.lancedb.com/contact).
