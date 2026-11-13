@@ -2646,6 +2646,8 @@ mod tests {
     use lance_file::version::ConcreteFileVersion;
     use lance_table::format::overlay::{DataOverlayFile, OverlayCoverage};
 
+    use crate::table::computed_columns::test_support::{stamp_bindings, text_features_binding};
+
     const COLUMN: &str = "doubled";
     const EXPRESSION: &str = "value * 2";
 
@@ -3123,6 +3125,126 @@ mod tests {
                 BTreeMap::from([(1, RoaringBitmap::from_iter([1]))])
             );
             assert_eq!(staleness.pending_fill.len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn input_update_dirties_only_the_updated_rows_and_retains_outputs() {
+        let table = fresh_function_table().await;
+        let result = table
+            .update()
+            .only_if("title = 'a'")
+            .column("body", "'changed'")
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(result.rows_updated, 1);
+        let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
+        for output in ["search_text", "search_token_count"] {
+            let stale = function_plan(&dataset, output).await;
+            let mut dirty_rows = 0;
+            for fragment in dataset.get_fragments() {
+                if stale.needs_recompute(fragment.id() as u32) {
+                    let batch = fragment
+                        .scan()
+                        .project(&["title"])
+                        .unwrap()
+                        .try_into_batch()
+                        .await
+                        .unwrap();
+                    let titles = batch
+                        .column(0)
+                        .as_any()
+                        .downcast_ref::<arrow_array::StringArray>()
+                        .unwrap();
+                    assert!(titles.iter().all(|title| title == Some("a")), "{stale:?}");
+                    dirty_rows += batch.num_rows();
+                }
+            }
+            assert_eq!(dirty_rows, 1, "{stale:?}");
+        }
+        assert_eq!(table.count_rows(Some("title = 'a' AND body = 'changed' AND search_text = 'a x' AND search_token_count = 2".into())).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn input_update_keeps_an_independent_function_binding_fresh() {
+        let batch = arrow_array::record_batch!(
+            ("title", Utf8, ["a", "b", "c", "d"]),
+            ("body", Utf8, ["x", "y", "z", "w"]),
+            ("search_text", Utf8, ["a x", "b y", "c z", "d w"]),
+            ("search_token_count", Int64, [2, 2, 2, 2]),
+            ("search_text_other", Utf8, ["a a", "b b", "c c", "d d"]),
+            ("search_token_count_other", Int64, [2, 2, 2, 2])
+        )
+        .unwrap();
+        let table = crate::connect("memory://")
+            .execute()
+            .await
+            .unwrap()
+            .create_table("independent_functions", batch)
+            .write_options(crate::table::WriteOptions {
+                lance_write_params: Some(WriteParams {
+                    max_rows_per_file: 2,
+                    ..Default::default()
+                }),
+            })
+            .execute()
+            .await
+            .unwrap();
+        let mut other = serde_json::to_value(text_features_binding("_other")).unwrap();
+        other["inputs"][1]["field_path"] = serde_json::json!("title");
+        other["inputs"][1]["field_id"] = other["inputs"][0]["field_id"].clone();
+        let bindings = [
+            text_features_binding(""),
+            serde_json::from_value(other).unwrap(),
+        ];
+        stamp_bindings(&table, &bindings).await;
+        let native = table.as_native().unwrap();
+        let mut dataset = native.dataset.get().await.unwrap().as_ref().clone();
+        for binding in &bindings {
+            let paths = binding
+                .inputs()
+                .iter()
+                .map(|input| input.field_path.clone())
+                .collect::<Vec<_>>();
+            let inputs = fields_for_paths(dataset.schema(), &paths).unwrap();
+            let signatures = signatures_for(&dataset, &[0, 1], &inputs).unwrap();
+            for output in binding.outputs() {
+                write_signatures(
+                    &mut dataset,
+                    &output.output_name,
+                    binding.binding_id(),
+                    signatures.clone(),
+                )
+                .await
+                .unwrap();
+            }
+        }
+        native.dataset.update(dataset);
+        table
+            .update()
+            .only_if("title = 'a'")
+            .column("body", "'changed'")
+            .execute()
+            .await
+            .unwrap();
+        let dataset = native.dataset.get().await.unwrap();
+        assert!(
+            function_plan(&dataset, "search_text")
+                .await
+                .needs_recompute(2)
+        );
+        let other = &bindings[1];
+        let inputs = fields_for_paths(dataset.schema(), &["title".into()]).unwrap();
+        for output in other.outputs() {
+            let stale =
+                staleness_against(&dataset, &output.output_name, other.binding_id(), &inputs)
+                    .await
+                    .unwrap();
+            assert!(
+                !stale.recompute_all && stale.dirty.is_empty() && stale.row_dirty.is_empty(),
+                "{stale:?}"
+            );
         }
     }
 
