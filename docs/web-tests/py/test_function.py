@@ -154,13 +154,27 @@ def test_function_output_nullability():
         ("note", True),
     ]
 
-    # A scalar output, and a struct declared as one nullable field, may not be.
-    for nullable in (
-        pa.field("result", pa.float64(), nullable=True),
-        pa.field("result", pa.struct(fields), nullable=True),
-    ):
-        with pytest.raises(ValueError, match="non-nullable"):
-            function(input_schema=inputs, output_schema=nullable)(describe)
+    # A scalar output may be nullable.
+    @function(input_schema=inputs)
+    def maybe_double(value: float) -> float | None:
+        return None if value == 0 else value * 2
+
+    output = maybe_double.registration_request.signature.output
+    assert (output.kind, output.arrow_type, output.nullable) == (
+        "scalar",
+        "float64",
+        True,
+    )
+    assert json.loads(maybe_double.registration_request.signature.to_canonical_json())[
+        "output"
+    ] == {"kind": "scalar", "arrow_type": "float64", "nullable": True}
+
+    # A struct declared as one nullable field may not be.
+    with pytest.raises(ValueError, match="non-nullable"):
+        function(
+            input_schema=inputs,
+            output_schema=pa.field("result", pa.struct(fields), nullable=True),
+        )(describe)
 
 
 def test_function_registration_is_remote(tmp_path):

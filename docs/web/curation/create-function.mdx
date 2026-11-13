@@ -240,11 +240,12 @@ extract_frame_version = db.create_function_async(extract_frame).wait(
 ```
 </CodeGroup>
 
-An empty byte string is a filled result. A scalar output cannot be nullable,
-because a physical NULL marks an unfilled computed row. To return a nullable
-blob as a value, use a named-struct output schema with a nullable blob field;
-the struct itself records whether the result has been filled. Read a nested
-blob with `table.fetch_blobs("payload.image", hits)`.
+An empty byte string is a filled result. A top-level Blob v2 output cannot be
+nullable; to return a nullable blob as a value, use a named-struct output
+schema with a nullable blob field. The struct itself records whether the
+result has been filled. A nullable non-Blob scalar output is declared with
+`Optional[T]` or `T | None`; see [Functions](/management/function#define).
+Read a nested blob with `table.fetch_blobs("payload.image", hits)`.
 
 A list or large-list output may also contain Blob v2 elements; inputs and
 fixed-size lists do not support this layout. List-nested values are queryable
