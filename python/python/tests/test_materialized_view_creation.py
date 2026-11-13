@@ -18,9 +18,15 @@ async def test_exist_ok_preserves_materialized_data(
     source_args = (
         {"query": "SELECT * FROM source"} if defining_query else {"source": "source"}
     )
-    missing_args = (
-        {"query": "SELECT * FROM missing"} if defining_query else {"source": "missing"}
-    )
+    replacement_args = {
+        **(
+            {"query": "SELECT * FROM missing"}
+            if defining_query
+            else {"source": "missing"}
+        ),
+        "auto_refresh_enabled": True,
+        "auto_refresh_interval_seconds": 1,
+    }
     options = {"storage_options": {"new_table_enable_stable_row_ids": "true"}}
     if asynchronous:
         db = (
@@ -37,13 +43,13 @@ async def test_exist_ok_preserves_materialized_data(
         await source.add([{"id": 2}])
         if background:
             job = await db.create_materialized_view_async(
-                "saved", **missing_args, exist_ok=True
+                "saved", **replacement_args, exist_ok=True
             )
             await job.wait()
             kept = await db.open_materialized_view("saved")
         else:
             kept = await db.create_materialized_view(
-                "saved", **missing_args, exist_ok=True
+                "saved", **replacement_args, exist_ok=True
             )
         assert (await kept.definition()).query == definition.query
         assert await kept.table.version() == version
@@ -63,12 +69,14 @@ async def test_exist_ok_preserves_materialized_data(
         source.add([{"id": 2}])
         if background:
             job = db.create_materialized_view_async(
-                "saved", **missing_args, exist_ok=True
+                "saved", **replacement_args, exist_ok=True
             )
             job.wait()
             kept = db.open_materialized_view("saved")
         else:
-            kept = db.create_materialized_view("saved", **missing_args, exist_ok=True)
+            kept = db.create_materialized_view(
+                "saved", **replacement_args, exist_ok=True
+            )
         assert kept.definition.query == definition.query
         assert kept.table.version == version
         assert kept.table.to_arrow().to_pylist() == [{"id": 1}]

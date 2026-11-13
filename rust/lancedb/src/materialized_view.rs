@@ -1827,16 +1827,16 @@ impl CreateMaterializedViewBuilder {
 
     async fn execute_native(self) -> Result<MaterializedView> {
         crate::require_experimental_functions()?;
+        if self.exist_ok
+            && let Some(view) = self.existing_view().await?
+        {
+            return Ok(view);
+        }
         if self.auto_refresh_enabled == Some(true) || self.auto_refresh_interval_seconds.is_some() {
             return Err(Error::NotSupported {
                 message: "automatic materialized-view refresh requires LanceDB Enterprise"
                     .to_string(),
             });
-        }
-        if self.exist_ok
-            && let Some(view) = self.existing_view().await?
-        {
-            return Ok(view);
         }
         let prepared = match &self.input {
             MaterializedViewInput::Source(name) => {
