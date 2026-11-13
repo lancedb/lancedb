@@ -63,6 +63,7 @@ from .secrets import EnvVarSecret
 
 _Int32 = conint(strict=True, ge=-(2**31), le=2**31 - 1)
 _UInt32 = conint(strict=True, ge=0, le=2**32 - 1)
+_PositiveUInt32 = conint(strict=True, ge=1, le=2**32 - 1)
 _UInt64 = conint(strict=True, ge=0, le=2**64 - 1)
 _GPU_CLASS_NAME = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 _GPU_CLASS_ERROR = (
@@ -77,16 +78,29 @@ def _validate_gpu_wire_marker(value: Any) -> bool:
     return True
 
 
-def _normalize_gpu_marker(value: bool) -> Optional[bool]:
-    if not isinstance(value, bool):
-        raise ValueError("gpu must be a boolean")
-    return True if value else None
-
-
 def _validate_gpu_class_name(value: Any) -> str:
     if not isinstance(value, str) or not _GPU_CLASS_NAME.fullmatch(value):
         raise ValueError(_GPU_CLASS_ERROR)
     return value
+
+
+def _normalize_gpu_request(
+    gpu: Optional[str],
+) -> tuple[Optional[bool], Optional[str], Optional[int]]:
+    if gpu is None:
+        return None, None, None
+    if not isinstance(gpu, str):
+        raise ValueError("gpu must be a GPU class or 'CLASS:COUNT'")
+    match = re.fullmatch(r"([A-Za-z0-9][A-Za-z0-9-]*)(?::([0-9]+))?", gpu)
+    if match is None:
+        raise ValueError("gpu must be a GPU class or 'CLASS:COUNT'")
+    name = _validate_gpu_class_name(match[1].lower())
+    if name in {"true", "false"} or name.isdecimal():
+        raise ValueError("gpu must be a GPU class or 'CLASS:COUNT'")
+    count = int(match[2]) if match[2] is not None else 1
+    if not 1 <= count <= 2**32 - 1:
+        raise ValueError("gpu count must be between 1 and 4294967295")
+    return True, name, count
 
 
 def _validate_batch_size(value: Any) -> Optional[int]:
@@ -443,6 +457,7 @@ class PythonRuntimeSpec(_RemoteValue):
     env: Optional[Mapping[str, str]] = None
     gpu: Optional[bool] = None
     gpu_class: Optional[str] = None
+    gpus_per_worker: Optional[_PositiveUInt32] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -480,6 +495,8 @@ class PythonRuntimeSpec(_RemoteValue):
                 raise ValueError(
                     "python runtime with gpu_class requires kind='python_v2'"
                 )
+            if self.gpus_per_worker is not None:
+                raise ValueError("gpus_per_worker requires kind='python_v2'")
         elif self.kind == "python_v2":
             if self.python_version is None:
                 raise ValueError("python_v2 runtime requires python_version")
@@ -493,6 +510,7 @@ class PythonRuntimeSpec(_RemoteValue):
             object.__setattr__(self, "env", None)
             object.__setattr__(self, "gpu", None)
             object.__setattr__(self, "gpu_class", None)
+            object.__setattr__(self, "gpus_per_worker", None)
         return self
 
     @property
@@ -2332,8 +2350,7 @@ class FunctionDefinition:
         max_concurrency: Optional[int] = None,
         row_timeout_seconds: Optional[float] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
-        gpu: bool = False,
-        gpu_class: Optional[str] = None,
+        gpu: Optional[str] = None,
         conda: tuple[str, ...] = (),
         conda_channels: tuple[str, ...] = (),
         apt: tuple[str, ...] = (),
@@ -2354,11 +2371,7 @@ class FunctionDefinition:
         if conda_channels and not conda:
             raise ValueError("conda_channels requires conda packages")
         _validate_package_requirements("conda" if conda else "pip", conda or pip)
-        gpu_marker = _normalize_gpu_marker(gpu)
-        if gpu_class is not None:
-            _validate_gpu_class_name(gpu_class)
-            if gpu_marker is None:
-                raise ValueError("gpu_class requires gpu=True")
+        gpu_marker, gpu_class, gpus_per_worker = _normalize_gpu_request(gpu)
         packages = tuple(sorted(set(conda if conda else pip)))
         system_packages = tuple(sorted(set(apt)))
         if any(
@@ -2473,6 +2486,7 @@ class FunctionDefinition:
             env=environment,
             gpu=gpu_marker,
             gpu_class=gpu_class,
+            gpus_per_worker=gpus_per_worker,
         )
         self._function = function
         self._request = FunctionRegistrationRequest(
@@ -2595,8 +2609,7 @@ def function(
     max_concurrency: Optional[int] = None,
     row_timeout_seconds: Optional[float] = None,
     retry_policy: Optional[FunctionRetryPolicy] = None,
-    gpu: bool = False,
-    gpu_class: Optional[str] = None,
+    gpu: Optional[str] = None,
     conda: tuple[str, ...] | list[str] = (),
     conda_channels: tuple[str, ...] | list[str] = (),
     apt: tuple[str, ...] | list[str] = (),
@@ -2619,8 +2632,7 @@ def function(
     max_concurrency: Optional[int] = None,
     row_timeout_seconds: Optional[float] = None,
     retry_policy: Optional[FunctionRetryPolicy] = None,
-    gpu: bool = False,
-    gpu_class: Optional[str] = None,
+    gpu: Optional[str] = None,
     conda: tuple[str, ...] | list[str] = (),
     conda_channels: tuple[str, ...] | list[str] = (),
     apt: tuple[str, ...] | list[str] = (),
@@ -2791,16 +2803,15 @@ def function(
         and backoff. A refresh may override this default. Retrying a partial
         call must be safe; completed calls are not repeated. For batch Functions,
         skip after exhaustion applies to the whole failed call.
-    gpu : bool, default False
-        Whether every remote execution requires a GPU. The execution platform
-        selects one compatible GPU for each worker. The requirement is part of
-        the immutable Function version.
-    gpu_class : str, optional
-        Operator-defined GPU class for every execution of this Function, such
-        as ``"a10g"`` or ``"h100"``. Requires ``gpu=True`` and follows the
-        lowercase 63-character DNS-label rule. The class is part of the
-        immutable Function version; per-refresh aggregate GPU budgets are
-        selected through ``refresh_column`` instead of registration.
+    gpu : str, optional
+        Select an operator-configured class and minimum GPUs per worker with
+        ``"A10G:2"`` or ``"H100:4"``.
+        A class alone requests one GPU. Class names are normalized to lowercase.
+        All requested devices are allocated to one worker, allowing tensor
+        parallel models. Configure the model's parallelism separately. Use
+        ``db.list_gpu_classes()`` to inspect hardware and per-worker limits.
+        The requirement is part of the immutable Function version; refresh
+        ``gpu_count`` is a separate aggregate budget and must fit one worker.
     code : sequence of module, optional
         Top-level modules or packages whose importable ``.py`` files ship
         with the Function and are importable by their own names. Package data
@@ -2842,13 +2853,13 @@ def function(
     ...     return value
     >>> batch_identity(pa.array([1, 2, 3])).to_pylist()
     [1, 2, 3]
-    >>> @function(pip=["cupy-cuda12x"], gpu=True, gpu_class="a10g")
+    >>> @function(pip=["cupy-cuda12x"], gpu="A10G:2")
     ... def gpu_score(value: int) -> int:
     ...     return value * 2
     >>> gpu_score.registration_request.runtime.gpu
     True
-    >>> gpu_score.registration_request.runtime.gpu_class
-    'a10g'
+    >>> gpu_score.registration_request.runtime.gpus_per_worker
+    2
     >>> @function
     ... class scale:
     ...     def __init__(self, factor: float, offset: float = 0.0):
@@ -2921,7 +2932,6 @@ def function(
             row_timeout_seconds=row_timeout_seconds,
             retry_policy=retry_policy,
             gpu=gpu,
-            gpu_class=gpu_class,
             conda=tuple(conda),
             conda_channels=tuple(conda_channels),
             apt=tuple(apt),

@@ -353,7 +353,7 @@ dependencies are part of its definition:
 
 <CodeGroup>
 ```python Python icon="python"
-@function(gpu=True)
+@function(gpu="default")
 def extract_frame(video: BlobReader, ts: float) -> bytes:
     ...  # runs only on a GPU-capable worker
 ```
@@ -492,7 +492,7 @@ its model-loading code factored into a sibling module instead of inlined:
 ```python Python icon="python"
 import caption_worker  # a sibling module with the model-loading logic
 
-@function(gpu=True, code=[caption_worker])
+@function(gpu="default", code=[caption_worker])
 def caption(jpeg: bytes) -> str:
     return caption_worker.run(jpeg)
 ```

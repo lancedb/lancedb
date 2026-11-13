@@ -117,8 +117,9 @@ and remote-API Functions both build on below.
 `db.list_gpu_classes()` lists the GPU classes configured for the deployment.
 Each record reports the operator's hardware description and limits; it does
 not mean a GPU is currently free. Listing requires the System Usage
-permission. Pass a returned class name to `gpu_class` to fix that placement
-in the Function version. `gpu=True` remains required:
+permission. Pass a returned class name to `gpu`, such as `gpu="A10G:2"`,
+to select a class and the minimum GPUs allocated together to each worker.
+A class name alone requests one GPU. Omitting `gpu` uses CPU workers:
 
 <CodeGroup>
 ```python Python icon="python"
@@ -130,8 +131,7 @@ gpu_class = next(
 )
 
 @function(
-    gpu=True,
-    gpu_class=gpu_class,
+    gpu=gpu_class,
     pip=["torch==2.12.0", "sentence-transformers==5.7.0"],
 )
 class embed_text:
@@ -153,9 +153,17 @@ table.add_columns({"embedding": version(text=col("caption"))})
 </CodeGroup>
 
 Older servers that do not implement `GET /v1/gpu/classes` raise
-`NotImplementedError`. Without `gpu_class`, the deployment's default GPU
-class is used. The class is immutable with the Function version; set a
-per-refresh class or aggregate GPU budget through
+`NotImplementedError`. Use `gpu="default"` for the deployment's default
+GPU class. Class names are case insensitive and stored in lowercase. Counts
+must be positive integers; the deployment must have a node that can supply
+that many devices together. `max_gpu_count_per_worker` in the class inventory
+is the operator's cap; an unset cap does not promise unlimited hardware.
+The request is immutable with the Function version. Configure tensor
+parallelism in the model separately, for example vLLM's
+`tensor_parallel_size=2` for `gpu="A10G:2"`.
+
+The refresh `gpu_count` is a separate aggregate budget across workers and
+must be at least the Function's per-worker count. Set it through
 [`refresh_column_async`](/feature-engineering/refresh-column#resources).
 
 The model loads once per worker instance, in `__init__`; `__call__` only
@@ -223,7 +231,7 @@ from lancedb.functions import function
 
 @function(
     name="extract_frame",
-    gpu=True,
+    gpu="default",
     pip=["av==13.1.0", "pillow==11.0.0"],
     input_schema=pa.schema([
         lancedb.blob("video"),
@@ -268,7 +276,7 @@ A second Function can bind a blob another Function produced. Register
 
 <CodeGroup>
 ```python Python icon="python"
-@function(gpu=True, pip=["transformers==4.47.0"])
+@function(gpu="default", pip=["transformers==4.47.0"])
 def caption(jpeg: bytes) -> str:
     ...  # run a vision-language model over the JPEG, return one sentence
 

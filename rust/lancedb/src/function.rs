@@ -305,6 +305,7 @@ pub enum PythonRuntimeSpec {
     ///     },
     ///     env: BTreeMap::new(),
     ///     gpu_class: Some("a10g".to_string()),
+    ///     gpus_per_worker: std::num::NonZeroU32::new(2),
     /// };
     /// assert!(runtime.requires_gpu());
     /// ```
@@ -314,6 +315,8 @@ pub enum PythonRuntimeSpec {
         env: BTreeMap<String, String>,
         /// Operator-defined GPU class; absent uses the deployment default.
         gpu_class: Option<String>,
+        /// Minimum GPUs allocated together to each worker.
+        gpus_per_worker: Option<std::num::NonZeroU32>,
     },
     /// A runtime kind introduced by a newer server.
     ///
@@ -372,10 +375,22 @@ impl PythonRuntimeSpec {
             _ => None,
         }
     }
+
+    /// Minimum GPUs allocated to one worker; zero for CPU runtimes.
+    pub fn gpus_per_worker(&self) -> u32 {
+        match self {
+            Self::PythonV2 {
+                gpus_per_worker, ..
+            } => gpus_per_worker.map_or(1, std::num::NonZeroU32::get),
+            _ => 0,
+        }
+    }
 }
 
 #[derive(Deserialize)]
 struct PythonRuntimeV1Wire {
+    #[serde(default)]
+    gpus_per_worker: Option<Value>,
     python_version: String,
     environment: PythonEnvironmentSpec,
     #[serde(default)]
@@ -388,6 +403,8 @@ struct PythonRuntimeV1Wire {
 
 #[derive(Deserialize)]
 struct PythonRuntimeV2Wire {
+    #[serde(default)]
+    gpus_per_worker: Option<std::num::NonZeroU32>,
     python_version: String,
     environment: PythonEnvironmentSpec,
     #[serde(default)]
@@ -420,6 +437,11 @@ impl<'de> Deserialize<'de> for PythonRuntimeSpec {
                         "python runtime with gpu_class requires kind='python_v2'",
                     ));
                 }
+                if wire.gpus_per_worker.is_some() {
+                    return Err(de::Error::custom(
+                        "gpus_per_worker requires kind='python_v2'",
+                    ));
+                }
                 Ok(Self::Python {
                     python_version: wire.python_version,
                     environment: wire.environment,
@@ -440,6 +462,7 @@ impl<'de> Deserialize<'de> for PythonRuntimeSpec {
                     environment: wire.environment,
                     env: wire.env,
                     gpu_class: wire.gpu_class,
+                    gpus_per_worker: wire.gpus_per_worker,
                 })
             }
             _ => Ok(Self::Unrecognized { kind }),
@@ -460,6 +483,8 @@ impl Serialize for PythonRuntimeSpec {
             gpu: Option<bool>,
             #[serde(skip_serializing_if = "Option::is_none")]
             gpu_class: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            gpus_per_worker: Option<std::num::NonZeroU32>,
         }
 
         #[derive(Serialize)]
@@ -479,6 +504,7 @@ impl Serialize for PythonRuntimeSpec {
                 env,
                 gpu: None,
                 gpu_class: None,
+                gpus_per_worker: None,
             }
             .serialize(serializer),
             Self::PythonV2 {
@@ -486,6 +512,7 @@ impl Serialize for PythonRuntimeSpec {
                 environment,
                 env,
                 gpu_class,
+                gpus_per_worker,
             } => PythonRuntimeRef {
                 kind: "python_v2",
                 python_version,
@@ -493,6 +520,7 @@ impl Serialize for PythonRuntimeSpec {
                 env,
                 gpu: Some(true),
                 gpu_class: gpu_class.as_deref(),
+                gpus_per_worker: *gpus_per_worker,
             }
             .serialize(serializer),
             Self::Unrecognized { kind } => UnrecognizedRuntimeRef { kind }.serialize(serializer),
@@ -1244,6 +1272,7 @@ impl_json!(RefreshColumnResult);
 #[cfg(test)]
 mod conda_environment_tests {
     use super::{PythonEnvironmentSpec, PythonRuntimeSpec};
+    use serde_json::Value;
 
     #[test]
     fn conda_channels_round_trip_and_pip_stays_bare() {
@@ -1305,6 +1334,27 @@ mod conda_environment_tests {
             super::canonical_json(&runtime).unwrap(),
             r#"{"environment":{"kind":"pip"},"gpu":true,"gpu_class":"a10g","kind":"python_v2","python_version":"3.12"}"#
         );
+        let runtime: PythonRuntimeSpec = serde_json::from_str(
+            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":true,"gpu_class":"a10g","gpus_per_worker":2}"#,
+        ).unwrap();
+        assert_eq!(runtime.gpus_per_worker(), 2);
+        let encoded = super::canonical_json(&runtime).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&encoded).unwrap()["gpus_per_worker"],
+            2
+        );
+        for count in [
+            serde_json::json!(0),
+            serde_json::json!(-1),
+            serde_json::json!(true),
+            serde_json::json!("2"),
+            serde_json::json!(1.5),
+            serde_json::json!(4294967296_u64),
+        ] {
+            let mut value: Value = serde_json::from_str(&encoded).unwrap();
+            value["gpus_per_worker"] = count;
+            assert!(serde_json::from_value::<PythonRuntimeSpec>(value).is_err());
+        }
 
         for invalid in [
             r#"{"kind":"python","python_version":"3.12","environment":{"kind":"pip"},"gpu":true}"#,

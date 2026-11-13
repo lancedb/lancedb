@@ -661,7 +661,7 @@ def test_function_image_requires_digest_reference(image):
 def test_function_gpu_marker_uses_gpu_runtime():
     with pytest.warns(UserWarning, match="uses a scalar callable"):
 
-        @function(pip=["cupy-cuda12x"], gpu=True, gpu_class="a10g")
+        @function(pip=["cupy-cuda12x"], gpu="A10G:2")
         def double_on_gpu(value: int) -> int:
             return value * 2
 
@@ -669,6 +669,7 @@ def test_function_gpu_marker_uses_gpu_runtime():
     assert request["runtime"]["kind"] == "python_v2"
     assert request["runtime"]["gpu"] is True
     assert request["runtime"]["gpu_class"] == "a10g"
+    assert request["runtime"]["gpus_per_worker"] == 2
 
     @function(pip=["pyarrow"])
     def cpu_function(value: int) -> int:
@@ -684,14 +685,25 @@ def test_function_gpu_marker_uses_gpu_runtime():
     def identity(value: int) -> int:
         return value
 
-    for invalid in [None, 0, 1, -1, 1.5, "", "true", "1", "H100"]:
-        with pytest.raises(ValueError, match="gpu must be a boolean"):
+    for invalid in [
+        True,
+        False,
+        0,
+        1,
+        -1,
+        1.5,
+        "",
+        "true",
+        "1",
+        "a_b",
+        "-a10g",
+        "a10g-",
+        "a" * 64,
+    ]:
+        with pytest.raises(ValueError, match="gpu"):
             function(name="invalid_gpu", gpu=invalid)(identity)
-    for invalid in ["H100", "a_b", "-a10g", "a10g-", "a" * 64]:
-        with pytest.raises(ValueError, match="gpu_class"):
-            function(name="invalid_gpu_class", gpu=True, gpu_class=invalid)(identity)
-    with pytest.raises(ValueError, match="requires gpu=True"):
-        function(name="gpu_class_without_gpu", gpu_class="a10g")(identity)
+    with pytest.raises(TypeError, match="gpu_class"):
+        function(name="legacy_gpu_class", gpu="A10G", gpu_class="a10g")(identity)
 
     base_runtime = {
         "kind": "python_v2",
@@ -723,27 +735,76 @@ class _GpuArrayFunction:
         return value
 
 
+@pytest.mark.parametrize(
+    "gpu, name, count",
+    [("A10G:2", "a10g", 2), ("H100:4", "h100", 4), ("default", "default", 1)],
+)
+def test_modal_gpu_request_is_part_of_runtime_identity(gpu, name, count):
+    with pytest.warns(UserWarning):
+        definition = function(gpu=gpu)(normalize_score.__wrapped__)
+    runtime = definition.registration_request.runtime
+    assert runtime.gpu is True
+    assert runtime.gpu_class == name
+    assert runtime.gpus_per_worker == count
+    encoded = definition.registration_request.to_canonical_json()
+    assert json.loads(encoded)["runtime"]["gpus_per_worker"] == count
+    different = runtime._copy(update={"gpus_per_worker": count + 1})
+    assert runtime.digest != different.digest
+
+
+@pytest.mark.parametrize(
+    "gpu",
+    [
+        "H100:0",
+        "H100:-1",
+        "H100:1.5",
+        "H100:",
+        "H100:2:3",
+        "H100:4294967296",
+        " H100:2",
+        "H100:+2",
+    ],
+)
+def test_modal_gpu_request_rejects_invalid_counts(gpu):
+    with pytest.raises(ValueError, match="gpu"):
+        function(gpu=gpu)(normalize_score.__wrapped__)
+
+
+@pytest.mark.parametrize("count", [0, -1, True, 1.5, "2", 2**32])
+def test_gpu_wire_count_is_a_strict_positive_uint32(count):
+    with pytest.raises(ValueError):
+        PythonRuntimeSpec.model_validate(
+            {
+                "kind": "python_v2",
+                "python_version": "3.12",
+                "environment": {"kind": "pip"},
+                "gpu": True,
+                "gpus_per_worker": count,
+            }
+        )
+
+
 def test_gpu_scalar_warning_names_the_vectorized_alternative():
     with pytest.warns(UserWarning, match="model batch is not inferred"):
 
-        @function(gpu=True)
+        @function(gpu="default")
         def scalar_embedding(value: str) -> list[int]:
             return [len(value)]
 
     input_schema = pa.schema([pa.field("value", pa.string(), nullable=False)])
     with pytest.warns(UserWarning, match="uses a scalar callable"):
-        class_scalar = function(_GpuScalarFunction, gpu=True)
+        class_scalar = function(_GpuScalarFunction, gpu="default")
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
 
         @function(
-            gpu=True, input_schema=input_schema, output_schema=pa.list_(pa.int64())
+            gpu="default", input_schema=input_schema, output_schema=pa.list_(pa.int64())
         )
         def array_embedding(value: pa.Array) -> pa.Array:
             return value
 
         @function(
-            gpu=True, input_schema=input_schema, output_schema=pa.list_(pa.int64())
+            gpu="default", input_schema=input_schema, output_schema=pa.list_(pa.int64())
         )
         def record_batch_embedding(value: pa.RecordBatch) -> pa.Array:
             return value.column(0)
@@ -754,7 +815,7 @@ def test_gpu_scalar_warning_names_the_vectorized_alternative():
 
         class_embedding = function(
             _GpuArrayFunction,
-            gpu=True,
+            gpu="default",
             input_schema=input_schema,
             output_schema=pa.list_(pa.int64()),
         )

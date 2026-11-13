@@ -54,8 +54,7 @@ version is unaffected.
 | `apt` | OS packages to install in the worker environment |
 | `image` | a specific container image to run the worker in, such as `'host/repo@sha256:...'` |
 | `python_version` | worker Python version; `3.12` when omitted, whatever Python you send the statement from |
-| `gpu` | `'true'` when every execution needs a GPU |
-| `gpu_class` | which configured GPU class to run on, when `gpu = 'true'` |
+| `gpu` | GPU class and optional count per worker, such as `'A10G:2'` or `'H100:4'`; a class alone requests one GPU |
 | `result_stability` | `'input_and_context'` or `'per_call'` |
 | `batch_size` | maximum rows per Function call |
 | `row_timeout_seconds` | per-row (or per-batch, for a vectorized Function) execution timeout |
