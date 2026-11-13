@@ -6414,3 +6414,21 @@ def test_fts_exist_ok_matches_quoted_default_name(mem_db):
     table.create_index("`body-text`", config=FTS(), exist_ok=True)
     assert table.version == before
     assert len(table.list_indices()) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_data_prewarm_job_is_unsupported_locally(tmp_path, asynchronous):
+    if asynchronous:
+        db = await lancedb.connect_async(tmp_path)
+        table = await db.create_table("prewarm", [{"id": 1}])
+        with pytest.raises(
+            NotImplementedError, match="only supported on remote tables"
+        ):
+            await table.prewarm_data_async(filter="id > 0", concurrency=2)
+    else:
+        table = lancedb.connect(tmp_path).create_table("prewarm", [{"id": 1}])
+        with pytest.raises(
+            NotImplementedError, match="only supported on remote tables"
+        ):
+            table.prewarm_data_async(filter="id > 0", concurrency=2)

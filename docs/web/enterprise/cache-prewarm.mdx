@@ -72,6 +72,48 @@ and rollouts instead of dipping right after each one.
 [Contact us](https://www.lancedb.com/contact) to learn more about how
 prewarming is configured for your deployment.
 
+## On-demand data prewarm
+
+On compatible Enterprise deployments, the SDK submits data prewarm through
+SQL. Flight SQL connectivity is required; the existing generic HTTP job API is
+used to inspect or wait for the durable warming job. Under Standard
+authorization, submission requires table Select plus Usage on the database
+and namespace hierarchy. Job events require System Usage and cancellation
+requires System Operate.
+
+```python
+from datetime import timedelta
+
+# The table handle determines the database, namespace, and branch.
+job = table.prewarm_data_async(
+    ["video"], filter="quality > 0.7", concurrency=4
+)
+print(job.id)
+job.wait(timeout=timedelta(minutes=10))
+
+# Reattach in a later process using the same database connection settings.
+db.open_job(job.id).wait()
+```
+
+The method returns when the job is accepted. Waiting finishes when warming
+reaches a terminal state; a timeout does not cancel the job. Use
+`job.refresh()` and `job.spec["table_version"]` to inspect the captured source
+version. In Python's asynchronous API, await submission and `job.wait()`.
+Node exposes `table.prewarmDataAsync({ columns, filter, concurrency })` with
+the same lifecycle.
+
+The filter is a single SQL predicate used for conservative metadata pruning.
+Unknown or unavailable metadata keeps data eligible for warming. Omitted
+columns warm all fields; concurrency must be a positive integer. Historical
+version checkouts are unsupported: use the latest version of the selected
+branch. The server never needs to scan rows merely to evaluate the predicate.
+
+`prewarm_data(columns)` / `prewarmData(columns)` still return after acceptance
+without a job handle, but now also require SQL PREWARM support and Flight SQL
+connectivity. Unsupported servers fail without a REST fallback or silently
+dropping options. Repeated submissions may create distinct jobs; warming
+already-cached data is safe. Index prewarm keeps its existing behavior.
+
 ## What to read next {#next}
 
 <CardGroup cols={2}>
