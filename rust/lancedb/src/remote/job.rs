@@ -293,14 +293,32 @@ impl<S: HttpSend> JobHandle for RemoteJob<S> {
             match description.state() {
                 JobState::Done => return Ok(description.into_terminal_result(request_id)),
                 JobState::Failed => {
+                    let mut failure = description
+                        .failure
+                        .map(ReportedFailure::into_job_failure)
+                        .unwrap_or_default();
+                    // The responding query node may have upgraded since this job
+                    // failed. Only its persisted terminal writer identifies the failure.
+                    if let Some(server) = description
+                        .result
+                        .as_ref()
+                        .and_then(|result| result.get("terminal_server"))
+                        .and_then(|server| {
+                            serde_json::from_value::<crate::server_info::ServerBuildInfo>(
+                                server.clone(),
+                            )
+                            .ok()
+                        })
+                    {
+                        let provenance = format!("[server: {server}]");
+                        failure.message = Some(match failure.message {
+                            Some(message) => format!("{message} {provenance}"),
+                            None => provenance,
+                        });
+                    }
                     return Err(Error::JobFailed {
                         job_id: Some(self.job_id.clone()),
-                        failure: Box::new(
-                            description
-                                .failure
-                                .map(ReportedFailure::into_job_failure)
-                                .unwrap_or_default(),
-                        ),
+                        failure: Box::new(failure),
                     });
                 }
                 JobState::Cancelled => {
