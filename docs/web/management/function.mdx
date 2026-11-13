@@ -200,6 +200,8 @@ function application keeps its scalar or named-struct result in the named
 column. A bare named-struct application expands its result fields as one atomic
 binding, with aliases from `rename(columns=...)`.
 
+{/* Draft for the Function literal binding release.
+
 ### Bind a constant input {#literal-inputs}
 
 <Note>
@@ -241,6 +243,8 @@ The constant belongs to the column binding, so the Function version and its
 image stay the same. Only column inputs contribute table dependencies. Refresh
 `scaled` to fill it. To change the constant to `lit(8)`, drop and redeclare the
 column using the same `multiplier` version; the new binding needs a refresh.
+
+*/}
 
 ### Bind more than one input, or fill more than one column {#multi}
 
