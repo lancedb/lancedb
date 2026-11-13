@@ -183,9 +183,9 @@ impl SqlClient {
 
 #[cfg(test)]
 mod tests {
-    use super::string_lists;
+    use super::{string_lists, strings};
     use arrow_array::builder::{ListBuilder, StringBuilder};
-    use arrow_array::{ArrayRef, RecordBatch};
+    use arrow_array::{ArrayRef, LargeStringArray, RecordBatch, StringArray, StringViewArray};
     use arrow_schema::{DataType, Field, Schema};
     use std::sync::Arc;
 
