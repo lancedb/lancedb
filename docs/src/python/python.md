@@ -37,10 +37,34 @@ embedding_functions`. Prefer keyword arguments for optional parameters.
 
 ::: lancedb.db.DBConnection
 
+Use `db.server_info()` (or `await db.server_info()` on an asynchronous connection)
+to include the responding server's release, Git revision, build date and Function
+runtime information in a bug report. It returns a JSON-compatible dictionary and
+does not submit a query or job. Configured images are distinct from the version
+of an already running job. During a rolling upgrade, successive requests can
+reach different query-node builds. Embedded connections and older servers without
+the endpoint raise `NotImplementedError`.
+
+::: lancedb.server_info.ServerBuildInfo
+
+::: lancedb.server_info.ServerInfo
+
 Resource listings return iterators. Use `list(db.list_tables())` to collect all
 table names. `db.list_tables().tables` is a list of the first page; `limit`
 controls its page size and `page_token` resumes at a saved token. The same
 patterns apply to `list_namespaces()`. Other resource listings use `page_limit`.
+
+For existence checks, use `db.table_exists(["events"])` or `"events" in db`.
+These look up the table directly and work even when the database has more than
+100 tables. For a table in a namespace, include the namespace segments:
+
+```python
+exists = db.table_exists(["analytics", "events"])
+```
+
+When migrating from `name in db.table_names()`, use `name in db` or
+`db.table_exists([name])`. Checking `name in db.list_tables().tables` only
+searches the first page and can miss an existing table.
 
 Resource listings (`list_storage_integrations`, `list_secrets`, `list_views`, `list_jobs`, `list_functions`, and
 `list_materialized_views`) return lazy iterators. Use `list(db.list_views())` to
@@ -352,9 +376,27 @@ accept the LanceDB Embedded options: cleanup and compaction warn that they are n
 `optimize` submits a durable compaction job and returns once that submission is
 accepted, not once compaction itself finishes. Pruning and index optimization
 are not yet supported remotely, so it silently skips them and returns with
-zeroed pruning statistics rather than attempting and failing. A non-default
-`compaction_options` raises `NotImplementedError` before anything is
-submitted, since there is no way yet to forward those settings to the server.
+zeroed pruning statistics. Remote `compaction_options` support per-job
+`target_rows_per_fragment`, `max_source_rows`, `io_buffer_size`, and `batch_size`
+on compatible servers. Other non-default settings raise `NotImplementedError`
+before submission; older-server errors are returned without dropping options.
+The source-row budget selects whole tasks and can produce no work if the first
+task exceeds it. An I/O buffer size of zero disables byte-based I/O backpressure.
+Use a positive size to limit I/O read-ahead; this is not a total-memory limit.
+Each field resolves as invocation option → table tuning → deployment/built-in
+default. These options apply only to the submitted job and leave table policy
+unchanged. Table `enabled` controls automatic scheduling; explicit manual runs
+remain allowed.
+
+```python
+table.optimize(compaction_options={
+    "target_rows_per_fragment": 100_000,
+    "max_source_rows": 1_000_000,
+    "io_buffer_size": 64 * 1024 * 1024,
+    "batch_size": 1024,
+})
+```
+
 Removed Tantivy options produce the same explanatory errors on both backends.
 
 The old LanceDB Enterprise keyword names `predicate` for `delete`, `index_name` for
@@ -416,6 +458,51 @@ scaler = Scale(factor=2.0)
 assert scaler(3.0) == 6.0
 scaler.close()
 ```
+
+### Function packaging restrictions
+
+The decorator snapshots the Function's source and referenced globals into a new
+module. It conservatively rejects imports of `sys`, `builtins`, `importlib`,
+`inspect`, `gc`, `ctypes`, and `types`, including submodules such as `ctypes.util`
+and `importlib.metadata`. This applies to imports inside function or class bodies
+and references to module-level aliases. Even ordinary uses such as `sys.version`
+and `ctypes.util.find_library` are blocked: these modules can reach names outside
+the reconstructed Function namespace. References to `globals`, `locals`, `vars`,
+`eval`, `exec`, `compile`, and `__import__` are rejected as dynamic namespace access.
+These restrictions also apply to the deprecated `@udf` alias.
+
+For legitimate uses, move the code into an importable helper module and ship it
+with `code=`, or install its package with `pip=` or `conda=`. Imported helpers keep
+their own namespace; the packager does not scan their bodies. Helpers defined in
+`__main__` are copied by source and have the same restrictions as the Function.
+
+For example, put this helper in `native_diagnostics/__init__.py`:
+
+```python
+import ctypes.util
+
+
+def find_library(name: str) -> str:
+    return ctypes.util.find_library(name) or ""
+```
+
+Then import the helper and include its source in the Function's artifact:
+
+```python
+import native_diagnostics
+from lancedb import function
+
+
+@function(code=[native_diagnostics])
+def probe_library(name: str) -> str:
+    return native_diagnostics.find_library(name)
+```
+
+Captured literal globals support `None`, booleans, integers, strings, bytes,
+finite floats, and tuples of these values. Construct other objects, including
+PyArrow types and schemas, inside the Function or helper module instead. Values
+used only in the decorator's `input_schema` or `output_schema` are not captured
+globals and can be defined outside the Function.
 
 Annotate a blob input with `lancedb.BlobReader` for lazy, seekable access, or
 with `bytes` to materialize its contents before the Function runs. Reader
@@ -505,6 +592,14 @@ with BlobReader(read_range, len(payload)) as reader:
 
 ::: lancedb.FunctionErrorFragment
 
+::: lancedb.FunctionColumnStatus
+
+::: lancedb.FunctionColumnVersionStatus
+
+::: lancedb.FunctionColumnLastRefreshJob
+
+::: lancedb.FunctionColumnAutoRefreshStatus
+
 ::: lancedb.job.Job
 
 ::: lancedb.job.AsyncJob
@@ -531,6 +626,20 @@ packages leave it disabled. Opening, reading, listing and dropping existing view
 remain available, as do LanceDB Enterprise operations. The same feature
 requirement applies to LanceDB Embedded SQL computed-column declaration and refresh; ordinary
 eager `add_columns` transforms remain available.
+
+Pass a complete defining SQL query with `query=` to use grouping, Functions
+in `FROM`, or `UNNEST`:
+
+```python
+view = db.create_materialized_view(
+    "events_by_kind",
+    query="SELECT kind, count(*) AS n FROM events GROUP BY kind",
+)
+```
+
+`query` is mutually exclusive with `source`, `select`, `where`, and `limit`.
+It is also accepted by asynchronous connections and `create_materialized_view_async`.
+The backend SQL parser determines which query shapes are supported.
 
 In LanceDB Enterprise, creation accepts `auto_refresh_enabled` and
 `auto_refresh_interval_seconds`:
@@ -710,6 +819,15 @@ with `search().with_row_id(True).to_arrow()` and pass the result to the fetch AP
 One missing or deleted row ID rejects the entire blob-read batch; the APIs do
 not return partial results.
 
+Local and remote `BlobFile` handles prefetch 512 KiB for sequential reads by
+default. Pass `buffer_size=0` to `fetch_blob_files`, `open_blob_file`, or
+`open_blob_files` for sparse reads, or choose another window size in bytes.
+Call `file.set_buffer_size(size)` to change it without moving the cursor;
+changing the size discards unused prefetched bytes. Explicit `read_range` and
+`read_ranges` calls always read exactly the requested intervals and leave the
+cursor unchanged. Remote prefetch consumes the HTTP response completely before
+returning, so idle handles do not hold request concurrency slots or connections.
+
 To construct inline Blob V2 arrays for ingestion in record batches, use
 [blob_array][lancedb.schema.blob_array]. It accepts bytes and `None`, preserving
 the distinction between an empty blob (`b""`) and a null blob:
@@ -841,6 +959,13 @@ older server omits structured resource details. A structured `already_exists`
 response keeps its more specific `AlreadyExistsError` type. Both are subclasses
 of `HttpError`.
 
+A remote query whose streamed response stops partway raises
+`ResponseInterruptedError`, also a subclass of `HttpError`. It carries the number
+of batches and rows already returned and, when the server reports it, the table
+version the response reflected, so the query can be run again against that
+version. It is never retried automatically, because the batches already returned
+would be returned again.
+
 SQL response failures raise `SqlError`, retaining the numeric `grpc_code` and
 `request_id`. Servers that report a recognized `x-lancedb-error-code` select a
 specific input-error subclass. HTTP failures use the corresponding `HttpError`
@@ -907,6 +1032,8 @@ generic HTTP/SQL exceptions with their transport status and current request ID.
 ::: lancedb.remote.errors.AlreadyExistsError
 
 ::: lancedb.remote.errors.ConflictError
+
+::: lancedb.remote.errors.ResponseInterruptedError
 
 ::: lancedb.exceptions.MissingValueError
 
@@ -1019,6 +1146,11 @@ first page, use `page = await db.list_tables()` and then `page.tables`. Reading
 the page list does not consume the iterator. `page.page_token` is the token for
 the next request; drain cached results before using it to resume in a new
 listing. The same behavior applies to namespaces.
+
+Use `await db.table_exists(["events"])` to check for a table in the root
+namespace, or `await db.table_exists(["analytics", "events"])` for a table in
+a namespace. Checking membership in an awaited listing's `.tables` attribute
+only searches one page.
 
 ::: lancedb.listing.AsyncTableListing
 
@@ -1288,3 +1420,15 @@ name; omitting it allows matching reads of any revision. Prefixes must be concre
 paths without wildcards or traversal. This integration does not make Hugging Face
 a writable database location for `ATTACH DATABASE`. Dataset SQL sources select a
 matching integration automatically, with no integration argument in the query.
+
+
+### Function package resources
+
+`@function(code=[my_package])` includes the package’s Python modules and data
+files, including vendored subpackages. Resource paths and bytes are preserved,
+so `importlib.resources` and package integrity checks work after deployment.
+Changing a resource changes the Function artifact digest. This requires a server
+that accepts `python_bundle.resources`.
+
+Caches, hidden paths, symlinks and unsafe paths are excluded. Use `pip=` or
+`conda=` for platform-specific dependencies and `models=` for large model snapshots.

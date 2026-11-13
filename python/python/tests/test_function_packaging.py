@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import importlib
+import hashlib
 import json
 import subprocess
 import sys
@@ -20,7 +21,7 @@ import pyarrow as pa
 import pytest
 
 from lancedb import col
-from lancedb.functions import FunctionDefinition, FunctionVersion, function
+from lancedb.functions import FunctionDefinition, FunctionVersion, function, udf
 
 FIXTURES = (
     Path(__file__).parents[3]
@@ -125,6 +126,162 @@ def test_function_without_initialization_keeps_its_wire_form():
     request = json.loads(double.registration_request.to_canonical_json())
     assert "initialization" not in request["signature"]
     assert request["artifact"]["kind"] == "python_callable"
+
+
+@pytest.mark.filterwarnings("ignore:lancedb.udf is deprecated:DeprecationWarning")
+@pytest.mark.parametrize("decorator", [function, udf])
+@pytest.mark.parametrize("explicit_schemas", [False, True])
+@pytest.mark.parametrize("class_function", [False, True])
+@pytest.mark.parametrize(
+    ("declaration", "statement"),
+    [
+        ("def", "yield value"),
+        ("def", "yield from [value]"),
+        ("async def", "yield value"),
+    ],
+)
+def test_generator_functions_are_rejected_at_decoration(
+    helper_package, decorator, explicit_schemas, class_function, declaration, statement
+):
+    signature = (
+        "__call__(self, value: int)" if class_function else "generates(value: int)"
+    )
+    source = f"{declaration} {signature} -> int:\n    {statement}\n"
+    if class_function:
+        source = "class generates:\n" + textwrap.indent(source, "    ")
+    module = helper_package("fx_generator", {"__init__.py": source})
+    options = (
+        {
+            "input_schema": pa.schema([pa.field("value", pa.int64(), nullable=False)]),
+            "output_schema": pa.int64(),
+        }
+        if explicit_schemas
+        else {}
+    )
+    with pytest.raises(TypeError) as error:
+        decorator(**options)(module.generates)
+    message = str(error.value)
+    assert "generator Functions are not supported" in message
+    assert "return a value" in message
+    assert "return a list" in message
+
+
+@pytest.mark.filterwarnings("ignore:lancedb.udf is deprecated:DeprecationWarning")
+@pytest.mark.parametrize("decorator", [function, udf])
+@pytest.mark.parametrize("explicit_name", [False, True])
+def test_lambda_functions_explain_the_named_alternative(decorator, explicit_name):
+    options = {"name": "double"} if explicit_name else {}
+    with pytest.raises(TypeError, match="lambda.*use a named def"):
+        decorator(**options)(lambda value: value * 2)
+
+
+@pytest.mark.parametrize("class_function", [False, True])
+@pytest.mark.parametrize("cache_decorator", ["lru_cache", "cache"])
+def test_cached_functions_explain_where_to_keep_caches(
+    helper_package, class_function, cache_decorator
+):
+    signature = "__call__(self, value: int)" if class_function else "cached(value: int)"
+    source = (
+        f"@functools.{cache_decorator}\ndef {signature} -> int:\n    return value * 2\n"
+    )
+    if class_function:
+        source = "class cached:\n" + textwrap.indent(source, "    ")
+    module = helper_package("fx_cached", {"__init__.py": "import functools\n" + source})
+    with pytest.raises(TypeError) as error:
+        function(module.cached)
+    message = str(error.value)
+    assert "decorated wrappers are not supported" in message
+    assert "inside the function body" in message
+    assert "class Function with a cache in __init__" in message
+
+
+@pytest.mark.parametrize("class_function", [False, True])
+@pytest.mark.parametrize("keyword_only", [False, True])
+def test_callable_defaults_explain_class_initialization(
+    helper_package, class_function, keyword_only
+):
+    parameters = "value: float, " + ("*, " if keyword_only else "")
+    parameters += "threshold: float = 0.5"
+    signature = (
+        f"__call__(self, {parameters})"
+        if class_function
+        else f"thresholded({parameters})"
+    )
+    source = f"def {signature} -> bool:\n    return value >= threshold\n"
+    if class_function:
+        source = "class thresholded:\n" + textwrap.indent(source, "    ")
+    module = helper_package("fx_defaults", {"__init__.py": source})
+    with pytest.raises(TypeError) as error:
+        function(module.thresholded)
+    message = str(error.value)
+    assert "defaults are not supported: 'threshold'" in message
+    assert "class Function's __init__" in message
+    assert "binding-time initialization values" in message
+
+
+def test_function_can_return_a_list_from_a_generator_expression():
+    @function
+    def many(value: int) -> list[int]:
+        return list(item * 2 for item in range(value))
+
+    namespace = {}
+    exec(compile(artifact(many), "user_function.py", "exec"), namespace)
+    assert namespace["many"](3) == [0, 2, 4]
+    assert many.registration_request.signature.output.arrow_type == "list<int64>"
+
+
+@pytest.mark.parametrize("kind", ["function", "class"])
+@pytest.mark.parametrize(
+    ("global_value", "value_type"),
+    [
+        ("pa.struct([('label', pa.string())])", "StructType"),
+        ("(1, (pa.int64(),))", "DataType"),
+        ("{'label': 1}", "dict"),
+        ("float('inf')", "float"),
+    ],
+)
+def test_unsupported_global_names_value_and_remedy(
+    helper_package, kind, global_value, value_type
+):
+    definition = (
+        "class uses_global:\n"
+        "    def __call__(self, value: int) -> int:\n"
+        "        return value if CAPTURED_VALUE else 0\n"
+        if kind == "class"
+        else "def uses_global(value: int) -> int:\n"
+        "    return value if CAPTURED_VALUE else 0\n"
+    )
+    module = helper_package(
+        "fx_unsupported_global",
+        {
+            "__init__.py": f"import pyarrow as pa\nCAPTURED_VALUE = {global_value}\n"
+            + definition
+        },
+    )
+    with pytest.raises(TypeError) as error:
+        function(module.uses_global)
+    message = str(error.value)
+    assert "CAPTURED_VALUE" in message
+    assert value_type in message
+    assert "finite float" in message
+    assert "inside the function or class body" in message
+
+
+def test_supported_nested_literal_global_still_packages(helper_package):
+    module = helper_package(
+        "fx_literal_global",
+        {
+            "__init__.py": "CAPTURED_VALUE = (None, True, 1, 'label', "
+            "b'bytes', (1.5,))\n"
+            "def uses_global(value: int) -> int:\n"
+            "    return value + CAPTURED_VALUE[2]\n"
+        },
+    )
+    definition = function(module.uses_global)
+    namespace = {}
+    exec(compile(artifact(definition), "user_function.py", "exec"), namespace)
+    assert namespace["uses_global"](3) == 4
+    assert namespace["CAPTURED_VALUE"] == module.CAPTURED_VALUE
 
 
 @pytest.mark.parametrize("annotation", ["Array", "RecordBatch"])
@@ -310,6 +467,126 @@ def test_nested_class_and_closure_are_rejected_with_the_reason():
             return value * factor
 
 
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "sys",
+        "builtins",
+        "importlib",
+        "inspect",
+        "gc",
+        "ctypes",
+        "types",
+        "ctypes.util",
+        "importlib.metadata",
+    ],
+)
+@pytest.mark.parametrize("import_style", ["import", "from", "global"])
+@pytest.mark.parametrize("class_function", [False, True])
+def test_namespace_module_errors_explain_the_rule_and_remedy(
+    helper_package, module_name, import_style, class_function
+):
+    statement = f"import {module_name} as namespace_module"
+    body = f"{statement}\nreturn value\n"
+    preamble = ""
+    if import_style == "from":
+        body = f"from {module_name} import __name__\nreturn value\n"
+    elif import_style == "global":
+        preamble = statement + "\n"
+        body = "return str(namespace_module)\n"
+    if class_function:
+        definition = "class blocked:\n    def __call__(self, value: str) -> str:\n"
+        source = preamble + definition + textwrap.indent(body, "        ")
+    else:
+        definition = "def blocked(value: str) -> str:\n"
+        source = preamble + definition + textwrap.indent(body, "    ")
+    module = helper_package("fx_namespace_import", {"__init__.py": source})
+
+    with pytest.raises(ValueError) as error:
+        function(module.blocked)
+    message = str(error.value)
+    assert "imports from namespace-access modules" in message
+    assert repr(module_name) in message
+    assert "builtins, ctypes, gc, importlib, inspect, sys, types" in message
+    assert "including submodules" in message
+    assert "reconstructed module namespace" in message
+    assert "importable helper module" in message
+    assert "code=, pip=, or conda=" in message
+    assert "dynamic namespace access" not in message
+
+
+@pytest.mark.filterwarnings("ignore:lancedb.udf is deprecated:DeprecationWarning")
+def test_udf_namespace_import_error_explains_the_helper_alternative():
+    with pytest.raises(ValueError, match="ctypes.util.*importable helper module"):
+
+        @udf
+        def probe(value: str) -> str:
+            import ctypes.util
+
+            return str(ctypes.util.find_library(value))
+
+
+@pytest.mark.parametrize(
+    "operation", ["globals", "locals", "vars", "eval", "exec", "compile", "__import__"]
+)
+def test_dynamic_namespace_errors_name_the_operation_and_remedy(
+    helper_package, operation
+):
+    module = helper_package(
+        "fx_namespace_operation",
+        {
+            "__init__.py": (
+                f"def blocked(value: str) -> str:\n    return str({operation})\n"
+            )
+        },
+    )
+    with pytest.raises(ValueError) as error:
+        function(module.blocked)
+    message = str(error.value)
+    assert f"dynamic namespace access: ['{operation}']" in message
+    assert "Reference dependencies explicitly" in message
+    assert "importable helper module" in message
+
+
+@pytest.mark.parametrize("ship_source", [False, True])
+def test_namespace_access_in_importable_helpers_keeps_its_module_namespace(
+    helper_package, ship_source
+):
+    helpers = helper_package(
+        "fx_namespace_helper",
+        {
+            "__init__.py": """
+                import ctypes.util
+
+                def module_name():
+                    return ctypes.util.__name__
+            """,
+        },
+    )
+    entry = helper_package(
+        "fx_namespace_entry",
+        {
+            "__init__.py": """
+                from fx_namespace_helper import module_name
+
+                def probe(value: str) -> str:
+                    return module_name() + value
+            """,
+        },
+    )
+    options = {"code": [helpers]} if ship_source else {"pip": ["fx-namespace-helper"]}
+    definition = function(**options)(entry.probe)
+    if ship_source:
+        files = bundle_files(definition)
+        assert "import ctypes.util" in files["fx_namespace_helper/__init__.py"]
+        source = files["user_function.py"]
+    else:
+        source = artifact(definition).decode()
+    namespace = {}
+    exec(compile(source, "user_function.py", "exec"), namespace)
+    assert namespace["probe"]("!") == "ctypes.util!"
+
+
 def test_binding_passes_initialization_as_constants():
     version = FunctionVersion.from_json(
         json.dumps(
@@ -350,6 +627,102 @@ def test_binding_passes_initialization_as_constants():
         version(text=col("body"), model="small", dimensions=float("nan"))
     with pytest.raises(TypeError, match="takes booleans"):
         version(text=col("body"), model=object())
+
+
+def test_vendored_package_resources_survive_an_isolated_import(
+    tmp_path, helper_package
+):
+    package = helper_package(
+        "fx_vendor",
+        {
+            "__init__.py": "from .vendor.model import predict",
+            "vendor/__init__.py": "",
+            "vendor/model.py": """
+                import hashlib
+                import json
+                from importlib.resources import files
+
+                def predict(value):
+                    root = files("fx_vendor")
+                    payload = root.joinpath("label-maps/payload.bin").read_bytes()
+                    metadata = json.loads(root.joinpath("models.json").read_text())
+                    source = root.joinpath("vendor/model.py").read_bytes()
+                    source_digest = hashlib.sha256(source).hexdigest()
+                    assert source_digest == metadata["source_sha256"]
+                    assert hashlib.sha256(payload).hexdigest() == metadata["sha256"]
+                    return value + metadata["offset"]
+            """,
+            "models.json": "{}",
+        },
+    )
+    payload = b"\x00\xff\r\nvendored model data"
+    package_root = Path(package.__file__).parent
+    (package_root / "label-maps").mkdir()
+    (package_root / "label-maps/payload.bin").write_bytes(payload)
+    module_path = package_root / "vendor/model.py"
+    module_bytes = (
+        module_path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    )
+    module_path.write_bytes(module_bytes)
+    (package_root / "models.json").write_bytes(
+        json.dumps(
+            {
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "source_sha256": hashlib.sha256(module_bytes).hexdigest(),
+                "offset": 7,
+            }
+        ).encode()
+        + b"\r\n"
+    )
+
+    entry = helper_package(
+        "fx_vendor_entry",
+        {
+            "__init__.py": """
+        import fx_vendor
+        from lancedb import function
+
+        @function(code=[fx_vendor])
+        def vendored(value: int) -> int:
+            return fx_vendor.predict(value)
+    """
+        },
+    )
+    vendored = entry.vendored
+
+    first_digest = vendored.registration_request.artifact.digest
+    bundle = json.loads(artifact(vendored))
+    isolated = tmp_path / "isolated"
+    isolated.mkdir()
+    for name, content in bundle["files"].items():
+        target = isolated / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content.encode("utf-8"))
+    for name, content in bundle["resources"].items():
+        target = isolated / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(base64.b64decode(content))
+    assert (isolated / "fx_vendor/models.json").read_bytes().endswith(b"\r\n")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            "import sys; sys.path.insert(0, sys.argv[1]); "
+            "from user_function import vendored; assert vendored(3) == 10",
+            str(isolated),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    (package_root / "models.json").write_text('{"offset": 8}')
+    assert (
+        function(code=[package])(
+            vendored._function
+        ).registration_request.artifact.digest
+        != first_digest
+    )
 
 
 def test_code_packages_ship_as_a_bundle_and_version_with_their_source(
@@ -396,14 +769,13 @@ def test_code_packages_ship_as_a_bundle_and_version_with_their_source(
         first = define()
     assert len(caught) == 1
     warning = str(caught[0].message)
-    assert "fx_helpers/fixtures/data.json" in warning
+    assert "fx_helpers/fixtures/data.json" not in warning
     assert "fx_helpers/not-a-module.py" in warning
-    assert warning.index("fx_helpers/fixtures/data.json") < warning.index(
-        "fx_helpers/not-a-module.py"
-    )
-    assert "remove 'fx_helpers' from code=" in warning
-    assert "pip=" in warning
-    assert "conda=" in warning
+
+    assert "safe relative names" in warning
+    assert "importable Python module names" in warning
+    resources = json.loads(artifact(first))["resources"]
+    assert base64.b64decode(resources["fx_helpers/fixtures/data.json"]) == b"{}"
     assert "__pycache__" not in warning
     assert ".pyc" not in warning
     shipped = bundle_files(first)
@@ -456,7 +828,7 @@ def test_code_package_cache_artifacts_do_not_warn(helper_package):
     ]
 
 
-def test_code_package_nonidentifier_resource_dir_warns_at_boundary(helper_package):
+def test_code_package_resources_keep_nonidentifier_directories(helper_package):
     resources = helper_package(
         "fx_resources",
         {
@@ -472,11 +844,9 @@ def test_code_package_nonidentifier_resource_dir_warns_at_boundary(helper_packag
         def resource_boundary(value: int) -> int:
             return value
 
-    assert len(caught) == 1
-    warning = str(caught[0].message)
-    assert "fx_resources/label-maps/" in warning
-    assert "remove 'fx_resources' from code=" in warning
-    assert "labels.json" not in warning
+    assert not caught
+    resources = json.loads(artifact(resource_boundary))["resources"]
+    assert base64.b64decode(resources["fx_resources/label-maps/labels.json"]) == b"{}"
     assert sorted(bundle_files(resource_boundary)) == [
         "fx_resources/__init__.py",
         "user_function.py",

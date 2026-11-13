@@ -2,8 +2,10 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import asyncio
+import json
 import time
 from datetime import timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -11,6 +13,50 @@ import pytest
 from lancedb.exceptions import JobCancelledError, JobFailedError
 from lancedb.job import AsyncJob, Job, _progress_eta
 from lancedb.remote.errors import HttpError, RetryError
+
+
+@pytest.mark.parametrize("sync", [False, True])
+def test_job_repr_bounds_large_payloads_without_fetching(sync):
+    spec = {"initialization": list(range(100000)), "source": "x" * 100000}
+    result = {"rows_computed": 7, "details": [{"data": b"x" * 10000}] * 1000}
+    inner = SimpleNamespace(
+        id="job-repr",
+        _state="failed",
+        job_type="function_refresh",
+        _description=SimpleNamespace(
+            creation_ms=2000,
+            spec=spec,
+            result=result,
+            failure="worker failed " + "x" * 10000,
+        ),
+    )
+    job = AsyncJob(inner)
+    if sync:
+        job = Job(job)
+    rendered = repr(job)
+    assert len(rendered) < 1600
+    assert len(rendered.splitlines()) <= 10
+    assert "id='job-repr'" in rendered
+    assert "state='failed'" in rendered
+    assert "job_type='function_refresh'" in rendered
+    assert "rows_computed" in rendered
+    assert "worker failed" in rendered
+    assert "..." in rendered
+    assert len(repr(job.status)) < 1700
+    assert job.spec is spec
+    assert job.result is result
+    assert len(job.spec["initialization"]) == 100000
+
+
+@pytest.mark.parametrize("sync", [False, True])
+def test_job_repr_handles_unobserved_and_local_jobs(sync):
+    unobserved = AsyncJob(SimpleNamespace(id="job-pending", _state=None))
+    local = AsyncJob(None)
+    if sync:
+        unobserved, local = Job(unobserved), Job(local)
+    assert "id='job-pending', not refreshed" in repr(unobserved)
+    assert "state='finished'" in repr(local)
+    assert "failure=" not in repr(local)
 
 
 @pytest.fixture(params=["async", "sync"])
@@ -706,3 +752,54 @@ async def test_query_wait_timeout_requires_keeping_original_handle():
     assert "continues on the server" in message
     assert "keep this handle to continue waiting" in message
     assert "db.open_job" not in message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync", [False, True])
+async def test_export_timeline_writes_fresh_recording_without_waiting(sync, tmp_path):
+    trace = {
+        "traceEvents": [{"ph": "X", "ts": 0, "dur": 1000}],
+        "metadata": {"partial": True},
+    }
+    inner = SimpleNamespace(
+        timeline=AsyncMock(return_value=json.dumps(trace)),
+        wait=AsyncMock(),
+        cancel=AsyncMock(),
+    )
+    job = AsyncJob(inner)
+    path = tmp_path / "job.trace.json"
+    if sync:
+        await asyncio.to_thread(Job(job).export_timeline, str(path))
+    else:
+        await job.export_timeline(path)
+    assert json.loads(path.read_text()) == trace
+    inner.timeline.assert_awaited_once_with()
+    inner.wait.assert_not_awaited()
+    inner.cancel.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_export_timeline_failure_preserves_existing_file(tmp_path):
+    path = tmp_path / "job.trace.json"
+    path.write_text("previous recording")
+    job = AsyncJob(
+        SimpleNamespace(
+            timeline=AsyncMock(side_effect=RuntimeError("unsupported server"))
+        )
+    )
+    with pytest.raises(RuntimeError, match="unsupported server"):
+        await job.export_timeline(path)
+    assert path.read_text() == "previous recording"
+    with pytest.raises(NotImplementedError, match="server-side Function job"):
+        await AsyncJob(None).export_timeline(path)
+    with pytest.raises(NotImplementedError, match="server-side Function job"):
+        Job(None).export_timeline(path)
+
+
+@pytest.mark.asyncio
+async def test_export_timeline_reports_filesystem_errors(tmp_path):
+    job = AsyncJob(
+        SimpleNamespace(timeline=AsyncMock(return_value='{"traceEvents":[]}'))
+    )
+    with pytest.raises(FileNotFoundError):
+        await job.export_timeline(tmp_path / "missing" / "trace.json")

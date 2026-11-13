@@ -75,6 +75,7 @@ pub struct MergeInsertBuilder {
     pub(crate) when_not_matched_by_source_delete: bool,
     pub(crate) when_not_matched_by_source_delete_filt: Option<MergeFilter>,
     pub(crate) timeout: Option<Duration>,
+    pub(crate) retries: Option<u8>,
     pub(crate) use_index: bool,
     pub(crate) use_rte: Option<bool>,
     pub(crate) validate_single_shard: bool,
@@ -91,10 +92,19 @@ impl MergeInsertBuilder {
             when_not_matched_by_source_delete: false,
             when_not_matched_by_source_delete_filt: None,
             timeout: None,
+            retries: None,
             use_index: true,
             use_rte: None,
             validate_single_shard: true,
         }
+    }
+
+    /// Override the remote transport retry budget for this operation. `0`
+    /// disables retries. Ambiguous write results are never replayed. This is
+    /// independent of local transaction conflict retries.
+    pub fn retries(&mut self, retries: u8) -> &mut Self {
+        self.retries = Some(retries);
+        self
     }
 
     /// Rows that exist in both the source table (new data) and
@@ -385,6 +395,8 @@ pub(crate) async fn execute_merge_insert(
     }
 
     let dataset = table.dataset.get().await?;
+    let source_schema = source.schema();
+    let on = params.on.clone();
     let mut builder = LanceMergeInsertBuilder::try_new(dataset.clone(), params.on)?;
     match (
         params.when_matched_update_all,
@@ -432,8 +444,21 @@ pub(crate) async fn execute_merge_insert(
         Either::Right(job.execute(source).map_err(|e| e.into()))
     };
     let (new_dataset, stats) = future.await?;
+    let mut new_dataset = new_dataset.as_ref().clone();
+    if let Err(error) = super::freshness::preserve_function_freshness(
+        &mut new_dataset,
+        super::freshness::FunctionWrite::Merge {
+            source_schema: &source_schema,
+            on: &on,
+            num_inserted_rows: stats.num_inserted_rows,
+        },
+    )
+    .await
+    {
+        log::warn!("merge committed but Function freshness could not be preserved: {error}");
+    }
     let version = new_dataset.manifest().version;
-    table.dataset.update(new_dataset.as_ref().clone());
+    table.dataset.update(new_dataset);
     Ok(MergeResult {
         version,
         num_updated_rows: stats.num_updated_rows,

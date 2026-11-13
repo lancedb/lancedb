@@ -57,6 +57,7 @@ export {
   AddResult,
   AddColumnsResult,
   RefreshColumnOptions,
+  FunctionWorkerResourceBudget,
   RefreshColumnResult,
   FunctionErrors,
   FunctionErrorsOptions,
@@ -90,6 +91,7 @@ export type {
   BlobInput,
   BlobOptions,
   BlobRange,
+  BlobRangeRequest,
   BlobReadOptions,
   BlobUri,
 } from "./blob";
@@ -153,6 +155,10 @@ export {
 
 export {
   Table,
+  FunctionColumnAutoRefreshStatus,
+  FunctionColumnLastRefreshJob,
+  FunctionColumnStatus,
+  FunctionColumnVersionStatus,
   Branches,
   BranchColumnSummary,
   BranchColumnChange,
@@ -165,6 +171,7 @@ export {
   AddDataOptions,
   UpdateOptions,
   OptimizeOptions,
+  CompactionOptions,
   Version,
   WriteProgress,
   FtsToken,

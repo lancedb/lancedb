@@ -218,6 +218,7 @@ pub mod query;
 pub mod remote;
 pub mod rerankers;
 pub mod secrets;
+pub mod server_info;
 pub mod sql;
 pub mod storage_integration;
 pub mod table;

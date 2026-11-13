@@ -4,9 +4,11 @@
 """Handles to asynchronous registry jobs, SQL queries, and local operations."""
 
 import asyncio
-import json
+import reprlib
 import time
 from datetime import timedelta
+from os import PathLike
+from pathlib import Path
 from typing import Any, Callable, Generic, Optional, TypeVar, cast
 
 import pyarrow as pa
@@ -15,6 +17,7 @@ from lancedb.background_loop import LOOP
 
 from . import _lancedb
 from ._lancedb import JobDescription, JobFailureInfo, JobInfo, _append_doc_url
+from .functions import RefreshColumnResult
 from .remote.errors import HttpError, RetryError
 
 T = TypeVar("T")
@@ -422,6 +425,31 @@ class AsyncJob(Generic[T]):
         description = self._inner._description if self._inner is not None else None
         return getattr(description, name) if description is not None else None
 
+    async def export_timeline(self, path: str | PathLike[str]) -> None:
+        """Write a fresh recorded Function job timeline as Chrome trace JSON.
+
+        Open the file in Perfetto or Chrome tracing. The recording contains
+        retained split spans grouped by worker and timestamped job phases.
+        Batch counts and latency statistics are included as details; individual
+        batch timestamps are not recorded. Running jobs export a partial snapshot
+        without waiting or cancelling. Download again to include later work.
+
+        Requires a server-side Function job and a server supporting timeline
+        export. Unsupported operations raise ``NotImplementedError`` or a server
+        error. The destination is overwritten only after the trace is fetched.
+        Filesystem errors propagate to the caller.
+
+        Examples
+        --------
+        >>> await job.export_timeline("refresh.trace.json")  # doctest: +SKIP
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "job timeline export requires a server-side Function job"
+            )
+        trace = await self._inner.timeline()
+        await asyncio.to_thread(Path(path).write_text, trace, encoding="utf-8")
+
     async def events(
         self,
         *,
@@ -461,43 +489,49 @@ class AsyncJob(Generic[T]):
 
 
 _REPR_INDENT = " " * 4
+_REPR_MAX_FIELD_LENGTH = 240
+_PAYLOAD_REPR = reprlib.Repr()
+_PAYLOAD_REPR.maxlevel = 2
+_PAYLOAD_REPR.maxdict = 4
+_PAYLOAD_REPR.maxlist = 4
+_PAYLOAD_REPR.maxtuple = 4
+_PAYLOAD_REPR.maxstring = 120
+_PAYLOAD_REPR.maxother = 120
 
 
 def _repr_payload(value: Any) -> str:
-    """Render a job payload as indented JSON, aligned under its field."""
-    try:
-        rendered = json.dumps(value, indent=4)
-    except TypeError:
-        return repr(value)
-    return rendered.replace("\n", "\n" + _REPR_INDENT)
+    """Bound nested payload previews without changing the stored values."""
+    rendered = _PAYLOAD_REPR.repr(value).replace("\n", "\\n")
+    if len(rendered) > _REPR_MAX_FIELD_LENGTH:
+        return rendered[: _REPR_MAX_FIELD_LENGTH - 3] + "..."
+    return rendered
 
 
 def _job_repr(kind: str, job: Any) -> str:
-    """Render every field the handle currently knows, omitting the rest.
+    """Show cached job identity and bounded previews without backend calls.
 
-    One field per line, with the JSON payloads indented, because a refresh
-    job's spec and result are the point of printing it.
+    The complete payloads remain available through ``spec`` and ``result``.
     """
     state = job.state
     if state is None:
         # Nothing has been fetched yet, so there is nothing to lay out.
-        known = f"id={job.id!r}, " if job.id is not None else ""
+        known = f"id={_repr_payload(job.id)}, " if job.id is not None else ""
         return f"{kind}({known}not refreshed)"
 
     fields = []
     if job.id is not None:
-        fields.append(f"id={job.id!r}")
-    fields.append(f"state={state!r}")
+        fields.append(f"id={_repr_payload(job.id)}")
+    fields.append(f"state={_repr_payload(state)}")
     for name in ("job_type", "creation_ms"):
         value = getattr(job, name)
         if value is not None:
-            fields.append(f"{name}={value!r}")
+            fields.append(f"{name}={_repr_payload(value)}")
     for name in ("spec", "result"):
         value = getattr(job, name)
         if value is not None:
             fields.append(f"{name}={_repr_payload(value)}")
     if job.failure is not None:
-        fields.append(f"failure={job.failure!r}")
+        fields.append(f"failure={_repr_payload(job.failure)}")
     body = "".join(f"\n{_REPR_INDENT}{field}," for field in fields)
     return f"{kind}({body}\n)"
 
@@ -615,6 +649,22 @@ class Job(Generic[T]):
     def _field(self, name: str) -> Optional[Any]:
         return getattr(self._inner, name) if self._inner is not None else None
 
+    def export_timeline(self, path: str | PathLike[str]) -> None:
+        """Write Chrome trace JSON for this Function job.
+
+        See :meth:`AsyncJob.export_timeline`. Open the file in Perfetto or
+        Chrome tracing.
+
+        Examples
+        --------
+        >>> job.export_timeline("refresh.trace.json")  # doctest: +SKIP
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "job timeline export requires a server-side Function job"
+            )
+        return LOOP.run(self._inner.export_timeline(path))
+
     def events(
         self,
         *,
@@ -643,3 +693,9 @@ def _typed_job(
 ) -> AsyncJob[T]:
     """Bind an internal JSON-producing job to its public result model."""
     return AsyncJob(inner, result_decoder)
+
+
+def _opened_job(inner: "_lancedb.Job") -> AsyncJob:
+    if inner.job_type in ("function_refresh", "computed_refresh", "refresh_column"):
+        return _typed_job(inner, RefreshColumnResult.from_json)
+    return AsyncJob(inner)

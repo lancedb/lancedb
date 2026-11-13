@@ -17,7 +17,12 @@ import {
   tableFromIPC,
 } from "./arrow";
 
-import { BlobFile, BlobReadOptions, runWithSignal } from "./blob";
+import {
+  BlobFile,
+  BlobRangeRequest,
+  BlobReadOptions,
+  runWithSignal,
+} from "./blob";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { IndexOptions } from "./indices";
 import { Job } from "./job";
@@ -35,6 +40,7 @@ import {
   FunctionErrorsOptions,
   IndexConfig,
   IndexStatistics,
+  JobFailureInfo,
   Branches as NativeBranches,
   OptimizeStats,
   RTEStats,
@@ -136,6 +142,13 @@ export interface AddDataOptions {
    * when the blob is read later.
    */
   allowExternalBlobOutsideBases?: boolean;
+
+  /**
+   * Override the remote retry budget for this call (0 to 255). Zero disables
+   * retries, including multipart parts. Ambiguous commits are never replayed.
+   * Ignored by LanceDB Embedded.
+   */
+  retries?: number;
 }
 
 export interface UpdateOptions {
@@ -152,7 +165,31 @@ export interface UpdateOptions {
   where: string;
 }
 
+/** Per-invocation compaction settings. Values must be safe integers. */
+export interface CompactionOptions {
+  /** Positive target rows per output fragment; also affects candidate selection. */
+  targetRowsPerFragment?: number;
+  /** Positive live-source-row budget across whole tasks; an oversized first task can produce no work. */
+  maxSourceRows?: number;
+  /** Scanner I/O read-ahead budget in bytes; zero disables byte-based I/O backpressure. */
+  ioBufferSize?: number;
+  /** Positive scanner batch size in rows. */
+  batchSize?: number;
+}
+
 export interface OptimizeOptions {
+  /**
+   * Compaction settings for this invocation. Omitted remote values inherit table
+   * tuning, then deployment/built-in defaults.
+   * Remote tables require a server supporting these SQL options; settings do
+   * not change table policy. This is not a runtime or total-memory limit.
+   * @example
+   * await tbl.optimize({ compactionOptions: {
+   *   targetRowsPerFragment: 1000, maxSourceRows: 5000,
+   *   ioBufferSize: 64 * 1024 * 1024, batchSize: 128,
+   * } });
+   */
+  compactionOptions?: CompactionOptions;
   /**
    * If set then all versions older than the given date
    * be removed.  The current version will never be removed.
@@ -232,6 +269,76 @@ export interface RTEWriteSpec {
   maintainedIndexes?: string[];
   /** Default `ShardWriter` configuration recorded in the MemWAL index. */
   writerConfigDefaults?: Record<string, string>;
+}
+
+/** Exact immutable Function revision attached to a table output. */
+export interface FunctionColumnVersionStatus {
+  name: string;
+  namespacePath: string[];
+  objectId: string;
+  location: string;
+  version: string;
+  manifestDigest: string;
+}
+
+/** Latest matching refresh Job projected for a Function output. */
+export interface FunctionColumnLastRefreshJob {
+  jobId: string;
+  state: string;
+  automatic?: boolean;
+  completedAtMillis?: bigint;
+  /** Structured failure details for a failed Job. */
+  failure?: JobFailureInfo;
+}
+
+/** Automatic-refresh projection for a Function output. */
+export interface FunctionColumnAutoRefreshStatus {
+  enabled: boolean;
+  intervalSeconds?: bigint;
+  activeJobId?: string;
+  state:
+    | "disabled"
+    | "running"
+    | "queued"
+    | "ready"
+    | "up_to_date"
+    | "waiting_interval"
+    | "waiting_backoff"
+    | "blocked"
+    | "unobservable";
+  failureStreak: number;
+  effectiveCooldownMillis?: bigint;
+  blockedReason?:
+    | "table_has_mem_wal"
+    | "inputs_not_settled"
+    | "dependency_in_flight"
+    | "table_capacity"
+    | "cancelled"
+    | "preparation_backoff"
+    | "failure_threshold_reached"
+    | "binding_revision_missing";
+  nextRunAtMillis: bigint | null;
+  nextRunAtReason?: string;
+}
+
+/** Exact four-way status of one Function output at one table version. */
+export interface FunctionColumnStatus {
+  column: string;
+  bindingId: string;
+  function: FunctionColumnVersionStatus;
+  tableVersion: bigint;
+  rows: bigint;
+  fresh: bigint;
+  stale: bigint;
+  neverComputed: bigint;
+  failed: bigint;
+  lastRefreshJob?: FunctionColumnLastRefreshJob;
+  /**
+   * Newest failed refresh Job. This remains present when `lastRefreshJob`
+   * is a later cancellation.
+   */
+  lastFailureJob?: FunctionColumnLastRefreshJob;
+  autoRefresh: FunctionColumnAutoRefreshStatus;
 }
 
 /**
@@ -582,6 +689,31 @@ export abstract class Table {
   ): Promise<(Buffer | null)[]>;
 
   /**
+   * Materializes row-specific byte ranges at the table's current checkout.
+   * Preserves request order, duplicates, and nulls. Zero length returns an empty
+   * buffer for a non-null blob. Invalid ranges or missing rows reject the entire
+   * call. See {@link Table.fetchBlobs} for row-ID validity across versions.
+   *
+   * Remote tables use the batched endpoint when the server advertises support,
+   * splitting at 1024 ranges and 64 MiB, including individual larger ranges.
+   * Older servers use descriptor queries and BlobFile range reads. Both protocols
+   * use one exact branch and version. Errors from an advertised endpoint propagate
+   * without switching protocols. All output bytes occupy memory.
+   *
+   * @example
+   * ```ts
+   * const bytes = await table.fetchBlobRanges("image", [
+   *   { rowId: 10n, offset: 0n, length: 1024n },
+   * ]);
+   * ```
+   */
+  abstract fetchBlobRanges(
+    column: string,
+    requests: readonly BlobRangeRequest[],
+    options?: BlobReadOptions,
+  ): Promise<(Buffer | null)[]>;
+
+  /**
    * Opens lazy blob handles for `column` at the given row IDs using the
    * table's current checkout.
    *
@@ -698,15 +830,36 @@ export abstract class Table {
    * @param {RefreshColumnOptions} options Refresh options, mirroring the SQL
    * `REFRESH COLUMN ... WHERE ... WITH (...)` form: `where` narrows the rows,
    * `errorPolicy`, `maxFailedFraction`, `maxFailedRows`, `rowTimeoutSeconds`
-   * and `initTimeoutSeconds` govern failing rows, and `batchSize`,
-   * `gpuClass`, `gpuCount`, `numWorkers` and `maxExecutorProcessesPerWorker`
-   * size the workers. All are LanceDB Enterprise only; a LanceDB Embedded
-   * refresh rejects every option other than `batchSize`, `gpuClass` and
-   * `gpuCount`.
+   * and `initTimeoutSeconds` govern failing rows. `batchSize`, `gpuClass`,
+   * `maxConcurrency`, `resourceBudget` and
+   * `maxExecutorProcessesPerWorker` size registered Function refreshes.
+   * `maxConcurrency` overrides the registered default for this logical
+   * execution only and is a positive integer; it is not an account-wide
+   * quota. A `resourceBudget` requires `cpuMillis` and
+   * `memoryBytes`; its `gpuCount` defaults to zero for a CPU-only Function.
+   * The budget applies only to this explicit refresh and does not configure
+   * a later automatic refresh.
+   * `gpuCount` at the top level is the shorthand that preserves the
+   * deployment defaults for CPU and memory, and cannot be combined with
+   * `resourceBudget`. `numWorkers` applies only to expression columns; use
+   * `resourceBudget` for registered Functions. All are LanceDB Enterprise
+   * only; a LanceDB Embedded refresh rejects every option other than
+   * `batchSize`, `gpuClass` and `gpuCount`.
+   * `publicationIntervalRows` opts into publishing completed Function split
+   * ranges once their accumulated unpublished rows reach the threshold.
+   * It must be a positive safe integer and requires non-Blob Function outputs.
+   * Omit it for whole-fragment publication. Publications can exceed the
+   * threshold, and remaining rows publish at completion.
    * @example
    * ```ts
    * const job = await table.refreshColumnAsync("embedding", {
    *   where: "published_at > '2026-01-01'",
+   *   resourceBudget: {
+   *     cpuMillis: 8000,
+   *     memoryBytes: 16 * 1024 ** 3,
+   *   },
+   *   maxConcurrency: 4,
+   *   publicationIntervalRows: 10000,
    *   errorPolicy: "skip",
    *   maxFailedFraction: 0.01,
    *   rowTimeoutSeconds: 30,
@@ -740,6 +893,32 @@ export abstract class Table {
   abstract functionErrors(
     options?: FunctionErrorsOptions,
   ): Promise<FunctionErrors>;
+
+  /**
+   * Return exact freshness status for Function-backed output columns.
+   *
+   * All results describe one server table version. Omit `column` for every
+   * Function output. Rows already failed remain visible and do not prevent
+   * `waitFresh` from completing. A handle pinned to an exact version requests
+   * that version; a latest handle retains normal read-freshness behavior.
+   */
+  abstract functionColumnStatuses(
+    column?: string,
+  ): Promise<FunctionColumnStatus[]>;
+
+  /** Return exact freshness status for one Function-backed output column. */
+  abstract functionColumnStatus(column: string): Promise<FunctionColumnStatus>;
+
+  /**
+   * Poll until no stale or never-computed rows remain.
+   *
+   * Only HTTP 503 with the exact finalization-pending error code is retried;
+   * every other error propagates. Failed rows do not block completion.
+   */
+  abstract waitFresh(
+    column: string,
+    timeoutSeconds?: number,
+  ): Promise<FunctionColumnStatus>;
 
   /**
    * Recompute this table's contents from its materialized-view definition.
@@ -1047,6 +1226,9 @@ export abstract class Table {
    * skipped there instead of being attempted, so this call resolves
    * successfully, with zeroed pruning statistics, once the compaction job
    * has been submitted; it does not wait for that job to finish.
+   * `compactionOptions` can tune the four per-job settings documented in
+   * {@link CompactionOptions}. Older-server errors are propagated without
+   * retrying with the settings removed.
    */
   abstract optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats>;
   /**
@@ -1175,6 +1357,14 @@ export class LocalTable extends Table {
   }
 
   async add(data: Data, options?: Partial<AddDataOptions>): Promise<AddResult> {
+    if (
+      options?.retries !== undefined &&
+      (!Number.isInteger(options.retries) ||
+        options.retries < 0 ||
+        options.retries > 255)
+    ) {
+      throw new Error("retries must be an integer between 0 and 255");
+    }
     const mode = options?.mode ?? "append";
     const schema = await this.schema();
 
@@ -1197,6 +1387,7 @@ export class LocalTable extends Table {
       mode,
       progress,
       options?.allowExternalBlobOutsideBases,
+      options?.retries,
     );
   }
 
@@ -1346,6 +1537,23 @@ export class LocalTable extends Table {
       this.inner.fetchBlobs(column, rowIdsToBigInts(rowIds), signal),
     );
     // N-API Option maps missing values to undefined. Collapse those to null.
+    return values.map((value) => value ?? null);
+  }
+
+  async fetchBlobRanges(
+    column: string,
+    requests: readonly BlobRangeRequest[],
+    options?: BlobReadOptions,
+  ): Promise<(Buffer | null)[]> {
+    const rowIds = rowIdsToBigInts(requests.map((request) => request.rowId));
+    const ranges = requests.map((request, i) => ({
+      rowId: rowIds[i],
+      offset: request.offset,
+      length: request.length,
+    }));
+    const values = await runWithSignal(options?.signal, (signal) =>
+      this.inner.fetchBlobRanges(column, ranges, signal),
+    );
     return values.map((value) => value ?? null);
   }
 
@@ -1515,6 +1723,31 @@ export class LocalTable extends Table {
     return await this.inner.functionErrors(options);
   }
 
+  async functionColumnStatuses(
+    column?: string,
+  ): Promise<FunctionColumnStatus[]> {
+    return (await this.inner.functionColumnStatuses(
+      column,
+    )) as FunctionColumnStatus[];
+  }
+
+  async functionColumnStatus(column: string): Promise<FunctionColumnStatus> {
+    return (await this.inner.functionColumnStatus(
+      column,
+    )) as FunctionColumnStatus;
+  }
+
+  async waitFresh(
+    column: string,
+    timeoutSeconds?: number,
+  ): Promise<FunctionColumnStatus> {
+    validateNonNegativeInteger(timeoutSeconds, "timeoutSeconds");
+    return (await this.inner.waitForFunctionColumn(
+      column,
+      timeoutSeconds,
+    )) as FunctionColumnStatus;
+  }
+
   async refreshMaterializedView(
     sourceVersion?: number,
     full?: boolean,
@@ -1646,9 +1879,23 @@ export class LocalTable extends Table {
   }
 
   async optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats> {
+    // JavaScript callers can supply extra keys that TypeScript would reject.
+    // Refuse them before the native binding can silently discard a work limit.
+    const supported = new Set([
+      "targetRowsPerFragment",
+      "maxSourceRows",
+      "ioBufferSize",
+      "batchSize",
+    ]);
+    for (const key of Object.keys(options?.compactionOptions ?? {})) {
+      if (!supported.has(key)) {
+        throw new Error(`Unsupported compaction option: ${key}`);
+      }
+    }
     return await this.inner.optimize(
       options?.cleanupOlderThan?.getTime(),
       options?.deleteUnverified,
+      options?.compactionOptions,
     );
   }
 

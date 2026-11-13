@@ -55,6 +55,55 @@ use crate::function::validate_gpu_class_name;
 use crate::job::Job;
 use crate::{Error, Result};
 
+/// Aggregate worker resources for one Enterprise Function refresh.
+///
+/// CPU is in millicores (1000 = one core) and memory is in bytes. These
+/// values cap the Function workers together; they are not per-worker
+/// allocations. The default GPU budget is zero, which describes a CPU-only
+/// Function. This option is rejected by LanceDB Embedded refreshes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct FunctionWorkerResourceBudget {
+    pub cpu_millis: u64,
+    pub memory_bytes: u64,
+    /// Aggregate GPU budget across the refresh. Zero is CPU-only.
+    #[serde(default)]
+    pub gpu_count: u32,
+}
+
+impl FunctionWorkerResourceBudget {
+    /// Create a CPU-only aggregate budget.
+    pub fn new(cpu_millis: u64, memory_bytes: u64) -> Self {
+        Self {
+            cpu_millis,
+            memory_bytes,
+            gpu_count: 0,
+        }
+    }
+
+    /// Set the aggregate GPU budget.
+    pub fn with_gpu_count(mut self, gpu_count: u32) -> Self {
+        self.gpu_count = gpu_count;
+        self
+    }
+
+    /// Require every per-tier resource limit to request at least one unit.
+    pub fn validate(&self) -> Result<()> {
+        if self.cpu_millis == 0 {
+            return Err(Error::InvalidInput {
+                message: "resource_budget.cpu_millis must be greater than zero".into(),
+            });
+        }
+        if self.memory_bytes == 0 {
+            return Err(Error::InvalidInput {
+                message: "resource_budget.memory_bytes must be greater than zero".into(),
+            });
+        }
+        Ok(())
+    }
+}
+
 /// Options for refreshing a computed column.
 ///
 /// Serializes to the Enterprise backfill request body, one key per set
@@ -100,6 +149,24 @@ pub struct RefreshColumnOptions {
     /// effect on expression-backed columns in LanceDB Embedded.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub batch_size: Option<usize>,
+    /// Override the registered Function's maximum concurrent user-code calls
+    /// for this logical execution. Must be greater than zero. `None` uses the
+    /// registration default, or disabled when the Function declares none.
+    /// This is not an account quota and does not change `resource_budget`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_concurrency: Option<u32>,
+    /// Opt-in row-count threshold for publishing completed Function outputs.
+    ///
+    /// Must be greater than zero. `None` keeps whole-fragment publication.
+    /// Actual publication boundaries can be larger than this threshold because
+    /// they also depend on completed work and Function batching. LanceDB Embedded
+    /// rejects this option.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub publication_interval_rows: Option<u64>,
+    /// Complete aggregate CPU, memory, and GPU budget for a registered
+    /// Function refresh. Cannot be combined with `gpu_count`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_budget: Option<FunctionWorkerResourceBudget>,
     /// GPU class for Function workers in LanceDB Enterprise.
     ///
     /// `None` keeps the Function's registered class, or the deployment default
@@ -174,6 +241,29 @@ impl RefreshColumnOptions {
         self
     }
 
+    /// Override the registered Function's maximum concurrent user-code calls
+    /// for this logical execution.
+    pub fn max_concurrency(mut self, max_concurrency: u32) -> Self {
+        self.max_concurrency = Some(max_concurrency);
+        self
+    }
+
+    /// Use `rows` as the opt-in publication threshold for completed Function
+    /// outputs. The actual publication boundary can be larger than this value.
+    pub fn publication_interval_rows(mut self, rows: u64) -> Self {
+        self.publication_interval_rows = Some(rows);
+        self
+    }
+
+    /// Set the aggregate worker resource budget for a Function refresh.
+    ///
+    /// Use [`FunctionWorkerResourceBudget::new`] for a CPU-only budget, or
+    /// [`FunctionWorkerResourceBudget::with_gpu_count`] to include GPUs.
+    pub fn resource_budget(mut self, budget: FunctionWorkerResourceBudget) -> Self {
+        self.resource_budget = Some(budget);
+        self
+    }
+
     /// Request Function workers from `gpu_class`.
     pub fn gpu_class(mut self, gpu_class: impl Into<String>) -> Self {
         self.gpu_class = Some(gpu_class.into());
@@ -201,6 +291,12 @@ impl RefreshColumnOptions {
                 "max_executor_processes_per_worker",
                 self.max_executor_processes_per_worker.is_some(),
             ),
+            ("max_concurrency", self.max_concurrency.is_some()),
+            (
+                "publication_interval_rows",
+                self.publication_interval_rows.is_some(),
+            ),
+            ("resource_budget", self.resource_budget.is_some()),
         ]
         .into_iter()
         .find_map(|(name, set)| set.then_some(name))
@@ -252,6 +348,24 @@ impl RefreshColumnOptions {
             return Err(Error::InvalidInput {
                 message: "batch_size must be greater than zero".into(),
             });
+        }
+        if self.max_concurrency == Some(0) {
+            return Err(Error::InvalidInput {
+                message: "max_concurrency must be greater than zero".into(),
+            });
+        }
+        if self.publication_interval_rows == Some(0) {
+            return Err(Error::InvalidInput {
+                message: "publication_interval_rows must be greater than zero".into(),
+            });
+        }
+        if self.resource_budget.is_some() && self.gpu_count.is_some() {
+            return Err(Error::InvalidInput {
+                message: "gpu_count cannot be combined with resource_budget".into(),
+            });
+        }
+        if let Some(budget) = &self.resource_budget {
+            budget.validate()?;
         }
         if let Some(gpu_class) = &self.gpu_class {
             validate_gpu_class_name(gpu_class)?;
@@ -308,6 +422,7 @@ async fn execute_refresh_column_with_source(
         schema.clone(),
         column,
         &expression,
+        dataset.session().datafusion_session(),
     )?);
     ensure_inputs_filled(&dataset, &schema, column, &bound).await?;
     let field = dataset
@@ -490,7 +605,12 @@ async fn ensure_inputs_filled(
                 ),
             });
         };
-        let input_bound = super::computed_columns::bind(schema.clone(), input, expression)?;
+        let input_bound = super::computed_columns::bind(
+            schema.clone(),
+            input,
+            expression,
+            dataset.session().datafusion_session(),
+        )?;
         let mut unfilled = 0u64;
         for fragment in dataset.get_fragments() {
             unfilled += count_fragment_gains(dataset, &fragment, &input_bound, input)

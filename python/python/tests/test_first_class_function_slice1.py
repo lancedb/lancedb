@@ -34,7 +34,7 @@ FIXTURES = (
 
 
 def fixture(name: str) -> str:
-    return (FIXTURES / name).read_text()
+    return (FIXTURES / name).read_text(encoding="utf-8")
 
 
 def job_result(name: str) -> dict:
@@ -148,6 +148,38 @@ def test_function_version_identity_is_immutable_and_exact():
             FunctionVersion(**{**value, "version": invalid})
 
 
+@pytest.mark.parametrize(
+    "case", json.loads(fixture("runtime_identity.json")), ids=lambda case: case["name"]
+)
+def test_runtime_digests_match_server_golden_values(case):
+    runtime = PythonRuntimeSpec.from_json(json.dumps(case["runtime"]))
+    assert runtime.digest == case["digest"]
+    assert (
+        PythonRuntimeSpec.from_json(runtime.to_canonical_json()).digest
+        == runtime.digest
+    )
+
+
+def test_unknown_runtime_digest_fails_closed():
+    runtime = PythonRuntimeSpec.from_json('{"kind":"python_v3","future":"value"}')
+    with pytest.raises(ValueError, match="cannot digest unknown runtime kind"):
+        runtime.digest
+
+
+@pytest.mark.parametrize("runtime_digest", [None, "sha256:runtime-inputs"])
+def test_function_version_preserves_runtime_digest(runtime_digest):
+    value = job_result("remote_function_job.json")
+    legacy = FunctionVersion.from_json(json.dumps(value))
+    assert legacy.runtime_digest is None
+    assert "runtime_digest" not in json.loads(legacy.to_canonical_json())
+    value["runtime_digest"] = runtime_digest
+    version = FunctionVersion.from_json(json.dumps(value))
+    assert version.runtime_digest == runtime_digest
+    assert FunctionVersion.from_json(version.to_canonical_json()) == version
+    with pytest.raises((TypeError, ValueError)):
+        version.runtime_digest = "sha256:changed"
+
+
 @pytest.mark.parametrize("source_digest", [None, "sha256:source-artifact"])
 def test_function_version_preserves_source_digest(source_digest):
     value = job_result("remote_function_job.json")
@@ -184,6 +216,7 @@ def test_function_version_preserves_execution_controls():
     value = job_result("remote_function_job.json")
     value.update(
         batch_size=12,
+        max_concurrency=4,
         row_timeout_seconds=8.0,
         result_stability="input_and_context",
     )
@@ -192,8 +225,13 @@ def test_function_version_preserves_execution_controls():
 
     assert encoded == value
     assert type(encoded["batch_size"]) is int
+    assert type(encoded["max_concurrency"]) is int
     assert type(encoded["row_timeout_seconds"]) is float
     assert type(encoded["result_stability"]) is str
+
+    for invalid in [True, 1.5, 0, -1, 2**32]:
+        with pytest.raises(ValueError, match="max_concurrency"):
+            FunctionVersion(**{**value, "max_concurrency": invalid})
 
 
 def test_function_version_binds_named_columns_as_one_immutable_application():
@@ -459,6 +497,7 @@ class _FunctionDeclarationInner:
         output_name,
         auto_refresh_enabled,
         auto_refresh_interval_seconds,
+        auto_refresh_resource_budget,
     ):
         self.calls.append(
             (
@@ -466,6 +505,7 @@ class _FunctionDeclarationInner:
                 output_name,
                 auto_refresh_enabled,
                 auto_refresh_interval_seconds,
+                auto_refresh_resource_budget,
             )
         )
         return "declared"
@@ -491,7 +531,7 @@ async def test_add_columns_routes_struct_as_one_and_multi_output_binding_atomica
     )
     assert result == "declared"
     assert inner.calls[-1][1] == "features"
-    assert inner.calls[-1][2:] == (None, None)
+    assert inner.calls[-1][2:] == (None, None, None)
 
     bare = application._copy(update={"columns": {}}).rename(
         columns={"normalized_text": "search_text"}
@@ -502,7 +542,7 @@ async def test_add_columns_routes_struct_as_one_and_multi_output_binding_atomica
     assert result == "declared"
     assert inner.calls[-1][1] is None
     assert inner.calls[-1][0]["columns"] == {"normalized_text": "search_text"}
-    assert inner.calls[-1][2:] == (False, 300)
+    assert inner.calls[-1][2:] == (False, 300, None)
 
 
 @pytest.mark.asyncio

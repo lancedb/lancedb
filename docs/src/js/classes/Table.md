@@ -650,6 +650,48 @@ tables; no partial handles are returned.
 
 ***
 
+### fetchBlobRanges()
+
+```ts
+abstract fetchBlobRanges(
+   column,
+   requests,
+   options?): Promise<(null | Buffer)[]>
+```
+
+Materializes row-specific byte ranges at the table's current checkout.
+Preserves request order, duplicates, and nulls. Zero length returns an empty
+buffer for a non-null blob. Invalid ranges or missing rows reject the entire
+call. See [Table.fetchBlobs](Table.md#fetchblobs) for row-ID validity across versions.
+
+Remote tables use the batched endpoint when the server advertises support,
+splitting at 1024 ranges and 64 MiB, including individual larger ranges.
+Older servers use descriptor queries and BlobFile range reads. Both protocols
+use one exact branch and version. Errors from an advertised endpoint propagate
+without switching protocols. All output bytes occupy memory.
+
+#### Parameters
+
+* **column**: `string`
+
+* **requests**: readonly [`BlobRangeRequest`](../type-aliases/BlobRangeRequest.md)[]
+
+* **options?**: [`BlobReadOptions`](../type-aliases/BlobReadOptions.md)
+
+#### Returns
+
+`Promise`&lt;(`null` \| `Buffer`)[]&gt;
+
+#### Example
+
+```ts
+const bytes = await table.fetchBlobRanges("image", [
+  { rowId: 10n, offset: 0n, length: 1024n },
+]);
+```
+
+***
+
 ### fetchBlobs()
 
 ```ts
@@ -701,6 +743,47 @@ so this is safe to call repeatedly.
 #### Returns
 
 `Promise`&lt;`void`&gt;
+
+***
+
+### functionColumnStatus()
+
+```ts
+abstract functionColumnStatus(column): Promise<FunctionColumnStatus>
+```
+
+Return exact freshness status for one Function-backed output column.
+
+#### Parameters
+
+* **column**: `string`
+
+#### Returns
+
+`Promise`&lt;[`FunctionColumnStatus`](../interfaces/FunctionColumnStatus.md)&gt;
+
+***
+
+### functionColumnStatuses()
+
+```ts
+abstract functionColumnStatuses(column?): Promise<FunctionColumnStatus[]>
+```
+
+Return exact freshness status for Function-backed output columns.
+
+All results describe one server table version. Omit `column` for every
+Function output. Rows already failed remain visible and do not prevent
+`waitFresh` from completing. A handle pinned to an exact version requests
+that version; a latest handle retains normal read-freshness behavior.
+
+#### Parameters
+
+* **column?**: `string`
+
+#### Returns
+
+`Promise`&lt;[`FunctionColumnStatus`](../interfaces/FunctionColumnStatus.md)[]&gt;
 
 ***
 
@@ -948,6 +1031,9 @@ supported. Pruning old versions and index optimization are silently
 skipped there instead of being attempted, so this call resolves
 successfully, with zeroed pruning statistics, once the compaction job
 has been submitted; it does not wait for that job to finish.
+`compactionOptions` can tune the four per-job settings documented in
+[CompactionOptions](../interfaces/CompactionOptions.md). Older-server errors are propagated without
+retrying with the settings removed.
 
 #### Parameters
 
@@ -1138,11 +1224,26 @@ LanceDB Enterprise it is the server's backfill job.
     Refresh options, mirroring the SQL
     `REFRESH COLUMN ... WHERE ... WITH (...)` form: `where` narrows the rows,
     `errorPolicy`, `maxFailedFraction`, `maxFailedRows`, `rowTimeoutSeconds`
-    and `initTimeoutSeconds` govern failing rows, and `batchSize`,
-    `gpuClass`, `gpuCount`, `numWorkers` and `maxExecutorProcessesPerWorker`
-    size the workers. All are LanceDB Enterprise only; a LanceDB Embedded
-    refresh rejects every option other than `batchSize`, `gpuClass` and
-    `gpuCount`.
+    and `initTimeoutSeconds` govern failing rows. `batchSize`, `gpuClass`,
+    `maxConcurrency`, `resourceBudget` and
+    `maxExecutorProcessesPerWorker` size registered Function refreshes.
+    `maxConcurrency` overrides the registered default for this logical
+    execution only and is a positive integer; it is not an account-wide
+    quota. A `resourceBudget` requires `cpuMillis` and
+    `memoryBytes`; its `gpuCount` defaults to zero for a CPU-only Function.
+    The budget applies only to this explicit refresh and does not configure
+    a later automatic refresh.
+    `gpuCount` at the top level is the shorthand that preserves the
+    deployment defaults for CPU and memory, and cannot be combined with
+    `resourceBudget`. `numWorkers` applies only to expression columns; use
+    `resourceBudget` for registered Functions. All are LanceDB Enterprise
+    only; a LanceDB Embedded refresh rejects every option other than
+    `batchSize`, `gpuClass` and `gpuCount`.
+    `publicationIntervalRows` opts into publishing completed Function split
+    ranges once their accumulated unpublished rows reach the threshold.
+    It must be a positive safe integer and requires non-Blob Function outputs.
+    Omit it for whole-fragment publication. Publications can exceed the
+    threshold, and remaining rows publish at completion.
 
 #### Returns
 
@@ -1153,6 +1254,12 @@ LanceDB Enterprise it is the server's backfill job.
 ```ts
 const job = await table.refreshColumnAsync("embedding", {
   where: "published_at > '2026-01-01'",
+  resourceBudget: {
+    cpuMillis: 8000,
+    memoryBytes: 16 * 1024 ** 3,
+  },
+  maxConcurrency: 4,
+  publicationIntervalRows: 10000,
   errorPolicy: "skip",
   maxFailedFraction: 0.01,
   rowTimeoutSeconds: 30,
@@ -1580,3 +1687,26 @@ Waits for asynchronous indexing to complete on the table.
 #### Returns
 
 `Promise`&lt;`void`&gt;
+
+***
+
+### waitFresh()
+
+```ts
+abstract waitFresh(column, timeoutSeconds?): Promise<FunctionColumnStatus>
+```
+
+Poll until no stale or never-computed rows remain.
+
+Only HTTP 503 with the exact finalization-pending error code is retried;
+every other error propagates. Failed rows do not block completion.
+
+#### Parameters
+
+* **column**: `string`
+
+* **timeoutSeconds?**: `number`
+
+#### Returns
+
+`Promise`&lt;[`FunctionColumnStatus`](../interfaces/FunctionColumnStatus.md)&gt;

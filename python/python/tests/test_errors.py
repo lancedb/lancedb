@@ -15,6 +15,7 @@ from lancedb.remote.errors import (
     HttpError,
     LanceDBClientError,
     NamespaceNotFoundError,
+    ResponseInterruptedError,
     RetryError,
     SecretNotFoundError,
     TableNotFoundError,
@@ -71,6 +72,17 @@ def test_pickle_http_transport_error():
     assert isinstance(restored, HttpError)
     assert restored.is_transport_error is True
     assert restored.request_id == "req-789"
+
+
+def test_pickle_response_interrupted_error():
+    err = ResponseInterruptedError("interrupted", "req-1", 2, 2048, 7, True)
+    restored = pickle.loads(pickle.dumps(err))
+    assert type(restored) is ResponseInterruptedError
+    assert str(restored) == "interrupted"
+    assert restored.request_id == "req-1"
+    assert (restored.batches, restored.rows, restored.table_version) == (2, 2048, 7)
+    assert restored.is_transport_error is True
+    assert restored.status_code is None
 
 
 @pytest.mark.parametrize("error_code", [None, "conflict", "future_conflict_code"])

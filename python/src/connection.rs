@@ -24,8 +24,9 @@ use lancedb::{
     connection::NamespaceClientPushdownOperation,
     database::namespace::LanceNamespaceDatabase,
     database::{CreateTableMode, Database, ReadConsistency},
-    function::GpuClass as LanceGpuClass,
+    function::{GpuClass as LanceGpuClass, RefreshColumnResult},
     graph::PropertyGraphDefinition,
+    materialized_view::CreateMaterializedViewBuilder,
 };
 use pyo3::{
     Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
@@ -33,6 +34,27 @@ use pyo3::{
     pyclass, pyfunction, pymethods,
     types::{PyAnyMethods, PyDict, PyDictMethods, PyList},
 };
+
+fn materialized_view_builder(
+    connection: &LanceConnection,
+    name: String,
+    source: Option<String>,
+    query: Option<String>,
+    has_clauses: bool,
+) -> PyResult<CreateMaterializedViewBuilder> {
+    match (source, query) {
+        (None, Some(query)) if !has_clauses => {
+            Ok(connection.create_materialized_view_from_query(name, query))
+        }
+        (Some(source), None) => Ok(connection.create_materialized_view(name, source)),
+        (None, None) => Err(PyValueError::new_err(
+            "either source or query must be provided",
+        )),
+        _ => Err(PyValueError::new_err(
+            "query cannot be combined with source, select, where or limit",
+        )),
+    }
+}
 
 #[pyclass]
 pub struct Connection {
@@ -483,21 +505,29 @@ impl Connection {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (name, source, projections=None, filter=None, limit=None, with_no_data=false, auto_refresh_enabled=None, auto_refresh_interval_seconds=None))]
+    #[pyo3(signature = (name, source=None, projections=None, filter=None, limit=None, with_no_data=false, auto_refresh_enabled=None, auto_refresh_interval_seconds=None, *, query=None))]
     pub fn create_materialized_view(
         self_: PyRef<'_, Self>,
         name: String,
-        source: String,
+        source: Option<String>,
         projections: Option<Vec<(String, String)>>,
         filter: Option<String>,
         limit: Option<u64>,
         with_no_data: bool,
         auto_refresh_enabled: Option<bool>,
         auto_refresh_interval_seconds: Option<f64>,
+        query: Option<String>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
+        let builder = materialized_view_builder(
+            &inner,
+            name,
+            source,
+            query,
+            projections.is_some() || filter.is_some() || limit.is_some(),
+        )?;
         future_into_py(self_.py(), async move {
-            let mut builder = inner.create_materialized_view(name, source);
+            let mut builder = builder;
             if let Some(enabled) = auto_refresh_enabled {
                 builder = builder.auto_refresh_enabled(enabled);
             }
@@ -520,21 +550,29 @@ impl Connection {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (name, source, projections=None, filter=None, limit=None, with_no_data=false, auto_refresh_enabled=None, auto_refresh_interval_seconds=None))]
+    #[pyo3(signature = (name, source=None, projections=None, filter=None, limit=None, with_no_data=false, auto_refresh_enabled=None, auto_refresh_interval_seconds=None, *, query=None))]
     pub fn create_materialized_view_async(
         self_: PyRef<'_, Self>,
         name: String,
-        source: String,
+        source: Option<String>,
         projections: Option<Vec<(String, String)>>,
         filter: Option<String>,
         limit: Option<u64>,
         with_no_data: bool,
         auto_refresh_enabled: Option<bool>,
         auto_refresh_interval_seconds: Option<f64>,
+        query: Option<String>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
+        let builder = materialized_view_builder(
+            &inner,
+            name,
+            source,
+            query,
+            projections.is_some() || filter.is_some() || limit.is_some(),
+        )?;
         future_into_py(self_.py(), async move {
-            let mut builder = inner.create_materialized_view(name, source);
+            let mut builder = builder;
             if let Some(enabled) = auto_refresh_enabled {
                 builder = builder.auto_refresh_enabled(enabled);
             }
@@ -854,7 +892,14 @@ impl Connection {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
             let job = inner.open_job(&job_id).await.infer_error()?;
-            Ok(crate::job::Job::new(job))
+            match job.job_type().as_deref() {
+                Some("function_refresh" | "computed_refresh" | "refresh_column") => {
+                    Ok(crate::job::Job::new_typed(
+                        job.into_typed::<RefreshColumnResult>().infer_error()?,
+                    ))
+                }
+                _ => Ok(crate::job::Job::new(job)),
+            }
         })
     }
 
@@ -877,22 +922,22 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (name, version, namespace_path=None))]
+    #[pyo3(signature = (name, version=None, namespace_path=None))]
     pub fn get_function(
         self_: PyRef<'_, Self>,
         name: String,
-        version: String,
+        version: Option<String>,
         namespace_path: Option<Vec<String>>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         let namespace_path = namespace_path.unwrap_or_default();
         future_into_py(self_.py(), async move {
-            inner
-                .get_function(name, version, &namespace_path)
-                .await
-                .infer_error()?
-                .to_canonical_json()
-                .infer_error()
+            let function = match version {
+                Some(version) => inner.get_function(name, version, &namespace_path).await,
+                None => inner.get_function_latest(name, &namespace_path).await,
+            }
+            .infer_error()?;
+            function.to_canonical_json().infer_error()
         })
     }
 
@@ -1029,18 +1074,20 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (name, value, namespace_path=None))]
+    #[pyo3(signature = (name, value, namespace_path=None, *, exist_ok=false))]
     pub fn create_secret(
         self_: PyRef<'_, Self>,
         name: String,
         value: String,
         namespace_path: Option<Vec<String>>,
+        exist_ok: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         let namespace_path = namespace_path.unwrap_or_default();
         future_into_py(self_.py(), async move {
             inner
                 .create_secret(name, value, &namespace_path)
+                .exist_ok(exist_ok)
                 .await
                 .infer_error()
         })
@@ -1274,6 +1321,14 @@ impl Connection {
             self.get_inner()?
                 .list_jobs(crate::listing::options(page_token, page_limit)),
         ))
+    }
+
+    pub fn server_info(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let info = inner.server_info().await.infer_error()?;
+            serde_json::to_string(&info).map_err(|error| PyValueError::new_err(error.to_string()))
+        })
     }
 
     pub fn list_gpu_classes(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {

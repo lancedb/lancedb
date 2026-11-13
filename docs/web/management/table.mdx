@@ -201,7 +201,7 @@ setting. See [Limits](/basics/limits#schema).
 <CodeGroup>
 ```python Python icon="python"
 tbl = db.open_table("documents")
-db.table_names()
+names = list(db.list_tables())
 ```
 
 ```typescript TypeScript icon="square-js"
@@ -229,6 +229,27 @@ listing. A missing table raises `ValueError` on a local directory and
 `lance_namespace.TableNotFoundError` on a connection from `connect_namespace`.
 A listing returns one page of names at a time, so check every page. TypeScript
 has no `tableExists`.
+
+{/*
+Draft for the table-existence lookup release (#4974). Once released, replace
+the two table-existence paragraphs above with this guidance:
+
+For Python local, remote, and namespace connections, use
+`db.table_exists(["documents"])` or `"documents" in db` to check whether a root
+table exists. For an async connection, use
+`await db.table_exists(["documents"])`. Include namespace segments before the
+table name, for example `["analytics", "documents"]`. These checks return
+`False` when the table is missing and propagate other errors, including
+permission errors. They look up the table directly, regardless of the number
+of tables in the database.
+
+When migrating from `name in db.table_names()`, use `name in db` or
+`db.table_exists([name])`. To collect every table name, use
+`list(db.list_tables())`, or `[name async for name in db.list_tables()]` on an
+async connection. The `.tables` attribute holds only one page (100 names by
+default), so membership checks against it can miss existing tables. TypeScript
+has no `tableExists`.
+*/}
 
 ## Rename and clone tables {#rename-clone}
 
@@ -354,8 +375,16 @@ file, up to 64 KiB by default, and larger values are stored outside it.
 A `blob` column keeps metadata separate from the payload bytes, so queries can
 filter rows without loading the blobs.
 
-Most queries return descriptors, which contain metadata about the blob instead
-of its bytes. You can
+{/* Draft for Blob v2 GA. Confirm release status before removing Early access.
+
+Blob v2 GA supports standard tables. Tables with Realtime or MemWAL enabled
+are outside the GA support scope.
+*/}
+
+SDK queries return descriptors by default, which contain metadata about the
+blob instead of its bytes. Enterprise SQL queries return payload bytes by
+default; use `blob_descriptor(column)` to select metadata instead. With an SDK,
+you can
 [read the bytes in the query results](#multimodal-blob-query-results) or
 [fetch them by row ID](#multimodal-read-blobs).
 
@@ -465,9 +494,11 @@ methods `to_pandas()`, `to_arrow()`, `to_list()`, and `to_batches()` accept a
 
 For supported local v2 blob projections, `to_pandas(blob_mode="bytes")` and
 `to_pandas(blob_mode="descriptions")` use native Arrow conversion without
-pylance. Pandas conversions that need the Lance scanner, including plain-scan
-`"lazy"` handles and legacy blobs, still require pylance. `to_arrow()`,
-`to_list()`, `to_batches()`, and the fetch methods do not require pylance.
+pylance. Eligible local plain scans also convert row-addressable legacy blob
+bytes without pylance. Pandas conversions that need the Lance scanner,
+including plain-scan `"lazy"` handles and scanner-only options, still require
+pylance. `to_arrow()`, `to_list()`, `to_batches()`, and the fetch methods do
+not require pylance for supported local queries.
 
 `blob_mode="bytes"` requires a LanceDB Embedded table snapshot, so Enterprise
 and in-memory tables raise `NotImplementedError`. On an Enterprise table,
@@ -476,6 +507,122 @@ and in-memory tables raise `NotImplementedError`. On an Enterprise table,
 the default `"lazy"` mode because it would open `BlobFile` handles. Query with
 `blob_mode="descriptions"`, then read bytes with `fetch_blobs` or
 `fetch_blob_files`.
+
+{/* Draft for the Enterprise Python bytes release. Replace the released instructions above only after SDK and serving-node rollout.
+
+`blob_mode="bytes"` also supports Enterprise queries. The SDK locks all blob
+fetches, including streaming batches, to both the version in
+`x-lancedb-query-version` and the incarnation/revision identity in
+`x-lancedb-query-snapshot`, captured from the same query response. Every payload
+request verifies that identity against the actual opened dataset before reading
+rows. Concurrent writes therefore preserve the selected payloads. Dropping and
+recreating a table, even at the same location and version, cannot substitute the
+replacement's bytes: the original snapshot is served or the read fails explicitly.
+
+Upgrade the SDK and every serving node to support snapshot identities. A server
+that reports only a numeric query version, a legacy `x-lancedb-version` watermark,
+or Arrow schema metadata does not enable deferred bytes. Missing or unsupported
+identities raise `NotImplementedError`; use `"descriptions"` until the upgrade is
+complete. Ordinary queries, descriptors, and independent `fetch_blobs` calls keep
+working. Old SDKs keep their existing behavior and do not gain this protection
+from a server-only upgrade. Realtime/MemWAL and historical manifests without a
+native transaction identity do not support deferred bytes. Snapshot identities
+do not retain old versions; deleting the selected version still fails explicitly.
+In-memory tables and namespace `QueryTable` pushdown do not support bytes mode.
+On an Enterprise table, sync `Table.to_pandas()` and `Table.to_arrow()` are not
+supported; use `table.search()` instead. A query's `to_pandas()` also raises in
+the default `"lazy"` mode because remote lazy handles are not supported.
+*/}
+
+###### Copy a subset of blob rows {#multimodal-copy-subset}
+
+SDK descriptors identify stored payloads; materialize the bytes before inserting
+them into another table. These APIs return different values:
+
+| Read path | Value |
+| --- | --- |
+| Enterprise SQL | Raw payload bytes by default. |
+| An SDK Arrow query in `"descriptions"` mode | Descriptor struct identifying the stored blob. Treat it as opaque. |
+| `table.fetch_blobs(column, row_ids)` | Arrow `large_binary` array; `.to_pylist()` gives `bytes` or `None` in the requested order. |
+| A Function parameter annotated `lancedb.BlobReader` | Lazy, seekable reader over the input blob, available inside the Function. |
+
+For an Enterprise source table, select the rows and fetch their bytes explicitly.
+The following example copies up to 100 rows from an existing `images` table with
+an integer `id` and a blob `image` column. Keep the source unchanged during this
+operation: selection and fetching are separate requests.
+
+```python
+import lancedb
+import pyarrow as pa
+
+source = db.open_table("images")
+hits = (
+    source.search()
+    .where("id < 100")
+    .select(["id"])
+    .with_row_id(True)
+    .limit(100)
+    .to_arrow()
+)
+payloads = source.fetch_blobs("image", hits["_rowid"]).to_pylist()
+subset = db.create_table(
+    "image_subset",
+    schema=pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")]),
+)
+if hits.num_rows:
+    subset.add([
+        {"id": image_id, "image": payload}
+        for image_id, payload in zip(hits["id"].to_pylist(), payloads, strict=True)
+    ])
+```
+
+Empty blobs remain `b""` and null blobs remain `None`. Fetch bounded batches
+for larger subsets; `fetch_blobs` materializes all requested bytes in memory.
+For incremental decoding, use `fetch_blob_files` instead.
+
+{/* Draft for the Enterprise Python bytes release. Replace the copy example above when snapshot-bound remote bytes are released.
+
+For Enterprise tables, prefer server-side `CREATE TABLE AS SELECT` or
+`INSERT INTO ... SELECT` to copy blobs without a client round trip:
+
+```sql
+CREATE TABLE image_subset AS SELECT id, image FROM images WHERE id < 100;
+-- To append to an existing destination:
+INSERT INTO image_subset SELECT id, image FROM images WHERE id >= 100 AND id < 200;
+```
+
+For SDK copies, query with `blob_mode="bytes"` to bind selection and payload
+reads to one snapshot. The following example copies up to 100 rows from an
+existing `images` table with an integer `id` and a blob `image` column.
+
+```python
+import lancedb
+import pyarrow as pa
+
+source = db.open_table("images")
+hits = (
+    source.search()
+    .where("id < 100")
+    .select(["id", "image"])
+    .limit(100)
+    .to_arrow(blob_mode="bytes")
+)
+subset = db.create_table(
+    "image_subset",
+    schema=pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")]),
+)
+if hits.num_rows:
+    subset.add(hits)
+```
+
+Empty blobs remain `b""` and null blobs remain `None`. Fetch bounded batches
+for larger subsets; `fetch_blobs` materializes all requested bytes in memory.
+For incremental decoding, use `fetch_blob_files` instead.
+
+Remote bytes mode requires a server that supports snapshot-bound Blob reads.
+Older servers and Realtime/MemWAL tables can still return descriptors, but
+bytes mode raises an explicit unsupported-operation error before fetching payloads.
+*/}
 
 `blob_mode="bytes"` materializes top-level and struct-nested blob columns. It
 raises `ValueError` when the selected columns include blobs
@@ -486,10 +633,11 @@ PyArrow.
 
 ###### Stream blob results {#multimodal-blob-batches}
 
-`to_batches(blob_mode="bytes")` fetches blob v2 payloads one batch at a time
-and returns them as Arrow `large_binary` values. Iterate over the reader and
-call `batch.to_pandas()` to convert each batch to a DataFrame without collecting
-all payloads at once.
+`to_batches(blob_mode="bytes")` fetches row-addressable blob v2 payloads and
+eligible local plain-scan legacy v1 payloads one batch at a time and returns
+them as Arrow `large_binary` values. Iterate over the reader and call
+`batch.to_pandas()` to convert each batch to a DataFrame without collecting all
+payloads at once.
 
 For sync queries, call `query.to_batches(batch_size=64, blob_mode="bytes")`
 and iterate with `for`. For async queries, call
@@ -497,17 +645,31 @@ and iterate with `for`. For async queries, call
 with `async for`. Sync full-text and hybrid queries do not support
 `to_batches()`.
 
-The default `"lazy"` mode returns descriptors and keeps automatic `_rowid`
-columns visible for manual fetches. `"descriptions"` returns the five-field
-descriptors. Both `"bytes"` and `"descriptions"` hide automatic row IDs;
-explicitly requested row IDs remain visible.
+The default `"lazy"` mode returns blob v2 descriptors and keeps their automatic
+`_rowid` columns visible for manual fetches. `"descriptions"` returns the
+five-field descriptors. Both `"bytes"` and `"descriptions"` hide automatic row
+IDs; explicitly requested row IDs remain visible.
 
 Bytes mode has the same restrictions as `to_arrow(blob_mode="bytes")`,
-including no legacy blobs, blobs inside lists, Enterprise tables, or namespace
-`QueryTable` pushdown. If concurrent writers can overwrite the table, use a
-separate reader checked out to a fixed version before querying. Otherwise,
-an overwrite can invalidate the row IDs used to fetch bytes and raise
-`ValueError`.
+including no blobs inside lists, Enterprise tables, namespace `QueryTable`
+pushdown, or query shapes that cannot preserve their row results. Legacy v1
+bytes are limited to eligible local plain scans. If concurrent writers can
+overwrite the table, use a separate reader checked out to a fixed version
+before querying. Otherwise, an overwrite can invalidate the row IDs used to
+fetch bytes and raise `ValueError`.
+
+{/* Draft for the Enterprise Python bytes release. Replace the streaming restrictions above after release.
+
+Bytes mode has the same restrictions as `to_arrow(blob_mode="bytes")`,
+including no blobs inside lists, namespace `QueryTable` pushdown, or query
+shapes that cannot preserve their row results. Enterprise queries require a
+valid `x-lancedb-query-version` and `x-lancedb-query-snapshot` response headers.
+Legacy v1 bytes are limited to
+eligible local plain scans. For local queries, if concurrent writers can
+overwrite the table, use a separate reader checked out to a fixed version
+before querying. Otherwise, an overwrite can invalidate the row IDs used to
+fetch bytes and raise `ValueError`.
+*/}
 
 ###### Optional pandas examples {#multimodal-blob-pandas}
 
@@ -574,6 +736,10 @@ The other fetch methods load bytes directly:
 | Whole payloads for a set of rows | `fetch_blobs` | `fetchBlobs` | `fetch_blobs` |
 | Byte slices across many rows in one call | `fetch_blob_ranges` | Not available. Use `fetchBlobFiles` and `readRanges`. | `fetch_blob_ranges` |
 
+{/* Draft for the TypeScript cross-row Blob range release. Replace the row above:
+| Byte slices across many rows in one call | `fetch_blob_ranges` | `fetchBlobRanges` | `fetch_blob_ranges` |
+*/}
+
 - `fetch_blobs` returns the full bytes for each row ID in order. Null blobs
   produce null entries, and empty blobs produce empty byte strings.
 - `fetch_blob_files` loads bytes when you call `read`, `read_range`, or
@@ -597,6 +763,21 @@ The other fetch methods load bytes directly:
     </CodeBlock>
 </CodeGroup>
 
+{/* Draft for the TypeScript cross-row Blob range release.
+<Info>
+Upcoming-release draft: TypeScript adds `fetchBlobRanges` for cross-row slices.
+Until that SDK release is available, use `fetchBlobFiles` and `readRanges`.
+Server-side batching requires a deployment with the validated range capability;
+older servers continue using the descriptor and Range path selected before the
+read. An error from the selected batched endpoint is returned without fallback.
+A batched call keeps the native snapshot identity from its first range response
+across every partition and requires each serving node to verify it. Missing identity
+support or a replaced/deleted snapshot fails the whole call; upgrade all serving
+nodes before selecting the batched endpoint with a new SDK.
+Custom TypeScript `Table` subclasses must implement the new abstract method.
+</Info>
+*/}
+
 Python and Rust read slices across rows with `fetch_blob_ranges`. On a handle,
 `read_ranges` reads more than one slice of one blob. Python takes
 `(offset, length)` pairs, TypeScript takes `{ start, end }` ranges with an
@@ -608,6 +789,14 @@ exclusive `end`, and Rust takes `start..end` ranges:
     </CodeBlock>
 
     <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {/* Draft for the TypeScript cross-row Blob range release.
+    {`// Upcoming-release draft: slices from more than one row.
+const slices = await blobTable.fetchBlobRanges("image", [
+  { rowId: rowIds[0]!, offset: 0n, length: 6n },
+  { rowId: rowIds[1]!, offset: 7n, length: 5n },
+]);
+`}{"\n"}
+    */}
     {TsBlobApiRanges}
     </CodeBlock>
 

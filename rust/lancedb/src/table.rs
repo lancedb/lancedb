@@ -83,6 +83,7 @@ pub mod datafusion;
 pub(crate) mod dataset;
 pub mod delete;
 pub mod freshness;
+pub mod function_column_status;
 pub mod merge;
 pub mod optimize;
 pub(crate) mod primary_key;
@@ -106,14 +107,20 @@ pub use computed_columns::{
     ComputedColumn, ComputedColumnKind, computed_column_from_field, computed_columns,
 };
 pub use delete::DeleteResult;
+pub use function_column_status::{
+    FunctionColumnAutoRefreshBlockedReason, FunctionColumnAutoRefreshState,
+    FunctionColumnAutoRefreshStatus, FunctionColumnLastRefreshJob, FunctionColumnStatus,
+    FunctionColumnVersionStatus,
+};
 use futures::future::join_all;
 pub use lance::dataset::refs::{BranchContents, Ref, TagContents, Tags as LanceTags};
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
 pub use lance_index::optimize::OptimizeOptions;
 pub use optimize::{
-    CompactionMode, CompactionOptions, IndexRemapMode, OptimizeAction, OptimizeStats,
+    CompactionMode, CompactionOptions, CompactionOverrides, IndexRemapMode, OptimizeAction,
+    OptimizeStats,
 };
-pub use refresh::{RefreshColumnOptions, RefreshColumnResult};
+pub use refresh::{FunctionWorkerResourceBudget, RefreshColumnOptions, RefreshColumnResult};
 pub use rte_stats::{MemtableStats, RTEStats, SsTableStats, TableShardStats};
 pub use schema_evolution::{
     AddColumnsResult, AlterColumnsResult, DropColumnsResult, FieldMetadataUpdate,
@@ -595,6 +602,25 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
                 .append_to("remote materialized-view refresh is not supported on this table type"),
         })
     }
+    /// Submit an Enterprise refresh with aggregate resource caps and GPU placement.
+    #[doc(hidden)]
+    async fn refresh_materialized_view_async_with_options(
+        &self,
+        source_version: Option<u64>,
+        full: bool,
+        options: crate::materialized_view::RefreshMaterializedViewOptions,
+    ) -> Result<Job<crate::materialized_view::RefreshMaterializedViewResult>> {
+        options.validate()?;
+        if !options.is_empty() {
+            return Err(Error::NotSupported {
+                message:
+                    "this table cannot enforce materialized-view resource budgets or GPU placement"
+                        .into(),
+            });
+        }
+        self.refresh_materialized_view_async(source_version, full)
+            .await
+    }
     /// Create a read-only handle pinned to the table's current active revision.
     ///
     /// The returned handle is independent from later refreshes or checkouts on
@@ -806,6 +832,16 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "blob_columns is not supported on this table type".into(),
         })
     }
+    /// Bind a remote payload reader to an identity from its producing query.
+    async fn query_snapshot_with_identity(
+        &self,
+        _version: u64,
+        _identity: &str,
+    ) -> Result<Arc<dyn BaseTable>> {
+        Err(Error::NotSupported {
+            message: "query snapshot identities are not supported on this table type".into(),
+        })
+    }
     /// Materialize blob bytes for the given row ids. See [`Table::fetch_blobs`].
     async fn fetch_blobs(&self, _column: &str, _row_ids: &[u64]) -> Result<LargeBinaryArray> {
         Err(Error::NotSupported {
@@ -842,6 +878,14 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn tags(&self) -> Result<Box<dyn Tags + '_>>;
     /// Optimize the dataset.
     async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats>;
+    /// Compact with optional fields, preserving remote policy inheritance.
+    async fn compact(&self, options: optimize::CompactionOverrides) -> Result<OptimizeStats> {
+        self.optimize(OptimizeAction::Compact {
+            options: options.into_options(),
+            remap_options: None,
+        })
+        .await
+    }
     /// Add columns to the table.
     async fn add_columns(
         &self,
@@ -931,6 +975,19 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         Err(Error::NotSupported {
             message: DocLink::FunctionErrors
                 .append_to("per-row Function errors are recorded only in LanceDB Enterprise"),
+        })
+    }
+    /// Exact four-way freshness status for Function-backed output columns.
+    ///
+    /// `column` filters to one user-visible output; `None` returns every
+    /// Function output. The default returns `NotSupported`.
+    async fn function_column_statuses(
+        &self,
+        _column: Option<&str>,
+    ) -> Result<Vec<FunctionColumnStatus>> {
+        Err(Error::NotSupported {
+            message: DocLink::Functions
+                .append_to("exact Function column status is supported only in LanceDB Enterprise"),
         })
     }
     /// Alter columns in the table.
@@ -1305,6 +1362,19 @@ impl Table {
         })
     }
 
+    /// Create an independent remote handle constrained by a query response.
+    #[doc(hidden)]
+    pub async fn query_snapshot_with_identity(&self, version: u64, identity: &str) -> Result<Self> {
+        Ok(Self {
+            inner: self
+                .inner
+                .query_snapshot_with_identity(version, identity)
+                .await?,
+            database: self.database.clone(),
+            embedding_registry: self.embedding_registry.clone(),
+        })
+    }
+
     /// Count the number of rows in this dataset.
     ///
     /// # Arguments
@@ -1382,8 +1452,13 @@ impl Table {
     /// ranges for the same blob. The output has the same length and order as
     /// the requests. Null blobs produce null output slots; empty ranges on
     /// non-null blobs produce empty byte strings.
-    /// LanceDB Enterprise tables read through version-pinned [`BlobFile`] handles using
-    /// HTTP byte-range requests.
+    /// LanceDB Enterprise uses the batched endpoint when the server advertises
+    /// support, splitting calls at 1024 ranges and 64 MiB of requested bytes.
+    /// Individual larger ranges are partitioned and reassembled into one result.
+    /// Older servers use descriptor queries and [`Self::fetch_blob_files`] range
+    /// reads. Both protocols read one exact branch and version without changing
+    /// this handle's checkout. The final materialized output still occupies memory.
+    /// Errors from an advertised endpoint propagate without switching protocols.
     ///
     /// `_rowid` values stay valid after compaction when the table has stable
     /// row ids. One missing or deleted row id rejects the whole request; no
@@ -1416,10 +1491,14 @@ impl Table {
         column: impl AsRef<str>,
         requests: impl IntoIterator<Item = BlobRangeRequest>,
     ) -> Result<LargeBinaryArray> {
-        let requests = requests.into_iter().collect::<Vec<_>>();
-        self.inner
-            .fetch_blob_ranges(column.as_ref(), &requests)
-            .await
+        let mut ranges = Vec::new();
+        for request in requests {
+            ranges.try_reserve(1).map_err(|error| Error::InvalidInput {
+                message: format!("cannot allocate blob range requests: {error}"),
+            })?;
+            ranges.push(request);
+        }
+        self.inner.fetch_blob_ranges(column.as_ref(), &ranges).await
     }
 
     /// Open lazy [`BlobFile`] handles for the given row ids.
@@ -1925,12 +2004,60 @@ impl Table {
     ///
     /// # LanceDB Enterprise (remote tables)
     ///
-    /// Only [`OptimizeAction::Compact`] with default `options` and no custom
-    /// `remap_options` is supported; `All`, `Prune`, and `Index` return
+    /// [`OptimizeAction::Compact`] supports per-job `target_rows_per_fragment`,
+    /// `max_source_rows`, `io_buffer_size`, and `batch_size`, with no custom
+    /// `remap_options`. Other non-default options, `All`, `Prune`, and `Index` return
     /// [`crate::Error::NotSupported`]. See [`OptimizeAction::Compact`] for
     /// what a remote call submits and what it does and does not wait for.
     pub async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats> {
         self.inner.optimize(action).await
+    }
+
+    /// Compact data files with optional tuning fields. On remote tables,
+    /// omitted fields inherit table tuning, then deployment/built-in defaults.
+    /// Returns after job submission; remote statistics are placeholders.
+    ///
+    /// ```
+    /// use lancedb::{Table, table::optimize::CompactionOverrides};
+    /// # async fn compact(table: &Table) -> lancedb::Result<()> {
+    /// table.compact(CompactionOverrides {
+    ///     io_buffer_size: Some(64 * 1024 * 1024),
+    ///     ..Default::default()
+    /// }).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn compact(&self, options: optimize::CompactionOverrides) -> Result<OptimizeStats> {
+        self.inner.compact(options).await
+    }
+
+    /// Language-binding entry point retaining optional compaction fields.
+    #[doc(hidden)]
+    pub async fn optimize_full_with_overrides(
+        &self,
+        options: optimize::CompactionOverrides,
+        older_than: Option<chrono::Duration>,
+        before_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+        delete_unverified: Option<bool>,
+    ) -> Result<OptimizeStats> {
+        if self.as_native().is_some() {
+            return self
+                .optimize_full(
+                    options.into_options(),
+                    older_than,
+                    before_timestamp,
+                    delete_unverified,
+                )
+                .await;
+        }
+        if older_than.is_some() || before_timestamp.is_some() || delete_unverified == Some(true) {
+            return Err(Error::NotSupported { message: "pruning is not supported in LanceDB Enterprise; omit pruning options to run compaction only".into() });
+        }
+        let stats = self.compact(options).await?;
+        Ok(OptimizeStats {
+            compaction: stats.compaction,
+            prune: Some(RemovalStats::default()),
+        })
     }
 
     /// Prune versions committed before an absolute timestamp.
@@ -1966,10 +2093,10 @@ impl Table {
     ///
     /// This is an internal entry point for language bindings. On a remote
     /// table (LanceDB Enterprise) only [`OptimizeAction::Compact`] with its
-    /// defaults is supported. A caller asking for anything pruning-related
+    /// supported per-job options is supported. A caller asking for anything pruning-related
     /// (`older_than`, `before_timestamp`, or `delete_unverified: Some(true)`)
-    /// gets `NotSupported` before anything is submitted, the same way a
-    /// non-default `CompactionOptions` is already rejected -- rather than a
+    /// gets `NotSupported` before anything is submitted, the same way
+    /// unsupported `CompactionOptions` are rejected -- rather than a
     /// success that silently reports zero bytes pruned when nothing was
     /// pruned at all. A plain call with none of those set only compacts:
     /// `Prune` and `Index` are skipped here rather than attempted and
@@ -2065,10 +2192,18 @@ impl Table {
     ///
     /// [`RefreshColumnOptions::batch_size()`] caps rows per Function call in
     /// LanceDB Enterprise and must be greater than zero when set.
+    /// [`RefreshColumnOptions::publication_interval_rows()`] sets an opt-in
+    /// row-count publication threshold for completed Function outputs; unset
+    /// keeps whole-fragment publication.
+    /// [`RefreshColumnOptions::resource_budget()`] sets the aggregate CPU,
+    /// memory, and GPU budget for a Function refresh.
     /// [`RefreshColumnOptions::gpu_class()`] selects a GPU pool and
-    /// [`RefreshColumnOptions::gpu_count()`] sets the aggregate GPU budget.
-    /// These options have no effect on expression-backed columns in LanceDB
-    /// Embedded. Remote refreshes require
+    /// [`RefreshColumnOptions::gpu_count()`] sets the aggregate GPU budget
+    /// without changing the deployment's CPU and memory defaults.
+    /// Batch-size and GPU options have no effect on expression-backed columns
+    /// in LanceDB Embedded; a resource budget and publication threshold are
+    /// rejected there.
+    /// Remote refreshes require
     /// [`Table::refresh_column_async_with_options`].
     ///
     /// ```
@@ -2125,12 +2260,18 @@ impl Table {
     /// Set [`RefreshColumnOptions::batch_size()`] to cap the rows each remote
     /// Function call receives, for example to keep slow Functions within the
     /// executor's per-call deadline. Set
-    /// [`RefreshColumnOptions::gpu_class()`] and
-    /// [`RefreshColumnOptions::gpu_count()`] to override the registered GPU
-    /// class or set an aggregate GPU budget for Function workers. Unset values
-    /// use the Function and server defaults; zero counts and malformed class
-    /// names are rejected before submitting a job. Embedded expression
-    /// refreshes ignore all three options.
+    /// [`RefreshColumnOptions::publication_interval_rows()`] to publish
+    /// completed Function outputs at a row-count threshold; unset keeps
+    /// whole-fragment publication. Set
+    /// [`RefreshColumnOptions::resource_budget()`] to pass a complete aggregate
+    /// CPU, memory, and GPU budget for a Function refresh. The standalone
+    /// [`RefreshColumnOptions::gpu_count()`] shorthand and
+    /// [`RefreshColumnOptions::gpu_class()`] placement remain available; a
+    /// resource budget cannot be combined with the gpu-count shorthand. Unset
+    /// values use the Function and server defaults; invalid counts and malformed
+    /// class names are rejected before submitting a job. Embedded expression
+    /// refreshes ignore the batch-size and GPU options, and reject resource
+    /// budgets, publication thresholds, and other Enterprise-only options.
     ///
     /// ```
     /// # use lancedb::{Table, table::RefreshColumnOptions};
@@ -2154,6 +2295,72 @@ impl Table {
         self.inner
             .refresh_column_async_with_options(column.as_ref(), options)
             .await
+    }
+
+    /// Return exact freshness status for all Function-backed output columns.
+    ///
+    /// The server evaluates all counts at one table version. Clients never
+    /// derive counts by joining schema, Job, and error listings. A handle
+    /// pinned with `checkout` sends that exact version, while a latest handle
+    /// keeps the existing read-freshness headers.
+    pub async fn function_column_statuses(
+        &self,
+        column: Option<&str>,
+    ) -> Result<Vec<FunctionColumnStatus>> {
+        let statuses = self.inner.function_column_statuses(column).await?;
+        function_column_status::validate_statuses(&statuses)?;
+        Ok(statuses)
+    }
+
+    /// Return exact freshness status for one Function-backed output column.
+    pub async fn function_column_status(&self, column: &str) -> Result<FunctionColumnStatus> {
+        let mut statuses = self.function_column_statuses(Some(column)).await?;
+        if statuses.len() != 1 || statuses[0].column != column {
+            return Err(Error::ColumnNotFound {
+                name: column.to_string(),
+            });
+        }
+        Ok(statuses.remove(0))
+    }
+
+    /// Poll until a Function output has no stale or never-computed rows.
+    ///
+    /// Failed rows do not keep the call pending. A typed
+    /// `function_column_status_finalization_pending` response is retried with
+    /// bounded exponential backoff; every other error is returned immediately.
+    pub async fn wait_for_function_column(
+        &self,
+        column: &str,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<FunctionColumnStatus> {
+        let started = std::time::Instant::now();
+        let mut delay = std::time::Duration::from_millis(250);
+        loop {
+            let result = self.function_column_status(column).await;
+            match result {
+                Ok(status) if status.stale == 0 && status.never_computed == 0 => return Ok(status),
+                Ok(_) => {}
+                Err(error) if function_column_status::is_finalization_pending(&error) => {}
+                Err(error) => return Err(error),
+            }
+
+            let sleep_for = match timeout {
+                Some(timeout) => {
+                    let remaining = timeout.saturating_sub(started.elapsed());
+                    if remaining.is_zero() {
+                        return Err(Error::Timeout {
+                            message: format!(
+                                "Function column '{column}' did not become fresh before timeout"
+                            ),
+                        });
+                    }
+                    delay.min(remaining)
+                }
+                None => delay,
+            };
+            tokio::time::sleep(sleep_for).await;
+            delay = std::cmp::min(delay * 2, std::time::Duration::from_secs(1));
+        }
     }
 
     /// The per-row errors Function refreshes recorded on this table: the
@@ -3331,7 +3538,11 @@ impl NativeTable {
         namespace_client: Option<Arc<dyn LanceNamespace>>,
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
     ) -> Result<Self> {
-        let batches = computed_columns::admit_create_source(batches)?;
+        let session = params.as_ref().and_then(|p| p.session.as_deref());
+        let batches = computed_columns::admit_create_source(
+            batches,
+            session.and_then(lance::session::Session::datafusion_session),
+        )?;
         // Default params uses format v1.
         let params = params.unwrap_or(WriteParams {
             ..Default::default()
@@ -3432,7 +3643,12 @@ impl NativeTable {
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
         session: Option<Arc<lance::session::Session>>,
     ) -> Result<Self> {
-        let batches = computed_columns::admit_create_source(batches)?;
+        let batches = computed_columns::admit_create_source(
+            batches,
+            session
+                .as_deref()
+                .and_then(lance::session::Session::datafusion_session),
+        )?;
         // Build table_id from namespace + name for the storage options provider
         let mut table_id = namespace.clone();
         table_id.push(name.to_string());

@@ -107,7 +107,9 @@ single `id` is the SQL query UUID. Repeated waits reuse the completed result.
 </CodeBlock>
 
 `create_function` is the blocking equivalent. A registered version is fetched
-with `db.get_function(name, version=...)`.
+with `db.get_function(name, version=...)`. The version may be an integer or
+its string form. Omit `version` to resolve and return the latest currently
+visible revision.
 
 <Note>
 The SQL command submits an internal `create_function` image-build job and
@@ -118,9 +120,10 @@ have no registry history and cannot be reopened with `open_job()`.
 ## List and describe {#list-describe}
 
 `list_functions` pages through every published version in a namespace,
-ordered by name then version; `get_function` opens one exact version by
-name and `version`. Both take `namespace_path`, defaulting to the root
-namespace, the same as `create_function`.
+ordered by name then version. `get_function` accepts an integer or string
+version, or resolves the latest visible revision when `version` is omitted.
+Both take `namespace_path`, defaulting to the root namespace, the same as
+`create_function`.
 
 <CodeGroup>
 ```python Python icon="python"
@@ -128,6 +131,7 @@ for version in db.list_functions():
     print(version.name, version.version, version.created_at_millis)
 
 version = db.get_function("double", version="1")
+latest = db.get_function("double")
 ```
 
 ```rust
@@ -140,6 +144,7 @@ while let Some(version) = versions.try_next().await? {
 }
 
 let version = connection.get_function("double", "1", &[]).await?;
+let latest = connection.get_function_latest("double", &[]).await?;
 # Ok(())
 # }
 ```
@@ -151,6 +156,7 @@ SHOW FUNCTIONS
 SHOW FUNCTIONS IN "analytics" WITH (name = 'double', limit = 100)
 
 DESCRIBE FUNCTION double WITH (version = '1')
+DESCRIBE FUNCTION double
 ```
 </CodeGroup>
 
@@ -493,13 +499,20 @@ def caption(jpeg: bytes) -> str:
 </CodeGroup>
 
 Each module in `code` is captured and shipped the same way the function
-itself is: as source, snapshotted at registration. Only `.py` source files are
-included; package data such as JSON, YAML, prompt, or tokenizer files is not
-copied. `@function` warns before registration when it skips such files from a
-package in `code`, naming the affected paths. To use a package that includes
-the required resources, install it with `pip=` or `conda=` and remove that
-package from `code`; otherwise the Python-only copied package shadows the
-installed distribution.
+itself is: as source, snapshotted at registration. Packages also include regular
+data files such as JSON, YAML, prompts, and tokenizer files, including resources
+inside vendored subpackages. Resource paths and bytes are preserved for
+`importlib.resources` and package integrity checks. Changing a resource changes
+the Function artifact's identity. Caches, hidden paths, symlinks, and unsafe
+paths are excluded.
+
+Package resources require matching SDK and server support. Upgrade query nodes
+and Function image-building workers before registering resource bundles; older
+servers reject them. Older SDKs ship only Python source and warn when excluding
+package data. On deployments without resource-bundle support, install the
+package with `pip=` or `conda=` and omit it from `code` so the copied package does
+not shadow the installed distribution. Use environment dependencies for
+platform-specific packages and `models=` for large model snapshots.
 
 ## Drop it {#drop}
 

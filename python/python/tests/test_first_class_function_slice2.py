@@ -18,6 +18,7 @@ import subprocess
 import sys
 import typing
 import urllib.parse
+import warnings
 from typing import Optional
 
 import pyarrow as pa
@@ -134,6 +135,7 @@ def test_function_execution_controls_match_shared_registration_golden():
         env={"MODE": "test"},
         python_version="3.12",
         batch_size=2,
+        max_concurrency=4,
         row_timeout_seconds=0.75,
     )(normalize_score.__wrapped__)
     assert (
@@ -193,6 +195,11 @@ def test_function_retry_policy_rejects_invalid_options(options):
         ({"batch_size": 0}, "batch_size"),
         ({"batch_size": 2**32}, "batch_size"),
         ({"batch_size": True}, "batch_size"),
+        ({"max_concurrency": 0}, "max_concurrency"),
+        ({"max_concurrency": -1}, "max_concurrency"),
+        ({"max_concurrency": 2**32}, "max_concurrency"),
+        ({"max_concurrency": True}, "max_concurrency"),
+        ({"max_concurrency": 1.5}, "max_concurrency"),
         ({"row_timeout_seconds": 0}, "row_timeout_seconds"),
         ({"row_timeout_seconds": -0.25}, "row_timeout_seconds"),
         ({"row_timeout_seconds": float("inf")}, "row_timeout_seconds"),
@@ -652,9 +659,11 @@ def test_function_image_requires_digest_reference(image):
 
 
 def test_function_gpu_marker_uses_gpu_runtime():
-    @function(pip=["cupy-cuda12x"], gpu=True, gpu_class="a10g")
-    def double_on_gpu(value: int) -> int:
-        return value * 2
+    with pytest.warns(UserWarning, match="uses a scalar callable"):
+
+        @function(pip=["cupy-cuda12x"], gpu=True, gpu_class="a10g")
+        def double_on_gpu(value: int) -> int:
+            return value * 2
 
     request = json.loads(double_on_gpu.registration_request.to_canonical_json())
     assert request["runtime"]["kind"] == "python_v2"
@@ -702,6 +711,60 @@ def test_function_gpu_marker_uses_gpu_runtime():
         PythonRuntimeSpec.model_validate(
             {**base_runtime, "gpu": True, "gpu_class": "H100"}
         )
+
+
+class _GpuScalarFunction:
+    def __call__(self, value: str) -> int:
+        return len(value)
+
+
+class _GpuArrayFunction:
+    def __call__(self, value: pa.Array) -> pa.Array:
+        return value
+
+
+def test_gpu_scalar_warning_names_the_vectorized_alternative():
+    with pytest.warns(UserWarning, match="model batch is not inferred"):
+
+        @function(gpu=True)
+        def scalar_embedding(value: str) -> list[int]:
+            return [len(value)]
+
+    input_schema = pa.schema([pa.field("value", pa.string(), nullable=False)])
+    with pytest.warns(UserWarning, match="uses a scalar callable"):
+        class_scalar = function(_GpuScalarFunction, gpu=True)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+
+        @function(
+            gpu=True, input_schema=input_schema, output_schema=pa.list_(pa.int64())
+        )
+        def array_embedding(value: pa.Array) -> pa.Array:
+            return value
+
+        @function(
+            gpu=True, input_schema=input_schema, output_schema=pa.list_(pa.int64())
+        )
+        def record_batch_embedding(value: pa.RecordBatch) -> pa.Array:
+            return value.column(0)
+
+        @function
+        def cpu_scalar(value: str) -> int:
+            return len(value)
+
+        class_embedding = function(
+            _GpuArrayFunction,
+            gpu=True,
+            input_schema=input_schema,
+            output_schema=pa.list_(pa.int64()),
+        )
+
+    assert not caught
+    assert array_embedding.registration_request.batch_size is None
+    assert record_batch_embedding.registration_request.batch_size is None
+    assert cpu_scalar.registration_request.batch_size is None
+    assert class_scalar.registration_request.batch_size is None
+    assert class_embedding.registration_request.batch_size is None
 
 
 def test_unknown_runtime_discards_payload_before_known_field_validation():
@@ -882,7 +945,7 @@ def test_function_rejects_a_module_level_namespace_alias(tmp_path):
     spec = importlib.util.spec_from_file_location("aliasing_udfs", module_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    with pytest.raises(ValueError, match="dynamic namespace access"):
+    with pytest.raises(ValueError, match="imports from namespace-access modules"):
         function(module.score)
 
 
@@ -893,7 +956,6 @@ def test_function_rejects_a_module_level_namespace_alias(tmp_path):
         "eval('THRESHOLD')",
         "(lambda g: g()['THRESHOLD'])(globals)",
         "__import__('sys').modules[__name__].THRESHOLD",
-        "sys.modules[__name__].THRESHOLD",
     ],
 )
 def test_function_rejects_dynamic_namespace_access(access):
@@ -905,9 +967,7 @@ def test_function_rejects_dynamic_namespace_access(access):
     )
     with pytest.raises(ValueError, match="dynamic namespace access"):
         _package_from_text(
-            "def score(value: int) -> int:\n"
-            "    import sys\n"
-            f"    return value + {access}\n"
+            f"def score(value: int) -> int:\n    return value + {access}\n"
         )
 
 
@@ -1885,6 +1945,29 @@ def test_annotation_and_explicit_schema_validation_fail_closed():
                 return value
 
 
+def test_default_function_runtime_matches_server_identity():
+    definition = function(python_version="3.12")(analyze_caption.__wrapped__)
+    runtime = definition.registration_request.runtime
+    assert runtime.env == {}
+    cases = json.loads((FIXTURES / "runtime_identity.json").read_text(encoding="utf-8"))
+    expected = next(
+        case["digest"] for case in cases if case["name"] == "empty-environment"
+    )
+    assert runtime.digest == expected
+
+
+def test_environment_changes_do_not_change_source_identity():
+    definition = function(
+        pip=["openai==3.46.0"],
+        env={"MODE": "test"},
+        python_version="3.12",
+    )(analyze_caption.__wrapped__)
+    previous = analyze_caption.registration_request
+    changed = definition.registration_request
+    assert previous.artifact.digest == changed.artifact.digest
+    assert previous.runtime.digest != changed.runtime.digest
+
+
 def test_local_function_catalog_operations_are_not_supported(tmp_path):
     db = lancedb.connect(tmp_path)
     message = "Function catalog operations are not supported by this database"
@@ -1895,6 +1978,8 @@ def test_local_function_catalog_operations_are_not_supported(tmp_path):
     with pytest.raises(NotImplementedError, match=message):
         db.get_function("normalize_score", version=FUNCTION_VERSION)
     with pytest.raises(NotImplementedError, match=message):
+        db.get_function("normalize_score")
+    with pytest.raises(NotImplementedError, match=message):
         list(db.list_functions())
     with pytest.raises(NotImplementedError, match=message):
         db.drop_function("normalize_score", version=FUNCTION_VERSION)
@@ -1903,8 +1988,10 @@ def test_local_function_catalog_operations_are_not_supported(tmp_path):
 class _RawFunctionCatalog:
     def __init__(self, definition, *, encode=False):
         self.definition = json.dumps(definition) if encode else definition
+        self.requested_versions = []
 
-    async def get_function(self, _name, version, namespace_path):
+    async def get_function(self, _name, version=None, namespace_path=None):
+        self.requested_versions.append(version)
         return self.definition
 
     def list_functions(self, *, namespace_path=None, page_token=None, page_limit=None):
@@ -1940,17 +2027,27 @@ async def test_async_catalog_path_preserves_execution_controls():
         (FIXTURES / "remote_function_version.canonical.json").read_text()
     )
     definition.update(
+        runtime_digest=normalize_score.registration_request.runtime.digest,
         batch_size=12,
         row_timeout_seconds=8.0,
         result_stability="input_and_context",
     )
-    connection = AsyncConnection(_RawFunctionCatalog(definition, encode=True))
+    catalog = _RawFunctionCatalog(definition, encode=True)
+    connection = AsyncConnection(catalog)
 
+    latest = await connection.get_function("embed")
+    integer = await connection.get_function("embed", version=1)
     exact = await connection.get_function("embed", version="1")
+    await connection.get_function("embed", version="001")
     listed = [item async for item in connection.list_functions(page_limit=32)]
     assert len(listed) == 1
-    for version in [exact, *listed]:
+    for version in [latest, integer, exact, *listed]:
         assert _assert_execution_control_encoding(version) == definition
+    assert catalog.requested_versions == [None, "1", "1", "001"]
+    with pytest.raises(TypeError, match="int, str, or None"):
+        await connection.get_function("embed", version=True)
+    with pytest.raises(TypeError, match="int, str, or None"):
+        await connection.get_function("embed", version=1.5)
 
 
 def test_sync_catalog_path_preserves_execution_controls():
@@ -1958,18 +2055,28 @@ def test_sync_catalog_path_preserves_execution_controls():
         (FIXTURES / "remote_function_version.canonical.json").read_text()
     )
     definition.update(
+        runtime_digest=normalize_score.registration_request.runtime.digest,
         batch_size=12,
         row_timeout_seconds=8.0,
         result_stability="input_and_context",
     )
     connection = object.__new__(RemoteDBConnection)
-    connection._conn = _RawFunctionCatalog(FunctionVersion(**definition))
+    catalog = _RawFunctionCatalog(FunctionVersion(**definition))
+    connection._conn = catalog
 
+    latest = connection.get_function("embed")
+    integer = connection.get_function("embed", version=1)
     exact = connection.get_function("embed", version="1")
+    connection.get_function("embed", version="001")
     listed = list(connection.list_functions(page_limit=32))
     assert len(listed) == 1
-    for version in [exact, *listed]:
+    for version in [latest, integer, exact, *listed]:
         assert _assert_execution_control_encoding(version) == definition
+    assert catalog.requested_versions == [None, "1", "1", "001"]
+    with pytest.raises(TypeError, match="int, str, or None"):
+        connection.get_function("embed", version=True)
+    with pytest.raises(TypeError, match="int, str, or None"):
+        connection.get_function("embed", version=1.5)
 
 
 def test_sync_drop_function_emits_server_warnings_without_changing_bool_api():
@@ -2062,6 +2169,9 @@ def _mock_remote_function_catalog():
                     )["image"],
                     "signature": body["signature"],
                     "source_digest": body["artifact"]["digest"],
+                    "runtime_digest": PythonRuntimeSpec.from_json(
+                        json.dumps(body["runtime"])
+                    ).digest,
                     "secret_bindings": body.get("secret_bindings", []),
                     "created_at_millis": 1787270400000,  # 2026-08-21T00:00:00Z
                 }

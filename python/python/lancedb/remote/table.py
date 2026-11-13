@@ -34,6 +34,7 @@ from lancedb._lancedb import (
     DeleteResult,
     DropColumnsResult,
     FtsToken,
+    FunctionColumnStatus,
     IndexConfig,
     RTEWriteSpec,
     MergeResult,
@@ -718,6 +719,7 @@ class RemoteTable(Table):
         progress: Optional[Union[bool, Callable, Any]] = None,
         write_parallelism: Optional[int] = None,
         allow_external_blob_outside_bases: bool = False,
+        retries: Optional[int] = None,
     ) -> AddResult:
         """Add more data to the [Table][lancedb.table.Table].
 
@@ -752,6 +754,9 @@ class RemoteTable(Table):
             using too much memory.
         allow_external_blob_outside_bases: bool, default False
             Not supported in LanceDB Enterprise. Setting this raises.
+        retries: int, optional
+            Override the retry budget for this call (0 to 255). Zero disables
+            retries, including multipart parts. Ambiguous commits are never replayed.
 
         Returns
         -------
@@ -769,6 +774,7 @@ class RemoteTable(Table):
                     progress=progress,
                     write_parallelism=write_parallelism,
                     allow_external_blob_outside_bases=allow_external_blob_outside_bases,
+                    retries=retries,
                 )
             )
         finally:
@@ -1091,10 +1097,13 @@ class RemoteTable(Table):
         Enterprise job. Pruning old versions and index optimization are not
         yet supported remotely, so this call skips them and returns
         successfully with zeroed pruning statistics once the compaction job
-        has been submitted; it does not wait for that job to finish. Passing
-        a non-default ``compaction_options`` raises ``NotImplementedError``
-        before anything is submitted, since there is no way yet to forward
-        those settings to the server.
+        has been submitted; it does not wait for that job to finish. The
+        per-job options ``target_rows_per_fragment``, ``max_source_rows``,
+        ``io_buffer_size``, and ``batch_size`` are supported on compatible
+        servers. Omitted fields inherit table tuning, then deployment/built-in
+        defaults. Other non-default settings raise ``NotImplementedError``
+        before submission. Errors from older servers are propagated without
+        retrying with the settings removed.
         """
         return LOOP.run(
             self._table.optimize(
@@ -1124,6 +1133,7 @@ class RemoteTable(Table):
         computed: Dict[str, str] | None = None,
         auto_refresh_enabled: bool | None = None,
         auto_refresh_interval_seconds: int | None = None,
+        auto_refresh_resource_budget: Optional[Dict[str, int]] = None,
     ) -> AddColumnsResult:
         return LOOP.run(
             self._table.add_columns(
@@ -1131,6 +1141,7 @@ class RemoteTable(Table):
                 computed=computed,
                 auto_refresh_enabled=auto_refresh_enabled,
                 auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+                auto_refresh_resource_budget=auto_refresh_resource_budget,
             )
         )
 
@@ -1140,6 +1151,9 @@ class RemoteTable(Table):
         *,
         where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        max_concurrency: Optional[int] = None,
+        publication_interval_rows: Optional[int] = None,
+        resource_budget: Optional[Dict[str, int]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -1156,6 +1170,9 @@ class RemoteTable(Table):
                 column,
                 where=where,
                 batch_size=batch_size,
+                max_concurrency=max_concurrency,
+                publication_interval_rows=publication_interval_rows,
+                resource_budget=resource_budget,
                 gpu_class=gpu_class,
                 gpu_count=gpu_count,
                 retry_policy=retry_policy,
@@ -1175,6 +1192,9 @@ class RemoteTable(Table):
         *,
         where: Optional[str] = None,
         batch_size: Optional[int] = None,
+        max_concurrency: Optional[int] = None,
+        publication_interval_rows: Optional[int] = None,
+        resource_budget: Optional[Dict[str, int]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -1192,6 +1212,9 @@ class RemoteTable(Table):
                     column,
                     where=where,
                     batch_size=batch_size,
+                    max_concurrency=max_concurrency,
+                    publication_interval_rows=publication_interval_rows,
+                    resource_budget=resource_budget,
                     gpu_class=gpu_class,
                     gpu_count=gpu_count,
                     retry_policy=retry_policy,
@@ -1215,6 +1238,19 @@ class RemoteTable(Table):
         return LOOP.run(
             self._table.function_errors(job_id=job_id, column=column, limit=limit)
         )
+
+    def column_statuses(
+        self, column: Optional[str] = None
+    ) -> list[FunctionColumnStatus]:
+        return LOOP.run(self._table.column_statuses(column=column))
+
+    def column_status(self, column: str) -> FunctionColumnStatus:
+        return LOOP.run(self._table.column_status(column))
+
+    def wait_fresh(
+        self, column: str, timeout: Optional[timedelta] = None
+    ) -> FunctionColumnStatus:
+        return LOOP.run(self._table.wait_fresh(column, timeout))
 
     def alter_columns(
         self, *alterations: Iterable[Dict[str, str]]
@@ -1389,13 +1425,20 @@ class RemoteTable(Table):
         self,
         column: str,
         row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
+        *,
+        buffer_size: Optional[int] = None,
     ) -> "list[Optional[BlobFile]]":
-        return LOOP.run(self._table.fetch_blob_files(column, row_ids))
+        return LOOP.run(
+            self._table.fetch_blob_files(column, row_ids, buffer_size=buffer_size)
+        )
 
     def open_blob_file(
-        self, descriptor: Union[dict, pa.StructScalar, None]
+        self,
+        descriptor: Union[dict, pa.StructScalar, None],
+        *,
+        buffer_size: Optional[int] = None,
     ) -> Optional[BlobFile]:
-        return LOOP.run(self._table.open_blob_file(descriptor))
+        return LOOP.run(self._table.open_blob_file(descriptor, buffer_size=buffer_size))
 
     def head(self, n=5) -> pa.Table:
         """

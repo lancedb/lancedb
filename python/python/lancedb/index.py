@@ -131,6 +131,23 @@ class NGram:
 
 
 @dataclass
+class ZoneMap:
+    """Describe a ZoneMap index configuration.
+
+    A `ZoneMap` index stores compact min and max summaries for contiguous
+    ranges (zones) of rows. During a scan it skips any zone whose summary
+    cannot satisfy the predicate, so it accelerates range and equality
+    filters such as `col > 10`, `col BETWEEN a AND b`, and `col = x`,
+    without changing the results.
+
+    It suits large numeric or temporal columns whose values are correlated
+    with row order (for example `timestamp`, `price`, `id`).
+    """
+
+    pass
+
+
+@dataclass
 class FTS:
     """Describe a FTS index configuration.
 

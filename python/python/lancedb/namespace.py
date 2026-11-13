@@ -579,12 +579,15 @@ class LanceNamespaceDBConnection(DBConnection):
         If limit is None, return all table names; zero returns an empty list.
 
         .. deprecated::
-            Use :meth:`list_tables` instead, which provides proper pagination support.
+            Iterate over :meth:`list_tables` to get all names, or use
+            :meth:`table_exists` to check for a particular table. The listing's
+            ``tables`` attribute contains only one page.
         """
         import warnings
 
         warnings.warn(
-            "table_names() is deprecated, use list_tables() instead",
+            "table_names() is deprecated, iterate list_tables() for all names "
+            "or use table_exists([name]) to check existence",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -693,8 +696,9 @@ class LanceNamespaceDBConnection(DBConnection):
     def create_materialized_view(
         self,
         name: str,
-        source: MaterializedViewSource,
+        source: Optional[MaterializedViewSource] = None,
         *,
+        query: Optional[str] = None,
         select: "SelectArg" = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
@@ -712,6 +716,7 @@ class LanceNamespaceDBConnection(DBConnection):
                     self._inner.create_materialized_view(
                         name,
                         source,
+                        query=query,
                         select=select,
                         where=where,
                         limit=limit,
@@ -727,8 +732,9 @@ class LanceNamespaceDBConnection(DBConnection):
     def create_materialized_view_async(
         self,
         name: str,
-        source: MaterializedViewSource,
+        source: Optional[MaterializedViewSource] = None,
         *,
+        query: Optional[str] = None,
         select: "SelectArg" = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
@@ -740,6 +746,7 @@ class LanceNamespaceDBConnection(DBConnection):
             self._inner.create_materialized_view_async(
                 name,
                 source,
+                query=query,
                 select=select,
                 where=where,
                 limit=limit,
@@ -1015,6 +1022,8 @@ class LanceNamespaceDBConnection(DBConnection):
         bool
             True if the table exists, False otherwise.
         """
+        if self._route_pushdown_to_rust:
+            return LOOP.run(self._inner.table_exists(table_id))
         request = TableExistsRequest(id=table_id)
         try:
             self._namespace_client.table_exists(request)
@@ -1030,7 +1039,11 @@ class LanceNamespaceDBConnection(DBConnection):
         limit: Optional[int] = None,
     ) -> TableListing:
         """
-        List all tables in this database with pagination support.
+        Iterate over all tables in this database, fetching pages as needed.
+
+        The ``tables`` attribute contains only the current page (100 names by
+        default). Iterate over the listing to visit all pages, or use
+        ``table_exists([name])`` to check for a particular table.
 
         Parameters
         ----------
@@ -1227,12 +1240,15 @@ class AsyncLanceNamespaceDBConnection:
         If limit is None, return all table names; zero returns an empty list.
 
         .. deprecated::
-            Use :meth:`list_tables` instead, which provides proper pagination support.
+            Iterate over :meth:`list_tables` to get all names, or use
+            :meth:`table_exists` to check for a particular table. The listing's
+            ``tables`` attribute contains only one page.
         """
         import warnings
 
         warnings.warn(
-            "table_names() is deprecated, use list_tables() instead",
+            "table_names() is deprecated, iterate list_tables() for all names "
+            "or use table_exists([name]) to check existence",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -1327,8 +1343,9 @@ class AsyncLanceNamespaceDBConnection:
     async def create_materialized_view(
         self,
         name: str,
-        source: MaterializedViewSource,
+        source: Optional[MaterializedViewSource] = None,
         *,
+        query: Optional[str] = None,
         select: "SelectArg" = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
@@ -1340,6 +1357,7 @@ class AsyncLanceNamespaceDBConnection:
         view = await self._inner.create_materialized_view(
             name,
             source,
+            query=query,
             select=select,
             where=where,
             limit=limit,
@@ -1354,8 +1372,9 @@ class AsyncLanceNamespaceDBConnection:
     async def create_materialized_view_async(
         self,
         name: str,
-        source: MaterializedViewSource,
+        source: Optional[MaterializedViewSource] = None,
         *,
+        query: Optional[str] = None,
         select: "SelectArg" = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
@@ -1367,6 +1386,7 @@ class AsyncLanceNamespaceDBConnection:
         return await self._inner.create_materialized_view_async(
             name,
             source,
+            query=query,
             select=select,
             where=where,
             limit=limit,
@@ -1614,6 +1634,8 @@ class AsyncLanceNamespaceDBConnection:
         bool
             True if the table exists, False otherwise.
         """
+        if self._route_pushdown_to_rust:
+            return await self._inner.table_exists(table_id)
         request = TableExistsRequest(id=table_id)
         try:
             self._namespace_client.table_exists(request)
@@ -1628,7 +1650,11 @@ class AsyncLanceNamespaceDBConnection:
         limit: Optional[int] = None,
     ) -> AsyncTableListing:
         """
-        List all tables in this database with pagination support.
+        Iterate over all tables in this database, fetching pages as needed.
+
+        The ``tables`` attribute contains only the current page (100 names by
+        default). Iterate over the listing to visit all pages, or use
+        ``table_exists([name])`` to check for a particular table.
 
         Parameters
         ----------
