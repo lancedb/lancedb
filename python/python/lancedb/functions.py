@@ -2806,7 +2806,11 @@ def function(
     gpu : str, optional
         Select an operator-configured class and GPUs per worker with
         ``"A10G:2"`` or ``"H100:4"``.
-        A class alone requests one GPU. Class names are normalized to lowercase.
+        Use ``"any:2"`` to accept any configured GPU class with two devices
+        together per worker; ``"any"`` requests one. The server selects a class
+        from its configured per-worker limits. ``"default:2"`` restricts the
+        request to the deployment's default class. A class alone requests one
+        GPU. Class names are normalized to lowercase.
         All requested devices are allocated to one worker, allowing tensor
         parallel models. Configure the model's parallelism separately. Use
         ``db.list_gpu_classes()`` to inspect hardware and per-worker limits.

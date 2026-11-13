@@ -737,7 +737,13 @@ class _GpuArrayFunction:
 
 @pytest.mark.parametrize(
     "gpu, name, count",
-    [("A10G:2", "a10g", 2), ("H100:4", "h100", 4), ("default", "default", 1)],
+    [
+        ("A10G:2", "a10g", 2),
+        ("H100:4", "h100", 4),
+        ("default", "default", 1),
+        ("ANY:2", "any", 2),
+        ("any", "any", 1),
+    ],
 )
 def test_modal_gpu_request_is_part_of_runtime_identity(gpu, name, count):
     with pytest.warns(UserWarning):
@@ -763,6 +769,8 @@ def test_modal_gpu_request_is_part_of_runtime_identity(gpu, name, count):
         "H100:4294967296",
         " H100:2",
         "H100:+2",
+        "any:0",
+        "any:4294967296",
     ],
 )
 def test_modal_gpu_request_rejects_invalid_counts(gpu):

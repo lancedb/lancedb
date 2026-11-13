@@ -158,6 +158,15 @@ GPU class. Class names are case insensitive and stored in lowercase. Counts
 must be positive integers; the deployment must have a node that can supply
 that many devices together. `max_gpu_count_per_worker` in the class inventory
 is the operator's cap; an unset cap does not promise unlimited hardware.
+Use `gpu="any:2"` when any configured GPU class is acceptable, but each
+worker needs two devices together. `gpu="any"` requests one GPU. The server
+selects a class that fits the request using operator-configured limits,
+preferring known multi-GPU limits over unspecified limits. The selected
+class is fixed for the worker cohort; selection does not reserve capacity
+until the worker is scheduled. `gpu="default:2"` restricts the request to the
+default pool. A Function with an `any` request can share a SQL job with a
+Function pinned to a class; that job uses the pinned class.
+
 The request is immutable with the Function version. Configure tensor
 parallelism in the model separately, for example vLLM's
 `tensor_parallel_size=2` for `gpu="A10G:2"`.

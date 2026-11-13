@@ -1335,9 +1335,10 @@ mod conda_environment_tests {
             r#"{"environment":{"kind":"pip"},"gpu":true,"gpu_class":"a10g","kind":"python_v2","python_version":"3.12"}"#
         );
         let runtime: PythonRuntimeSpec = serde_json::from_str(
-            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":true,"gpu_class":"a10g","gpus_per_worker":2}"#,
+            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":true,"gpu_class":"any","gpus_per_worker":2}"#,
         ).unwrap();
         assert_eq!(runtime.gpus_per_worker(), 2);
+        assert_eq!(runtime.gpu_class(), Some("any"));
         let encoded = super::canonical_json(&runtime).unwrap();
         assert_eq!(
             serde_json::from_str::<Value>(&encoded).unwrap()["gpus_per_worker"],
