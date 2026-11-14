@@ -71,14 +71,14 @@ Most recent execution's fencing token, when reported.
 ### failure
 
 ```ts
-get failure(): any
+get failure(): null | JobFailureInfo
 ```
 
 Why the job failed, when it failed and the server reports a reason.
 
 #### Returns
 
-`any`
+`null` \| [`JobFailureInfo`](../interfaces/JobFailureInfo.md)
 
 ***
 
