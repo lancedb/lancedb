@@ -261,6 +261,35 @@ impl<S: HttpSend> JobHandle for RemoteJob<S> {
         Ok(trace)
     }
 
+    async fn stats(&self) -> Result<Option<String>> {
+        let request = self
+            .client
+            .post("/v1/jobs/stats")
+            .json(&serde_json::json!({"job_id": self.job_id}));
+        let (request_id, response) = self.client.send(request).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        let response: serde_json::Value =
+            serde_json::from_str(&body).map_err(|error| Error::Http {
+                source: format!("failed to parse job statistics: {error}").into(),
+                request_id: request_id.clone(),
+                status_code: None,
+            })?;
+        if response.get("job_id").and_then(serde_json::Value::as_str) == Some(self.job_id.as_str())
+        {
+            match response.get("report") {
+                Some(serde_json::Value::Null) => return Ok(None),
+                Some(serde_json::Value::String(report)) => return Ok(Some(report.clone())),
+                _ => {}
+            }
+        }
+        Err(Error::Http {
+            source: "server response is not a Function job run report; job statistics require server support".into(),
+            request_id,
+            status_code: None,
+        })
+    }
+
     async fn events(&self, request: JobEventsRequest) -> Result<Vec<RecordBatch>> {
         let mut body = serde_json::json!({ "job_id": self.job_id });
         if let Some(limit) = request.limit {
@@ -353,6 +382,74 @@ mod tests {
     const UNIT_JOB: &str =
         include_str!("../../tests/fixtures/first_class_functions/v1/remote_unit_job.json");
     const MISSING_RESULT_JOB: &str = r#"{"job_state":"DONE"}"#;
+
+    #[tokio::test]
+    async fn stats_reads_report_verbatim_and_preserves_unavailable_without_waiting() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let seen = requests.clone();
+        let report = "Function job: finished\nWorker utilization: unavailable\n";
+        let client = client_with_handler(move |request| {
+            assert_eq!(request.method(), reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/jobs/stats");
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(body, serde_json::json!({"job_id":"job-1"}));
+            let response = if seen.fetch_add(1, Ordering::SeqCst) == 0 {
+                serde_json::json!({"job_id":"job-1","profile":null,"report":null})
+            } else {
+                serde_json::json!({"job_id":"job-1","profile":{"future_field":17},"report":report})
+            };
+            http::Response::builder()
+                .status(200)
+                .body(response.to_string())
+                .unwrap()
+        });
+        let job = Job::new(Box::new(RemoteJob::new(client, "job-1".to_string())));
+        assert_eq!(job.stats().await.unwrap(), None);
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        assert_eq!(job.stats().await.unwrap().as_deref(), Some(report));
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn stats_rejects_malformed_or_unrelated_responses() {
+        for body in [
+            "{",
+            r#"{"job_id":"job-1"}"#,
+            r#"{"job_id":"job-1","report":7}"#,
+            r#"{"job_id":"another-job","report":"a report"}"#,
+        ] {
+            let client = client_with_handler(move |_| {
+                http::Response::builder().status(200).body(body).unwrap()
+            });
+            let error = RemoteJob::new(client, "job-1".to_string())
+                .stats()
+                .await
+                .unwrap_err();
+            assert!(matches!(error, crate::Error::Http { .. }));
+            assert!(error.to_string().contains("job statistics"));
+        }
+    }
+
+    #[tokio::test]
+    async fn stats_preserves_not_found_errors() {
+        let client = client_with_handler(|_| {
+            http::Response::builder()
+                .status(404)
+                .body("job not found")
+                .unwrap()
+        });
+        let error = RemoteJob::new(client, "missing".to_string())
+            .stats()
+            .await
+            .unwrap_err();
+        match error {
+            crate::Error::Http { status_code, .. } => {
+                assert_eq!(status_code, Some(reqwest::StatusCode::NOT_FOUND));
+            }
+            other => panic!("expected HTTP 404, got {other:?}"),
+        }
+    }
 
     struct FixtureRemoteJob(&'static str);
 

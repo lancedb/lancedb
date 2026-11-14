@@ -756,6 +756,46 @@ async def test_query_wait_timeout_requires_keeping_original_handle():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("sync", [False, True])
+async def test_stats_returns_fresh_report_without_waiting_or_printing(sync, capsys):
+    reports = [
+        None,
+        "Function job: finished\nWorker utilization: unavailable\n",
+        "Function job: finished\nWorker utilization: 25.0%\n",
+    ]
+    inner = SimpleNamespace(
+        stats=AsyncMock(side_effect=reports),
+        wait=AsyncMock(),
+        cancel=AsyncMock(),
+    )
+    job = AsyncJob(inner)
+    for expected in reports:
+        actual = await asyncio.to_thread(Job(job).stats) if sync else await job.stats()
+        assert actual == expected
+    inner.wait.assert_not_awaited()
+    inner.cancel.assert_not_awaited()
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync", [False, True])
+async def test_stats_preserves_errors_and_rejects_untracked_jobs(sync):
+    error = RuntimeError("run reports are unavailable on this server")
+    job = AsyncJob(SimpleNamespace(stats=AsyncMock(side_effect=error)))
+    with pytest.raises(RuntimeError) as exc:
+        if sync:
+            await asyncio.to_thread(Job(job).stats)
+        else:
+            await job.stats()
+    assert exc.value is error
+    with pytest.raises(NotImplementedError, match="server-side Function job"):
+        if sync:
+            Job(None).stats()
+        else:
+            await AsyncJob(None).stats()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync", [False, True])
 async def test_export_timeline_writes_fresh_recording_without_waiting(sync, tmp_path):
     trace = {
         "traceEvents": [{"ph": "X", "ts": 0, "dur": 1000}],
