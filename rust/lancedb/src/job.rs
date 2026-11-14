@@ -747,13 +747,35 @@ where
     async fn wait_with_progress_opt(&self, progress: Option<JobProgressCallback>) -> Result<T> {
         match &self.inner {
             JobInner::Handle { handle, decode } => {
-                let settled = handle.wait_with_progress(progress).await;
+                let observed_state = Arc::new(Mutex::new(None));
+                let observed = observed_state.clone();
+                let observer: JobProgressCallback =
+                    Arc::new(Mutex::new(move |description: &JobDescription| {
+                        *observed.lock().unwrap() = Some(
+                            description
+                                .lifecycle_state
+                                .clone()
+                                .unwrap_or_else(|| JobState::from(description.state.as_str())),
+                        );
+                        if let Some(progress) = &progress
+                            && let Ok(mut callback) = progress.lock()
+                        {
+                            callback(description);
+                        }
+                    }));
+                let settled = handle.wait_with_progress(Some(observer)).await;
                 // Waiting already established a terminal state; record it so
                 // the detail accessors do not need another round trip for it.
                 if let Some(state) = terminal_state(&settled) {
                     let mut cache = self.cache_write();
                     cache.state = Some(state.to_string());
-                    cache.lifecycle_state = Some(JobState::from(state));
+                    cache.lifecycle_state = Some(
+                        observed_state
+                            .lock()
+                            .unwrap()
+                            .take()
+                            .unwrap_or_else(|| JobState::from(state)),
+                    );
                 }
                 (decode)(settled?)
             }

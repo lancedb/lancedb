@@ -441,6 +441,29 @@ mod tests {
     const MISSING_RESULT_JOB: &str = r#"{"job_state":"DONE"}"#;
 
     #[tokio::test]
+    async fn wait_preserves_a_timed_out_attempt_without_an_extra_status_request() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let observed = requests.clone();
+        let client = client_with_handler(move |_| {
+            observed.fetch_add(1, Ordering::SeqCst);
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"job_state":"FAILED","lifecycle_state":"timed_out"}"#.to_string())
+                .unwrap()
+        });
+        let job = Job::new(Box::new(RemoteJob::new(client, "attempt-1".to_string())));
+        for _ in 0..2 {
+            assert!(matches!(
+                job.wait().await,
+                Err(crate::Error::JobFailed { .. })
+            ));
+            assert_eq!(job.state().as_deref(), Some("failed"));
+            assert_eq!(job.lifecycle_state(), Some(crate::JobState::TimedOut));
+        }
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
     async fn local_and_remote_jobs_share_terminal_state_contract() {
         for remote in [false, true] {
             for state in [
