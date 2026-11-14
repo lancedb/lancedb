@@ -1009,6 +1009,15 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn checkout_tag(&self, tag: &str) -> Result<()>;
     /// Checkout the latest version of the table.
     async fn checkout_latest(&self) -> Result<()>;
+    /// Advance a latest handle to the current snapshot before a polling read.
+    ///
+    /// Pinned version, tag, and snapshot handles must remain unchanged. This
+    /// lets a freshness wait observe publications that arrive after it starts
+    /// without changing an explicit time-travel selection.
+    #[doc(hidden)]
+    async fn checkout_latest_if_latest(&self) -> Result<()> {
+        Ok(())
+    }
     /// Return an independent handle pinned to the version currently selected.
     ///
     /// Backends that can advance between requests should override this for
@@ -2328,6 +2337,9 @@ impl Table {
     /// Failed rows do not keep the call pending. A typed
     /// `function_column_status_finalization_pending` response is retried with
     /// bounded exponential backoff; every other error is returned immediately.
+    /// Latest handles checkout the current snapshot before each poll so they
+    /// observe publications that happened after the wait started. Pinned
+    /// handles keep their explicit version.
     pub async fn wait_for_function_column(
         &self,
         column: &str,
@@ -2336,6 +2348,7 @@ impl Table {
         let started = std::time::Instant::now();
         let mut delay = std::time::Duration::from_millis(250);
         loop {
+            self.inner.checkout_latest_if_latest().await?;
             let result = self.function_column_status(column).await;
             match result {
                 Ok(status) if status.stale == 0 && status.never_computed == 0 => return Ok(status),
