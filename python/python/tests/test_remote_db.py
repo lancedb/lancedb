@@ -2838,7 +2838,9 @@ def test_remote_json_fts_config(server_version):
     assert request["block_size"] == 256
 
 
-def test_remote_scalar_plugin_nests_params():
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
+async def test_remote_scalar_plugin_nests_params(use_async):
     from lancedb.index import ScalarPlugin
 
     received_requests = []
@@ -2858,35 +2860,48 @@ def test_remote_scalar_plugin_nests_params():
         else:
             raise AssertionError(f"Unexpected request: {request.path}")
 
-    with mock_lancedb_connection(handler) as db:
-        table = db.open_table("test")
-        table.create_index("id", config=ScalarPlugin("ZoneMap"))
-        # A param named like a request field stays inside `params`.
-        table.create_index(
-            "id",
-            config=ScalarPlugin(
-                "bloomfilter", {"number_of_items": 4096, "column": "not_id"}
-            ),
-            name="id_bloom",
-            replace=False,
-        )
-        table.create_index(
-            "id", config=ScalarPlugin("bloomfilter", '{"probability": 0.01}')
-        )
+    cases = [
+        (ScalarPlugin(" ZoneMap "), {}),
+        (
+            ScalarPlugin("bloomfilter", {"number_of_items": 4096, "column": "not_id"}),
+            {"name": "id_bloom", "replace": False},
+        ),
+        (ScalarPlugin("bloomfilter", '{"probability": 0.01}'), {}),
+        (ScalarPlugin("zonemap", {}), {}),
+    ]
+
+    if use_async:
+        async with mock_lancedb_connection_async(handler) as db:
+            table = await db.open_table("test")
+            for config, options in cases:
+                await table.create_index("id", config=config, **options)
+    else:
+        with mock_lancedb_connection(handler) as db:
+            table = db.open_table("test")
+            for config, options in cases:
+                table.create_index("id", config=config, **options)
 
     assert received_requests == [
-        {"column": "id", "index_type": "ZONEMAP"},
+        {"column": "id", "index_type": "PLUGIN", "plugin_type": "ZONEMAP"},
         {
             "column": "id",
-            "index_type": "BLOOMFILTER",
+            "index_type": "PLUGIN",
+            "plugin_type": "BLOOMFILTER",
             "name": "id_bloom",
             "replace": False,
             "params": {"number_of_items": 4096, "column": "not_id"},
         },
         {
             "column": "id",
-            "index_type": "BLOOMFILTER",
+            "index_type": "PLUGIN",
+            "plugin_type": "BLOOMFILTER",
             "params": {"probability": 0.01},
+        },
+        {
+            "column": "id",
+            "index_type": "PLUGIN",
+            "plugin_type": "ZONEMAP",
+            "params": {},
         },
     ]
 

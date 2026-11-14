@@ -1098,7 +1098,7 @@ describe("remote connection", () => {
     expect(createIndexBody?.["custom_stop_words"]).toEqual(["the"]);
   });
 
-  it("nests scalar plugin params when creating a remote index", async () => {
+  it("uses an explicit type and nested params for remote scalar plugin indexes", async () => {
     const createIndexBodies: Record<string, unknown>[] = [];
 
     await withMockDatabase(
@@ -1135,7 +1135,7 @@ describe("remote connection", () => {
       },
       async (db) => {
         const table = await db.openTable("t");
-        await table.createIndex("id", { config: Index.plugin("ZoneMap") });
+        await table.createIndex("id", { config: Index.plugin(" ZoneMap ") });
         await table.createIndex("id", {
           config: Index.plugin("bloomfilter", {
             // biome-ignore lint/style/useNamingConvention: plugin param name
@@ -1147,16 +1147,19 @@ describe("remote connection", () => {
         await table.createIndex("id", {
           config: Index.plugin("bloomfilter", '{"probability": 0.01}'),
         });
+        await table.createIndex("id", { config: Index.plugin("zonemap", {}) });
       },
     );
 
     expect(createIndexBodies).toEqual([
       // biome-ignore lint/style/useNamingConvention: wire format
-      { column: "id", index_type: "ZONEMAP" },
+      { column: "id", index_type: "PLUGIN", plugin_type: "ZONEMAP" },
       {
         column: "id",
         // biome-ignore lint/style/useNamingConvention: wire format
-        index_type: "BLOOMFILTER",
+        index_type: "PLUGIN",
+        // biome-ignore lint/style/useNamingConvention: wire format
+        plugin_type: "BLOOMFILTER",
         name: "id_bloom",
         // biome-ignore lint/style/useNamingConvention: plugin param name
         params: { number_of_items: 4096, column: "not_id" },
@@ -1164,8 +1167,18 @@ describe("remote connection", () => {
       {
         column: "id",
         // biome-ignore lint/style/useNamingConvention: wire format
-        index_type: "BLOOMFILTER",
+        index_type: "PLUGIN",
+        // biome-ignore lint/style/useNamingConvention: wire format
+        plugin_type: "BLOOMFILTER",
         params: { probability: 0.01 },
+      },
+      {
+        column: "id",
+        // biome-ignore lint/style/useNamingConvention: wire format
+        index_type: "PLUGIN",
+        // biome-ignore lint/style/useNamingConvention: wire format
+        plugin_type: "ZONEMAP",
+        params: {},
       },
     ]);
   });
