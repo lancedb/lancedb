@@ -204,35 +204,18 @@ impl RTreeIndexBuilder {
     }
 }
 
-/// Builder for any scalar index plugin registered with Lance, selected by name.
+/// Configure a scalar index of a type recognized by a registered database plugin.
 ///
-/// LanceDB does not interpret the parameters. It passes the plugin name and the
-/// parameters to Lance, and the registered plugin validates them and the column
-/// type. Use it for index types without a dedicated builder: plugins your
-/// application registers, or Lance index types this version of LanceDB does
-/// not wrap yet. For the index types they cover, the dedicated builders, such
-/// as [`ZoneMapIndexBuilder`] and [`BloomFilterIndexBuilder`], are still the
-/// better choice, because they check their parameters when you set them.
+/// Use this for index types without a dedicated builder. Prefer a dedicated
+/// builder, such as [`ZoneMapIndexBuilder`] or [`BloomFilterIndexBuilder`], when
+/// one is available.
 ///
-/// The name is the plugin's name in Lance's registry. Lance's built-in plugins
-/// are `btree`, `bitmap`, `labellist`, `ngram`, `zonemap`, `bloomfilter`,
-/// `inverted`, `json`, `fm` and `minhashlsh`, plus `rtree` when Lance is built
-/// with its `geo` feature. These can differ from LanceDB's own type names:
-/// `labellist`, not `LABEL_LIST`. Names are case-insensitive, as in Lance, so
-/// the builder trims and lower-cases the name: `"ZoneMap"` selects `zonemap`.
+/// Index type names are case-insensitive. Surrounding whitespace is ignored.
+/// Parameters are optional and, if given, must be a JSON object. They are passed
+/// as given. Each plugin defines its parameters and defaults; refer to the
+/// plugin's documentation for guidance.
 ///
-/// The plugin must be able to build the index from the column's data, which
-/// Lance calls a basic trainer. Lance's built-in plugins all can. A plugin
-/// registered only to read indexes built some other way cannot be created by
-/// name.
-///
-/// Parameters are optional and, if given, must be a JSON object. They use the
-/// plugin's own parameter names. Lance reports an unknown plugin name, a
-/// plugin without a basic trainer, or parameters the plugin rejects, when the
-/// index is built.
-///
-/// Remote tables need a server that supports plugin indexes; see
-/// [`Index::Plugin`](crate::index::Index::Plugin).
+/// An unknown plugin name or invalid parameters cause index creation to fail.
 ///
 /// ```
 /// use lancedb::index::{Index, scalar::PluginIndexBuilder};
@@ -255,7 +238,7 @@ pub struct PluginIndexBuilder {
 }
 
 impl PluginIndexBuilder {
-    /// Select the scalar index plugin named `index_type`.
+    /// Select the scalar index type named `index_type`.
     ///
     /// The name is trimmed and lower-cased. Returns
     /// [`Error::InvalidInput`](crate::Error::InvalidInput) if it is empty.
@@ -272,7 +255,7 @@ impl PluginIndexBuilder {
         })
     }
 
-    /// Set the plugin's parameters, which must be a JSON object.
+    /// Set the index parameters, which must be a JSON object.
     ///
     /// Returns [`Error::InvalidInput`](crate::Error::InvalidInput) for any
     /// other JSON value, including `null`.
@@ -291,7 +274,7 @@ impl PluginIndexBuilder {
         }
     }
 
-    /// Set the plugin's parameters from a JSON string, which must hold an object.
+    /// Set the index parameters from a JSON string, which must hold an object.
     ///
     /// Returns [`Error::InvalidInput`](crate::Error::InvalidInput) if the string
     /// is not valid JSON or holds anything but an object.
@@ -303,12 +286,12 @@ impl PluginIndexBuilder {
         self.params(params)
     }
 
-    /// The plugin name, trimmed and lower-cased.
+    /// The index type name, trimmed and lower-cased.
     pub fn index_type(&self) -> &str {
         &self.index_type
     }
 
-    /// The plugin's parameters, if set.
+    /// The index parameters, if set.
     pub fn parameters(&self) -> Option<&serde_json::Map<String, serde_json::Value>> {
         self.params.as_ref()
     }
