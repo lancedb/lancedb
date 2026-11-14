@@ -9906,6 +9906,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_delta_is_not_supported_on_remote_tables() {
+        // Only the version lookup that pins the range may reach the server.
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"version": 3, "schema": { "fields": [] }}"#)
+                .unwrap()
+        });
+
+        let delta = table
+            .delta()
+            .compared_against_version(1)
+            .build()
+            .await
+            .unwrap();
+        let err = delta.upserted_rows().await.err().unwrap();
+        assert!(matches!(err, Error::NotSupported { .. }), "{err}");
+    }
+
+    #[tokio::test]
     async fn test_tokenize_uses_remote_index_details() {
         let schema = Schema::new(vec![Field::new("text", DataType::Utf8, false)]);
         let index_details = serde_json::json!({

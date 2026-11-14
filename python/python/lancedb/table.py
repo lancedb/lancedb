@@ -64,6 +64,7 @@ import pyarrow.fs as pa_fs
 import numpy as np
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
+from .delta import AsyncTableDelta, TableDelta
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
 from .embeddings.registry import _embedding_column_pairs
 from .index import (
@@ -3724,6 +3725,52 @@ class Table(ABC):
     def list_versions(self) -> List[Dict[str, Any]]:
         """List all versions of the table"""
 
+    @abstractmethod
+    def delta(
+        self,
+        compared_against: Optional[int] = None,
+        *,
+        begin_version: Optional[int] = None,
+        end_version: Optional[int] = None,
+    ) -> "TableDelta":
+        """Get the rows that changed between two versions of the table.
+
+        Use it to process only what changed since a checkpoint version, without
+        rescanning the table. This is a bounded comparison, not a change feed.
+
+        Parameters
+        ----------
+        compared_against : int, optional
+            Compare the table's current version against this version. The
+            checkpoint may be older or newer than the table.
+        begin_version : int, optional
+            Start of an explicit range (exclusive). Use with ``end_version``.
+        end_version : int, optional
+            End of an explicit range (inclusive). Use with ``begin_version``.
+
+        Returns
+        -------
+        TableDelta
+            Read the changed rows with ``inserted_rows()``, ``updated_rows()``,
+            ``upserted_rows()`` or ``deleted_row_ids()``. The version range is
+            fixed now, so later writes do not change it. Invalid ranges raise
+            ``ValueError``.
+
+        Examples
+        --------
+        >>> checkpoint = table.version  # doctest: +SKIP
+        >>> table.add(new_rows)  # doctest: +SKIP
+        >>> delta = table.delta(compared_against=checkpoint)  # doctest: +SKIP
+        >>> delta.upserted_rows().read_all()  # doctest: +SKIP
+
+        Notes
+        -----
+        Inserted, updated and upserted rows need stable row ids. Create the table
+        with ``storage_options={"new_table_enable_stable_row_ids": "true"}``.
+        ``deleted_row_ids()`` needs stable row ids at both endpoints of the range
+        (version 0 is exempt).
+        """
+
     @cached_property
     def _dataset_uri(self) -> str:
         return _table_uri(self._conn.uri, self.name)
@@ -3978,6 +4025,23 @@ class LanceTable(Table):
     def list_versions(self) -> List[Dict[str, Any]]:
         """List all versions of the table"""
         return LOOP.run(self._table.list_versions())
+
+    def delta(
+        self,
+        compared_against: Optional[int] = None,
+        *,
+        begin_version: Optional[int] = None,
+        end_version: Optional[int] = None,
+    ) -> "TableDelta":
+        return TableDelta(
+            LOOP.run(
+                self._table.delta(
+                    compared_against,
+                    begin_version=begin_version,
+                    end_version=end_version,
+                )
+            )
+        )
 
     @property
     def version(self) -> int:
@@ -8508,6 +8572,50 @@ class AsyncTable:
             )
 
         return versions
+
+    async def delta(
+        self,
+        compared_against: Optional[int] = None,
+        *,
+        begin_version: Optional[int] = None,
+        end_version: Optional[int] = None,
+    ) -> AsyncTableDelta:
+        """Get the rows that changed between two versions of the table.
+
+        Use it to process only what changed since a checkpoint version, without
+        rescanning the table. This is a bounded comparison, not a change feed.
+
+        Parameters
+        ----------
+        compared_against : int, optional
+            Compare the table's current version against this version. The
+            checkpoint may be older or newer than the table.
+        begin_version : int, optional
+            Start of an explicit range (exclusive). Use with ``end_version``.
+        end_version : int, optional
+            End of an explicit range (inclusive). Use with ``begin_version``.
+
+        Returns
+        -------
+        AsyncTableDelta
+            Read the changed rows with ``inserted_rows()``, ``updated_rows()``,
+            ``upserted_rows()`` or ``deleted_row_ids()``. The version range is
+            fixed now, so later writes do not change it. Invalid ranges raise
+            ``ValueError``.
+
+        Notes
+        -----
+        Inserted, updated and upserted rows need stable row ids. Create the table
+        with ``storage_options={"new_table_enable_stable_row_ids": "true"}``.
+        ``deleted_row_ids()`` needs stable row ids at both endpoints of the range
+        (version 0 is exempt).
+        """
+        return await AsyncTableDelta._create(
+            self._inner,
+            compared_against=compared_against,
+            begin_version=begin_version,
+            end_version=end_version,
+        )
 
     async def checkout(self, version: int | str):
         """

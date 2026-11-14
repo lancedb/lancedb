@@ -52,6 +52,7 @@ use std::sync::Arc;
 use crate::connection::NamespaceClientPushdownOperation;
 
 use crate::DistanceType;
+use crate::arrow::SendableRecordBatchStream;
 use crate::blob::BlobRangeRequest;
 use crate::data::scannable::{PeekedScannable, Scannable, estimate_write_partitions};
 use crate::database::Database;
@@ -82,6 +83,7 @@ mod create_index;
 pub mod datafusion;
 pub(crate) mod dataset;
 pub mod delete;
+pub mod delta;
 pub mod freshness;
 pub mod function_column_status;
 pub mod merge;
@@ -1028,6 +1030,18 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn restore(&self) -> Result<()>;
     /// List the versions of the table.
     async fn list_versions(&self) -> Result<Vec<Version>>;
+    /// Read the rows that changed over `range`.
+    ///
+    /// Backends without row-level change tracking return `NotSupported`.
+    async fn delta_rows(
+        &self,
+        _range: delta::DeltaRange,
+        _rows: delta::DeltaRows,
+    ) -> Result<SendableRecordBatchStream> {
+        Err(Error::NotSupported {
+            message: "delta is not supported on this table type".into(),
+        })
+    }
     /// Create a new branch from `from` and return a handle scoped to it.
     async fn create_branch(
         &self,
@@ -2748,6 +2762,14 @@ impl Table {
         self.inner.restore().await
     }
 
+    /// Start building a delta: the rows inserted, updated or deleted between
+    /// two versions of this table.
+    ///
+    /// See the [`delta`] module for an example.
+    pub fn delta(&self) -> delta::DeltaBuilder {
+        delta::DeltaBuilder::new(self.inner.clone())
+    }
+
     /// List all the versions of the table
     pub async fn list_versions(&self) -> Result<Vec<Version>> {
         self.inner.list_versions().await
@@ -3989,6 +4011,26 @@ impl BaseTable for NativeTable {
 
     async fn list_versions(&self) -> Result<Vec<Version>> {
         Ok(self.dataset.get().await?.versions().await?)
+    }
+
+    async fn delta_rows(
+        &self,
+        range: delta::DeltaRange,
+        rows: delta::DeltaRows,
+    ) -> Result<SendableRecordBatchStream> {
+        let dataset = self.dataset.get().await?;
+        let builder = dataset.delta();
+        let delta = builder
+            .with_begin_version(range.begin)
+            .with_end_version(range.end)
+            .build()?;
+        let stream = match rows {
+            delta::DeltaRows::Inserted => delta.get_inserted_rows().await?,
+            delta::DeltaRows::Updated => delta.get_updated_rows().await?,
+            delta::DeltaRows::Upserted => delta.get_upserted_rows().await?,
+            delta::DeltaRows::DeletedRowIds => delta.get_deleted_row_ids().await?,
+        };
+        Ok(stream.into())
     }
 
     async fn restore(&self) -> Result<()> {

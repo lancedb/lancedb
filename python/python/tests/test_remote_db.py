@@ -890,6 +890,14 @@ def test_remote_open_table_branch_and_version():
         assert db.open_table("test", branch="exp", version=2).current_branch() == "exp"
 
 
+def test_remote_table_delta_is_not_supported():
+    with mock_lancedb_connection(_branch_open_handler) as db:
+        table = db.open_table("test")
+
+        with pytest.raises(NotImplementedError, match="delta"):
+            table.delta(compared_against=1).upserted_rows()
+
+
 def test_remote_table_branches_sync():
     # Branch CRUD + current_branch on the sync RemoteTable. The handle returned
     # by create/checkout must stay a RemoteTable scoped to the branch.
