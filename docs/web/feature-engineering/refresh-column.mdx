@@ -433,7 +433,30 @@ from `lancedb.functions`. Use `FunctionRetryPolicy(max_attempts=1)` to
 disable user-error retries. Omitting the override preserves the registered
 policy.
 
-In TypeScript, pass the same fields as `retryPolicy` in camelCase:
+<CodeGroup>
+```python Python icon="python"
+from lancedb.functions import FunctionRetryPolicy
+
+job = table.refresh_column_async(
+    "embedding",
+    retry_policy=FunctionRetryPolicy(transient=True, max_attempts=3),
+)
+job.wait()
+```
+
+```rust Rust icon="rust"
+use lancedb::{function::FunctionRetryPolicy, table::RefreshColumnOptions};
+
+let mut retry_policy = FunctionRetryPolicy::transient();
+retry_policy.max_attempts = 3;
+
+let _job = table
+    .refresh_column_async_with_options(
+        "embedding",
+        RefreshColumnOptions::default().retry_policy(retry_policy),
+    )
+    .await?;
+```
 
 ```typescript TypeScript icon="typescript"
 const job = await table.refreshColumnAsync("embedding", {
@@ -441,6 +464,7 @@ const job = await table.refreshColumnAsync("embedding", {
 });
 await job.wait();
 ```
+</CodeGroup>
 
 This requires a supporting LanceDB Enterprise server as well as an SDK
 that exposes these options. An older Function image may need
