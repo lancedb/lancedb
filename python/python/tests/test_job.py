@@ -31,6 +31,7 @@ def test_local_jobs_retain_identity_and_typed_state(sync):
 def test_unknown_job_state_is_preserved_without_becoming_success():
     state = JobState("future_publication_state")
     assert state.value == "future_publication_state"
+    assert str(state) == "future_publication_state"
     assert not state.is_terminal
     assert not state.is_success
 

@@ -1935,6 +1935,8 @@ describe("remote connection jobs surface", () => {
         expect(job.failure?.message).toEqual("worker died");
         expect(await job.progress()).toEqual({
           // biome-ignore lint/style/useNamingConvention: server wire format
+          job_id: "job-1",
+          // biome-ignore lint/style/useNamingConvention: server wire format
           job_type: "create_index",
           state: "failed",
           // biome-ignore lint/style/useNamingConvention: server wire format

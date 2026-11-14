@@ -23,6 +23,9 @@ use crate::error::{Error, JobFailure, Result};
 mod state;
 pub use state::JobState;
 
+/// Arrow schema metadata carrying the next retained event page.
+pub const JOB_EVENT_PAGE_TOKEN_METADATA_KEY: &str = "lancedb.job_coordinator.page_token";
+
 /// Observer called with each description fetched by a job's existing wait
 /// poller. Keeping this callback on the poller avoids a second lifecycle or
 /// retry loop just to render progress.
@@ -71,7 +74,7 @@ pub fn job_event_page_token(batches: &[RecordBatch]) -> Option<&str> {
         .first()?
         .schema_ref()
         .metadata()
-        .get("lancedb.job_coordinator.page_token")
+        .get(JOB_EVENT_PAGE_TOKEN_METADATA_KEY)
         .map(String::as_str)
 }
 
@@ -638,7 +641,18 @@ where
             }
             batches.extend(page);
             if done {
-                return Ok(batches);
+                return batches
+                    .into_iter()
+                    .map(|batch| {
+                        let mut metadata = batch.schema_ref().metadata().clone();
+                        metadata.remove(JOB_EVENT_PAGE_TOKEN_METADATA_KEY);
+                        let schema = arrow_schema::Schema::new_with_metadata(
+                            batch.schema_ref().fields().clone(),
+                            metadata,
+                        );
+                        batch.with_schema(Arc::new(schema)).map_err(Into::into)
+                    })
+                    .collect();
             }
             request.page_token = next;
         }
@@ -973,6 +987,58 @@ mod tests {
     use std::future::pending;
 
     use super::*;
+
+    struct HistoryPages(Arc<Mutex<Vec<Option<String>>>>);
+
+    #[async_trait]
+    impl JobHandle for HistoryPages {
+        async fn status(&self) -> Result<String> {
+            Ok("running".to_string())
+        }
+        async fn wait(&self) -> Result<TerminalResult> {
+            pending().await
+        }
+        async fn cancel(&self) -> Result<()> {
+            Ok(())
+        }
+        async fn events(&self, request: JobEventsRequest) -> Result<Vec<RecordBatch>> {
+            self.0.lock().unwrap().push(request.page_token.clone());
+            let metadata = if request.page_token.is_none() {
+                [(
+                    JOB_EVENT_PAGE_TOKEN_METADATA_KEY.to_string(),
+                    "next".to_string(),
+                )]
+                .into_iter()
+                .collect()
+            } else {
+                Default::default()
+            };
+            Ok(vec![RecordBatch::new_empty(Arc::new(
+                arrow_schema::Schema::new_with_metadata(
+                    Vec::<arrow_schema::Field>::new(),
+                    metadata,
+                ),
+            ))])
+        }
+    }
+
+    #[tokio::test]
+    async fn collected_history_follows_empty_pages_and_clears_continuations() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let job = Job::new(Box::new(HistoryPages(requests.clone())));
+        let history = job.history(JobEventsRequest::default()).await.unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(
+            *requests.lock().unwrap(),
+            vec![None, Some("next".to_string())]
+        );
+        assert!(history.iter().all(|batch| {
+            !batch
+                .schema_ref()
+                .metadata()
+                .contains_key(JOB_EVENT_PAGE_TOKEN_METADATA_KEY)
+        }));
+    }
 
     #[test]
     fn local_typed_result_decode_errors_are_runtime_errors() {

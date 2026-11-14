@@ -78,6 +78,9 @@ class JobState(str, Enum):
     def is_success(self) -> bool:
         return self == self.SUCCEEDED
 
+    def __str__(self) -> str:
+        return self.value
+
 
 def _timeout_message(
     job_id: Optional[str], timeout: timedelta, job_type: Optional[str]

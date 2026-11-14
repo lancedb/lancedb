@@ -67,14 +67,14 @@ Most recent execution's fencing token, when reported.
 ### failure
 
 ```ts
-get failure(): any
+get failure(): null | JobFailureInfo
 ```
 
 Why the job failed, when it failed and the server reports a reason.
 
 #### Returns
 
-`any`
+`null` \| [`JobFailureInfo`](../interfaces/JobFailureInfo.md)
 
 ***
 
@@ -399,7 +399,7 @@ callback exception does not reject `wait`.
 
 #### Parameters
 
-* **options?**: [`JobProgressCallback`](../type-aliases/JobProgressCallback.md) \| [`JobWaitOptions`](../interfaces/JobWaitOptions.md)
+* **options?**: [`JobWaitOptions`](../interfaces/JobWaitOptions.md) \| [`JobProgressCallback`](../type-aliases/JobProgressCallback.md)
 
 #### Returns
 

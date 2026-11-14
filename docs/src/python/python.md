@@ -457,7 +457,7 @@ successor; call `retry()` on that successor to request another attempt. Safely
 retryable states and publication outcomes are validated by the backend.
 
 ```python
-retry = job.retry()
+retry = failed_job.retry()
 token = ""
 while token is not None:
     errors = table.function_errors(job_id=retry.job_id, limit=1000, page_token=token)
