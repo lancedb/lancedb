@@ -565,6 +565,12 @@ class Table:
         allow_external_blob_outside_bases: bool = False,
         retries: Optional[int] = None,
     ) -> AddResult: ...
+    async def execute_merge_insert(
+        self,
+        data: pa.RecordBatchReader,
+        parameters: Dict[str, Any],
+        retries: Optional[int] = None,
+    ) -> MergeResult: ...
     async def update(
         self, updates: Dict[str, str], where: Optional[str]
     ) -> UpdateResult: ...

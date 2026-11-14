@@ -938,7 +938,8 @@ describe("merge insert", () => {
       .mergeInsert("a")
       .whenMatchedUpdateAll()
       .whenNotMatchedInsertAll()
-      .execute(newData, { timeoutMs: 10_000 });
+      .useIndex(false)
+      .execute(newData, { timeoutMs: 10_000, retries: 0 });
     expect(mergeInsertRes).toHaveProperty("version");
     expect(mergeInsertRes.version).toBe(2);
     expect(mergeInsertRes.numInsertedRows).toBe(1);

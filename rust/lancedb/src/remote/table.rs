@@ -3707,7 +3707,17 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                     return Ok(merge_result);
                 }
                 Err(err) if rescannable && self.is_retryable_write_error(&err) => {
+                    let status = err.status_code();
                     retry_counter.increment_from_error(err)?;
+                    log::warn!(
+                        "Retrying merge insert {} after status {:?}; attempt {}",
+                        retry_counter.request_id,
+                        status.map(|s| s.as_u16()),
+                        u16::from(retry_counter.request_failures)
+                            + u16::from(retry_counter.connect_failures)
+                            + u16::from(retry_counter.read_failures)
+                            + 1,
+                    );
                     tokio::time::sleep(retry_counter.next_sleep_time()).await;
                     merge = merge.reset_state()?;
                     continue;
