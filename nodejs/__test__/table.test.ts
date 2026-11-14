@@ -17,6 +17,7 @@ import {
   PhraseQuery,
   Query,
   Table,
+  Tags,
   VectorQuery,
   blob,
   connect,
@@ -2634,6 +2635,16 @@ describe("when dealing with versioning", () => {
       "checkout before running restore",
     );
   });
+
+  it("rejects a fractional checkout version", async () => {
+    const con = await connect(tmpDir.name);
+    const table = await con.createTable("vectors", [
+      { id: 1n, vector: [0.1, 0.2] },
+    ]);
+    await expect(table.checkout(1.5)).rejects.toThrow(
+      "version must be a non-negative integer",
+    );
+  });
 });
 
 function legacyBlob(name: string): Field {
@@ -3921,6 +3932,87 @@ describe("when dealing with tags", () => {
     expect(await table.countRows()).toBe(1);
     await table.add([{ id: 3n, vector: [0.5, 0.6] }]);
     expect(await table.countRows()).toBe(2);
+  });
+
+  it("keeps Tags compatible with structural implementations", async () => {
+    const manager: Tags = {
+      async list() {
+        return {};
+      },
+      async getVersion(_tag: string) {
+        return 1;
+      },
+      async create(_tag: string, _version: number) {
+        return;
+      },
+      async delete(_tag: string) {
+        return;
+      },
+      async update(_tag: string, _version: number) {
+        return;
+      },
+    };
+    expect(await manager.getVersion("v1")).toBe(1);
+  });
+
+  it("rejects non-integer tag versions", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createTable("my_table", [
+      { id: 1n, vector: [0.1, 0.2] },
+    ]);
+    const tagsManager = await table.tags();
+    // Fractional versions would be silently truncated at the N-API boundary
+    // and negative ones would wrap; they must be rejected instead.
+    await expect(tagsManager.create("bad", 1.5)).rejects.toThrow(
+      "version must be a non-negative integer",
+    );
+    await expect(tagsManager.create("bad", -1)).rejects.toThrow(
+      "version must be a non-negative integer",
+    );
+    await expect(tagsManager.update("bad", 2.9)).rejects.toThrow(
+      "version must be a non-negative integer",
+    );
+  });
+});
+
+describe("query option validation", () => {
+  let tmpDir: tmp.DirResult;
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => {
+    tmpDir.removeCallback();
+  });
+
+  it("rejects non-integer query options", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createTable("my_table", [
+      { id: 1n, vector: [0.1, 0.2] },
+    ]);
+    // Integer-contract options would be silently truncated at the N-API
+    // boundary; they must be rejected instead.
+    expect(() => table.query().limit(2.5)).toThrow(
+      "limit must be a non-negative integer",
+    );
+    expect(() => table.vectorSearch([0.1, 0.2]).nprobes(1.5)).toThrow(
+      "nprobes must be a non-negative integer",
+    );
+    expect(() => table.vectorSearch([0.1, 0.2]).minimumNprobes(0.5)).toThrow(
+      "minimumNprobes must be a non-negative integer",
+    );
+    expect(() => table.vectorSearch([0.1, 0.2]).maximumNprobes(2.5)).toThrow(
+      "maximumNprobes must be a non-negative integer",
+    );
+    expect(() => table.vectorSearch([0.1, 0.2]).ef(3.5)).toThrow(
+      "ef must be a non-negative integer",
+    );
+    expect(() => table.vectorSearch([0.1, 0.2]).refineFactor(1.5)).toThrow(
+      "refineFactor must be a non-negative integer",
+    );
+    // searchEffort is legitimately fractional and must keep working.
+    expect(() =>
+      table.vectorSearch([0.1, 0.2]).searchEffort(0.75),
+    ).not.toThrow();
   });
 });
 
@@ -5427,6 +5519,15 @@ describe("enableRTE / disableRTE", () => {
         numBuckets: 0,
       }),
     ).rejects.toThrow();
+    // Fractional num_buckets would be silently truncated at the N-API
+    // boundary.
+    await expect(
+      table.enableRTE({
+        specType: "bucket",
+        column: "id",
+        numBuckets: 2.5,
+      }),
+    ).rejects.toThrow("numBuckets must be a non-negative integer");
     // Column mismatch.
     await expect(
       table.enableRTE({
