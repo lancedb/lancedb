@@ -256,7 +256,8 @@ def _py_type_to_arrow_type(py_type: Type[Any], field: FieldInfo) -> pa.DataType:
         return pa.duration("us")
     elif get_origin(py_type) is Literal:
         # Store a Literal as the type of its values, e.g. Literal["a", "b"] as utf8.
-        value_types = {type(value) for value in get_args(py_type)}
+        # A None value makes the field nullable and has no type of its own.
+        value_types = {type(value) for value in get_args(py_type) if value is not None}
         if len(value_types) != 1:
             raise TypeError(
                 "Converting Pydantic type to Arrow Type: unsupported type "
@@ -346,6 +347,13 @@ def _pydantic_list_child_to_arrow(child: Any, field: FieldInfo) -> pa.DataType:
 
 
 def _unwrap_optional_annotation(annotation: Any) -> Any | None:
+    if get_origin(annotation) is Literal:
+        # Literal["a", None] is the same type as Optional[Literal["a"]] (PEP 586).
+        values = get_args(annotation)
+        non_none = tuple(value for value in values if value is not None)
+        if non_none and len(non_none) != len(values):
+            return Literal[non_none]
+        return None
     if isinstance(annotation, (_GenericAlias, GenericAlias)):
         origin = annotation.__origin__
         args = annotation.__args__
