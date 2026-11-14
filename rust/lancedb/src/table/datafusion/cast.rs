@@ -3,15 +3,18 @@
 
 use std::sync::{Arc, LazyLock};
 
-use arrow_array::StructArray;
 use arrow_array::cast::AsArray;
-use arrow_array::types::{Decimal256Type, Float64Type};
+use arrow_array::types::{
+    Decimal32Type, Decimal64Type, Decimal128Type, Decimal256Type, Float16Type, Float32Type,
+    Float64Type,
+};
+use arrow_array::{
+    Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, OffsetSizeTrait, StructArray,
+};
 use arrow_buffer::i256;
 use arrow_cast::can_cast_types;
 use arrow_cast::display::array_value_to_string;
-use arrow_schema::{
-    ArrowError, DECIMAL256_MAX_PRECISION, DataType, Field, FieldRef, Fields, Schema,
-};
+use arrow_schema::{ArrowError, DataType, Field, FieldRef, Fields, Schema};
 use datafusion::functions::core::{get_field, named_struct};
 use datafusion_common::config::ConfigOptions;
 use datafusion_common::metadata::FieldMetadata;
@@ -330,13 +333,30 @@ impl ScalarUDFImpl for RestoreValidityUdf {
 }
 
 /// Whether a `from` → `to` cast can drop a fractional part. Arrow casts a float or decimal to an
-/// integer by truncating it toward zero and reports only overflow, so 2.7 would become 2.
+/// integer by truncating it toward zero and reports only overflow, so 2.7 would become 2. The walk
+/// follows Arrow's casts: list items, struct fields by name, map keys and values by position, and
+/// dictionary values.
 fn may_drop_fraction(from: &DataType, to: &DataType) -> bool {
     match (from, to) {
+        (DataType::Dictionary(_, from), to) => may_drop_fraction(from, to),
+        (from, DataType::Dictionary(_, to)) => may_drop_fraction(from, to),
         (
             DataType::List(from) | DataType::LargeList(from) | DataType::FixedSizeList(from, _),
             DataType::List(to) | DataType::LargeList(to) | DataType::FixedSizeList(to, _),
         ) => may_drop_fraction(from.data_type(), to.data_type()),
+        (DataType::Struct(from), DataType::Struct(to)) => to.iter().any(|to| {
+            from.find(to.name())
+                .is_some_and(|(_, from)| may_drop_fraction(from.data_type(), to.data_type()))
+        }),
+        (DataType::Map(from, _), DataType::Map(to, _)) => {
+            match (from.data_type(), to.data_type()) {
+                (DataType::Struct(from), DataType::Struct(to)) => from
+                    .iter()
+                    .zip(to.iter())
+                    .any(|(from, to)| may_drop_fraction(from.data_type(), to.data_type())),
+                _ => false,
+            }
+        }
         _ => (from.is_floating() || from.is_decimal()) && to.is_integer(),
     }
 }
@@ -395,11 +415,10 @@ impl ScalarUDFImpl for RejectFractionsUdf {
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> DFResult<ColumnarValue> {
         let input = args.args[1].to_array(args.number_rows)?;
-        if let Some(value) = first_fraction(input.as_ref())? {
+        if let Some((value, to)) = first_fraction(input.as_ref(), args.return_type())? {
             return Err(ArrowError::CastError(format!(
-                "Can't cast value {value} in column '{}' to {} without losing its fractional part",
+                "Can't cast value {value} in column '{}' to {to} without losing its fractional part",
                 args.return_field.name(),
-                args.return_type(),
             ))
             .into());
         }
@@ -407,43 +426,121 @@ impl ScalarUDFImpl for RejectFractionsUdf {
     }
 }
 
-// The first non-null value of `array`, or of the items of its lists, that is not a whole number.
+/// The first value in `array` that a cast to `to` would truncate, with the integer type it was
+/// bound for. Walks the types like `may_drop_fraction`, reads the values in place, and skips list
+/// child values outside the array's offsets, which belong to no row.
 fn first_fraction(
-    array: &dyn arrow_array::Array,
-) -> std::result::Result<Option<String>, ArrowError> {
-    let fractional: Vec<bool> = match array.data_type() {
-        DataType::List(_) => return first_fraction(array.as_list::<i32>().values().as_ref()),
-        DataType::LargeList(_) => return first_fraction(array.as_list::<i64>().values().as_ref()),
-        DataType::FixedSizeList(..) => {
-            return first_fraction(array.as_fixed_size_list().values().as_ref());
+    array: &dyn Array,
+    to: &DataType,
+) -> std::result::Result<Option<(String, DataType)>, ArrowError> {
+    if let DataType::Dictionary(_, to) = to {
+        return first_fraction(array, to);
+    }
+    if let Some(dictionary) = array.as_any_dictionary_opt() {
+        let values = dictionary.values().as_ref();
+        // A value no key points at is not written, so recheck a hit against the used values.
+        if first_fraction(values, to)?.is_none() {
+            return Ok(None);
         }
-        // Widening to f64 is exact. fract() of -0.0 is -0.0, which compares equal to zero.
-        DataType::Float16 | DataType::Float32 | DataType::Float64 => {
-            arrow_cast::cast(array, &DataType::Float64)?
-                .as_primitive::<Float64Type>()
-                .iter()
-                .map(|v| v.is_some_and(|v| v.fract() != 0.0))
-                .collect()
+        let used = arrow_select::take::take(values, dictionary.keys(), None)?;
+        return first_fraction(used.as_ref(), to);
+    }
+    let found = match (array.data_type(), to) {
+        (
+            DataType::List(_) | DataType::LargeList(_) | DataType::FixedSizeList(..),
+            DataType::List(to) | DataType::LargeList(to) | DataType::FixedSizeList(to, _),
+        ) => return first_fraction(list_items(array).as_ref(), to.data_type()),
+        (DataType::Struct(_), DataType::Struct(fields)) => {
+            let array = array.as_struct();
+            for field in fields {
+                if let Some(column) = array.column_by_name(field.name())
+                    && let Some(found) = first_fraction(column.as_ref(), field.data_type())?
+                {
+                    return Ok(Some(found));
+                }
+            }
+            return Ok(None);
         }
-        DataType::Decimal32(_, scale)
-        | DataType::Decimal64(_, scale)
-        | DataType::Decimal128(_, scale)
-        | DataType::Decimal256(_, scale) => {
-            let unit = i256::from_i128(10).wrapping_pow((*scale).max(0) as u32);
-            let wide = DataType::Decimal256(DECIMAL256_MAX_PRECISION, *scale);
-            arrow_cast::cast(array, &wide)?
-                .as_primitive::<Decimal256Type>()
-                .iter()
-                .map(|v| v.is_some_and(|v| v.wrapping_rem(unit) != i256::ZERO))
-                .collect()
+        (DataType::Map(..), DataType::Map(entries, _)) => {
+            let DataType::Struct(fields) = entries.data_type() else {
+                return Ok(None);
+            };
+            let map = array.as_map();
+            let (start, len) = item_range(map.value_offsets());
+            for (column, field) in [map.keys(), map.values()].into_iter().zip(fields.iter()) {
+                let column = column.slice(start, len);
+                if let Some(found) = first_fraction(column.as_ref(), field.data_type())? {
+                    return Ok(Some(found));
+                }
+            }
+            return Ok(None);
         }
-        _ => return Ok(None),
+        (_, to) if !to.is_integer() => None,
+        (DataType::Float16, _) => position::<Float16Type>(array, |v| v.to_f32().fract() != 0.0),
+        (DataType::Float32, _) => position::<Float32Type>(array, |v| v.fract() != 0.0),
+        (DataType::Float64, _) => position::<Float64Type>(array, |v| v.fract() != 0.0),
+        (DataType::Decimal32(_, scale), _) => decimal_position::<Decimal32Type>(array, *scale, 10),
+        (DataType::Decimal64(_, scale), _) => decimal_position::<Decimal64Type>(array, *scale, 10),
+        (DataType::Decimal128(_, scale), _) => {
+            decimal_position::<Decimal128Type>(array, *scale, 10)
+        }
+        (DataType::Decimal256(_, scale), _) => {
+            decimal_position::<Decimal256Type>(array, *scale, i256::from_i128(10))
+        }
+        _ => None,
     };
-    fractional
-        .iter()
-        .position(|&f| f)
-        .map(|i| array_value_to_string(array, i))
+    found
+        .map(|i| Ok((array_value_to_string(array, i)?, to.clone())))
         .transpose()
+}
+
+// The child values of a list array's rows.
+fn list_items(array: &dyn Array) -> ArrayRef {
+    fn items<O: OffsetSizeTrait>(array: &dyn Array) -> ArrayRef {
+        let list = array.as_list::<O>();
+        let (start, len) = item_range(list.value_offsets());
+        list.values().slice(start, len)
+    }
+    match array.data_type() {
+        DataType::List(_) => items::<i32>(array),
+        DataType::LargeList(_) => items::<i64>(array),
+        // Slicing a fixed-size list slices its values.
+        _ => array.as_fixed_size_list().values().clone(),
+    }
+}
+
+fn item_range<O: OffsetSizeTrait>(offsets: &[O]) -> (usize, usize) {
+    let start = offsets[0].as_usize();
+    (start, offsets[offsets.len() - 1].as_usize() - start)
+}
+
+// The index of the first valid value that `is_fraction` holds for.
+fn position<T: ArrowPrimitiveType>(
+    array: &dyn Array,
+    is_fraction: impl Fn(T::Native) -> bool,
+) -> Option<usize> {
+    let array = array.as_primitive::<T>();
+    let values = array.values();
+    match array.nulls() {
+        None => values.iter().position(|v| is_fraction(*v)),
+        Some(nulls) => (0..values.len()).find(|&i| nulls.is_valid(i) && is_fraction(values[i])),
+    }
+}
+
+fn decimal_position<T: ArrowPrimitiveType>(
+    array: &dyn Array,
+    scale: i8,
+    ten: T::Native,
+) -> Option<usize> {
+    if scale <= 0 {
+        return None;
+    }
+    // When 10^scale does not fit the type, every value is smaller than one unit.
+    let unit = ten.pow_checked(scale as u32).ok();
+    position::<T>(array, |v| match unit {
+        Some(unit) => !v.mod_wrapping(unit).is_zero(),
+        None => !v.is_zero(),
+    })
 }
 
 // The storage type arrow.json would use for `input`, or None if it cannot hold JSON text.
