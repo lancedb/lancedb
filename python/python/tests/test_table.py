@@ -601,6 +601,16 @@ def test_empty_table(mem_db: DBConnection):
     tbl.add(data=data)
 
 
+def test_add_keeps_columns_first_seen_in_later_rows(mem_db: DBConnection):
+    schema = pa.schema({"id": pa.int64(), "note": pa.string()})
+    tbl = mem_db.create_table("test", schema=schema)
+    tbl.add([{"id": 1}, {"id": 2, "note": "keep me"}])
+    assert tbl.to_arrow().sort_by("id").to_pylist() == [
+        {"id": 1, "note": None},
+        {"id": 2, "note": "keep me"},
+    ]
+
+
 def test_add_dictionary(mem_db: DBConnection):
     schema = pa.schema(
         [
