@@ -572,12 +572,11 @@ mod tests {
     use std::sync::Arc;
 
     use arrow::buffer::OffsetBuffer;
-    use arrow_array::cast::AsArray;
-    use arrow_array::types::{Float32Type, UInt8Type};
+    use arrow_array::types::{Float32Type, Float64Type, Int32Type};
     use arrow_array::{
-        Array, ArrayRef, Decimal128Array, FixedSizeListArray, Float32Array, Float64Array,
-        Int32Array, Int64Array, ListArray, RecordBatch, StringArray, StructArray, UInt32Array,
-        UInt64Array,
+        Array, ArrayRef, Decimal128Array, DictionaryArray, FixedSizeListArray, Float32Array,
+        Float64Array, Int32Array, Int64Array, ListArray, MapArray, RecordBatch, StringArray,
+        StructArray, UInt32Array, UInt64Array,
     };
     use arrow_schema::{DataType, Field, FieldRef, Fields, Schema};
     use datafusion::prelude::SessionContext;
@@ -959,6 +958,64 @@ mod tests {
         assert!(result.is_err(), "expected overflow error at execution time");
     }
 
+    fn batch_of(column: ArrayRef) -> RecordBatch {
+        let field = Field::new("a", column.data_type().clone(), true);
+        RecordBatch::try_new(Arc::new(Schema::new(vec![field])), vec![column]).unwrap()
+    }
+
+    fn f64s(values: &[f64]) -> ArrayRef {
+        Arc::new(Float64Array::from(values.to_vec()))
+    }
+
+    fn i32s(values: &[i32]) -> ArrayRef {
+        Arc::new(Int32Array::from(values.to_vec()))
+    }
+
+    fn struct_of(fields: Vec<(&str, ArrayRef)>) -> StructArray {
+        StructArray::from(
+            fields
+                .into_iter()
+                .map(|(name, values)| {
+                    let field = Field::new(name, values.data_type().clone(), true);
+                    (Arc::new(field), values)
+                })
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    // One row holding every item.
+    fn list_of(items: StructArray) -> ArrayRef {
+        let field = Arc::new(Field::new_list_field(items.data_type().clone(), true));
+        let offsets = OffsetBuffer::from_lengths([items.len()]);
+        Arc::new(ListArray::new(field, offsets, Arc::new(items), None))
+    }
+
+    fn fixed_size_list_of(items: StructArray) -> ArrayRef {
+        let field = Arc::new(Field::new_list_field(items.data_type().clone(), true));
+        let size = items.len() as i32;
+        Arc::new(FixedSizeListArray::new(field, size, Arc::new(items), None))
+    }
+
+    // One row mapping "k" to each value.
+    fn map_of(values: ArrayRef) -> ArrayRef {
+        let keys: ArrayRef = Arc::new(StringArray::from(vec!["k"; values.len()]));
+        let entries = StructArray::from(vec![
+            (Arc::new(Field::new("key", DataType::Utf8, false)), keys),
+            (
+                Arc::new(Field::new("value", values.data_type().clone(), true)),
+                values,
+            ),
+        ]);
+        let field = Arc::new(Field::new("entries", entries.data_type().clone(), false));
+        let offsets = OffsetBuffer::from_lengths([entries.len()]);
+        Arc::new(MapArray::new(field, offsets, entries, None, false))
+    }
+
+    fn dictionary_of(keys: Vec<i32>, values: ArrayRef) -> ArrayRef {
+        let keys = Int32Array::from(keys);
+        Arc::new(DictionaryArray::<Int32Type>::try_new(keys, values).unwrap())
+    }
+
     // Arrow casts a float or decimal to an integer by truncating it toward zero and reports
     // only overflow, so without a check 2.7 would be written as 2.
     #[rstest::rstest]
@@ -984,25 +1041,26 @@ mod tests {
         DataType::Int64,
         "2.75"
     )]
+    #[case::struct_field_in_list(
+        list_of(struct_of(vec![("q", f64s(&[2.7])), ("f", f64s(&[0.5]))])),
+        list_of(struct_of(vec![("q", i32s(&[0])), ("f", f64s(&[0.0]))])).data_type().clone(),
+        "2.7"
+    )]
+    #[case::struct_field_in_fixed_size_list(
+        fixed_size_list_of(struct_of(vec![("q", f64s(&[2.7]))])),
+        fixed_size_list_of(struct_of(vec![("q", i32s(&[0]))])).data_type().clone(),
+        "2.7"
+    )]
+    #[case::map_value(map_of(f64s(&[2.7])), map_of(i32s(&[0])).data_type().clone(), "2.7")]
+    #[case::dictionary(dictionary_of(vec![0], f64s(&[2.7])), DataType::Int32, "2.7")]
     #[tokio::test]
     async fn test_cast_dropping_fraction_errors(
         #[case] input: ArrayRef,
         #[case] table_type: DataType,
         #[case] value: &str,
     ) {
-        let input_batch = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new(
-                "a",
-                input.data_type().clone(),
-                true,
-            )])),
-            vec![input],
-        )
-        .unwrap();
-
+        let plan = plan_from_batch(batch_of(input)).await;
         let table_schema = Schema::new(vec![Field::new("a", table_type, true)]);
-
-        let plan = plan_from_batch(input_batch).await;
         let casted = cast_to_table_schema(plan, &table_schema).unwrap();
 
         let ctx = SessionContext::new();
@@ -1012,50 +1070,43 @@ mod tests {
         assert!(err.contains(value), "unexpected error: {err}");
     }
 
-    #[tokio::test]
-    async fn test_cast_integral_floats_to_int() {
-        let vector_type = |item| DataType::new_fixed_size_list(item, 2, true);
-        let input_batch = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![
-                Field::new("a", DataType::Float64, true),
-                Field::new("v", vector_type(DataType::Float32), true),
-            ])),
-            vec![
-                Arc::new(Float64Array::from(vec![Some(4.0), Some(-0.0), None])),
-                Arc::new(
-                    FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
-                        vec![
-                            Some(vec![Some(1.0), Some(255.0)]),
-                            None,
-                            Some(vec![Some(0.0), None]),
-                        ],
-                        2,
-                    ),
-                ),
-            ],
-        )
-        .unwrap();
-
-        let table_schema = Schema::new(vec![
-            Field::new("a", DataType::Int32, true),
-            Field::new("v", vector_type(DataType::UInt8), true),
-        ]);
-
-        let plan = plan_from_batch(input_batch).await;
-        let casted = cast_to_table_schema(plan, &table_schema).unwrap();
-        let result = collect(casted).await;
-
-        let a: &Int32Array = result.column(0).as_any().downcast_ref().unwrap();
-        assert_eq!(a.iter().collect::<Vec<_>>(), vec![Some(4), Some(0), None]);
-        let expected = FixedSizeListArray::from_iter_primitive::<UInt8Type, _, _>(
-            vec![
-                Some(vec![Some(1), Some(255)]),
-                None,
-                Some(vec![Some(0), None]),
-            ],
+    // Whole values cast exactly as Arrow casts them.
+    #[rstest::rstest]
+    #[case::whole_floats(
+        Arc::new(Float64Array::from(vec![Some(4.0), Some(-0.0), None])) as ArrayRef,
+        DataType::Int32
+    )]
+    #[case::whole_vectors(
+        Arc::new(FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+            vec![Some(vec![Some(1.0), Some(255.0)]), None, Some(vec![Some(0.0), None])],
             2,
-        );
-        assert_eq!(result.column(1).as_fixed_size_list(), &expected);
+        )) as ArrayRef,
+        DataType::new_fixed_size_list(DataType::UInt8, 2, true)
+    )]
+    // The slice leaves out the row holding 0.5, though its child values still do.
+    #[case::sliced_list(
+        Arc::new(
+            ListArray::from_iter_primitive::<Float64Type, _, _>(vec![
+                Some(vec![Some(0.5)]),
+                Some(vec![Some(1.0), Some(2.0)]),
+            ])
+            .slice(1, 1),
+        ) as ArrayRef,
+        DataType::new_list(DataType::Int32, true)
+    )]
+    #[case::double_beside_int_in_list_struct(
+        list_of(struct_of(vec![("q", f64s(&[2.0])), ("f", f64s(&[0.5]))])),
+        list_of(struct_of(vec![("q", i32s(&[0])), ("f", f64s(&[0.0]))])).data_type().clone()
+    )]
+    // No key points at the 2.7.
+    #[case::unused_dictionary_value(dictionary_of(vec![1], f64s(&[2.7, 3.0])), DataType::Int32)]
+    #[tokio::test]
+    async fn test_cast_whole_values(#[case] input: ArrayRef, #[case] table_type: DataType) {
+        let expected = arrow_cast::cast(input.as_ref(), &table_type).unwrap();
+        let plan = plan_from_batch(batch_of(input)).await;
+        let table_schema = Schema::new(vec![Field::new("a", table_type, true)]);
+        let result = collect(cast_to_table_schema(plan, &table_schema).unwrap()).await;
+        assert_eq!(result.column(0).as_ref(), expected.as_ref());
     }
 
     #[tokio::test]
