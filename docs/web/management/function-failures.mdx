@@ -85,6 +85,51 @@ Ordinary and automatic refreshes exclude quarantined rows, including during
 an `"all"` upgrade. Explicit inclusion releases quarantine before the retry.
 Async tables expose the same operations with `await`; `function_errors()`
 returns `AsyncFunctionErrors`, and its `rows()` method is also awaited.
+These native recovery APIs are available in Python and Rust. TypeScript does
+not yet expose them; its SDK support is tracked as a separate follow-up.
+
+The equivalent Rust operations use explicit request options:
+
+```rust
+use lancedb::{Table, table::RefreshColumnOptions};
+use lancedb::function::{
+    FunctionProvenanceOptions, FunctionQuarantineOptions, FunctionRecompute,
+};
+
+async fn recover(table: &Table) -> lancedb::Result<()> {
+    let retry = table.refresh_column_async_with_options(
+        "embedding",
+        RefreshColumnOptions::default()
+            .retry_errors(true)
+            .retry_error_type("ValueError"),
+    ).await?;
+    retry.wait().await?;
+
+    let upgrade = table.refresh_column_async_with_options(
+        "embedding",
+        RefreshColumnOptions::default().upgrade("2", FunctionRecompute::Failed),
+    ).await?;
+    upgrade.wait().await?;
+
+    table.quarantine_function_errors(
+        "embedding",
+        FunctionQuarantineOptions {
+            after_attempts: Some(3),
+            ..Default::default()
+        },
+    ).await?;
+    let provenance = table.function_provenance(
+        "embedding", FunctionProvenanceOptions::default(),
+    ).await?;
+    if !provenance.truncated {
+        println!("{:?}", provenance.records);
+    }
+    Ok(())
+}
+```
+
+Set `include_quarantined(true)` on a Rust failed-row retry to explicitly
+release quarantine before recomputing those failures.
 
 The native contract also applies skip/5% defaults to newly created materialized
 views, with errors identified by Function invocation and source input. Column
