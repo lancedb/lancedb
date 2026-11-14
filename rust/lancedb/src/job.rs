@@ -90,6 +90,10 @@ pub(crate) trait JobHandle: Send + Sync {
         job_detail_not_supported("job timeline export")
     }
 
+    async fn stack(&self, _worker_id: &str) -> Result<Value> {
+        job_detail_not_supported("worker stack capture")
+    }
+
     /// A printable report of recorded Function job metrics.
     async fn stats(&self) -> Result<Option<String>> {
         job_detail_not_supported("job statistics")
@@ -533,6 +537,34 @@ where
         match &self.inner {
             JobInner::Handle { handle, .. } => handle.timeline().await,
             JobInner::Completed(_) => job_detail_not_supported("job timeline export"),
+        }
+    }
+
+    /// Capture Python thread stacks from a running Function worker.
+    ///
+    /// Requires a server supporting stack inspection and system operate privilege.
+    /// The JSON response reports capture availability per session, timestamps and
+    /// truncation. Stacks exclude source text, locals and native frames. A server
+    /// may reuse a recent capture to bound sampling overhead. Unsupported local
+    /// operations return [`crate::Error::NotSupported`].
+    ///
+    /// ```no_run
+    /// # async fn inspect(job: &lancedb::job::Job) -> Result<(), Box<dyn std::error::Error>> {
+    /// let evidence = job.stack("worker-id").await?;
+    /// println!("{evidence}");
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn stack(&self, worker_id: impl AsRef<str>) -> Result<Value> {
+        let worker_id = worker_id.as_ref();
+        if worker_id.is_empty() || worker_id.len() > 256 {
+            return Err(Error::InvalidInput {
+                message: "worker_id must contain 1 to 256 bytes".into(),
+            });
+        }
+        match &self.inner {
+            JobInner::Handle { handle, .. } => handle.stack(worker_id).await,
+            JobInner::Completed(_) => job_detail_not_supported("worker stack capture"),
         }
     }
 

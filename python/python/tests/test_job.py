@@ -843,3 +843,48 @@ async def test_export_timeline_reports_filesystem_errors(tmp_path):
     )
     with pytest.raises(FileNotFoundError):
         await job.export_timeline(tmp_path / "missing" / "trace.json")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync", [False, True])
+async def test_stack_preserves_evidence_and_does_not_wait(sync):
+    evidence = {
+        "worker_id": "worker",
+        "status": "unavailable",
+        "execution_epoch": 1,
+        "stacks": [],
+        "omitted_sessions": 0,
+    }
+    inner = SimpleNamespace(
+        stack=AsyncMock(return_value=json.dumps(evidence)),
+        wait=AsyncMock(),
+        cancel=AsyncMock(),
+    )
+    job = AsyncJob(inner)
+    actual = (
+        await asyncio.to_thread(Job(job).stack, "worker")
+        if sync
+        else await job.stack("worker")
+    )
+    assert actual == evidence
+    inner.stack.assert_awaited_once_with("worker")
+    inner.wait.assert_not_awaited()
+    inner.cancel.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync", [False, True])
+async def test_stack_propagates_errors_and_rejects_local_handles(sync):
+    error = RuntimeError("system operate privilege required")
+    job = AsyncJob(SimpleNamespace(stack=AsyncMock(side_effect=error)))
+    with pytest.raises(RuntimeError) as failure:
+        if sync:
+            await asyncio.to_thread(Job(job).stack, "worker")
+        else:
+            await job.stack("worker")
+    assert failure.value is error
+    with pytest.raises(NotImplementedError):
+        if sync:
+            Job(None).stack("worker")
+        else:
+            await AsyncJob(None).stack("worker")

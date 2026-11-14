@@ -324,6 +324,10 @@ impl<S: HttpSend> crate::job::JobHandle for FreshnessJob<S> {
         crate::job::JobHandle::timeline(&self.inner).await
     }
 
+    async fn stack(&self, worker_id: &str) -> Result<serde_json::Value> {
+        crate::job::JobHandle::stack(&self.inner, worker_id).await
+    }
+
     async fn events(
         &self,
         request: crate::job::JobEventsRequest,
@@ -407,6 +411,10 @@ impl<S: HttpSend> crate::job::JobHandle for MaterializedViewRefreshJob<S> {
 
     async fn timeline(&self) -> Result<serde_json::Value> {
         crate::job::JobHandle::timeline(&self.inner).await
+    }
+
+    async fn stack(&self, worker_id: &str) -> Result<serde_json::Value> {
+        crate::job::JobHandle::stack(&self.inner, worker_id).await
     }
 
     async fn events(
