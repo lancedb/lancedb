@@ -283,8 +283,9 @@ export interface QueryExecutionOptions {
    *   called. All the bytes are held in memory.
    *
    * Selecting a parent struct or directly aliasing a blob or struct also returns
-   * bytes. Blobs inside lists keep their descriptors. Arbitrary projection
-   * expressions are not materialized as bytes.
+   * bytes, including through an `Expr` that only references a column, such as
+   * `col("image")`. Blobs inside lists keep their descriptors. Arbitrary
+   * projection expressions are not materialized as bytes.
    *
    * The rows and bytes come from the same snapshot. Remote queries require
    * authoritative query version and snapshot identity headers, verified again
@@ -416,34 +417,62 @@ export class QueryBase<
    * For example, you may not care about "a" or "b" but instead simply want "a + b".  This is often
    * seen in the SELECT clause of an SQL query (e.g. `SELECT a+b FROM my_table`).
    *
-   * To create dynamic columns you can pass in a Map<string, string>.  A column will be returned
-   * for each entry in the map.  The key provides the name of the column.  The value is
-   * an SQL string used to specify how the column is calculated.
+   * To create dynamic columns you can pass in a Map<string, string | Expr>.  A column will be
+   * returned for each entry in the map.  The key provides the name of the column.  The value is
+   * an SQL string or an `Expr` that specifies how the column is calculated.  An `Expr` built
+   * with `col` keeps the exact, case-sensitive column name.
    *
    * For example, an SQL query might state `SELECT a + b AS combined, c`.  The equivalent
-   * input to this method would be:
-   * @example
-   * new Map([["combined", "a + b"], ["c", "c"]])
+   * input to this method would be `new Map([["combined", "a + b"], ["c", "c"]])`.
    *
    * Columns will always be returned in the order given, even if that order is different than
    * the order used when adding the data.
    *
-   * Note that you can pass in a `Record<string, string>` (e.g. an object literal). This method
-   * uses `Object.entries` which should preserve the insertion order of the object.  However,
-   * object insertion order is easy to get wrong and `Map` is more foolproof.
+   * Note that you can pass in a `Record<string, string | Expr>` (e.g. an object literal). This
+   * method uses `Object.entries` which should preserve the insertion order of the object.
+   * However, object insertion order is easy to get wrong and `Map` is more foolproof.
+   *
+   * @example
+   * ```ts
+   * table.query().select(new Map([["combined", "a + b"], ["c", "c"]]));
+   * table.query().select({ id: "id", doubled: col("unitPrice").mul(2) });
+   * ```
    */
   select(
-    columns: string[] | Map<string, string> | Record<string, string> | string,
+    columns:
+      | string[]
+      | Map<string, string | Expr>
+      | Record<string, string | Expr>
+      | string,
   ): this {
     const selectColumns = (columnArray: string[]) => {
       this.doCall((inner: NativeQueryType) => {
         inner.selectColumns(columnArray);
       });
     };
-    const selectMapping = (columnTuples: [string, string][]) => {
+    const selectMapping = (entries: [string, string | Expr][]) => {
+      const columnTuples: [string, string][] = [];
+      const sources: [string, string][] = [];
+      for (const [name, value] of entries) {
+        if (value instanceof Expr) {
+          const sql = value.toSql();
+          columnTuples.push([name, sql]);
+          // toSql() quotes camelCase names and SQL keywords, so blobMode
+          // matches a bare column reference by its plain name instead.
+          sources.push([name, value.inner.columnName() ?? sql]);
+        } else if (typeof value === "string") {
+          columnTuples.push([name, value]);
+          sources.push([name, value]);
+        } else {
+          throw new TypeError(
+            `select() values must be SQL strings or Expr objects, got ${typeof value} for "${name}"`,
+          );
+        }
+      }
       this.doCall((inner: NativeQueryType) => {
         inner.select(columnTuples);
       });
+      return sources;
     };
 
     let projection: [string, string][];
@@ -454,11 +483,9 @@ export class QueryBase<
       selectColumns(columns);
       projection = columns.map((column) => [column, column]);
     } else if (columns instanceof Map) {
-      projection = Array.from(columns.entries());
-      selectMapping(projection);
+      projection = selectMapping(Array.from(columns.entries()));
     } else {
-      projection = Object.entries(columns);
-      selectMapping(projection);
+      projection = selectMapping(Object.entries(columns));
     }
     if (this.blobContext !== undefined) {
       this.blobContext = { ...this.blobContext, projection };
