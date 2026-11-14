@@ -189,9 +189,12 @@ all readable this way without applying or calling the function.
 ### Inspect the resolved environment {#resolved-environment}
 
 The version keeps the requested runtime separate from what the server actually
-installed. `version.runtime` is the specification sent at registration.
-`version.resolved_environment` is measured data from the built image:
+installed. The typed catalog API is available in Python and Rust; TypeScript
+does not yet expose this readback API. `version.runtime` is the specification
+sent at registration. `version.resolved_environment` is measured data from the
+built image:
 
+<CodeGroup>
 ```python
 version = db.get_function("double")
 print(version.runtime)                    # requested runtime, or None for legacy
@@ -202,6 +205,30 @@ if version.environment.resolved is not None:
     for package in version.environment.resolved.packages:
         print(package.name, package.version)  # versions keep labels such as +cu130
 ```
+
+{/* Draft for the typed Rust environment inspection release.
+```rust
+# async fn inspect_environment(connection: &lancedb::Connection) -> Result<(), Box<dyn std::error::Error>> {
+let version = connection.get_function_latest("double", &[]).await?;
+println!("Requested runtime: {:?}", version.runtime());
+
+if let Some(environment) = version.resolved_environment() {
+    for package in &environment.packages {
+        println!("{} {}", package.name, package.version);
+    }
+}
+
+for (platform, environment) in version.resolved_environments() {
+    println!("{platform}: {} measured packages", environment.packages.len());
+    for package in &environment.packages {
+        println!("{} {}", package.name, package.version);
+    }
+}
+# Ok(())
+# }
+```
+*/}
+</CodeGroup>
 
 `version.environment.requested` and `version.environment.resolved` are
 convenience members over the same canonical fields; they do not add another
