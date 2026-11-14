@@ -470,8 +470,10 @@ export abstract class Table {
    * Indices on scalar columns will speed up filtering (in both
    * vector and non-vector searches)
    *
-   * We currently don't support custom named indexes.
-   * The index name will always be `${column}_idx`.
+   * The index name defaults to `${column}_idx`. Set {@link IndexOptions.name}
+   * to use a custom name containing 1–128 ASCII letters, digits, dashes,
+   * underscores, or periods, excluding `.` and `..`.
+   * See {@link IndexOptions.name} for legacy-name cleanup guidance.
    *
    * On LanceDB Embedded tables the index is built before the returned promise
    * resolves. On LanceDB Enterprise tables it resolves once the build is

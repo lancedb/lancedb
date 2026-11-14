@@ -252,6 +252,10 @@ impl IndexBuilder {
 
     /// The name of the index. If not set, a default name will be generated.
     ///
+    /// Custom names must contain 1 to 128 ASCII alphanumeric characters,
+    /// dashes, underscores, or periods, and cannot be `.` or `..`.
+    /// Invalid names are rejected when executing the builder.
+    ///
     /// # Examples
     ///
     /// ```

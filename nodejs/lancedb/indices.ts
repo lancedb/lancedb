@@ -949,7 +949,14 @@ export interface IndexOptions {
   /**
    * Optional custom name for the index.
    *
+   * Custom names must contain 1–128 ASCII letters, digits, dashes, underscores,
+   * or periods, excluding `.` and `..`.
+   *
    * If not provided, a default name will be generated based on the column name.
+   * Existing and generated names remain addressable through index operations,
+   * except that remote tables reject empty names, `.` and `..` to prevent URL
+   * path normalization. Existing `.` or `..` indices on managed tables require
+   * server-side cleanup, or a native connection with direct dataset access.
    */
   name?: string;
 

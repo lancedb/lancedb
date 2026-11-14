@@ -23,6 +23,9 @@ use datafusion_physical_plan::SendableRecordBatchStream;
 /// object store.
 const MAX_TABLE_NAME_CHARS: usize = 128;
 
+/// The maximum length of a custom index name, which is also used in remote URLs.
+const MAX_INDEX_NAME_CHARS: usize = 128;
+
 /// The maximum length of a component of a namespace.
 const MAX_NAMESPACE_NAME_CHARS: usize = 64;
 
@@ -134,6 +137,11 @@ pub fn validate_table_name(name: &str) -> Result<()> {
         });
     }
     Ok(())
+}
+
+/// Validate a custom index name before creation.
+pub(crate) fn validate_index_name(name: &str) -> Result<()> {
+    validate_view_or_namespace_or_secret(name, "index name", MAX_INDEX_NAME_CHARS)
 }
 
 /// Validate that an input string contains alphanumerics, or dashes, underscores, and periods.
@@ -1090,6 +1098,37 @@ mod tests {
             err.contains("underscores, and periods are allowed"),
             "unexpected message: {err}"
         );
+    }
+
+    #[test]
+    fn test_validate_index_name() {
+        for name in [
+            "my_index",
+            "index-1.2",
+            "index..v2",
+            "...",
+            &"a".repeat(128),
+        ] {
+            assert!(validate_index_name(name).is_ok(), "rejected {name:?}");
+        }
+        for name in [
+            "",
+            ".",
+            "..",
+            "my/index",
+            "my\\index",
+            "%2e%2e",
+            "index?query",
+            "index#fragment",
+            "name with space",
+            "café",
+            &"a".repeat(129),
+        ] {
+            assert!(
+                matches!(validate_index_name(name), Err(Error::InvalidInput { .. })),
+                "accepted {name:?}"
+            );
+        }
     }
 
     #[test]
