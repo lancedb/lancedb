@@ -1321,6 +1321,11 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         filter: JobListFilter,
         options: ListingOptions,
     ) -> Result<ListingPage<JobInfo>> {
+        if self.db_name.is_empty() {
+            return Err(Error::InvalidInput {
+                message: "list_jobs requires a connected database".into(),
+            });
+        }
         if filter.table.is_none() && !filter.namespace_path.is_empty() {
             return Err(Error::InvalidInput {
                 message: "namespace_path requires a table filter".into(),
@@ -1334,7 +1339,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 message: "created_at_gte_millis must be less than created_at_lt_millis".into(),
             });
         }
-        let mut body = serde_json::json!({});
+        let mut body = serde_json::json!({"database": self.db_name});
         if let Some(table) = filter.table {
             validate_table_name(&table)?;
             validate_namespace(&filter.namespace_path)?;
@@ -4197,7 +4202,10 @@ mod tests {
                         let body: serde_json::Value =
                             serde_json::from_slice(request.body().unwrap().as_bytes().unwrap())
                                 .unwrap();
-                        assert_eq!(body, serde_json::json!({"page_token": token, "limit": 2}));
+                        assert_eq!(
+                            body,
+                            serde_json::json!({"database": "default", "page_token": token, "limit": 2})
+                        );
                     } else {
                         let ns = "team";
                         assert_eq!(
@@ -4409,6 +4417,7 @@ mod tests {
             let body: serde_json::Value =
                 serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
             let mut expected = serde_json::json!({
+                "database": "default",
                 "table_ref": {
                     "db_name": "default",
                     "table_id": {"namespace_path": ["team", "project"], "table_name": "events"},

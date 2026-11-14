@@ -268,7 +268,7 @@ async def test_listing_lazy_pages_and_resume(listing_server, kind, asynchronous)
         if kind == "jobs":
             assert verb == "POST"
             assert path.path == "/v1/jobs/list"
-            assert body == {"page_token": token, "limit": 2}
+            assert body == {"database": "dev", "page_token": token, "limit": 2}
         else:
             namespace = "team"
             resource = kind.removesuffix("s")
@@ -359,6 +359,7 @@ async def test_job_filters_persist_across_pages_and_resume(
     assert resumed.page_token() is None
     assert len(requests) == 3
     expected = dict(
+        database="dev",
         limit=1,
         table_ref={
             "db_name": "dev",
@@ -372,6 +373,28 @@ async def test_job_filters_persist_across_pages_and_resume(
     for (_, path, body), token in zip(requests, [None, "empty", "last"]):
         assert path == "/v1/jobs/list"
         assert body == {**expected, **({"page_token": token} if token else {})}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize(
+    "filters",
+    [
+        {},
+        {"state": "failed"},
+        {"job_types": ["column_refresh"]},
+        {"created_at_lt_millis": 200},
+    ],
+)
+async def test_job_listing_without_table_stays_in_connected_database(
+    listing_server, asynchronous, filters
+):
+    endpoint, requests, responses = listing_server
+    responses.append((200, response_page("jobs", ["a"], None)))
+    db = await connection(endpoint, asynchronous)
+    items = db.list_jobs(**filters)
+    assert (await advance(items, asynchronous)).job_id == "a"
+    assert requests[0][2] == {"database": "dev", **filters}
 
 
 @pytest.mark.asyncio
