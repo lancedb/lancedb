@@ -1524,7 +1524,8 @@ mod tests {
                     .execute(Box::new(arrow_array::RecordBatchIterator::new(
                         vec![Ok(input)],
                         schema,
-                    )))
+                    ))
+                        as Box<dyn arrow_array::RecordBatchReader + Send>)
                     .await
                     .map(|_| ())
             } else {
@@ -1948,7 +1949,8 @@ mod tests {
                     .execute(Box::new(arrow_array::RecordBatchIterator::new(
                         vec![Ok(input)],
                         input_schema,
-                    )))
+                    ))
+                        as Box<dyn arrow_array::RecordBatchReader + Send>)
                     .await
                     .unwrap();
             } else {
@@ -2111,7 +2113,8 @@ mod tests {
                 .execute(Box::new(arrow_array::RecordBatchIterator::new(
                     vec![Ok(input)],
                     schema,
-                )))
+                ))
+                    as Box<dyn arrow_array::RecordBatchReader + Send>)
                 .await
                 .unwrap();
         } else {
