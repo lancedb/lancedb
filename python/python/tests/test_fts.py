@@ -1962,12 +1962,16 @@ def test_simple_fts_operator_and_count(tmp_path, indexed, operator, expected):
     )
     if indexed:
         table.create_index("text", config=FTS())
-    kwargs = {} if operator is None else {"operator": operator}
+    kwargs = {"fts_columns": "text"}
+    if operator is not None:
+        kwargs["operator"] = operator
     query = table.search("gripper closed", query_type="fts", **kwargs)
     assert query.count_rows() == expected
     assert len(query.limit(100).to_list()) == expected
     assert (
-        table.search("gripper closed", query_type="fts").operator("AND").count_rows()
+        table.search("gripper closed", query_type="fts", fts_columns="text")
+        .operator("AND")
+        .count_rows()
         == 15
     )
     if operator is not None:
@@ -1977,7 +1981,9 @@ def test_simple_fts_operator_and_count(tmp_path, indexed, operator, expected):
     assert query.count_rows() == expected - 5
     assert query.to_query_object() == before
     assert len(query.to_list()) <= 2
-    assert table.search("absent", query_type="fts").count_rows() == 0
+    assert (
+        table.search("absent", query_type="fts", fts_columns="text").count_rows() == 0
+    )
     assert (
         table.search(MatchQuery("gripper closed", "text", operator="AND")).count_rows()
         == 15
@@ -2004,7 +2010,9 @@ async def test_simple_fts_operator_and_count_async(
     )
     if indexed:
         await table.create_index("text", config=FTS())
-    query = await table.search("gripper closed", query_type="fts", operator=operator)
+    query = await table.search(
+        "gripper closed", query_type="fts", fts_columns="text", operator=operator
+    )
     assert await query.count_rows() == expected
     assert len(await query.limit(100).to_list()) == expected
     query.where("id >= 5").postfilter().select(["id"]).limit(2).offset(1)
@@ -2016,7 +2024,9 @@ async def test_simple_fts_operator_and_count_async(
     )
     assert await direct.count_rows() == 15
     assert direct.to_query_object().full_text_query.query.operator == "AND"
-    assert await table.query().nearest_to_text("absent").count_rows() == 0
+    assert (
+        await table.query().nearest_to_text("absent", columns="text").count_rows() == 0
+    )
 
 
 @pytest.mark.parametrize("with_position", [False, True])
