@@ -94,6 +94,104 @@ describe("Query outputSchema", () => {
     expect(aField?.type.toString()).toBe("Int64");
   });
 
+  it.each([false, true])(
+    "should honor vector scoring projection (explicit score: %s)",
+    async (includeScore) => {
+      const columns = includeScore ? ["a", "_distance"] : ["a"];
+      const query = table
+        .vectorSearch([1, 2])
+        .select(columns)
+        .disableScoringAutoprojection();
+
+      const results = await query.toArrow();
+      expect(results.numRows).toBe(3);
+      expect(results.schema.fields.map((field) => field.name)).toEqual(columns);
+      expect(
+        (await query.outputSchema()).fields.map((field) => field.name),
+      ).toEqual(columns);
+    },
+  );
+
+  it.each([false, true])(
+    "should honor FTS scoring projection (explicit score: %s)",
+    async (includeScore) => {
+      await table.createIndex("text", { config: Index.fts() });
+      const columns = includeScore ? ["a", "_score"] : ["a"];
+      const query = table
+        .query()
+        .fullTextSearch("foo")
+        .select(columns)
+        .disableScoringAutoprojection();
+
+      const results = await query.toArrow();
+      expect(results.numRows).toBe(1);
+      expect(results.schema.fields.map((field) => field.name)).toEqual(columns);
+      expect(
+        (await query.outputSchema()).fields.map((field) => field.name),
+      ).toEqual(columns);
+    },
+  );
+
+  it.each(["columns", "dynamic", "all"])(
+    "should keep hybrid search working with scoring autoprojection disabled (%s)",
+    async (projection) => {
+      await table.createIndex("text", { config: Index.fts() });
+      const query = () => {
+        const query = table.vectorSearch([1, 2]).fullTextSearch("foo");
+        if (projection === "columns") {
+          query.select(["a"]);
+        } else if (projection === "dynamic") {
+          query.select({ doubled: "a * 2" });
+        }
+        return query;
+      };
+      const expected = await query().toArrow();
+      const results = await query().disableScoringAutoprojection().toArrow();
+
+      const rows = (result: typeof results) =>
+        result.toArray().map((row) => ({
+          a: row.a,
+          doubled: row.doubled,
+          text: row.text,
+          vec: row.vec ? Array.from(row.vec) : undefined,
+          relevance: row._relevance_score,
+        }));
+      expect(results.numRows).toBe(3);
+      expect(rows(results)).toEqual(rows(expected));
+      expect(results.schema.fields.map((field) => field.name)).toEqual(
+        expected.schema.fields
+          .map((field) => field.name)
+          .filter((name) => name !== "_distance" && name !== "_score"),
+      );
+    },
+  );
+
+  it("should preserve the scoring option when converting to a vector query", async () => {
+    const results = await table
+      .query()
+      .disableScoringAutoprojection()
+      .nearestTo([1, 2])
+      .select({ doubled: "a * 2" })
+      .toArrow();
+
+    expect(results.numRows).toBe(3);
+    expect(results.schema.fields.map((field) => field.name)).toEqual([
+      "doubled",
+    ]);
+  });
+
+  it("should apply the scoring option to deferred auto queries", async () => {
+    await table.createIndex("text", { config: Index.fts() });
+    const results = await table
+      .search("foo")
+      .select(["a"])
+      .disableScoringAutoprojection()
+      .toArrow();
+
+    expect(results.numRows).toBe(1);
+    expect(results.schema.fields.map((field) => field.name)).toEqual(["a"]);
+  });
+
   it("should return schema for take query", async () => {
     const schema = await table.takeOffsets([0]).select(["text"]).outputSchema();
 

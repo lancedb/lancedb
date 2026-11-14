@@ -12,6 +12,36 @@ use lance_index::{scalar::inverted::SCORE_COL, vector::DIST_COL};
 use std::sync::Arc;
 
 use crate::error::{Error, Result};
+use crate::query::Select;
+
+/// Include a leg's score in its internal projection, recording whether it was
+/// injected so it can be removed after reranking.
+///
+/// The caller expands `Select::All` before adding scoring columns.
+pub(super) fn add_score_column(select: &mut Select, score: &str) -> bool {
+    match select {
+        Select::All => unreachable!("hybrid score projection requires explicit columns"),
+        Select::Columns(columns) => {
+            if columns.iter().any(|name| name == score) {
+                return false;
+            }
+            columns.push(score.to_string());
+        }
+        Select::Dynamic(columns) => {
+            if columns.iter().any(|(name, _)| name == score) {
+                return false;
+            }
+            columns.push((score.to_string(), score.to_string()));
+        }
+        Select::Expr(columns) => {
+            if columns.iter().any(|(name, _)| name == score) {
+                return false;
+            }
+            columns.push((score.to_string(), crate::expr::col(score)));
+        }
+    }
+    true
+}
 
 /// Converts results's score column to a rank.
 ///

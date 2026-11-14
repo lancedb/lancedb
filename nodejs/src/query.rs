@@ -169,6 +169,11 @@ impl Query {
         self.inner = self.inner.clone().with_row_id();
     }
 
+    #[napi]
+    pub fn disable_scoring_autoprojection(&mut self) {
+        self.inner = self.inner.clone().disable_scoring_autoprojection();
+    }
+
     #[napi(js_name = "useRTE")]
     pub fn use_rte(&mut self, enable: bool) {
         self.inner = self.inner.clone().use_rte(enable);
@@ -410,6 +415,11 @@ impl VectorQuery {
     #[napi(js_name = "useRTE")]
     pub fn use_rte(&mut self, enable: bool) {
         self.inner = self.inner.clone().use_rte(enable);
+    }
+
+    #[napi]
+    pub fn disable_scoring_autoprojection(&mut self) {
+        self.inner = self.inner.clone().disable_scoring_autoprojection();
     }
 
     #[napi]
