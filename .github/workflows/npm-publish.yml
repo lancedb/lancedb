@@ -36,6 +36,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Temporary composition validation: build only the macOS ARM leg.
         settings:
           - target: aarch64-apple-darwin
             host: macos-latest
@@ -45,103 +46,6 @@ jobs:
             codegen_units: 16
             pre_build: |-
               brew install protobuf
-          - target: x86_64-pc-windows-msvc
-            host: windows-2025
-            features: ","
-            # The lower peak also keeps this on the standard 4-core runner.
-            lto: thin
-            codegen_units: 16
-            pre_build: |-
-              choco install --no-progress protoc ninja nasm
-              tail -n 1000 /c/ProgramData/chocolatey/logs/chocolatey.log
-              # There is an issue where choco doesn't add nasm to the path
-              export PATH="$PATH:/c/Program Files/NASM"
-              nasm -v
-          - target: aarch64-pc-windows-msvc
-            host: windows-2025
-            features: ","
-            lto: thin
-            codegen_units: 16
-            pre_build: |-
-                choco install --no-progress protoc
-                rustup target add aarch64-pc-windows-msvc
-          - target: x86_64-unknown-linux-gnu
-            # Fat LTO reached 15.1 GiB before rustc was killed on the 15 GiB runner.
-            host: ubuntu-2404-8x-x64
-            features: fp16kernels
-            # https://github.com/napi-rs/napi-rs/blob/main/debian.Dockerfile
-            docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian
-            pre_build: |-
-              set -e
-              apt-get update
-              apt-get install -y protobuf-compiler pkg-config
-              # The base image (manylinux2014-cross) sets TARGET_CC to the old
-              # GCC 4.8 cross-compiler. aws-lc-sys checks TARGET_CC before CC,
-              # so it picks up GCC even though the napi-rs image sets CC=clang.
-              # Override to use the image's clang-18 which supports -fuse-ld=lld.
-              export TARGET_CC=clang TARGET_CXX=clang++
-          - target: x86_64-unknown-linux-musl
-            # This one seems to need some extra memory
-            host: ubuntu-2404-8x-x64
-            features: fp16kernels
-            pre_build: |-
-              set -e
-              sudo apt-get update
-              sudo apt-get install -y protobuf-compiler pkg-config
-              rustup target add x86_64-unknown-linux-musl
-              export EXTRA_ARGS="-x"
-          - target: aarch64-unknown-linux-gnu
-            host: ubuntu-2404-8x-x64
-            # https://github.com/napi-rs/napi-rs/blob/main/debian-aarch64.Dockerfile
-            docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian-aarch64
-            features: "fp16kernels"
-            # Fat LTO OOM-killed rustc every nightly; even with lld it peaked
-            # at 31391 MiB of the runner's 32 GiB.
-            lto: thin
-            codegen_units: 16
-            # arm64 Linux links through GNU `ld` where x86_64 defaults to
-            # `rust-lld`, which is why only arm64 OOM'd. lld cut the largest
-            # linker process 7.0 -> 4.0 GiB (lancedb/sophon#7313).
-            linker: /tmp/aarch64-lld-clang
-            pre_build: |-
-              set -e
-              apt-get update
-              apt-get install -y protobuf-compiler pkg-config
-              export TARGET_CC=clang TARGET_CXX=clang++
-              # The manylinux2014 sysroot has glibc 2.17 headers which lack
-              # AT_HWCAP2 (added in Linux 3.17). Define it for aws-lc-sys.
-              export CFLAGS="$CFLAGS -DAT_HWCAP2=26"
-              rustup target add aarch64-unknown-linux-gnu
-              # Not `&&`-chained: in dash, errexit does not fire for a
-              # non-final command in an `&&` list, so failures were ignored.
-              #
-              # A wrapper rather than `-C link-arg` because the per-target
-              # rustflags variable does not reach every unit that links, while
-              # the linker variable does. `clang` because GCC silently ignores
-              # `-fuse-ld=lld` unless built with lld support. Two echoes
-              # because printf's newline escape gets rewritten to `;` between
-              # here and the container.
-              echo '#!/bin/sh' > /tmp/aarch64-lld-clang
-              echo 'exec clang --target=aarch64-unknown-linux-gnu --sysroot=/usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot --gcc-toolchain=/usr/aarch64-unknown-linux-gnu -fuse-ld=lld "$@"' >> /tmp/aarch64-lld-clang
-              chmod 0755 /tmp/aarch64-lld-clang
-              # Fail now, not at the cdylib link ~30 minutes later. Linking at
-              # all also proves lld resolved; clang errors out when it cannot.
-              echo 'int main(void){return 0;}' > /tmp/probe.c
-              /tmp/aarch64-lld-clang /tmp/probe.c -o /tmp/probe
-              readelf -h /tmp/probe | grep AArch64
-          - target: aarch64-unknown-linux-musl
-            host: ubuntu-2404-8x-x64
-            features: ","
-            # Fat LTO took the whole runner down. lld cannot help: it died
-            # inside rustc's LLVM, before any linker was spawned.
-            lto: thin
-            codegen_units: 16
-            pre_build: |-
-              set -e
-              sudo apt-get update
-              sudo apt-get install -y protobuf-compiler
-              rustup target add aarch64-unknown-linux-musl
-              export EXTRA_ARGS="-x"
     name: build - ${{ matrix.settings.target }}
     runs-on: ${{ matrix.settings.host }}
     # On the job, not exported from `pre_build`: `Swatinem/rust-cache` hashes
@@ -328,16 +232,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Temporary composition validation: test only macOS ARM on Node 22.
         settings:
-          # TODO: Get tests passing on Windows (failing from test tmpdir issue)
-          # - host: windows-latest
-          #   target: x86_64-pc-windows-msvc
           - host: macos-latest
             target: aarch64-apple-darwin
-          - target: x86_64-unknown-linux-gnu
-            host: ubuntu-latest
-          - target: aarch64-unknown-linux-gnu
-            host: ubuntu-2404-8x-arm64
         node:
           - '22'
     runs-on: ${{ matrix.settings.host }}
@@ -391,6 +289,8 @@ jobs:
   publish:
     name: Publish
     runs-on: ubuntu-latest
+    # Temporary composition validation must never publish.
+    if: ${{ false }}
     defaults:
       run:
         shell: bash
@@ -452,9 +352,8 @@ jobs:
     name: Report Workflow Failure
     runs-on: ubuntu-latest
     needs: [build-lancedb, test-lancedb, publish]
-    # Nightly runs are the only thing watching the cross-compiled targets now,
-    # so they have to report failures too or the signal is silently lost.
-    if: always() && failure() && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'schedule')
+    # Temporary composition validation must not create failure issues.
+    if: ${{ false }}
     permissions:
       contents: read
       issues: write
