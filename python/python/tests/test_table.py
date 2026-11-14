@@ -619,6 +619,28 @@ def test_add_dictionary(mem_db: DBConnection):
     )
 
 
+def test_add_dicts_keep_columns_missing_from_first_row(mem_db: DBConnection):
+    schema = pa.schema({"id": pa.int64(), "note": pa.string()})
+    tbl = mem_db.create_table("test", schema=schema)
+    tbl.add([{"id": 1}, {"id": 2, "note": "keep me"}])
+    assert tbl.to_arrow().sort_by("id").to_pylist() == [
+        {"id": 1, "note": None},
+        {"id": 2, "note": "keep me"},
+    ]
+
+
+def test_merge_insert_dicts_keep_columns_missing_from_first_row(mem_db: DBConnection):
+    schema = pa.schema({"id": pa.int64(), "note": pa.string()})
+    tbl = mem_db.create_table("test", schema=schema)
+    tbl.merge_insert("id").when_not_matched_insert_all().execute(
+        [{"id": 1}, {"id": 2, "note": "keep me"}]
+    )
+    assert tbl.to_arrow().sort_by("id").to_pylist() == [
+        {"id": 1, "note": None},
+        {"id": 2, "note": "keep me"},
+    ]
+
+
 def test_add(mem_db: DBConnection):
     schema = pa.schema(
         [
