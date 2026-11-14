@@ -496,6 +496,7 @@
               "management/materialized-view",
               "management/secret",
               "management/function",
+              "management/function-failures",
               "management/storage-integration"
             ]
           },
