@@ -641,18 +641,12 @@ where
             }
             batches.extend(page);
             if done {
-                return batches
-                    .into_iter()
-                    .map(|batch| {
-                        let mut metadata = batch.schema_ref().metadata().clone();
-                        metadata.remove(JOB_EVENT_PAGE_TOKEN_METADATA_KEY);
-                        let schema = arrow_schema::Schema::new_with_metadata(
-                            batch.schema_ref().fields().clone(),
-                            metadata,
-                        );
-                        batch.with_schema(Arc::new(schema)).map_err(Into::into)
-                    })
-                    .collect();
+                for batch in &mut batches {
+                    batch
+                        .schema_metadata_mut()
+                        .remove(JOB_EVENT_PAGE_TOKEN_METADATA_KEY);
+                }
+                return Ok(batches);
             }
             request.page_token = next;
         }
