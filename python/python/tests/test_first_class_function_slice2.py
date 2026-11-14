@@ -9,7 +9,7 @@ import functools
 import importlib.util
 import inspect
 import types
-from datetime import date
+from datetime import date, datetime, timedelta
 import http.server
 import json
 import os
@@ -19,7 +19,7 @@ import sys
 import typing
 import urllib.parse
 import warnings
-from typing import Optional
+from typing import Annotated, Optional
 
 import pyarrow as pa
 import pytest
@@ -884,12 +884,11 @@ def test_canonical_arrow_type_prefers_the_compact_grammar():
         == "large_list<float32>"
     )
     for outside in [
-        pa.timestamp("us"),
         pa.decimal128(10, 2),
         pa.binary(4),
-        pa.duration("s"),
+        pa.time32("s"),
+        pa.time64("us"),
         pa.list_(pa.float32(), 0),
-        pa.list_(pa.timestamp("us")),
     ]:
         with pytest.raises(TypeError, match="unsupported Arrow type"):
             _canonical_arrow_type(outside)
@@ -1213,6 +1212,153 @@ def test_explicit_arrow_schema_is_deterministic():
     assert signature.inputs[0].nullable is True
     assert signature.output.arrow_type == "fixed_size_list<float32, 3>"
     assert signature.output.nullable is False
+
+
+def test_timestamp_annotation_and_explicit_schema_serialization():
+    for unit in ("s", "ms", "us", "ns"):
+        for timezone in (None, "UTC", "America/New_York", "+08:00", "-05:00"):
+            encoded = json.loads(_canonical_arrow_type(pa.timestamp(unit, tz=timezone)))
+            if unit == "us" and timezone is None:
+                assert encoded == {"type": "timestamp"}
+            else:
+                suffix = timezone if timezone is not None else "-"
+                assert encoded == {"type": f"timestamp:{unit}:{suffix}"}
+
+    with pytest.raises(TypeError, match="reserved for no timezone"):
+        _canonical_arrow_type(pa.timestamp("us", tz="-"))
+
+    @function
+    def normalize(
+        ts: Annotated[datetime, pa.timestamp("ns", tz="UTC")],
+    ) -> Annotated[datetime, pa.timestamp("ns", tz="UTC")]:
+        return ts
+
+    signature = normalize.registration_request.signature
+    assert json.loads(signature.inputs[0].arrow_type) == {"type": "timestamp:ns:UTC"}
+    assert json.loads(signature.output.arrow_type) == {"type": "timestamp:ns:UTC"}
+    round_trip = FunctionSignature.from_json(signature.to_canonical_json())
+    assert round_trip.inputs[0].arrow_type == signature.inputs[0].arrow_type
+    assert round_trip.output.arrow_type == signature.output.arrow_type
+
+    @function
+    def optional_timestamp(
+        ts: Optional[Annotated[datetime, pa.timestamp("ms", tz="UTC")]],
+    ) -> int:
+        return 0
+
+    optional_input = optional_timestamp.registration_request.signature.inputs[0]
+    assert optional_input.nullable is True
+    assert json.loads(optional_input.arrow_type) == {"type": "timestamp:ms:UTC"}
+
+    @function
+    def legacy(ts: datetime) -> datetime:
+        return ts
+
+    legacy_signature = legacy.registration_request.signature
+    assert json.loads(legacy_signature.inputs[0].arrow_type) == {"type": "timestamp"}
+    assert json.loads(legacy_signature.output.arrow_type) == {"type": "timestamp"}
+    legacy_round_trip = FunctionSignature.from_json(
+        legacy_signature.to_canonical_json()
+    )
+    assert legacy_round_trip.inputs[0].arrow_type == '{"type":"timestamp"}'
+
+    input_schema = pa.schema(
+        [pa.field("ts", pa.timestamp("ms", tz="America/New_York"), nullable=True)]
+    )
+    output_schema = pa.schema(
+        [
+            pa.field("ts", pa.timestamp("ns", tz="+08:00"), nullable=True),
+            pa.field("elapsed", pa.duration("ms"), nullable=False),
+        ]
+    )
+
+    @function(input_schema=input_schema, output_schema=output_schema)
+    def nested(ts):
+        return {"ts": ts, "elapsed": None}
+
+    nested_signature = nested.registration_request.signature
+    assert nested_signature.inputs[0].nullable is True
+    assert json.loads(nested_signature.inputs[0].arrow_type) == {
+        "type": "timestamp:ms:America/New_York"
+    }
+    assert nested_signature.output.kind == "named_struct"
+    assert nested_signature.output.fields[0].nullable is True
+    assert json.loads(nested_signature.output.fields[0].arrow_type) == {
+        "type": "timestamp:ns:+08:00"
+    }
+    assert json.loads(nested_signature.output.fields[1].arrow_type) == {
+        "type": "duration:ms"
+    }
+
+    list_type = pa.list_(pa.field("item", pa.timestamp("ms", tz="UTC"), nullable=False))
+    assert json.loads(_canonical_arrow_type(list_type)) == {
+        "type": "list",
+        "fields": [
+            {
+                "name": "item",
+                "nullable": False,
+                "type": {"type": "timestamp:ms:UTC"},
+            }
+        ],
+    }
+
+
+def test_duration_annotation_and_explicit_schema_serialization():
+    for unit in ("s", "ms", "us", "ns"):
+        encoded = json.loads(_canonical_arrow_type(pa.duration(unit)))
+        expected = (
+            {"type": "duration"} if unit == "us" else {"type": f"duration:{unit}"}
+        )
+        assert encoded == expected
+
+    @function
+    def elapsed(
+        value: Annotated[timedelta, pa.duration("s")],
+    ) -> Annotated[timedelta, pa.duration("ns")]:
+        return value
+
+    signature = elapsed.registration_request.signature
+    assert json.loads(signature.inputs[0].arrow_type) == {"type": "duration:s"}
+    assert json.loads(signature.output.arrow_type) == {"type": "duration:ns"}
+    round_trip = FunctionSignature.from_json(signature.to_canonical_json())
+    assert round_trip.inputs[0].arrow_type == signature.inputs[0].arrow_type
+    assert round_trip.output.arrow_type == signature.output.arrow_type
+
+    @function
+    def optional_elapsed(
+        value: Optional[Annotated[timedelta, pa.duration("ms")]],
+    ) -> int:
+        return 0
+
+    optional_input = optional_elapsed.registration_request.signature.inputs[0]
+    assert optional_input.nullable is True
+    assert json.loads(optional_input.arrow_type) == {"type": "duration:ms"}
+
+    with pytest.raises(
+        TypeError, match="timedelta Function annotations require an explicit unit"
+    ):
+
+        @function
+        def missing(value: timedelta) -> timedelta:
+            return value
+
+    input_schema = pa.schema([pa.field("elapsed", pa.duration("ms"), nullable=True)])
+    output_schema = pa.field("result", pa.duration("us"), nullable=False)
+
+    @function(input_schema=input_schema, output_schema=output_schema)
+    def explicit(elapsed: timedelta) -> timedelta:
+        return elapsed
+
+    explicit_signature = explicit.registration_request.signature
+    assert explicit_signature.inputs[0].nullable is True
+    assert json.loads(explicit_signature.inputs[0].arrow_type) == {
+        "type": "duration:ms"
+    }
+    assert json.loads(explicit_signature.output.arrow_type) == {"type": "duration"}
+    explicit_round_trip = FunctionSignature.from_json(
+        explicit_signature.to_canonical_json()
+    )
+    assert explicit_round_trip.output.arrow_type == '{"type":"duration"}'
 
 
 def test_nullable_scalar_output_annotation_and_explicit_schema():

@@ -104,6 +104,41 @@ at all is the struct's own validity, which Enterprise keeps in a separate
 internal column when it expands the result into sibling columns, so a null
 field is a value rather than a missing row.
 
+### Timestamps and durations {#timestamps-durations}
+
+Bare `datetime` keeps its existing `timestamp[us]` default without a timezone.
+For any other unit or a timezone, declare the Arrow type explicitly:
+
+```python
+from datetime import datetime
+from typing import Annotated
+
+import pyarrow as pa
+
+
+@function
+def normalize(
+    ts: Annotated[datetime, pa.timestamp("ns", tz="UTC")],
+) -> Annotated[datetime, pa.timestamp("ns", tz="UTC")]:
+    ...
+```
+
+`pa.timestamp` accepts `s`, `ms`, `us`, and `ns`, and a timezone such as
+`UTC`, `America/New_York`, or `+08:00`. The canonical signature uses
+`{"type":"timestamp:<unit>:<timezone>"}`, with `-` for no timezone; the
+microsecond/no-timezone case keeps the legacy `{"type":"timestamp"}` shape.
+A timezone string of `-` is reserved for "no timezone" and is rejected.
+
+`pa.duration` accepts the same four units and uses
+`{"type":"duration:<unit>"}`; the microsecond case keeps the legacy
+`{"type":"duration"}` shape. A bare `timedelta` has no unit and is rejected;
+use `Annotated[timedelta, pa.duration("s")]` or an explicit schema.
+
+Other units are never downgraded to microseconds. A reader that predates the
+compound temporal representation cannot read those signatures. A deployment
+must include the corresponding Lance Namespace and Sophon support; this
+client-side declaration does not add server support.
+
 ## Connect and create a table {#table}
 
 The remaining steps run against your Enterprise deployment. Replace the database
