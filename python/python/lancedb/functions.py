@@ -528,12 +528,69 @@ class PythonRuntimeSpec(_RemoteValue):
 
 
 class FunctionImage(_RemoteValue):
-    """A complete OCI Function image identified by its exact manifest digest."""
+    """A complete OCI Function image identified by its exact manifest digest.
+
+    ``describe()`` and the concise representation inspect the descriptor without
+    walking Pydantic model internals. Missing metadata is ``None`` (unknown).
+    The current service does not report image platforms, base image or byte size;
+    these cannot be inferred from the client's platform or the manifest digest.
+    The full descriptor remains available through ``descriptor``.
+    """
 
     manifest_digest: str
     descriptor: Mapping[str, Any]
     source: bool
     models: tuple[HuggingFaceModel, ...] = ()
+
+    def describe(self) -> dict[str, Any]:
+        """Return concise image details without fetching registry content.
+
+        ``requires_gpu`` reflects a ``lance.cuda`` requirement in a v1
+        descriptor, rather than promising compatibility with every GPU.
+        ``platforms``, ``base_image`` and ``size_bytes`` are unavailable from
+        the current wire contract and return ``None``.
+
+        Examples
+        --------
+        >>> print(fn.image.describe())  # doctest: +SKIP
+        """
+        python = self.descriptor.get("python")
+        requires = self.descriptor.get("requires")
+        capabilities = (
+            requires.get("capabilities") if isinstance(requires, Mapping) else None
+        )
+        known_capabilities = (
+            self.descriptor.get("format_version") == 1
+            and isinstance(capabilities, (list, tuple))
+            and all(isinstance(item, Mapping) for item in capabilities)
+        )
+        cuda = (
+            next(
+                (item for item in capabilities if item.get("type") == "lance.cuda"),
+                None,
+            )
+            if known_capabilities
+            else None
+        )
+        python_version = python.get("version") if isinstance(python, Mapping) else None
+        cuda_toolkit = cuda.get("cuda_toolkit") if cuda is not None else None
+        return {
+            "manifest_digest": self.manifest_digest,
+            "python_version": python_version
+            if isinstance(python_version, str)
+            else None,
+            "requires_gpu": cuda is not None if known_capabilities else None,
+            "cuda_toolkit": cuda_toolkit if isinstance(cuda_toolkit, str) else None,
+            "platforms": None,
+            "base_image": None,
+            "size_bytes": None,
+        }
+
+    def __repr_args__(self):
+        for name, value in self.describe().items():
+            if isinstance(value, str) and len(value) > 80:
+                value = value[:77] + "..."
+            yield name, value
 
 
 def _validate_object_version(value: str) -> str:

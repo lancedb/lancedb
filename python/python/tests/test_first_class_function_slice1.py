@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import json
+import warnings
 from collections import UserDict
 from pathlib import Path
 from types import MappingProxyType
@@ -13,6 +14,7 @@ import lancedb.functions as functions
 from lancedb.functions import (
     FunctionApplication,
     FunctionBinding,
+    FunctionImage,
     FunctionVersion,
     PythonRuntimeSpec,
     SecretBinding,
@@ -146,6 +148,59 @@ def test_function_version_identity_is_immutable_and_exact():
     for invalid in [version.image.manifest_digest, "0", "01", "-1", str(2**64)]:
         with pytest.raises(ValueError):
             FunctionVersion(**{**value, "version": invalid})
+
+
+@pytest.mark.parametrize("gpu", [False, True])
+def test_image_inspection_is_concise_warning_free_and_preserves_wire_state(gpu):
+    value = job_result("remote_function_job.json")["image"]
+    value["descriptor"]["future_metadata"] = "x" * 100_000
+    if gpu:
+        value["descriptor"]["requires"]["capabilities"] = [
+            {
+                "type": "lance.cuda",
+                "version": 1,
+                "device_count": 1,
+                "cuda_toolkit": "12.4",
+            }
+        ]
+    image = FunctionImage(**value)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        details = image.describe()
+        rendered = repr(image)
+        assert "manifest_digest=" in str(image)
+        encoded = json.loads(image.to_canonical_json())
+    assert details == {
+        "manifest_digest": value["manifest_digest"],
+        "python_version": "3.12.14",
+        "requires_gpu": gpu,
+        "cuda_toolkit": "12.4" if gpu else None,
+        "platforms": None,
+        "base_image": None,
+        "size_bytes": None,
+    }
+    assert len(rendered) < 350
+    assert f"requires_gpu={gpu}" in rendered
+    assert "future_metadata" not in rendered
+    assert encoded == value
+
+
+@pytest.mark.parametrize(
+    "descriptor",
+    [
+        {},
+        {"format_version": 2, "requires": {"capabilities": []}},
+        {"format_version": 1, "requires": {"capabilities": [None]}},
+        {"python": {"version": {"future": "x" * 100_000}}},
+    ],
+)
+def test_image_inspection_leaves_missing_or_unrecognized_metadata_unknown(descriptor):
+    image = FunctionImage(
+        manifest_digest="sha256:example", descriptor=descriptor, source=True
+    )
+    assert image.describe()["requires_gpu"] is None
+    assert image.describe()["python_version"] is None
+    assert len(repr(image)) < 350
 
 
 @pytest.mark.parametrize(

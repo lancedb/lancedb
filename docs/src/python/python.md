@@ -424,6 +424,25 @@ code that used the former LanceDB Enterprise-only argument order.
 
 ## Functions and Jobs
 
+Use `progress=True` when waiting for Function registration in a notebook or
+terminal. A callback receives structured snapshots instead:
+
+```python
+fn = db.create_function(my_function, progress=True)
+registration = db.create_function_async(other_function)
+fn = registration.wait(progress=lambda snapshot: print(snapshot))
+print(fn.image.describe())
+```
+
+Registration uses the existing SQL query handle. The current handle reports
+lifecycle state and `client_elapsed_time_millis` since the handle was created;
+detailed build phases and build logs are unavailable. Keep the same handle after
+a wait timeout to resume waiting. Failures retain the server error and request
+identifiers. `fn.image` has a concise representation; `describe()` exposes Python
+and CUDA requirements without inspecting Pydantic internals. Platforms, base image
+and size are `None` until the service reports them. The full image descriptor and
+canonical JSON remain available.
+
 A `@function` definition is also a local callable. Call a decorated function
 directly with row inputs, or call a decorated class with its initialization fields
 and then call the returned instance; call `close()` if the class defines it. This
