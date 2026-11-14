@@ -1321,10 +1321,9 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         filter: JobListFilter,
         options: ListingOptions,
     ) -> Result<ListingPage<JobInfo>> {
-        if filter.table.is_none() && (!filter.namespace_path.is_empty() || filter.branch.is_some())
-        {
+        if filter.table.is_none() && !filter.namespace_path.is_empty() {
             return Err(Error::InvalidInput {
-                message: "namespace_path and branch require a table filter".into(),
+                message: "namespace_path requires a table filter".into(),
             });
         }
         if let (Some(start), Some(end)) =
@@ -1343,9 +1342,6 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 "db_name": self.db_name,
                 "table_id": {"namespace_path": filter.namespace_path, "table_name": table},
             });
-            if let Some(branch) = filter.branch {
-                body["table_ref"]["branch_name"] = branch.into();
-            }
         }
         if let Some(state) = filter.state {
             body["state"] = serde_json::json!(state);
@@ -4416,7 +4412,6 @@ mod tests {
                 "table_ref": {
                     "db_name": "default",
                     "table_id": {"namespace_path": ["team", "project"], "table_name": "events"},
-                    "branch_name": "experiment",
                 },
                 "state": "in_progress",
                 "job_types": ["column_refresh", "materialized_view_refresh"],
@@ -4436,7 +4431,6 @@ mod tests {
         let filter = JobListFilter {
             table: Some("events".into()),
             namespace_path: vec!["team".into(), "project".into()],
-            branch: Some("experiment".into()),
             state: Some(JobListState::InProgress),
             job_types: vec!["column_refresh".into(), "materialized_view_refresh".into()],
             created_at_gte_millis: Some(100),
@@ -4468,16 +4462,12 @@ mod tests {
             namespace_path: vec!["team".into()],
             ..Default::default()
         };
-        let branch_only = JobListFilter {
-            branch: Some("experiment".into()),
-            ..Default::default()
-        };
         let invalid_time = JobListFilter {
             created_at_gte_millis: Some(200),
             created_at_lt_millis: Some(100),
             ..Default::default()
         };
-        for filter in [namespace_only, branch_only, invalid_time] {
+        for filter in [namespace_only, invalid_time] {
             let mut jobs = conn.list_jobs_filtered(filter, ListingOptions::default());
             assert!(matches!(
                 jobs.try_next().await,

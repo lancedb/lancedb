@@ -1320,14 +1320,13 @@ impl Connection {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (*, page_token=None, page_limit=None, table=None, namespace_path=None, branch=None, state=None, job_type=None, job_types=None, created_at_gte_millis=None, created_at_lt_millis=None))]
+    #[pyo3(signature = (*, page_token=None, page_limit=None, table=None, namespace_path=None, state=None, job_type=None, job_types=None, created_at_gte_millis=None, created_at_lt_millis=None))]
     pub fn list_jobs(
         &self,
         page_token: Option<String>,
         page_limit: Option<u32>,
         table: Option<String>,
         namespace_path: Option<Vec<String>>,
-        branch: Option<String>,
         state: Option<String>,
         job_type: Option<String>,
         job_types: Option<Vec<String>>,
@@ -1342,7 +1341,6 @@ impl Connection {
         let mut filter = JobListFilter::default();
         filter.table = table;
         filter.namespace_path = namespace_path.unwrap_or_default();
-        filter.branch = branch;
         filter.state = state
             .as_deref()
             .map(|state| match state {

@@ -306,7 +306,6 @@ class Connection(object):
         page_limit: Optional[int] = None,
         table: Optional[str] = None,
         namespace_path: Optional[List[str]] = None,
-        branch: Optional[str] = None,
         state: Optional[
             Literal["in_progress", "succeeded", "failed", "canceled", "timed_out"]
         ] = None,

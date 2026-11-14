@@ -345,7 +345,6 @@ async def test_job_filters_persist_across_pages_and_resume(
     filters = dict(
         table="events",
         namespace_path=namespace,
-        branch="experiment",
         state="in_progress",
         created_at_gte_millis=100,
         created_at_lt_millis=200,
@@ -364,7 +363,6 @@ async def test_job_filters_persist_across_pages_and_resume(
         table_ref={
             "db_name": "dev",
             "table_id": {"namespace_path": namespace, "table_name": "events"},
-            "branch_name": "experiment",
         },
         state="in_progress",
         job_types=types if multiple_types else types[:1],
@@ -381,8 +379,7 @@ async def test_job_filters_persist_across_pages_and_resume(
 @pytest.mark.parametrize(
     "filters, message",
     [
-        ({"namespace_path": ["team"]}, "require a table"),
-        ({"branch": "experiment"}, "require a table"),
+        ({"namespace_path": ["team"]}, "requires a table"),
         ({"created_at_gte_millis": 200, "created_at_lt_millis": 200}, "less than"),
         ({"created_at_gte_millis": 201, "created_at_lt_millis": 200}, "less than"),
         ({"job_type": "column_refresh", "job_types": []}, "only one"),

@@ -262,12 +262,10 @@ pub enum JobListState {
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
 pub struct JobListFilter {
-    /// Table name within `namespace_path`; absent means all tables.
+    /// Table name within `namespace_path`, including all its branches; absent means all tables.
     pub table: Option<String>,
     /// Namespace of `table`; requires a table name.
     pub namespace_path: Vec<String>,
-    /// Optional branch of `table`; absent includes all branches.
-    pub branch: Option<String>,
     /// Registry state, such as `in_progress`, `succeeded`, or `failed`.
     /// These are server states, rather than the labels in [`JobInfo::state`].
     pub state: Option<JobListState>,

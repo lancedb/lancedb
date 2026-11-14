@@ -1561,7 +1561,6 @@ class DBConnection(EnforceOverrides):
         page_limit: Optional[int] = None,
         table: Optional[str] = None,
         namespace_path: Optional[List[str]] = None,
-        branch: Optional[str] = None,
         state: Optional[
             Literal["in_progress", "succeeded", "failed", "canceled", "timed_out"]
         ] = None,
@@ -1573,8 +1572,8 @@ class DBConnection(EnforceOverrides):
         """List server-side jobs, optionally filtered before pagination.
 
         ``table`` names a table in ``namespace_path`` (the root by default).
-        ``branch`` narrows that table to one branch; omitting it includes all
-        branches. Namespace and branch filters require ``table``.
+        Listings include all branches of the table. A namespace filter requires
+        ``table``.
         ``state`` uses registry states such as ``in_progress``, ``succeeded``,
         ``failed``, ``timed_out``, and ``canceled``, rather than the SDK's
         ``running``/``finished`` labels. Set either ``job_type`` or ``job_types``.
@@ -2783,7 +2782,6 @@ class LanceDBConnection(DBConnection):
         page_limit: Optional[int] = None,
         table: Optional[str] = None,
         namespace_path: Optional[List[str]] = None,
-        branch: Optional[str] = None,
         state: Optional[
             Literal["in_progress", "succeeded", "failed", "canceled", "timed_out"]
         ] = None,
@@ -2795,8 +2793,8 @@ class LanceDBConnection(DBConnection):
         """List server-side jobs, optionally filtered before pagination.
 
         ``table`` names a table in ``namespace_path`` (the root by default).
-        ``branch`` narrows that table to one branch; omitting it includes all
-        branches. Namespace and branch filters require ``table``.
+        Listings include all branches of the table. A namespace filter requires
+        ``table``.
         ``state`` uses registry states such as ``in_progress``, ``succeeded``,
         ``failed``, ``timed_out``, and ``canceled``, rather than the SDK's
         ``running``/``finished`` labels. Set either ``job_type`` or ``job_types``.
@@ -2818,7 +2816,6 @@ class LanceDBConnection(DBConnection):
                 page_limit=page_limit,
                 table=table,
                 namespace_path=namespace_path,
-                branch=branch,
                 state=state,
                 job_type=job_type,
                 job_types=job_types,
@@ -4394,7 +4391,6 @@ class AsyncConnection(object):
         page_limit: Optional[int] = None,
         table: Optional[str] = None,
         namespace_path: Optional[List[str]] = None,
-        branch: Optional[str] = None,
         state: Optional[
             Literal["in_progress", "succeeded", "failed", "canceled", "timed_out"]
         ] = None,
@@ -4406,8 +4402,8 @@ class AsyncConnection(object):
         """List server-side jobs, optionally filtered before pagination.
 
         ``table`` names a table in ``namespace_path`` (the root by default).
-        ``branch`` narrows that table to one branch; omitting it includes all
-        branches. Namespace and branch filters require ``table``.
+        Listings include all branches of the table. A namespace filter requires
+        ``table``.
         ``state`` uses registry states such as ``in_progress``, ``succeeded``,
         ``failed``, ``timed_out``, and ``canceled``, rather than the SDK's
         ``running``/``finished`` labels. Set either ``job_type`` or ``job_types``.
@@ -4433,7 +4429,6 @@ class AsyncConnection(object):
                 page_limit=page_limit,
                 table=table,
                 namespace_path=namespace_path,
-                branch=branch,
                 state=state,
                 job_type=job_type,
                 job_types=job_types,
