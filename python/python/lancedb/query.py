@@ -3774,6 +3774,14 @@ class AsyncQueryBase(object):
         timeout: Optional[timedelta] = None,
         blob_sources: Optional[dict[str, str]] = None,
     ) -> AsyncRecordBatchReader:
+        # Shared execution entry point for every async query (to_arrow,
+        # to_batches, to_list, to_pandas, head, and the vector/FTS/hybrid
+        # variants, which all funnel through here via super()). A branch
+        # handle with QueryTable pushdown configured must fail here: unlike
+        # Table._execute_query, this path executes the Rust query directly,
+        # and Rust runs branch queries locally instead of pushing them down.
+        if self._table is not None:
+            self._table._check_branch_query_allowed()
         if (
             blob_sources
             and not self._user_requested_row_id()

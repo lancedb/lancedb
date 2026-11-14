@@ -15,12 +15,14 @@ import builtins
 import copy
 import pyarrow as pa
 import lancedb
+from lance_namespace import DescribeTableResponse
 from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
 from utils import start_server_thread
 from lancedb.listing import AsyncListing, Listing
 from lancedb.materialized_view import DEFINITION_FORMAT, DEFINITION_META_KEY
 from lancedb.namespace import (
     _MAX_QUERY_K,
+    AsyncLanceNamespaceDBConnection,
     LanceNamespace,
     LanceNamespaceDBConnection,
     _query_to_namespace_request,
@@ -218,6 +220,9 @@ class _FailingAsyncInner:
     async def schema(self):
         return PUSHDOWN_DATA.schema
 
+    async def count_rows(self, filter=None):
+        raise RuntimeError("local execution reached")
+
     def query(self):
         raise AssertionError("direct async query should not be used")
 
@@ -227,6 +232,52 @@ class _FailingAsyncInnerOnBranch(_FailingAsyncInner):
         # A branch handle with QueryTable pushdown configured must fail
         # clearly instead of being pushed down without branch information.
         return "b1"
+
+
+class _FailingAsyncQuery:
+    """Stand-in for the Rust query object returned by the inner table.
+
+    ``limit`` is a no-op, as on the real query; every execution entry
+    raises, so reaching one proves the branch guard did not fire.
+    """
+
+    def limit(self, limit):
+        return self
+
+    def to_query_request(self):
+        raise RuntimeError("local execution reached")
+
+    async def execute(self, max_batch_length=None, timeout=None):
+        raise RuntimeError("local execution reached")
+
+
+class _FailingAsyncBranches:
+    """Stand-in for the Rust branches object on the inner table."""
+
+    async def create(self, name, from_ref=None, from_version=None):
+        return _FailingAsyncInnerOnBranchWithQuery()
+
+    async def checkout(self, name, version=None):
+        return _FailingAsyncInnerOnBranchWithQuery()
+
+
+class _FailingAsyncInnerWithQuery(_FailingAsyncInner):
+    """Async inner whose query() returns a failing query object, so the
+    public query()/head() paths run the real AsyncQuery code."""
+
+    def query(self):
+        return _FailingAsyncQuery()
+
+    @property
+    def branches(self):
+        return _FailingAsyncBranches()
+
+
+class _FailingAsyncInnerOnBranchWithQuery(_FailingAsyncInnerOnBranch):
+    """Branch variant of the above: query() returns a failing query object."""
+
+    def query(self):
+        return _FailingAsyncQuery()
 
 
 class _NamespaceClient:
@@ -249,6 +300,33 @@ def _namespace_lance_table(
     # This test exercises the Python-side pushdown path (non-native client), so
     # pushdown is not routed to Rust.
     table._route_pushdown_to_rust = False
+    return table
+
+
+def _namespace_lance_table_over_async(
+    namespace_client: _NamespaceClient,
+    inner=None,
+    *,
+    route_pushdown_to_rust: bool = False,
+) -> LanceTable:
+    """A LanceTable whose inner is a real AsyncTable (not a fake), so sync
+    entry points (head/count_rows, branches.checkout) run the real
+    AsyncTable delegation instead of a stub."""
+    async_table = AsyncTable(
+        inner if inner is not None else _FailingAsyncInner(),
+        namespace_path=["geneva"],
+        namespace_client=namespace_client,
+        pushdown_operations={"QueryTable"},
+        route_pushdown_to_rust=route_pushdown_to_rust,
+    )
+    table = LanceTable.__new__(LanceTable)
+    table._table = async_table
+    table._namespace_path = ["geneva"]
+    table._namespace_client = namespace_client
+    table._pushdown_operations = {"QueryTable"}
+    table._route_pushdown_to_rust = route_pushdown_to_rust
+    table._location = None
+    table._conn = None
     return table
 
 
@@ -1374,6 +1452,94 @@ class TestPushdownOperations:
             table.to_arrow()
         assert namespace_client.requests == []
 
+    def test_native_namespace_branch_query_rejects(self, tmp_path):
+        # Gatekeeper regression case from #5038 (verbatim): a built-in
+        # "dir" namespace connection routes pushdown to Rust
+        # (_namespace_client is None, _route_pushdown_to_rust is True), so
+        # the old Python-side guard never ran and the branch query executed
+        # locally in Rust. It must fail clearly instead.
+        db = lancedb.connect_namespace("dir", {"root": str(tmp_path)})
+        table = db.create_table("t", [{"id": 1}])
+        table.branches.create("b1")
+        db = lancedb.connect_namespace(
+            "dir",
+            {"root": str(tmp_path)},
+            namespace_client_pushdown_operations=["QueryTable"],
+        )
+        branch = db.open_table("t", branch="b1")
+        with pytest.raises((ValueError, RuntimeError), match="branch"):
+            branch.search().to_list()
+
+    def test_lance_table_branch_head_with_pushdown_fails_clearly(self):
+        # head() runs through AsyncTable.head -> query().limit().to_arrow(),
+        # which executes the Rust query directly and never passed through
+        # _execute_query, so the old guard did not cover it (gatekeeper
+        # review on #5038).
+        namespace_client = _NamespaceClient()
+        table = _namespace_lance_table_over_async(
+            namespace_client, inner=_FailingAsyncInnerOnBranchWithQuery()
+        )
+
+        with pytest.raises(ValueError, match="Cannot run a query on branch 'b1'"):
+            table.head()
+        assert namespace_client.requests == []
+
+    def test_lance_table_branch_head_with_rust_routed_pushdown_fails_clearly(self):
+        # Same head() path, but pushdown is routed to Rust (built-in rest/dir
+        # connections have no Python namespace client): the guard must fire
+        # regardless of routing, since Rust executes branch queries locally.
+        table = _namespace_lance_table_over_async(
+            None,
+            inner=_FailingAsyncInnerOnBranchWithQuery(),
+            route_pushdown_to_rust=True,
+        )
+
+        with pytest.raises(ValueError, match="Cannot run a query on branch 'b1'"):
+            table.head()
+
+    def test_lance_table_branch_count_rows_with_pushdown_fails_clearly(self):
+        # count_rows() also reads the branch without going through
+        # _execute_query, so it needs the same guard.
+        namespace_client = _NamespaceClient()
+        table = _namespace_lance_table_over_async(
+            namespace_client, inner=_FailingAsyncInnerOnBranchWithQuery()
+        )
+
+        with pytest.raises(ValueError, match="Cannot run a query on branch 'b1'"):
+            table.count_rows()
+        assert namespace_client.requests == []
+
+    def test_lance_table_branches_checkout_keeps_pushdown_context(self):
+        # A handle from branches.checkout() used to lose the pushdown
+        # configuration (the async branch manager returned a bare table),
+        # so branch reads on it ran locally. It must keep the context and
+        # fail clearly instead.
+        namespace_client = _NamespaceClient()
+        table = _namespace_lance_table_over_async(
+            namespace_client, inner=_FailingAsyncInnerWithQuery()
+        )
+
+        branch = table.branches.checkout("b1")
+        assert branch._pushdown_operations == {"QueryTable"}
+        assert branch._namespace_client is namespace_client
+        assert branch.current_branch() == "b1"
+        with pytest.raises(ValueError, match="Cannot run a query on branch 'b1'"):
+            branch.head()
+        assert namespace_client.requests == []
+
+    def test_lance_table_main_query_with_rust_routed_pushdown_is_not_blocked(self):
+        # Positive control: the routing-independent guard must not fire on
+        # the default branch -- a main query with Rust-routed pushdown still
+        # falls through to execution (here, the failing inner).
+        table = _namespace_lance_table_over_async(
+            None,
+            inner=_FailingAsyncInnerWithQuery(),
+            route_pushdown_to_rust=True,
+        )
+
+        with pytest.raises(RuntimeError, match="local execution reached"):
+            table._execute_query(Query())
+
     def test_probe_fields_pass_through_independently(self):
         request = _query_to_namespace_request(
             ["geneva", "hist"],
@@ -1513,6 +1679,91 @@ class TestAsyncPushdownOperations:
 
         with pytest.raises(ValueError, match="Cannot run a query on branch 'b1'"):
             await table.to_arrow()
+        assert namespace_client.requests == []
+
+    async def test_python_async_public_query_rejects(self, tmp_path):
+        # Gatekeeper regression case from #5038 (verbatim): on a real
+        # custom-namespace branch, to_arrow() raised the new error but
+        # query().to_arrow() returned rows, because the public async query
+        # path executes the Rust query directly and never passed through
+        # _execute_query.
+        setup = lancedb.connect_namespace_async("dir", {"root": str(tmp_path)})
+        table = await setup.create_table("t", [{"id": 1}])
+        await table.branches.create("b1")
+        location = await table.uri()
+
+        class DenyingNamespace(LanceNamespace):
+            def namespace_id(self):
+                return "gate5038-deny"
+
+            def describe_table(self, request):
+                return DescribeTableResponse(location=location)
+
+            def query_table(self, request):
+                raise PermissionError("namespace query denied")
+
+        db = AsyncLanceNamespaceDBConnection(
+            DenyingNamespace(),
+            namespace_client_pushdown_operations=["QueryTable"],
+        )
+        branch = await db.open_table("t", branch="b1")
+        with pytest.raises(ValueError, match="Cannot run a query on branch"):
+            await branch.to_arrow()
+        with pytest.raises((ValueError, RuntimeError), match="branch"):
+            await branch.query().to_arrow()
+
+    async def test_async_table_branch_head_with_pushdown_fails_clearly(self):
+        # head() runs through query().limit().to_arrow(), the same public
+        # async query path as above.
+        namespace_client = _NamespaceClient()
+
+        table = AsyncTable(
+            _FailingAsyncInnerOnBranchWithQuery(),
+            namespace_path=["geneva"],
+            namespace_client=namespace_client,
+            pushdown_operations={"QueryTable"},
+        )
+
+        with pytest.raises(ValueError, match="Cannot run a query on branch 'b1'"):
+            await table.head()
+        assert namespace_client.requests == []
+
+    async def test_async_table_branch_count_rows_with_pushdown_fails_clearly(self):
+        # count_rows() also reads the branch without going through
+        # _execute_query, so it needs the same guard.
+        namespace_client = _NamespaceClient()
+
+        table = AsyncTable(
+            _FailingAsyncInnerOnBranchWithQuery(),
+            namespace_path=["geneva"],
+            namespace_client=namespace_client,
+            pushdown_operations={"QueryTable"},
+        )
+
+        with pytest.raises(ValueError, match="Cannot run a query on branch 'b1'"):
+            await table.count_rows()
+        assert namespace_client.requests == []
+
+    async def test_async_table_branches_checkout_keeps_pushdown_context(self):
+        # A handle from branches.checkout() used to lose the pushdown
+        # configuration (the async branch manager returned a bare table),
+        # so branch reads on it ran locally. It must keep the context and
+        # fail clearly instead.
+        namespace_client = _NamespaceClient()
+
+        main = AsyncTable(
+            _FailingAsyncInnerWithQuery(),
+            namespace_path=["geneva"],
+            namespace_client=namespace_client,
+            pushdown_operations={"QueryTable"},
+        )
+
+        branch = await main.branches.checkout("b1")
+        assert branch._pushdown_operations == {"QueryTable"}
+        assert branch._namespace_client is namespace_client
+        assert branch.current_branch() == "b1"
+        with pytest.raises(ValueError, match="Cannot run a query on branch 'b1'"):
+            await branch.query().to_arrow()
         assert namespace_client.requests == []
 
 
