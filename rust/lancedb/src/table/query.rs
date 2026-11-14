@@ -12,6 +12,7 @@ use super::NativeTable;
 use crate::connection::NamespaceClientPushdownOperation;
 use crate::error::{Error, Result};
 use crate::expr::expr_to_sql_string;
+use crate::index::scalar::{FtsQuery, Operator as FullTextOperator};
 use crate::query::{
     DEFAULT_TOP_K, QueryExecutionOptions, QueryFilter, QueryRequest, Select, VectorQueryRequest,
 };
@@ -36,7 +37,7 @@ use lance::io::exec::{ANNIvfBatchExec, ANNIvfSubIndexExec};
 use lance_datafusion::exec::{analyze_plan as lance_analyze_plan, execute_plan};
 use lance_index::IndexType;
 use lance_index::metrics::NoOpMetricsCollector;
-use lance_index::scalar::{FtsQuery, FullTextSearchQuery, Operator as FullTextOperator};
+use lance_index::scalar::FullTextSearchQuery;
 use lance_index::vector::DIST_COL;
 use lance_linalg::distance::DistanceType as LanceDistanceType;
 use lance_namespace::LanceNamespace;
@@ -1156,13 +1157,13 @@ async fn parse_arrow_ipc_response(bytes: bytes::Bytes) -> Result<DatasetRecordBa
 #[cfg(test)]
 #[allow(deprecated)]
 mod tests {
+    use crate::index::scalar::MatchQuery;
     use arrow_array::{
         ArrayRef, FixedSizeListArray, Float32Array, Int32Array, RecordBatch, StringArray,
         StructArray,
     };
     use futures::TryStreamExt;
     use lance_arrow::FixedSizeListArrayExt;
-    use lance_index::scalar::MatchQuery;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
