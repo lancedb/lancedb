@@ -128,6 +128,7 @@
 - [QueryExecutionOptions](interfaces/QueryExecutionOptions.md)
 - [RTEStats](interfaces/RTEStats.md)
 - [RTEWriteSpec](interfaces/RTEWriteSpec.md)
+- [RTreeOptions](interfaces/RTreeOptions.md)
 - [RefreshColumnOptions](interfaces/RefreshColumnOptions.md)
 - [RefreshColumnResult](interfaces/RefreshColumnResult.md)
 - [RefreshMaterializedViewResult](interfaces/RefreshMaterializedViewResult.md)

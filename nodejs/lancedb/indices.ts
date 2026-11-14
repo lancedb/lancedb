@@ -678,6 +678,18 @@ export interface FtsOptions {
   blockSize?: 128 | 256;
 }
 
+/**
+ * Options to create an `RTREE` index
+ */
+export interface RTreeOptions {
+  /**
+   * The maximum number of entries in each R-tree page.
+   *
+   * Must be at least 2. The default is 4096.
+   */
+  pageSize?: number;
+}
+
 export class Index {
   private readonly inner: LanceDbIndex;
   private constructor(inner: LanceDbIndex) {
@@ -832,6 +844,60 @@ export class Index {
    */
   static fm() {
     return new Index(LanceDbIndex.fm());
+  }
+
+  /**
+   * Create an RTree index.
+   *
+   * An RTree index is a scalar index on a GeoArrow geometry column, that is, a
+   * column whose Arrow field metadata sets `ARROW:extension:name` to a GeoArrow
+   * type such as `geoarrow.point`, `geoarrow.polygon` or `geoarrow.wkb`. It
+   * stores the bounding box of each geometry and accelerates spatial filters.
+   *
+   * The index answers `ST_Intersects`, `ST_Contains`, `ST_Within`,
+   * `ST_Touches`, `ST_Crosses`, `ST_Overlaps`, `ST_Covers` and `ST_CoveredBy`
+   * between the indexed column and a constant geometry, in either argument
+   * order, for example
+   * `ST_Within(geom, ST_GeomFromText('POLYGON ((...))'))`, as well as
+   * `geom IS NULL`. These filters can be combined with other conditions using
+   * `AND`. Bounding boxes only narrow the scan to candidate rows; the exact
+   * predicate is then evaluated on those rows, so the results are the same with
+   * or without the index.
+   *
+   * Other spatial functions such as `ST_Distance` work in filters but scan
+   * every row. Spatial functions are planar, so distances are in the units of
+   * the column's coordinates. `ST_DWithin` is not available.
+   *
+   * On a vector search, a spatial prefilter (the default) uses the index to
+   * restrict the candidates before the nearest neighbors are found. Use
+   * `explainPlan()` to check that a query uses the index: an indexed filter
+   * shows up as `ScalarIndexQuery`.
+   *
+   * Remote tables send the `RTREE` index type to the server, which must
+   * support it.
+   *
+   * @example
+   * ```ts
+   * await table.createIndex("geom", { config: Index.rtree() });
+   * await table
+   *   .query()
+   *   .where("ST_Intersects(geom, ST_GeomFromText('POLYGON ((0 0, 4 0, 0 4, 0 0))'))")
+   *   .toArray();
+   * ```
+   */
+  static rtree(options?: Partial<RTreeOptions>) {
+    const pageSize = options?.pageSize;
+    // napi converts a number to u32 by wrapping, so -1 would arrive as
+    // 4294967295; reject anything that is not a valid page size first.
+    if (
+      pageSize !== undefined &&
+      !(Number.isInteger(pageSize) && pageSize >= 2 && pageSize <= 0xffffffff)
+    ) {
+      throw new Error(
+        `RTree page_size must be at least 2 and an integer, got ${pageSize}`,
+      );
+    }
+    return new Index(LanceDbIndex.rtree(pageSize));
   }
 
   /**
