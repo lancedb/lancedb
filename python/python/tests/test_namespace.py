@@ -18,6 +18,7 @@ import lancedb
 from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
 from utils import start_server_thread
 from lancedb.listing import AsyncListing, Listing
+from lancedb.index import FTS
 from lancedb.materialized_view import DEFINITION_FORMAT, DEFINITION_META_KEY
 from lancedb.namespace import (
     _MAX_QUERY_K,
@@ -1545,3 +1546,20 @@ def test_namespace_fts_operator_is_preserved(columns):
     else:
         assert structured["match"]["operator"] == "And"
         assert structured["match"].get("column") == (columns[0] if columns else None)
+
+
+def test_namespace_fts_count_fast_search(tmp_path):
+    properties = {"root": str(tmp_path)}
+    db = lancedb.connect_namespace("dir", properties)
+    table = db.create_table("matches", pa.table({"text": ["gripper"] * 15}))
+    table.create_index("text", config=FTS())
+    table.add(pa.table({"text": ["gripper"] * 5}))
+    assert table.search("gripper", query_type="fts").fast_search().count_rows() == 15
+    pushed = lancedb.connect_namespace(
+        "dir", properties, namespace_client_pushdown_operations=["QueryTable"]
+    ).open_table("matches")
+    assert pushed.search("gripper", query_type="fts").count_rows() == 20
+    query = pushed.search("gripper", query_type="fts").fast_search()
+    assert query.use_rte(False).count_rows() == 15
+    query = pushed.search("gripper", query_type="fts").fast_search()
+    assert query.count_rows() == 15

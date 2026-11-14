@@ -1033,6 +1033,7 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
                 filter,
                 columns,
                 prefilter: Some(q.prefilter),
+                fast_search: Some(q.fast_search),
                 offset: q.offset.map(|o| o as i32),
                 vector_column: None, // No vector column for plain queries
                 with_row_id: Some(q.with_row_id),
