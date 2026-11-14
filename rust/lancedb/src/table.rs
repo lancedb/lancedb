@@ -2730,6 +2730,10 @@ impl Table {
     /// As a consequence, calling this method will disable any read consistency interval
     /// that was previously set.
     ///
+    /// In local mode, the tag must reference this handle's branch. A tag on another
+    /// branch is rejected without changing the handle. Use [`Self::checkout_branch`]
+    /// to obtain a handle scoped to that branch first.
+    ///
     /// This is a read-only operation that turns the table into a sort of "view"
     /// or "detached head".  Other table instances will not be affected.  To make the change
     /// permanent you can use the `[Self::restore]` method.
@@ -5256,6 +5260,127 @@ mod tests {
         assert_eq!(table.version().await.unwrap(), 3);
         table.checkout_latest().await.unwrap();
         assert_eq!(table.version().await.unwrap(), 4);
+    }
+
+    #[rstest::rstest]
+    #[case(None)]
+    #[case(Some(Duration::ZERO))]
+    #[case(Some(Duration::from_secs(60)))]
+    #[tokio::test]
+    async fn test_checkout_tag_rejects_other_branch(#[case] interval: Option<Duration>) {
+        let tmp_dir = tempdir().unwrap();
+        let mut builder = ConnectBuilder::new(tmp_dir.path().to_str().unwrap());
+        if let Some(interval) = interval {
+            builder = builder.read_consistency_interval(interval);
+        }
+        let conn = builder.execute().await.unwrap();
+        let main = conn
+            .create_table("my_table", sample_rows(vec![0]))
+            .execute()
+            .await
+            .unwrap();
+        let exp = main.create_branch("exp", 1u64).await.unwrap();
+        let other = main.create_branch("other", 1u64).await.unwrap();
+        let handles = [
+            (&main, "main", 100),
+            (&exp, "exp", 10),
+            (&other, "other", 20),
+        ];
+
+        for (handle, tag, row) in handles {
+            handle.add(sample_rows(vec![row])).execute().await.unwrap();
+            // All tags have the same version number but different branch data.
+            assert_eq!(handle.version().await.unwrap(), 2);
+            handle.tags().await.unwrap().create(tag, 2).await.unwrap();
+        }
+
+        for (handle, own_tag, row) in handles {
+            for (_, foreign_tag, _) in handles {
+                if foreign_tag == own_tag {
+                    continue;
+                }
+                let err = handle.checkout_tag(foreign_tag).await.unwrap_err();
+                assert!(matches!(err, Error::InvalidInput { .. }), "{err}");
+                // A failed checkout must not pin a previously writable handle.
+                assert!(handle.restore().await.is_err());
+            }
+
+            handle.checkout_tag(own_tag).await.unwrap();
+            for (_, foreign_tag, _) in handles {
+                if foreign_tag != own_tag {
+                    assert!(matches!(
+                        handle.checkout_tag(foreign_tag).await,
+                        Err(Error::InvalidInput { .. })
+                    ));
+                    // The wrapper's explicit branch/version references must
+                    // also check the branch when version numbers are equal.
+                    assert!(matches!(
+                        handle
+                            .dataset()
+                            .unwrap()
+                            .as_time_travel((foreign_tag, 2u64))
+                            .await,
+                        Err(Error::InvalidInput { .. })
+                    ));
+                }
+            }
+            let expected_branch = (own_tag != "main").then_some(own_tag);
+            assert_eq!(handle.current_branch().as_deref(), expected_branch);
+            assert_eq!(handle.version().await.unwrap(), 2);
+            assert_eq!(handle.count_rows(None).await.unwrap(), 2);
+            assert_eq!(
+                handle.count_rows(Some(format!("i = {row}"))).await.unwrap(),
+                1
+            );
+            assert!(handle.add(sample_rows(vec![999])).execute().await.is_err());
+
+            handle.checkout_latest().await.unwrap();
+            assert_eq!(handle.current_branch().as_deref(), expected_branch);
+            handle
+                .add(sample_rows(vec![row + 1]))
+                .execute()
+                .await
+                .unwrap();
+        }
+
+        for (_, branch, own_row) in handles {
+            let fresh = conn
+                .open_table("my_table")
+                .branch(branch)
+                .execute()
+                .await
+                .unwrap();
+            for (_, _, row) in handles {
+                assert_eq!(
+                    fresh
+                        .count_rows(Some(format!("i = {}", row + 1)))
+                        .await
+                        .unwrap(),
+                    usize::from(row == own_row),
+                    "write must stay on {branch}"
+                );
+            }
+        }
+
+        for (handle, own_tag, row) in handles {
+            handle.checkout_tag(own_tag).await.unwrap();
+            for (_, foreign_tag, _) in handles {
+                if foreign_tag != own_tag {
+                    assert!(handle.checkout_tag(foreign_tag).await.is_err());
+                }
+            }
+            handle.restore().await.unwrap();
+            assert_eq!(handle.version().await.unwrap(), 4);
+            assert_eq!(
+                handle.current_branch().as_deref(),
+                (own_tag != "main").then_some(own_tag)
+            );
+            assert_eq!(handle.count_rows(None).await.unwrap(), 2);
+            assert_eq!(
+                handle.count_rows(Some(format!("i = {row}"))).await.unwrap(),
+                1
+            );
+        }
     }
 
     #[tokio::test]

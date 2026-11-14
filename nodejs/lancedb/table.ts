@@ -1132,6 +1132,11 @@ export abstract class Table {
    *
    * Calling this method will set the table into time-travel mode. If you
    * wish to return to standard mode, call `checkoutLatest`.
+   *
+   * In local mode, a tag must reference this handle's branch. A tag on another
+   * branch is rejected without changing the handle. Use {@link Branches.checkout}
+   * to open a handle scoped to that branch before checking out its tag.
+   *
    * @param {number | string} version The version to checkout, could be version number or tag
    * @example
    * ```typescript
