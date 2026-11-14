@@ -200,15 +200,33 @@ class _FailingSyncInner:
         raise RuntimeError("local execution reached")
 
 
+class _FailingSyncInnerOnBranch(_FailingSyncInner):
+    def current_branch(self):
+        # A branch handle with QueryTable pushdown configured must fail
+        # clearly instead of silently running locally.
+        return "b1"
+
+
 class _FailingAsyncInner:
     def name(self):
         return "hist"
+
+    def current_branch(self):
+        # The pushdown gate only routes server-side when on the default branch.
+        return None
 
     async def schema(self):
         return PUSHDOWN_DATA.schema
 
     def query(self):
         raise AssertionError("direct async query should not be used")
+
+
+class _FailingAsyncInnerOnBranch(_FailingAsyncInner):
+    def current_branch(self):
+        # A branch handle with QueryTable pushdown configured must fail
+        # clearly instead of being pushed down without branch information.
+        return "b1"
 
 
 class _NamespaceClient:
@@ -220,9 +238,11 @@ class _NamespaceClient:
         return _ipc_file()
 
 
-def _namespace_lance_table(namespace_client: _NamespaceClient) -> LanceTable:
+def _namespace_lance_table(
+    namespace_client: _NamespaceClient, inner=None
+) -> LanceTable:
     table = LanceTable.__new__(LanceTable)
-    table._table = _FailingSyncInner()
+    table._table = inner if inner is not None else _FailingSyncInner()
     table._namespace_path = ["geneva"]
     table._namespace_client = namespace_client
     table._pushdown_operations = {"QueryTable"}
@@ -1328,6 +1348,32 @@ class TestPushdownOperations:
             table._execute_query(Query(vector=[1.0, 2.0], **query_kwargs))
         assert namespace_client.requests == []
 
+    def test_lance_table_branch_query_with_pushdown_fails_clearly(self):
+        # Regression test for https://github.com/lancedb/lancedb/issues/4850:
+        # with QueryTable pushdown configured, a branch query used to silently
+        # fall back to a local scan of the table's storage, bypassing server
+        # authorization and auditing. It must fail clearly instead.
+        namespace_client = _NamespaceClient()
+        table = _namespace_lance_table(
+            namespace_client, inner=_FailingSyncInnerOnBranch()
+        )
+
+        with pytest.raises(ValueError, match="Cannot run a query on branch 'b1'"):
+            table._execute_query(Query())
+        # Neither the server nor local storage was touched.
+        assert namespace_client.requests == []
+
+    def test_lance_table_branch_to_arrow_with_pushdown_fails_clearly(self):
+        # Same guard via the to_arrow() entry point used by the issue's repro.
+        namespace_client = _NamespaceClient()
+        table = _namespace_lance_table(
+            namespace_client, inner=_FailingSyncInnerOnBranch()
+        )
+
+        with pytest.raises(ValueError, match="Cannot run a query on branch 'b1'"):
+            table.to_arrow()
+        assert namespace_client.requests == []
+
     def test_probe_fields_pass_through_independently(self):
         request = _query_to_namespace_request(
             ["geneva", "hist"],
@@ -1436,6 +1482,37 @@ class TestAsyncPushdownOperations:
 
         with pytest.raises(AssertionError, match="direct async query"):
             await table._execute_query(Query(vector=[1.0, 2.0], **query_kwargs))
+        assert namespace_client.requests == []
+
+    async def test_async_table_branch_query_with_pushdown_fails_clearly(self):
+        # Same guard as the sync path (issue #4850): a branch query must not
+        # be pushed down without branch information, which would silently
+        # run it against the default branch.
+        namespace_client = _NamespaceClient()
+
+        table = AsyncTable(
+            _FailingAsyncInnerOnBranch(),
+            namespace_path=["geneva"],
+            namespace_client=namespace_client,
+            pushdown_operations={"QueryTable"},
+        )
+
+        with pytest.raises(ValueError, match="Cannot run a query on branch 'b1'"):
+            await table._execute_query(Query())
+        assert namespace_client.requests == []
+
+    async def test_async_table_branch_to_arrow_with_pushdown_fails_clearly(self):
+        namespace_client = _NamespaceClient()
+
+        table = AsyncTable(
+            _FailingAsyncInnerOnBranch(),
+            namespace_path=["geneva"],
+            namespace_client=namespace_client,
+            pushdown_operations={"QueryTable"},
+        )
+
+        with pytest.raises(ValueError, match="Cannot run a query on branch 'b1'"):
+            await table.to_arrow()
         assert namespace_client.requests == []
 
 

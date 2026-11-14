@@ -5310,21 +5310,33 @@ class LanceTable(Table):
         batch_size: Optional[int] = None,
         timeout: Optional[timedelta] = None,
     ) -> pa.RecordBatchReader:
-        # Branch queries run locally: the server-side query protocol can't
-        # carry a branch yet.
+        # The server-side query protocol can't carry a branch yet, so a branch
+        # query must fail clearly instead of silently running against local
+        # storage, which would bypass server authorization and auditing.
         # TODO: push down server-side once it can (with remote table support).
         if (
             _should_push_down_query_table(
                 self._namespace_client, self._pushdown_operations
             )
             and not self._route_pushdown_to_rust
-            and self.current_branch() is None
-            and not _requires_local_namespace_execution(query)
         ):
-            from lancedb.namespace import _execute_server_side_query
+            branch = self.current_branch()
+            if branch is not None:
+                raise ValueError(
+                    f"Cannot run a query on branch {branch!r} with QueryTable "
+                    "pushdown configured: the namespace QueryTable request "
+                    "cannot carry a branch, so the query would silently run "
+                    "against local storage without server authorization or "
+                    "auditing. Query the default branch instead, or disable "
+                    "QueryTable pushdown."
+                )
+            if not _requires_local_namespace_execution(query):
+                from lancedb.namespace import _execute_server_side_query
 
-            table_id = self._namespace_path + [self.name]
-            return _execute_server_side_query(self._namespace_client, table_id, query)
+                table_id = self._namespace_path + [self.name]
+                return _execute_server_side_query(
+                    self._namespace_client, table_id, query
+                )
 
         async_iter = LOOP.run(
             self._table._execute_query(query, batch_size=batch_size, timeout=timeout)
@@ -7633,17 +7645,32 @@ class AsyncTable:
         batch_size: Optional[int] = None,
         timeout: Optional[timedelta] = None,
     ) -> pa.RecordBatchReader:
+        # The server-side query protocol can't carry a branch yet, so a branch
+        # query must fail clearly instead of being pushed down without branch
+        # information (which would run it against the default branch).
+        # TODO: push down server-side once it can (with remote table support).
         if (
             _should_push_down_query_table(
                 self._namespace_client, self._pushdown_operations
             )
             and not self._route_pushdown_to_rust
-            and not _requires_local_namespace_execution(query)
         ):
-            from lancedb.namespace import _execute_server_side_query
+            branch = self.current_branch()
+            if branch is not None:
+                raise ValueError(
+                    f"Cannot run a query on branch {branch!r} with QueryTable "
+                    "pushdown configured: the namespace QueryTable request "
+                    "cannot carry a branch, so the query would silently run "
+                    "against the default branch instead. Query the default "
+                    "branch instead, or disable QueryTable pushdown."
+                )
+            if not _requires_local_namespace_execution(query):
+                from lancedb.namespace import _execute_server_side_query
 
-            table_id = self._namespace_path + [self.name]
-            return _execute_server_side_query(self._namespace_client, table_id, query)
+                table_id = self._namespace_path + [self.name]
+                return _execute_server_side_query(
+                    self._namespace_client, table_id, query
+                )
 
         # The sync table calls into this method, so we need to map the
         # query to the async version of the query and run that here. This is only
