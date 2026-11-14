@@ -188,7 +188,11 @@ class Connection(object):
     async def server_info(self) -> str: ...
     async def list_gpu_classes(self) -> list[GpuClass]: ...
     async def create_function_async(
-        self, request_json: str, namespace_path: Optional[List[str]] = None
+        self,
+        request_json: str,
+        namespace_path: Optional[List[str]] = None,
+        *,
+        exist_ok: bool = False,
     ) -> Job: ...
     async def get_function(
         self,
@@ -253,7 +257,12 @@ class Connection(object):
         self, name: str, namespace_path: Optional[List[str]] = None
     ) -> Tuple[str, int, int]: ...
     async def create_view(
-        self, name: str, query: str, namespace_path: Optional[List[str]] = None
+        self,
+        name: str,
+        query: str,
+        namespace_path: Optional[List[str]] = None,
+        *,
+        exist_ok: bool = False,
     ) -> Tuple[str, List[str], str, str, List[str], pa.Schema]: ...
     async def describe_view(
         self, name: str, namespace_path: Optional[List[str]] = None

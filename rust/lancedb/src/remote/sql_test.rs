@@ -24,6 +24,7 @@ use super::stream::{PROTOCOL_HEADER, PROTOCOL_VERSION, QueryResponse};
 use super::*;
 use crate::Connection;
 use crate::database::Database;
+use crate::embeddings::MemoryRegistry;
 use crate::materialized_view::CreateMaterializedViewRequest;
 use crate::remote::RemoteCatalogOptions;
 use crate::remote::client::HeaderProvider;
@@ -3086,7 +3087,16 @@ async fn function_creation_and_description_use_sql_query_handles() {
     const REQUEST: &str = include_str!(
         "../../tests/fixtures/first_class_functions/v1/remote_function_registration_request.json"
     );
-    for (defer, with_models) in [(false, false), (false, true), (true, false), (true, true)] {
+    for (defer, with_models, exist_ok) in [
+        (false, false, false),
+        (false, true, false),
+        (true, false, false),
+        (true, true, false),
+        (false, false, true),
+        (false, true, true),
+        (true, false, true),
+        (true, true, true),
+    ] {
         let mut request_json: serde_json::Value = serde_json::from_str(REQUEST).unwrap();
         request_json["batch_size"] = serde_json::json!(2);
         request_json["max_concurrency"] = serde_json::json!(4);
@@ -3136,9 +3146,11 @@ async fn function_creation_and_description_use_sql_query_handles() {
         let expected_models = version_json["image"].get("models");
         let mut expected_request = request_json.clone();
         expected_request.as_object_mut().unwrap().remove("name");
-        let request =
+        let mut request =
             crate::function::FunctionRegistrationRequest::from_json(&request_json.to_string())
                 .unwrap();
+        assert!(!request.exist_ok);
+        request.exist_ok = exist_ok;
         let result = RecordBatch::try_from_iter(vec![(
             "definition",
             Arc::new(StringArray::from(vec![version_json.to_string()])) as ArrayRef,
@@ -3179,7 +3191,10 @@ async fn function_creation_and_description_use_sql_query_handles() {
         {
             let seen = statements.lock().unwrap();
             let encoded = seen[0]
-                .strip_prefix(r#"CREATE FUNCTION "normalize_score" FROM '"#)
+                .strip_prefix(&format!(
+                    "CREATE FUNCTION{} \"normalize_score\" FROM '",
+                    if exist_ok { " IF NOT EXISTS" } else { "" }
+                ))
                 .unwrap()
                 .strip_suffix('\'')
                 .unwrap();
@@ -3821,25 +3836,48 @@ async fn view_create_and_describe_return_metadata_through_sql() {
             ..Default::default()
         };
         let statements = service.statements.clone();
+        let headers = service.headers.clone();
         let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
         let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
             panic!("unexpected REST request");
         })
         .with_sql_client(client);
-        let created = db
+        let connection = Connection::new(Arc::new(db), Arc::new(MemoryRegistry::new()));
+        let created = connection
             .create_view("adults", "SELECT name FROM people", &["team".into()])
             .await
             .unwrap();
-        let described = db.describe_view("adults", &["team".into()]).await.unwrap();
+        let existing = connection
+            .create_view(
+                "adults",
+                "SELECT replacement FROM other_people",
+                &["team".into()],
+            )
+            .exist_ok(true)
+            .await
+            .unwrap();
+        let described = connection
+            .describe_view("adults", &["team".into()])
+            .await
+            .unwrap();
         assert_eq!(created, described);
+        assert_eq!(existing, described);
         assert_eq!(created.schema.fields()[0].name(), "name");
         assert_eq!(created.default_namespace_path, ["team"]);
         assert_eq!(
             statements.lock().unwrap().as_slice(),
             [
                 "CREATE VIEW \"adults\" AS SELECT name FROM people",
+                "CREATE VIEW IF NOT EXISTS \"adults\" AS SELECT replacement FROM other_people",
                 "DESCRIBE VIEW \"adults\""
             ]
+        );
+        assert!(
+            headers
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|header| header.namespace_path == "team")
         );
         shutdown.send(()).unwrap();
     }

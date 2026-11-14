@@ -118,6 +118,19 @@ registration action, not part of the Function's source or runtime identity.
 A deployment must support the field; an older server rejects the unknown
 field rather than silently reusing the old lock.
 
+{/* Draft for the function exist_ok release.
+
+Use `exist_ok=True` on `create_function` or `create_function_async` to return
+the existing named version without changing its code, credentials or settings.
+This requires a deployment that supports the option. The default retains the
+current behavior of registering a new version.
+
+```python
+version = db.create_function(embed, exist_ok=True)
+```
+
+*/}
+
 <Note>
 The SQL command submits an internal `create_function` image-build job and
 waits for publication. The SDK returns the SQL query handle. Query handles

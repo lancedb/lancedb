@@ -151,52 +151,71 @@ def test_refresh_lock_is_a_registration_option_not_part_of_identity():
 
 
 @pytest.mark.asyncio
-async def test_async_create_function_forwards_refresh_lock():
+@pytest.mark.parametrize("exist_ok", [False, True])
+async def test_async_create_function_forwards_refresh_lock(exist_ok):
     calls = []
 
     class Inner:
-        async def create_function_async(self, request_json, namespace_path=None):
-            calls.append((json.loads(request_json), namespace_path))
+        async def create_function_async(
+            self, request_json, namespace_path=None, *, exist_ok=False
+        ):
+            calls.append((json.loads(request_json), namespace_path, exist_ok))
             return object()
 
     connection = object.__new__(AsyncConnection)
     connection._inner = Inner()
     await connection.create_function_async(normalize_score)
     await connection.create_function_async(
-        normalize_score, refresh_lock=True, namespace_path=["team"]
+        normalize_score, refresh_lock=True, exist_ok=exist_ok, namespace_path=["team"]
     )
     with pytest.raises(ValueError, match="refresh_lock must be a boolean"):
         await connection.create_function_async(normalize_score, refresh_lock=1)
 
     assert len(calls) == 2
     assert "refresh_lock" not in calls[0][0]
-    assert calls[0][1] is None
+    assert calls[0][1:] == (None, False)
     assert calls[1][0]["refresh_lock"] is True
-    assert calls[1][1] == ["team"]
+    assert calls[1][1:] == (["team"], exist_ok)
 
 
-def test_sync_create_function_paths_forward_refresh_lock():
+@pytest.mark.parametrize("exist_ok", [False, True])
+def test_sync_create_function_paths_forward_refresh_lock(exist_ok):
     calls = []
 
     class AsyncInner:
         async def create_function_async(
-            self, definition, *, secrets=None, namespace_path=None, refresh_lock=False
+            self,
+            definition,
+            *,
+            secrets=None,
+            exist_ok=False,
+            namespace_path=None,
+            refresh_lock=False,
         ):
-            calls.append(("wrapped", refresh_lock, namespace_path))
+            calls.append(("wrapped", refresh_lock, namespace_path, exist_ok))
             return object()
 
     for connection_type in (LanceDBConnection, RemoteDBConnection):
         connection = object.__new__(connection_type)
         connection._conn = AsyncInner()
         connection.create_function_async(
-            normalize_score, refresh_lock=True, namespace_path=["team"]
+            normalize_score,
+            refresh_lock=True,
+            exist_ok=exist_ok,
+            namespace_path=["team"],
         )
 
     class BlockingConnection:
         def create_function_async(
-            self, definition, *, secrets=None, namespace_path=None, refresh_lock=False
+            self,
+            definition,
+            *,
+            secrets=None,
+            exist_ok=False,
+            namespace_path=None,
+            refresh_lock=False,
         ):
-            calls.append(("blocking", refresh_lock, namespace_path))
+            calls.append(("blocking", refresh_lock, namespace_path, exist_ok))
 
             class ImmediateJob:
                 def wait(self):
@@ -210,14 +229,15 @@ def test_sync_create_function_paths_forward_refresh_lock():
             blocking,
             normalize_score,
             refresh_lock=True,
+            exist_ok=exist_ok,
             namespace_path=["team"],
         )
         == "version"
     )
     assert calls == [
-        ("wrapped", True, ["team"]),
-        ("wrapped", True, ["team"]),
-        ("blocking", True, ["team"]),
+        ("wrapped", True, ["team"], exist_ok),
+        ("wrapped", True, ["team"], exist_ok),
+        ("blocking", True, ["team"], exist_ok),
     ]
 
 
@@ -2184,7 +2204,9 @@ async def test_registration_job_emits_server_environment_warnings_once():
             return json.dumps(payload)
 
     class Inner:
-        async def create_function_async(self, request_json, namespace_path=None):
+        async def create_function_async(
+            self, request_json, namespace_path=None, *, exist_ok=False
+        ):
             assert "refresh_lock" not in json.loads(request_json)
             return InnerJob()
 
@@ -2213,7 +2235,9 @@ def test_blocking_create_function_emits_server_environment_warnings():
             return json.dumps(payload)
 
     class Inner:
-        async def create_function_async(self, request_json, namespace_path=None):
+        async def create_function_async(
+            self, request_json, namespace_path=None, *, exist_ok=False
+        ):
             return InnerJob()
 
     connection = object.__new__(RemoteDBConnection)

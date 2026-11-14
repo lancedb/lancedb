@@ -1,7 +1,7 @@
 ---
-title: "Real Time Engine compaction"
+title: "Realtime Engine compaction"
 sidebarTitle: "RTE Compaction"
-description: "How Enterprise automatically folds a Real Time Engine shard's SSTables into the base table and catches its indexes up."
+description: "How Enterprise automatically folds a Realtime Engine shard's SSTables into the base table and catches its indexes up."
 icon: "compress"
 availability:
   embedded: unavailable
@@ -11,7 +11,7 @@ availability:
 [Distributed Compaction](/enterprise/distributed-compaction) merges small
 base-table fragments and reclaims deleted rows -- the same operation
 [Compaction](/maintenance/compaction) describes for LanceDB Embedded. A
-table with the [real time engine](/tables/realtime-engine) enabled has a
+table with the [Realtime Engine](/tables/realtime-engine) enabled has a
 second, unrelated compaction: folding a shard's accumulated SSTables into
 the base table and catching the base table's indexes up over the rows that
 just landed. This produces two job types, `memwal_compaction` and
@@ -176,9 +176,9 @@ manifest update in step 6 is the single point where a row's SSTable copy
 stops being listed, and it only commits after `merge_insert` has already
 written that row into the base table.
 
-A table queried *without* the real time engine's live path only sees data
+A table queried *without* the Realtime Engine's live path only sees data
 once it has been folded into the base table, so its staleness bound tracks
-whichever trigger fires -- wider either way than the real time engine's
+whichever trigger fires -- wider either way than the Realtime Engine's
 own millisecond-scale freshness. A shard under steady write pressure
 compacts on the count or bytes trigger, within `WAL_COMPACTION_INTERVAL_SECS`
 plus the compaction job's own runtime. A shard that never gathers enough
@@ -197,7 +197,7 @@ for what a live RTE read sees instead.
 ## What to read next {#next}
 
 <CardGroup cols={2}>
-  <Card title="Real Time Engine" icon="bolt" href="/tables/realtime-engine">
+  <Card title="Realtime Engine" icon="bolt" href="/tables/realtime-engine">
     The MemWAL format, shards, and WAL nodes this page assumes.
   </Card>
   <Card title="Distributed Compaction" icon="compress" href="/enterprise/distributed-compaction">

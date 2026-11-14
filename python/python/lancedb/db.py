@@ -1027,10 +1027,14 @@ class DBConnection(EnforceOverrides):
         definition: FunctionDefinition,
         *,
         secrets: Optional[Sequence[EnvVarSecret]] = None,
+        exist_ok: bool = False,
         namespace_path: Optional[List[str]] = None,
         refresh_lock: bool = False,
     ) -> FunctionVersion:
         """Build and register a scalar Python function, then return its version.
+
+        ``exist_ok=True`` returns the existing named Function version unchanged.
+        By default, registration retains its existing version-creation behavior.
 
         The server builds the OCI image and registers the completed artifact.
         This is the blocking counterpart of :meth:`create_function_async`.
@@ -1073,6 +1077,7 @@ class DBConnection(EnforceOverrides):
         return self.create_function_async(
             definition,
             secrets=secrets,
+            exist_ok=exist_ok,
             namespace_path=namespace_path,
             refresh_lock=refresh_lock,
         ).wait()
@@ -1082,10 +1087,14 @@ class DBConnection(EnforceOverrides):
         definition: FunctionDefinition,
         *,
         secrets: Optional[Sequence[EnvVarSecret]] = None,
+        exist_ok: bool = False,
         namespace_path: Optional[List[str]] = None,
         refresh_lock: bool = False,
     ) -> Job[FunctionVersion]:
         """Submit a scalar Python function for building and registration.
+
+        ``exist_ok=True`` preserves an existing named version and its metadata.
+        The default retains the existing version-creation behavior.
 
         The server-side job builds the OCI image, then registers the completed
         artifact. The returned job has type ``query`` and the SQL query UUID as
@@ -1313,7 +1322,12 @@ class DBConnection(EnforceOverrides):
         )
 
     def create_view(
-        self, name: str, query: str, *, namespace_path: Optional[List[str]] = None
+        self,
+        name: str,
+        query: str,
+        *,
+        exist_ok: bool = False,
+        namespace_path: Optional[List[str]] = None,
     ) -> ViewDescription:
         """Create a view: a named query the database plans on every read.
 
@@ -1321,9 +1335,10 @@ class DBConnection(EnforceOverrides):
         is refused now rather than at the first read. A view holds no rows, and
         its readers see its sources as they are at read time.
 
-        There is no replace: a name already taken is an error, and changing a
-        view is a drop followed by a create. LanceDB Embedded connections raise
-        ``NotImplementedError``.
+        A name already taken is an error unless ``exist_ok=True``, which returns
+        the existing view's stored query and schema without changing them.
+        Changing a view is a drop followed by a create. LanceDB Embedded
+        connections raise ``NotImplementedError``.
 
         >>> import lancedb
         >>> db = lancedb.connect("db://my_database")  # doctest: +SKIP
@@ -2430,6 +2445,7 @@ class LanceDBConnection(DBConnection):
         definition: FunctionDefinition,
         *,
         secrets: Optional[Sequence[EnvVarSecret]] = None,
+        exist_ok: bool = False,
         namespace_path: Optional[List[str]] = None,
         refresh_lock: bool = False,
     ) -> Job[FunctionVersion]:
@@ -2437,6 +2453,7 @@ class LanceDBConnection(DBConnection):
             self._conn.create_function_async(
                 definition,
                 secrets=secrets,
+                exist_ok=exist_ok,
                 namespace_path=namespace_path,
                 refresh_lock=refresh_lock,
             )
@@ -2636,10 +2653,17 @@ class LanceDBConnection(DBConnection):
 
     @override
     def create_view(
-        self, name: str, query: str, *, namespace_path: Optional[List[str]] = None
+        self,
+        name: str,
+        query: str,
+        *,
+        exist_ok: bool = False,
+        namespace_path: Optional[List[str]] = None,
     ) -> ViewDescription:
         return LOOP.run(
-            self._conn.create_view(name, query, namespace_path=namespace_path)
+            self._conn.create_view(
+                name, query, exist_ok=exist_ok, namespace_path=namespace_path
+            )
         )
 
     @override
@@ -3763,10 +3787,14 @@ class AsyncConnection(object):
         definition: FunctionDefinition,
         *,
         secrets: Optional[Sequence[EnvVarSecret]] = None,
+        exist_ok: bool = False,
         namespace_path: Optional[List[str]] = None,
         refresh_lock: bool = False,
     ) -> AsyncJob[FunctionVersion]:
         """Submit a scalar Python function for building and registration.
+
+        ``exist_ok=True`` preserves an existing named version and its metadata.
+        The default retains the existing version-creation behavior.
 
         The server-side job builds the OCI image, then registers the completed
         artifact. The returned job has type ``query`` and the SQL query UUID as
@@ -3783,7 +3811,7 @@ class AsyncConnection(object):
             raise TypeError("create_function_async requires a @function definition")
         request = definition.bind_secrets(secrets).with_refresh_lock(refresh_lock)
         inner = await self._inner.create_function_async(
-            request.to_canonical_json(), namespace_path
+            request.to_canonical_json(), namespace_path, exist_ok=exist_ok
         )
         return _typed_job(inner, _function_registration_decoder())
 
@@ -4154,7 +4182,12 @@ class AsyncConnection(object):
         )
 
     async def create_view(
-        self, name: str, query: str, *, namespace_path: Optional[List[str]] = None
+        self,
+        name: str,
+        query: str,
+        *,
+        exist_ok: bool = False,
+        namespace_path: Optional[List[str]] = None,
     ) -> ViewDescription:
         """Create a view: a named query the database plans on every read.
 
@@ -4162,7 +4195,9 @@ class AsyncConnection(object):
         [DBConnection.create_view][lancedb.DBConnection.create_view].
         """
         return _view_description(
-            await self._inner.create_view(name, query, list(namespace_path or []))
+            await self._inner.create_view(
+                name, query, list(namespace_path or []), exist_ok=exist_ok
+            )
         )
 
     async def describe_view(

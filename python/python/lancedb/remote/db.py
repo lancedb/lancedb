@@ -992,6 +992,7 @@ class RemoteDBConnection(DBConnection):
         definition: FunctionDefinition,
         *,
         secrets: Optional[Sequence[EnvVarSecret]] = None,
+        exist_ok: bool = False,
         namespace_path: Optional[List[str]] = None,
         refresh_lock: bool = False,
     ) -> Job[FunctionVersion]:
@@ -999,6 +1000,7 @@ class RemoteDBConnection(DBConnection):
             self._conn.create_function_async(
                 definition,
                 secrets=secrets,
+                exist_ok=exist_ok,
                 namespace_path=namespace_path,
                 refresh_lock=refresh_lock,
             )
@@ -1201,10 +1203,17 @@ class RemoteDBConnection(DBConnection):
 
     @override
     def create_view(
-        self, name: str, query: str, *, namespace_path: Optional[List[str]] = None
+        self,
+        name: str,
+        query: str,
+        *,
+        exist_ok: bool = False,
+        namespace_path: Optional[List[str]] = None,
     ) -> ViewDescription:
         return LOOP.run(
-            self._conn.create_view(name, query, namespace_path=namespace_path)
+            self._conn.create_view(
+                name, query, exist_ok=exist_ok, namespace_path=namespace_path
+            )
         )
 
     @override

@@ -923,6 +923,9 @@ fn is_false(value: &bool) -> bool {
 /// database already holds, which Sophon resolves inside the remote runtime.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FunctionRegistrationRequest {
+    /// Preserve an existing named Function version instead of registering a new one.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub exist_ok: bool,
     /// Default retries of failed user-code calls. Enterprise only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_policy: Option<FunctionRetryPolicy>,
@@ -967,6 +970,10 @@ pub struct FunctionRegistrationRequest {
     /// instead of reusing the published version's lock. Omitted when false.
     #[serde(default, skip_serializing_if = "is_false")]
     pub refresh_lock: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl FunctionRegistrationRequest {
