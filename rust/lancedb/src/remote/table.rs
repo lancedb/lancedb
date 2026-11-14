@@ -11561,6 +11561,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_refresh_column_async_structured_resource_options() {
+        use crate::table::{
+            FunctionRefreshPlanningConfig, FunctionRefreshPodResources, RefreshColumnOptions,
+        };
+
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/backfill_column");
+            assert_eq!(
+                request_body_json(&request),
+                serde_json::json!({
+                    "column": "quality",
+                    "supervisor_resources": {
+                        "cpu_millis": 2_000,
+                        "memory_bytes": 4_294_967_296_u64,
+                        "ephemeral_storage_bytes": 10_737_418_240_u64,
+                    },
+                    "planning_workers": {
+                        "resources": {
+                            "cpu_millis": 1_000,
+                            "memory_bytes": 2_147_483_648_u64,
+                            "ephemeral_storage_bytes": 5_368_709_120_u64,
+                        },
+                        "max_workers": 4,
+                        "rows_per_worker": 100_000,
+                        "fragments_per_worker": 8,
+                    },
+                })
+            );
+            http::Response::builder()
+                .status(202)
+                .body(r#"{"job_id":"j-structured"}"#)
+                .unwrap()
+        });
+        let supervisor = FunctionRefreshPodResources::new(2_000, 4_294_967_296, 10_737_418_240);
+        let planning = FunctionRefreshPlanningConfig::new(
+            FunctionRefreshPodResources::new(1_000, 2_147_483_648, 5_368_709_120),
+            4,
+            100_000,
+            8,
+        );
+        let job = table
+            .refresh_column_async_with_options(
+                "quality",
+                RefreshColumnOptions::default()
+                    .supervisor_resources(supervisor)
+                    .planning_workers(planning),
+            )
+            .await
+            .unwrap();
+        assert_eq!(job.id(), Some("j-structured"));
+    }
+
+    #[tokio::test]
     async fn test_refresh_column_async_retry_policy() {
         use crate::function::{FunctionErrorPolicy, FunctionRetryPolicy};
         use crate::table::RefreshColumnOptions;
@@ -11640,7 +11693,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_refresh_column_rejects_invalid_filter_and_limit_options_before_request() {
-        use crate::table::RefreshColumnOptions;
+        use crate::table::{
+            FunctionRefreshPlanningConfig, FunctionRefreshPodResources, RefreshColumnOptions,
+        };
 
         let table = Table::new_with_handler("my_table", |_| -> http::Response<String> {
             panic!("invalid refresh options must not send a request")
@@ -11678,6 +11733,55 @@ mod tests {
             (
                 RefreshColumnOptions::default().publication_interval_rows(0),
                 "publication_interval_rows",
+            ),
+            (
+                RefreshColumnOptions::default()
+                    .supervisor_resources(FunctionRefreshPodResources::new(0, 1, 1)),
+                "supervisor_resources.cpu_millis",
+            ),
+            (
+                RefreshColumnOptions::default().planning_workers(
+                    FunctionRefreshPlanningConfig::new(
+                        FunctionRefreshPodResources::new(1, 1, 0),
+                        1,
+                        1,
+                        1,
+                    ),
+                ),
+                "planning_workers.resources.ephemeral_storage_bytes",
+            ),
+            (
+                RefreshColumnOptions::default().planning_workers(
+                    FunctionRefreshPlanningConfig::new(
+                        FunctionRefreshPodResources::new(1, 1, 1),
+                        0,
+                        1,
+                        1,
+                    ),
+                ),
+                "planning_workers.max_workers",
+            ),
+            (
+                RefreshColumnOptions::default().planning_workers(
+                    FunctionRefreshPlanningConfig::new(
+                        FunctionRefreshPodResources::new(1, 1, 1),
+                        1,
+                        0,
+                        1,
+                    ),
+                ),
+                "planning_workers.rows_per_worker",
+            ),
+            (
+                RefreshColumnOptions::default().planning_workers(
+                    FunctionRefreshPlanningConfig::new(
+                        FunctionRefreshPodResources::new(1, 1, 1),
+                        1,
+                        1,
+                        0,
+                    ),
+                ),
+                "planning_workers.fragments_per_worker",
             ),
         ] {
             let error = table

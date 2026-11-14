@@ -9,6 +9,8 @@ use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
 use lancedb::table::{
     AddDataMode, ColumnAlteration as LanceColumnAlteration,
     FieldMetadataUpdate as LanceFieldMetadataUpdate, FtsToken as LanceDbFtsToken,
+    FunctionRefreshPlanningConfig as LanceFunctionRefreshPlanningConfig,
+    FunctionRefreshPodResources as LanceFunctionRefreshPodResources,
     FunctionWorkerResourceBudget as LanceFunctionWorkerResourceBudget, NewColumnTransform, Ref,
     Table as LanceDbTable,
 };
@@ -1705,6 +1707,58 @@ pub struct FunctionWorkerResourceBudget {
     pub gpu_count: Option<f64>,
 }
 
+/// CPU, memory, and ephemeral-storage limits for one Function refresh
+/// control-plane pod.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct FunctionRefreshPodResources {
+    /// CPU limit in millicores; 1000 is one CPU.
+    pub cpu_millis: f64,
+    /// Memory limit in bytes.
+    pub memory_bytes: f64,
+    /// Ephemeral storage limit in bytes.
+    pub ephemeral_storage_bytes: f64,
+}
+
+/// Resources and sizing policy for the planning fleet of one registered
+/// Function refresh.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct FunctionRefreshPlanningConfig {
+    /// CPU, memory, and ephemeral-storage limits for one planning worker.
+    pub resources: FunctionRefreshPodResources,
+    /// Maximum number of planning workers.
+    pub max_workers: f64,
+    /// Maximum rows assigned to one planning worker.
+    pub rows_per_worker: f64,
+    /// Maximum fragments assigned to one planning worker.
+    pub fragments_per_worker: f64,
+}
+
+/// Overrides retries of failed user-code calls for one refresh. Omitted
+/// fields use the Function refresh defaults.
+#[napi(object)]
+#[derive(Clone, Debug, Default)]
+pub struct FunctionRetryPolicy {
+    /// Total calls, including the first; 1 disables retries, maximum 100.
+    pub max_attempts: Option<u32>,
+    /// Initial exponential-backoff ceiling, in seconds.
+    pub initial_backoff_seconds: Option<f64>,
+    /// Maximum backoff, in seconds.
+    pub max_backoff_seconds: Option<f64>,
+    /// Exception class names, preferably qualified.
+    pub exception_types: Option<Vec<String>>,
+    /// Regular expression matched against the exception class and message.
+    pub message_pattern: Option<String>,
+    /// Structured provider error codes or HTTP status codes.
+    pub error_codes: Option<Vec<String>>,
+    /// Match connection/timeouts, HTTP 429/503, SlowDown and
+    /// ServiceUnavailable.
+    pub transient: Option<bool>,
+    /// Honor Retry-After within the configured maximum.
+    pub honor_retry_after: Option<bool>,
+}
+
 fn positive_safe_integer(value: f64, name: &str) -> napi::Result<u64> {
     const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
     if !value.is_finite() || value.fract() != 0.0 || !(1.0..=MAX_SAFE_INTEGER).contains(&value) {
@@ -1768,8 +1822,14 @@ pub struct RefreshColumnOptions {
     /// Complete aggregate CPU and memory budget for a registered Function
     /// refresh. `gpuCount` inside the budget defaults to zero.
     pub resource_budget: Option<FunctionWorkerResourceBudget>,
+    /// CPU, memory, and ephemeral-storage limits for the refresh supervisor.
+    pub supervisor_resources: Option<FunctionRefreshPodResources>,
+    /// Resources and sizing for the refresh planning fleet.
+    pub planning_workers: Option<FunctionRefreshPlanningConfig>,
     /// Positive aggregate GPU budget for Function workers.
     pub gpu_count: Option<u32>,
+    /// Override retries of failed user-code calls for this refresh.
+    pub retry_policy: Option<FunctionRetryPolicy>,
     /// `"fail"` (default) stops on a row error; `"skip"` writes null and
     /// records the error, subject to the failure limits.
     pub error_policy: Option<String>,
@@ -1814,7 +1874,87 @@ impl TryFrom<RefreshColumnOptions> for lancedb::table::RefreshColumnOptions {
                 )
             })
             .transpose()?;
+        options.supervisor_resources = value
+            .supervisor_resources
+            .map(|resources| {
+                Ok::<_, napi::Error>(LanceFunctionRefreshPodResources::new(
+                    positive_safe_integer(resources.cpu_millis, "supervisorResources.cpuMillis")?,
+                    positive_safe_integer(
+                        resources.memory_bytes,
+                        "supervisorResources.memoryBytes",
+                    )?,
+                    positive_safe_integer(
+                        resources.ephemeral_storage_bytes,
+                        "supervisorResources.ephemeralStorageBytes",
+                    )?,
+                ))
+            })
+            .transpose()?;
+        options.planning_workers = value
+            .planning_workers
+            .map(|planning| {
+                let resources = LanceFunctionRefreshPodResources::new(
+                    positive_safe_integer(
+                        planning.resources.cpu_millis,
+                        "planningWorkers.resources.cpuMillis",
+                    )?,
+                    positive_safe_integer(
+                        planning.resources.memory_bytes,
+                        "planningWorkers.resources.memoryBytes",
+                    )?,
+                    positive_safe_integer(
+                        planning.resources.ephemeral_storage_bytes,
+                        "planningWorkers.resources.ephemeralStorageBytes",
+                    )?,
+                );
+                let max_workers = usize::try_from(positive_safe_integer(
+                    planning.max_workers,
+                    "planningWorkers.maxWorkers",
+                )?)
+                .map_err(|_| napi::Error::from_reason("planningWorkers.maxWorkers is too large"))?;
+                Ok::<_, napi::Error>(LanceFunctionRefreshPlanningConfig::new(
+                    resources,
+                    max_workers,
+                    positive_safe_integer(
+                        planning.rows_per_worker,
+                        "planningWorkers.rowsPerWorker",
+                    )?,
+                    positive_safe_integer(
+                        planning.fragments_per_worker,
+                        "planningWorkers.fragmentsPerWorker",
+                    )?,
+                ))
+            })
+            .transpose()?;
         options.gpu_count = value.gpu_count;
+        options.retry_policy = value.retry_policy.map(|policy| {
+            let mut converted = lancedb::function::FunctionRetryPolicy::default();
+            if let Some(max_attempts) = policy.max_attempts {
+                converted.max_attempts = max_attempts;
+            }
+            if let Some(seconds) = policy.initial_backoff_seconds {
+                converted.initial_backoff_seconds = seconds;
+            }
+            if let Some(seconds) = policy.max_backoff_seconds {
+                converted.max_backoff_seconds = seconds;
+            }
+            if let Some(exception_types) = policy.exception_types {
+                converted.exception_types = exception_types;
+            }
+            if let Some(pattern) = policy.message_pattern {
+                converted.message_pattern = Some(pattern);
+            }
+            if let Some(error_codes) = policy.error_codes {
+                converted.error_codes = error_codes;
+            }
+            if let Some(transient) = policy.transient {
+                converted.transient = transient;
+            }
+            if let Some(honor_retry_after) = policy.honor_retry_after {
+                converted.honor_retry_after = honor_retry_after;
+            }
+            converted
+        });
         options.error_policy = match value.error_policy.as_deref() {
             None => None,
             Some("fail") => Some(lancedb::function::FunctionErrorPolicy::Fail),

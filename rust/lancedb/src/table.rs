@@ -120,7 +120,10 @@ pub use optimize::{
     CompactionMode, CompactionOptions, CompactionOverrides, IndexRemapMode, OptimizeAction,
     OptimizeStats,
 };
-pub use refresh::{FunctionWorkerResourceBudget, RefreshColumnOptions, RefreshColumnResult};
+pub use refresh::{
+    FunctionRefreshPlanningConfig, FunctionRefreshPodResources, FunctionWorkerResourceBudget,
+    RefreshColumnOptions, RefreshColumnResult,
+};
 pub use rte_stats::{MemtableStats, RTEStats, SsTableStats, TableShardStats};
 pub use schema_evolution::{
     AddColumnsResult, AlterColumnsResult, DropColumnsResult, FieldMetadataUpdate,
