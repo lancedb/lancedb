@@ -30,8 +30,9 @@ use lancedb::connection::LanceFileVersion;
 use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::table::{
     AddDataMode, ColumnAlteration, CompactionMode, CompactionOptions, Duration,
-    FieldMetadataUpdate, FtsToken as LanceDbFtsToken, FunctionWorkerResourceBudget, IndexRemapMode,
-    NewColumnTransform, Ref, RefreshColumnOptions, Table as LanceDbTable,
+    FieldMetadataUpdate, FtsToken as LanceDbFtsToken, FunctionRefreshPlanningConfig,
+    FunctionRefreshPodResources, FunctionWorkerResourceBudget, IndexRemapMode, NewColumnTransform,
+    Ref, RefreshColumnOptions, Table as LanceDbTable,
 };
 use lancedb::tokenize as lancedb_tokenize;
 use pyo3::{
@@ -52,6 +53,8 @@ struct RefreshColumnArgs {
     max_concurrency: Option<u32>,
     publication_interval_rows: Option<i64>,
     resource_budget: Option<FunctionWorkerResourceBudget>,
+    supervisor_resources: Option<FunctionRefreshPodResources>,
+    planning_workers: Option<FunctionRefreshPlanningConfig>,
     gpu_class: Option<String>,
     gpu_count: Option<i64>,
     retry_policy: Option<String>,
@@ -159,6 +162,101 @@ fn parse_resource_budget(
     ))
 }
 
+fn structured_integer(value: &Bound<'_, PyAny>, name: &str) -> PyResult<u64> {
+    if value.is_none() || value.is_instance_of::<PyBool>() {
+        return Err(PyValueError::new_err(format!("{name} must be an integer")));
+    }
+    let parsed = value
+        .extract::<u64>()
+        .map_err(|_| PyValueError::new_err(format!("{name} must be an integer")))?;
+    if parsed == 0 {
+        return Err(PyValueError::new_err(format!(
+            "{name} must be greater than zero"
+        )));
+    }
+    Ok(parsed)
+}
+
+fn parse_pod_resources(
+    resources: &Bound<'_, PyDict>,
+    prefix: &str,
+) -> PyResult<FunctionRefreshPodResources> {
+    for key in resources.keys() {
+        let key = key
+            .extract::<String>()
+            .map_err(|_| PyValueError::new_err(format!("{prefix} keys must be strings")))?;
+        if !matches!(
+            key.as_str(),
+            "cpu_millis" | "memory_bytes" | "ephemeral_storage_bytes"
+        ) {
+            return Err(PyValueError::new_err(format!(
+                "{prefix} contains unsupported key '{key}'"
+            )));
+        }
+    }
+    let get = |name: &str| -> PyResult<u64> {
+        let value = resources
+            .get_item(name)?
+            .ok_or_else(|| PyValueError::new_err(format!("{prefix}.{name} is required")))?;
+        structured_integer(&value, &format!("{prefix}.{name}"))
+    };
+    Ok(FunctionRefreshPodResources::new(
+        get("cpu_millis")?,
+        get("memory_bytes")?,
+        get("ephemeral_storage_bytes")?,
+    ))
+}
+
+fn parse_supervisor_resources(
+    resources: Option<&Bound<'_, PyDict>>,
+) -> PyResult<Option<FunctionRefreshPodResources>> {
+    resources
+        .map(|resources| parse_pod_resources(resources, "supervisor_resources"))
+        .transpose()
+}
+
+fn parse_planning_workers(
+    planning: Option<&Bound<'_, PyDict>>,
+) -> PyResult<Option<FunctionRefreshPlanningConfig>> {
+    let Some(planning) = planning else {
+        return Ok(None);
+    };
+    for key in planning.keys() {
+        let key = key
+            .extract::<String>()
+            .map_err(|_| PyValueError::new_err("planning_workers keys must be strings"))?;
+        if !matches!(
+            key.as_str(),
+            "resources" | "max_workers" | "rows_per_worker" | "fragments_per_worker"
+        ) {
+            return Err(PyValueError::new_err(format!(
+                "planning_workers contains unsupported key '{key}'"
+            )));
+        }
+    }
+    let resources = planning
+        .get_item("resources")?
+        .ok_or_else(|| PyValueError::new_err("planning_workers.resources is required"))?;
+    let resources = resources
+        .cast::<PyDict>()
+        .map_err(|_| PyValueError::new_err("planning_workers.resources must be a dict"))?;
+    let resources = parse_pod_resources(resources, "planning_workers.resources")?;
+    let get = |name: &str| -> PyResult<u64> {
+        let value = planning
+            .get_item(name)?
+            .ok_or_else(|| PyValueError::new_err(format!("planning_workers.{name} is required")))?;
+        structured_integer(&value, &format!("planning_workers.{name}"))
+    };
+    let max_workers = usize::try_from(get("max_workers")?)
+        .map_err(|_| PyValueError::new_err("planning_workers.max_workers is too large"))?;
+    Ok(Some(FunctionRefreshPlanningConfig::new(
+        resources,
+        max_workers,
+        get("rows_per_worker")?,
+        get("fragments_per_worker")?,
+    )))
+}
+
 fn refresh_column_options(args: RefreshColumnArgs) -> PyResult<RefreshColumnOptions> {
     let RefreshColumnArgs {
         where_clause,
@@ -166,6 +264,8 @@ fn refresh_column_options(args: RefreshColumnArgs) -> PyResult<RefreshColumnOpti
         max_concurrency,
         publication_interval_rows,
         resource_budget,
+        supervisor_resources,
+        planning_workers,
         gpu_class,
         gpu_count,
         retry_policy,
@@ -211,6 +311,8 @@ fn refresh_column_options(args: RefreshColumnArgs) -> PyResult<RefreshColumnOpti
     options.publication_interval_rows =
         positive_count(publication_interval_rows, "publication_interval_rows")?;
     options.resource_budget = resource_budget;
+    options.supervisor_resources = supervisor_resources;
+    options.planning_workers = planning_workers;
     options.gpu_class = gpu_class;
     options.gpu_count = gpu_count
         .map(|count| {
@@ -1628,7 +1730,8 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, index=None, replace=None, wait_timeout=None, *, name=None, train=None))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (column, index=None, replace=None, wait_timeout=None, *, name=None, train=None, exist_ok=false))]
     pub fn create_index<'a>(
         self_: PyRef<'a, Self>,
         column: String,
@@ -1637,6 +1740,7 @@ impl Table {
         wait_timeout: Option<Bound<'_, PyAny>>,
         name: Option<String>,
         train: Option<bool>,
+        exist_ok: bool,
     ) -> PyResult<Bound<'a, PyAny>> {
         let index = extract_index_params(&index)?;
         let timeout = wait_timeout
@@ -1645,6 +1749,7 @@ impl Table {
         let mut op = self_
             .inner_ref()?
             .create_index_with_timeout(&[column], index, timeout);
+        op = op.exist_ok(exist_ok);
         if let Some(replace) = replace {
             op = op.replace(replace);
         }
@@ -1661,7 +1766,8 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, index=None, replace=None, wait_timeout=None, *, name=None, train=None))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (column, index=None, replace=None, wait_timeout=None, *, name=None, train=None, exist_ok=false))]
     pub fn create_index_async<'a>(
         self_: PyRef<'a, Self>,
         column: String,
@@ -1670,6 +1776,7 @@ impl Table {
         wait_timeout: Option<Bound<'_, PyAny>>,
         name: Option<String>,
         train: Option<bool>,
+        exist_ok: bool,
     ) -> PyResult<Bound<'a, PyAny>> {
         let index = extract_index_params(&index)?;
         let timeout = wait_timeout
@@ -1678,6 +1785,7 @@ impl Table {
         let mut op = self_
             .inner_ref()?
             .create_index_with_timeout(&[column], index, timeout);
+        op = op.exist_ok(exist_ok);
         if let Some(replace) = replace {
             op = op.replace(replace);
         }
@@ -2486,7 +2594,7 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, *, r#where=None, batch_size=None, max_concurrency=None, publication_interval_rows=None, resource_budget=None, gpu_class=None, gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None))]
+    #[pyo3(signature = (column, *, r#where=None, batch_size=None, max_concurrency=None, publication_interval_rows=None, resource_budget=None, supervisor_resources=None, planning_workers=None, gpu_class=None, gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None))]
     #[allow(clippy::too_many_arguments)]
     pub fn refresh_column<'py>(
         self_: PyRef<'py, Self>,
@@ -2496,6 +2604,8 @@ impl Table {
         max_concurrency: Option<Bound<'py, PyAny>>,
         publication_interval_rows: Option<i64>,
         resource_budget: Option<Bound<'py, PyDict>>,
+        supervisor_resources: Option<Bound<'py, PyDict>>,
+        planning_workers: Option<Bound<'py, PyDict>>,
         gpu_class: Option<String>,
         gpu_count: Option<i64>,
         retry_policy: Option<String>,
@@ -2513,6 +2623,8 @@ impl Table {
             max_concurrency: positive_u32_integer(max_concurrency.as_ref(), "max_concurrency")?,
             publication_interval_rows,
             resource_budget: parse_resource_budget(resource_budget.as_ref())?,
+            supervisor_resources: parse_supervisor_resources(supervisor_resources.as_ref())?,
+            planning_workers: parse_planning_workers(planning_workers.as_ref())?,
             gpu_class,
             gpu_count,
             retry_policy,
@@ -2534,7 +2646,7 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, *, r#where=None, batch_size=None, max_concurrency=None, publication_interval_rows=None, resource_budget=None, gpu_class=None, gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None))]
+    #[pyo3(signature = (column, *, r#where=None, batch_size=None, max_concurrency=None, publication_interval_rows=None, resource_budget=None, supervisor_resources=None, planning_workers=None, gpu_class=None, gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None))]
     #[allow(clippy::too_many_arguments)]
     pub fn refresh_column_async<'py>(
         self_: PyRef<'py, Self>,
@@ -2544,6 +2656,8 @@ impl Table {
         max_concurrency: Option<Bound<'py, PyAny>>,
         publication_interval_rows: Option<i64>,
         resource_budget: Option<Bound<'py, PyDict>>,
+        supervisor_resources: Option<Bound<'py, PyDict>>,
+        planning_workers: Option<Bound<'py, PyDict>>,
         gpu_class: Option<String>,
         gpu_count: Option<i64>,
         retry_policy: Option<String>,
@@ -2561,6 +2675,8 @@ impl Table {
             max_concurrency: positive_u32_integer(max_concurrency.as_ref(), "max_concurrency")?,
             publication_interval_rows,
             resource_budget: parse_resource_budget(resource_budget.as_ref())?,
+            supervisor_resources: parse_supervisor_resources(supervisor_resources.as_ref())?,
+            planning_workers: parse_planning_workers(planning_workers.as_ref())?,
             gpu_class,
             gpu_count,
             retry_policy,

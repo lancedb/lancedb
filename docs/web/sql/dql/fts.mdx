@@ -30,14 +30,16 @@ INSERT INTO my_docs VALUES
     (3, 'The puppy catches a ball with great enthusiasm', 'sports', 'Alice'),
     (5, 'Puppy training requires patience and dedication', 'training', 'Alice');
 
-CREATE INDEX ON my_docs USING fts (text);
+CREATE INDEX ON my_docs USING fts (text) WITH (with_position = true);
 ```
 </CodeGroup>
 
 <Warning>
 Phrase queries need position information, which costs extra index size.
-Add `WITH (with_position = true)` to `CREATE INDEX`. Without it,
-[phrase queries](#phrase) find nothing. See
+The setup above enables it with `WITH (with_position = true)`. An existing
+index without positions must be rebuilt before running a phrase query; the
+server rejects the query and asks you to recreate the index with positions.
+It does not silently return no matches. See
 [FTS parameters](/indexing/fts-index#fts-parameters).
 </Warning>
 
@@ -86,6 +88,44 @@ LIMIT 5
 it behaves like any other column, but exists only in a relation that came
 from `fts()`. See [Data types](/sql/data-types#pseudo-columns).
 
+## Match any term or every term {#term-operators}
+
+The default match operator is OR. `"happy puppy"` matches either analyzed
+term. SQL JSON uses `"Or"` and `"And"`, with this casing; Python uses the
+`FullTextOperator.OR` and `FullTextOperator.AND` enum members:
+
+```python
+from lancedb.query import FullTextOperator, MatchQuery
+
+query = MatchQuery("happy puppy", "text", operator=FullTextOperator.AND)
+json_query = query.to_json()
+```
+
+```sql
+SELECT id, text, _score
+FROM fts('my_docs', '{"match":{"column":"text","terms":"happy puppy","operator":"And"}}')
+ORDER BY _score DESC
+```
+
+Both terms must occur, but they need not be adjacent. Do not embed `AND` or
+`OR` in `terms` to select an operator.
+
+## Count matches {#count}
+
+Count the `fts()` relation before applying a top-k limit:
+
+```sql
+SELECT COUNT(*) AS matching_rows
+FROM fts('my_docs', '{"match":{"column":"text","terms":"happy puppy","operator":"And"}}')
+```
+
+This is an Enterprise SQL workaround when the SDK's FTS query builder does
+not expose a match-count operation. `table.count_rows()` without an FTS
+relation counts table rows, and taking the length of a limited search counts
+only that result page. For list-element indexes, multiple matching elements
+can produce multiple rows; use `COUNT(DISTINCT id)` when you need unique
+application records.
+
 ## Fuzzy {#fuzzy}
 
 Tolerates typos, up to a character-edit budget:
@@ -109,6 +149,12 @@ PhraseQuery("puppy park", "text", slop=2)   # up to 2 words between them
 ```
 </CodeGroup>
 
+```sql
+SELECT id, text, _score
+FROM fts('my_docs', '{"phrase":{"column":"text","terms":"happy puppy","slop":0}}')
+ORDER BY _score DESC
+```
+
 ## Boolean {#boolean}
 
 Combine queries with `&` (AND) or `|` (OR):
@@ -119,6 +165,17 @@ MatchQuery("puppy", "text") & MatchQuery("happy", "text")
 MatchQuery("puppy", "text") | MatchQuery("kitten", "text")
 ```
 </CodeGroup>
+
+For SQL, serialize the composed query rather than writing occurrence enums
+by hand:
+
+```python
+query = MatchQuery("puppy", "text") & MatchQuery("happy", "text")
+json_query = query.to_json()
+```
+
+Use that string as the second `fts()` argument. `.to_json()` supplies the
+serialized Boolean field names for the SDK version you use.
 
 ## Boost {#boost}
 

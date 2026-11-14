@@ -205,6 +205,16 @@ Dropping, renaming, or retyping a column is an SDK operation
 
 ## CLONE {#clone}
 
+{/* Draft for the table-clone exist_ok release.
+
+Use `CREATE TABLE IF NOT EXISTS target CLONE source` to preserve an existing
+target unchanged. The Python equivalent is
+`db.clone_table("target", source_uri, exist_ok=True)`. Omitting the option reports
+an error for an existing target. A skipped clone does not copy rows or change
+the target's version history.
+
+*/}
+
 <CodeGroup>
 ```sql SQL icon="database"
 CREATE TABLE docs_snapshot CLONE documents

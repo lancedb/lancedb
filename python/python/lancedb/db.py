@@ -464,8 +464,12 @@ class DBConnection(EnforceOverrides):
         azure_client_secret_secret: Optional[Union[str, SecretReference]] = None,
         gcp_credentials_json_secret: Optional[Union[str, SecretReference]] = None,
         huggingface_token_secret: Optional[Union[str, SecretReference]] = None,
+        exist_ok: bool = False,
         namespace_path: Optional[List[str]] = None,
     ) -> StorageIntegrationInfo:
+        """Register storage access, preserving existing configuration with
+        ``exist_ok=True``. Existing names are errors by default.
+        """
         raise NotImplementedError
 
     def describe_storage_integration(
@@ -738,10 +742,14 @@ class DBConnection(EnforceOverrides):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
     ) -> MaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
+
+        ``exist_ok=True`` preserves an existing view's definition, data and
+        refresh settings without refreshing it. Existing names error by default.
 
         LanceDB Embedded creation and refresh require a source build with the
         ``experimental-functions`` Cargo feature. Published packages leave it
@@ -808,10 +816,14 @@ class DBConnection(EnforceOverrides):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
     ) -> Job[None]:
         """Submit materialized-view creation and return its job.
+
+        ``exist_ok=True`` preserves an existing view without refreshing it.
+        A skipped creation returns a completed job without a registry job ID.
 
         The job may already be complete in LanceDB Embedded. In LanceDB
         Distributed, creation submits CREATE MATERIALIZED VIEW through the SQL
@@ -2193,10 +2205,14 @@ class LanceDBConnection(DBConnection):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
     ) -> MaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
+
+        ``exist_ok=True`` preserves an existing view's definition, data and
+        refresh settings without refreshing it. Existing names error by default.
 
         LanceDB Embedded creation and refresh require a source build with the
         ``experimental-functions`` Cargo feature. Published packages leave it
@@ -2228,6 +2244,7 @@ class LanceDBConnection(DBConnection):
                 where=where,
                 limit=limit,
                 with_no_data=with_no_data,
+                exist_ok=exist_ok,
                 auto_refresh_enabled=auto_refresh_enabled,
                 auto_refresh_interval_seconds=auto_refresh_interval_seconds,
             )
@@ -2245,6 +2262,7 @@ class LanceDBConnection(DBConnection):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
     ) -> Job[None]:
@@ -2257,6 +2275,7 @@ class LanceDBConnection(DBConnection):
                 where=where,
                 limit=limit,
                 with_no_data=with_no_data,
+                exist_ok=exist_ok,
                 auto_refresh_enabled=auto_refresh_enabled,
                 auto_refresh_interval_seconds=auto_refresh_interval_seconds,
             )
@@ -2314,6 +2333,7 @@ class LanceDBConnection(DBConnection):
         source_version: Optional[int] = None,
         source_tag: Optional[str] = None,
         is_shallow: bool = True,
+        exist_ok: bool = False,
     ) -> LanceTable:
         """Clone a table from a source table.
 
@@ -2338,6 +2358,8 @@ class LanceDBConnection(DBConnection):
         is_shallow: bool, default True
             Whether to perform a shallow clone (True) or deep clone (False).
             Currently only shallow clone is supported.
+        exist_ok: bool, default False
+            Return the existing target unchanged instead of cloning over it.
 
         Returns
         -------
@@ -2353,6 +2375,7 @@ class LanceDBConnection(DBConnection):
                 source_version=source_version,
                 source_tag=source_tag,
                 is_shallow=is_shallow,
+                exist_ok=exist_ok,
             )
         )
         return LanceTable.open(
@@ -2552,6 +2575,7 @@ class LanceDBConnection(DBConnection):
         azure_client_secret_secret: Optional[Union[str, SecretReference]] = None,
         gcp_credentials_json_secret: Optional[Union[str, SecretReference]] = None,
         huggingface_token_secret: Optional[Union[str, SecretReference]] = None,
+        exist_ok: bool = False,
         namespace_path: Optional[List[str]] = None,
     ) -> StorageIntegrationInfo:
         return LOOP.run(
@@ -2569,6 +2593,7 @@ class LanceDBConnection(DBConnection):
                 azure_client_secret_secret=azure_client_secret_secret,
                 gcp_credentials_json_secret=gcp_credentials_json_secret,
                 huggingface_token_secret=huggingface_token_secret,
+                exist_ok=exist_ok,
                 namespace_path=namespace_path,
             )
         )
@@ -3492,10 +3517,14 @@ class AsyncConnection(object):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
     ) -> AsyncMaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
+
+        ``exist_ok=True`` preserves an existing view's definition, data and
+        refresh settings without refreshing it. Existing names error by default.
 
         LanceDB Embedded creation and refresh require a source build with the
         ``experimental-functions`` Cargo feature. Published packages leave it
@@ -3519,6 +3548,7 @@ class AsyncConnection(object):
             filter=where,
             limit=limit,
             with_no_data=with_no_data,
+            exist_ok=exist_ok,
             auto_refresh_enabled=auto_refresh_enabled,
             auto_refresh_interval_seconds=auto_refresh_interval_seconds,
             **native_options,
@@ -3535,10 +3565,14 @@ class AsyncConnection(object):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
     ) -> AsyncJob[None]:
         """Submit materialized-view creation and return its job.
+
+        ``exist_ok=True`` preserves an existing view without refreshing it.
+        A skipped creation returns a completed job without a registry job ID.
 
         Wait for the returned job before opening or querying the view. In LanceDB
         Enterprise, creation uses SQL; ``job_type`` is ``"query"`` and ``id``
@@ -3560,6 +3594,7 @@ class AsyncConnection(object):
             filter=where,
             limit=limit,
             with_no_data=with_no_data,
+            exist_ok=exist_ok,
             auto_refresh_enabled=auto_refresh_enabled,
             auto_refresh_interval_seconds=auto_refresh_interval_seconds,
             **native_options,
@@ -3638,6 +3673,7 @@ class AsyncConnection(object):
         source_version: Optional[int] = None,
         source_tag: Optional[str] = None,
         is_shallow: bool = True,
+        exist_ok: bool = False,
     ) -> AsyncTable:
         """Clone a table from a source table.
 
@@ -3662,6 +3698,8 @@ class AsyncConnection(object):
         is_shallow: bool, default True
             Whether to perform a shallow clone (True) or deep clone (False).
             Currently only shallow clone is supported.
+        exist_ok: bool, default False
+            Return the existing target unchanged instead of cloning over it.
 
         Returns
         -------
@@ -3676,6 +3714,7 @@ class AsyncConnection(object):
             source_version=source_version,
             source_tag=source_tag,
             is_shallow=is_shallow,
+            exist_ok=exist_ok,
         )
         return AsyncTable(table)
 
@@ -3940,6 +3979,7 @@ class AsyncConnection(object):
         azure_client_secret_secret: Optional[Union[str, SecretReference]] = None,
         gcp_credentials_json_secret: Optional[Union[str, SecretReference]] = None,
         huggingface_token_secret: Optional[Union[str, SecretReference]] = None,
+        exist_ok: bool = False,
         namespace_path: Optional[List[str]] = None,
     ) -> StorageIntegrationInfo:
         """Register cloud storage access using database-owned credential Secrets.
@@ -3954,6 +3994,10 @@ class AsyncConnection(object):
         optionally set ``huggingface_token_secret`` to a Secret containing the
         token; omitting it selects anonymous access at the default rate limits.
         Registration returns setup instructions without verifying storage access.
+
+        ``exist_ok=True`` returns the stored configuration unchanged when the
+        integration exists, preserving its provider, prefix and credential
+        bindings. Existing names are errors by default.
         """
         azure_options = (
             azure_tenant_id_secret,
@@ -4062,6 +4106,8 @@ class AsyncConnection(object):
             "aws_access_key_id_secret": reference(aws_access_key_id_secret),
             "aws_secret_access_key_secret": reference(aws_secret_access_key_secret),
         }
+        if exist_ok:
+            request["exist_ok"] = True
         info = await self._inner.create_storage_integration(
             validate_secret_name(name),
             json.dumps(request),

@@ -369,6 +369,7 @@ class RemoteTable(Table):
         index_type: ScalarIndexType = "BTREE",
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
     ):
         """Create a scalar index on a column.
 
@@ -395,6 +396,7 @@ class RemoteTable(Table):
             self._table.create_index(
                 column,
                 replace=replace,
+                exist_ok=exist_ok,
                 config=config,
                 wait_timeout=wait_timeout,
                 name=name,
@@ -433,6 +435,7 @@ class RemoteTable(Table):
         document_granularity: DocumentGranularity = DocumentGranularity.ROW,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
     ):
         """Create a full-text search index on a column.
 
@@ -492,6 +495,7 @@ class RemoteTable(Table):
                 self._table.create_index(
                     field_names,
                     replace=replace,
+                    exist_ok=exist_ok,
                     config=config,
                     name=name,
                     wait_timeout=wait_timeout,
@@ -516,6 +520,7 @@ class RemoteTable(Table):
         replace: bool = ...,
         wait_timeout: Optional[timedelta] = ...,
         name: Optional[str] = ...,
+        exist_ok: bool = ...,
         train: bool = ...,
     ) -> None: ...
 
@@ -541,6 +546,7 @@ class RemoteTable(Table):
         *,
         wait_timeout: Optional[timedelta] = ...,
         name: Optional[str] = ...,
+        exist_ok: bool = ...,
         train: bool = ...,
         target_partition_size: Optional[int] = ...,
     ) -> None: ...
@@ -572,6 +578,7 @@ class RemoteTable(Table):
         config: Optional[IndexConfigType] = None,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
         train: bool = True,
         target_partition_size: Optional[int] = None,
     ):
@@ -675,6 +682,7 @@ class RemoteTable(Table):
             self._table.create_index(
                 column,
                 replace=replace,
+                exist_ok=exist_ok,
                 config=config,
                 wait_timeout=wait_timeout,
                 name=name,
@@ -690,6 +698,7 @@ class RemoteTable(Table):
         replace: Optional[bool] = None,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
         train: bool = True,
     ) -> Job:
         """Create an index, returning a handle to the indexing job.
@@ -702,6 +711,7 @@ class RemoteTable(Table):
                 self._table.create_index_async(
                     column,
                     replace=replace,
+                    exist_ok=exist_ok,
                     config=config,
                     wait_timeout=wait_timeout,
                     name=name,
@@ -1154,6 +1164,8 @@ class RemoteTable(Table):
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
         resource_budget: Optional[Dict[str, int]] = None,
+        supervisor_resources: Optional[Dict[str, int]] = None,
+        planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -1173,6 +1185,8 @@ class RemoteTable(Table):
                 max_concurrency=max_concurrency,
                 publication_interval_rows=publication_interval_rows,
                 resource_budget=resource_budget,
+                supervisor_resources=supervisor_resources,
+                planning_workers=planning_workers,
                 gpu_class=gpu_class,
                 gpu_count=gpu_count,
                 retry_policy=retry_policy,
@@ -1195,6 +1209,8 @@ class RemoteTable(Table):
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
         resource_budget: Optional[Dict[str, int]] = None,
+        supervisor_resources: Optional[Dict[str, int]] = None,
+        planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -1215,6 +1231,8 @@ class RemoteTable(Table):
                     max_concurrency=max_concurrency,
                     publication_interval_rows=publication_interval_rows,
                     resource_budget=resource_budget,
+                    supervisor_resources=supervisor_resources,
+                    planning_workers=planning_workers,
                     gpu_class=gpu_class,
                     gpu_count=gpu_count,
                     retry_policy=retry_policy,

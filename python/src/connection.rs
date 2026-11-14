@@ -457,7 +457,8 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (target_table_name, source_uri, target_namespace_path=None, source_version=None, source_tag=None, is_shallow=true))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (target_table_name, source_uri, target_namespace_path=None, source_version=None, source_tag=None, is_shallow=true, *, exist_ok=false))]
     pub fn clone_table(
         self_: PyRef<'_, Self>,
         target_table_name: String,
@@ -466,6 +467,7 @@ impl Connection {
         source_version: Option<u64>,
         source_tag: Option<String>,
         is_shallow: bool,
+        exist_ok: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
 
@@ -477,7 +479,7 @@ impl Connection {
         if let Some(tag) = source_tag {
             builder = builder.source_tag(tag);
         }
-        builder = builder.is_shallow(is_shallow);
+        builder = builder.is_shallow(is_shallow).exist_ok(exist_ok);
 
         future_into_py(self_.py(), async move {
             let table = builder.execute().await.infer_error()?;
@@ -505,7 +507,7 @@ impl Connection {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (name, source=None, projections=None, filter=None, limit=None, with_no_data=false, auto_refresh_enabled=None, auto_refresh_interval_seconds=None, *, query=None))]
+    #[pyo3(signature = (name, source=None, projections=None, filter=None, limit=None, with_no_data=false, auto_refresh_enabled=None, auto_refresh_interval_seconds=None, *, query=None, exist_ok=false))]
     pub fn create_materialized_view(
         self_: PyRef<'_, Self>,
         name: String,
@@ -517,6 +519,7 @@ impl Connection {
         auto_refresh_enabled: Option<bool>,
         auto_refresh_interval_seconds: Option<f64>,
         query: Option<String>,
+        exist_ok: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         let builder = materialized_view_builder(
@@ -527,7 +530,7 @@ impl Connection {
             projections.is_some() || filter.is_some() || limit.is_some(),
         )?;
         future_into_py(self_.py(), async move {
-            let mut builder = builder;
+            let mut builder = builder.exist_ok(exist_ok);
             if let Some(enabled) = auto_refresh_enabled {
                 builder = builder.auto_refresh_enabled(enabled);
             }
@@ -550,7 +553,7 @@ impl Connection {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (name, source=None, projections=None, filter=None, limit=None, with_no_data=false, auto_refresh_enabled=None, auto_refresh_interval_seconds=None, *, query=None))]
+    #[pyo3(signature = (name, source=None, projections=None, filter=None, limit=None, with_no_data=false, auto_refresh_enabled=None, auto_refresh_interval_seconds=None, *, query=None, exist_ok=false))]
     pub fn create_materialized_view_async(
         self_: PyRef<'_, Self>,
         name: String,
@@ -562,6 +565,7 @@ impl Connection {
         auto_refresh_enabled: Option<bool>,
         auto_refresh_interval_seconds: Option<f64>,
         query: Option<String>,
+        exist_ok: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         let builder = materialized_view_builder(
@@ -572,7 +576,7 @@ impl Connection {
             projections.is_some() || filter.is_some() || limit.is_some(),
         )?;
         future_into_py(self_.py(), async move {
-            let mut builder = builder;
+            let mut builder = builder.exist_ok(exist_ok);
             if let Some(enabled) = auto_refresh_enabled {
                 builder = builder.auto_refresh_enabled(enabled);
             }

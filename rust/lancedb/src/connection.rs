@@ -433,6 +433,21 @@ impl CloneTableBuilder {
         }
     }
 
+    /// Preserve an existing target without reading or cloning the source.
+    /// Defaults to false, which reports a duplicate-name error.
+    ///
+    /// ```no_run
+    /// # async fn example(db: &lancedb::Connection) -> lancedb::Result<()> {
+    /// let table = db.clone_table("snapshot", "s3://bucket/source.lance")
+    ///     .exist_ok(true).execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn exist_ok(mut self, exist_ok: bool) -> Self {
+        self.request.exist_ok = exist_ok;
+        self
+    }
+
     /// Set the source version to clone from
     pub fn source_version(mut self, version: u64) -> Self {
         self.request.source_version = Some(version);
@@ -633,7 +648,8 @@ impl Connection {
     /// Creates a new table by cloning from an existing source table.
     /// By default, this performs a shallow clone where the new table shares
     /// the underlying data files with the source table.
-    /// The target table name must be unused. An existing table is left unchanged.
+    /// The target table name must be unused by default. Use
+    /// [`CloneTableBuilder::exist_ok`] to open an existing target unchanged.
     ///
     /// # Parameters
     /// - `target_table_name`: The name of the new table to create
@@ -2787,6 +2803,14 @@ mod tests {
             "unexpected clone error: {err:?}"
         );
 
+        let preserved = db
+            .clone_table(target, "missing-source.lance")
+            .exist_ok(true)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(preserved.name(), target);
+
         // Reopen both tables to verify that the failed clone left their data and versions intact.
         for (name, expected_data) in [("source", source_data), ("target", target_data)] {
             let table = db.open_table(name).execute().await.unwrap();
@@ -2804,8 +2828,9 @@ mod tests {
         }
     }
 
+    #[rstest::rstest]
     #[tokio::test]
-    async fn test_clone_table() {
+    async fn test_clone_table(#[values(false, true)] exist_ok: bool) {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
         let db = connect(uri).execute().await.unwrap();
@@ -2830,6 +2855,7 @@ mod tests {
         // Clone the table
         let cloned_table = db
             .clone_table("cloned_table", source_uri)
+            .exist_ok(exist_ok)
             .execute()
             .await
             .unwrap();
