@@ -936,7 +936,7 @@ class FunctionValueProvenance(_RemoteValue):
 class FunctionProvenance(_RemoteValue):
     """A bounded per-row producing-version listing for a table snapshot."""
 
-    records: list[FunctionValueProvenance]
+    records: tuple[FunctionValueProvenance, ...]
     truncated: bool = False
 
 
@@ -1097,8 +1097,9 @@ class FunctionErrors(_FunctionErrors):
             .with_row_address()
             .limit(max(1, len(identities)))
         )
-        if columns is not None:
-            query = query.select(columns)
+        selected = list(self._table.schema.names if columns is None else columns)
+        selected.extend(name for name in ("_rowid", "_rowaddr") if name not in selected)
+        query = query.select(selected)
         return self._join_rows(query.to_arrow(), identities)
 
 
@@ -1116,8 +1117,11 @@ class AsyncFunctionErrors(_FunctionErrors):
             .with_row_address()
             .limit(max(1, len(identities)))
         )
-        if columns is not None:
-            query = query.select(columns)
+        selected = list(
+            (await self._table.schema()).names if columns is None else columns
+        )
+        selected.extend(name for name in ("_rowid", "_rowaddr") if name not in selected)
+        query = query.select(selected)
         return self._join_rows(await query.to_arrow(), identities)
 
 
@@ -1158,7 +1162,7 @@ class RefreshColumnResult(_RemoteValue):
     """Exact table version the refresh read."""
 
     published_version: Optional[_UInt64] = None
-    error_groups: list[FunctionErrorGroup] = Field(default_factory=list)
+    error_groups: tuple[FunctionErrorGroup, ...] = ()
     error_groups_truncated: bool = False
     """Table version made visible by the refresh, when one was published."""
 

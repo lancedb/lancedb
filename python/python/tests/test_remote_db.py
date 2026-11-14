@@ -7642,7 +7642,7 @@ def test_function_error_rows_returns_all_inputs_and_preserves_multiple_column_er
 ):
     db = lancedb.connect(tmp_path)
     table = db.create_table("inputs", [{"id": index} for index in range(16)])
-    inputs = table.search().with_row_id(True).limit(16).to_arrow()
+    inputs = table.search().select(["id", "_rowid", "_rowaddr"]).limit(16).to_arrow()
     records = [
         SimpleNamespace(
             column="first",
@@ -7675,6 +7675,17 @@ def test_function_error_rows_returns_all_inputs_and_preserves_multiple_column_er
     assert sorted(set(rows.column("id").to_pylist())) == list(range(16))
     assert rows.column("__function_error").type.field("column").name == "column"
     assert [group.rows_failed for group in errors.summary()] == [16, 1]
+    legacy = copy.copy(records[0])
+    legacy.row_id = None
+    legacy.row_address = inputs.column("_rowaddr")[0].as_py()
+    legacy_errors = lancedb.FunctionErrors(
+        SimpleNamespace(
+            records=[legacy], fragments=[], truncated=False, workflow_version=1
+        ),
+        table,
+    )
+    assert legacy_errors.rows(columns=["id"]).column("id").to_pylist() == [0]
+
     incomplete = lancedb.FunctionErrors(
         SimpleNamespace(
             records=records, fragments=[], truncated=True, workflow_version=1
