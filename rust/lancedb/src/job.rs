@@ -102,6 +102,9 @@ pub(crate) trait JobHandle: Send + Sync {
         self.wait().await
     }
     async fn cancel(&self) -> Result<()>;
+    async fn retry(&self) -> Result<Box<dyn JobHandle>> {
+        job_detail_not_supported("retrying a job")
+    }
     /// The job's full server-side record. Backends that run the operation in
     /// this process have none and keep the default.
     async fn describe(&self) -> Result<JobDescription> {
@@ -754,6 +757,23 @@ where
         match &self.inner {
             JobInner::Handle { handle, .. } => handle.cancel().await,
             JobInner::Completed(_) => Ok(()),
+        }
+    }
+
+    /// Select a successor for this exact unsuccessful attempt. The backend
+    /// copies pinned inputs and coalesces repeated requests; it does not resolve
+    /// a newer Function alias. In-process operations cannot be retried because
+    /// they do not retain a replayable operation specification.
+    pub async fn retry(&self) -> Result<Self> {
+        match &self.inner {
+            JobInner::Handle { handle, decode } => Ok(Self {
+                inner: JobInner::Handle {
+                    handle: handle.retry().await?,
+                    decode: decode.clone(),
+                },
+                cache: RwLock::default(),
+            }),
+            JobInner::Completed(_) => job_detail_not_supported("retrying a job"),
         }
     }
 

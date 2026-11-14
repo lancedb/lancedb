@@ -1132,6 +1132,8 @@ pub struct FunctionErrorsRequest {
     /// At most this many records; the server default is 10000 and its cap
     /// 100000. [`FunctionErrors::truncated`] says whether the cap was hit.
     pub limit: Option<usize>,
+    /// Empty starts paging for an exact job_id; a returned token continues it.
+    pub page_token: Option<String>,
 }
 
 impl FunctionErrorsRequest {
@@ -1155,6 +1157,13 @@ impl FunctionErrorsRequest {
     /// At most `limit` records.
     pub fn limit(mut self, limit: usize) -> Self {
         self.limit = Some(limit);
+        self
+    }
+
+    /// Start with an empty token, then continue using the response's token.
+    /// Paging requires an exact job_id and a supporting backend.
+    pub fn page_token(mut self, token: impl Into<String>) -> Self {
+        self.page_token = Some(token.into());
         self
     }
 }
@@ -1232,6 +1241,10 @@ pub struct FunctionErrors {
     /// Whether the listing stopped at its limit.
     #[serde(default)]
     pub truncated: bool,
+    /// Continue this exact job/filter, or `None` when a paged read is complete.
+    /// Older servers and legacy non-paged reads omit this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_token: Option<String>,
 }
 
 impl RefreshColumnResult {

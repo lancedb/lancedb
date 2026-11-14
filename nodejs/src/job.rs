@@ -153,6 +153,13 @@ impl Job {
         self.inner.cancel().await.default_error()
     }
 
+    #[napi(catch_unwind)]
+    pub async fn retry(&self) -> napi::Result<Self> {
+        Ok(Self {
+            inner: Arc::new(self.inner.retry().await.default_error()?),
+        })
+    }
+
     /// Ask the backend for this job's current state, and for a server-side job
     /// its full record, then cache it for the getters below.
     ///

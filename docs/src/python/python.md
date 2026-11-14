@@ -451,6 +451,24 @@ stable identity for their lifetime and share typed lifecycle and wait semantics;
 their IDs cannot be reopened after a process restart. Event history, durable
 retries, and per-row Function errors require a backend that records them.
 
+Explicit retries name the exact failed attempt and preserve its resolved
+Function version and source snapshot. Repeating `job.retry()` selects the same
+successor; call `retry()` on that successor to request another attempt. Safely
+retryable states and publication outcomes are validated by the backend.
+
+```python
+retry = job.retry()
+token = ""
+while token is not None:
+    errors = table.function_errors(job_id=retry.job_id, limit=1000, page_token=token)
+    print(errors.records, errors.fragments)
+    token = errors.page_token
+```
+
+An empty error page can still carry a continuation. Keep the table, branch,
+job, and column filters unchanged while paging. Diagnose a terminal attempt for
+its complete retained row errors; an executing attempt is a partial observation.
+
 A `@function` definition is also a local callable. Call a decorated function
 directly with row inputs, or call a decorated class with its initialization fields
 and then call the returned instance; call `close()` if the class defines it. This

@@ -869,6 +869,7 @@ pub struct FunctionErrors {
     pub records: Vec<FunctionErrorRecord>,
     pub fragments: Vec<FunctionErrorFragment>,
     pub truncated: bool,
+    pub page_token: Option<String>,
 }
 
 #[pymethods]
@@ -889,6 +890,7 @@ impl From<lancedb::function::FunctionErrors> for FunctionErrors {
             records: errors.records.into_iter().map(Into::into).collect(),
             fragments: errors.fragments.into_iter().map(Into::into).collect(),
             truncated: errors.truncated,
+            page_token: errors.page_token,
         }
     }
 }
@@ -2588,18 +2590,20 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (job_id=None, column=None, limit=None))]
+    #[pyo3(signature = (job_id=None, column=None, limit=None, page_token=None))]
     pub fn function_errors(
         self_: PyRef<'_, Self>,
         job_id: Option<String>,
         column: Option<String>,
         limit: Option<usize>,
+        page_token: Option<String>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         let request = lancedb::function::FunctionErrorsRequest {
             job_id,
             column,
             limit,
+            page_token,
         };
         future_into_py(self_.py(), async move {
             let errors = inner.function_errors(request).await.infer_error()?;

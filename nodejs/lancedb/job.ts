@@ -147,12 +147,11 @@ export class Job {
   /** Refresh and return the detailed lifecycle state. */
   async statusTyped(): Promise<JobState> {
     const state = await this.status();
-    const aliases: Record<string, string> = {
-      running: "in_progress",
-      finished: "succeeded",
-      cancelled: "canceled",
-    };
-    return this.lifecycleState ?? aliases[state] ?? state;
+    if (this.lifecycleState !== null) return this.lifecycleState;
+    if (state === "running") return "in_progress";
+    if (state === "finished") return "succeeded";
+    if (state === "cancelled") return "canceled";
+    return state;
   }
 
   /** The last observed lifecycle state, without contacting the backend. */
@@ -247,6 +246,11 @@ export class Job {
   /** Request cancellation. Cancelling a finished operation is a no-op. */
   async cancel(): Promise<void> {
     return this.inner.cancel();
+  }
+
+  /** Select this exact attempt's pinned successor. Requires backend support. */
+  async retry(): Promise<Job> {
+    return new Job(await this.inner.retry());
   }
 
   /**

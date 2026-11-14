@@ -3485,6 +3485,7 @@ class Table(ABC):
         job_id: Optional[str] = None,
         column: Optional[str] = None,
         limit: Optional[int] = None,
+        page_token: Optional[str] = None,
     ) -> "FunctionErrors":
         """
         The per-row errors Function refreshes recorded on this table.
@@ -3504,6 +3505,9 @@ class Table(ABC):
             Only errors on this column.
         limit: int, optional
             At most this many records (server default 10000, cap 100000).
+        page_token: str, optional
+            Empty starts paging for an exact job_id. Continue with the response's
+            page_token until it is None, keeping all filters unchanged.
 
         Returns
         -------
@@ -5719,11 +5723,14 @@ class LanceTable(Table):
         job_id: Optional[str] = None,
         column: Optional[str] = None,
         limit: Optional[int] = None,
+        page_token: Optional[str] = None,
     ) -> "FunctionErrors":
         """The per-row errors Function refreshes recorded on this table. See
         [`Table.function_errors`][lancedb.table.Table.function_errors]."""
         return LOOP.run(
-            self._table.function_errors(job_id=job_id, column=column, limit=limit)
+            self._table.function_errors(
+                job_id=job_id, column=column, limit=limit, page_token=page_token
+            )
         )
 
     def column_statuses(
@@ -8232,6 +8239,7 @@ class AsyncTable:
         job_id: Optional[str] = None,
         column: Optional[str] = None,
         limit: Optional[int] = None,
+        page_token: Optional[str] = None,
     ) -> "FunctionErrors":
         """
         The per-row errors Function refreshes recorded on this table.
@@ -8251,6 +8259,9 @@ class AsyncTable:
             Only errors on this column.
         limit: int, optional
             At most this many records (server default 10000, cap 100000).
+        page_token: str, optional
+            Empty starts paging for an exact job_id. Continue with the response's
+            page_token until it is None, keeping all filters unchanged.
 
         Returns
         -------
@@ -8313,7 +8324,7 @@ class AsyncTable:
         ...     print("listing stopped at the limit")
         """
         return await self._inner.function_errors(
-            job_id=job_id, column=column, limit=limit
+            job_id=job_id, column=column, limit=limit, page_token=page_token
         )
 
     async def column_statuses(

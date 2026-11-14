@@ -226,6 +226,32 @@ impl<S: HttpSend> RemoteJob<S> {
         Self { client, job_id }
     }
 
+    pub async fn retry_attempt(&self) -> Result<Self> {
+        let request = self
+            .client
+            .post("/v1/jobs/retry")
+            .json(&serde_json::json!({"job_id": self.job_id}));
+        let (request_id, response) = self.client.send(request).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        let response: serde_json::Value =
+            serde_json::from_str(&body).map_err(|error| Error::Http {
+                source: format!("invalid job retry response: {error}").into(),
+                request_id: request_id.clone(),
+                status_code: None,
+            })?;
+        let job_id = response
+            .get("job_id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| Error::Http {
+                source: "job retry response omitted the successor job_id".into(),
+                request_id,
+                status_code: None,
+            })?;
+        Ok(Self::new(self.client.clone(), job_id.to_string()))
+    }
+
     /// One `/v1/jobs/describe` round trip.
     async fn fetch_description(&self) -> Result<(String, DescribeJobResponse)> {
         let request = self
@@ -385,6 +411,10 @@ impl<S: HttpSend> JobHandle for RemoteJob<S> {
             .await
             .map(|_| ())
     }
+
+    async fn retry(&self) -> Result<Box<dyn JobHandle>> {
+        Ok(Box::new(self.retry_attempt().await?))
+    }
 }
 
 #[cfg(test)]
@@ -494,6 +524,35 @@ mod tests {
             Err(crate::Error::Timeout { .. })
         ));
         assert_eq!(job.lifecycle_state(), Some(state));
+    }
+
+    #[tokio::test]
+    async fn retry_preserves_the_typed_result_decoder_and_exact_predecessor() {
+        let client = client_with_handler(|request| {
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            let response = if request.url().path() == "/v1/jobs/retry" {
+                assert_eq!(body["job_id"], "attempt-1");
+                serde_json::json!({"job_id": "attempt-2"})
+            } else {
+                assert_eq!(body["job_id"], "attempt-2");
+                serde_json::json!({"job_id": "attempt-2", "operation_id": "attempt-1", "attempt": 2,
+                    "retry_of": "attempt-1", "job_state": "DONE", "lifecycle_state": "succeeded", "result": 41})
+            };
+            http::Response::builder()
+                .status(200)
+                .body(response.to_string())
+                .unwrap()
+        });
+        let job = Job::<u64>::new_typed(Box::new(RemoteJob::new(client, "attempt-1".to_string())))
+            .map(|value| value + 1);
+        let successor = job.retry().await.unwrap();
+        assert_eq!(successor.id(), Some("attempt-2"));
+        assert_eq!(successor.wait().await.unwrap(), 42);
+        successor.refresh().await.unwrap();
+        assert_eq!(successor.operation_id().as_deref(), Some("attempt-1"));
+        assert_eq!(successor.attempt(), Some(2));
+        assert_eq!(successor.retry_of().as_deref(), Some("attempt-1"));
     }
 
     #[tokio::test]

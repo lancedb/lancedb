@@ -87,7 +87,7 @@ def _timeout_message(
     if job_id is None:
         return (
             f"operation still running after {seconds} {unit}; "
-            "it continues on the server"
+            "keep this handle to continue waiting"
         )
     if job_type == "query":
         return (
@@ -452,6 +452,18 @@ class AsyncJob(Generic[T]):
             return
         await self._inner.cancel()
 
+    async def retry(self) -> "AsyncJob[T]":
+        """Select a successor for this exact failed attempt using pinned inputs.
+
+        Repeated requests select the same successor even after it finishes.
+        Requires a supporting server and a safely retryable Function job.
+        In-process operations do not retain a replayable specification and
+        raise ``NotImplementedError``.
+        """
+        if self._inner is None:
+            raise NotImplementedError("retry requires a registry-backed job")
+        return AsyncJob(await self._inner.retry(), self._result_decoder)
+
     async def refresh(self) -> None:
         """Ask the backend for this job's current state, and for a server-side
         job its full record, then cache it for the properties below.
@@ -784,6 +796,10 @@ class Job(Generic[T]):
         if self._inner is None:
             return
         LOOP.run(self._inner.cancel())
+
+    def retry(self) -> "Job[T]":
+        """Select this attempt's pinned successor. See :meth:`AsyncJob.retry`."""
+        return Job(LOOP.run(self._inner.retry()))
 
     def refresh(self) -> None:
         """Ask the backend for this job's current state and record.

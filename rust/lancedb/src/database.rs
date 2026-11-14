@@ -361,6 +361,7 @@ impl JobDescription {
         if let Some(operation_id) = &self.operation_id {
             snapshot.insert("operation_id".to_string(), operation_id.clone().into());
         }
+        snapshot.insert("job_id".to_string(), self.job_id.clone().into());
         if let Some(attempt) = self.attempt {
             snapshot.insert("attempt".to_string(), attempt.into());
         }
