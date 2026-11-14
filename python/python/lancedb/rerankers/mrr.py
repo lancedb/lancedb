@@ -174,7 +174,8 @@ class MRRReranker(Reranker):
             final_mrr_scores[result_id] = mean_rr
 
         combined = pa.concat_tables(vector_results, **self._concat_tables_args)
-        combined = self._deduplicate(combined)
+        if deduplicate:
+            combined = self._deduplicate(combined)
 
         combined_row_ids = combined["_rowid"].to_pylist()
 
