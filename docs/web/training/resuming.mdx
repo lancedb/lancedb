@@ -20,7 +20,7 @@ terminology from [Distributed Training](/training/distributed-training#paralleli
 import torch
 from lancedb.streaming import StreamingDataset
 
-checkpoint = torch.load("checkpoint_100.pt")
+checkpoint = torch.load(f"checkpoint_100_rank_{rank}.pt")
 model.load_state_dict(checkpoint["model"])
 
 dataset_state = checkpoint["dataset"]
