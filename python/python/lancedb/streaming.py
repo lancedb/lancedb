@@ -232,6 +232,34 @@ class _TwoPhaseSplitReader:
         # watermark, so rescanning that ever-growing prefix on each top-up
         # would make prefetch cost quadratic in the split's block count.
         self._visit_cursor = 0
+        # io_queue_depth submits several calls at once and they may take
+        # _lock out of order, so a later call's max index is not a safe
+        # eviction point: an earlier, still-waiting call can need a block
+        # whose last use precedes it, and evicting it forces a re-read.
+        # Evict only behind _served_prefix, the first plan position not yet
+        # returned by any call.
+        self._served = np.zeros(self.num_rows, dtype=bool)
+        self._served_prefix = 0
+
+    def _load_block(self, block_id: int) -> pa.Table:
+        # A block read can arrive as several record batches. Table.take on a
+        # multi-chunk column concatenates the whole column first, so every
+        # later gather from this block would copy all of it; combining once
+        # here pays that copy a single time per block instead of per call.
+        return self._read_block_fn(block_id).combine_chunks()
+
+    def _advance_served_prefix(self, idx_arr: np.ndarray) -> int:
+        """Mark ``idx_arr`` served; return the last position of the served prefix."""
+        self._served[idx_arr] = True
+        n = self.num_rows
+        while self._served_prefix < n:
+            window = self._served[self._served_prefix : self._served_prefix + 4096]
+            if window.all():
+                self._served_prefix += len(window)
+            else:
+                self._served_prefix += int(window.argmin())
+                break
+        return self._served_prefix - 1
 
     def __getitems__(self, indices) -> pa.RecordBatch:
         # Fancy-indexed (not sliced) so this also supports non-contiguous
@@ -241,19 +269,17 @@ class _TwoPhaseSplitReader:
         with self._lock:
             block_pos_slice = self._plan_block_pos[idx_arr]
             local_off_slice = self._plan_local_offset[idx_arr]
-            needed = sorted(set(block_pos_slice.tolist()))
-            for bp in needed:
+            for bp in np.unique(block_pos_slice).tolist():
                 if bp not in self._loaded:
                     if bp in self._pending:
                         # Prefetched by an earlier call: block on it only if
                         # it hasn't finished yet -- often it already has.
                         self._loaded[bp] = self._pending.pop(bp).result()
                     else:
-                        block_id = self._block_ids[bp]
                         # read_block_fn already returns only this block's
                         # live rows, in natural (ascending) order -- no
                         # further filtering or reordering needed here.
-                        self._loaded[bp] = self._read_block_fn(block_id)
+                        self._loaded[bp] = self._load_block(self._block_ids[bp])
 
             # Group by source block (stable, so each block's rows keep
             # their relative order), gather from each, then invert the
@@ -261,24 +287,19 @@ class _TwoPhaseSplitReader:
             group_order = np.argsort(block_pos_slice, kind="stable")
             grouped_block_pos = block_pos_slice[group_order]
             grouped_local_off = local_off_slice[group_order]
-            tables = []
-            pos = 0
-            n = len(grouped_block_pos)
-            while pos < n:
-                bp = grouped_block_pos[pos]
-                run_end = pos + 1
-                while run_end < n and grouped_block_pos[run_end] == bp:
-                    run_end += 1
-                offs = grouped_local_off[pos:run_end]
-                tables.append(
-                    self._loaded[int(bp)].take(pa.array(offs, type=pa.int64()))
+            run_starts = np.flatnonzero(np.diff(grouped_block_pos)) + 1
+            bounds = [0, *run_starts.tolist(), len(grouped_block_pos)]
+            tables = [
+                self._loaded[int(grouped_block_pos[start])].take(
+                    grouped_local_off[start:end]
                 )
-                pos = run_end
+                for start, end in zip(bounds[:-1], bounds[1:])
+            ]
             combined = pa.concat_tables(tables)
             inverse = np.argsort(group_order)
-            result = combined.take(pa.array(inverse, type=pa.int64()))
+            result = combined.take(inverse)
 
-            watermark = int(idx_arr.max())
+            watermark = self._advance_served_prefix(idx_arr)
             for bp in list(self._loaded):
                 if self._block_last_pos.get(bp, -1) <= watermark:
                     del self._loaded[bp]
@@ -307,7 +328,7 @@ class _TwoPhaseSplitReader:
                         # Already read past: never needed again.
                         continue
                     self._pending[bp] = self._executor.submit(
-                        self._read_block_fn, self._block_ids[bp]
+                        self._load_block, self._block_ids[bp]
                     )
                     room -= 1
 
@@ -1010,10 +1031,6 @@ class StreamingDataset(IterableDataset):
                 # over when block_size doesn't evenly divide the row count)
                 # rather than reading it as an undersized final block.
                 num_blocks = total_rows // block_size
-                block_ranges = [
-                    (i * block_size, (i + 1) * block_size) for i in range(num_blocks)
-                ]
-                block_live_counts = [block_size] * num_blocks
                 num_rows = num_blocks * block_size
             else:
                 # One pass, computed once here and never repeated at read
@@ -1063,19 +1080,19 @@ class StreamingDataset(IterableDataset):
                 # divide the live row count) -- discard it rather than
                 # reading an undersized final block.
                 num_blocks = live_offsets.size // block_size
-                block_ranges = []
                 block_live_offsets = [
                     live_offsets[i * block_size : (i + 1) * block_size]
                     for i in range(num_blocks)
                 ]
-                block_live_counts = [block_size] * num_blocks
                 num_rows = num_blocks * block_size
 
+            # Every block holds exactly block_size live rows (runts are
+            # discarded above), so no per-block range or count list is kept:
+            # anything sized by the block count also inflates the pickle
+            # shipped to each DataLoader worker (see __getstate__).
             self._num_rows = num_rows
             self._num_blocks = num_blocks
-            self._block_ranges: list[tuple[int, int]] = block_ranges
             self._block_live_offsets: Optional[list[np.ndarray]] = block_live_offsets
-            self._block_live_counts: list[int] = block_live_counts
             if self._num_blocks < num_splits:
                 raise ValueError(
                     f"block_size={block_size} yields only {self._num_blocks} "
@@ -1094,17 +1111,11 @@ class StreamingDataset(IterableDataset):
                 if reshuffle_blocks_per_epoch is not None
                 else True
             )
-            block_order = list(range(self._num_blocks))
-            if shuffle:
-                block_seed = shuffle_seed
-                if self._reshuffle_blocks_per_epoch:
-                    block_seed += epoch * _EPOCH_PRIME
-                random.Random(block_seed).shuffle(block_order)
             # Kept as a plain Python list for simplicity, unlike the
             # 1-phase row mapping below, which is Arrow-backed because it
             # is built and consumed through the Arrow-based permutation
             # table machinery; a block permutation has no such need.
-            self._block_perm: list[int] = block_order
+            self._block_perm: Optional[list[int]] = self._shuffled_block_order()
             self._perm_table = None
             # Block mode has no PermutationBuilder output to fingerprint.
             # These fields still drive common checkpoint code.
@@ -1278,7 +1289,8 @@ class StreamingDataset(IterableDataset):
         if self._filter is None:
             # offset/limit is a positional, sequential read, so its output
             # order is exactly storage order -- no restoration needed.
-            row_start, row_end = self._block_ranges[block_id]
+            row_start = block_id * self._block_size
+            row_end = row_start + self._block_size
             if lance_ds is not None:
                 # Local table: pylance's native scanner is a direct,
                 # purpose-built positional range read -- substantially
@@ -1316,6 +1328,16 @@ class StreamingDataset(IterableDataset):
         order = pc.sort_indices(block.column("_rowoffset"))
         return block.take(order).drop_columns(["_rowoffset"])
 
+    def _shuffled_block_order(self) -> list[int]:
+        """The epoch's block permutation, derived only from scalar config."""
+        block_order = list(range(self._num_blocks))
+        if self._shuffle:
+            block_seed = self._shuffle_seed
+            if self._reshuffle_blocks_per_epoch:
+                block_seed += self._epoch * _EPOCH_PRIME
+            random.Random(block_seed).shuffle(block_order)
+        return block_order
+
     def _split_block_ids(self, split_idx: int) -> list[int]:
         """Block ids assigned to one split, in the split's read order.
 
@@ -1340,7 +1362,7 @@ class StreamingDataset(IterableDataset):
         own deterministic read order (see ``_TwoPhaseSplitReader``).
         """
         block_ids = self._split_block_ids(split_idx)
-        live_counts = [self._block_live_counts[bid] for bid in block_ids]
+        live_counts = [self._block_size] * len(block_ids)
         sigma_seed = (
             self._shuffle_seed
             + self._epoch * _EPOCH_PRIME
@@ -2169,6 +2191,13 @@ class StreamingDataset(IterableDataset):
         ):
             state[key] = None
         state["_consumer_iterator_lock"] = None
+        # Rebuilt in __setstate__.  Spawn/forkserver workers receive this
+        # pickle through a pipe; once it outgrows the 64 KiB pipe buffer,
+        # each Popen blocks until its child has imported torch and read it,
+        # so a payload that scales with the block count serializes worker
+        # startup (minutes at 128 workers with small blocks).
+        if state.get("_block_perm") is not None:
+            state["_block_perm"] = None
         # Non-picklable Rust-backed handle (see _pinned_lance_dataset);
         # dropped rather than set to None so the worker's first _read_block
         # call recomputes it fresh against its own reconnected table instead
@@ -2185,6 +2214,8 @@ class StreamingDataset(IterableDataset):
         perm_table_state = state.pop("_perm_table")
         self.__dict__.update(state)
         self._consumer_iterator_lock = threading.Lock()
+        if "_block_perm" in state:
+            self._block_perm = self._shuffled_block_order()
         if self._connection_factory is not None:
             self._table = self._connection_factory(table_name)
         else:

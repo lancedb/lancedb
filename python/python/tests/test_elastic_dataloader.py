@@ -32,6 +32,7 @@ Parameters used throughout:
 
 import dataclasses
 import logging
+import pickle
 import threading
 from unittest.mock import patch
 
@@ -1103,6 +1104,41 @@ def test_block_size_dataloader_workers_reconnect(tmp_path):
         iterator._shutdown_workers()
 
     assert sorted(row for batch in batches for row in batch) == list(range(8))
+
+
+@pytest.mark.parametrize("reshuffle_blocks_per_epoch", [True, False])
+def test_block_size_pickle_does_not_grow_with_block_count(
+    tmp_path, reshuffle_blocks_per_epoch
+):
+    """Spawned workers start serially once the pickle outgrows a pipe buffer."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("block_pickle", pa.table({"id": list(range(1 << 16))}))
+
+    def make(block_size):
+        return StreamingDataset(
+            table,
+            num_splits=2,
+            shuffle_seed=7,
+            epoch=3,
+            block_size=block_size,
+            reshuffle_blocks_per_epoch=reshuffle_blocks_per_epoch,
+        )
+
+    def pickled_state(dataset):
+        # The fixed-size RawArray counters only pickle while spawning a child.
+        state = dataset.__getstate__()
+        del state["_worker_stats"], state["_untracked_worker_iteration"]
+        return pickle.dumps(state)
+
+    few_blocks, many_blocks = make(1 << 12), make(4)
+    few_size = len(pickled_state(few_blocks))
+    many_size = len(pickled_state(many_blocks))
+    assert many_size - few_size < 1024, (few_size, many_size)
+
+    restored = StreamingDataset.__new__(StreamingDataset)
+    restored.__setstate__(pickle.loads(pickled_state(many_blocks)))
+    assert restored._block_perm == many_blocks._block_perm
+    assert restored._block_perm != sorted(restored._block_perm)
 
 
 def test_distributed_checkpoint_uses_rank_local_worker_boundary(tmp_path):
@@ -3668,9 +3704,15 @@ class _LookupCountingDict(dict):
 
 
 @pytest.mark.parametrize(
-    "skip", [pytest.param(0, id="fresh"), pytest.param(1500, id="resumed")]
+    "skip,swap_calls",
+    [
+        pytest.param(0, False, id="fresh"),
+        pytest.param(1500, False, id="resumed"),
+        # io_queue_depth lets calls take the reader's lock out of order.
+        pytest.param(0, True, id="out_of_order"),
+    ],
 )
-def test_two_phase_reader_sequential_read_is_linear_in_blocks(skip):
+def test_two_phase_reader_sequential_read_is_linear_in_blocks(skip, swap_calls):
     """A sequential read must fetch each block once and keep per-call
     bookkeeping bounded by the resident window, not by how many blocks the
     split has already passed -- otherwise prefetch cost grows quadratically
@@ -3681,7 +3723,12 @@ def test_two_phase_reader_sequential_read_is_linear_in_blocks(skip):
 
     def read_block(block_id):
         reads.append(block_id)
-        return pa.table({"block": [block_id] * block_size, "row": range(block_size)})
+        # Two record batches per block, as a multi-batch scan returns.
+        half = block_size // 2
+        return pa.concat_tables(
+            pa.table({"block": [block_id] * half, "row": range(lo, lo + half)})
+            for lo in (0, half)
+        )
 
     reader = streaming._TwoPhaseSplitReader(
         block_ids=block_ids,
@@ -3702,14 +3749,20 @@ def test_two_phase_reader_sequential_read_is_linear_in_blocks(skip):
         assert reader._block_last_pos == expected_last_pos
 
         reader._block_last_pos = _LookupCountingDict(reader._block_last_pos)
-        rows = []
-        num_calls = 0
-        for start in range(0, reader.num_rows, batch):
+        starts = list(range(0, reader.num_rows, batch))
+        if swap_calls:
+            starts[0::2], starts[1::2] = starts[1::2], starts[0::2]
+        outputs = {}
+        for start in starts:
             out = reader.__getitems__(range(start, min(start + batch, reader.num_rows)))
-            rows.extend(
+            outputs[start] = list(
                 zip(out.column("block").to_pylist(), out.column("row").to_pylist())
             )
-            num_calls += 1
+            assert all(
+                t.column("block").num_chunks == 1 for t in reader._loaded.values()
+            )
+        rows = [row for start in sorted(outputs) for row in outputs[start]]
+        num_calls = len(starts)
     finally:
         reader.close()
 
