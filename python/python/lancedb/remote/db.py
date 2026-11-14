@@ -1091,6 +1091,7 @@ class RemoteDBConnection(DBConnection):
         azure_client_secret_secret: Optional[Union[str, SecretReference]] = None,
         gcp_credentials_json_secret: Optional[Union[str, SecretReference]] = None,
         huggingface_token_secret: Optional[Union[str, SecretReference]] = None,
+        exist_ok: bool = False,
         namespace_path: Optional[List[str]] = None,
     ) -> StorageIntegrationInfo:
         return LOOP.run(
@@ -1108,6 +1109,7 @@ class RemoteDBConnection(DBConnection):
                 azure_client_secret_secret=azure_client_secret_secret,
                 gcp_credentials_json_secret=gcp_credentials_json_secret,
                 huggingface_token_secret=huggingface_token_secret,
+                exist_ok=exist_ok,
                 namespace_path=namespace_path,
             )
         )
