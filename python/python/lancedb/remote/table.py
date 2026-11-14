@@ -65,6 +65,7 @@ from lancedb.embeddings import EmbeddingFunctionRegistry
 from lancedb.table import _normalize_progress
 
 from ..query import (
+    FullTextOperator,
     AnalyzePlanDistributedMetrics,
     DocumentGranularity,
     FullTextQuery,
@@ -799,6 +800,8 @@ class RemoteTable(Table):
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
         fast_search: Optional[bool] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support
@@ -857,6 +860,10 @@ class RemoteTable(Table):
 
             - *default None*, which leaves fast search disabled.
 
+        operator: "AND" or "OR", optional
+            Combine terms in a string full-text query; the default is OR.
+            Use ``query_type="fts"`` when the table also has embeddings.
+
         Returns
         -------
         LanceQueryBuilder
@@ -893,6 +900,7 @@ class RemoteTable(Table):
             ordering_field_name=ordering_field_name,
             fts_columns=fts_columns or [],
             fast_search=fast_search,
+            operator=operator,
         )
 
     def _execute_query(

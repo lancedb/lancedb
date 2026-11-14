@@ -42,7 +42,7 @@ from .rerankers.base import Reranker
 from .rerankers.rrf import RRFReranker
 from .rerankers.util import check_reranker_result
 from .schema import blob_column_paths, is_blob_like_field, schema_has_blob_field
-from .util import _validate_query_vector, flatten_columns, get_uri_scheme
+from .util import _validate_query_vector, add_note, flatten_columns, get_uri_scheme
 from . import _wal_hybrid  # WAL-PK-FUSION: delete.
 from ._blob import (
     BLOB_MODE_TO_HANDLING,
@@ -873,10 +873,29 @@ class FullTextSearchQuery(pydantic.BaseModel):
     query: str | FullTextQuery
         If a string, it is treated as a MatchQuery.
         If a FullTextQuery object, it is used directly.
+    operator: FullTextOperator, optional
+        Combine terms in a string query using AND or OR (the default).
+        Quoted strings keep phrase semantics regardless of the operator.
     """
 
     columns: Optional[List[str]] = None
     query: Union[str, FullTextQuery]
+    operator: Optional[FullTextOperator] = None
+
+    @pydantic.model_validator(mode="after")
+    def _validate_operator(self) -> Self:
+        if self.operator is not None and not isinstance(self.query, str):
+            raise ValueError("operator requires a string full-text query")
+        return self
+
+
+def _add_fts_position_error_note(error: Exception) -> None:
+    if "position is not found but required for phrase queries" in str(error):
+        add_note(
+            error,
+            "Phrase queries require an index built with positions. Rebuild it with "
+            "table.create_index(column, config=FTS(with_position=True), replace=True).",
+        )
 
 
 class Query(pydantic.BaseModel):
@@ -1147,6 +1166,7 @@ class LanceQueryBuilder(ABC):
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
         fast_search: bool = None,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> Self:
         """
         Create a query builder based on the given query and query type.
@@ -1171,6 +1191,10 @@ class LanceQueryBuilder(ABC):
         fast_search: bool
             Skip flat search of unindexed data.
         """
+        if operator is not None:
+            operator = FullTextOperator(operator)
+            if not isinstance(query, str) or query_type not in ("auto", "fts"):
+                raise ValueError("operator requires a string full-text query")
         if query_type != "fts":
             _validate_query_vector(query)
 
@@ -1201,6 +1225,9 @@ class LanceQueryBuilder(ABC):
             table, query, query_type, vector_column_name
         )
 
+        if operator is not None and query_type != "fts":
+            raise ValueError("operator requires a string full-text query")
+
         if query_type == "hybrid":
             return LanceHybridQueryBuilder(
                 table, query, vector_column_name, fts_columns=fts_columns
@@ -1214,7 +1241,7 @@ class LanceQueryBuilder(ABC):
                 ordering_field_name=ordering_field_name,
                 fts_columns=fts_columns,
                 fast_search=fast_search,
-            )
+            ).operator(operator)
 
         if isinstance(query, (list, tuple)):
             query = np.array(query, dtype=np.float32)
@@ -2563,6 +2590,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         super().__init__(table)
         self._query = query
         self._phrase_query = False
+        self._operator: Optional[FullTextOperator] = None
         # Deprecated compatibility parameter. Native FTS ordering is now
         # configured through order_by(); LanceQueryBuilder.create emits the warning.
         _ = ordering_field_name
@@ -2571,6 +2599,36 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         if isinstance(fts_columns, str):
             fts_columns = [fts_columns]
         self._fts_columns = fts_columns
+
+    def operator(
+        self, operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]]
+    ) -> LanceFtsQueryBuilder:
+        """Combine terms in a string query with ``"AND"`` or ``"OR"``.
+
+        The default is OR. AND requires every term to match. For example,
+        ``table.search("gripper closed", query_type="fts").operator("AND")``.
+        Structured queries specify their own operators. Quoted strings and
+        ``phrase_query()`` retain their phrase semantics.
+        """
+        if operator is not None and not isinstance(self._query, str):
+            raise ValueError("operator requires a string full-text query")
+        self._operator = FullTextOperator(operator) if operator is not None else None
+        return self
+
+    def count_rows(self) -> int:
+        """Count all full-text matches satisfying the query's filter.
+
+        Ignores limit, offset, selection, ordering, and reranking. ``fast_search``
+        still restricts the count to indexed data. This streams matching scores
+        without loading document columns and may scan every match.
+
+        For example, ``table.search("gripper closed", query_type="fts",``
+        ``operator="AND").where("active = true").count_rows()``.
+        """
+        self._table._ensure_no_legacy_fts_index()
+        query = self._table._table._sync_query_to_async(self.to_query_object())
+        assert isinstance(query, AsyncFTSQuery)
+        return LOOP.run(query.count_rows())
 
     def phrase_query(self, phrase_query: bool = True) -> LanceFtsQueryBuilder:
         """Set whether to use phrase query.
@@ -2628,7 +2686,9 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             fragment_ids=self._fragment_ids,
             use_rte=self._use_rte,
             full_text_query=FullTextSearchQuery(
-                query=self._query_with_phrase_semantics(), columns=self._fts_columns
+                query=self._query_with_phrase_semantics(),
+                columns=self._fts_columns,
+                operator=self._operator,
             ),
             offset=self._offset,
             fast_search=self._fast_search,
@@ -4443,7 +4503,11 @@ class AsyncQuery(AsyncStandardQuery):
             )
 
     def nearest_to_text(
-        self, query: str | FullTextQuery, columns: Union[str, List[str], None] = None
+        self,
+        query: str | FullTextQuery,
+        columns: Union[str, List[str], None] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> AsyncFTSQuery:
         """
         Find the documents that are most relevant to the given text query.
@@ -4464,7 +4528,11 @@ class AsyncQuery(AsyncStandardQuery):
         columns: str or list of str, default None
             The columns to search in. If None, all indexed columns are searched.
             For now only one column can be searched at a time.
+        operator: "AND" or "OR", optional
+            Combine terms in a string query. Defaults to OR. Quoted strings use
+            phrase semantics and require an index built with positions.
         """
+        fts_query = FullTextSearchQuery(query=query, operator=operator)
         if isinstance(columns, str):
             columns = [columns]
         if columns is None:
@@ -4472,7 +4540,13 @@ class AsyncQuery(AsyncStandardQuery):
 
         if isinstance(query, str):
             return AsyncFTSQuery(
-                self._inner.nearest_to_text({"query": query, "columns": columns}),
+                self._inner.nearest_to_text(
+                    {
+                        "query": query,
+                        "columns": columns,
+                        "operator": fts_query.operator,
+                    }
+                ),
                 self._table,
             )
         # FullTextQuery object
@@ -4486,6 +4560,22 @@ class AsyncFTSQuery(AsyncStandardQuery):
         super().__init__(inner, table)
         self._inner = inner
         self._reranker = None
+
+    async def count_rows(self) -> int:
+        """Count all full-text matches satisfying the query's filter.
+
+        Ignores limit, offset, selection, ordering, and reranking. ``fast_search``
+        still restricts the count to indexed data. Matching scores are streamed
+        without loading document columns, so counting may scan every match.
+
+        For example, ``await table.query().nearest_to_text("gripper closed",``
+        ``operator="AND").where("active = true").count_rows()``.
+        """
+        try:
+            return await self._inner.count_rows()
+        except Exception as error:
+            _add_fts_position_error_note(error)
+            raise
 
     def get_query(self) -> str:
         return self._inner.get_query()
@@ -4580,10 +4670,16 @@ class AsyncFTSQuery(AsyncStandardQuery):
         timeout: Optional[timedelta] = None,
         blob_sources: Optional[dict[str, str]] = None,
     ) -> AsyncRecordBatchReader:
-        reader = await super()._execute_batches(
-            timeout=timeout, blob_sources=blob_sources
-        )
-        results = pa.Table.from_batches(await reader.read_all(), reader.schema)
+        try:
+            reader = await super()._execute_batches(
+                max_batch_length=max_batch_length,
+                timeout=timeout,
+                blob_sources=blob_sources,
+            )
+            results = pa.Table.from_batches(await reader.read_all(), reader.schema)
+        except Exception as error:
+            _add_fts_position_error_note(error)
+            raise
         if self._reranker:
             source = results
             results = self._reranker.rerank_fts(self.get_query(), results)
@@ -4861,7 +4957,11 @@ class AsyncVectorQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         return self
 
     def nearest_to_text(
-        self, query: str | FullTextQuery, columns: Union[str, List[str], None] = None
+        self,
+        query: str | FullTextQuery,
+        columns: Union[str, List[str], None] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> AsyncHybridQuery:
         """
         Find the documents that are most relevant to the given text query,
@@ -4886,7 +4986,10 @@ class AsyncVectorQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         columns: str or list of str, default None
             The columns to search in. If None, all indexed columns are searched.
             For now only one column can be searched at a time.
+        operator: "AND" or "OR", optional
+            Combine terms in a string query. Defaults to OR.
         """
+        fts_query = FullTextSearchQuery(query=query, operator=operator)
         if isinstance(columns, str):
             columns = [columns]
         if columns is None:
@@ -4894,7 +4997,9 @@ class AsyncVectorQuery(AsyncStandardQuery, AsyncVectorQueryBase):
 
         if isinstance(query, str):
             return AsyncHybridQuery(
-                self._inner.nearest_to_text({"query": query, "columns": columns}),
+                self._inner.nearest_to_text(
+                    {"query": query, "columns": columns, "operator": fts_query.operator}
+                ),
                 self._table,
             )
         # FullTextQuery object

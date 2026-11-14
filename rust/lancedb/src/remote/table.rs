@@ -20,7 +20,7 @@ use crate::error::{HttpErrorSource, RemoteErrorMetadata};
 use crate::expr::expr_to_sql_string;
 use crate::index::Index;
 use crate::index::IndexStatistics;
-use crate::index::scalar::FtsQuery;
+use crate::index::scalar::{FtsQuery, Operator};
 use crate::index::waiter::{MAX_WAIT, wait_for_index};
 use crate::job::Job;
 use crate::materialized_view::{MaterializedViewInfo, RefreshMaterializedViewResult};
@@ -1374,6 +1374,20 @@ impl<S: HttpSend> RemoteTable<S> {
                     "query": full_text_search.query.clone(),
                 });
             } else {
+                let has_and = match &full_text_search.query {
+                    FtsQuery::Match(query) => query.operator == Operator::And,
+                    FtsQuery::MultiMatch(query) => query
+                        .match_queries
+                        .iter()
+                        .any(|query| query.operator == Operator::And),
+                    _ => false,
+                };
+                if has_and {
+                    return Err(Error::NotSupported {
+                        message: "AND full-text queries require server version 0.3.0 or later"
+                            .into(),
+                    });
+                }
                 body["full_text_query"] = serde_json::json!({
                     "columns": full_text_search.columns().into_iter().collect::<Vec<_>>(),
                     "query": full_text_search.query.query(),
