@@ -977,6 +977,28 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
                 .append_to("per-row Function errors are recorded only in LanceDB Enterprise"),
         })
     }
+    /// Change the quarantine state of current failed rows.
+    async fn quarantine_function_errors(
+        &self,
+        _column: &str,
+        _options: &crate::function::FunctionQuarantineOptions,
+    ) -> Result<u64> {
+        Err(Error::NotSupported {
+            message: "Function quarantine requires LanceDB Enterprise".into(),
+        })
+    }
+
+    /// Read per-row producing Function versions from LanceDB Enterprise.
+    async fn function_provenance(
+        &self,
+        _column: &str,
+        _options: &crate::function::FunctionProvenanceOptions,
+    ) -> Result<crate::function::FunctionProvenance> {
+        Err(Error::NotSupported {
+            message: "Function provenance requires LanceDB Enterprise".into(),
+        })
+    }
+
     /// Exact four-way freshness status for Function-backed output columns.
     ///
     /// `column` filters to one user-visible output; `None` returns every
@@ -2395,6 +2417,28 @@ impl Table {
         request: FunctionErrorsRequest,
     ) -> Result<crate::function::FunctionErrors> {
         self.inner.function_errors(&request).await
+    }
+
+    /// Quarantine current failures, or release them with `quarantined=false`.
+    /// Normal and automatic Function refreshes skip quarantined rows.
+    pub async fn quarantine_function_errors(
+        &self,
+        column: &str,
+        options: crate::function::FunctionQuarantineOptions,
+    ) -> Result<u64> {
+        self.inner
+            .quarantine_function_errors(column, &options)
+            .await
+    }
+
+    /// Read the producing Function version and job for each returned row.
+    /// Inspect `truncated` before treating this as a complete snapshot.
+    pub async fn function_provenance(
+        &self,
+        column: &str,
+        options: crate::function::FunctionProvenanceOptions,
+    ) -> Result<crate::function::FunctionProvenance> {
+        self.inner.function_provenance(column, &options).await
     }
 
     /// Change a column's name, data type, or nullability.

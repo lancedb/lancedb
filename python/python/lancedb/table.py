@@ -84,6 +84,9 @@ from .index import (
 )
 from .expr import Expr
 from .functions import (
+    FunctionErrors,
+    AsyncFunctionErrors,
+    FunctionProvenance,
     FunctionRetryPolicy,
     FunctionApplication,
     RefreshColumnResult as RefreshColumnJobResult,
@@ -294,7 +297,6 @@ if TYPE_CHECKING:
         CompactionStats,
         Tag,
         AddColumnsResult,
-        FunctionErrors,
         RefreshColumnResult,
         AddResult,
         AlterColumnsResult,
@@ -3268,6 +3270,12 @@ class Table(ABC):
         init_timeout_seconds: Optional[float] = None,
         num_workers: Optional[int] = None,
         max_executor_processes_per_worker: Optional[int] = None,
+        retry_errors: bool = False,
+        retry_job_id: Optional[str] = None,
+        retry_error_type: Optional[str] = None,
+        include_quarantined: bool = False,
+        function_version: Optional[str] = None,
+        recompute: Optional[Literal["failed", "all", "none"]] = None,
     ) -> "RefreshColumnResult":
         """
         Fill the rows of a computed column that hold no value yet.
@@ -3377,6 +3385,12 @@ class Table(ABC):
         init_timeout_seconds: Optional[float] = None,
         num_workers: Optional[int] = None,
         max_executor_processes_per_worker: Optional[int] = None,
+        retry_errors: bool = False,
+        retry_job_id: Optional[str] = None,
+        retry_error_type: Optional[str] = None,
+        include_quarantined: bool = False,
+        function_version: Optional[str] = None,
+        recompute: Optional[Literal["failed", "all", "none"]] = None,
     ) -> Job[RefreshColumnJobResult]:
         """
         Like :meth:`refresh_column`, but returns a handle to the refresh job
@@ -3479,12 +3493,92 @@ class Table(ABC):
         'finished'
         """
 
+    def retry_failed(
+        self,
+        column: str,
+        *,
+        error_type: Optional[str] = None,
+        job_id: Optional[str] = None,
+        include_quarantined: bool = False,
+        function_version: Optional[str] = None,
+        **options: Any,
+    ) -> Job[RefreshColumnJobResult]:
+        """Start a job for exactly the current failed rows.
+
+        Stable row identities survive compaction. Set ``function_version`` to
+        upgrade and retry failures atomically. ``include_quarantined=True``
+        explicitly releases quarantined rows before retrying them.
+
+        >>> job = table.retry_failed("sharpness", function_version="2")  # doctest: +SKIP
+        >>> result = job.wait()  # doctest: +SKIP
+        """
+        return self.refresh_column_async(
+            column,
+            retry_errors=True,
+            retry_error_type=error_type,
+            retry_job_id=job_id,
+            include_quarantined=include_quarantined,
+            function_version=function_version,
+            recompute="failed" if function_version is not None else None,
+            **options,
+        )
+
+    def upgrade_column(
+        self,
+        column: str,
+        *,
+        version: str,
+        recompute: Literal["failed", "all", "none"] = "all",
+        **options: Any,
+    ) -> Job[RefreshColumnJobResult]:
+        """Upgrade a Function binding while keeping its columns available.
+
+        ``failed`` recomputes current failures, ``all`` recomputes all live rows,
+        and ``none`` preserves existing values. New and changed rows use the new
+        version; ``function_provenance`` identifies each value's producing version.
+        """
+        return self.refresh_column_async(
+            column, function_version=version, recompute=recompute, **options
+        )
+
+    def quarantine_failed(
+        self,
+        column: str,
+        *,
+        error_type: Optional[str] = None,
+        job_id: Optional[str] = None,
+        after_attempts: Optional[int] = None,
+        quarantined: bool = True,
+    ) -> int:
+        """Quarantine current failures, or release them with ``quarantined=False``.
+
+        Normal and automatic refreshes skip quarantined rows. ``after_attempts``
+        restricts the selection to rows with at least that many failed calls.
+        Returns the number of selected rows. LanceDB Enterprise only.
+        """
+        raise NotImplementedError("Function quarantine requires LanceDB Enterprise")
+
+    def function_provenance(
+        self,
+        column: str,
+        *,
+        limit: Optional[int] = None,
+        version: Optional[int] = None,
+    ) -> FunctionProvenance:
+        """Read each returned row's producing Function version and job.
+
+        ``version`` selects a table snapshot. Check ``truncated`` before treating
+        the returned records as a complete snapshot. LanceDB Enterprise only.
+        """
+        raise NotImplementedError("Function provenance requires LanceDB Enterprise")
+
     @abstractmethod
     def function_errors(
         self,
         job_id: Optional[str] = None,
         column: Optional[str] = None,
         limit: Optional[int] = None,
+        history: bool = False,
     ) -> "FunctionErrors":
         """
         The per-row errors Function refreshes recorded on this table.
@@ -5642,6 +5736,12 @@ class LanceTable(Table):
         init_timeout_seconds: Optional[float] = None,
         num_workers: Optional[int] = None,
         max_executor_processes_per_worker: Optional[int] = None,
+        retry_errors: bool = False,
+        retry_job_id: Optional[str] = None,
+        retry_error_type: Optional[str] = None,
+        include_quarantined: bool = False,
+        function_version: Optional[str] = None,
+        recompute: Optional[Literal["failed", "all", "none"]] = None,
     ) -> "RefreshColumnResult":
         """Fill a computed column's unfilled rows and recompute those whose
         inputs changed. See
@@ -5664,6 +5764,12 @@ class LanceTable(Table):
                 init_timeout_seconds=init_timeout_seconds,
                 num_workers=num_workers,
                 max_executor_processes_per_worker=max_executor_processes_per_worker,
+                retry_errors=retry_errors,
+                retry_job_id=retry_job_id,
+                retry_error_type=retry_error_type,
+                include_quarantined=include_quarantined,
+                function_version=function_version,
+                recompute=recompute,
             )
         )
 
@@ -5686,6 +5792,12 @@ class LanceTable(Table):
         init_timeout_seconds: Optional[float] = None,
         num_workers: Optional[int] = None,
         max_executor_processes_per_worker: Optional[int] = None,
+        retry_errors: bool = False,
+        retry_job_id: Optional[str] = None,
+        retry_error_type: Optional[str] = None,
+        include_quarantined: bool = False,
+        function_version: Optional[str] = None,
+        recompute: Optional[Literal["failed", "all", "none"]] = None,
     ) -> Job[RefreshColumnJobResult]:
         """Fill a computed column's unfilled rows and recompute those whose
         inputs changed, returning a handle to the refresh job. See
@@ -5710,6 +5822,12 @@ class LanceTable(Table):
                     init_timeout_seconds=init_timeout_seconds,
                     num_workers=num_workers,
                     max_executor_processes_per_worker=max_executor_processes_per_worker,
+                    retry_errors=retry_errors,
+                    retry_job_id=retry_job_id,
+                    retry_error_type=retry_error_type,
+                    include_quarantined=include_quarantined,
+                    function_version=function_version,
+                    recompute=recompute,
                 )
             )
         )
@@ -5719,11 +5837,44 @@ class LanceTable(Table):
         job_id: Optional[str] = None,
         column: Optional[str] = None,
         limit: Optional[int] = None,
+        history: bool = False,
     ) -> "FunctionErrors":
         """The per-row errors Function refreshes recorded on this table. See
         [`Table.function_errors`][lancedb.table.Table.function_errors]."""
         return LOOP.run(
-            self._table.function_errors(job_id=job_id, column=column, limit=limit)
+            self._table.function_errors(
+                job_id=job_id, column=column, limit=limit, history=history
+            )
+        ).as_sync(self)
+
+    def quarantine_failed(
+        self,
+        column: str,
+        *,
+        error_type: Optional[str] = None,
+        job_id: Optional[str] = None,
+        after_attempts: Optional[int] = None,
+        quarantined: bool = True,
+    ) -> int:
+        return LOOP.run(
+            self._table.quarantine_failed(
+                column,
+                error_type=error_type,
+                job_id=job_id,
+                after_attempts=after_attempts,
+                quarantined=quarantined,
+            )
+        )
+
+    def function_provenance(
+        self,
+        column: str,
+        *,
+        limit: Optional[int] = None,
+        version: Optional[int] = None,
+    ) -> FunctionProvenance:
+        return LOOP.run(
+            self._table.function_provenance(column, limit=limit, version=version)
         )
 
     def column_statuses(
@@ -8119,6 +8270,12 @@ class AsyncTable:
         init_timeout_seconds: Optional[float] = None,
         num_workers: Optional[int] = None,
         max_executor_processes_per_worker: Optional[int] = None,
+        retry_errors: bool = False,
+        retry_job_id: Optional[str] = None,
+        retry_error_type: Optional[str] = None,
+        include_quarantined: bool = False,
+        function_version: Optional[str] = None,
+        recompute: Optional[Literal["failed", "all", "none"]] = None,
     ) -> RefreshColumnResult:
         """
         Fill the rows of a computed column that hold no value yet.
@@ -8225,6 +8382,77 @@ class AsyncTable:
             init_timeout_seconds=init_timeout_seconds,
             num_workers=num_workers,
             max_executor_processes_per_worker=max_executor_processes_per_worker,
+            retry_errors=retry_errors,
+            retry_job_id=retry_job_id,
+            retry_error_type=retry_error_type,
+            include_quarantined=include_quarantined,
+            function_version=function_version,
+            recompute=recompute,
+        )
+
+    async def retry_failed(
+        self,
+        column: str,
+        *,
+        error_type: Optional[str] = None,
+        job_id: Optional[str] = None,
+        include_quarantined: bool = False,
+        function_version: Optional[str] = None,
+        **options: Any,
+    ) -> AsyncJob[RefreshColumnJobResult]:
+        """Start an exact failed-row retry; see ``Table.retry_failed``."""
+        return await self.refresh_column_async(
+            column,
+            retry_errors=True,
+            retry_error_type=error_type,
+            retry_job_id=job_id,
+            include_quarantined=include_quarantined,
+            function_version=function_version,
+            recompute="failed" if function_version is not None else None,
+            **options,
+        )
+
+    async def upgrade_column(
+        self,
+        column: str,
+        *,
+        version: str,
+        recompute: Literal["failed", "all", "none"] = "all",
+        **options: Any,
+    ) -> AsyncJob[RefreshColumnJobResult]:
+        """Upgrade the Function and choose which rows to recompute."""
+        return await self.refresh_column_async(
+            column, function_version=version, recompute=recompute, **options
+        )
+
+    async def quarantine_failed(
+        self,
+        column: str,
+        *,
+        error_type: Optional[str] = None,
+        job_id: Optional[str] = None,
+        after_attempts: Optional[int] = None,
+        quarantined: bool = True,
+    ) -> int:
+        """Quarantine current failures or release them for later refreshes."""
+        return await self._inner.quarantine_function_errors(
+            column,
+            quarantined=quarantined,
+            error_type=error_type,
+            job_id=job_id,
+            after_attempts=after_attempts,
+        )
+
+    async def function_provenance(
+        self,
+        column: str,
+        *,
+        limit: Optional[int] = None,
+        version: Optional[int] = None,
+    ) -> FunctionProvenance:
+        """Read per-row producing versions at a table snapshot."""
+        return FunctionProvenance.from_json(
+            await self._inner.function_provenance(column, limit=limit, version=version)
         )
 
     async def function_errors(
@@ -8232,7 +8460,8 @@ class AsyncTable:
         job_id: Optional[str] = None,
         column: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> "FunctionErrors":
+        history: bool = False,
+    ) -> "AsyncFunctionErrors":
         """
         The per-row errors Function refreshes recorded on this table.
 
@@ -8312,9 +8541,10 @@ class AsyncTable:
         >>> if errors.truncated:  # doctest: +SKIP
         ...     print("listing stopped at the limit")
         """
-        return await self._inner.function_errors(
-            job_id=job_id, column=column, limit=limit
+        raw = await self._inner.function_errors(
+            job_id=job_id, column=column, limit=limit, history=history
         )
+        return AsyncFunctionErrors(raw, self, history=history)
 
     async def column_statuses(
         self, column: Optional[str] = None
@@ -8361,6 +8591,12 @@ class AsyncTable:
         init_timeout_seconds: Optional[float] = None,
         num_workers: Optional[int] = None,
         max_executor_processes_per_worker: Optional[int] = None,
+        retry_errors: bool = False,
+        retry_job_id: Optional[str] = None,
+        retry_error_type: Optional[str] = None,
+        include_quarantined: bool = False,
+        function_version: Optional[str] = None,
+        recompute: Optional[Literal["failed", "all", "none"]] = None,
     ) -> AsyncJob[RefreshColumnJobResult]:
         """
         Like :meth:`refresh_column`, but returns a handle to the refresh job
@@ -8483,6 +8719,12 @@ class AsyncTable:
                 init_timeout_seconds=init_timeout_seconds,
                 num_workers=num_workers,
                 max_executor_processes_per_worker=max_executor_processes_per_worker,
+                retry_errors=retry_errors,
+                retry_job_id=retry_job_id,
+                retry_error_type=retry_error_type,
+                include_quarantined=include_quarantined,
+                function_version=function_version,
+                recompute=recompute,
             ),
             RefreshColumnJobResult.from_json,
         )

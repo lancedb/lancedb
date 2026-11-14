@@ -50,6 +50,7 @@ from lancedb.index import (
 )
 from lancedb.job import Job
 from lancedb.functions import (
+    FunctionProvenance,
     FunctionApplication,
     FunctionRetryPolicy,
     RefreshColumnResult,
@@ -1174,6 +1175,12 @@ class RemoteTable(Table):
         init_timeout_seconds: Optional[float] = None,
         num_workers: Optional[int] = None,
         max_executor_processes_per_worker: Optional[int] = None,
+        retry_errors: bool = False,
+        retry_job_id: Optional[str] = None,
+        retry_error_type: Optional[str] = None,
+        include_quarantined: bool = False,
+        function_version: Optional[str] = None,
+        recompute: Optional[Literal["failed", "all", "none"]] = None,
     ):
         return LOOP.run(
             self._table.refresh_column(
@@ -1193,6 +1200,12 @@ class RemoteTable(Table):
                 init_timeout_seconds=init_timeout_seconds,
                 num_workers=num_workers,
                 max_executor_processes_per_worker=max_executor_processes_per_worker,
+                retry_errors=retry_errors,
+                retry_job_id=retry_job_id,
+                retry_error_type=retry_error_type,
+                include_quarantined=include_quarantined,
+                function_version=function_version,
+                recompute=recompute,
             )
         )
 
@@ -1215,6 +1228,12 @@ class RemoteTable(Table):
         init_timeout_seconds: Optional[float] = None,
         num_workers: Optional[int] = None,
         max_executor_processes_per_worker: Optional[int] = None,
+        retry_errors: bool = False,
+        retry_job_id: Optional[str] = None,
+        retry_error_type: Optional[str] = None,
+        include_quarantined: bool = False,
+        function_version: Optional[str] = None,
+        recompute: Optional[Literal["failed", "all", "none"]] = None,
     ) -> Job[RefreshColumnResult]:
         return Job(
             LOOP.run(
@@ -1235,6 +1254,12 @@ class RemoteTable(Table):
                     init_timeout_seconds=init_timeout_seconds,
                     num_workers=num_workers,
                     max_executor_processes_per_worker=max_executor_processes_per_worker,
+                    retry_errors=retry_errors,
+                    retry_job_id=retry_job_id,
+                    retry_error_type=retry_error_type,
+                    include_quarantined=include_quarantined,
+                    function_version=function_version,
+                    recompute=recompute,
                 )
             )
         )
@@ -1244,9 +1269,42 @@ class RemoteTable(Table):
         job_id: Optional[str] = None,
         column: Optional[str] = None,
         limit: Optional[int] = None,
+        history: bool = False,
     ):
         return LOOP.run(
-            self._table.function_errors(job_id=job_id, column=column, limit=limit)
+            self._table.function_errors(
+                job_id=job_id, column=column, limit=limit, history=history
+            )
+        ).as_sync(self)
+
+    def quarantine_failed(
+        self,
+        column: str,
+        *,
+        error_type: Optional[str] = None,
+        job_id: Optional[str] = None,
+        after_attempts: Optional[int] = None,
+        quarantined: bool = True,
+    ) -> int:
+        return LOOP.run(
+            self._table.quarantine_failed(
+                column,
+                error_type=error_type,
+                job_id=job_id,
+                after_attempts=after_attempts,
+                quarantined=quarantined,
+            )
+        )
+
+    def function_provenance(
+        self,
+        column: str,
+        *,
+        limit: Optional[int] = None,
+        version: Optional[int] = None,
+    ) -> FunctionProvenance:
+        return LOOP.run(
+            self._table.function_provenance(column, limit=limit, version=version)
         )
 
     def column_statuses(

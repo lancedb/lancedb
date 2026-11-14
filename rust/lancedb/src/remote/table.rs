@@ -961,6 +961,33 @@ impl<S: HttpSend> RemoteTable<S> {
         }
     }
 
+    async fn require_function_failure_workflow(&self) -> Result<()> {
+        let mut body = serde_json::json!({"limit": 1});
+        self.apply_branch_body(&mut body);
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/errors", self.identifier))
+            .json(&body);
+        let (request_id, response) = self.send(request, true).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        let value: serde_json::Value =
+            serde_json::from_str(&body).map_err(|error| Error::Http {
+                source: error.into(),
+                request_id,
+                status_code: None,
+            })?;
+        if value
+            .get("workflow_version")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|version| version >= 1)
+        {
+            Ok(())
+        } else {
+            Err(Error::NotSupported { message: "The server does not support the Function row-failure workflow; upgrade the server before retrying, upgrading, or quarantining rows".into() })
+        }
+    }
+
     async fn describe(&self) -> Result<TableDescription> {
         self.describe_read_snapshot(self.snapshot_read_state().await)
             .await
@@ -4276,6 +4303,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     ) -> Result<Job<crate::function::RefreshColumnResult>> {
         options.validate()?;
         self.check_mutable().await?;
+        if options.retry_errors == Some(true) || options.function_version.is_some() {
+            self.require_function_failure_workflow().await?;
+        }
         let mut body = serde_json::to_value(&options).map_err(|e| Error::Runtime {
             message: format!("failed to serialize refresh options: {e}"),
         })?;
@@ -4317,7 +4347,13 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         &self,
         request: &crate::function::FunctionErrorsRequest,
     ) -> Result<crate::function::FunctionErrors> {
+        if request.history {
+            self.require_function_failure_workflow().await?;
+        }
         let mut body = serde_json::json!({});
+        if request.history {
+            body["history"] = serde_json::json!(true);
+        }
         if let Some(job_id) = &request.job_id {
             body["job_id"] = serde_json::json!(job_id);
         }
@@ -4337,6 +4373,70 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let body = response.text().await.err_to_http(request_id.clone())?;
         serde_json::from_str(&body).map_err(|e| Error::Http {
             source: format!("Failed to parse errors response: {}", e).into(),
+            request_id,
+            status_code: None,
+        })
+    }
+
+    async fn quarantine_function_errors(
+        &self,
+        column: &str,
+        options: &crate::function::FunctionQuarantineOptions,
+    ) -> Result<u64> {
+        self.require_function_failure_workflow().await?;
+        self.check_mutable().await?;
+        if options.after_attempts == Some(0) {
+            return Err(Error::InvalidInput {
+                message: "after_attempts must be at least 1".into(),
+            });
+        }
+        let mut body = serde_json::json!({"column": column, "quarantined": options.quarantined,
+            "job_id": options.job_id, "error_type": options.error_type, "after_attempts": options.after_attempts});
+        self.apply_branch_body(&mut body);
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/errors/quarantine", self.identifier))
+            .json(&body);
+        let (request_id, response) = self.send(request, false).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        let value: serde_json::Value =
+            serde_json::from_str(&body).map_err(|error| Error::Http {
+                source: error.into(),
+                request_id: request_id.clone(),
+                status_code: None,
+            })?;
+        value
+            .get("rows_affected")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| Error::Http {
+                source: "Function quarantine response has no rows_affected".into(),
+                request_id,
+                status_code: None,
+            })
+    }
+
+    async fn function_provenance(
+        &self,
+        column: &str,
+        options: &crate::function::FunctionProvenanceOptions,
+    ) -> Result<crate::function::FunctionProvenance> {
+        self.require_function_failure_workflow().await?;
+        let mut body = serde_json::json!({"column": column, "limit": options.limit,
+            "version": match options.version { Some(version) => version, None => self.version().await? }});
+        self.apply_branch_body(&mut body);
+        let request = self
+            .client
+            .post(&format!(
+                "/v1/table/{}/function_provenance",
+                self.identifier
+            ))
+            .json(&body);
+        let (request_id, response) = self.send(request, true).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        serde_json::from_str(&body).map_err(|error| Error::Http {
+            source: error.into(),
             request_id,
             status_code: None,
         })
@@ -12353,6 +12453,10 @@ mod tests {
         assert_eq!(
             errors.records,
             [FunctionErrorRecord {
+                first_seen_at_millis: None,
+                last_seen_at_millis: None,
+                quarantined: false,
+                input: None,
                 attempts: Some(3),
                 job_id: "j-7".into(),
                 fragment_id: 3,

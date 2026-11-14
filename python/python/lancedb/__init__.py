@@ -29,7 +29,6 @@ from ._lancedb import (
 )
 from ._lancedb import FunctionErrorFragment as FunctionErrorFragment
 from ._lancedb import FunctionErrorRecord as FunctionErrorRecord
-from ._lancedb import FunctionErrors as FunctionErrors
 from ._lancedb import GpuClass as GpuClass
 from ._lancedb import RTEWriteSpec
 from ._lancedb import tokenize as _tokenize
@@ -46,6 +45,11 @@ from .sql import AsyncQuery as AsyncSqlQuery
 from .sql import Query as SqlQuery
 from .sql import QueryDescription
 from .functions import (
+    FunctionErrors as FunctionErrors,
+    AsyncFunctionErrors as AsyncFunctionErrors,
+    FunctionErrorGroup as FunctionErrorGroup,
+    FunctionProvenance as FunctionProvenance,
+    FunctionValueProvenance as FunctionValueProvenance,
     AssignmentMapping as AssignmentMapping,
     FunctionArtifactRequest as FunctionArtifactRequest,
     FunctionApplication as FunctionApplication,
@@ -674,6 +678,11 @@ __all__ = [
     "FunctionColumnLastRefreshJob",
     "FunctionColumnStatus",
     "FunctionColumnVersionStatus",
+    "FunctionErrors",
+    "AsyncFunctionErrors",
+    "FunctionErrorGroup",
+    "FunctionProvenance",
+    "FunctionValueProvenance",
     "col",
     "Expr",
     "func",

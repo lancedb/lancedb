@@ -586,6 +586,14 @@ with BlobReader(read_range, len(payload)) as reader:
 
 ::: lancedb.functions.RefreshColumnResult
 
+::: lancedb.functions.FunctionErrorGroup
+
+::: lancedb.functions.FunctionProvenance
+
+::: lancedb.functions.FunctionValueProvenance
+
+::: lancedb.functions.AsyncFunctionErrors
+
 ::: lancedb.FunctionErrors
 
 ::: lancedb.FunctionErrorRecord

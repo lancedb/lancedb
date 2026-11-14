@@ -21,6 +21,7 @@ import threading
 import time
 from urllib.parse import parse_qs, urlparse
 from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
 import uuid
 import warnings
 from packaging.version import Version
@@ -2204,7 +2205,7 @@ async def test_remote_refresh_async_returns_typed_terminal_result(
             result = job.wait(timeout=timedelta(seconds=30))
 
     assert isinstance(result, lancedb.RefreshColumnResult)
-    assert result.model_dump() == terminal_result
+    assert result.model_dump(exclude_defaults=True) == terminal_result
     assert result.rows_filled == 12
     assert result.version == 8
 
@@ -7516,3 +7517,201 @@ async def test_remote_index_exist_ok_wire(is_async, background, kwargs):
         assert body["replace"] is False
     else:
         assert "replace" not in body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("async_table", [False, True])
+async def test_function_failure_workflow_uses_exact_retry_and_upgrade_apis(async_table):
+    received = []
+    result = {
+        "rows_assigned": 1000,
+        "rows_failed": 100,
+        "rows_remaining": 0,
+        "source_version": 7,
+        "published_version": 8,
+        "error_groups": [
+            {
+                "column": "derived",
+                "error_type": "RowTimeoutError",
+                "error_message": "timeout",
+                "rows_failed": 100,
+            }
+        ],
+        "error_groups_truncated": False,
+    }
+
+    def handler(request):
+        length = int(request.headers.get("Content-Length", 0))
+        body = json.loads(request.rfile.read(length)) if length else {}
+        received.append((request.path, body))
+        status = 200
+        if request.path == "/v1/table/test/describe/":
+            response = {"version": 8, "schema": {"fields": []}}
+        elif request.path == "/v1/table/test/backfill_column":
+            status = 202
+            response = {"job_id": "refresh-1"}
+        elif request.path == "/v1/jobs/describe":
+            response = {
+                "job_id": "refresh-1",
+                "job_type": "function_refresh",
+                "job_state": "DONE",
+                "result": result,
+            }
+        elif request.path == "/v1/table/test/errors/quarantine":
+            response = {"rows_affected": 100}
+        elif request.path == "/v1/table/test/function_provenance":
+            response = {
+                "records": [
+                    {
+                        "column": "derived",
+                        "job_id": "refresh-1",
+                        "function_name": "check",
+                        "function_version": "2",
+                        "row_id": 42,
+                        "source_version": 7,
+                        "published_version": 8,
+                    }
+                ],
+                "truncated": False,
+            }
+        elif request.path == "/v1/table/test/errors":
+            response = {
+                "records": [],
+                "fragments": [],
+                "truncated": False,
+                "workflow_version": 1,
+            }
+        else:
+            status = 404
+            response = {}
+        request.send_response(status)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(response).encode())
+
+    retry_options = dict(
+        error_type="ValueError",
+        job_id="first",
+        include_quarantined=True,
+        function_version="2",
+        max_failed_fraction=1.0,
+    )
+    if async_table:
+        async with mock_lancedb_connection_async(handler) as db:
+            table = await db.open_table("test")
+            job = await table.retry_failed("derived", **retry_options)
+            terminal = await job.wait()
+            await table.upgrade_column("derived", version="3", recompute="none")
+            affected = await table.quarantine_failed("derived", after_attempts=3)
+            provenance = await table.function_provenance("derived")
+            errors = await table.function_errors(column="derived", history=True)
+    else:
+        with mock_lancedb_connection(handler) as db:
+            table = db.open_table("test")
+            terminal = table.retry_failed("derived", **retry_options).wait()
+            table.upgrade_column("derived", version="3", recompute="none")
+            affected = table.quarantine_failed("derived", after_attempts=3)
+            provenance = table.function_provenance("derived")
+            errors = table.function_errors(column="derived", history=True)
+
+    refreshes = [body for path, body in received if path.endswith("backfill_column")]
+    assert refreshes == [
+        {
+            "column": "derived",
+            "retry_errors": True,
+            "retry_job_id": "first",
+            "retry_error_type": "ValueError",
+            "include_quarantined": True,
+            "function_version": "2",
+            "recompute": "failed",
+            "max_failed_fraction": 1.0,
+        },
+        {"column": "derived", "function_version": "3", "recompute": "none"},
+    ]
+    assert terminal.rows_assigned == 1000
+    assert terminal.error_groups[0].rows_failed == 100
+    assert affected == 100
+    assert provenance.records[0].function_version == "2"
+    assert provenance.records[0].row_id == 42
+    assert errors.summary() == []
+    assert ("/v1/table/test/errors", {"column": "derived", "history": True}) in received
+
+
+def test_function_error_rows_returns_all_inputs_and_preserves_multiple_column_errors(
+    tmp_path,
+):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("inputs", [{"id": index} for index in range(16)])
+    inputs = table.search().with_row_id(True).limit(16).to_arrow()
+    records = []
+    for row_id in inputs.column("_rowid").to_pylist():
+        records.append(
+            SimpleNamespace(
+                column="first",
+                row_id=row_id,
+                row_address=999999,
+                row_offset=0,
+                input=None,
+                error_type="ValueError",
+                error_message="corrupt",
+                attempts=3,
+                function_version="1",
+                job_id="first",
+                first_seen_at_millis=100,
+                last_seen_at_millis=200,
+                quarantined=False,
+            )
+        )
+    duplicate = copy.copy(records[0])
+    duplicate.column = "second"
+    records.append(duplicate)
+    errors = lancedb.FunctionErrors(
+        SimpleNamespace(
+            records=records, fragments=[], truncated=False, workflow_version=1
+        ),
+        table,
+    )
+    rows = errors.rows(columns=["id"])
+    assert rows.num_rows == 17
+    assert sorted(set(rows.column("id").to_pylist())) == list(range(16))
+    assert rows.column("__function_error").type.field("column").name == "column"
+    assert [group.rows_failed for group in errors.summary()] == [16, 1]
+    incomplete = lancedb.FunctionErrors(
+        SimpleNamespace(
+            records=records, fragments=[], truncated=True, workflow_version=1
+        ),
+        table,
+    )
+    with pytest.raises(ValueError, match="incomplete"):
+        incomplete.rows()
+
+
+def test_exact_function_retries_fail_before_writing_to_older_servers():
+    writes = []
+
+    def handler(request):
+        length = int(request.headers.get("Content-Length", 0))
+        body = request.rfile.read(length) if length else b""
+        if request.path == "/v1/table/test/describe/":
+            response = {"version": 1, "schema": {"fields": []}}
+        elif request.path == "/v1/table/test/errors":
+            response = {"records": [], "fragments": [], "truncated": False}
+        else:
+            writes.append((request.path, body))
+            response = {}
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(response).encode())
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.open_table("test")
+        with pytest.raises(NotImplementedError, match="server does not support"):
+            table.retry_failed("derived")
+        with pytest.raises(NotImplementedError, match="server does not support"):
+            table.upgrade_column("derived", version="2", recompute="failed")
+        with pytest.raises(NotImplementedError, match="server does not support"):
+            table.function_errors(history=True)
+        with pytest.raises(NotImplementedError, match="server does not support"):
+            table.function_errors().summary()
+    assert writes == []

@@ -1107,6 +1107,12 @@ impl_json!(FunctionBinding);
 /// Enterprise decodes the same value from the durable job's terminal payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RefreshColumnResult {
+    /// Grouped row failures, when the server reports them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub error_groups: Vec<FunctionErrorGroup>,
+    /// Whether the grouped counts omit any failures.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub error_groups_truncated: bool,
     /// Rows assigned a value by this refresh.
     pub rows_assigned: u64,
     /// Rows whose computation failed.
@@ -1125,6 +1131,8 @@ pub struct RefreshColumnResult {
 /// covers every refresh of every column.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FunctionErrorsRequest {
+    /// Include retained historical errors, including repaired rows.
+    pub history: bool,
     /// Only errors recorded by this job.
     pub job_id: Option<String>,
     /// Only errors on this column.
@@ -1135,6 +1143,11 @@ pub struct FunctionErrorsRequest {
 }
 
 impl FunctionErrorsRequest {
+    /// Include retained historical records instead of current failures.
+    pub fn history(mut self, history: bool) -> Self {
+        self.history = history;
+        self
+    }
     /// A request with no filter.
     pub fn new() -> Self {
         Self::default()
@@ -1164,6 +1177,18 @@ impl FunctionErrorsRequest {
 /// read access to the table.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionErrorRecord {
+    /// Earliest retained failure time for this current failure.
+    #[serde(default)]
+    pub first_seen_at_millis: Option<i64>,
+    /// Most recent failure time.
+    #[serde(default)]
+    pub last_seen_at_millis: Option<i64>,
+    /// Whether normal refreshes skip this row until explicitly retried.
+    #[serde(default)]
+    pub quarantined: bool,
+    /// Source identities for a materialized-view Function invocation.
+    #[serde(default)]
+    pub input: Option<serde_json::Value>,
     /// Number of user-code calls for this failed invocation, when recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attempts: Option<u32>,
@@ -1224,6 +1249,12 @@ pub struct FunctionErrorFragment {
 /// A table's per-row Function errors; see [`crate::Table::function_errors`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionErrors {
+    /// Version of the server's current-failure, retry, upgrade, and quarantine contract.
+    #[serde(default)]
+    pub workflow_version: Option<u16>,
+    /// Grouped causes for the returned records. Counts are bounded by the listing.
+    #[serde(default)]
+    pub error_groups: Vec<FunctionErrorGroup>,
     /// The recorded rows, newest job first.
     pub records: Vec<FunctionErrorRecord>,
     /// Fragments whose detail was capped.
@@ -1231,6 +1262,79 @@ pub struct FunctionErrors {
     pub fragments: Vec<FunctionErrorFragment>,
     /// Whether the listing stopped at its limit.
     #[serde(default)]
+    pub truncated: bool,
+}
+
+/// Which existing rows to recompute when upgrading a Function column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FunctionRecompute {
+    /// Recompute exactly the current failures.
+    Failed,
+    /// Recompute all live rows.
+    All,
+    /// Preserve existing values; new and changed rows use the new Function.
+    None,
+}
+
+/// One cause in a Function failure listing or refresh result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionErrorGroup {
+    pub column: String,
+    pub error_type: String,
+    pub error_message: String,
+    pub rows_failed: u64,
+}
+
+/// Selection and state for explicitly quarantining or releasing failed rows.
+#[derive(Debug, Clone, Serialize)]
+pub struct FunctionQuarantineOptions {
+    pub quarantined: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after_attempts: Option<u32>,
+}
+
+impl Default for FunctionQuarantineOptions {
+    fn default() -> Self {
+        Self {
+            quarantined: true,
+            job_id: None,
+            error_type: None,
+            after_attempts: None,
+        }
+    }
+}
+
+/// Which snapshot and how much producing-version metadata to read.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct FunctionProvenanceOptions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
+/// The Function and job that produced one stored value.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionValueProvenance {
+    pub job_id: String,
+    pub column: String,
+    pub function_name: String,
+    pub function_version: String,
+    pub row_id: Option<u64>,
+    pub row_address: Option<u64>,
+    pub source_version: u64,
+    pub published_version: u64,
+}
+
+/// A bounded set of per-row producing-version records.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionProvenance {
+    pub records: Vec<FunctionValueProvenance>,
     pub truncated: bool,
 }
 
