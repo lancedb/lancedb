@@ -5,8 +5,13 @@ use std::sync::{Arc, LazyLock};
 
 use arrow_array::StructArray;
 use arrow_array::cast::AsArray;
+use arrow_array::types::{Decimal256Type, Float64Type};
+use arrow_buffer::i256;
 use arrow_cast::can_cast_types;
-use arrow_schema::{DataType, Field, FieldRef, Fields, Schema};
+use arrow_cast::display::array_value_to_string;
+use arrow_schema::{
+    ArrowError, DECIMAL256_MAX_PRECISION, DataType, Field, FieldRef, Fields, Schema,
+};
 use datafusion::functions::core::{get_field, named_struct};
 use datafusion_common::config::ConfigOptions;
 use datafusion_common::metadata::FieldMetadata;
@@ -210,11 +215,20 @@ pub(super) fn build_field_exprs(
             // Types match: pass through.
             (inp, tbl) if inp == tbl => input_expr,
             // Types differ: cast.
-            // safe: false (the default) means overflow/truncation errors surface at execution time.
-            (_, _) if can_cast_types(input_field.data_type(), table_field.data_type()) => Arc::new(
-                CastExpr::new(input_expr, table_field.data_type().clone(), None),
-            )
-                as Arc<dyn PhysicalExpr>,
+            // safe: false (the default) means overflow errors surface at execution time;
+            // `reject_fractions` does the same for a fractional part the cast would drop.
+            (_, _) if can_cast_types(input_field.data_type(), table_field.data_type()) => {
+                let cast_expr: Arc<dyn PhysicalExpr> = Arc::new(CastExpr::new(
+                    input_expr.clone(),
+                    table_field.data_type().clone(),
+                    None,
+                ));
+                if may_drop_fraction(input_field.data_type(), table_field.data_type()) {
+                    reject_fractions(cast_expr, input_expr, table_field, config.clone())
+                } else {
+                    cast_expr
+                }
+            }
             (inp, tbl) => {
                 return Err(Error::InvalidInput {
                     message: format!(
@@ -313,6 +327,123 @@ impl ScalarUDFImpl for RestoreValidityUdf {
         let restored = StructArray::try_new_with_length(fields, columns, nulls, rows)?;
         Ok(ColumnarValue::Array(Arc::new(restored)))
     }
+}
+
+/// Whether a `from` → `to` cast can drop a fractional part. Arrow casts a float or decimal to an
+/// integer by truncating it toward zero and reports only overflow, so 2.7 would become 2.
+fn may_drop_fraction(from: &DataType, to: &DataType) -> bool {
+    match (from, to) {
+        (
+            DataType::List(from) | DataType::LargeList(from) | DataType::FixedSizeList(from, _),
+            DataType::List(to) | DataType::LargeList(to) | DataType::FixedSizeList(to, _),
+        ) => may_drop_fraction(from.data_type(), to.data_type()),
+        _ => (from.is_floating() || from.is_decimal()) && to.is_integer(),
+    }
+}
+
+// Wraps a cast that `may_drop_fraction`, so that a fractional value fails the write the way an
+// overflowing one does instead of being stored truncated.
+fn reject_fractions(
+    cast_expr: Arc<dyn PhysicalExpr>,
+    input_expr: Arc<dyn PhysicalExpr>,
+    table_field: &Field,
+    config: Arc<ConfigOptions>,
+) -> Arc<dyn PhysicalExpr> {
+    Arc::new(ScalarFunctionExpr::new(
+        &format!("reject_fractions({})", table_field.name()),
+        REJECT_FRACTIONS_UDF.clone(),
+        vec![cast_expr, input_expr],
+        Arc::new(Field::new(
+            table_field.name(),
+            table_field.data_type().clone(),
+            table_field.is_nullable(),
+        )),
+        config,
+    ))
+}
+
+static REJECT_FRACTIONS_UDF: LazyLock<Arc<datafusion_expr::ScalarUDF>> =
+    LazyLock::new(|| Arc::new(datafusion_expr::ScalarUDF::from(RejectFractionsUdf::new())));
+
+/// Returns its first argument, the cast of its second, unless the second holds a value that is
+/// not a whole number.
+#[derive(Debug, Hash, PartialEq, Eq)]
+struct RejectFractionsUdf {
+    signature: Signature,
+}
+
+impl RejectFractionsUdf {
+    fn new() -> Self {
+        Self {
+            signature: Signature::any(2, Volatility::Immutable),
+        }
+    }
+}
+
+impl ScalarUDFImpl for RejectFractionsUdf {
+    fn name(&self) -> &str {
+        "reject_fractions"
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, arg_types: &[DataType]) -> DFResult<DataType> {
+        Ok(arg_types[0].clone())
+    }
+
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> DFResult<ColumnarValue> {
+        let input = args.args[1].to_array(args.number_rows)?;
+        if let Some(value) = first_fraction(input.as_ref())? {
+            return Err(ArrowError::CastError(format!(
+                "Can't cast value {value} in column '{}' to {} without losing its fractional part",
+                args.return_field.name(),
+                args.return_type(),
+            ))
+            .into());
+        }
+        Ok(args.args[0].clone())
+    }
+}
+
+// The first non-null value of `array`, or of the items of its lists, that is not a whole number.
+fn first_fraction(
+    array: &dyn arrow_array::Array,
+) -> std::result::Result<Option<String>, ArrowError> {
+    let fractional: Vec<bool> = match array.data_type() {
+        DataType::List(_) => return first_fraction(array.as_list::<i32>().values().as_ref()),
+        DataType::LargeList(_) => return first_fraction(array.as_list::<i64>().values().as_ref()),
+        DataType::FixedSizeList(..) => {
+            return first_fraction(array.as_fixed_size_list().values().as_ref());
+        }
+        // Widening to f64 is exact. fract() of -0.0 is -0.0, which compares equal to zero.
+        DataType::Float16 | DataType::Float32 | DataType::Float64 => {
+            arrow_cast::cast(array, &DataType::Float64)?
+                .as_primitive::<Float64Type>()
+                .iter()
+                .map(|v| v.is_some_and(|v| v.fract() != 0.0))
+                .collect()
+        }
+        DataType::Decimal32(_, scale)
+        | DataType::Decimal64(_, scale)
+        | DataType::Decimal128(_, scale)
+        | DataType::Decimal256(_, scale) => {
+            let unit = i256::from_i128(10).wrapping_pow((*scale).max(0) as u32);
+            let wide = DataType::Decimal256(DECIMAL256_MAX_PRECISION, *scale);
+            arrow_cast::cast(array, &wide)?
+                .as_primitive::<Decimal256Type>()
+                .iter()
+                .map(|v| v.is_some_and(|v| v.wrapping_rem(unit) != i256::ZERO))
+                .collect()
+        }
+        _ => return Ok(None),
+    };
+    fractional
+        .iter()
+        .position(|&f| f)
+        .map(|i| array_value_to_string(array, i))
+        .transpose()
 }
 
 // The storage type arrow.json would use for `input`, or None if it cannot hold JSON text.
