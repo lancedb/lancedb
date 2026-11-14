@@ -145,7 +145,8 @@ containing sample IDs `s1` and `s2`.
 from lancedb import col, function
 
 media_before = db.execute_query(
-    "SELECT sample_id, media FROM samples ORDER BY sample_id"
+    "SELECT sample_id, media FROM samples "
+    "WHERE sample_id IN ('s1', 's2') ORDER BY sample_id"
 ).read_all().to_pylist()
 
 answers = db.create_table("answer_rescore_demo", [
@@ -188,7 +189,8 @@ assert by_sample["s2"]["rescored"] is None
 assert by_sample["s2"]["previous"] == [0.4]
 
 media_after = db.execute_query(
-    "SELECT sample_id, media FROM samples ORDER BY sample_id"
+    "SELECT sample_id, media FROM samples "
+    "WHERE sample_id IN ('s1', 's2') ORDER BY sample_id"
 ).read_all().to_pylist()
 assert media_after == media_before
 ```

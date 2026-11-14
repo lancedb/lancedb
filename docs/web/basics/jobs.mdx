@@ -187,9 +187,12 @@ token after the final page can coexist with unread cached items. A resumed
 listing is not a transactionally frozen view of jobs submitted in the meantime.
 
 `events.schema` describes the Arrow response. Use `events.to_pylist()` for
-Python row dictionaries, not dictionary access on the table itself. Event
-columns include lifecycle state, time and origin/claim information; optional
-work counters and diagnostic details depend on job type and server version.
+Python row dictionaries. Common event columns are `event_seq` (int64), `state`
+(string), `updated_at_millis` (int64), `updated_by` (string), and nullable
+`emitted_from`, `emitted_by` and `claim_entity` strings. Optional uint64 work
+counters such as `rows_processed` and diagnostic details depend on job type
+and server version. If a `payload` column is returned, its value is a nullable
+JSON string, not an already decoded Python dictionary.
 Empty results retain their schema. Events are newest first and belong to the
 requested job; child events are separate. An event count is not a completed-row
 count, and a running job can have no terminal `result` while producing events.
@@ -198,6 +201,10 @@ For a Function refresh, `wait()` returns a `RefreshColumnResult` such as
 `rows_assigned`, `rows_failed`, `rows_remaining`, `source_version` and optional
 `published_version`. Other job types have different results. Do not parse the
 printed representation to recover a spec, result or progress measurement.
+For object-shaped registry data, `job.spec` and `job.result` are decoded Python
+dictionaries: access fields with keys, such as `job.result.get("summary")`
+after refreshing a successful Function job. The separate typed object from
+`wait()` uses attributes, such as `result.rows_assigned`.
 
 Event responses have [row limits](/basics/limits#jobs). An explicit limit can
 request more than the default, but it does not guarantee a complete event
