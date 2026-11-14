@@ -178,6 +178,13 @@ with `db.get_function(name, version=...)`. The version may be an integer or
 its string form. Omit `version` to resolve and return the latest currently
 visible revision.
 
+Re-registering unchanged code reuses the published version and its resolved
+environment lock. Pass `refresh_lock=True` to `create_function` or
+`create_function_async` to request a fresh lock for this registration. It is a
+registration action, not part of the Function's source or runtime identity.
+A deployment must support the field; an older server rejects the unknown
+field rather than silently reusing the old lock.
+
 {/* Draft for the function exist_ok release.
 
 Use `exist_ok=True` on `create_function` or `create_function_async` to return
@@ -245,6 +252,117 @@ not the total, and `page_token` resumes from a saved token. Child namespaces
 are not included; list each namespace separately. A version's
 `created_at_millis`, `metadata`, `disabled` flag, and `secret_bindings` are
 all readable this way without applying or calling the function.
+
+### Inspect the resolved environment {#resolved-environment}
+
+The version keeps the requested runtime separate from what the server actually
+installed. The typed catalog API is available in Python and Rust; TypeScript
+does not yet expose this readback API. `version.runtime` is the specification
+sent at registration. `version.resolved_environment` is measured data from the
+built image:
+
+<CodeGroup>
+```python
+version = db.get_function("double")
+print(version.runtime)                    # requested runtime, or None for legacy
+print(version.environment.resolved)       # measured environment, or None for legacy
+print(version.environment_report)         # platform -> measured environment map
+
+if version.environment.resolved is not None:
+    for package in version.environment.resolved.packages:
+        print(package.name, package.version)  # versions keep labels such as +cu130
+```
+
+{/* Draft for the typed Rust environment inspection release.
+```rust
+# async fn inspect_environment(connection: &lancedb::Connection) -> Result<(), Box<dyn std::error::Error>> {
+let version = connection.get_function_latest("double", &[]).await?;
+println!("Requested runtime: {:?}", version.runtime());
+
+if let Some(environment) = version.resolved_environment() {
+    for package in &environment.packages {
+        println!("{} {}", package.name, package.version);
+    }
+}
+
+for (platform, environment) in version.resolved_environments() {
+    println!("{platform}: {} measured packages", environment.packages.len());
+    for package in &environment.packages {
+        println!("{} {}", package.name, package.version);
+    }
+}
+# Ok(())
+# }
+```
+*/}
+</CodeGroup>
+
+`version.environment.requested` and `version.environment.resolved` are
+convenience members over the same canonical fields; they do not add another
+wire shape. The canonical JSON exposes top-level `runtime` and
+`resolved_environment`. A missing `resolved_environment` means the version or
+environment cache predates measurement; it is unknown, not an empty installed
+package list. A package's `source` is present only when the submitted lock
+retained it, and provenance fields are reported without client-side guessing.
+
+For a multiarchitecture image, the scalar field is absent and
+`version.resolved_environments` (also available as
+`version.environment_report`) maps OCI `os/architecture` keys to the measured
+environment for that platform. A missing platform key means its measurement is
+unknown; an empty `packages` list inside a key is a measured empty environment
+and is retained. The SDK never merges platforms or fabricates an aggregate
+package list.
+
+The corresponding canonical payload has this shape:
+
+```json
+{
+  "runtime": {
+    "kind": "python",
+    "python_version": "3.12",
+    "environment": {"kind": "pip", "packages": ["vllm==0.11.0"]}
+  },
+  "resolved_environment": {
+    "packages": [
+      {
+        "name": "torch",
+        "version": "2.9.0+cu130",
+        "source": "https://packages.example/simple"
+      }
+    ],
+    "provenance": {
+      "configured_index_urls": ["https://packages.example/simple"],
+      "resolved_indexes": ["https://packages.example/simple"],
+      "cuda_toolkit": "12.8",
+      "torch_version": "torch==2.9.0+cu130"
+    },
+    "warnings": [
+      "torch resolved to torch==2.9.0+cu130 but is not pinned exactly; add torch==2.9.0+cu130 to pin it."
+    ]
+  }
+}
+```
+
+The multiarchitecture form has the same package shape per platform:
+
+```json
+{
+  "resolved_environments": {
+    "linux/amd64": {
+      "packages": [{"name": "torch", "version": "2.9.0+cu130"}]
+    },
+    "linux/arm64": {
+      "packages": []
+    }
+  }
+}
+```
+
+Environment warnings are part of the registration result. Waiting on
+`create_function_async(...)` (or calling `create_function`) emits each server
+warning from the scalar or per-platform measurements as a Python `UserWarning`;
+`get_function` and `list_functions` read the same version but do not
+replay those registration warnings.
 
 ## Try it in SQL {#try-sql}
 

@@ -3171,6 +3171,38 @@ async fn function_creation_and_description_use_sql_query_handles() {
         version_json["max_concurrency"] = serde_json::json!(4);
         version_json["row_timeout_seconds"] = serde_json::json!(8.0);
         version_json["result_stability"] = serde_json::json!("input_and_context");
+        version_json["runtime"] = request_json["runtime"].clone();
+        version_json["resolved_environment"] = serde_json::json!({
+            "packages": [
+                {
+                    "name": "torch",
+                    "version": "2.9.0+cu130",
+                    "source": "https://packages.example/simple"
+                },
+                {
+                    "name": "transformers",
+                    "version": "4.57.1"
+                }
+            ],
+            "provenance": {
+                "configured_index_urls": ["https://packages.example/simple"],
+                "configured_find_links": [],
+                "resolved_indexes": ["https://packages.example/simple"],
+                "cuda_toolkit": "12.8",
+                "torch_version": "torch==2.9.0+cu130"
+            },
+            "warnings": [
+                "transformers resolved to transformers==4.57.1 but is not pinned exactly; add transformers==4.57.1 to pin it."
+            ]
+        });
+        version_json["resolved_environments"] = serde_json::json!({
+            "linux/amd64": {
+                "packages": [{"name": "torch", "version": "2.9.0+cu130"}]
+            },
+            "linux/arm64": {
+                "packages": []
+            }
+        });
         if with_models {
             let models = serde_json::json!([{
                 "repo": "sentence-transformers/all-MiniLM-L6-v2",
@@ -3217,6 +3249,17 @@ async fn function_creation_and_description_use_sql_query_handles() {
         assert_eq!(created.max_concurrency(), Some(4));
         assert_eq!(created.row_timeout_seconds(), Some(8.0));
         assert_eq!(created.result_stability(), Some("input_and_context"));
+        assert_eq!(created.runtime().unwrap().kind(), "python");
+        assert_eq!(
+            created.resolved_environment().unwrap().packages[0].version,
+            "2.9.0+cu130"
+        );
+        assert_eq!(created.resolved_environments().len(), 2);
+        assert!(
+            created.resolved_environments()["linux/arm64"]
+                .packages
+                .is_empty()
+        );
         // Assert the actual SQL body, after the same native JSON decode used
         // by the Python binding, rather than only the Python declaration.
         {
@@ -3241,6 +3284,23 @@ async fn function_creation_and_description_use_sql_query_handles() {
         assert_eq!(created_json["row_timeout_seconds"], 8.0);
         assert_eq!(created_json["result_stability"], "input_and_context");
         assert_eq!(
+            created_json["resolved_environment"]["packages"][0]["version"],
+            "2.9.0+cu130"
+        );
+        assert!(
+            created_json["resolved_environment"]["packages"][1]
+                .get("source")
+                .is_none()
+        );
+        assert_eq!(
+            created_json["resolved_environments"]["linux/amd64"]["packages"][0]["version"],
+            "2.9.0+cu130"
+        );
+        assert_eq!(
+            created_json["resolved_environments"]["linux/arm64"]["packages"],
+            serde_json::json!([])
+        );
+        assert_eq!(
             client.describe(id).await.unwrap().status,
             QueryStatus::Finished
         );
@@ -3253,6 +3313,19 @@ async fn function_creation_and_description_use_sql_query_handles() {
         assert_eq!(described.max_concurrency(), Some(4));
         assert_eq!(described.row_timeout_seconds(), Some(8.0));
         assert_eq!(described.result_stability(), Some("input_and_context"));
+        assert_eq!(described.runtime().unwrap().kind(), "python");
+        assert_eq!(
+            described
+                .resolved_environment()
+                .unwrap()
+                .provenance
+                .as_ref()
+                .unwrap()
+                .torch_version
+                .as_deref(),
+            Some("torch==2.9.0+cu130")
+        );
+        assert_eq!(described.resolved_environments().len(), 2);
         let described_json: serde_json::Value =
             serde_json::from_str(&described.to_canonical_json().unwrap()).unwrap();
         assert_eq!(described_json["image"].get("models"), expected_models);
@@ -3279,6 +3352,16 @@ async fn function_creation_and_description_use_sql_query_handles() {
             listed.items[0].result_stability(),
             Some("input_and_context")
         );
+        assert_eq!(listed.items[0].runtime().unwrap().kind(), "python");
+        assert_eq!(
+            listed.items[0]
+                .resolved_environment()
+                .unwrap()
+                .warnings
+                .len(),
+            1
+        );
+        assert_eq!(listed.items[0].resolved_environments().len(), 2);
         let listed_json: serde_json::Value =
             serde_json::from_str(&listed.items[0].to_canonical_json().unwrap()).unwrap();
         assert_eq!(listed_json["image"].get("models"), expected_models);
@@ -3289,6 +3372,58 @@ async fn function_creation_and_description_use_sql_query_handles() {
         let seen = statements.lock().unwrap();
         assert_eq!(seen[1], "DESCRIBE FUNCTION \"embed\" WITH (version = '1')");
         assert_eq!(seen[2], "DESCRIBE FUNCTION \"embed\"");
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn function_creation_refresh_lock_is_forwarded_only_when_true() {
+    const VERSION: &str = include_str!(
+        "../../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
+    );
+    const REQUEST: &str = include_str!(
+        "../../tests/fixtures/first_class_functions/v1/remote_function_registration_request.json"
+    );
+    for (refresh_lock, expect_field) in [(false, false), (true, true)] {
+        let mut request_json: serde_json::Value = serde_json::from_str(REQUEST).unwrap();
+        if refresh_lock {
+            request_json["refresh_lock"] = serde_json::json!(true);
+        }
+        let request =
+            crate::function::FunctionRegistrationRequest::from_json(&request_json.to_string())
+                .unwrap();
+        assert_eq!(request.refresh_lock, refresh_lock);
+        let result = RecordBatch::try_from_iter(vec![(
+            "definition",
+            Arc::new(StringArray::from(vec![VERSION.to_string()])) as ArrayRef,
+        )])
+        .unwrap();
+        let service = TestSqlService {
+            adaptive: true,
+            defer: false,
+            result,
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let db = RemoteDatabase::new_mock(|request| -> http::Response<String> {
+            panic!("unexpected REST request: {}", request.url().path());
+        })
+        .with_sql_client(client.clone());
+        let job = db.create_function_async(request, &[]).await.unwrap();
+        job.wait().await.unwrap();
+        let seen = statements.lock().unwrap();
+        let encoded = seen[0]
+            .strip_prefix(r#"CREATE FUNCTION "normalize_score" FROM '"#)
+            .unwrap()
+            .strip_suffix('\'')
+            .unwrap();
+        let sent: serde_json::Value = serde_json::from_str(&encoded.replace("''", "'")).unwrap();
+        assert_eq!(sent.get("refresh_lock").is_some(), expect_field);
+        if expect_field {
+            assert_eq!(sent["refresh_lock"], serde_json::json!(true));
+        }
+        drop(seen);
         shutdown.send(()).unwrap();
     }
 }

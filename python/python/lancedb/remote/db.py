@@ -1002,6 +1002,7 @@ class RemoteDBConnection(DBConnection):
         secrets: Optional[Sequence[EnvVarSecret]] = None,
         exist_ok: bool = False,
         namespace_path: Optional[List[str]] = None,
+        refresh_lock: bool = False,
     ) -> Job[FunctionVersion]:
         job = LOOP.run(
             self._conn.create_function_async(
@@ -1009,6 +1010,7 @@ class RemoteDBConnection(DBConnection):
                 secrets=secrets,
                 exist_ok=exist_ok,
                 namespace_path=namespace_path,
+                refresh_lock=refresh_lock,
             )
         )
         return Job(job)

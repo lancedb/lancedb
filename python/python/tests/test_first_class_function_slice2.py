@@ -26,8 +26,9 @@ import pytest
 
 import lancedb
 from lancedb import BlobReader
-from lancedb.db import AsyncConnection
+from lancedb.db import AsyncConnection, DBConnection, LanceDBConnection
 from lancedb.functions import (
+    FunctionRegistrationRequest,
     FunctionSignature,
     FunctionVersion,
     HuggingFaceModel,
@@ -82,6 +83,63 @@ def analyze_caption(caption: str) -> str:
     return caption.strip()
 
 
+def _function_version_with_resolved_environment():
+    version = json.loads(
+        (FIXTURES / "remote_function_version.canonical.json").read_text()
+    )
+    version["runtime"] = json.loads(
+        normalize_score.registration_request.runtime.to_canonical_json()
+    )
+    version["resolved_environment"] = {
+        "packages": [
+            {
+                "name": "torch",
+                "version": "2.9.0+cu130",
+                "source": "https://packages.example/simple",
+            },
+            {"name": "transformers", "version": "4.57.1"},
+        ],
+        "provenance": {
+            "configured_index_urls": ["https://packages.example/simple"],
+            "configured_find_links": ["https://downloads.example/wheels"],
+            "resolved_indexes": ["https://packages.example/simple"],
+            "cuda_toolkit": "12.8",
+            "torch_version": "torch==2.9.0+cu130",
+        },
+        "warnings": [
+            "transformers resolved to transformers==4.57.1 but is not pinned "
+            "exactly; add transformers==4.57.1 to pin it."
+        ],
+    }
+    return version
+
+
+def _function_version_with_resolved_environments():
+    version = json.loads(
+        (FIXTURES / "remote_function_version.canonical.json").read_text()
+    )
+    version["runtime"] = json.loads(
+        normalize_score.registration_request.runtime.to_canonical_json()
+    )
+    version["resolved_environments"] = {
+        "linux/amd64": {
+            "packages": [
+                {
+                    "name": "torch",
+                    "version": "2.9.0+cu130",
+                    "source": "https://packages.example/simple",
+                }
+            ],
+            "warnings": ["amd64 environment warning"],
+        },
+        "linux/arm64": {
+            "packages": [],
+            "warnings": ["arm64 environment warning"],
+        },
+    }
+    return version
+
+
 def test_scalar_function_matches_shared_registration_golden_and_remains_callable():
     assert isinstance(normalize_score, FunctionDefinition)
     assert normalize_score(25.0) == 0.25
@@ -96,6 +154,118 @@ def test_scalar_function_matches_shared_registration_golden_and_remains_callable
         "kind": "scalar_to_arrow_batch",
         "version": 1,
     }
+
+
+def test_refresh_lock_is_a_registration_option_not_part_of_identity():
+    default = normalize_score.registration_request
+    old_json = default.to_canonical_json()
+    assert "refresh_lock" not in json.loads(old_json)
+
+    refreshed = default.with_refresh_lock(True)
+    payload = json.loads(refreshed.to_canonical_json())
+    assert payload["refresh_lock"] is True
+    assert (
+        FunctionRegistrationRequest.from_json(
+            refreshed.to_canonical_json()
+        ).refresh_lock
+        is True
+    )
+    assert refreshed.artifact.digest == default.artifact.digest
+    assert refreshed.runtime.digest == default.runtime.digest
+    assert default.with_refresh_lock(False).to_canonical_json() == old_json
+    with pytest.raises(ValueError, match="refresh_lock must be a boolean"):
+        default.with_refresh_lock(1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exist_ok", [False, True])
+async def test_async_create_function_forwards_refresh_lock(exist_ok):
+    calls = []
+
+    class Inner:
+        async def create_function_async(
+            self, request_json, namespace_path=None, *, exist_ok=False
+        ):
+            calls.append((json.loads(request_json), namespace_path, exist_ok))
+            return object()
+
+    connection = object.__new__(AsyncConnection)
+    connection._inner = Inner()
+    await connection.create_function_async(normalize_score)
+    await connection.create_function_async(
+        normalize_score, refresh_lock=True, exist_ok=exist_ok, namespace_path=["team"]
+    )
+    with pytest.raises(ValueError, match="refresh_lock must be a boolean"):
+        await connection.create_function_async(normalize_score, refresh_lock=1)
+
+    assert len(calls) == 2
+    assert "refresh_lock" not in calls[0][0]
+    assert calls[0][1:] == (None, False)
+    assert calls[1][0]["refresh_lock"] is True
+    assert calls[1][1:] == (["team"], exist_ok)
+
+
+@pytest.mark.parametrize("exist_ok", [False, True])
+def test_sync_create_function_paths_forward_refresh_lock(exist_ok):
+    calls = []
+
+    class AsyncInner:
+        async def create_function_async(
+            self,
+            definition,
+            *,
+            secrets=None,
+            exist_ok=False,
+            namespace_path=None,
+            refresh_lock=False,
+        ):
+            calls.append(("wrapped", refresh_lock, namespace_path, exist_ok))
+            return object()
+
+    for connection_type in (LanceDBConnection, RemoteDBConnection):
+        connection = object.__new__(connection_type)
+        connection._conn = AsyncInner()
+        connection.create_function_async(
+            normalize_score,
+            refresh_lock=True,
+            exist_ok=exist_ok,
+            namespace_path=["team"],
+        )
+
+    class BlockingConnection:
+        def create_function_async(
+            self,
+            definition,
+            *,
+            secrets=None,
+            exist_ok=False,
+            namespace_path=None,
+            refresh_lock=False,
+        ):
+            calls.append(("blocking", refresh_lock, namespace_path, exist_ok))
+
+            class ImmediateJob:
+                def wait(self):
+                    return "version"
+
+            return ImmediateJob()
+
+    blocking = BlockingConnection()
+    assert (
+        DBConnection.create_function(
+            blocking,
+            normalize_score,
+            refresh_lock=True,
+            exist_ok=exist_ok,
+            namespace_path=["team"],
+        )
+        == "version"
+    )
+    assert calls == [
+        ("wrapped", True, ["team"], exist_ok),
+        ("wrapped", True, ["team"], exist_ok),
+        ("blocking", True, ["team"], exist_ok),
+    ]
 
 
 def test_function_declares_pinned_hugging_face_models():
@@ -2203,6 +2373,205 @@ class _RawFunctionCatalog:
 
     def page_token(self):
         return None
+
+
+def test_function_version_reads_requested_and_resolved_environments():
+    legacy = json.loads(
+        (FIXTURES / "remote_function_version.canonical.json").read_text()
+    )
+    legacy_version = FunctionVersion.from_json(json.dumps(legacy))
+    assert legacy_version.runtime is None
+    assert legacy_version.resolved_environment is None
+    assert legacy_version.environment.requested is None
+    assert legacy_version.environment.resolved is None
+
+    payload = _function_version_with_resolved_environment()
+    version = FunctionVersion.from_json(json.dumps(payload))
+    assert version.environment.requested is version.runtime
+    assert version.environment.resolved is version.resolved_environment
+    assert version.runtime.kind == "python"
+    resolved = version.resolved_environment
+    assert resolved.packages[0].version == "2.9.0+cu130"
+    assert resolved.packages[0].source == "https://packages.example/simple"
+    assert resolved.packages[1].source is None
+    assert resolved.provenance.torch_version == "torch==2.9.0+cu130"
+    assert resolved.warnings == tuple(payload["resolved_environment"]["warnings"])
+
+    encoded = json.loads(version.to_canonical_json())
+    assert encoded["runtime"]["kind"] == "python"
+    assert encoded["resolved_environment"]["packages"][0]["version"] == "2.9.0+cu130"
+    assert "source" not in encoded["resolved_environment"]["packages"][1]
+    assert (
+        encoded["resolved_environment"]["provenance"]["torch_version"]
+        == "torch==2.9.0+cu130"
+    )
+    assert FunctionVersion.from_json(version.to_canonical_json()) == version
+
+    invalid = json.loads(json.dumps(payload))
+    del invalid["resolved_environment"]["packages"]
+    with pytest.raises(ValueError):
+        FunctionVersion.from_json(json.dumps(invalid))
+
+
+def test_function_version_reads_resolved_environments_by_platform():
+    legacy = json.loads(
+        (FIXTURES / "remote_function_version.canonical.json").read_text()
+    )
+    legacy_version = FunctionVersion.from_json(json.dumps(legacy))
+    assert legacy_version.resolved_environment is None
+    assert legacy_version.resolved_environments == {}
+    assert legacy_version.environment_report == {}
+
+    payload = _function_version_with_resolved_environments()
+    version = FunctionVersion.from_json(json.dumps(payload))
+    assert version.resolved_environment is None
+    assert version.resolved_environments == version.environment_report
+    assert set(version.environment_report) == {"linux/amd64", "linux/arm64"}
+    assert (
+        version.environment_report["linux/amd64"].packages[0].version == "2.9.0+cu130"
+    )
+    assert version.environment_report["linux/arm64"].packages == ()
+    assert version.environment_report["linux/arm64"].warnings == (
+        "arm64 environment warning",
+    )
+
+    encoded = json.loads(version.to_canonical_json())
+    assert "resolved_environment" not in encoded
+    assert (
+        encoded["resolved_environments"]["linux/amd64"]["packages"][0]["version"]
+        == "2.9.0+cu130"
+    )
+    assert encoded["resolved_environments"]["linux/arm64"]["packages"] == []
+    assert FunctionVersion.from_json(version.to_canonical_json()) == version
+
+    missing_platform = json.loads(json.dumps(payload))
+    del missing_platform["resolved_environments"]["linux/arm64"]
+    missing_version = FunctionVersion.from_json(json.dumps(missing_platform))
+    assert "linux/arm64" not in missing_version.environment_report
+    assert "linux/amd64" in missing_version.environment_report
+
+    empty_map = json.loads(json.dumps(payload))
+    empty_map["resolved_environments"] = {}
+    empty_version = FunctionVersion.from_json(json.dumps(empty_map))
+    assert empty_version.resolved_environments == {}
+    assert "resolved_environments" not in json.loads(empty_version.to_canonical_json())
+
+    invalid = json.loads(json.dumps(payload))
+    del invalid["resolved_environments"]["linux/amd64"]["packages"]
+    with pytest.raises(ValueError):
+        FunctionVersion.from_json(json.dumps(invalid))
+
+
+@pytest.mark.asyncio
+async def test_registration_job_emits_server_environment_warnings_once():
+    payload = _function_version_with_resolved_environment()
+
+    class InnerJob:
+        async def wait(self):
+            return json.dumps(payload)
+
+    class Inner:
+        async def create_function_async(
+            self, request_json, namespace_path=None, *, exist_ok=False
+        ):
+            assert "refresh_lock" not in json.loads(request_json)
+            return InnerJob()
+
+    connection = object.__new__(AsyncConnection)
+    connection._inner = Inner()
+    job = await connection.create_function_async(normalize_score)
+    with pytest.warns(UserWarning) as recorded:
+        version = await job.wait()
+    assert [str(w.message) for w in recorded] == list(
+        payload["resolved_environment"]["warnings"]
+    )
+    assert version.environment.resolved.warnings == tuple(
+        payload["resolved_environment"]["warnings"]
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert await job.wait() is not None
+    assert caught == []
+
+
+@pytest.mark.asyncio
+async def test_registration_job_emits_per_platform_environment_warnings():
+    payload = _function_version_with_resolved_environments()
+
+    class InnerJob:
+        async def wait(self):
+            return json.dumps(payload)
+
+    class Inner:
+        async def create_function_async(
+            self, request_json, namespace_path=None, *, exist_ok=False
+        ):
+            return InnerJob()
+
+    connection = object.__new__(AsyncConnection)
+    connection._inner = Inner()
+    job = await connection.create_function_async(normalize_score)
+    with pytest.warns(UserWarning) as recorded:
+        version = await job.wait()
+    assert [str(w.message) for w in recorded] == [
+        "amd64 environment warning",
+        "arm64 environment warning",
+    ]
+    assert version.environment_report["linux/arm64"].warnings == (
+        "arm64 environment warning",
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert await job.wait() is not None
+    assert caught == []
+
+
+def test_blocking_create_function_emits_server_environment_warnings():
+    payload = _function_version_with_resolved_environment()
+
+    class InnerJob:
+        async def wait(self):
+            return json.dumps(payload)
+
+    class Inner:
+        async def create_function_async(
+            self, request_json, namespace_path=None, *, exist_ok=False
+        ):
+            return InnerJob()
+
+    connection = object.__new__(RemoteDBConnection)
+    connection._conn = AsyncConnection(Inner())
+    with pytest.warns(UserWarning) as recorded:
+        version = DBConnection.create_function(connection, normalize_score)
+    assert [str(w.message) for w in recorded] == list(
+        payload["resolved_environment"]["warnings"]
+    )
+    assert version.environment.resolved.packages[0].version == "2.9.0+cu130"
+
+
+@pytest.mark.asyncio
+async def test_catalog_readback_does_not_replay_registration_warnings():
+    payload = _function_version_with_resolved_environment()
+    connection = AsyncConnection(_RawFunctionCatalog(payload, encode=True))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        version = await connection.get_function("embed")
+        listed = [item async for item in connection.list_functions()]
+    assert caught == []
+    assert version.environment.resolved.packages[0].version == "2.9.0+cu130"
+    assert listed[0].environment.resolved == version.resolved_environment
+
+
+@pytest.mark.asyncio
+async def test_catalog_readback_does_not_replay_per_platform_warnings():
+    payload = _function_version_with_resolved_environments()
+    connection = AsyncConnection(_RawFunctionCatalog(payload, encode=True))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        version = await connection.get_function("embed")
+        listed = [item async for item in connection.list_functions()]
+    assert caught == []
+    assert version.environment_report == listed[0].environment_report
 
 
 def _assert_execution_control_encoding(version):

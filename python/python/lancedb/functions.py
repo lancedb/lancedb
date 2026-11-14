@@ -36,6 +36,7 @@ from typing import (
     Any,
     Callable,
     Literal,
+    NamedTuple,
     Optional,
     TYPE_CHECKING,
     Union,
@@ -98,6 +99,12 @@ def _validate_batch_size(value: Any) -> Optional[int]:
         raise ValueError("batch_size must be an integer")
     if not 1 <= value <= 2**32 - 1:
         raise ValueError("batch_size must be between 1 and 4294967295")
+    return value
+
+
+def _validate_refresh_lock(value: Any) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError("refresh_lock must be a boolean")
     return value
 
 
@@ -544,6 +551,67 @@ class FunctionImage(_RemoteValue):
     models: tuple[HuggingFaceModel, ...] = ()
 
 
+class ResolvedPackage(_RemoteValue):
+    """One installed Python distribution measured from a baked environment.
+
+    ``version`` is the complete version reported by package metadata,
+    including local labels such as ``+cu130``. ``source`` is present only when
+    the submitted lock retained a per-package source; absent means unknown, not
+    an inferred index.
+    """
+
+    name: str
+    version: str
+    source: Optional[str] = None
+
+
+class ResolvedEnvironmentProvenance(_RemoteValue):
+    """Sanitized source and accelerator provenance for a resolved environment.
+
+    ``configured_index_urls`` and ``configured_find_links`` record build
+    inputs. ``resolved_indexes`` records indexes visible in the submitted lock,
+    so a configured source is not by itself evidence that a package came from
+    it. Empty lists and absent fields remain absent; the client does not
+    synthesize them.
+    """
+
+    configured_index_urls: tuple[str, ...] = ()
+    configured_find_links: tuple[str, ...] = ()
+    resolved_indexes: tuple[str, ...] = ()
+    cuda_toolkit: Optional[str] = None
+    torch_version: Optional[str] = None
+
+
+class ResolvedEnvironment(_RemoteValue):
+    """Actual installed distributions and registration warnings for one platform.
+
+    A missing value means its measurement is unknown, not an empty
+    installed-package list. Versions are retained verbatim, including local
+    labels; package ``source`` is retained only when the producer recorded it.
+    """
+
+    packages: tuple[ResolvedPackage, ...]
+    provenance: Optional[ResolvedEnvironmentProvenance] = None
+    warnings: tuple[str, ...] = ()
+
+
+class FunctionEnvironment(NamedTuple):
+    """Requested and measured environment view for a Function version.
+
+    This is a view over
+    [FunctionVersion.runtime][lancedb.functions.FunctionVersion.runtime]
+    and
+    [FunctionVersion.resolved_environment][lancedb.functions.FunctionVersion.resolved_environment].
+    It adds no wire field and performs no second parse. ``requested`` is the
+    runtime specification supplied at registration; ``resolved`` is measured
+    data and is ``None`` when unknown. For per-platform multiarchitecture
+    measurements, use ``FunctionVersion.environment_report``.
+    """
+
+    requested: Optional[PythonRuntimeSpec]
+    resolved: Optional[ResolvedEnvironment]
+
+
 def _validate_object_version(value: str) -> str:
     if int(value) > 2**64 - 1:
         raise ValueError("Function version exceeds uint64")
@@ -593,6 +661,17 @@ class FunctionVersion(_RemoteValue):
     ``result_stability`` retain the execution controls reported by the
     catalog. They are ``None`` for versions registered before the
     corresponding declaration.
+
+    ``runtime`` is the runtime specification requested at registration. It is
+    not evidence of what was installed. ``resolved_environment`` is measured
+    data for a single-platform image: actual package names and complete
+    versions, optional per-package source, provenance, and registration
+    warnings. ``resolved_environments`` is the corresponding map for a
+    multiarchitecture image, keyed by OCI ``os/architecture``. It is never
+    flattened into an aggregate package list. ``None`` or an empty map means
+    unknown data, not an empty installed environment. ``environment`` is a
+    convenience view with ``requested`` and ``resolved`` members over the same
+    fields.
     """
 
     name: str
@@ -613,6 +692,11 @@ class FunctionVersion(_RemoteValue):
     max_concurrency: Optional[int] = None
     row_timeout_seconds: Optional[float] = None
     result_stability: Optional[str] = None
+    runtime: Optional[PythonRuntimeSpec] = None
+    resolved_environment: Optional[ResolvedEnvironment] = None
+    resolved_environments: Mapping[str, ResolvedEnvironment] = Field(
+        default_factory=dict
+    )
 
     @field_validator("batch_size", mode="before")
     @classmethod
@@ -628,6 +712,24 @@ class FunctionVersion(_RemoteValue):
     @classmethod
     def _validate_row_timeout(cls, value):
         return _validate_row_timeout(value)
+
+    @property
+    def environment(self) -> FunctionEnvironment:
+        """Requested and measured environment without adding a second parser."""
+        return FunctionEnvironment(
+            requested=self.runtime,
+            resolved=self.resolved_environment,
+        )
+
+    @property
+    def environment_report(self) -> Mapping[str, ResolvedEnvironment]:
+        """Per-platform measured reports, keyed by OCI ``os/architecture``.
+
+        This is the same map as ``resolved_environments`` and is never
+        flattened. Single-platform images use ``resolved_environment`` instead;
+        an absent platform means its measurement is unknown.
+        """
+        return self.resolved_environments
 
     def __call__(self, **arguments: Any) -> FunctionApplication:
         """Bind this exact version to named table columns and constant inputs.
@@ -769,6 +871,9 @@ class FunctionRegistrationRequest(_RemoteValue):
     Credential values deliberately have no field here. The only secret-shaped
     thing a client sends is ``secret_bindings``: the name of a Secret the
     database already holds, which the remote service resolves at execution.
+    ``refresh_lock`` is a per-registration action, not part of the Function's
+    source or runtime identity; its false default is omitted from canonical
+    JSON.
     """
 
     name: str
@@ -781,6 +886,7 @@ class FunctionRegistrationRequest(_RemoteValue):
     retry_policy: Optional[FunctionRetryPolicy] = None
     secret_bindings: tuple[SecretBinding, ...] = ()
     models: tuple[HuggingFaceModel, ...] = ()
+    refresh_lock: bool = False
 
     @field_validator("batch_size", mode="before")
     @classmethod
@@ -796,6 +902,18 @@ class FunctionRegistrationRequest(_RemoteValue):
     @classmethod
     def _validate_row_timeout(cls, value):
         return _validate_row_timeout(value)
+
+    @field_validator("refresh_lock", mode="before")
+    @classmethod
+    def _validate_refresh_lock(cls, value):
+        return _validate_refresh_lock(value)
+
+    def with_refresh_lock(self, refresh_lock: bool) -> FunctionRegistrationRequest:
+        """Return this request with the registration-time refresh action set."""
+        refresh_lock = _validate_refresh_lock(refresh_lock)
+        if self.refresh_lock == refresh_lock:
+            return self
+        return self._copy(update={"refresh_lock": refresh_lock})
 
 
 class FunctionVersionRef(_OpenRemoteValue):
@@ -3043,6 +3161,7 @@ __all__ = [
     "FunctionArtifactContent",
     "FunctionArtifactRequest",
     "FunctionBinding",
+    "FunctionEnvironment",
     "FunctionOutput",
     "FunctionParameter",
     "FunctionRegistrationRequest",
@@ -3059,6 +3178,9 @@ __all__ = [
     "PythonEnvironmentSpec",
     "PythonAdapterSpec",
     "PythonRuntimeSpec",
+    "ResolvedEnvironment",
+    "ResolvedEnvironmentProvenance",
+    "ResolvedPackage",
     "RefreshColumnResult",
     "FunctionDefinition",
 ]

@@ -154,6 +154,38 @@ def _normalize_function_version(version: Optional[Union[int, str]]) -> Optional[
     raise TypeError("version must be an int, str, or None")
 
 
+def _function_registration_decoder():
+    """Parse a registration result and emit its server warnings once.
+
+    The warnings come from the scalar environment or, for a multiarchitecture
+    image, each measured platform entry. They are part of the registration job
+    result, not a new client-side package policy. Catalog get/list readbacks
+    use ``FunctionVersion.from_json`` directly and therefore do not replay
+    them.
+    """
+    warned = False
+
+    def decode(payload: str) -> FunctionVersion:
+        nonlocal warned
+        version = FunctionVersion.from_json(payload)
+        if not warned:
+            environments = [
+                environment
+                for environment in (
+                    version.resolved_environment,
+                    *version.resolved_environments.values(),
+                )
+                if environment is not None
+            ]
+            for environment in environments:
+                for message in environment.warnings:
+                    warnings.warn(message, UserWarning, stacklevel=3)
+            warned = True
+        return version
+
+    return decode
+
+
 class DBConnection(EnforceOverrides):
     """An active LanceDB connection interface.
 
@@ -1018,6 +1050,7 @@ class DBConnection(EnforceOverrides):
         secrets: Optional[Sequence[EnvVarSecret]] = None,
         exist_ok: bool = False,
         namespace_path: Optional[List[str]] = None,
+        refresh_lock: bool = False,
     ) -> FunctionVersion:
         """Build and register a scalar Python function, then return its version.
 
@@ -1040,6 +1073,13 @@ class DBConnection(EnforceOverrides):
         namespace_path : list of str, optional
             The namespace holding the Function. None or an empty list is the
             root namespace.
+        refresh_lock : bool, default False
+            Ask the server to resolve a fresh environment lock instead of
+            reusing the published version's lock.
+
+        When the registration job resolves, each resolved-environment warning
+        reported by the server is emitted as a Python ``UserWarning``. Catalog
+        reads do not replay those registration warnings.
 
         Examples
         --------
@@ -1060,6 +1100,7 @@ class DBConnection(EnforceOverrides):
             secrets=secrets,
             exist_ok=exist_ok,
             namespace_path=namespace_path,
+            refresh_lock=refresh_lock,
         ).wait()
 
     def create_function_async(
@@ -1069,6 +1110,7 @@ class DBConnection(EnforceOverrides):
         secrets: Optional[Sequence[EnvVarSecret]] = None,
         exist_ok: bool = False,
         namespace_path: Optional[List[str]] = None,
+        refresh_lock: bool = False,
     ) -> Job[FunctionVersion]:
         """Submit a scalar Python function for building and registration.
 
@@ -1079,6 +1121,11 @@ class DBConnection(EnforceOverrides):
         artifact. The returned job has type ``query`` and the SQL query UUID as
         its ID. Waiting on it returns the immutable Function version.
         LanceDB Embedded connections raise ``NotImplementedError``.
+
+        ``refresh_lock`` asks the server to resolve a fresh environment lock
+        instead of reusing the published version's lock. Waiting on the job
+        emits the server's resolved-environment warnings as Python warnings;
+        reading the same version later does not repeat them.
         """
         raise NotImplementedError(
             _append_doc_url(
@@ -2432,6 +2479,7 @@ class LanceDBConnection(DBConnection):
         secrets: Optional[Sequence[EnvVarSecret]] = None,
         exist_ok: bool = False,
         namespace_path: Optional[List[str]] = None,
+        refresh_lock: bool = False,
     ) -> Job[FunctionVersion]:
         job = LOOP.run(
             self._conn.create_function_async(
@@ -2439,6 +2487,7 @@ class LanceDBConnection(DBConnection):
                 secrets=secrets,
                 exist_ok=exist_ok,
                 namespace_path=namespace_path,
+                refresh_lock=refresh_lock,
             )
         )
         return Job(job)
@@ -3788,6 +3837,7 @@ class AsyncConnection(object):
         secrets: Optional[Sequence[EnvVarSecret]] = None,
         exist_ok: bool = False,
         namespace_path: Optional[List[str]] = None,
+        refresh_lock: bool = False,
     ) -> AsyncJob[FunctionVersion]:
         """Submit a scalar Python function for building and registration.
 
@@ -3802,14 +3852,16 @@ class AsyncConnection(object):
         the environment variable its value arrives in. ``namespace_path`` is
         the namespace the Function is registered in; None or an empty list is
         the root. LanceDB Embedded connections raise ``NotImplementedError``.
+        ``refresh_lock`` asks the server to resolve a fresh environment lock
+        instead of reusing the published version's lock.
         """
         if not isinstance(definition, FunctionDefinition):
             raise TypeError("create_function_async requires a @function definition")
-        request = definition.bind_secrets(secrets)
+        request = definition.bind_secrets(secrets).with_refresh_lock(refresh_lock)
         inner = await self._inner.create_function_async(
             request.to_canonical_json(), namespace_path, exist_ok=exist_ok
         )
-        return _typed_job(inner, FunctionVersion.from_json)
+        return _typed_job(inner, _function_registration_decoder())
 
     async def get_function(
         self,
