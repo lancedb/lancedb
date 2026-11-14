@@ -300,7 +300,19 @@ class Connection(object):
         page_limit: Optional[int] = None,
     ) -> NameListing: ...
     def list_jobs(
-        self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
+        self,
+        *,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+        table: Optional[str] = None,
+        namespace_path: Optional[List[str]] = None,
+        state: Optional[
+            Literal["in_progress", "succeeded", "failed", "canceled", "timed_out"]
+        ] = None,
+        job_type: Optional[str] = None,
+        job_types: Optional[List[str]] = None,
+        created_at_gte_millis: Optional[int] = None,
+        created_at_lt_millis: Optional[int] = None,
     ) -> JobListing: ...
     async def cancel_job(self, job_id: str) -> bool: ...
     async def pause_job(self, job_id: str) -> str: ...

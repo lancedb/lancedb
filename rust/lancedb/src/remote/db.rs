@@ -22,7 +22,8 @@ use lance_namespace::models::{
 use crate::Error;
 use crate::database::{
     CloneTableRequest, CreateTableMode, CreateTableRequest, Database, DatabaseOptions,
-    ExecuteQueryRequest, JobInfo, OpenTableRequest, ReadConsistency, TableNamesRequest,
+    ExecuteQueryRequest, JobInfo, JobListFilter, OpenTableRequest, ReadConsistency,
+    TableNamesRequest,
 };
 use crate::error::Result;
 use crate::function::{FunctionRegistrationRequest, FunctionVersion, GpuClass};
@@ -1311,7 +1312,54 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn list_jobs(&self, options: ListingOptions) -> Result<ListingPage<JobInfo>> {
-        let mut body = serde_json::json!({});
+        self.list_jobs_filtered(JobListFilter::default(), options)
+            .await
+    }
+
+    async fn list_jobs_filtered(
+        &self,
+        filter: JobListFilter,
+        options: ListingOptions,
+    ) -> Result<ListingPage<JobInfo>> {
+        if self.db_name.is_empty() {
+            return Err(Error::InvalidInput {
+                message: "list_jobs requires a connected database".into(),
+            });
+        }
+        if filter.table.is_none() && !filter.namespace_path.is_empty() {
+            return Err(Error::InvalidInput {
+                message: "namespace_path requires a table filter".into(),
+            });
+        }
+        if let (Some(start), Some(end)) =
+            (filter.created_at_gte_millis, filter.created_at_lt_millis)
+            && start >= end
+        {
+            return Err(Error::InvalidInput {
+                message: "created_at_gte_millis must be less than created_at_lt_millis".into(),
+            });
+        }
+        let mut body = serde_json::json!({"database": self.db_name});
+        if let Some(table) = filter.table {
+            validate_table_name(&table)?;
+            validate_namespace(&filter.namespace_path)?;
+            body["table_ref"] = serde_json::json!({
+                "db_name": self.db_name,
+                "table_id": {"namespace_path": filter.namespace_path, "table_name": table},
+            });
+        }
+        if let Some(state) = filter.state {
+            body["state"] = serde_json::json!(state);
+        }
+        if !filter.job_types.is_empty() {
+            body["job_types"] = serde_json::json!(filter.job_types);
+        }
+        if let Some(start) = filter.created_at_gte_millis {
+            body["created_at_gte_millis"] = start.into();
+        }
+        if let Some(end) = filter.created_at_lt_millis {
+            body["created_at_lt_millis"] = end.into();
+        }
         if let Some(token) = options.page_token {
             body["page_token"] = token.into();
         }
@@ -2020,7 +2068,7 @@ mod tests {
     use rstest::rstest;
 
     use crate::connection::ConnectBuilder;
-    use crate::database::Database;
+    use crate::database::{Database, JobListFilter, JobListState};
     use crate::error::{JobFailure, RemoteErrorMetadata, RemoteResourceIdentity};
     use crate::graph::{EdgeTable, Endpoint, NodeTable, PropertyGraphDefinition};
     use crate::materialized_view::CreateMaterializedViewRequest;
@@ -4154,7 +4202,10 @@ mod tests {
                         let body: serde_json::Value =
                             serde_json::from_slice(request.body().unwrap().as_bytes().unwrap())
                                 .unwrap();
-                        assert_eq!(body, serde_json::json!({"page_token": token, "limit": 2}));
+                        assert_eq!(
+                            body,
+                            serde_json::json!({"database": "default", "page_token": token, "limit": 2})
+                        );
                     } else {
                         let ns = "team";
                         assert_eq!(
@@ -4355,6 +4406,84 @@ mod tests {
                 if message.contains("newer LanceDB server")
                     && message.contains("/v1/gpu/classes")
         ));
+    }
+
+    #[tokio::test]
+    async fn test_list_jobs_filters_every_page_without_eager_fetching() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let seen = count.clone();
+        let conn = Connection::new_with_handler(move |request| {
+            let page = seen.fetch_add(1, Ordering::SeqCst);
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            let mut expected = serde_json::json!({
+                "database": "default",
+                "table_ref": {
+                    "db_name": "default",
+                    "table_id": {"namespace_path": ["team", "project"], "table_name": "events"},
+                },
+                "state": "in_progress",
+                "job_types": ["column_refresh", "materialized_view_refresh"],
+                "created_at_gte_millis": 100,
+                "created_at_lt_millis": 200,
+                "limit": 1,
+            });
+            if page > 0 {
+                expected["page_token"] = "next".into();
+            }
+            assert_eq!(body, expected);
+            http::Response::builder().status(200).body(serde_json::json!({
+                "jobs": [{"job_id": format!("job-{page}"), "table": "events", "job_type": "column_refresh", "state": "in_progress", "created_at_millis": 100}],
+                "page_token": (page == 0).then_some("next"),
+            }).to_string()).unwrap()
+        });
+        let filter = JobListFilter {
+            table: Some("events".into()),
+            namespace_path: vec!["team".into(), "project".into()],
+            state: Some(JobListState::InProgress),
+            job_types: vec!["column_refresh".into(), "materialized_view_refresh".into()],
+            created_at_gte_millis: Some(100),
+            created_at_lt_millis: Some(200),
+        };
+        let mut jobs =
+            conn.list_jobs_filtered(filter.clone(), ListingOptions::default().page_limit(1));
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+        assert_eq!(jobs.try_next().await.unwrap().unwrap().job_id, "job-0");
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        let resumed = conn.list_jobs_filtered(
+            filter,
+            ListingOptions::default()
+                .page_limit(1)
+                .page_token(jobs.page_token().unwrap()),
+        );
+        let remaining = resumed.try_collect::<Vec<_>>().await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].job_id, "job-1");
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_list_jobs_invalid_filters_never_reach_server() {
+        let conn = Connection::new_with_handler(|_| -> http::Response<String> {
+            panic!("invalid filters must not reach the server")
+        });
+        let namespace_only = JobListFilter {
+            namespace_path: vec!["team".into()],
+            ..Default::default()
+        };
+        let invalid_time = JobListFilter {
+            created_at_gte_millis: Some(200),
+            created_at_lt_millis: Some(100),
+            ..Default::default()
+        };
+        for filter in [namespace_only, invalid_time] {
+            let mut jobs = conn.list_jobs_filtered(filter, ListingOptions::default());
+            assert!(matches!(
+                jobs.try_next().await,
+                Err(Error::InvalidInput { .. })
+            ));
+            assert!(jobs.try_next().await.unwrap().is_none());
+        }
     }
 
     #[tokio::test]
