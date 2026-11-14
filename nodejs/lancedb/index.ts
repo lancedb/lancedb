@@ -270,6 +270,23 @@ export interface TokenizeOptions {
 
   /** Whether to only emit token prefixes for the n-gram tokenizer. */
   prefixOnly?: boolean;
+
+  /**
+   * The analyzer family to use. See {@link FtsOptions.analyzer}.
+   */
+  analyzer?: "text" | "code";
+
+  /** Split code identifiers into subwords. See {@link FtsOptions.splitIdentifiers}. */
+  splitIdentifiers?: boolean;
+
+  /** Split identifier subwords at letter and number boundaries. */
+  splitOnNumerics?: boolean;
+
+  /** Also emit the complete identifier next to its subwords. */
+  preserveOriginal?: boolean;
+
+  /** Emit code operators such as `::`, `->` and `!=`. */
+  indexOperators?: boolean;
 }
 
 /**
@@ -295,6 +312,11 @@ export async function tokenize(
     options?.ngramMinLength,
     options?.ngramMaxLength,
     options?.prefixOnly,
+    options?.analyzer,
+    options?.splitIdentifiers,
+    options?.splitOnNumerics,
+    options?.preserveOriginal,
+    options?.indexOperators,
   );
 }
 
