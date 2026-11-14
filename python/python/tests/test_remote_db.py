@@ -2076,6 +2076,23 @@ def test_remote_create_index_async_returns_job():
                 "gpu_count": 2,
             }
         },
+        {
+            "supervisor_resources": {
+                "cpu_millis": 2000,
+                "memory_bytes": 4 * 1024**3,
+                "ephemeral_storage_bytes": 10 * 1024**3,
+            },
+            "planning_workers": {
+                "resources": {
+                    "cpu_millis": 1000,
+                    "memory_bytes": 2 * 1024**3,
+                    "ephemeral_storage_bytes": 5 * 1024**3,
+                },
+                "max_workers": 4,
+                "rows_per_worker": 100_000,
+                "fragments_per_worker": 8,
+            },
+        },
         {"gpu_class": "a10g", "gpu_count": 2},
         {
             "retry_policy": {"transient": True, "max_attempts": 3},
@@ -2122,6 +2139,9 @@ async def test_remote_refresh_async_returns_typed_terminal_result(
                     **budget,
                     "gpu_count": budget.get("gpu_count", 0),
                 }
+            for key in ("supervisor_resources", "planning_workers"):
+                if refresh_kwargs.get(key) is not None:
+                    expected[key] = refresh_kwargs[key]
             if refresh_kwargs.get("retry_policy") is not None:
                 expected["retry_policy"] = lancedb.FunctionRetryPolicy.model_validate(
                     refresh_kwargs["retry_policy"]
@@ -2349,6 +2369,51 @@ def test_remote_refresh_async_forwards_progress_from_submitted_handle():
                 }
             },
             "unsupported key 'unknown'",
+        ),
+        (
+            {
+                "supervisor_resources": {
+                    "cpu_millis": 0,
+                    "memory_bytes": 1,
+                    "ephemeral_storage_bytes": 1,
+                }
+            },
+            "supervisor_resources.cpu_millis",
+        ),
+        (
+            {
+                "supervisor_resources": {
+                    "cpu_millis": 1,
+                    "memory_bytes": 1,
+                }
+            },
+            "supervisor_resources.ephemeral_storage_bytes",
+        ),
+        (
+            {
+                "supervisor_resources": {
+                    "cpu_millis": 1,
+                    "memory_bytes": 1,
+                    "ephemeral_storage_bytes": 1,
+                    "unknown": 1,
+                }
+            },
+            "unsupported key 'unknown'",
+        ),
+        (
+            {
+                "planning_workers": {
+                    "resources": {
+                        "cpu_millis": 1,
+                        "memory_bytes": 1,
+                        "ephemeral_storage_bytes": 1,
+                    },
+                    "max_workers": 0,
+                    "rows_per_worker": 1,
+                    "fragments_per_worker": 1,
+                }
+            },
+            "planning_workers.max_workers",
         ),
         (
             {"max_executor_processes_per_worker": -2},

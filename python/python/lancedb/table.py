@@ -3258,6 +3258,8 @@ class Table(ABC):
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
         resource_budget: Optional[Dict[str, int]] = None,
+        supervisor_resources: Optional[Dict[str, int]] = None,
+        planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -3315,6 +3317,17 @@ class Table(ABC):
             CPU-only budget. This budget cannot be combined with the top-level
             ``gpu_count`` shorthand. LanceDB Enterprise only; local refreshes
             reject it.
+        supervisor_resources: dict[str, int], optional
+            CPU, memory, and ephemeral-storage limits for the Function refresh
+            supervisor pod. Keys are ``cpu_millis``, ``memory_bytes`` and
+            ``ephemeral_storage_bytes``; all are required and positive.
+            LanceDB Enterprise only; local refreshes reject it.
+        planning_workers: dict[str, object], optional
+            Resources and sizing for the Function refresh planning fleet.
+            ``resources`` has the same keys as ``supervisor_resources``; the
+            other keys are ``max_workers``, ``rows_per_worker`` and
+            ``fragments_per_worker``. LanceDB Enterprise only; local refreshes
+            reject it.
         gpu_class: str, optional
             GPU class for Function workers. Must be a lowercase name of 1-63
             letters, digits, or hyphens, without a leading or trailing hyphen.
@@ -3367,6 +3380,8 @@ class Table(ABC):
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
         resource_budget: Optional[Dict[str, int]] = None,
+        supervisor_resources: Optional[Dict[str, int]] = None,
+        planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -3422,6 +3437,17 @@ class Table(ABC):
             ``gpu_count`` is optional and defaults to zero, which requests a
             CPU-only budget. This budget cannot be combined with the top-level
             ``gpu_count`` shorthand. LanceDB Enterprise only; local refreshes
+            reject it.
+        supervisor_resources: dict[str, int], optional
+            CPU, memory, and ephemeral-storage limits for the Function refresh
+            supervisor pod. Keys are ``cpu_millis``, ``memory_bytes`` and
+            ``ephemeral_storage_bytes``; all are required and positive.
+            LanceDB Enterprise only; local refreshes reject it.
+        planning_workers: dict[str, object], optional
+            Resources and sizing for the Function refresh planning fleet.
+            ``resources`` has the same keys as ``supervisor_resources``; the
+            other keys are ``max_workers``, ``rows_per_worker`` and
+            ``fragments_per_worker``. LanceDB Enterprise only; local refreshes
             reject it.
         gpu_class: str, optional
             GPU class for Function workers. Must be a lowercase name of 1-63
@@ -5632,6 +5658,8 @@ class LanceTable(Table):
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
         resource_budget: Optional[Dict[str, int]] = None,
+        supervisor_resources: Optional[Dict[str, int]] = None,
+        planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -5654,6 +5682,8 @@ class LanceTable(Table):
                 max_concurrency=max_concurrency,
                 publication_interval_rows=publication_interval_rows,
                 resource_budget=resource_budget,
+                supervisor_resources=supervisor_resources,
+                planning_workers=planning_workers,
                 gpu_class=gpu_class,
                 gpu_count=gpu_count,
                 retry_policy=retry_policy,
@@ -5676,6 +5706,8 @@ class LanceTable(Table):
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
         resource_budget: Optional[Dict[str, int]] = None,
+        supervisor_resources: Optional[Dict[str, int]] = None,
+        planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -5700,6 +5732,8 @@ class LanceTable(Table):
                     max_concurrency=max_concurrency,
                     publication_interval_rows=publication_interval_rows,
                     resource_budget=resource_budget,
+                    supervisor_resources=supervisor_resources,
+                    planning_workers=planning_workers,
                     gpu_class=gpu_class,
                     gpu_count=gpu_count,
                     retry_policy=retry_policy,
@@ -8109,6 +8143,8 @@ class AsyncTable:
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
         resource_budget: Optional[Dict[str, int]] = None,
+        supervisor_resources: Optional[Dict[str, int]] = None,
+        planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -8166,6 +8202,17 @@ class AsyncTable:
             CPU-only budget. This budget cannot be combined with the top-level
             ``gpu_count`` shorthand. LanceDB Enterprise only; local refreshes
             reject it.
+        supervisor_resources: dict[str, int], optional
+            CPU, memory, and ephemeral-storage limits for the Function refresh
+            supervisor pod. Keys are ``cpu_millis``, ``memory_bytes`` and
+            ``ephemeral_storage_bytes``; all are required and positive.
+            LanceDB Enterprise only; local refreshes reject it.
+        planning_workers: dict[str, object], optional
+            Resources and sizing for the Function refresh planning fleet.
+            ``resources`` has the same keys as ``supervisor_resources``; the
+            other keys are ``max_workers``, ``rows_per_worker`` and
+            ``fragments_per_worker``. LanceDB Enterprise only; local refreshes
+            reject it.
         gpu_class: str, optional
             GPU class for Function workers. Must be a lowercase name of 1-63
             letters, digits, or hyphens, without a leading or trailing hyphen.
@@ -8213,6 +8260,8 @@ class AsyncTable:
             max_concurrency=max_concurrency,
             publication_interval_rows=publication_interval_rows,
             resource_budget=resource_budget,
+            supervisor_resources=supervisor_resources,
+            planning_workers=planning_workers,
             gpu_class=gpu_class,
             gpu_count=gpu_count,
             retry_policy=None
@@ -8351,6 +8400,8 @@ class AsyncTable:
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
         resource_budget: Optional[Dict[str, int]] = None,
+        supervisor_resources: Optional[Dict[str, int]] = None,
+        planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -8406,6 +8457,17 @@ class AsyncTable:
             ``gpu_count`` is optional and defaults to zero, which requests a
             CPU-only budget. This budget cannot be combined with the top-level
             ``gpu_count`` shorthand. LanceDB Enterprise only; local refreshes
+            reject it.
+        supervisor_resources: dict[str, int], optional
+            CPU, memory, and ephemeral-storage limits for the Function refresh
+            supervisor pod. Keys are ``cpu_millis``, ``memory_bytes`` and
+            ``ephemeral_storage_bytes``; all are required and positive.
+            LanceDB Enterprise only; local refreshes reject it.
+        planning_workers: dict[str, object], optional
+            Resources and sizing for the Function refresh planning fleet.
+            ``resources`` has the same keys as ``supervisor_resources``; the
+            other keys are ``max_workers``, ``rows_per_worker`` and
+            ``fragments_per_worker``. LanceDB Enterprise only; local refreshes
             reject it.
         gpu_class: str, optional
             GPU class for Function workers. Must be a lowercase name of 1-63
@@ -8471,6 +8533,8 @@ class AsyncTable:
                 max_concurrency=max_concurrency,
                 publication_interval_rows=publication_interval_rows,
                 resource_budget=resource_budget,
+                supervisor_resources=supervisor_resources,
+                planning_workers=planning_workers,
                 gpu_class=gpu_class,
                 gpu_count=gpu_count,
                 retry_policy=None

@@ -5739,6 +5739,31 @@ describe("computed columns", () => {
         resourceBudget: { cpuMillis: 1_000, memoryBytes: 1_024 },
       }),
     ).rejects.toThrow("resource_budget requires a LanceDB Enterprise refresh");
+    await expect(
+      table.refreshColumn("x", {
+        supervisorResources: {
+          cpuMillis: 1_000,
+          memoryBytes: 1_024,
+          ephemeralStorageBytes: 2_048,
+        },
+      }),
+    ).rejects.toThrow(
+      "supervisor_resources requires a LanceDB Enterprise refresh",
+    );
+    await expect(
+      table.refreshColumnAsync("x", {
+        planningWorkers: {
+          resources: {
+            cpuMillis: 1_000,
+            memoryBytes: 1_024,
+            ephemeralStorageBytes: 2_048,
+          },
+          maxWorkers: 2,
+          rowsPerWorker: 100,
+          fragmentsPerWorker: 1,
+        },
+      }),
+    ).rejects.toThrow("planning_workers requires a LanceDB Enterprise refresh");
   });
 
   it("records Function errors only on remote tables", async () => {

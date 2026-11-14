@@ -979,6 +979,42 @@ describe("remote connection", () => {
             },
             "resourceBudget.gpuCount",
           ],
+          [
+            {
+              supervisorResources: {
+                cpuMillis: 0,
+                memoryBytes: 1_024,
+                ephemeralStorageBytes: 2_048,
+              },
+            },
+            "supervisorResources.cpuMillis",
+          ],
+          [
+            {
+              supervisorResources: {
+                cpuMillis: 1_000,
+                memoryBytes: 1_024,
+                ephemeralStorageBytes: 0,
+              },
+            },
+            "supervisorResources.ephemeralStorageBytes",
+          ],
+          [
+            {
+              planningWorkers: {
+                resources: {
+                  cpuMillis: 1_000,
+                  memoryBytes: 1_024,
+                  ephemeralStorageBytes: 2_048,
+                },
+                maxWorkers: 0,
+                rowsPerWorker: 100,
+                fragmentsPerWorker: 1,
+              },
+            },
+            "planningWorkers.maxWorkers",
+          ],
+          [{ retryPolicy: { maxAttempts: 0 } }, "retry_policy.max_attempts"],
         ] as const) {
           await expect(
             table.refreshColumnAsync("embedding", options),
@@ -1013,6 +1049,91 @@ describe("remote connection", () => {
             "gpu_count": 0
           }}`,
       ),
+    ]);
+  });
+
+  it("forwards structured Function refresh options and Node retry policy", async () => {
+    const bodies: unknown[] = [];
+    await withMockDatabase(
+      (req, res) => {
+        const path = req.url ?? "";
+        if (path.endsWith("/describe/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              name: "docs",
+              version: 1,
+              schema: { fields: [] },
+            }),
+          );
+          return;
+        }
+        if (path === "/v1/table/docs/backfill_column") {
+          let body = "";
+          req.on("data", (chunk) => {
+            body += chunk;
+          });
+          req.on("end", () => {
+            bodies.push(JSON.parse(body));
+            res
+              .writeHead(202, { "Content-Type": "application/json" })
+              .end('{"job_id": "j-structured"}');
+          });
+          return;
+        }
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const table = await db.openTable("docs");
+        const job = await table.refreshColumnAsync("embedding", {
+          supervisorResources: {
+            cpuMillis: 2_000,
+            memoryBytes: 4 * 1024 ** 3,
+            ephemeralStorageBytes: 10 * 1024 ** 3,
+          },
+          planningWorkers: {
+            resources: {
+              cpuMillis: 1_000,
+              memoryBytes: 2 * 1024 ** 3,
+              ephemeralStorageBytes: 5 * 1024 ** 3,
+            },
+            maxWorkers: 4,
+            rowsPerWorker: 100_000,
+            fragmentsPerWorker: 8,
+          },
+          retryPolicy: { transient: true },
+        });
+        expect(job.id).toBe("j-structured");
+      },
+    );
+    expect(bodies).toEqual([
+      {
+        column: "embedding",
+        supervisor_resources: {
+          cpu_millis: 2_000,
+          memory_bytes: 4 * 1024 ** 3,
+          ephemeral_storage_bytes: 10 * 1024 ** 3,
+        },
+        planning_workers: {
+          resources: {
+            cpu_millis: 1_000,
+            memory_bytes: 2 * 1024 ** 3,
+            ephemeral_storage_bytes: 5 * 1024 ** 3,
+          },
+          max_workers: 4,
+          rows_per_worker: 100_000,
+          fragments_per_worker: 8,
+        },
+        retry_policy: {
+          max_attempts: 3,
+          initial_backoff_seconds: 0.2,
+          max_backoff_seconds: 30,
+          exception_types: [],
+          message_pattern: null,
+          error_codes: [],
+          transient: true,
+          honor_retry_after: true,
+        },
+      },
     ]);
   });
 
