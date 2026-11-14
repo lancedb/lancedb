@@ -7516,3 +7516,46 @@ async def test_remote_index_exist_ok_wire(is_async, background, kwargs):
         assert body["replace"] is False
     else:
         assert "replace" not in body
+
+
+@pytest.mark.parametrize("operator", ["AND", "OR"])
+def test_remote_fts_operator_and_count(operator):
+    def handler(body):
+        query = body["full_text_query"]["query"]["match"]
+        assert query["terms"] == "gripper closed"
+        assert query["operator"] == operator.title()
+        assert query["column"] == "text"
+        assert body["k"] == 2**63 - 1
+        assert "offset" not in body
+        assert body["columns"] == ["_score"]
+        assert body["filter"] == "text IS NOT NULL"
+        assert body["prefilter"] is True
+        return pa.table({"_score": [1.0] * 25})
+
+    with query_test_table(
+        handler, server_version=Version("0.6.0"), vector_columns={}
+    ) as table:
+        query = (
+            table.search(
+                "gripper closed",
+                query_type="fts",
+                fts_columns="text",
+                operator=operator,
+            )
+            .where("text IS NOT NULL", prefilter=False)
+            .select(["text"])
+            .limit(1)
+            .offset(3)
+        )
+        assert query.count_rows() == 25
+        assert query.to_query_object().limit == 1
+        assert query.to_query_object().offset == 3
+
+
+def test_remote_fts_and_rejects_legacy_server():
+    def handler(body):
+        pytest.fail("AND must not silently become OR on a legacy server")
+
+    with query_test_table(handler, vector_columns={}) as table:
+        with pytest.raises(NotImplementedError, match="server version 0.3.0"):
+            table.search("gripper closed", query_type="fts", operator="AND").to_list()

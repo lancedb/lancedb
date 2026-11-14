@@ -41,7 +41,7 @@ use lance_linalg::distance::DistanceType as LanceDistanceType;
 use lance_namespace::LanceNamespace;
 use lance_namespace::models::{
     QueryTableRequest as NsQueryTableRequest, QueryTableRequestColumns,
-    QueryTableRequestFullTextQuery, QueryTableRequestVector, StringFtsQuery,
+    QueryTableRequestFullTextQuery, QueryTableRequestVector, StringFtsQuery, StructuredFtsQuery,
 };
 
 #[derive(Debug, Clone)]
@@ -859,6 +859,45 @@ async fn execute_namespace_query(
 }
 
 /// Convert an AnyQuery to the namespace QueryTableRequest format.
+fn namespace_fts_query(
+    fts: &lance_index::scalar::FullTextSearchQuery,
+) -> Result<Box<QueryTableRequestFullTextQuery>> {
+    let has_and = match &fts.query {
+        lance_index::scalar::FtsQuery::Match(query) => {
+            query.operator == lance_index::scalar::Operator::And
+        }
+        lance_index::scalar::FtsQuery::MultiMatch(query) => query
+            .match_queries
+            .iter()
+            .any(|query| query.operator == lance_index::scalar::Operator::And),
+        _ => false,
+    };
+    if has_and {
+        let query = serde_json::to_value(&fts.query)
+            .and_then(serde_json::from_value)
+            .map_err(|error| Error::InvalidInput {
+                message: format!("Cannot serialize namespace full-text query: {error}"),
+            })?;
+        Ok(Box::new(QueryTableRequestFullTextQuery {
+            string_query: None,
+            structured_query: Some(Box::new(StructuredFtsQuery::new(query))),
+        }))
+    } else {
+        let columns = fts.columns();
+        Ok(Box::new(QueryTableRequestFullTextQuery {
+            string_query: Some(Box::new(StringFtsQuery {
+                query: fts.query.to_string(),
+                columns: if columns.is_empty() {
+                    None
+                } else {
+                    Some(columns.into_iter().collect())
+                },
+            })),
+            structured_query: None,
+        }))
+    }
+}
+
 fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
     query.base().check_filter()?;
     match query {
@@ -912,21 +951,12 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
             }
 
             // Convert FTS query if present
-            let full_text_query = vq.base.full_text_search.as_ref().map(|fts| {
-                let columns = fts.columns();
-                let columns_vec = if columns.is_empty() {
-                    None
-                } else {
-                    Some(columns.into_iter().collect())
-                };
-                Box::new(QueryTableRequestFullTextQuery {
-                    string_query: Some(Box::new(StringFtsQuery {
-                        query: fts.query.to_string(),
-                        columns: columns_vec,
-                    })),
-                    structured_query: None,
-                })
-            });
+            let full_text_query = vq
+                .base
+                .full_text_search
+                .as_ref()
+                .map(namespace_fts_query)
+                .transpose()?;
 
             Ok(NsQueryTableRequest {
                 id: None, // Will be set in namespace_query
@@ -963,7 +993,6 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
 
             let k = match q.limit {
                 Some(limit) => limit as i32,
-                None if q.full_text_search.is_some() => DEFAULT_TOP_K as i32,
                 None => i32::MAX,
             };
 
@@ -995,20 +1024,11 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
             };
 
             // Handle full text search if present
-            let full_text_query = q.full_text_search.as_ref().map(|fts| {
-                let columns_vec = if fts.columns().is_empty() {
-                    None
-                } else {
-                    Some(fts.columns().iter().cloned().collect())
-                };
-                Box::new(QueryTableRequestFullTextQuery {
-                    string_query: Some(Box::new(StringFtsQuery {
-                        query: fts.query.to_string(),
-                        columns: columns_vec,
-                    })),
-                    structured_query: None,
-                })
-            });
+            let full_text_query = q
+                .full_text_search
+                .as_ref()
+                .map(namespace_fts_query)
+                .transpose()?;
 
             // Empty vector for non-vector queries
             let vector = Box::new(QueryTableRequestVector {
@@ -1414,7 +1434,7 @@ mod tests {
 
         let ns_request = convert_to_namespace_query(&any_query).unwrap();
 
-        assert_eq!(ns_request.k, 10);
+        assert_eq!(ns_request.k, i32::MAX);
     }
 
     #[tokio::test]

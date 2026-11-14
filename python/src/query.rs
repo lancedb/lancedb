@@ -16,19 +16,20 @@ use arrow::array::make_array;
 use arrow::pyarrow::FromPyArrow;
 use arrow::pyarrow::IntoPyArrow;
 use arrow::pyarrow::ToPyArrow;
+use futures::TryStreamExt;
 use lancedb::ApproxMode;
 use lancedb::index::scalar::{
     BooleanQuery, BoostQuery, CombinedFieldsQuery, DocumentGranularity, FtsQuery,
     FullTextSearchQuery, MatchQuery, MultiMatchQuery, Occur, Operator, PhraseQuery,
 };
 use lancedb::query::AnalyzePlanDistributedMetrics;
-use lancedb::query::QueryBase;
 use lancedb::query::QueryExecutionOptions;
 use lancedb::query::QueryFilter;
 use lancedb::query::{
     ColumnOrdering, ExecutableQuery, Query as LanceDbQuery, Select, TakeQuery as LanceDbTakeQuery,
     VectorQuery as LanceDbVectorQuery,
 };
+use lancedb::query::{HasQuery, QueryBase};
 use lancedb::table::AnyQuery;
 use pyo3::Bound;
 use pyo3::IntoPyObject;
@@ -616,8 +617,18 @@ impl Query {
                 query_text = query_text[1..query_text.len() - 1].to_string();
             }
 
+            let operator = query
+                .get_item("operator")?
+                .filter(|operator| !operator.is_none())
+                .map(|operator| {
+                    let operator = operator.extract::<String>()?;
+                    Operator::try_from(operator.as_str())
+                        .map_err(|err| PyValueError::new_err(err.to_string()))
+                })
+                .transpose()?
+                .unwrap_or(Operator::Or);
             let query: FtsQuery = match (is_phrase, is_multi_match) {
-                (false, _) => MatchQuery::new(query_text).into(),
+                (false, _) => MatchQuery::new(query_text).with_operator(operator).into(),
                 (true, false) => PhraseQuery::new(query_text).into(),
                 (true, true) => {
                     return Err(PyValueError::new_err(
@@ -895,6 +906,29 @@ impl FTSQuery {
             }
             let inner_stream = inner.execute_with_options(opts).await.infer_error()?;
             Ok(RecordBatchStream::new(inner_stream))
+        })
+    }
+
+    pub fn count_rows(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let mut inner = self_
+            .inner
+            .clone()
+            .full_text_search(self_.fts_query.clone());
+        let request = inner.mut_query();
+        request.limit = None;
+        request.offset = None;
+        request.select = Select::columns(&["_score"]);
+        request.order_by = None;
+        request.with_row_id = false;
+        request.prefilter = true;
+        request.reranker = None;
+        future_into_py(self_.py(), async move {
+            let mut stream = inner.execute().await.infer_error()?;
+            let mut count = 0_u64;
+            while let Some(batch) = stream.try_next().await.infer_error()? {
+                count += batch.num_rows() as u64;
+            }
+            Ok(count)
         })
     }
 

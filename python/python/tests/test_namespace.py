@@ -25,7 +25,7 @@ from lancedb.namespace import (
     LanceNamespaceDBConnection,
     _query_to_namespace_request,
 )
-from lancedb.query import Query
+from lancedb.query import FullTextSearchQuery, Query
 from lancedb.table import AsyncTable, LanceTable
 
 
@@ -1524,3 +1524,24 @@ def test_python_namespace_attribute_access(tmp_path):
     # Missing dunder lookups still raise, so copy/hasattr probes work.
     assert not hasattr(request, "__missing_dunder__")
     assert copy.deepcopy(request) == request
+
+
+@pytest.mark.parametrize("columns", [None, ["text"], ["title", "body"]])
+def test_namespace_fts_operator_is_preserved(columns):
+    request = _query_to_namespace_request(
+        ["matches"],
+        Query(
+            full_text_query=FullTextSearchQuery(
+                query="gripper closed", columns=columns, operator="AND"
+            )
+        ),
+    )
+    structured = request.to_dict()["full_text_query"]["structured_query"]["query"]
+    if columns and len(columns) > 1:
+        assert all(
+            query["operator"] == "And"
+            for query in structured["multi_match"]["match_queries"]
+        )
+    else:
+        assert structured["match"]["operator"] == "And"
+        assert structured["match"].get("column") == (columns[0] if columns else None)

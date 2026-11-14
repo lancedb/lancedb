@@ -29,6 +29,7 @@ from lancedb.query import (
     CombinedFieldsQuery,
     DocumentGranularity,
     FullTextOperator,
+    FullTextSearchQuery,
     MatchQuery,
     MultiMatchQuery,
     PhraseQuery,
@@ -530,11 +531,9 @@ async def test_fts_select_async(async_table):
 
 def test_search_fts_phrase_query(table):
     table.create_fts_index("text", with_position=False)
-    try:
-        phrase_results = table.search('"puppy runs"').limit(100).to_list()
-        assert False
-    except Exception:
-        pass
+    with pytest.raises(Exception) as error:
+        table.search('"puppy runs"').limit(100).to_list()
+    assert "FTS(with_position=True)" in exception_output(error)
     table.create_fts_index("text", with_position=True, replace=True)
     results = table.search("puppy").limit(100).to_list()
 
@@ -559,13 +558,9 @@ def test_search_fts_phrase_query(table):
 @pytest.mark.asyncio
 async def test_search_fts_phrase_query_async(async_table):
     await async_table.create_index("text", config=FTS(with_position=False))
-    try:
-        phrase_results = (
-            await async_table.query().nearest_to_text("puppy runs").limit(100).to_list()
-        )
-        assert False
-    except Exception:
-        pass
+    with pytest.raises(Exception) as error:
+        await async_table.query().nearest_to_text('"puppy runs"').to_list()
+    assert "FTS(with_position=True)" in exception_output(error)
     await async_table.create_index("text", config=FTS(with_position=True))
     results = await async_table.query().nearest_to_text("puppy").limit(100).to_list()
     phrase_results = (
@@ -1948,3 +1943,158 @@ async def test_async_fts_code_analyzer(mem_db_async):
 
     rows = await table.query().nearest_to_text("http").to_list()
     assert len(rows) == 1
+
+
+@pytest.mark.parametrize("indexed", [False, True])
+@pytest.mark.parametrize("operator,expected", [(None, 25), ("OR", 25), ("AND", 15)])
+def test_simple_fts_operator_and_count(tmp_path, indexed, operator, expected):
+    db = ldb.connect(tmp_path)
+    table = db.create_table(
+        "matches",
+        pa.table(
+            {
+                "id": list(range(30)),
+                "text": ["gripper closed"] * 15
+                + ["gripper open"] * 10
+                + ["camera ready"] * 5,
+            }
+        ),
+    )
+    if indexed:
+        table.create_index("text", config=FTS())
+    kwargs = {} if operator is None else {"operator": operator}
+    query = table.search("gripper closed", query_type="fts", **kwargs)
+    assert query.count_rows() == expected
+    assert len(query.limit(100).to_list()) == expected
+    assert (
+        table.search("gripper closed", query_type="fts").operator("AND").count_rows()
+        == 15
+    )
+    if operator is not None:
+        assert query.to_query_object().full_text_query.operator == operator
+    query.where("id >= 5", prefilter=False).select(["id"]).limit(2).offset(1)
+    before = query.to_query_object()
+    assert query.count_rows() == expected - 5
+    assert query.to_query_object() == before
+    assert len(query.to_list()) <= 2
+    assert table.search("absent", query_type="fts").count_rows() == 0
+    assert (
+        table.search(MatchQuery("gripper closed", "text", operator="AND")).count_rows()
+        == 15
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("indexed", [False, True])
+@pytest.mark.parametrize("operator,expected", [(None, 25), ("OR", 25), ("AND", 15)])
+async def test_simple_fts_operator_and_count_async(
+    tmp_path, indexed, operator, expected
+):
+    db = await ldb.connect_async(tmp_path)
+    table = await db.create_table(
+        "matches",
+        pa.table(
+            {
+                "id": list(range(30)),
+                "text": ["gripper closed"] * 15
+                + ["gripper open"] * 10
+                + ["camera ready"] * 5,
+            }
+        ),
+    )
+    if indexed:
+        await table.create_index("text", config=FTS())
+    query = await table.search("gripper closed", query_type="fts", operator=operator)
+    assert await query.count_rows() == expected
+    assert len(await query.limit(100).to_list()) == expected
+    query.where("id >= 5").postfilter().select(["id"]).limit(2).offset(1)
+    before = query.to_query_object()
+    assert await query.count_rows() == expected - 5
+    assert query.to_query_object() == before
+    direct = table.query().nearest_to_text(
+        "gripper closed", columns="text", operator="AND"
+    )
+    assert await direct.count_rows() == 15
+    assert direct.to_query_object().full_text_query.query.operator == "AND"
+    assert await table.query().nearest_to_text("absent").count_rows() == 0
+
+
+@pytest.mark.parametrize("with_position", [False, True])
+@pytest.mark.parametrize(
+    "query", ['"gripper closed"', PhraseQuery("gripper closed", "text")]
+)
+def test_fts_phrase_count_positions(tmp_path, with_position, query):
+    table = ldb.connect(tmp_path).create_table(
+        "phrases", pa.table({"text": ["gripper closed", "gripper often closed"]})
+    )
+    table.create_index("text", config=FTS(with_position=with_position))
+    search = table.search(query, query_type="fts")
+    if with_position:
+        assert search.count_rows() == 1
+        assert len(search.to_list()) == 1
+        assert (
+            table.search("gripper closed", query_type="fts", operator="AND")
+            .phrase_query()
+            .count_rows()
+            == 1
+        )
+    else:
+        with pytest.raises(Exception) as error:
+            search.count_rows()
+        assert "FTS(with_position=True)" in exception_output(error)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_position", [False, True])
+@pytest.mark.parametrize(
+    "query", ['"gripper closed"', PhraseQuery("gripper closed", "text")]
+)
+async def test_fts_phrase_count_positions_async(tmp_path, with_position, query):
+    db = await ldb.connect_async(tmp_path)
+    table = await db.create_table(
+        "phrases", pa.table({"text": ["gripper closed", "gripper often closed"]})
+    )
+    await table.create_index("text", config=FTS(with_position=with_position))
+    search = table.query().nearest_to_text(query)
+    if with_position:
+        assert await search.count_rows() == 1
+        assert len(await search.to_list()) == 1
+    else:
+        with pytest.raises(Exception) as error:
+            await search.count_rows()
+        assert "FTS(with_position=True)" in exception_output(error)
+
+
+def test_fts_operator_rejects_invalid_queries(table):
+    with pytest.raises(ValueError):
+        table.search("gripper", query_type="fts", operator="XOR")
+    for query in [None, [1.0, 2.0], MatchQuery("gripper", "text")]:
+        with pytest.raises(
+            ValueError, match="operator requires a string full-text query"
+        ):
+            table.search(query, operator="AND")
+    with pytest.raises(ValueError, match="operator requires a string full-text query"):
+        FullTextSearchQuery(query=MatchQuery("gripper"), operator="AND")
+
+
+@pytest.mark.asyncio
+async def test_fts_operator_rejects_invalid_queries_async(async_table):
+    with pytest.raises(ValueError):
+        await async_table.search("gripper", query_type="fts", operator="XOR")
+    for query in [None, [1.0, 2.0], MatchQuery("gripper", "text")]:
+        with pytest.raises(
+            ValueError, match="operator requires a string full-text query"
+        ):
+            await async_table.search(query, operator="AND")
+        with pytest.raises(ValueError):
+            async_table.query().nearest_to_text(query, operator="AND")
+
+
+def test_fts_count_fast_search(tmp_path):
+    table = ldb.connect(tmp_path).create_table(
+        "matches", pa.table({"text": ["gripper closed"] * 15})
+    )
+    table.create_index("text", config=FTS())
+    table.add(pa.table({"text": ["gripper closed"] * 5}))
+    assert table.search("gripper", query_type="fts").count_rows() == 20
+    assert table.search("gripper", query_type="fts").fast_search().count_rows() == 15
