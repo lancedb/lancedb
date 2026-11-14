@@ -36,6 +36,7 @@ use lance::io::exec::{ANNIvfBatchExec, ANNIvfSubIndexExec};
 use lance_datafusion::exec::{analyze_plan as lance_analyze_plan, execute_plan};
 use lance_index::IndexType;
 use lance_index::metrics::NoOpMetricsCollector;
+use lance_index::scalar::{FtsQuery, FullTextSearchQuery, Operator as FullTextOperator};
 use lance_index::vector::DIST_COL;
 use lance_linalg::distance::DistanceType as LanceDistanceType;
 use lance_namespace::LanceNamespace;
@@ -858,21 +859,8 @@ async fn execute_namespace_query(
     parse_arrow_ipc_response(response_bytes).await
 }
 
-/// Convert an AnyQuery to the namespace QueryTableRequest format.
-fn namespace_fts_query(
-    fts: &lance_index::scalar::FullTextSearchQuery,
-) -> Result<Box<QueryTableRequestFullTextQuery>> {
-    let has_and = match &fts.query {
-        lance_index::scalar::FtsQuery::Match(query) => {
-            query.operator == lance_index::scalar::Operator::And
-        }
-        lance_index::scalar::FtsQuery::MultiMatch(query) => query
-            .match_queries
-            .iter()
-            .any(|query| query.operator == lance_index::scalar::Operator::And),
-        _ => false,
-    };
-    if has_and {
+fn namespace_fts_query(fts: &FullTextSearchQuery) -> Result<Box<QueryTableRequestFullTextQuery>> {
+    if !matches!(&fts.query, FtsQuery::Match(query) if query.operator == FullTextOperator::Or) {
         let query = serde_json::to_value(&fts.query)
             .and_then(serde_json::from_value)
             .map_err(|error| Error::InvalidInput {
@@ -886,7 +874,7 @@ fn namespace_fts_query(
         let columns = fts.columns();
         Ok(Box::new(QueryTableRequestFullTextQuery {
             string_query: Some(Box::new(StringFtsQuery {
-                query: fts.query.to_string(),
+                query: fts.query.query().clone(),
                 columns: if columns.is_empty() {
                     None
                 } else {
@@ -898,6 +886,7 @@ fn namespace_fts_query(
     }
 }
 
+/// Convert an AnyQuery to the namespace QueryTableRequest format.
 fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
     query.base().check_filter()?;
     match query {
@@ -1173,6 +1162,7 @@ mod tests {
     };
     use futures::TryStreamExt;
     use lance_arrow::FixedSizeListArrayExt;
+    use lance_index::scalar::MatchQuery;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -1435,6 +1425,44 @@ mod tests {
         let ns_request = convert_to_namespace_query(&any_query).unwrap();
 
         assert_eq!(ns_request.k, i32::MAX);
+    }
+
+    #[test]
+    fn test_namespace_fts_operators_and_unbounded_counts() {
+        for columns in [
+            vec!["text".to_string()],
+            vec!["title".to_string(), "body".to_string()],
+        ] {
+            let fts = FullTextSearchQuery::new_query(
+                MatchQuery::new("gripper closed".to_string())
+                    .with_operator(FullTextOperator::And)
+                    .into(),
+            )
+            .with_columns(&columns)
+            .unwrap();
+            let request = convert_to_namespace_query(&AnyQuery::Query(QueryRequest {
+                full_text_search: Some(fts),
+                ..Default::default()
+            }))
+            .unwrap();
+            assert_eq!(request.k, i32::MAX);
+            let full_text_query = request.full_text_query.unwrap();
+            assert!(full_text_query.string_query.is_none());
+            let query =
+                serde_json::to_value(full_text_query.structured_query.unwrap().query).unwrap();
+            if columns.len() == 1 {
+                assert_eq!(query["match"]["operator"], "And");
+                assert_eq!(query["match"]["column"], "text");
+            } else {
+                let leaves = query["multi_match"]["match_queries"].as_array().unwrap();
+                assert_eq!(leaves.len(), 2);
+                assert!(leaves.iter().all(|leaf| leaf["operator"] == "And"));
+            }
+        }
+        let request =
+            namespace_fts_query(&FullTextSearchQuery::new("gripper closed".to_string())).unwrap();
+        assert_eq!(request.string_query.unwrap().query, "gripper closed");
+        assert!(request.structured_query.is_none());
     }
 
     #[tokio::test]

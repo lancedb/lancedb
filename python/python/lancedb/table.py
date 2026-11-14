@@ -2445,7 +2445,7 @@ class Table(ABC):
         fts_columns: Optional[Union[str, List[str]]] = None,
         fast_search: Optional[bool] = None,
         *,
-        operator: Optional[FullTextOperator] = None,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search](https://lancedb.com/docs/search/vector-search/)
@@ -5042,7 +5042,7 @@ class LanceTable(Table):
         fts_columns: Optional[Union[str, List[str]]] = None,
         fast_search: Optional[bool] = None,
         *,
-        operator: Optional[FullTextOperator] = None,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> LanceVectorQueryBuilder: ...
 
     @overload
@@ -5055,7 +5055,7 @@ class LanceTable(Table):
         fts_columns: Optional[Union[str, List[str]]] = None,
         fast_search: Optional[bool] = None,
         *,
-        operator: Optional[FullTextOperator] = None,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> LanceFtsQueryBuilder: ...
 
     @overload
@@ -5070,7 +5070,7 @@ class LanceTable(Table):
         fts_columns: Optional[Union[str, List[str]]] = None,
         fast_search: Optional[bool] = None,
         *,
-        operator: Optional[FullTextOperator] = None,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> LanceHybridQueryBuilder: ...
 
     @overload
@@ -5083,7 +5083,7 @@ class LanceTable(Table):
         fts_columns: Optional[Union[str, List[str]]] = None,
         fast_search: Optional[bool] = None,
         *,
-        operator: Optional[FullTextOperator] = None,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> LanceEmptyQueryBuilder: ...
 
     def search(
@@ -5097,7 +5097,7 @@ class LanceTable(Table):
         fts_columns: Optional[Union[str, List[str]]] = None,
         fast_search: Optional[bool] = None,
         *,
-        operator: Optional[FullTextOperator] = None,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search](https://lancedb.com/docs/search/vector-search/)
@@ -7363,7 +7363,7 @@ class AsyncTable:
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
         *,
-        operator: Optional[FullTextOperator] = None,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> AsyncQuery: ...
 
     @overload
@@ -7375,7 +7375,7 @@ class AsyncTable:
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
         *,
-        operator: Optional[FullTextOperator] = None,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> Union[AsyncHybridQuery, AsyncFTSQuery, AsyncVectorQuery]: ...
 
     @overload
@@ -7387,7 +7387,7 @@ class AsyncTable:
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
         *,
-        operator: Optional[FullTextOperator] = None,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> AsyncHybridQuery: ...
 
     @overload
@@ -7399,7 +7399,7 @@ class AsyncTable:
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
         *,
-        operator: Optional[FullTextOperator] = None,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> AsyncVectorQuery: ...
 
     @overload
@@ -7411,7 +7411,7 @@ class AsyncTable:
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
         *,
-        operator: Optional[FullTextOperator] = None,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> AsyncFTSQuery: ...
 
     @overload
@@ -7423,7 +7423,7 @@ class AsyncTable:
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
         *,
-        operator: Optional[FullTextOperator] = None,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> AsyncVectorQuery: ...
 
     async def search(
@@ -7436,7 +7436,7 @@ class AsyncTable:
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
         *,
-        operator: Optional[FullTextOperator] = None,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> Union[AsyncQuery, AsyncHybridQuery, AsyncFTSQuery, AsyncVectorQuery]:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search](https://lancedb.com/docs/search/vector-search/)

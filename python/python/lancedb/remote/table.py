@@ -801,7 +801,7 @@ class RemoteTable(Table):
         fts_columns: Optional[Union[str, List[str]]] = None,
         fast_search: Optional[bool] = None,
         *,
-        operator: Optional[FullTextOperator] = None,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support

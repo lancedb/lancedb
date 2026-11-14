@@ -1166,7 +1166,7 @@ class LanceQueryBuilder(ABC):
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
         fast_search: bool = None,
-        operator: Optional[FullTextOperator] = None,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> Self:
         """
         Create a query builder based on the given query and query type.
@@ -2600,7 +2600,9 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             fts_columns = [fts_columns]
         self._fts_columns = fts_columns
 
-    def operator(self, operator: Optional[FullTextOperator]) -> LanceFtsQueryBuilder:
+    def operator(
+        self, operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]]
+    ) -> LanceFtsQueryBuilder:
         """Combine terms in a string query with ``"AND"`` or ``"OR"``.
 
         The default is OR. AND requires every term to match. For example,
@@ -4505,7 +4507,7 @@ class AsyncQuery(AsyncStandardQuery):
         query: str | FullTextQuery,
         columns: Union[str, List[str], None] = None,
         *,
-        operator: Optional[FullTextOperator] = None,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> AsyncFTSQuery:
         """
         Find the documents that are most relevant to the given text query.
@@ -4959,7 +4961,7 @@ class AsyncVectorQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         query: str | FullTextQuery,
         columns: Union[str, List[str], None] = None,
         *,
-        operator: Optional[FullTextOperator] = None,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> AsyncHybridQuery:
         """
         Find the documents that are most relevant to the given text query,
