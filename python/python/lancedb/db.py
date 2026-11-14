@@ -710,10 +710,14 @@ class DBConnection(EnforceOverrides):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
     ) -> MaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
+
+        ``exist_ok=True`` preserves an existing view's definition, data and
+        refresh settings without refreshing it. Existing names error by default.
 
         LanceDB Embedded creation and refresh require a source build with the
         ``experimental-functions`` Cargo feature. Published packages leave it
@@ -780,10 +784,14 @@ class DBConnection(EnforceOverrides):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
     ) -> Job[None]:
         """Submit materialized-view creation and return its job.
+
+        ``exist_ok=True`` preserves an existing view without refreshing it.
+        A skipped creation returns a completed job without a registry job ID.
 
         The job may already be complete in LanceDB Embedded. In LanceDB
         Distributed, creation submits CREATE MATERIALIZED VIEW through the SQL
@@ -2150,10 +2158,14 @@ class LanceDBConnection(DBConnection):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
     ) -> MaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
+
+        ``exist_ok=True`` preserves an existing view's definition, data and
+        refresh settings without refreshing it. Existing names error by default.
 
         LanceDB Embedded creation and refresh require a source build with the
         ``experimental-functions`` Cargo feature. Published packages leave it
@@ -2185,6 +2197,7 @@ class LanceDBConnection(DBConnection):
                 where=where,
                 limit=limit,
                 with_no_data=with_no_data,
+                exist_ok=exist_ok,
                 auto_refresh_enabled=auto_refresh_enabled,
                 auto_refresh_interval_seconds=auto_refresh_interval_seconds,
             )
@@ -2202,6 +2215,7 @@ class LanceDBConnection(DBConnection):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
     ) -> Job[None]:
@@ -2214,6 +2228,7 @@ class LanceDBConnection(DBConnection):
                 where=where,
                 limit=limit,
                 with_no_data=with_no_data,
+                exist_ok=exist_ok,
                 auto_refresh_enabled=auto_refresh_enabled,
                 auto_refresh_interval_seconds=auto_refresh_interval_seconds,
             )
@@ -3453,10 +3468,14 @@ class AsyncConnection(object):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
     ) -> AsyncMaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
+
+        ``exist_ok=True`` preserves an existing view's definition, data and
+        refresh settings without refreshing it. Existing names error by default.
 
         LanceDB Embedded creation and refresh require a source build with the
         ``experimental-functions`` Cargo feature. Published packages leave it
@@ -3480,6 +3499,7 @@ class AsyncConnection(object):
             filter=where,
             limit=limit,
             with_no_data=with_no_data,
+            exist_ok=exist_ok,
             auto_refresh_enabled=auto_refresh_enabled,
             auto_refresh_interval_seconds=auto_refresh_interval_seconds,
             **native_options,
@@ -3496,10 +3516,14 @@ class AsyncConnection(object):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
     ) -> AsyncJob[None]:
         """Submit materialized-view creation and return its job.
+
+        ``exist_ok=True`` preserves an existing view without refreshing it.
+        A skipped creation returns a completed job without a registry job ID.
 
         Wait for the returned job before opening or querying the view. In LanceDB
         Enterprise, creation uses SQL; ``job_type`` is ``"query"`` and ``id``
@@ -3521,6 +3545,7 @@ class AsyncConnection(object):
             filter=where,
             limit=limit,
             with_no_data=with_no_data,
+            exist_ok=exist_ok,
             auto_refresh_enabled=auto_refresh_enabled,
             auto_refresh_interval_seconds=auto_refresh_interval_seconds,
             **native_options,

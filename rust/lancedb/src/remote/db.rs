@@ -803,16 +803,24 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         } else {
             format!(" WITH ({})", options.join(", "))
         };
+        let if_not_exists = if request.exist_ok {
+            " IF NOT EXISTS"
+        } else {
+            ""
+        };
         let submission = client
             .submit_materialized_view_job(
                 format!(
-                    "CREATE MATERIALIZED VIEW \"{name}\"{options} AS {}",
+                    "CREATE MATERIALIZED VIEW{if_not_exists} \"{name}\"{options} AS {}",
                     request.query
                 ),
                 request.namespace_path,
             )
             .await?;
         match submission {
+            crate::remote::sql::materialized_view::MaterializedViewJobSubmission::AlreadyExists => {
+                Ok(Job::new_done())
+            }
             crate::remote::sql::materialized_view::MaterializedViewJobSubmission::Registry {
                 job_id,
             } => Ok(Job::new(Box::new(RemoteJob::new(
@@ -4865,6 +4873,7 @@ mod tests {
         for seconds in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             let result = db
                 .create_materialized_view_async(CreateMaterializedViewRequest {
+                    exist_ok: false,
                     name: "adults".into(),
                     namespace_path: vec![],
                     query: "SELECT * FROM people".into(),
