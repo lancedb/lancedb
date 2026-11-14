@@ -1693,6 +1693,13 @@ page).
 The tags API supports the standard CRUD operations (create, list, update, delete),
 plus checking out by tag name.
 
+A tag identifies both a branch and a version. On remote tables, a tag must belong
+to the handle's current branch; checking out a tag on another branch raises an
+error without changing the current selection. Obtain a handle for the tag's
+branch first: in Python, use `branch_table = table.branches.checkout("exp")`, then
+`branch_table.checkout("baseline")` to read a tag named `baseline` on `exp`.
+See [Branches](/tables/branching) for more on branch handles.
+
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
     {VersioningTags}

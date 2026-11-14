@@ -3753,6 +3753,12 @@ class Table(ABC):
         out state. To return the table to a normal state use
         `[Self::checkout_latest]`.
 
+        For remote tables, a tag must belong to this handle's current branch.
+        To read a tag on another branch, first obtain that branch's handle with
+        `table.branches.checkout("branch_name")`, then call `checkout(tag)` on
+        that handle. A tag on another branch raises an error without changing
+        the current selection.
+
         Parameters
         ----------
         version: int | str,
@@ -8655,6 +8661,12 @@ class AsyncTable:
         Any operation that modifies the table will fail while the table is in a checked
         out state. To return the table to a normal state use
         `[Self::checkout_latest]`.
+
+        For remote tables, a tag must belong to this handle's current branch.
+        To read a tag on another branch, first obtain that branch's handle with
+        `await table.branches.checkout("branch_name")`, then call
+        `await branch_table.checkout(tag)` on that handle. A tag on another
+        branch raises an error without changing the current selection.
 
         Parameters
         ----------
