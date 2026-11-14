@@ -214,23 +214,16 @@ impl Query {
         let inner_stream = query
             .execute_with_options(execution_opts)
             .await
-            .map_err(|e| {
-                napi::Error::from_reason(format!(
-                    "Failed to execute query stream: {}",
-                    convert_error(&e)
-                ))
-            })?;
+            .map_err(|e| convert_error(&e))?;
         Ok(RecordBatchIterator::new(inner_stream))
     }
 
     #[napi]
     pub async fn explain_plan(&self, verbose: bool) -> napi::Result<String> {
-        self.inner.explain_plan(verbose).await.map_err(|e| {
-            napi::Error::from_reason(format!(
-                "Failed to retrieve the query plan: {}",
-                convert_error(&e)
-            ))
-        })
+        self.inner
+            .explain_plan(verbose)
+            .await
+            .map_err(|e| convert_error(&e))
     }
 
     #[napi(catch_unwind)]
@@ -239,12 +232,7 @@ impl Query {
         self.inner
             .analyze_plan_with_options(options)
             .await
-            .map_err(|e| {
-                napi::Error::from_reason(format!(
-                    "Failed to execute analyze plan: {}",
-                    convert_error(&e)
-                ))
-            })
+            .map_err(|e| convert_error(&e))
     }
 }
 
@@ -462,23 +450,16 @@ impl VectorQuery {
         let inner_stream = query
             .execute_with_options(execution_opts)
             .await
-            .map_err(|e| {
-                napi::Error::from_reason(format!(
-                    "Failed to execute query stream: {}",
-                    convert_error(&e)
-                ))
-            })?;
+            .map_err(|e| convert_error(&e))?;
         Ok(RecordBatchIterator::new(inner_stream))
     }
 
     #[napi]
     pub async fn explain_plan(&self, verbose: bool) -> napi::Result<String> {
-        self.inner.explain_plan(verbose).await.map_err(|e| {
-            napi::Error::from_reason(format!(
-                "Failed to retrieve the query plan: {}",
-                convert_error(&e)
-            ))
-        })
+        self.inner
+            .explain_plan(verbose)
+            .await
+            .map_err(|e| convert_error(&e))
     }
 
     #[napi(catch_unwind)]
@@ -487,12 +468,7 @@ impl VectorQuery {
         self.inner
             .analyze_plan_with_options(options)
             .await
-            .map_err(|e| {
-                napi::Error::from_reason(format!(
-                    "Failed to execute analyze plan: {}",
-                    convert_error(&e)
-                ))
-            })
+            .map_err(|e| convert_error(&e))
     }
 }
 
@@ -555,23 +531,16 @@ impl TakeQuery {
         let inner_stream = query
             .execute_with_options(execution_opts)
             .await
-            .map_err(|e| {
-                napi::Error::from_reason(format!(
-                    "Failed to execute query stream: {}",
-                    convert_error(&e)
-                ))
-            })?;
+            .map_err(|e| convert_error(&e))?;
         Ok(RecordBatchIterator::new(inner_stream))
     }
 
     #[napi]
     pub async fn explain_plan(&self, verbose: bool) -> napi::Result<String> {
-        self.inner.explain_plan(verbose).await.map_err(|e| {
-            napi::Error::from_reason(format!(
-                "Failed to retrieve the query plan: {}",
-                convert_error(&e)
-            ))
-        })
+        self.inner
+            .explain_plan(verbose)
+            .await
+            .map_err(|e| convert_error(&e))
     }
 
     #[napi(catch_unwind)]
@@ -580,12 +549,7 @@ impl TakeQuery {
         self.inner
             .analyze_plan_with_options(options)
             .await
-            .map_err(|e| {
-                napi::Error::from_reason(format!(
-                    "Failed to execute analyze plan: {}",
-                    convert_error(&e)
-                ))
-            })
+            .map_err(|e| convert_error(&e))
     }
 }
 
