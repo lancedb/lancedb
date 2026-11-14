@@ -1381,6 +1381,8 @@ def test_branches(tmp_path):
     branches = table.branches.list()
     assert "exp" in branches
     assert branches["exp"]["parent_branch"] is None
+    assert branches["exp"]["create_at"] > 0
+    assert branches["exp"]["metadata"] == {}
 
     # from_ref="main" is equivalent to the default
     table.branches.create("exp2", from_ref="main")

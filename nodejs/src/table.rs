@@ -2261,11 +2261,13 @@ pub struct TagContents {
     pub manifest_size: i64,
 }
 
-#[napi]
+#[napi(object)]
 pub struct BranchContents {
-    pub parent_branch: Option<String>,
+    pub parent_branch: Either<String, Null>,
     pub parent_version: i64,
+    pub create_at: i64,
     pub manifest_size: i64,
+    pub metadata: HashMap<String, String>,
 }
 
 #[napi]
@@ -2353,9 +2355,11 @@ impl Branches {
                 (
                     k,
                     BranchContents {
-                        parent_branch: v.parent_branch,
+                        parent_branch: v.parent_branch.map(Either::A).unwrap_or(Either::B(Null)),
                         parent_version: v.parent_version as i64,
+                        create_at: v.create_at as i64,
                         manifest_size: v.manifest_size as i64,
+                        metadata: v.metadata,
                     },
                 )
             })

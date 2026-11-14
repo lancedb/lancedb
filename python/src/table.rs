@@ -3108,7 +3108,9 @@ impl Branches {
                     let value = PyDict::new(py);
                     value.set_item("parent_branch", contents.parent_branch)?;
                     value.set_item("parent_version", contents.parent_version)?;
+                    value.set_item("create_at", contents.create_at)?;
                     value.set_item("manifest_size", contents.manifest_size)?;
+                    value.set_item("metadata", contents.metadata)?;
                     py_dict.set_item(name, value)?;
                 }
                 Ok(py_dict.unbind())
