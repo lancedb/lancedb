@@ -168,6 +168,36 @@ def _validate_index_accelerator(accelerator: Any) -> None:
         raise RuntimeError(_CUDA_UNAVAILABLE_MESSAGE) from err
 
 
+def _create_accelerated_index(dataset, *, exist_ok=False, name=None, **options):
+    if exist_ok:
+        parts = _parse_field_path(options["column"])
+        default_name = ".".join(parts)
+        if any("." in part for part in parts):
+            default_name = ".".join(
+                "`" + part.replace("`", "``") + "`"
+                if any(
+                    not character.isalnum() and character != "_" for character in part
+                )
+                else part
+                for part in parts
+            )
+        name = name or f"{default_name}_idx"
+        dataset.checkout_latest()
+        if any(index["name"] == name for index in dataset.list_indices()):
+            return
+        options["replace"] = False
+        options["name"] = name
+    _validate_index_accelerator(options.get("accelerator"))
+    try:
+        dataset.create_index(**options)
+    except Exception:
+        if exist_ok:
+            dataset.checkout_latest()
+            if any(index["name"] == name for index in dataset.list_indices()):
+                return
+        raise
+
+
 def _polars_predicate_pushdown_barrier(frame: Any) -> Any:
     """Return a Polars frame unchanged while blocking predicate pushdown."""
     return frame
@@ -1834,6 +1864,7 @@ class Table(ABC):
         replace: bool = ...,
         wait_timeout: Optional[timedelta] = ...,
         name: Optional[str] = ...,
+        exist_ok: bool = ...,
         train: bool = ...,
     ) -> None: ...
 
@@ -1859,6 +1890,7 @@ class Table(ABC):
         *,
         wait_timeout: Optional[timedelta] = ...,
         name: Optional[str] = ...,
+        exist_ok: bool = ...,
         train: bool = ...,
         target_partition_size: Optional[int] = ...,
     ) -> None: ...
@@ -1890,6 +1922,7 @@ class Table(ABC):
         config: Optional[IndexConfigType] = None,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
         train: bool = True,
         target_partition_size: Optional[int] = None,
     ):
@@ -1913,6 +1946,9 @@ class Table(ABC):
             BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, FTS.
         replace : bool, default True
             Whether to replace an existing index on this column.
+        exist_ok : bool, default False
+            Preserve the existing index with the requested or derived name.
+            Takes precedence over replace and keeps its definition and build.
         wait_timeout : timedelta, optional
             LanceDB Enterprise only: how long to wait for the index build to finish.
             If not set, the call returns once the build is scheduled.
@@ -1970,6 +2006,7 @@ class Table(ABC):
         replace: Optional[bool] = None,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
         train: bool = True,
     ) -> Job:
         """Create an index, returning a handle to the indexing job.
@@ -2067,6 +2104,7 @@ class Table(ABC):
         index_type: ScalarIndexType = "BTREE",
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
     ):
         """Create a scalar index on a column.
 
@@ -2153,6 +2191,7 @@ class Table(ABC):
         document_granularity: DocumentGranularity = DocumentGranularity.ROW,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
     ):
         """Create a full-text search index on the table.
 
@@ -4329,6 +4368,7 @@ class LanceTable(Table):
         replace: bool = ...,
         wait_timeout: Optional[timedelta] = ...,
         name: Optional[str] = ...,
+        exist_ok: bool = ...,
         train: bool = ...,
     ) -> None: ...
 
@@ -4354,6 +4394,7 @@ class LanceTable(Table):
         *,
         wait_timeout: Optional[timedelta] = ...,
         name: Optional[str] = ...,
+        exist_ok: bool = ...,
         train: bool = ...,
         target_partition_size: Optional[int] = ...,
     ) -> None: ...
@@ -4385,6 +4426,7 @@ class LanceTable(Table):
         config: Optional[IndexConfigType] = None,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
         train: bool = True,
         target_partition_size: Optional[int] = None,
     ):
@@ -4408,6 +4450,9 @@ class LanceTable(Table):
             BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, FTS.
         replace : bool, default True
             Whether to replace an existing index on this column.
+        exist_ok : bool, default False
+            Preserve the existing index with the requested or derived name.
+            Takes precedence over replace and keeps its definition and build.
         wait_timeout : timedelta, optional
             Timeout to wait for async indexing to complete.
         name : str, optional
@@ -4478,8 +4523,10 @@ class LanceTable(Table):
             # Handle accelerator through pylance
             if accelerator is not None:
                 dataset = self.to_lance()
-                _validate_index_accelerator(accelerator)
-                dataset.create_index(
+                _create_accelerated_index(
+                    dataset,
+                    exist_ok=exist_ok,
+                    name=name,
                     column=column,
                     index_type=index_type,
                     metric=metric,
@@ -4505,7 +4552,6 @@ class LanceTable(Table):
                 if acc is not None:
                     # Dispatch to pylance for GPU acceleration
                     dataset = self.to_lance()
-                    _validate_index_accelerator(acc)
                     index_type_map = {
                         "IvfFlat": "IVF_FLAT",
                         "IvfSq": "IVF_SQ",
@@ -4522,7 +4568,10 @@ class LanceTable(Table):
                     if num_bits is not None:
                         quantization_kwargs["num_bits"] = num_bits
 
-                    dataset.create_index(
+                    _create_accelerated_index(
+                        dataset,
+                        exist_ok=exist_ok,
+                        name=name,
                         column=column,
                         index_type=lance_index_type,
                         metric=getattr(config, "distance_type", "l2"),
@@ -4544,6 +4593,7 @@ class LanceTable(Table):
             self._table.create_index(
                 column,
                 replace=replace,
+                exist_ok=exist_ok,
                 config=config,
                 wait_timeout=wait_timeout,
                 name=name,
@@ -4559,6 +4609,7 @@ class LanceTable(Table):
         replace: Optional[bool] = None,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
         train: bool = True,
     ) -> Job:
         """Create an index, returning a handle to the indexing job.
@@ -4577,6 +4628,7 @@ class LanceTable(Table):
                 self._table.create_index_async(
                     column,
                     replace=replace,
+                    exist_ok=exist_ok,
                     config=config,
                     wait_timeout=wait_timeout,
                     name=name,
@@ -4697,6 +4749,7 @@ class LanceTable(Table):
         index_type: ScalarIndexType = "BTREE",
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
     ):
         """Create a scalar index on a column.
 
@@ -4723,6 +4776,7 @@ class LanceTable(Table):
             self._table.create_index(
                 column,
                 replace=replace,
+                exist_ok=exist_ok,
                 config=config,
                 wait_timeout=wait_timeout,
                 name=name,
@@ -4760,6 +4814,7 @@ class LanceTable(Table):
         document_granularity: DocumentGranularity = DocumentGranularity.ROW,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
     ):
         """Create a full-text search index on a column.
 
@@ -4821,6 +4876,7 @@ class LanceTable(Table):
                 self._table.create_index(
                     field_names,
                     replace=replace,
+                    exist_ok=exist_ok,
                     config=config,
                     name=name,
                     wait_timeout=wait_timeout,
@@ -6819,6 +6875,7 @@ class AsyncTable:
         ] = None,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
         train: bool = True,
     ):
         """Create an index to speed up queries
@@ -6851,6 +6908,9 @@ class AsyncTable:
             The name of the index. If not provided, a default name will be generated.
             Custom names must contain 1–128 ASCII letters, digits, dashes,
             underscores, or periods, excluding ``.`` and ``..``.
+        exist_ok: bool, default False
+            Preserve an existing index with the requested or derived name. This
+            takes precedence over replace and keeps its definition and build.
         train: bool, default True
             Whether to train the index with existing data. Vector indices always train
             with existing data.
@@ -6906,6 +6966,7 @@ class AsyncTable:
                 column,
                 index=config,
                 replace=replace,
+                exist_ok=exist_ok,
                 wait_timeout=wait_timeout,
                 name=name,
                 train=train,
@@ -6943,6 +7004,7 @@ class AsyncTable:
         ] = None,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
         train: bool = True,
     ) -> AsyncJob:
         """Create an index, returning a handle to the indexing job.
@@ -6961,6 +7023,7 @@ class AsyncTable:
             column,
             index=config,
             replace=replace,
+            exist_ok=exist_ok,
             wait_timeout=wait_timeout,
             name=name,
             train=train,

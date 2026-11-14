@@ -24,6 +24,7 @@ use super::stream::{PROTOCOL_HEADER, PROTOCOL_VERSION, QueryResponse};
 use super::*;
 use crate::Connection;
 use crate::database::Database;
+use crate::embeddings::MemoryRegistry;
 use crate::materialized_view::CreateMaterializedViewRequest;
 use crate::remote::RemoteCatalogOptions;
 use crate::remote::client::HeaderProvider;
@@ -1219,6 +1220,7 @@ async fn remote_create_uses_sql_and_preserves_options_and_namespace() {
         ] {
             let job = db
                 .create_materialized_view_async(CreateMaterializedViewRequest {
+                    exist_ok: false,
                     name: "adults".into(),
                     namespace_path: vec!["team".into(), "reports".into()],
                     query: "SELECT * FROM people".into(),
@@ -1301,6 +1303,7 @@ async fn remote_create_returns_the_registry_job_from_the_early_status_row() {
 
     let job = db
         .create_materialized_view_async(CreateMaterializedViewRequest {
+            exist_ok: false,
             name: "adults".into(),
             namespace_path: vec!["team".into(), "reports".into()],
             query: "SELECT * FROM people".into(),
@@ -1326,6 +1329,63 @@ async fn remote_create_returns_the_registry_job_from_the_early_status_row() {
             .all(|header| header.namespace_path == "team$reports")
     );
     shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
+async fn remote_create_if_not_exists_accepts_a_completed_noop_without_a_registry_job() {
+    for defer in [false, true] {
+        let service = TestSqlService {
+            adaptive: true,
+            defer,
+            materialized_view_job_handle_supported: true,
+            ..Default::default()
+        };
+        let statement = "CREATE MATERIALIZED VIEW IF NOT EXISTS \"adults\" AS SELECT * FROM people";
+        service.result_overrides.lock().unwrap().insert(
+            statement.into(),
+            RecordBatch::try_from_iter([
+                (
+                    "status",
+                    Arc::new(StringArray::from(vec!["already_exists"])) as arrow_array::ArrayRef,
+                ),
+                (
+                    "job_id",
+                    Arc::new(StringArray::from(vec![""])) as arrow_array::ArrayRef,
+                ),
+            ])
+            .unwrap(),
+        );
+        let statements = service.statements.clone();
+        let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let db = RemoteDatabase::new_mock(|request| -> http::Response<String> {
+            panic!(
+                "a skipped creation must not poll a registry job: {}",
+                request.url()
+            );
+        })
+        .with_sql_client(client);
+        let job = db
+            .create_materialized_view_async(CreateMaterializedViewRequest {
+                exist_ok: true,
+                name: "adults".into(),
+                namespace_path: vec!["team".into()],
+                query: "SELECT * FROM people".into(),
+                with_no_data: false,
+                auto_refresh_enabled: None,
+                auto_refresh_interval_seconds: None,
+            })
+            .await
+            .unwrap();
+        if defer {
+            assert!(job.id().is_none());
+        } else {
+            assert_eq!(job.job_type().as_deref(), Some("query"));
+        }
+        job.wait().await.unwrap();
+        assert_eq!(job.status().await.unwrap(), "finished");
+        assert_eq!(*statements.lock().unwrap(), [statement]);
+        shutdown.send(()).unwrap();
+    }
 }
 
 #[tokio::test]
@@ -1393,6 +1453,7 @@ async fn remote_create_registry_handle_reopens_describes_and_cancels() {
 
     let job = db
         .create_materialized_view_async(CreateMaterializedViewRequest {
+            exist_ok: false,
             name: "adults".into(),
             namespace_path: vec!["team".into(), "reports".into()],
             query: "SELECT * FROM people".into(),
@@ -3086,7 +3147,16 @@ async fn function_creation_and_description_use_sql_query_handles() {
     const REQUEST: &str = include_str!(
         "../../tests/fixtures/first_class_functions/v1/remote_function_registration_request.json"
     );
-    for (defer, with_models) in [(false, false), (false, true), (true, false), (true, true)] {
+    for (defer, with_models, exist_ok) in [
+        (false, false, false),
+        (false, true, false),
+        (true, false, false),
+        (true, true, false),
+        (false, false, true),
+        (false, true, true),
+        (true, false, true),
+        (true, true, true),
+    ] {
         let mut request_json: serde_json::Value = serde_json::from_str(REQUEST).unwrap();
         request_json["batch_size"] = serde_json::json!(2);
         request_json["max_concurrency"] = serde_json::json!(4);
@@ -3112,9 +3182,11 @@ async fn function_creation_and_description_use_sql_query_handles() {
         let expected_models = version_json["image"].get("models");
         let mut expected_request = request_json.clone();
         expected_request.as_object_mut().unwrap().remove("name");
-        let request =
+        let mut request =
             crate::function::FunctionRegistrationRequest::from_json(&request_json.to_string())
                 .unwrap();
+        assert!(!request.exist_ok);
+        request.exist_ok = exist_ok;
         let result = RecordBatch::try_from_iter(vec![(
             "definition",
             Arc::new(StringArray::from(vec![version_json.to_string()])) as ArrayRef,
@@ -3150,7 +3222,10 @@ async fn function_creation_and_description_use_sql_query_handles() {
         {
             let seen = statements.lock().unwrap();
             let encoded = seen[0]
-                .strip_prefix(r#"CREATE FUNCTION "normalize_score" FROM '"#)
+                .strip_prefix(&format!(
+                    "CREATE FUNCTION{} \"normalize_score\" FROM '",
+                    if exist_ok { " IF NOT EXISTS" } else { "" }
+                ))
                 .unwrap()
                 .strip_suffix('\'')
                 .unwrap();
@@ -3710,25 +3785,48 @@ async fn view_create_and_describe_return_metadata_through_sql() {
             ..Default::default()
         };
         let statements = service.statements.clone();
+        let headers = service.headers.clone();
         let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
         let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
             panic!("unexpected REST request");
         })
         .with_sql_client(client);
-        let created = db
+        let connection = Connection::new(Arc::new(db), Arc::new(MemoryRegistry::new()));
+        let created = connection
             .create_view("adults", "SELECT name FROM people", &["team".into()])
             .await
             .unwrap();
-        let described = db.describe_view("adults", &["team".into()]).await.unwrap();
+        let existing = connection
+            .create_view(
+                "adults",
+                "SELECT replacement FROM other_people",
+                &["team".into()],
+            )
+            .exist_ok(true)
+            .await
+            .unwrap();
+        let described = connection
+            .describe_view("adults", &["team".into()])
+            .await
+            .unwrap();
         assert_eq!(created, described);
+        assert_eq!(existing, described);
         assert_eq!(created.schema.fields()[0].name(), "name");
         assert_eq!(created.default_namespace_path, ["team"]);
         assert_eq!(
             statements.lock().unwrap().as_slice(),
             [
                 "CREATE VIEW \"adults\" AS SELECT name FROM people",
+                "CREATE VIEW IF NOT EXISTS \"adults\" AS SELECT replacement FROM other_people",
                 "DESCRIBE VIEW \"adults\""
             ]
+        );
+        assert!(
+            headers
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|header| header.namespace_path == "team")
         );
         shutdown.send(()).unwrap();
     }

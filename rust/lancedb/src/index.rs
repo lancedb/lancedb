@@ -220,6 +220,7 @@ pub struct IndexBuilder {
     pub(crate) index: Index,
     pub(crate) columns: Vec<String>,
     pub(crate) replace: bool,
+    pub(crate) exist_ok: bool,
     pub(crate) wait_timeout: Option<Duration>,
     pub(crate) train: bool,
     pub(crate) name: Option<String>,
@@ -232,6 +233,7 @@ impl IndexBuilder {
             index,
             columns,
             replace: true,
+            exist_ok: false,
             train: true,
             wait_timeout: None,
             name: None,
@@ -325,6 +327,21 @@ impl IndexBuilder {
     /// ```
     pub fn train(mut self, v: bool) -> Self {
         self.train = v;
+        self
+    }
+
+    /// Preserve an existing index with the requested name. Defaults to false.
+    /// This takes precedence over `replace`; a skipped creation does not rebuild.
+    ///
+    /// ```no_run
+    /// # async fn example(table: &lancedb::Table) -> lancedb::Result<()> {
+    /// table.create_index(&["id"], lancedb::index::Index::Auto)
+    ///     .exist_ok(true).execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn exist_ok(mut self, exist_ok: bool) -> Self {
+        self.exist_ok = exist_ok;
         self
     }
 

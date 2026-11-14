@@ -4152,14 +4152,18 @@ impl BaseTable for NativeTable {
     }
 
     async fn create_index(&self, opts: IndexBuilder) -> Result<()> {
-        let prepared = self.prepare_index(&opts).await?;
+        let Some(prepared) = self.prepare_index(&opts).await? else {
+            return Ok(());
+        };
         self.build_index(opts, prepared).await
     }
 
     async fn create_index_async(&self, opts: IndexBuilder) -> Result<Job> {
         // Prepare before spawning so bad input is reported by this call rather
         // than only by the job.
-        let prepared = self.prepare_index(&opts).await?;
+        let Some(prepared) = self.prepare_index(&opts).await? else {
+            return Ok(Job::new_done());
+        };
         let table = self.clone();
         Ok(Job::spawned(tokio::spawn(async move {
             table.build_index(opts, prepared).await

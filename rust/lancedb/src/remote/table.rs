@@ -717,9 +717,13 @@ impl<S: HttpSend> RemoteTable<S> {
             validate_index_name(name)?;
         }
         self.check_mutable().await?;
-        let request = self
+        let mut request = self
             .client
             .post(&format!("/v1/table/{}/create_index/", self.identifier));
+        if index.exist_ok {
+            request = request.query(&[("exist_ok", true)]);
+            index.replace = false;
+        }
 
         let column = match index.columns.len() {
             0 => {
@@ -2675,6 +2679,13 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .submit_materialized_view_job(statement, self.namespace.clone())
             .await?;
         match submission {
+            crate::remote::sql::materialized_view::MaterializedViewJobSubmission::AlreadyExists => {
+                Err(Error::Runtime {
+                    message:
+                        "REFRESH MATERIALIZED VIEW returned a create-only already_exists status"
+                            .into(),
+                })
+            }
             crate::remote::sql::materialized_view::MaterializedViewJobSubmission::Registry {
                 job_id,
             } => Ok(Job::new_typed(Box::new(MaterializedViewRefreshJob {
@@ -13225,8 +13236,11 @@ mod tests {
         }
     }
 
+    #[rstest]
+    #[case(false)]
+    #[case(true)]
     #[tokio::test]
-    async fn test_invalid_custom_index_names_never_send_requests() {
+    async fn test_invalid_custom_index_names_never_send_requests(#[case] exist_ok: bool) {
         let table = Table::new_with_handler("my_table", |request| -> http::Response<String> {
             panic!("Invalid index name sent a request to {}", request.url());
         });
@@ -13245,11 +13259,13 @@ mod tests {
                 table
                     .create_index(&["a"], Index::BTree(Default::default()))
                     .name(name.to_string())
+                    .exist_ok(exist_ok)
                     .execute()
                     .await,
                 table
                     .create_index(&["a"], Index::BTree(Default::default()))
                     .name(name.to_string())
+                    .exist_ok(exist_ok)
                     .execute_async()
                     .await
                     .map(|_| ()),
@@ -18275,6 +18291,42 @@ mod tests {
             .unwrap();
         branch.checkout(1).await.unwrap();
         branch.restore().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_index_exist_ok_query_and_replacement_policy() {
+        for exist_ok in [false, true] {
+            for background in [false, true] {
+                let table = Table::new_with_handler("my_table", move |request| {
+                    match request.url().path() {
+                        "/v1/table/my_table/describe/" => simple_describe_response(),
+                        "/v1/table/my_table/create_index/" => {
+                            assert_eq!(request.url().query(), exist_ok.then_some("exist_ok=true"));
+                            let body = request_body_json(&request);
+                            assert_eq!(
+                                body.get("replace"),
+                                exist_ok.then_some(&serde_json::Value::Bool(false))
+                            );
+                            assert!(body.get("exist_ok").is_none());
+                            http::Response::builder()
+                                .status(200)
+                                .body("{}".into())
+                                .unwrap()
+                        }
+                        path => panic!("unexpected request path: {path}"),
+                    }
+                });
+                let builder = table
+                    .create_index(&["id"], Index::BTree(Default::default()))
+                    .replace(true)
+                    .exist_ok(exist_ok);
+                if background {
+                    builder.execute_async().await.unwrap().wait().await.unwrap();
+                } else {
+                    builder.execute().await.unwrap();
+                }
+            }
+        }
     }
 
     #[tokio::test]

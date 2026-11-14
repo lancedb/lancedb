@@ -803,16 +803,24 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         } else {
             format!(" WITH ({})", options.join(", "))
         };
+        let if_not_exists = if request.exist_ok {
+            " IF NOT EXISTS"
+        } else {
+            ""
+        };
         let submission = client
             .submit_materialized_view_job(
                 format!(
-                    "CREATE MATERIALIZED VIEW \"{name}\"{options} AS {}",
+                    "CREATE MATERIALIZED VIEW{if_not_exists} \"{name}\"{options} AS {}",
                     request.query
                 ),
                 request.namespace_path,
             )
             .await?;
         match submission {
+            crate::remote::sql::materialized_view::MaterializedViewJobSubmission::AlreadyExists => {
+                Ok(Job::new_done())
+            }
             crate::remote::sql::materialized_view::MaterializedViewJobSubmission::Registry {
                 job_id,
             } => Ok(Job::new(Box::new(RemoteJob::new(
@@ -1099,11 +1107,12 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         name: &str,
         query: &str,
         namespace_path: &[String],
+        exist_ok: bool,
     ) -> Result<ViewDescription> {
         validate_view_name(name)?;
         validate_namespace(namespace_path)?;
         self.sql_client()?
-            .create_view(name, query, namespace_path)
+            .create_view(name, query, namespace_path, exist_ok)
             .await
     }
     async fn describe_view(
@@ -1611,10 +1620,13 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             is_shallow: Some(request.is_shallow),
         };
 
-        let req = self
+        let mut req = self
             .client
             .post(&format!("/v1/table/{}/clone", table_identifier.clone()))
             .json(&remote_request);
+        if request.exist_ok {
+            req = req.query(&[("exist_ok", true)]);
+        }
 
         let (request_id, rsp) = self.client.send(req).await?;
 
@@ -3650,9 +3662,10 @@ mod tests {
         }
     }
 
+    #[rstest::rstest]
     #[tokio::test]
-    async fn test_clone_table() {
-        let conn = Connection::new_with_handler(|request| {
+    async fn test_clone_table(#[values(false, true)] exist_ok: bool) {
+        let conn = Connection::new_with_handler(move |request| {
             assert_eq!(request.method(), &reqwest::Method::POST);
             assert_eq!(request.url().path(), "/v1/table/cloned_table/clone");
             assert_eq!(
@@ -3664,12 +3677,18 @@ mod tests {
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
             assert_eq!(body["source_location"], "s3://bucket/source_table");
             assert_eq!(body["is_shallow"], true);
+            if exist_ok {
+                assert_eq!(request.url().query(), Some("exist_ok=true"));
+            } else {
+                assert!(request.url().query().is_none());
+            }
 
             http::Response::builder().status(200).body("").unwrap()
         });
 
         let table = conn
             .clone_table("cloned_table", "s3://bucket/source_table")
+            .exist_ok(exist_ok)
             .execute()
             .await
             .unwrap();
@@ -4854,6 +4873,7 @@ mod tests {
         for seconds in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             let result = db
                 .create_materialized_view_async(CreateMaterializedViewRequest {
+                    exist_ok: false,
                     name: "adults".into(),
                     namespace_path: vec![],
                     query: "SELECT * FROM people".into(),
