@@ -10,8 +10,6 @@ use crate::{
     utils::{validate_namespace, validate_secret_name},
 };
 use arrow_array::{Array, Int64Array, RecordBatch, StringArray};
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use futures::TryStreamExt;
 use std::sync::Arc;
 
 pub(in crate::remote) enum SecretWriteOperation {
@@ -135,65 +133,7 @@ impl SqlClient {
         namespace: &[String],
         options: ListingOptions,
     ) -> Result<ListingPage<String>> {
-        validate_namespace(namespace)?;
-        let limit = options.page_limit.unwrap_or(100);
-        if limit == 0 || limit > i32::MAX as u32 {
-            return Err(Error::InvalidInput {
-                message: "page limit must be between 1 and i32::MAX".into(),
-            });
-        }
-        let invalid_token = || Error::InvalidInput {
-            message: "invalid secret page token for this database or namespace".into(),
-        };
-        let after = if let Some(token) = options.page_token.filter(|token| !token.is_empty()) {
-            let decoded = URL_SAFE_NO_PAD.decode(token).map_err(|_| invalid_token())?;
-            let (kind, database, prefix, path, last): (
-                String,
-                String,
-                Option<String>,
-                Vec<String>,
-                String,
-            ) = serde_json::from_slice(&decoded).map_err(|_| invalid_token())?;
-            if kind != "secret"
-                || database != self.inner.database
-                || prefix != self.inner.database_prefix
-                || path != namespace
-            {
-                return Err(invalid_token());
-            }
-            format!(" WHERE name > '{}'", last.replace('\'', "''"))
-        } else {
-            String::new()
-        };
-        let query = self
-            .execute(ExecuteQueryRequest {
-                query: format!("SHOW SECRETS{after} LIMIT {}", u64::from(limit) + 1),
-                default_namespace_path: namespace.to_vec(),
-                parameters: None,
-            })
-            .await?;
-        let mut reader = query.reader().await?;
-        let mut items = Vec::new();
-        while let Some(batch) = reader.try_next().await? {
-            items.extend(strings(&[batch], "name")?);
-        }
-        let page_token = if items.len() > limit as usize {
-            items.truncate(limit as usize);
-            let cursor = serde_json::to_vec(&(
-                "secret",
-                &self.inner.database,
-                &self.inner.database_prefix,
-                namespace,
-                items.last().unwrap(),
-            ))
-            .map_err(|error| Error::Runtime {
-                message: error.to_string(),
-            })?;
-            Some(URL_SAFE_NO_PAD.encode(cursor))
-        } else {
-            None
-        };
-        Ok(ListingPage { items, page_token })
+        self.list_names("SHOW SECRETS", namespace, options).await
     }
 }
 

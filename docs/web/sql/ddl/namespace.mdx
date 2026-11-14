@@ -17,7 +17,7 @@ backtick-quoted identifier with `$` between components, such as
 one path component, relative to an explicit parent schema or the session's
 current schema -- it cannot contain `$` or be qualified with a database.
 
-`SCHEMA` never accepts `IN`. `NAMESPACE` accepts `IN` followed by a complete
+For single-object commands, `SCHEMA` never accepts `IN`. `NAMESPACE` accepts `IN` followed by a complete
 schema identifier. Names are lowercased unless quoted.
 
 ## CREATE SCHEMA and CREATE NAMESPACE {#create}
@@ -126,27 +126,30 @@ Requires `USAGE` on the database and the namespace.
 
 ## SHOW SCHEMAS and SHOW NAMESPACES {#show}
 
-<CodeGroup>
-```sql SQL icon="database"
-SHOW SCHEMAS
-SHOW NAMESPACES
-SHOW NAMESPACES IN analytics.team
+```sql
+SHOW SCHEMAS LIMIT 100;
+SHOW SCHEMAS LIMIT 100 FROM '<page-token>';
+SHOW NAMESPACES IN analytics.team LIMIT 100;
+SHOW NAMESPACES IN analytics.team LIMIT 100 FROM '<page-token>';
 ```
-</CodeGroup>
 
-`SHOW SCHEMAS` returns complete paths in the current database, recursively,
-including `public` when the caller can use it. It does not accept `IN`.
+Both commands return two non-null string columns: `namespace_path`, the
+parent path as a compact JSON array, and `name`, the unqualified child name.
+Results are ordered by parent path components, then name, and omit namespaces
+the caller cannot use.
 
-`SHOW NAMESPACES` lists only immediate child names under the session's
-current schema. `IN` selects a different parent schema, optionally in
-another database -- use `IN public` for the current database's root, or
-`IN analytics.public` for another database's root. A missing parent is an
-error.
+`SHOW SCHEMAS` and `SHOW NAMESPACES` are equivalent listings. Without `IN`,
+both list recursively in the current database, include the implicit `public`
+root, and ignore the session namespace. With `IN`, both list immediate children
+of the selected parent. A schema path can appear directly: `IN team$features`;
+a database qualifier is optional. `IN public` selects the current database root,
+and `IN analytics.public` selects another database's root.
 
-Both forms return a sorted `name` column and omit namespaces the caller
-cannot use. Large listings that exceed 10,000 namespaces, or recursive
-listings deeper than 32 levels, return an error suggesting a narrower
-listing.
+Page through results using `LIMIT n [FROM '<page-token>']`. Read the opaque
+`lancedb.next_page_token` from the Arrow result schema metadata and pass it back
+unchanged with the same object type and scope. Stop when no token is returned;
+a short or empty page can still carry a continuation. See
+[catalog listing pagination](/sql/pagination).
 
 ## DROP SCHEMA and DROP NAMESPACE {#drop}
 
@@ -187,7 +190,6 @@ with `IF EXISTS`. Inspect a cascade drop's child jobs with
 | `CREATE SCHEMA child IN parent` | `CREATE NAMESPACE child IN parent` or `` CREATE SCHEMA `parent$child` `` |
 | `` DESCRIBE NAMESPACE `parent$child` `` | `` DESCRIBE SCHEMA `parent$child` `` or `DESCRIBE NAMESPACE child IN parent` |
 | `DROP NAMESPACE analytics.child` | `DROP NAMESPACE child IN analytics.public` |
-| `SHOW SCHEMAS IN parent` | `SHOW NAMESPACES IN parent` |
 
 ## What to read next {#next}
 

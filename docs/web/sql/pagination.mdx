@@ -1,0 +1,68 @@
+---
+title: "Catalog listing pagination"
+description: "Use one continuation-token syntax for SQL catalog listings."
+---
+
+Catalog `SHOW` statements share one pagination suffix:
+
+```sql
+SHOW <objects> [IN <scope>] [LIMIT <count> [FROM '<page-token>']];
+```
+
+This applies to tables, views, materialized views, functions and function
+history, secrets, storage integrations, namespaces/schemas, and databases.
+
+```sql
+SHOW TABLES LIMIT 100;
+SHOW TABLES IN team$ml LIMIT 100;
+SHOW TABLES IN team$ml LIMIT 100 FROM '<page-token>';
+SHOW TABLES IN analytics.team$ml LIMIT 100;
+SHOW DATABASES LIMIT 100 FROM '<page-token>';
+```
+
+## Namespace scope
+
+`IN` is optional. Without it, listings include root and every authorized
+namespace in the current database, regardless of the session's default namespace.
+With `IN`, objects are listed only in that exact namespace. The scope accepts a
+schema directly: `IN team$ml` means the absolute namespace path `["team", "ml"]`
+in the current database. Use `IN public` for root, or `IN other_db.team$ml` to
+select a different database. Quote schema identifiers containing punctuation or
+mixed case, for example `IN "Team$ML"`.
+
+`SHOW SCHEMAS` and `SHOW NAMESPACES` use the same rules: without `IN` they
+include all namespace paths and the public root; with `IN` they list the
+selected parent's immediate children. `SHOW DATABASES` remains global and
+does not accept `IN`.
+
+SDK APIs that take a namespace send an explicit `IN` clause and continue to
+list that one namespace.
+
+## Continuation metadata
+
+The Arrow result schema carries `lancedb.next_page_token` when more results
+remain. Pass that opaque value unchanged in `FROM` on the next request.
+The token identifies the object type, database, namespace scope, and complete
+position, including namespace path and any numeric revision. It cannot be
+reused with another object type or scope.
+
+The token is metadata, not an additional result column or a synthetic row.
+Namespace-scoped object listings contain `namespace_path` and `name`;
+databases contain only `name`. Function history retains revision metadata.
+SDK listing APIs expose this server-issued value as the page's `page_token`.
+
+Continue until no token is returned. A short or empty page may still have a
+token. Pages observe the live catalog; continuation does not create a snapshot.
+
+## Page size and ordering
+
+The default page limit is 1,000, with a maximum of 10,000. `LIMIT 0` returns
+no rows. Object catalogs order identifiers by namespace path components and
+unqualified name; database names are ordered by name. Table page boundaries
+follow native catalog order, which may differ from logical name order for
+directory-backed tables; table names are sorted within each returned page. Function history uses
+numeric revision order within each name. The token preserves that complete
+position, including when names repeat in different namespaces.
+
+The old name-comparison `WHERE` and Function `WITH` pagination forms are no
+longer supported. Use the same `LIMIT ... FROM ...` suffix for every listing.

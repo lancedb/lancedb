@@ -194,16 +194,25 @@ only the reference naming it.
 
 ## SHOW STORAGE INTEGRATIONS {#show}
 
-<CodeGroup>
-```sql SQL icon="database"
-SHOW STORAGE INTEGRATIONS
-SHOW STORAGE INTEGRATIONS IN platform
-LIST STORAGE INTEGRATIONS
+```sql
+SHOW STORAGE INTEGRATIONS IN analytics.`team$ml` LIMIT 100;
+SHOW STORAGE INTEGRATIONS IN analytics.`team$ml` LIMIT 100 FROM '<page-token>';
 ```
-</CodeGroup>
 
-`LIST` is an alias for `SHOW` here. Returns one `name` column; `IN`
-narrows the listing to one namespace.
+Returns two non-null string columns: `namespace_path`, a compact JSON array
+of parent namespace components (`[]` for root), and `name`, the unqualified
+object name. Omitting `IN` lists all authorized namespaces in the current database;
+`IN team$ml` selects that exact path without a database qualifier; `IN public` selects
+the current database's root. Listings require the relevant database and
+namespace `USAGE` privileges.
+
+`LIST STORAGE INTEGRATIONS` is an exact alias, including pagination.
+
+Page through results using `LIMIT n [FROM '<page-token>']`. Read the opaque
+`lancedb.next_page_token` from the Arrow result schema metadata and pass it back
+unchanged with the same object type and scope. Stop when no token is returned;
+a short or empty page can still carry a continuation. See
+[catalog listing pagination](/sql/pagination).
 
 ## DROP STORAGE INTEGRATION {#drop}
 

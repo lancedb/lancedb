@@ -1,42 +1,118 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use super::SqlClient;
+use super::{SqlClient, materialized_view::quote_identifier};
 use crate::{
     database::ExecuteQueryRequest,
     error::{Error, Result},
     job::Job,
+    listing::{ListingOptions, ListingPage},
+    utils::validate_namespace,
 };
-use arrow_array::{Array, ListArray, RecordBatch, StringArray};
+use arrow_array::{Array, LargeStringArray, ListArray, RecordBatch, StringArray, StringViewArray};
 use futures::TryStreamExt;
 use serde::{Serialize, de::DeserializeOwned};
 use std::sync::Arc;
+
+const DEFAULT_SQL_LISTING_LIMIT: u32 = 1_000;
+const MAX_SQL_LISTING_LIMIT: u32 = 10_000;
+const NEXT_PAGE_TOKEN_METADATA_KEY: &str = "lancedb.next_page_token";
+
+impl SqlClient {
+    pub(in crate::remote) async fn listing_page(
+        &self,
+        statement: &str,
+        namespace: &[String],
+        options: ListingOptions,
+    ) -> Result<(Vec<RecordBatch>, Option<String>)> {
+        validate_namespace(namespace)?;
+        let limit = options.page_limit.unwrap_or(DEFAULT_SQL_LISTING_LIMIT);
+        if limit > MAX_SQL_LISTING_LIMIT {
+            return Err(Error::InvalidInput {
+                message: format!("page limit must be between 0 and {MAX_SQL_LISTING_LIMIT}"),
+            });
+        }
+        if options.page_token.as_ref().is_some_and(String::is_empty) {
+            return Err(Error::InvalidInput {
+                message: "page token must not be empty".into(),
+            });
+        }
+        if limit == 0 {
+            return Ok((Vec::new(), None));
+        }
+        let schema = if namespace.is_empty() {
+            "public".to_owned()
+        } else {
+            namespace.join("$")
+        };
+        let mut statement = format!("{statement} IN {} LIMIT {limit}", quote_identifier(&schema));
+        if let Some(token) = options.page_token {
+            statement.push_str(&format!(" FROM {}", literal(&token)));
+        }
+        let query = self
+            .execute(ExecuteQueryRequest {
+                query: statement,
+                default_namespace_path: namespace.to_vec(),
+                parameters: None,
+            })
+            .await?;
+        let reader = query.reader().await?;
+        let token = reader
+            .schema()
+            .metadata()
+            .get(NEXT_PAGE_TOKEN_METADATA_KEY)
+            .cloned()
+            .filter(|token| !token.is_empty());
+        let batches = reader.try_collect::<Vec<_>>().await?;
+        if batches.iter().map(RecordBatch::num_rows).sum::<usize>() > limit as usize {
+            return Err(Error::Runtime {
+                message: "SQL listing exceeded its requested page size".into(),
+            });
+        }
+        Ok((batches, token))
+    }
+
+    pub(in crate::remote) async fn list_names(
+        &self,
+        statement: &str,
+        namespace: &[String],
+        options: ListingOptions,
+    ) -> Result<ListingPage<String>> {
+        let (batches, page_token) = self.listing_page(statement, namespace, options).await?;
+        Ok(ListingPage {
+            items: strings(&batches, "name")?,
+            page_token,
+        })
+    }
+}
 
 pub(super) fn literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 pub(super) fn strings(batches: &[RecordBatch], name: &str) -> Result<Vec<String>> {
-    batches
-        .iter()
-        .map(|batch| {
-            let values = batch
-                .column_by_name(name)
-                .and_then(|column| column.as_any().downcast_ref::<StringArray>())
-                .ok_or_else(|| Error::Runtime {
-                    message: format!("SQL result is missing UTF-8 column '{name}'"),
-                })?;
-            if values.null_count() != 0 {
-                return Err(Error::Runtime {
-                    message: format!("SQL result contains null '{name}'"),
-                });
-            }
-            Ok(values
-                .iter()
-                .map(|value| value.unwrap().to_owned())
-                .collect::<Vec<_>>())
-        })
-        .collect::<Result<Vec<_>>>()
-        .map(|rows| rows.into_iter().flatten().collect())
+    let mut result = Vec::new();
+    for batch in batches {
+        let column = batch.column_by_name(name).ok_or_else(|| Error::Runtime {
+            message: format!("SQL result is missing string column '{name}'"),
+        })?;
+        if column.null_count() != 0 {
+            return Err(Error::Runtime {
+                message: format!("SQL result contains null '{name}'"),
+            });
+        }
+        if let Some(values) = column.as_any().downcast_ref::<StringArray>() {
+            result.extend(values.iter().map(|value| value.unwrap().to_owned()));
+        } else if let Some(values) = column.as_any().downcast_ref::<LargeStringArray>() {
+            result.extend(values.iter().map(|value| value.unwrap().to_owned()));
+        } else if let Some(values) = column.as_any().downcast_ref::<StringViewArray>() {
+            result.extend(values.iter().map(|value| value.unwrap().to_owned()));
+        } else {
+            return Err(Error::Runtime {
+                message: format!("SQL result column '{name}' is not a string"),
+            });
+        }
+    }
+    Ok(result)
 }
 
 /// Read an optional `List<Utf8>` column. Older servers do not return the
@@ -112,9 +188,9 @@ impl SqlClient {
 
 #[cfg(test)]
 mod tests {
-    use super::string_lists;
+    use super::{string_lists, strings};
     use arrow_array::builder::{ListBuilder, StringBuilder};
-    use arrow_array::{ArrayRef, RecordBatch};
+    use arrow_array::{ArrayRef, LargeStringArray, RecordBatch, StringArray, StringViewArray};
     use arrow_schema::{DataType, Field, Schema};
     use std::sync::Arc;
 
@@ -124,6 +200,24 @@ mod tests {
             DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
             true,
         )]))
+    }
+
+    #[test]
+    fn listing_strings_accept_all_arrow_string_representations() {
+        for values in [
+            Arc::new(StringArray::from(vec!["a", "z"])) as ArrayRef,
+            Arc::new(LargeStringArray::from(vec!["a", "z"])) as ArrayRef,
+            Arc::new(StringViewArray::from(vec!["a", "z"])) as ArrayRef,
+        ] {
+            let batch = RecordBatch::try_from_iter(vec![("name", values)]).unwrap();
+            assert_eq!(strings(&[batch], "name").unwrap(), ["a", "z"]);
+        }
+        let batch = RecordBatch::try_from_iter(vec![(
+            "name",
+            Arc::new(StringViewArray::from(vec![Some("a"), None])) as ArrayRef,
+        )])
+        .unwrap();
+        assert!(strings(&[batch], "name").is_err());
     }
 
     #[test]

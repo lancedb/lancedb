@@ -135,20 +135,33 @@ from it.
 
 ## SHOW FUNCTIONS {#show}
 
-<CodeGroup>
-```sql SQL icon="database"
-SHOW FUNCTIONS
-SHOW FUNCTIONS HISTORY IN "analytics" WITH (name = 'embed', limit = 100)
-SHOW FUNCTIONS HISTORY WITH (after_name = 'embed', after_version = '1', limit = 100)
+```sql
+SHOW FUNCTIONS IN analytics.`team$ml` LIMIT 100;
+SHOW FUNCTIONS IN analytics.`team$ml` LIMIT 100 FROM '<page-token>';
 ```
-</CodeGroup>
 
-`SHOW FUNCTIONS` returns the highest published numeric revision for each name.
-Add `HISTORY` to list every published revision, as Python's `list_functions()`
-does. Rows are ordered by name and numeric revision, so `2` comes before `10`.
-`after_name` and `after_version` must be supplied together for keyset pagination.
-`limit` bounds
-the response; `include_definition = false` omits the optional definition JSON.
+Returns two non-null string columns: `namespace_path`, a compact JSON array
+of parent namespace components (`[]` for root), and `name`, the unqualified
+object name. Omitting `IN` lists all authorized namespaces in the current database;
+`IN team$ml` selects that exact path without a database qualifier; `IN public` selects
+the current database's root. Listings require the relevant database and
+namespace `USAGE` privileges.
+
+`SHOW FUNCTIONS` lists each function once. Add `HISTORY` to list every
+published revision with its metadata and definition, as `list_functions()`
+does. History uses the same pagination suffix; numeric revision order is
+encoded in the token, so revision `2` precedes `10`.
+
+```sql
+SHOW FUNCTIONS HISTORY IN analytics.`team$ml` LIMIT 100;
+SHOW FUNCTIONS HISTORY IN analytics.`team$ml` LIMIT 100 FROM '<page-token>';
+```
+
+Page through results using `LIMIT n [FROM '<page-token>']`. Read the opaque
+`lancedb.next_page_token` from the Arrow result schema metadata and pass it back
+unchanged with the same object type and scope. Stop when no token is returned;
+a short or empty page can still carry a continuation. See
+[catalog listing pagination](/sql/pagination).
 
 ## DROP FUNCTION {#drop}
 
