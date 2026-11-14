@@ -150,36 +150,13 @@ class ZoneMap:
 
 @dataclass
 class ScalarPlugin:
-    """Describe any scalar index plugin registered with Lance, by name.
+    """Configure a scalar index of a type recognized by a registered database plugin.
 
-    LanceDB passes ``index_type`` and ``params`` to Lance without interpreting
-    them, and the registered plugin validates them and the column. Use it for
-    index types that have no dedicated config class, such as plugins your
-    application registers or Lance index types this version of LanceDB does
-    not wrap yet. For the index types they cover, the dedicated classes, such
-    as [BTree][lancedb.index.BTree], remain the better choice.
+    Use this for index types without a dedicated configuration class.
+    Prefer a dedicated class, such as [BTree][lancedb.index.BTree], when one
+    is available.
 
-    Lance's built-in plugins are ``btree``, ``bitmap``, ``labellist``,
-    ``ngram``, ``zonemap``, ``bloomfilter``, ``inverted``, ``json``, ``fm`` and
-    ``minhashlsh``. Plugin names can differ from LanceDB's type names, e.g.
-    ``labellist`` rather than ``LABEL_LIST``. A plugin that is newer than the
-    Lance version in your LanceDB release is available only once LanceDB
-    depends on a Lance version that includes it.
-
-    The plugin must be able to build the index from the column's data, which
-    Lance calls a basic trainer. Lance's built-in plugins all can. A plugin
-    registered only to read indexes built some other way cannot be created by
-    name.
-
-    An unknown plugin name, a plugin without a basic trainer, a column the
-    plugin cannot index, or parameters it rejects raise an error when the
-    index is created.
-    [list_indices][lancedb.table.AsyncTable.list_indices] reports the type Lance
-    records for the index: for example ``"BloomFilter"`` for ``bloomfilter``,
-    or the plugin's own name, such as ``"MinHashLsh"``, when LanceDB has no
-    type for it.
-
-    LanceDB Enterprise does not support plugin indexes yet.
+    An unknown plugin name or invalid parameters cause index creation to fail.
 
     Examples
     --------
@@ -197,12 +174,12 @@ class ScalarPlugin:
     Attributes
     ----------
     index_type: str
-        The plugin name, case-insensitive, such as ``"zonemap"``. Surrounding
-        whitespace is ignored.
+        The index type, case-insensitive. Surrounding whitespace is ignored.
+        Must not be empty.
     params: dict or str, optional
-        The plugin's parameters, as a dict or as a string holding a JSON
-        object. The plugin defines the parameter names. If omitted, the plugin
-        uses its defaults.
+        The index parameters, as a dict or as a string holding a JSON object.
+        They are passed as given. Each plugin defines its parameters and
+        defaults; refer to the plugin's documentation for guidance.
 
     Raises
     ------

@@ -212,25 +212,16 @@ table.search().where("contains(text, 'needle')").limit(10).to_pandas()
 
 ## Create a plugin index by name
 
-Lance implements scalar indexes as plugins, each registered under a name. To
-create one that has no dedicated config in LanceDB, pass its plugin name and
-optional parameters: `ScalarPlugin` in Python, `Index.plugin()` in TypeScript,
-or `Index::Plugin(PluginIndexBuilder)` in Rust. This also covers plugins your
-application registers with Lance. LanceDB passes the name and parameters to
-Lance unchanged, and the plugin validates them and the column. Plugin names are
-case-insensitive. Parameters are a JSON object, given as a dict or object or as
-a JSON string, and use the plugin's own parameter names.
+LanceDB can create a scalar index of any type recognized by a registered database
+plugin. For index types without a dedicated configuration, pass the type name and
+optional parameters using `ScalarPlugin` in Python, `Index.plugin()` in TypeScript,
+or `Index::Plugin(PluginIndexBuilder)` in Rust. Prefer a dedicated configuration,
+such as `BTree`, when one is available.
 
-Creating an index by name works only for a plugin that can build the index
-from the column's data, which Lance calls a basic trainer. Lance's built-in
-plugins all have one. A plugin can also be registered only to read indexes
-built some other way; creating one of those by name fails, with an error that
-the index type does not support basic training.
-
-Lance's built-in plugins are `btree`, `bitmap`, `labellist`, `ngram`, `zonemap`,
-`bloomfilter`, `inverted`, `json`, `fm` and `minhashlsh`. A plugin added in a
-newer Lance version needs a LanceDB release built on that version. Prefer a
-dedicated config such as `BTree` when one exists.
+Index type names are case-insensitive. Surrounding whitespace is ignored.
+Parameters are a JSON object and are passed as given. Each plugin defines its
+parameters and defaults; refer to the plugin's documentation for guidance.
+Python and TypeScript also accept parameters as a string holding a JSON object.
 
 <CodeGroup>
 ```python Python icon="python"
@@ -262,16 +253,7 @@ tbl.create_index(&["id"], Index::Plugin(bloom_filter))
 ```
 </CodeGroup>
 
-`list_indices()` reports the type Lance records for the index, such as
-`"BloomFilter"`, or the plugin's own name, such as `"MinHashLsh"`, when LanceDB
-has no type for it. An unknown plugin name, a column the plugin cannot index,
-or parameters it rejects make `create_index` fail.
-
-<Note title="LanceDB Enterprise">
-LanceDB Enterprise does not support plugin indexes yet. The client sends the
-upper-cased plugin name as the index type, with the parameters under a single
-`params` key.
-</Note>
+An unknown plugin name or invalid parameters cause index creation to fail.
 
 ## Index UUID Columns
 

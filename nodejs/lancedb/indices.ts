@@ -835,40 +835,19 @@ export class Index {
   }
 
   /**
-   * Create any scalar index plugin registered with Lance, by name.
+   * Create a scalar index of a type recognized by a registered database plugin.
    *
-   * LanceDB passes the plugin name and the parameters to Lance without
-   * interpreting them, and the registered plugin validates them and the
-   * column. Use it for index types that have no dedicated factory on
-   * `Index`, such as plugins your application registers or Lance index types
-   * this version of LanceDB does not wrap yet.
+   * Use this for index types without a dedicated factory on `Index`.
+   * Prefer a dedicated factory when one is available.
    *
-   * Lance's built-in plugins are `btree`, `bitmap`, `labellist`, `ngram`,
-   * `zonemap`, `bloomfilter`, `inverted`, `json`, `fm` and `minhashlsh`.
-   * Plugin names can differ from LanceDB's type names, e.g. `labellist`
-   * rather than `LABEL_LIST`. A plugin newer than the Lance version in your
-   * LanceDB release is available only once LanceDB depends on a Lance version
-   * that includes it.
+   * An unknown plugin name or invalid parameters cause `createIndex` to fail.
    *
-   * The plugin must be able to build the index from the column's data, which
-   * Lance calls a basic trainer. Lance's built-in plugins all can. A plugin
-   * registered only to read indexes built some other way cannot be created
-   * by name.
-   *
-   * An unknown plugin name, a plugin without a basic trainer, a column the
-   * plugin cannot index, or parameters it rejects cause `createIndex` to
-   * fail. `listIndices` reports the type
-   * Lance records for the index: for example `"BloomFilter"` for
-   * `bloomfilter`, or the plugin's own name, such as `"MinHashLsh"`, when
-   * LanceDB has no type for it.
-   *
-   * LanceDB Enterprise does not support plugin indexes yet.
-   *
-   * @param indexType - The plugin name, case-insensitive, such as `"zonemap"`.
+   * @param indexType - The index type, case-insensitive.
    *   Surrounding whitespace is ignored. Must not be empty.
-   * @param params - The plugin's parameters, as an object or as a string
-   *   holding a JSON object. They are passed as given, so use the plugin's
-   *   own parameter names. If omitted, the plugin uses its defaults.
+   * @param params - The index parameters, as an object or as a string
+   *   holding a JSON object. They are passed as given. Each plugin defines
+   *   its parameters and defaults; refer to the plugin's documentation
+   *   for guidance.
    * @throws If `indexType` is empty, or `params` is not a JSON object.
    *
    * @example
