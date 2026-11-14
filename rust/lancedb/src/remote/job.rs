@@ -261,6 +261,46 @@ impl<S: HttpSend> JobHandle for RemoteJob<S> {
         Ok(trace)
     }
 
+    async fn stack(&self, worker_id: &str) -> Result<serde_json::Value> {
+        let request = self
+            .client
+            .post("/v1/jobs/stack")
+            .json(&serde_json::json!({"job_id": self.job_id, "worker_id": worker_id}));
+        let (request_id, response) = self.client.send(request).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        let evidence: serde_json::Value =
+            serde_json::from_str(&body).map_err(|error| Error::Http {
+                source: format!("failed to parse worker stack response: {error}").into(),
+                request_id: request_id.clone(),
+                status_code: None,
+            })?;
+        if evidence
+            .get("worker_id")
+            .and_then(serde_json::Value::as_str)
+            != Some(worker_id)
+            || !matches!(
+                evidence.get("status").and_then(serde_json::Value::as_str),
+                Some("captured" | "unavailable" | "unsupported")
+            )
+            || !evidence
+                .get("stacks")
+                .is_some_and(serde_json::Value::is_array)
+            || !evidence
+                .get("execution_epoch")
+                .is_some_and(serde_json::Value::is_i64)
+        {
+            return Err(Error::Http {
+                source:
+                    "server response is not worker stack evidence; capture requires server support"
+                        .into(),
+                request_id,
+                status_code: None,
+            });
+        }
+        Ok(evidence)
+    }
+
     async fn stats(&self) -> Result<Option<String>> {
         let request = self
             .client
@@ -382,6 +422,59 @@ mod tests {
     const UNIT_JOB: &str =
         include_str!("../../tests/fixtures/first_class_functions/v1/remote_unit_job.json");
     const MISSING_RESULT_JOB: &str = r#"{"job_state":"DONE"}"#;
+
+    #[tokio::test]
+    async fn stack_preserves_availability_and_uses_the_selected_worker() {
+        for status in ["captured", "unsupported", "unavailable"] {
+            let client = client_with_handler(move |request| {
+                assert_eq!(request.url().path(), "/v1/jobs/stack");
+                let body: serde_json::Value =
+                    serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+                assert_eq!(
+                    body,
+                    serde_json::json!({"job_id":"job-1", "worker_id":"worker-1"})
+                );
+                http::Response::builder().status(200).body(serde_json::json!({
+                    "worker_id":"worker-1", "status":status, "execution_epoch":1, "stacks":[], "omitted_sessions":0
+                }).to_string()).unwrap()
+            });
+            let job = Job::new(Box::new(RemoteJob::new(client, "job-1".into())));
+            assert_eq!(job.stack("worker-1").await.unwrap()["status"], status);
+        }
+    }
+
+    #[tokio::test]
+    async fn stack_rejects_unrelated_responses_and_preserves_authorization_errors() {
+        for body in [
+            "{}",
+            r#"{"worker_id":"other","status":"captured","execution_epoch":1,"stacks":[]}"#,
+        ] {
+            let client = client_with_handler(move |_| {
+                http::Response::builder().status(200).body(body).unwrap()
+            });
+            assert!(matches!(
+                RemoteJob::new(client, "job-1".into())
+                    .stack("worker-1")
+                    .await
+                    .unwrap_err(),
+                crate::Error::Http { .. }
+            ));
+        }
+        let client = client_with_handler(|_| {
+            http::Response::builder()
+                .status(403)
+                .body("access denied")
+                .unwrap()
+        });
+        assert!(
+            RemoteJob::new(client, "job-1".into())
+                .stack("worker-1")
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("403")
+        );
+    }
 
     #[tokio::test]
     async fn stats_reads_report_verbatim_and_preserves_unavailable_without_waiting() {

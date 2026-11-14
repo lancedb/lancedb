@@ -4,6 +4,7 @@
 """Handles to asynchronous registry jobs, SQL queries, and local operations."""
 
 import asyncio
+import json
 import reprlib
 import time
 from datetime import timedelta
@@ -425,6 +426,30 @@ class AsyncJob(Generic[T]):
         description = self._inner._description if self._inner is not None else None
         return getattr(description, name) if description is not None else None
 
+    async def stack(self, worker_id: str) -> dict[str, Any]:
+        """Capture Python thread stacks from a running Function worker.
+
+        Requires server support and system operate privilege. The response has
+        ``status``, ``worker_id``, ``execution_epoch`` and ``stacks``. Each session
+        reports its status, capture timestamp, Python frames and truncation.
+        ``omitted_sessions`` counts sessions beyond the server's capture limit.
+        Captures exclude source text, locals and native frames; a recent capture
+        may be reused to bound overhead. Unsupported or unavailable captures
+        have an explicit status. Transport and authorization errors propagate.
+        Local operations and SQL query handles raise ``NotImplementedError``.
+        Timeout stack evidence remains in the job's failure events.
+
+        Examples
+        --------
+        >>> evidence = await job.stack("worker-id")  # doctest: +SKIP
+        >>> print(evidence["stacks"])  # doctest: +SKIP
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "worker stacks require a server-side Function job"
+            )
+        return json.loads(await self._inner.stack(worker_id))
+
     async def stats(self) -> Optional[str]:
         """Return a printable run report for this Function job.
 
@@ -674,6 +699,22 @@ class Job(Generic[T]):
 
     def _field(self, name: str) -> Optional[Any]:
         return getattr(self._inner, name) if self._inner is not None else None
+
+    def stack(self, worker_id: str) -> dict[str, Any]:
+        """Capture Python thread stacks from a running Function worker.
+
+        See [AsyncJob.stack][lancedb.job.AsyncJob.stack] for availability,
+        permissions and response fields.
+
+        Examples
+        --------
+        >>> print(job.stack("worker-id")["stacks"])  # doctest: +SKIP
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "worker stacks require a server-side Function job"
+            )
+        return LOOP.run(self._inner.stack(worker_id))
 
     def stats(self) -> Optional[str]:
         """Return a printable Function job run report.
