@@ -1,23 +1,25 @@
 ---
 title: "Cache Prewarm"
 sidebarTitle: "Cache Prewarm"
-description: "Populate the tiered index cache ahead of a request, instead of filling it lazily on first read."
+description: "Warm indexes at executor startup or submit on-demand jobs to populate the data page cache."
 icon: "fire"
-keywords: ["prewarm", "cache", "index cache", "startup"]
+keywords: ["prewarm", "cache", "index cache", "data page cache", "startup"]
 availability:
   embedded: unavailable
   enterprise: available
 ---
 
-Cache Prewarm loads the [tiered index cache](/enterprise/tiered-index-cache)
-a plan executor keeps as part of Enterprise's serving layer, instead of
-leaving it to fill lazily on first read. You configure which tables to
-prewarm; on startup, each plan executor loads those tables' indexes into
-cache before it joins the fleet. The executor does not accept queries until
-prewarming finishes, so it never serves a request against a cold cache.
+Enterprise supports two kinds of cache prewarm: startup index prewarm fills
+the [tiered index cache](/enterprise/tiered-index-cache), and
+[on-demand data prewarm](#on-demand-data-prewarm) fills the
+[data page cache](/enterprise/data-page-cache) through a durable job.
 
-LanceDB Embedded has no such cache, so there is nothing for it to warm
-there. Embedded does have its own, separate `prewarm_index()` on a table --
+For startup index prewarm, you configure which tables to warm. Each plan
+executor loads those tables' indexes before it joins the fleet. The executor
+does not accept queries until startup prewarming finishes.
+
+These Enterprise caches are not available in LanceDB Embedded.
+Embedded does have its own, separate `prewarm_index()` on a table --
 an idempotent hint that loads a built index into memory ahead of a query.
 
 <div className="hidden dark:block">
@@ -72,7 +74,7 @@ and rollouts instead of dipping right after each one.
 [Contact us](https://www.lancedb.com/contact) to learn more about how
 prewarming is configured for your deployment.
 
-## On-demand data prewarm
+## On-demand data prewarm {#on-demand-data-prewarm}
 
 On compatible Enterprise deployments, the SDK submits data prewarm through
 SQL. Flight SQL connectivity is required; the existing generic HTTP job API is
@@ -81,10 +83,13 @@ authorization, submission requires table Select plus Usage on the database
 and namespace hierarchy. Job events require System Usage and cancellation
 requires System Operate.
 
+The table handle determines the database, namespace, and branch in every SDK.
+
+<Tabs>
+<Tab title="Python">
 ```python
 from datetime import timedelta
 
-# The table handle determines the database, namespace, and branch.
 job = table.prewarm_data_async(
     ["video"], filter="quality > 0.7", concurrency=4
 )
@@ -94,6 +99,45 @@ job.wait(timeout=timedelta(minutes=10))
 # Reattach in a later process using the same database connection settings.
 db.open_job(job.id).wait()
 ```
+</Tab>
+<Tab title="TypeScript">
+```typescript
+const job = await table.prewarmDataAsync({
+  columns: ["video"],
+  filter: "quality > 0.7",
+  concurrency: 4,
+});
+console.log(job.id);
+await job.wait();
+
+// Reattach using the same database connection settings.
+if (job.id !== null) {
+  await (await db.openJob(job.id)).wait();
+}
+```
+</Tab>
+<Tab title="Rust">
+```rust
+use lancedb::table::PrewarmDataOptions;
+
+let job = table
+    .prewarm_data_async(
+        PrewarmDataOptions::new()
+            .columns(["video"])
+            .filter("quality > 0.7")
+            .concurrency(4),
+    )
+    .await?;
+println!("{:?}", job.id());
+job.wait().await?;
+
+// Reattach using the same database connection settings.
+if let Some(id) = job.id() {
+    db.open_job(id).await?.wait().await?;
+}
+```
+</Tab>
+</Tabs>
 
 The method returns when the job is accepted. Waiting finishes when warming
 reaches a terminal state; a timeout does not cancel the job. Use
@@ -118,10 +162,10 @@ already-cached data is safe. Index prewarm keeps its existing behavior.
 
 <CardGroup cols={2}>
   <Card title="Data Page Cache" icon="database" href="/enterprise/data-page-cache">
-    The raw-data-page cache -- a separate cache from the one prewarm fills.
+    The raw-data-page cache populated by on-demand data prewarm jobs.
   </Card>
   <Card title="Tiered Index Cache" icon="layer-group" href="/enterprise/tiered-index-cache">
-    The deserialized-index cache prewarm fills.
+    The deserialized-index cache populated by startup index prewarm.
   </Card>
   <Card title="Architecture" icon="diagram-project" href="/index#architecture">
     Where plan executors and query nodes sit in the serving fleet.
