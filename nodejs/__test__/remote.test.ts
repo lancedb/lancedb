@@ -1108,30 +1108,30 @@ describe("remote connection", () => {
     expect(bodies).toEqual([
       {
         column: "embedding",
-        supervisor_resources: {
-          cpu_millis: 2_000,
-          memory_bytes: 4 * 1024 ** 3,
-          ephemeral_storage_bytes: 10 * 1024 ** 3,
+        ["supervisor_resources"]: {
+          ["cpu_millis"]: 2_000,
+          ["memory_bytes"]: 4 * 1024 ** 3,
+          ["ephemeral_storage_bytes"]: 10 * 1024 ** 3,
         },
-        planning_workers: {
+        ["planning_workers"]: {
           resources: {
-            cpu_millis: 1_000,
-            memory_bytes: 2 * 1024 ** 3,
-            ephemeral_storage_bytes: 5 * 1024 ** 3,
+            ["cpu_millis"]: 1_000,
+            ["memory_bytes"]: 2 * 1024 ** 3,
+            ["ephemeral_storage_bytes"]: 5 * 1024 ** 3,
           },
-          max_workers: 4,
-          rows_per_worker: 100_000,
-          fragments_per_worker: 8,
+          ["max_workers"]: 4,
+          ["rows_per_worker"]: 100_000,
+          ["fragments_per_worker"]: 8,
         },
-        retry_policy: {
-          max_attempts: 3,
-          initial_backoff_seconds: 0.2,
-          max_backoff_seconds: 30,
-          exception_types: [],
-          message_pattern: null,
-          error_codes: [],
+        ["retry_policy"]: {
+          ["max_attempts"]: 3,
+          ["initial_backoff_seconds"]: 0.2,
+          ["max_backoff_seconds"]: 30,
+          ["exception_types"]: [],
+          ["message_pattern"]: null,
+          ["error_codes"]: [],
           transient: true,
-          honor_retry_after: true,
+          ["honor_retry_after"]: true,
         },
       },
     ]);
