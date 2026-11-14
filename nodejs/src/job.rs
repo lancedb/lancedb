@@ -52,6 +52,45 @@ impl Job {
         self.inner.id().map(str::to_string)
     }
 
+    #[napi(getter)]
+    pub fn job_id(&self) -> Option<String> {
+        self.inner.job_id()
+    }
+
+    #[napi(getter)]
+    pub fn operation_id(&self) -> Option<String> {
+        self.inner.operation_id()
+    }
+
+    #[napi(getter)]
+    pub fn attempt(&self) -> Option<u32> {
+        self.inner.attempt()
+    }
+
+    #[napi(getter)]
+    pub fn retry_of(&self) -> Option<String> {
+        self.inner.retry_of()
+    }
+
+    #[napi(getter)]
+    pub fn lifecycle_state(&self) -> Option<String> {
+        self.inner
+            .lifecycle_state()
+            .map(|state| state.as_str().to_string())
+    }
+
+    #[napi(getter)]
+    pub fn source_table_version(&self) -> Option<f64> {
+        self.inner
+            .source_table_version()
+            .map(|version| version as f64)
+    }
+
+    #[napi(getter)]
+    pub fn execution_epoch(&self) -> Option<i64> {
+        self.inner.execution_epoch()
+    }
+
     /// The operation's current lifecycle state: "running", "finished",
     /// "failed", or "cancelled".
     ///
@@ -190,10 +229,19 @@ impl Job {
     /// This job's recorded lifecycle events, as an Arrow IPC stream buffer.
     /// The TypeScript wrapper turns it into an Arrow table.
     #[napi(catch_unwind)]
-    pub async fn events(&self, limit: Option<u32>, filter: Option<String>) -> napi::Result<Buffer> {
+    pub async fn events(
+        &self,
+        limit: Option<u32>,
+        filter: Option<String>,
+        page_token: Option<String>,
+    ) -> napi::Result<Buffer> {
         let batches = self
             .inner
-            .events(JobEventsRequest { limit, filter })
+            .events(JobEventsRequest {
+                limit,
+                filter,
+                page_token,
+            })
             .await
             .default_error()?;
         batches_to_ipc_buffer(&batches)

@@ -13,6 +13,8 @@ export interface JobEventsOptions {
   limit?: number;
   /** SQL-like filter over the event columns. */
   filter?: string;
+  /** Opaque continuation from the preceding page's schema metadata. */
+  pageToken?: string;
 }
 
 /**
@@ -93,6 +95,16 @@ export interface JobWaitOptions {
   /** Observe progress using the same poller that waits for completion. */
   onProgress?: JobProgressCallback;
 }
+/** Detailed lifecycle state. Unrecognized future values remain strings. */
+export type JobState =
+  | "created"
+  | "queued"
+  | "in_progress"
+  | "succeeded"
+  | "failed"
+  | "canceled"
+  | "timed_out"
+  | (string & {});
 
 /**
  * A handle to an operation that may still be running.
@@ -139,6 +151,52 @@ export class Job<T = void> {
    */
   get id(): string | null {
     return this.inner.id ?? null;
+  }
+
+  /** Stable attempt identity. Local IDs cannot be reopened on a server. */
+  get jobId(): string | null {
+    return this.inner.jobId ?? null;
+  }
+
+  /** Root of the explicit retry lineage, when reported. */
+  get operationId(): string | null {
+    return this.inner.operationId ?? null;
+  }
+
+  /** One-based attempt ordinal. Worker replacement does not increment it. */
+  get attempt(): number | null {
+    return this.inner.attempt ?? null;
+  }
+
+  /** Immediate predecessor attempt, when reported. */
+  get retryOf(): string | null {
+    return this.inner.retryOf ?? null;
+  }
+
+  /** Detailed state last observed; unknown values never establish success. */
+  get lifecycleState(): JobState | null {
+    return this.inner.lifecycleState ?? null;
+  }
+
+  /** Source snapshot pinned for this attempt, when reported. */
+  get sourceTableVersion(): number | null {
+    return this.inner.sourceTableVersion ?? null;
+  }
+
+  /** Most recent execution's fencing token, when reported. */
+  get executionEpoch(): number | null {
+    return this.inner.executionEpoch ?? null;
+  }
+
+  /** Refresh and return the detailed lifecycle state. */
+  async statusTyped(): Promise<JobState> {
+    const state = await this.status();
+    const aliases: Record<string, string> = {
+      running: "in_progress",
+      finished: "succeeded",
+      cancelled: "canceled",
+    };
+    return this.lifecycleState ?? aliases[state] ?? state;
   }
 
   /** The last observed lifecycle state, without contacting the backend. */
@@ -300,11 +358,31 @@ export class Job<T = void> {
    * `updated_by`, `emitted_from`, `emitted_by`, and `claim_entity` columns.
    */
   async events(options?: JobEventsOptions): Promise<ArrowTable> {
-    const buf = await this.inner.events(options?.limit, options?.filter);
+    const buf = await this.inner.events(
+      options?.limit,
+      options?.filter,
+      options?.pageToken,
+    );
     if (buf.length === 0) {
       return new ArrowTable();
     }
     return tableFromIPC(buf);
+  }
+
+  /** Walk retained history one page at a time using the server's continuation. */
+  async *history(options?: JobEventsOptions): AsyncGenerator<ArrowTable> {
+    let pageToken = options?.pageToken;
+    for (;;) {
+      const page = await this.events({ ...options, pageToken });
+      yield page;
+      const next = page.schema.metadata.get(
+        "lancedb.job_coordinator.page_token",
+      );
+      if (next === undefined) return;
+      if (next === pageToken)
+        throw new Error("Job history repeated its page token");
+      pageToken = next;
+    }
   }
 
   private lastProgress: JobProgress | null = null;
