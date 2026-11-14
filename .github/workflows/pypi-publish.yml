@@ -184,7 +184,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Build sdist
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           maturin-version: "1.12.4"
           command: sdist
@@ -311,7 +311,7 @@ jobs:
       # `docker://ghcr.io/<repo>:<ref>` image reference that GHA tries to pull.
       - name: Publish to PyPI
         if: steps.choose_repo.outputs.repo == 'pypi'
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: target/wheels/
   report-failure:
