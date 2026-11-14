@@ -13,6 +13,13 @@ import {
     PySchemaAddSetup,
 } from '/snippets/tables.mdx';
 
+<Note>
+Declare computed columns on ordinary tables. A materialized view derives its
+schema from its query; include the calculation in the view's `SELECT` instead
+of attaching a Function with `add_columns`. See
+[materialized-view schema changes](/feature-engineering/materialized-views#schema-changes).
+</Note>
+
 Lance can write a new column without rewriting the columns already in the
 table. That matters most on a table that also holds large images, video or
 embeddings, where rewriting everything just to add one small derived field

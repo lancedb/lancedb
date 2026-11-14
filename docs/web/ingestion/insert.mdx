@@ -150,9 +150,10 @@ Python and TypeScript report elapsed time in seconds; Rust returns a `Duration`.
 The expected row count may be unknown for streaming input. On the final update,
 it falls back to the number of rows written.
 
-For remote multipart writes, rows count input scanning, while bytes count
-acknowledged IPC parts. Bytes start at zero and a retried part is counted once,
-after acknowledgement. Scanned rows and staged bytes do not imply a commit.
+For remote multipart writes, both rows and IPC bytes count acknowledged parts.
+Both start at zero; a retried part is counted once, after acknowledgement.
+Scanning input or sending a rejected part does not advance these counts.
+Acknowledged parts are staged and do not imply a successful commit.
 
 Keep callbacks short and use the write operation's result to determine success.
 The final `done` update means progress reporting has ended; it can also occur

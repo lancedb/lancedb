@@ -115,14 +115,24 @@ impl NativeTable {
     pub(super) async fn prepare_index(
         &self,
         opts: &crate::index::IndexBuilder,
-    ) -> Result<PreparedIndex> {
+    ) -> Result<Option<PreparedIndex>> {
+        self.dataset.ensure_mutable()?;
+        let dataset = self.dataset.get().await?;
+        if opts.exist_ok
+            && let Some(name) = &opts.name
+            && dataset
+                .load_indices()
+                .await?
+                .iter()
+                .any(|index| &index.name == name)
+        {
+            return Ok(None);
+        }
         if opts.columns.len() != 1 {
             return Err(Error::Schema {
                 message: "Multi-column (composite) indices are not yet supported".to_string(),
             });
         }
-        self.dataset.ensure_mutable()?;
-        let dataset = self.dataset.get().await?;
         let (column, field) = if let Index::FTS(params) = &opts.index {
             let resolved = resolve_lance_fts_field_path(dataset.schema(), &opts.columns[0])?;
             if params.get_document_granularity().is_list_element() && resolved.list_depth == 0 {
@@ -137,9 +147,48 @@ impl NativeTable {
         } else {
             Self::resolve_index_field(dataset.schema(), &opts.columns[0])?
         };
+        if let Some(name) = Self::guarded_index_name(opts, &column)?
+            && dataset
+                .load_indices()
+                .await?
+                .iter()
+                .any(|index| index.name == name)
+        {
+            return Ok(None);
+        }
         let params = self.make_index_params(&field, opts.index.clone()).await?;
         let index_type = self.get_index_type_for_field(&field, &opts.index);
-        Ok((column, params, index_type))
+        Ok(Some((column, params, index_type)))
+    }
+
+    fn guarded_index_name(
+        opts: &crate::index::IndexBuilder,
+        column: &str,
+    ) -> Result<Option<String>> {
+        let name = if opts.exist_ok {
+            Some(if let Some(name) = &opts.name {
+                name.clone()
+            } else {
+                let names = lance_core::datatypes::parse_field_path(column)?;
+                let default_name = if matches!(&opts.index, Index::FTS(_))
+                    || names.iter().any(|name| name.contains('.'))
+                {
+                    column.to_string()
+                } else {
+                    names.join(".")
+                };
+                let suffix = if matches!(&opts.index, Index::FTS(params) if params.get_document_granularity().is_list_element())
+                {
+                    "_list_element_idx"
+                } else {
+                    "_idx"
+                };
+                format!("{default_name}{suffix}")
+            })
+        } else {
+            None
+        };
+        Ok(name)
     }
 
     /// Builds a prepared index and publishes the new dataset version.
@@ -150,16 +199,42 @@ impl NativeTable {
     ) -> Result<()> {
         let (column, lance_idx_params, index_type) = prepared;
         let mut dataset = (*self.dataset.get().await?).clone();
+        let guarded_name = Self::guarded_index_name(&opts, &column)?;
+        if let Some(name) = &guarded_name
+            && dataset
+                .load_indices()
+                .await?
+                .iter()
+                .any(|index| &index.name == name)
+        {
+            return Ok(());
+        }
         let columns = [column.as_str()];
         let mut builder = dataset
             .create_index_builder(&columns, index_type, lance_idx_params.as_ref())
             .train(opts.train)
-            .replace(opts.replace);
+            .replace(opts.replace && !opts.exist_ok);
 
-        if let Some(name) = opts.name {
+        if let Some(name) = guarded_name.clone().or(opts.name) {
             builder = builder.name(name);
         }
-        builder.await?;
+        if let Err(error) = builder.await {
+            if let Some(name) = guarded_name {
+                self.dataset.reload().await?;
+                if self
+                    .dataset
+                    .get()
+                    .await?
+                    .load_indices()
+                    .await?
+                    .iter()
+                    .any(|index| index.name == name)
+                {
+                    return Ok(());
+                }
+            }
+            return Err(error.into());
+        }
         // A writer already open was built before this index existed, so it has
         // to pick it up here or a read needing it is refused until it reopens.
         self.dataset
@@ -566,6 +641,63 @@ mod tests {
             .unwrap();
 
         Ok(FixedSizeListArray::from(data))
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_index_exist_ok_preserves_single_identity() {
+        let dir = tempdir().unwrap();
+        let db = connect(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let batch = record_batch!(("id", Int32, (0..512).collect::<Vec<_>>())).unwrap();
+        let table = db.create_table("t", batch).execute().await.unwrap();
+        let second = db.open_table("t").execute().await.unwrap();
+        let (left, right) = tokio::join!(
+            table
+                .create_index(&["id"], Index::BTree(Default::default()))
+                .exist_ok(true)
+                .execute(),
+            second
+                .create_index(&["id"], Index::BTree(Default::default()))
+                .exist_ok(true)
+                .execute()
+        );
+        left.unwrap();
+        right.unwrap();
+        table.checkout_latest().await.unwrap();
+        let indices = table
+            .as_native()
+            .unwrap()
+            .dataset
+            .get()
+            .await
+            .unwrap()
+            .load_indices()
+            .await
+            .unwrap();
+        assert_eq!(indices.len(), 1);
+        let original_uuid = indices[0].uuid;
+        let version = table.version().await.unwrap();
+        table
+            .create_index(&["id"], Index::BTree(Default::default()))
+            .replace(true)
+            .exist_ok(true)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.version().await.unwrap(), version);
+        let indices = table
+            .as_native()
+            .unwrap()
+            .dataset
+            .get()
+            .await
+            .unwrap()
+            .load_indices()
+            .await
+            .unwrap();
+        assert_eq!(indices[0].uuid, original_uuid);
     }
 
     #[tokio::test]

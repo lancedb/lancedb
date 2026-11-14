@@ -81,7 +81,7 @@
     },
     {
       "source": "/basics/offerings",
-      "destination": "/#architecture"
+      "destination": "/basics/embedded-vs-enterprise"
     },
     {
       "source": "/enterprise/deployment",
@@ -496,6 +496,7 @@
               "management/materialized-view",
               "management/secret",
               "management/function",
+              "management/function-failures",
               "management/storage-integration"
             ]
           },

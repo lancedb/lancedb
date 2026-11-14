@@ -1225,12 +1225,18 @@ LanceDB Enterprise it is the server's backfill job.
     `REFRESH COLUMN ... WHERE ... WITH (...)` form: `where` narrows the rows,
     `errorPolicy`, `maxFailedFraction`, `maxFailedRows`, `rowTimeoutSeconds`
     and `initTimeoutSeconds` govern failing rows. `batchSize`, `gpuClass`,
-    `maxConcurrency`, `resourceBudget` and
-    `maxExecutorProcessesPerWorker` size registered Function refreshes.
+    `maxConcurrency`, `resourceBudget`, `supervisorResources`,
+    `planningWorkers` and `maxExecutorProcessesPerWorker` size registered
+    Function refreshes. `retryPolicy` overrides user-code retries only when
+    repeating partial work is safe; set `maxAttempts: 1` to disable retries.
     `maxConcurrency` overrides the registered default for this logical
     execution only and is a positive integer; it is not an account-wide
     quota. A `resourceBudget` requires `cpuMillis` and
     `memoryBytes`; its `gpuCount` defaults to zero for a CPU-only Function.
+    `supervisorResources` and each `planningWorkers.resources` entry require
+    positive `cpuMillis`, `memoryBytes` and `ephemeralStorageBytes`.
+    `planningWorkers` also requires positive `maxWorkers`,
+    `rowsPerWorker` and `fragmentsPerWorker`.
     The budget applies only to this explicit refresh and does not configure
     a later automatic refresh.
     `gpuCount` at the top level is the shorthand that preserves the

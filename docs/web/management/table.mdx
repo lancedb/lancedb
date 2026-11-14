@@ -270,6 +270,18 @@ Renaming is not supported on a local directory connection. In LanceDB Enterprise
 whether a table can be renamed or cloned at all depends on how the deployment
 stores its catalog.
 
+{/* Draft for the table-clone exist_ok release.
+
+Pass `exist_ok=True` to keep an existing target table, including its data and
+version history, instead of reporting a duplicate. The source is used only when
+the target is missing. Remote use requires a deployment that supports this option.
+
+```python
+db.clone_table("docs_snapshot", source_uri="s3://bucket/db/documents.lance", exist_ok=True)
+```
+
+*/}
+
 A **shallow** clone (the default) references the source's data files rather
 than copying them, so it is fast and cheap regardless of table size. It is the
 practical way to branch an experiment off a known version, or to pin a training
@@ -707,6 +719,25 @@ table changes while the query runs, the query runs again, up to three times:
     {TsBlobApiBytesMode}
     </CodeBlock>
 </CodeGroup>
+
+{/* Draft for the Enterprise TypeScript bytes release. Replace the retry guidance above only after SDK and serving-node rollout.
+
+Local queries retry up to three times if the table changes while they run.
+Remote queries instead bind payload fetches to the version and immutable
+snapshot identity from the executed query response. They do not rerun the query
+against a newer version to recover missing payloads. Both `toArray()` and
+`toArrow()` discover Blob fields from that response, including fields added
+after the table handle was opened.
+
+Every serving node must support `x-lancedb-query-version` and
+`x-lancedb-query-snapshot`, enforce the requested identity when fetching bytes,
+and echo it in the fetch response. Proxies must forward these headers. Missing
+or mismatched provenance fails explicitly; use `blobMode: "descriptions"` until
+the rollout is complete. Keep queried versions available for deferred reads:
+snapshot identities do not prevent version deletion. Dropping and recreating a
+table cannot substitute the replacement's bytes, even if its version is reused.
+Hybrid byte queries require matching snapshot provenance from both responses.
+*/}
 
 #### Read blobs on demand {#multimodal-read-blobs}
 

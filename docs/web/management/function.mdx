@@ -66,11 +66,43 @@ your process, without the database, so unit tests stay ordinary tests:
 
 Where annotations cannot express the Arrow type precisely, pass `input_schema`
 and `output_schema` together: one without the other is rejected. A scalar
-output must be non-nullable, because a physical NULL is what marks a
-computed-column row as unfilled. A named-struct output may declare nullable
-fields: whether a row has a result at all is the struct's own validity, which
-Enterprise keeps in a separate internal column when it expands the result into
-sibling columns, so a null field is a value rather than a missing row.
+output is non-nullable by default. Annotate the return as `Optional[T]` or
+`T | None`, or pass a nullable output field, to declare a nullable scalar:
+
+```python
+import pyarrow as pa
+
+from lancedb import function
+
+
+@function(
+    input_schema=pa.schema([pa.field("value", pa.int64(), nullable=False)]),
+    output_schema=pa.field("result", pa.int64(), nullable=True),
+)
+def maybe_double(value: int) -> int | None:
+    return None if value == 0 else value * 2
+```
+
+The signature sent in the registration request then carries the nullable
+scalar:
+
+```json
+{
+  "inputs": [{"name": "value", "arrow_type": "int64", "nullable": false}],
+  "output": {"kind": "scalar", "arrow_type": "int64", "nullable": true}
+}
+```
+
+<Note>
+Nullable scalar outputs require an Enterprise server that supports them;
+older servers reject the registration. On a supporting server, a computed
+`NULL` counts as a filled result, independently of its stored value.
+</Note>
+
+A named-struct output may declare nullable fields: whether a row has a result
+at all is the struct's own validity, which Enterprise keeps in a separate
+internal column when it expands the result into sibling columns, so a null
+field is a value rather than a missing row.
 
 ### Maps and decimals {#maps-decimals}
 
@@ -150,6 +182,19 @@ single `id` is the SQL query UUID. Repeated waits reuse the completed result.
 with `db.get_function(name, version=...)`. The version may be an integer or
 its string form. Omit `version` to resolve and return the latest currently
 visible revision.
+
+{/* Draft for the function exist_ok release.
+
+Use `exist_ok=True` on `create_function` or `create_function_async` to return
+the existing named version without changing its code, credentials or settings.
+This requires a deployment that supports the option. The default retains the
+current behavior of registering a new version.
+
+```python
+version = db.create_function(embed, exist_ok=True)
+```
+
+*/}
 
 <Note>
 The SQL command submits an internal `create_function` image-build job and
@@ -239,6 +284,52 @@ The column is declared empty; the function has not run yet. A mapping with one
 function application keeps its scalar or named-struct result in the named
 column. A bare named-struct application expands its result fields as one atomic
 binding, with aliases from `rename(columns=...)`.
+
+{/* Draft for the Function literal binding release.
+
+### Bind a constant input {#literal-inputs}
+
+<Note>
+Literal inputs require an SDK that supports binding metadata version 2 and an
+Enterprise deployment with matching literal declaration and execution support.
+Upgrading the SDK alone does not enable this server capability. Older clients
+reject version 2 bindings; column-only bindings continue to use version 1.
+</Note>
+
+Use `lit(...)` to pass the same value for every row while another parameter
+reads a column. For example, using the table above:
+
+<CodeGroup>
+```python Python icon="python"
+from lancedb import col, function, lit
+
+
+@function
+def multiply(value: float, factor: int) -> float:
+    return value * factor
+
+
+multiplier = db.create_function_async(multiply).wait()
+table.add_columns(
+    {"scaled": multiplier(value=col("value"), factor=lit(16))},
+    auto_refresh_enabled=False,
+)
+```
+</CodeGroup>
+
+Supported scalar constants are booleans, strings, integers from `-(2**63)`
+through `2**64 - 1`, and `None` for a nullable parameter. Each value must match
+the parameter's declared type. Floating-point, binary, date, datetime and
+decimal constants are not supported in Function input bindings, even though
+`lit(...)` accepts them in other SQL expressions. Bind a direct literal;
+expressions such as `lit(16) + lit(8)` are not supported here.
+
+The constant belongs to the column binding, so the Function version and its
+image stay the same. Only column inputs contribute table dependencies. Refresh
+`scaled` to fill it. To change the constant to `lit(8)`, drop and redeclare the
+column using the same `multiplier` version; the new binding needs a refresh.
+
+*/}
 
 ### Bind more than one input, or fill more than one column {#multi}
 
@@ -447,6 +538,9 @@ full worked example.
 
 ## Failure handling {#failures}
 
+For the full skip, inspect, grouped-error, stable-row-ID retry and quarantine
+workflow, see [Handle Function failures](/management/function-failures).
+
 By default, a Function that raises fails the refresh job. Choose how the
 refresh handles row errors with its error policy:
 
@@ -521,6 +615,47 @@ seen and unsupported where it cannot: `globals()`, `eval`, `sys.modules`,
 In practice this means a function should be self-contained: take its inputs as
 arguments, import what it needs at module level, and avoid capturing state from
 the surrounding scope.
+
+### Supported global captures {#captures}
+
+The Python SDK's source packager captures only these literal values:
+
+| Module-level value | Packaging behavior |
+| --- | --- |
+| `None`, exact `bool`, `int`, `str`, `bytes`, finite `float` | Inlined as a snapshot at registration. |
+| Tuples containing only those values, including nested tuples | Recursively inlined. |
+| Imported modules, importable functions/classes | Reconstructed as imports; declare their packages in `pip` or `conda`, or ship local source with `code`. |
+| Arrow types/schemas, lists, dictionaries, sets, NumPy arrays, non-finite floats, other objects | Not captured as literals. Construct them inside the Function or class. |
+
+For example, a module-level `OUT_TYPE = pa.list_(pa.float32(), 3)` referenced
+from the Function body is unsupported. Construct the type where it is used:
+
+```python
+import pyarrow as pa
+from lancedb import function
+
+@function(
+    input_schema=pa.schema([pa.field("value", pa.float32(), nullable=False)]),
+    output_schema=pa.list_(pa.float32(), 3),
+)
+def make_vector(value: pa.Array) -> pa.Array:
+    out_type = pa.list_(pa.float32(), 3)
+    return pa.array([[v, v, v] for v in value.to_pylist()], type=out_type)
+```
+
+Decorator schema arguments are serialized as the signature; this restriction
+concerns values referenced by the packaged body. For an expensive constant or
+model, build it in a class Function's `__init__` and keep it on `self`.
+
+Later mutations of a client global do not update a registered version. Register
+a new version to change captured literals or source. The diagnostic fix in
+[SDK #4938](https://github.com/lancedb/lancedb/pull/4938) names the unsupported
+global and its type; it does not add Arrow/container capture support. There is
+no supported arbitrary-object serialization or documented container-size limit
+to rely on for those rejected types.
+
+See the [Function type matrix](/curation/create-function#signature-types) for
+what can travel as row inputs and outputs rather than captured globals.
 
 Pass `code=[module, ...]` to ship additional helper modules into the same
 image, for logic the function imports but that does not belong inlined into

@@ -261,6 +261,35 @@ impl<S: HttpSend> JobHandle for RemoteJob<S> {
         Ok(trace)
     }
 
+    async fn stats(&self) -> Result<Option<String>> {
+        let request = self
+            .client
+            .post("/v1/jobs/stats")
+            .json(&serde_json::json!({"job_id": self.job_id}));
+        let (request_id, response) = self.client.send(request).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        let response: serde_json::Value =
+            serde_json::from_str(&body).map_err(|error| Error::Http {
+                source: format!("failed to parse job statistics: {error}").into(),
+                request_id: request_id.clone(),
+                status_code: None,
+            })?;
+        if response.get("job_id").and_then(serde_json::Value::as_str) == Some(self.job_id.as_str())
+        {
+            match response.get("report") {
+                Some(serde_json::Value::Null) => return Ok(None),
+                Some(serde_json::Value::String(report)) => return Ok(Some(report.clone())),
+                _ => {}
+            }
+        }
+        Err(Error::Http {
+            source: "server response is not a Function job run report; job statistics require server support".into(),
+            request_id,
+            status_code: None,
+        })
+    }
+
     async fn events(&self, request: JobEventsRequest) -> Result<Vec<RecordBatch>> {
         let mut body = serde_json::json!({ "job_id": self.job_id });
         if let Some(limit) = request.limit {
@@ -293,14 +322,32 @@ impl<S: HttpSend> JobHandle for RemoteJob<S> {
             match description.state() {
                 JobState::Done => return Ok(description.into_terminal_result(request_id)),
                 JobState::Failed => {
+                    let mut failure = description
+                        .failure
+                        .map(ReportedFailure::into_job_failure)
+                        .unwrap_or_default();
+                    // The responding query node may have upgraded since this job
+                    // failed. Only its persisted terminal writer identifies the failure.
+                    if let Some(server) = description
+                        .result
+                        .as_ref()
+                        .and_then(|result| result.get("terminal_server"))
+                        .and_then(|server| {
+                            serde_json::from_value::<crate::server_info::ServerBuildInfo>(
+                                server.clone(),
+                            )
+                            .ok()
+                        })
+                    {
+                        let provenance = format!("[server: {server}]");
+                        failure.message = Some(match failure.message {
+                            Some(message) => format!("{message} {provenance}"),
+                            None => provenance,
+                        });
+                    }
                     return Err(Error::JobFailed {
                         job_id: Some(self.job_id.clone()),
-                        failure: Box::new(
-                            description
-                                .failure
-                                .map(ReportedFailure::into_job_failure)
-                                .unwrap_or_default(),
-                        ),
+                        failure: Box::new(failure),
                     });
                 }
                 JobState::Cancelled => {
@@ -353,6 +400,74 @@ mod tests {
     const UNIT_JOB: &str =
         include_str!("../../tests/fixtures/first_class_functions/v1/remote_unit_job.json");
     const MISSING_RESULT_JOB: &str = r#"{"job_state":"DONE"}"#;
+
+    #[tokio::test]
+    async fn stats_reads_report_verbatim_and_preserves_unavailable_without_waiting() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let seen = requests.clone();
+        let report = "Function job: finished\nWorker utilization: unavailable\n";
+        let client = client_with_handler(move |request| {
+            assert_eq!(request.method(), reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/jobs/stats");
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(body, serde_json::json!({"job_id":"job-1"}));
+            let response = if seen.fetch_add(1, Ordering::SeqCst) == 0 {
+                serde_json::json!({"job_id":"job-1","profile":null,"report":null})
+            } else {
+                serde_json::json!({"job_id":"job-1","profile":{"future_field":17},"report":report})
+            };
+            http::Response::builder()
+                .status(200)
+                .body(response.to_string())
+                .unwrap()
+        });
+        let job = Job::new(Box::new(RemoteJob::new(client, "job-1".to_string())));
+        assert_eq!(job.stats().await.unwrap(), None);
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        assert_eq!(job.stats().await.unwrap().as_deref(), Some(report));
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn stats_rejects_malformed_or_unrelated_responses() {
+        for body in [
+            "{",
+            r#"{"job_id":"job-1"}"#,
+            r#"{"job_id":"job-1","report":7}"#,
+            r#"{"job_id":"another-job","report":"a report"}"#,
+        ] {
+            let client = client_with_handler(move |_| {
+                http::Response::builder().status(200).body(body).unwrap()
+            });
+            let error = RemoteJob::new(client, "job-1".to_string())
+                .stats()
+                .await
+                .unwrap_err();
+            assert!(matches!(error, crate::Error::Http { .. }));
+            assert!(error.to_string().contains("job statistics"));
+        }
+    }
+
+    #[tokio::test]
+    async fn stats_preserves_not_found_errors() {
+        let client = client_with_handler(|_| {
+            http::Response::builder()
+                .status(404)
+                .body("job not found")
+                .unwrap()
+        });
+        let error = RemoteJob::new(client, "missing".to_string())
+            .stats()
+            .await
+            .unwrap_err();
+        match error {
+            crate::Error::Http { status_code, .. } => {
+                assert_eq!(status_code, Some(reqwest::StatusCode::NOT_FOUND));
+            }
+            other => panic!("expected HTTP 404, got {other:?}"),
+        }
+    }
 
     struct FixtureRemoteJob(&'static str);
 
@@ -564,5 +679,73 @@ mod tests {
         );
         assert_eq!(failure.retryable, Some(true));
         assert_eq!(failure.sql_job_id.as_deref(), Some("job-1"));
+    }
+
+    #[tokio::test]
+    async fn wait_failure_uses_persisted_terminal_build() {
+        let server = serde_json::json!({
+            "release": "1.13.0-beta.0",
+            "git_sha": "2a7874ecd589",
+            "build_date": "2026-11-12T22:45:43Z"
+        });
+        for result in [
+            serde_json::Value::Null,
+            serde_json::json!({"terminal_server": null}),
+            serde_json::json!({"terminal_server": {"release": "incomplete"}}),
+            serde_json::json!({"terminal_server": server}),
+        ] {
+            let known_build = result["terminal_server"] == server;
+            let response = serde_json::json!({
+                "job_id": "job-1",
+                "job_state": "FAILED",
+                "failure": {
+                    "phase": "function_refresh_attempt_failed",
+                    "message": "ValueError: corrupt frame at frame_index=207",
+                    "traceback": "Traceback: original user code",
+                    "retryable": false
+                },
+                "result": result
+            });
+            let client = client_with_handler(move |request| {
+                assert_eq!(request.url().path(), "/v1/jobs/describe");
+                http::Response::builder()
+                    .status(200)
+                    .header(
+                        "x-lancedb-server-build",
+                        r#"{"release":"2.0.0","git_sha":"new-query-node"}"#,
+                    )
+                    .body(response.to_string())
+                    .unwrap()
+            });
+            let job = RemoteJob::new(client, "job-1".to_string());
+            let description = job.describe().await.unwrap();
+            assert_eq!(
+                description.result.as_ref(),
+                (!result.is_null()).then_some(&result)
+            );
+            assert_eq!(
+                description.failure.unwrap().message.as_deref(),
+                Some("ValueError: corrupt frame at frame_index=207")
+            );
+            let error = job.wait().await.err().expect("failed job");
+            let mut expected =
+                "Job job-1 failed: ValueError: corrupt frame at frame_index=207".to_string();
+            if known_build {
+                expected.push_str(
+                    " [server: 1.13.0-beta.0 (git 2a7874ecd589, built 2026-11-12T22:45:43Z)]",
+                );
+            }
+            expected.push_str(" (in function_refresh_attempt_failed)");
+            assert_eq!(error.to_string(), expected);
+            let crate::error::Error::JobFailed { job_id, failure } = error else {
+                panic!("expected JobFailed");
+            };
+            assert_eq!(job_id.as_deref(), Some("job-1"));
+            assert_eq!(
+                failure.traceback.as_deref(),
+                Some("Traceback: original user code")
+            );
+            assert_eq!(failure.retryable, Some(false));
+        }
     }
 }
