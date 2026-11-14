@@ -820,6 +820,57 @@ async def test_query_progress_preserves_terminal_exceptions(error):
 
 
 @pytest.mark.asyncio
+async def test_query_progress_display_has_no_row_counter_and_closes_on_failure(
+    monkeypatch,
+):
+    tqdm_module = pytest.importorskip("tqdm.auto")
+    bar = MagicMock()
+    bar.n = 0
+    bar.total = None
+    constructor = MagicMock(return_value=bar)
+    monkeypatch.setattr(tqdm_module, "tqdm", constructor)
+    inner = _RegistrationQuery(JobFailedError("bake failed"))
+    inner.ready.set()
+
+    with pytest.raises(JobFailedError, match="bake failed"):
+        await AsyncJob(inner).wait(progress=True)
+    assert "elapsed" in constructor.call_args.kwargs["bar_format"]
+    assert "rows" not in str(constructor.call_args)
+    assert bar.set_postfix_str.call_args.args == ("failed",)
+    bar.close.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed", [False, True])
+@pytest.mark.parametrize("observer_error", ["status", "callback"])
+async def test_query_progress_observer_errors_do_not_replace_result_or_server_failure(
+    failed, observer_error, caplog
+):
+    error = (
+        JobFailedError("bake failed", job_id="registration-query") if failed else None
+    )
+    inner = _RegistrationQuery(error)
+    inner.ready.set()
+    if observer_error == "status":
+        inner.status = AsyncMock(side_effect=RuntimeError("observer failed"))
+
+    def observe(snapshot):
+        if observer_error == "callback":
+            raise RuntimeError("observer failed")
+
+    job = AsyncJob(inner, json.loads)
+    if failed:
+        with pytest.raises(JobFailedError) as raised:
+            await job.wait(progress=observe)
+        assert raised.value is error
+    else:
+        assert await job.wait(progress=observe) == {"version": "1"}
+    assert inner.wait_calls == 1
+    assert inner.cancel_calls == 0
+    assert "job progress observer failed" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_query_progress_timeout_keeps_registration_available_on_same_handle():
     inner = _RegistrationQuery()
     job = AsyncJob(inner, json.loads)
