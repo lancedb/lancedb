@@ -412,6 +412,28 @@ async def test_create_table_from_iterator_async(mem_db_async: lancedb.AsyncConne
     assert await table.count_rows() == 10
 
 
+@pytest.mark.parametrize(
+    "batches",
+    [
+        [[{"id": 1, "text": "foo"}], [{"id": "two", "text": "bar"}]],
+        [[{"id": 1, "text": "foo"}], [{"id": [2], "text": "bar"}]],
+        [[{"id": 1, "text": "foo"}], [{"id": 2, "text": "bar", "extra": 0}]],
+        [
+            pd.DataFrame({"id": [1], "text": ["foo"]}),
+            pd.DataFrame({"id": ["two"], "text": ["bar"]}),
+        ],
+    ],
+    ids=["invalid_cast", "unsupported_cast", "extra_column", "dataframes"],
+)
+def test_create_table_from_iterator_with_mismatched_batches(
+    mem_db: lancedb.DBConnection, batches
+):
+    with pytest.raises(
+        RuntimeError, match="does not match the schema of other batches"
+    ):
+        mem_db.create_table("test", data=iter(batches))
+
+
 def test_create_exist_ok_mode(tmp_db: lancedb.DBConnection):
     db = tmp_db
     data = [{"vector": [1.1, 1.2]}, {"vector": [0.2, 1.8]}]
