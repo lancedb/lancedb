@@ -1662,10 +1662,9 @@ mod tests {
             .remove("linux/arm64");
         let missing_platform = FunctionVersion::from_json(&document.to_string()).unwrap();
         assert!(
-            missing_platform
+            !missing_platform
                 .resolved_environments()
-                .get("linux/arm64")
-                .is_none()
+                .contains_key("linux/arm64")
         );
 
         document["resolved_environments"] = serde_json::json!({});
