@@ -1004,9 +1004,13 @@ class DBConnection(EnforceOverrides):
         definition: FunctionDefinition,
         *,
         secrets: Optional[Sequence[EnvVarSecret]] = None,
+        exist_ok: bool = False,
         namespace_path: Optional[List[str]] = None,
     ) -> FunctionVersion:
         """Build and register a scalar Python function, then return its version.
+
+        ``exist_ok=True`` returns the existing named Function version unchanged.
+        By default, registration retains its existing version-creation behavior.
 
         The server builds the OCI image and registers the completed artifact.
         This is the blocking counterpart of :meth:`create_function_async`.
@@ -1040,7 +1044,10 @@ class DBConnection(EnforceOverrides):
         ```
         """
         return self.create_function_async(
-            definition, secrets=secrets, namespace_path=namespace_path
+            definition,
+            secrets=secrets,
+            exist_ok=exist_ok,
+            namespace_path=namespace_path,
         ).wait()
 
     def create_function_async(
@@ -1048,9 +1055,13 @@ class DBConnection(EnforceOverrides):
         definition: FunctionDefinition,
         *,
         secrets: Optional[Sequence[EnvVarSecret]] = None,
+        exist_ok: bool = False,
         namespace_path: Optional[List[str]] = None,
     ) -> Job[FunctionVersion]:
         """Submit a scalar Python function for building and registration.
+
+        ``exist_ok=True`` preserves an existing named version and its metadata.
+        The default retains the existing version-creation behavior.
 
         The server-side job builds the OCI image, then registers the completed
         artifact. The returned job has type ``query`` and the SQL query UUID as
@@ -2396,11 +2407,15 @@ class LanceDBConnection(DBConnection):
         definition: FunctionDefinition,
         *,
         secrets: Optional[Sequence[EnvVarSecret]] = None,
+        exist_ok: bool = False,
         namespace_path: Optional[List[str]] = None,
     ) -> Job[FunctionVersion]:
         job = LOOP.run(
             self._conn.create_function_async(
-                definition, secrets=secrets, namespace_path=namespace_path
+                definition,
+                secrets=secrets,
+                exist_ok=exist_ok,
+                namespace_path=namespace_path,
             )
         )
         return Job(job)
@@ -3732,9 +3747,13 @@ class AsyncConnection(object):
         definition: FunctionDefinition,
         *,
         secrets: Optional[Sequence[EnvVarSecret]] = None,
+        exist_ok: bool = False,
         namespace_path: Optional[List[str]] = None,
     ) -> AsyncJob[FunctionVersion]:
         """Submit a scalar Python function for building and registration.
+
+        ``exist_ok=True`` preserves an existing named version and its metadata.
+        The default retains the existing version-creation behavior.
 
         The server-side job builds the OCI image, then registers the completed
         artifact. The returned job has type ``query`` and the SQL query UUID as
@@ -3749,7 +3768,7 @@ class AsyncConnection(object):
             raise TypeError("create_function_async requires a @function definition")
         request = definition.bind_secrets(secrets)
         inner = await self._inner.create_function_async(
-            request.to_canonical_json(), namespace_path
+            request.to_canonical_json(), namespace_path, exist_ok=exist_ok
         )
         return _typed_job(inner, FunctionVersion.from_json)
 
