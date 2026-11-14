@@ -1051,6 +1051,7 @@ class DBConnection(EnforceOverrides):
         exist_ok: bool = False,
         namespace_path: Optional[List[str]] = None,
         refresh_lock: bool = False,
+        progress: Any = False,
     ) -> FunctionVersion:
         """Build and register a scalar Python function, then return its version.
 
@@ -1076,6 +1077,9 @@ class DBConnection(EnforceOverrides):
         refresh_lock : bool, default False
             Ask the server to resolve a fresh environment lock instead of
             reusing the published version's lock.
+        progress : bool, callable, or tqdm-like object, default False
+            Display lifecycle state and elapsed time, or receive structured
+            snapshots through a callback. See [Job.wait][lancedb.job.Job.wait].
 
         When the registration job resolves, each resolved-environment warning
         reported by the server is emitted as a Python ``UserWarning``. Catalog
@@ -1101,7 +1105,7 @@ class DBConnection(EnforceOverrides):
             exist_ok=exist_ok,
             namespace_path=namespace_path,
             refresh_lock=refresh_lock,
-        ).wait()
+        ).wait(progress=progress)
 
     def create_function_async(
         self,

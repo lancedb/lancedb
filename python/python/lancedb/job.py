@@ -6,6 +6,7 @@
 import asyncio
 import reprlib
 import time
+from contextlib import suppress
 from datetime import timedelta
 from os import PathLike
 from pathlib import Path
@@ -53,11 +54,13 @@ def _timeout_message(
     )
 
 
-def _normalize_job_progress(progress):
+def _normalize_job_progress(progress, *, query=False):
     """Normalize ``wait(progress=...)`` using the same convention as writes."""
     if progress is True:
         from tqdm.auto import tqdm
 
+        if query:
+            return tqdm(bar_format="{postfix} [{elapsed}]"), True
         return tqdm(unit=" rows"), True
     if progress is False or progress is None:
         return None, False
@@ -65,6 +68,7 @@ def _normalize_job_progress(progress):
 
 
 _ETA_MAX_SAMPLE_INTERVAL_MILLIS = 10 * 60 * 1_000
+_QUERY_PROGRESS_INTERVAL_SECONDS = 1.0
 
 
 def _progress_eta(previous, current):
@@ -203,6 +207,7 @@ class AsyncJob(Generic[T]):
         self._inner = inner
         self._result_decoder = result_decoder
         self._last_progress_snapshot = None
+        self._created_at = time.monotonic()
 
     def _enrich_progress(self, snapshot):
         enriched = _with_progress_eta(self._last_progress_snapshot, snapshot)
@@ -235,7 +240,10 @@ class AsyncJob(Generic[T]):
     async def progress(self) -> Optional[dict[str, Any]]:
         """Fetch a structured progress snapshot.
 
-        Registry jobs always report lifecycle fields. Queue metadata and
+        Registry jobs always report lifecycle fields. SQL query handles report
+        lifecycle state and ``client_elapsed_time_millis``, measured since this
+        handle was created. They do not expose server build phases or logs.
+        Queue metadata and
         counters are included when supplied by the server. Older servers may
         omit counters, and in-process operations return ``None``. A missing
         counter is unknown rather than zero. This is additive to :meth:`status`,
@@ -243,9 +251,18 @@ class AsyncJob(Generic[T]):
         """
         if self._inner is None:
             return None
-        await self._inner.status()
+        state = await self._inner.status()
         description = getattr(self._inner, "_description", None)
         if description is None or description.progress is None:
+            if self.job_type == "query":
+                return {
+                    "job_id": self.id,
+                    "job_type": "query",
+                    "state": state,
+                    "client_elapsed_time_millis": int(
+                        (time.monotonic() - self._created_at) * 1_000
+                    ),
+                }
             return None
         return self._enrich_progress(description.progress)
 
@@ -270,6 +287,13 @@ class AsyncJob(Generic[T]):
         new execution epoch or smaller plan resets the bar to that plan.
         ``False`` preserves the original wait behavior.
 
+        For SQL-backed Function registration, progress shows the query's
+        lifecycle state and client elapsed time. It observes the existing
+        query handle while its original waiter runs; it does not resubmit or
+        cancel the registration. Detailed bake phases and build logs are not
+        available from the current query handle. Failure exceptions retain the
+        server's cause and request identifiers.
+
         Raises `JobFailedError` if the operation failed, `JobCancelledError`
         if it was cancelled, and `TimeoutError` if `timeout` elapses first.
         Transient connection and read errors are retried with capped exponential
@@ -285,7 +309,9 @@ class AsyncJob(Generic[T]):
         """
         if self._inner is None:
             return cast(T, None)
-        progress_obj, owns = _normalize_job_progress(progress)
+        progress_obj, owns = _normalize_job_progress(
+            progress, query=self.job_type == "query"
+        )
         progress_callback = _job_progress_callback(progress_obj, self._enrich_progress)
         last_error = None
 
@@ -311,13 +337,40 @@ class AsyncJob(Generic[T]):
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 30.0)
 
+        async def observe_query():
+            waiter = asyncio.create_task(wait_with_retries())
+            try:
+                while not waiter.done():
+                    snapshot = await self.progress()
+                    if snapshot is not None:
+                        progress_callback(snapshot)
+                    await asyncio.wait(
+                        {waiter}, timeout=_QUERY_PROGRESS_INTERVAL_SECONDS
+                    )
+                try:
+                    return await waiter
+                finally:
+                    snapshot = await self.progress()
+                    if snapshot is not None:
+                        progress_callback(snapshot)
+            finally:
+                if not waiter.done():
+                    waiter.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await waiter
+
+        wait_for_result = (
+            observe_query
+            if self.job_type == "query" and progress_callback is not None
+            else wait_with_retries
+        )
         try:
             try:
                 if timeout is None:
-                    result = await wait_with_retries()
+                    result = await wait_for_result()
                 else:
                     result = await asyncio.wait_for(
-                        wait_with_retries(), timeout.total_seconds()
+                        wait_for_result(), timeout.total_seconds()
                     )
             except asyncio.TimeoutError as error:
                 if last_error is None:
