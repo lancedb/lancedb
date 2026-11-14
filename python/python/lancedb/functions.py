@@ -911,6 +911,220 @@ class FunctionBinding(_RemoteValue):
         return reader.read_all().to_pylist()[0]
 
 
+class FunctionErrorGroup(_RemoteValue):
+    """A grouped cause among returned Function failures."""
+
+    column: str
+    error_type: str
+    error_message: str
+    rows_failed: _UInt64
+
+
+class FunctionValueProvenance(_RemoteValue):
+    """The Function version and job that produced one stored value."""
+
+    column: str
+    job_id: str
+    function_name: str
+    function_version: str
+    row_id: Optional[_UInt64] = None
+    row_address: Optional[_UInt64] = None
+    source_version: _UInt64
+    published_version: _UInt64
+
+
+class FunctionProvenance(_RemoteValue):
+    """A bounded per-row producing-version listing for a table snapshot."""
+
+    records: tuple[FunctionValueProvenance, ...]
+    truncated: bool = False
+
+
+class _FunctionErrors:
+    """Current Function failures, with grouped causes and source-row lookup.
+
+    Check ``truncated`` and ``fragments`` before treating a listing as complete.
+    ``history=True`` on ``table.function_errors`` returns retained past records.
+    """
+
+    def __init__(self, raw: Any, table: Any, *, history: bool = False):
+        self._raw = raw
+        self._table = table
+        self._history = history
+        self.records = raw.records
+        self.fragments = raw.fragments
+        self.truncated = raw.truncated
+
+    def __repr__(self) -> str:
+        return repr(self._raw)
+
+    def as_sync(self, table: Any) -> FunctionErrors:
+        return FunctionErrors(self._raw, table, history=self._history)
+
+    def summary(self) -> list[FunctionErrorGroup]:
+        """Group returned failures by column, exception class, and message.
+
+        Raises when records are incomplete, so sampled counts cannot be mistaken
+        for totals. Narrow the request by column or job, or raise its limit.
+        """
+        if (getattr(self._raw, "workflow_version", None) or 0) < 1:
+            raise NotImplementedError(
+                "The server does not support the current Function failure workflow"
+            )
+        if (
+            self.truncated
+            or self.fragments
+            or any(
+                record.row_offset is None and record.input is None
+                for record in self.records
+            )
+        ):
+            raise ValueError(
+                "Function errors are incomplete; narrow the request or raise limit"
+            )
+        groups: dict[tuple[str, str, str], int] = {}
+        for record in self.records:
+            if record.row_offset is None and record.input is None:
+                continue
+            message = record.error_message
+            if record.input is not None:
+                message = message.split("\nSource input: ", 1)[0].split(
+                    "\nFunction input ", 1
+                )[0]
+            key = (record.column, record.error_type, message)
+            groups[key] = groups.get(key, 0) + 1
+        return [
+            FunctionErrorGroup(
+                column=column, error_type=kind, error_message=message, rows_failed=count
+            )
+            for (column, kind, message), count in sorted(groups.items())
+        ]
+
+    def _identities(self) -> dict[tuple[str, int], list[Any]]:
+        if (getattr(self._raw, "workflow_version", None) or 0) < 1:
+            raise NotImplementedError(
+                "The server does not support the current Function failure workflow"
+            )
+        if self._history:
+            raise ValueError(
+                "Source-row lookup requires current failures; "
+                "read retained history through records"
+            )
+        if self.truncated or self.fragments:
+            raise ValueError(
+                "Function errors are incomplete; narrow the request or raise limit"
+            )
+        result = {}
+        for record in self.records:
+            if record.input is not None or record.row_offset is None:
+                raise ValueError(
+                    "This error names a Function invocation; "
+                    "inspect its input source identities"
+                )
+            identity = (
+                record.row_id if record.row_id is not None else record.row_address
+            )
+            if identity is None:
+                raise ValueError("This error has no source row identity")
+            key = ("_rowid" if record.row_id is not None else "_rowaddr", identity)
+            result.setdefault(key, []).append(record)
+        return result
+
+    def _predicate(self, identities: dict[tuple[str, int], list[Any]]) -> str:
+        clauses = []
+        for field in ("_rowid", "_rowaddr"):
+            selected = [identity for (kind, identity) in identities if kind == field]
+            if selected:
+                clauses.append(field + " IN (" + ",".join(map(str, selected)) + ")")
+        return " OR ".join(clauses) if clauses else "false"
+
+    def _join_rows(
+        self, rows: pa.Table, identities: dict[tuple[str, int], list[Any]]
+    ) -> pa.Table:
+        matches = []
+        indices = []
+        found = set()
+        for index, (row_id, address) in enumerate(
+            zip(rows.column("_rowid").to_pylist(), rows.column("_rowaddr").to_pylist())
+        ):
+            for key in (("_rowid", row_id), ("_rowaddr", address)):
+                for record in identities.get(key, []):
+                    found.add(key)
+                    indices.append(index)
+                    matches.append(record)
+        if found != identities.keys():
+            raise ValueError(
+                "Some failed inputs are no longer addressable in this snapshot; "
+                "refresh the error listing or use a historical snapshot"
+            )
+        rows = rows.take(pa.array(indices, type=pa.int64()))
+        fields = [
+            "column",
+            "error_type",
+            "error_message",
+            "attempts",
+            "function_version",
+            "job_id",
+            "first_seen_at_millis",
+            "last_seen_at_millis",
+            "quarantined",
+        ]
+        arrays = [
+            pa.array([getattr(record, field) for record in matches]) for field in fields
+        ]
+        if "__function_error" in rows.column_names:
+            raise ValueError("Source columns already contain __function_error")
+        return rows.append_column(
+            "__function_error", pa.StructArray.from_arrays(arrays, names=fields)
+        )
+
+
+class FunctionErrors(_FunctionErrors):
+    """Current failures with grouped causes and synchronous source-row lookup."""
+
+    def rows(self, columns: Optional[list[str]] = None) -> pa.Table:
+        """Return current failing inputs with a ``__function_error`` struct.
+
+        Row IDs come from the error records. The server joins stable identities
+        correctly after compaction; callers need no physical-address arithmetic.
+        """
+        identities = self._identities()
+        predicate = self._predicate(identities)
+        query = (
+            self._table.search()
+            .where(predicate)
+            .with_row_id(True)
+            .with_row_address()
+            .limit(max(1, len(identities)))
+        )
+        selected = list(self._table.schema.names if columns is None else columns)
+        selected.extend(name for name in ("_rowid", "_rowaddr") if name not in selected)
+        query = query.select(selected)
+        return self._join_rows(query.to_arrow(), identities)
+
+
+class AsyncFunctionErrors(_FunctionErrors):
+    """Current Function failures returned by an asynchronous table."""
+
+    async def rows(self, columns: Optional[list[str]] = None) -> pa.Table:
+        """Return current failing inputs with their ``__function_error`` metadata."""
+        identities = self._identities()
+        predicate = self._predicate(identities)
+        query = (
+            self._table.query()
+            .where(predicate)
+            .with_row_id()
+            .with_row_address()
+            .limit(max(1, len(identities)))
+        )
+        selected = list(
+            (await self._table.schema()).names if columns is None else columns
+        )
+        selected.extend(name for name in ("_rowid", "_rowaddr") if name not in selected)
+        query = query.select(selected)
+        return self._join_rows(await query.to_arrow(), identities)
+
+
 class RefreshColumnResult(_RemoteValue):
     """Terminal result of an expression-backed or Function-backed refresh Job.
 
@@ -948,6 +1162,8 @@ class RefreshColumnResult(_RemoteValue):
     """Exact table version the refresh read."""
 
     published_version: Optional[_UInt64] = None
+    error_groups: tuple[FunctionErrorGroup, ...] = ()
+    error_groups_truncated: bool = False
     """Table version made visible by the refresh, when one was published."""
 
     @property
@@ -2975,6 +3191,11 @@ __all__ = [
     "PythonAdapterSpec",
     "PythonRuntimeSpec",
     "RefreshColumnResult",
+    "FunctionErrors",
+    "AsyncFunctionErrors",
+    "FunctionErrorGroup",
+    "FunctionProvenance",
+    "FunctionValueProvenance",
     "FunctionDefinition",
 ]
 

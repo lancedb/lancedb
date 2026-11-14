@@ -112,6 +112,24 @@ impl FunctionWorkerResourceBudget {
 #[derive(Debug, Clone, Default, Serialize)]
 #[non_exhaustive]
 pub struct RefreshColumnOptions {
+    /// Select exactly the current failed rows. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_errors: Option<bool>,
+    /// Restrict retry selection to this job. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_job_id: Option<String>,
+    /// Restrict retry selection to this exception class. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_error_type: Option<String>,
+    /// Explicitly release and retry quarantined rows. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include_quarantined: Option<bool>,
+    /// Upgrade the bound Function to this exact version. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub function_version: Option<String>,
+    /// Rows recomputed by a Function upgrade. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recompute: Option<crate::function::FunctionRecompute>,
     /// Only refresh the rows matching this SQL filter. Enterprise only.
     #[serde(rename = "where", skip_serializing_if = "Option::is_none")]
     pub where_clause: Option<String>,
@@ -182,6 +200,40 @@ pub struct RefreshColumnOptions {
 }
 
 impl RefreshColumnOptions {
+    /// Retry only current failures, using the server's row identities.
+    pub fn retry_errors(mut self, enabled: bool) -> Self {
+        self.retry_errors = Some(enabled);
+        self
+    }
+
+    /// Restrict a failed-row retry to one recorded job.
+    pub fn retry_job_id(mut self, job_id: impl Into<String>) -> Self {
+        self.retry_job_id = Some(job_id.into());
+        self
+    }
+
+    /// Restrict a failed-row retry to one exception class.
+    pub fn retry_error_type(mut self, error_type: impl Into<String>) -> Self {
+        self.retry_error_type = Some(error_type.into());
+        self
+    }
+
+    /// Release quarantine when explicitly retrying failures.
+    pub fn include_quarantined(mut self, include: bool) -> Self {
+        self.include_quarantined = Some(include);
+        self
+    }
+
+    /// Change the Function version and select the upgrade's recomputation policy.
+    pub fn upgrade(
+        mut self,
+        version: impl Into<String>,
+        recompute: crate::function::FunctionRecompute,
+    ) -> Self {
+        self.function_version = Some(version.into());
+        self.recompute = Some(recompute);
+        self
+    }
     /// Only refresh the rows matching `filter`.
     pub fn where_clause(mut self, filter: impl Into<String>) -> Self {
         self.where_clause = Some(filter.into());
@@ -279,6 +331,12 @@ impl RefreshColumnOptions {
     /// The first set option a LanceDB Embedded refresh cannot honor, if any.
     pub fn enterprise_only_option(&self) -> Option<&'static str> {
         [
+            ("retry_errors", self.retry_errors.is_some()),
+            ("retry_job_id", self.retry_job_id.is_some()),
+            ("retry_error_type", self.retry_error_type.is_some()),
+            ("include_quarantined", self.include_quarantined.is_some()),
+            ("function_version", self.function_version.is_some()),
+            ("recompute", self.recompute.is_some()),
             ("where", self.where_clause.is_some()),
             ("retry_policy", self.retry_policy.is_some()),
             ("error_policy", self.error_policy.is_some()),
@@ -304,6 +362,31 @@ impl RefreshColumnOptions {
 
     /// Validate client-side constraints before any request is sent.
     pub fn validate(&self) -> Result<()> {
+        let retry = self.retry_errors == Some(true);
+        if (retry || self.function_version.is_some()) && self.where_clause.is_some() {
+            return Err(Error::InvalidInput {
+                message: "retry_errors and Function upgrades cannot be combined with where".into(),
+            });
+        }
+        if !retry
+            && (self.retry_job_id.is_some()
+                || self.retry_error_type.is_some()
+                || self.include_quarantined == Some(true))
+        {
+            return Err(Error::InvalidInput {
+                message: "retry filters require retry_errors=true".into(),
+            });
+        }
+        if self
+            .function_version
+            .as_ref()
+            .is_some_and(|version| version.is_empty())
+            || (self.recompute.is_some() && self.function_version.is_none())
+        {
+            return Err(Error::InvalidInput {
+                message: "recompute requires a nonempty function_version".into(),
+            });
+        }
         if self
             .where_clause
             .as_deref()
@@ -649,6 +732,8 @@ pub(crate) async fn execute_refresh_column_async(
         let execution = execute_refresh_column_with_source(&table, &column).await?;
         table.bump_freshness();
         Ok(crate::function::RefreshColumnResult {
+            error_groups: Vec::new(),
+            error_groups_truncated: false,
             rows_assigned: execution.result.rows_filled,
             rows_failed: 0,
             rows_remaining: 0,
