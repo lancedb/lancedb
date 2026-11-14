@@ -4,6 +4,7 @@
 """Handles to asynchronous registry jobs, SQL queries, and local operations."""
 
 import asyncio
+import logging
 import reprlib
 import time
 from contextlib import suppress
@@ -60,7 +61,7 @@ def _normalize_job_progress(progress, *, query=False):
         from tqdm.auto import tqdm
 
         if query:
-            return tqdm(bar_format="{postfix} [{elapsed}]"), True
+            return tqdm(bar_format="Query{postfix} [{elapsed}]"), True
         return tqdm(unit=" rows"), True
     if progress is False or progress is None:
         return None, False
@@ -243,8 +244,8 @@ class AsyncJob(Generic[T]):
         Registry jobs always report lifecycle fields. SQL query handles report
         lifecycle state and ``client_elapsed_time_millis``, measured since this
         handle was created. They do not expose server build phases or logs.
-        Queue metadata and
-        counters are included when supplied by the server. Older servers may
+        Queue metadata and counters are included when supplied by the server.
+        Older servers may
         omit counters, and in-process operations return ``None``. A missing
         counter is unknown rather than zero. This is additive to :meth:`status`,
         whose string contract is unchanged.
@@ -338,21 +339,27 @@ class AsyncJob(Generic[T]):
                 delay = min(delay * 2, 30.0)
 
         async def observe_query():
-            waiter = asyncio.create_task(wait_with_retries())
-            try:
-                while not waiter.done():
+            async def report():
+                try:
                     snapshot = await self.progress()
                     if snapshot is not None:
                         progress_callback(snapshot)
+                except Exception:
+                    logging.getLogger(__name__).warning(
+                        "job progress observer failed", exc_info=True
+                    )
+
+            waiter = asyncio.create_task(wait_with_retries())
+            try:
+                while not waiter.done():
+                    await report()
                     await asyncio.wait(
                         {waiter}, timeout=_QUERY_PROGRESS_INTERVAL_SECONDS
                     )
                 try:
                     return await waiter
                 finally:
-                    snapshot = await self.progress()
-                    if snapshot is not None:
-                        progress_callback(snapshot)
+                    await report()
             finally:
                 if not waiter.done():
                     waiter.cancel()
