@@ -53,6 +53,9 @@ use lance_io::object_store::{StorageOptionsAccessor, StorageOptionsProvider};
 
 mod create_secret;
 mod create_table;
+mod create_view;
+
+pub use create_view::CreateViewBuilder;
 
 pub use create_secret::CreateSecretBuilder;
 
@@ -976,9 +979,10 @@ impl Connection {
     /// refused now rather than at the first read. A view holds no rows, and
     /// its readers see its sources as they are at read time.
     ///
-    /// There is no replace: a name already taken is an error, and changing a
-    /// view is a drop followed by a create, each authorized against what it
-    /// actually touches. LanceDB Embedded databases return [`Error::NotSupported`].
+    /// A name already taken is an error unless [`CreateViewBuilder::exist_ok`] is
+    /// true, which returns the stored definition and schema without changing them.
+    /// Changing a view is a drop followed by a create, each authorized against what
+    /// it actually touches. LanceDB Embedded databases return [`Error::NotSupported`].
     ///
     /// # Example
     ///
@@ -1011,16 +1015,18 @@ impl Connection {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn create_view(
+    pub fn create_view(
         &self,
         name: impl AsRef<str>,
         query: impl AsRef<str>,
         namespace_path: &[String],
-    ) -> Result<ViewDescription> {
-        validate_view_reference(name.as_ref(), namespace_path)?;
-        self.internal
-            .create_view(name.as_ref(), query.as_ref(), namespace_path)
-            .await
+    ) -> CreateViewBuilder {
+        CreateViewBuilder::new(
+            self.internal.clone(),
+            name.as_ref().to_owned(),
+            query.as_ref().to_owned(),
+            namespace_path.to_vec(),
+        )
     }
 
     /// What this database records about one view: its defining query and the

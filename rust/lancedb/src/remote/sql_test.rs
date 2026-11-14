@@ -24,6 +24,7 @@ use super::stream::{PROTOCOL_HEADER, PROTOCOL_VERSION, QueryResponse};
 use super::*;
 use crate::Connection;
 use crate::database::Database;
+use crate::embeddings::MemoryRegistry;
 use crate::materialized_view::CreateMaterializedViewRequest;
 use crate::remote::RemoteCatalogOptions;
 use crate::remote::client::HeaderProvider;
@@ -3710,25 +3711,48 @@ async fn view_create_and_describe_return_metadata_through_sql() {
             ..Default::default()
         };
         let statements = service.statements.clone();
+        let headers = service.headers.clone();
         let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
         let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
             panic!("unexpected REST request");
         })
         .with_sql_client(client);
-        let created = db
+        let connection = Connection::new(Arc::new(db), Arc::new(MemoryRegistry::new()));
+        let created = connection
             .create_view("adults", "SELECT name FROM people", &["team".into()])
             .await
             .unwrap();
-        let described = db.describe_view("adults", &["team".into()]).await.unwrap();
+        let existing = connection
+            .create_view(
+                "adults",
+                "SELECT replacement FROM other_people",
+                &["team".into()],
+            )
+            .exist_ok(true)
+            .await
+            .unwrap();
+        let described = connection
+            .describe_view("adults", &["team".into()])
+            .await
+            .unwrap();
         assert_eq!(created, described);
+        assert_eq!(existing, described);
         assert_eq!(created.schema.fields()[0].name(), "name");
         assert_eq!(created.default_namespace_path, ["team"]);
         assert_eq!(
             statements.lock().unwrap().as_slice(),
             [
                 "CREATE VIEW \"adults\" AS SELECT name FROM people",
+                "CREATE VIEW IF NOT EXISTS \"adults\" AS SELECT replacement FROM other_people",
                 "DESCRIBE VIEW \"adults\""
             ]
+        );
+        assert!(
+            headers
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|header| header.namespace_path == "team")
         );
         shutdown.send(()).unwrap();
     }

@@ -693,6 +693,7 @@ pub trait Database:
         _name: &str,
         _query: &str,
         _namespace_path: &[String],
+        _exist_ok: bool,
     ) -> Result<ViewDescription> {
         view_ops_not_supported()
     }

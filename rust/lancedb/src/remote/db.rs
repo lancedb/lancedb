@@ -1099,11 +1099,12 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         name: &str,
         query: &str,
         namespace_path: &[String],
+        exist_ok: bool,
     ) -> Result<ViewDescription> {
         validate_view_name(name)?;
         validate_namespace(namespace_path)?;
         self.sql_client()?
-            .create_view(name, query, namespace_path)
+            .create_view(name, query, namespace_path, exist_ok)
             .await
     }
     async fn describe_view(
