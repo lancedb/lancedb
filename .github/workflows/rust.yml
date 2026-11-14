@@ -349,6 +349,8 @@ jobs:
         working-directory: rust/lancedb
     steps:
       - uses: actions/checkout@v6
+      - name: Enable long paths for Lance dependencies
+        run: git config --global core.longpaths true
       - name: Set target
         run: rustup target add ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
@@ -386,6 +388,8 @@ jobs:
         working-directory: rust/lancedb
     steps:
       - uses: actions/checkout@v6
+      - name: Enable long paths for Lance dependencies
+        run: git config --global core.longpaths true
       - name: Set target
         run: rustup target add aarch64-pc-windows-msvc
       - uses: Swatinem/rust-cache@v2
