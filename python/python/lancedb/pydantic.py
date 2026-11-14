@@ -256,11 +256,25 @@ def _py_type_to_arrow_type(py_type: Type[Any], field: FieldInfo) -> pa.DataType:
         return pa.duration("us")
     elif get_origin(py_type) is Literal:
         # Store a Literal as the type of its values, e.g. Literal["a", "b"] as utf8.
-        value_types = {type(value) for value in get_args(py_type)}
+        values = get_args(py_type)
+        value_types = {type(value) for value in values}
         if len(value_types) != 1:
             raise TypeError(
                 "Converting Pydantic type to Arrow Type: unsupported type "
                 f"{py_type}. All values of a Literal must have the same type."
+            )
+        # The member's value is stored. Unless the Enum mixes in the type of its
+        # values (str, int), a member does not equal its value, so the Literal
+        # would reject what was stored when the table is read back.
+        if any(
+            isinstance(v, Enum) and not isinstance(v, type(v.value)) for v in values
+        ):
+            enum_name = next(iter(value_types)).__name__
+            raise TypeError(
+                "Converting Pydantic type to Arrow Type: unsupported type "
+                f"{py_type}. A Literal of plain Enum members cannot be read back; "
+                f"annotate the field as {enum_name}, or give {enum_name} a str or "
+                "int mixin."
             )
         return _pydantic_type_to_arrow_type(value_types.pop(), field)
     elif getattr(py_type, "__origin__", None) in (list, tuple):
@@ -456,7 +470,8 @@ def pydantic_to_schema(model: Type[pydantic.BaseModel]) -> pa.Schema:
         ``Tuple[int, int]`` or ``Tuple[float, ...]``; for a fixed set of fields
         with different types, such as ``Tuple[int, str]``, use a nested
         ``LanceModel`` (an Arrow struct) instead. Enum values must also all
-        have the same type.
+        have the same type, and a ``Literal`` of Enum members needs an Enum that
+        mixes in the type of its values, such as ``class Color(str, Enum)``.
 
     Examples
     --------
