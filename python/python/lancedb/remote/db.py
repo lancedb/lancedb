@@ -576,6 +576,7 @@ class RemoteDBConnection(DBConnection):
         source_version: Optional[int] = None,
         source_tag: Optional[str] = None,
         is_shallow: bool = True,
+        exist_ok: bool = False,
     ) -> Table:
         """Clone a table from a source table.
 
@@ -595,6 +596,8 @@ class RemoteDBConnection(DBConnection):
         is_shallow: bool, default True
             Whether to perform a shallow clone (True) or deep clone (False).
             Currently only shallow clone is supported.
+        exist_ok: bool, default False
+            Return the existing target unchanged instead of cloning over it.
 
         Returns
         -------
@@ -612,6 +615,7 @@ class RemoteDBConnection(DBConnection):
                 source_version=source_version,
                 source_tag=source_tag,
                 is_shallow=is_shallow,
+                exist_ok=exist_ok,
             )
         )
         return RemoteTable(

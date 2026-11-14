@@ -347,6 +347,8 @@ class Connection(object):
         source_version: Optional[int] = None,
         source_tag: Optional[str] = None,
         is_shallow: bool = True,
+        *,
+        exist_ok: bool = False,
     ) -> Table: ...
     async def rename_table(
         self,

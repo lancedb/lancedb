@@ -2271,6 +2271,7 @@ class LanceDBConnection(DBConnection):
         source_version: Optional[int] = None,
         source_tag: Optional[str] = None,
         is_shallow: bool = True,
+        exist_ok: bool = False,
     ) -> LanceTable:
         """Clone a table from a source table.
 
@@ -2295,6 +2296,8 @@ class LanceDBConnection(DBConnection):
         is_shallow: bool, default True
             Whether to perform a shallow clone (True) or deep clone (False).
             Currently only shallow clone is supported.
+        exist_ok: bool, default False
+            Return the existing target unchanged instead of cloning over it.
 
         Returns
         -------
@@ -2310,6 +2313,7 @@ class LanceDBConnection(DBConnection):
                 source_version=source_version,
                 source_tag=source_tag,
                 is_shallow=is_shallow,
+                exist_ok=exist_ok,
             )
         )
         return LanceTable.open(
@@ -3595,6 +3599,7 @@ class AsyncConnection(object):
         source_version: Optional[int] = None,
         source_tag: Optional[str] = None,
         is_shallow: bool = True,
+        exist_ok: bool = False,
     ) -> AsyncTable:
         """Clone a table from a source table.
 
@@ -3619,6 +3624,8 @@ class AsyncConnection(object):
         is_shallow: bool, default True
             Whether to perform a shallow clone (True) or deep clone (False).
             Currently only shallow clone is supported.
+        exist_ok: bool, default False
+            Return the existing target unchanged instead of cloning over it.
 
         Returns
         -------
@@ -3633,6 +3640,7 @@ class AsyncConnection(object):
             source_version=source_version,
             source_tag=source_tag,
             is_shallow=is_shallow,
+            exist_ok=exist_ok,
         )
         return AsyncTable(table)
 

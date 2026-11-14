@@ -270,6 +270,18 @@ Renaming is not supported on a local directory connection. In LanceDB Enterprise
 whether a table can be renamed or cloned at all depends on how the deployment
 stores its catalog.
 
+{/* Draft for the table-clone exist_ok release.
+
+Pass `exist_ok=True` to keep an existing target table, including its data and
+version history, instead of reporting a duplicate. The source is used only when
+the target is missing. Remote use requires a deployment that supports this option.
+
+```python
+db.clone_table("docs_snapshot", source_uri="s3://bucket/db/documents.lance", exist_ok=True)
+```
+
+*/}
+
 A **shallow** clone (the default) references the source's data files rather
 than copying them, so it is fast and cheap regardless of table size. It is the
 practical way to branch an experiment off a known version, or to pin a training

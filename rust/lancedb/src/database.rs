@@ -163,6 +163,8 @@ impl CreateTableRequest {
 /// sharing the same data, deletion, and index files.
 #[derive(Clone, Debug)]
 pub struct CloneTableRequest {
+    /// Preserve an existing target rather than returning a duplicate-name error.
+    pub exist_ok: bool,
     /// The name of the target table to create
     pub target_table_name: String,
     /// The namespace path for the target table. Empty list represents root namespace.
@@ -184,6 +186,7 @@ pub struct CloneTableRequest {
 impl CloneTableRequest {
     pub fn new(target_table_name: String, source_uri: String) -> Self {
         Self {
+            exist_ok: false,
             target_table_name,
             target_namespace_path: vec![],
             source_uri,
