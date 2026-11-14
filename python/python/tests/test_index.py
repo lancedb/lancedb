@@ -23,6 +23,7 @@ from lancedb.index import (
     Fm,
     NGram,
     ZoneMap,
+    BloomFilter,
     HnswPq,
     HnswSq,
     HnswFlat,
@@ -300,6 +301,41 @@ async def test_create_zonemap_index(db_async):
     # The index narrows a range scan without changing its results.
     result = await table.query().where("value >= 90").to_arrow()
     assert sorted(result["id"].to_pylist()) == list(range(90, 100))
+
+
+@pytest.mark.asyncio
+async def test_create_bloomfilter_index(db_async):
+    # BloomFilter indexes accelerate equality and IN filters on high-cardinality
+    # columns by skipping blocks that cannot contain a queried value. A Bloom
+    # filter never reports a false negative, so results are unchanged.
+    data = pa.table({"id": list(range(100)), "value": list(range(100))})
+    table = await db_async.create_table("bloomfilter_table", data)
+    await table.create_index("value", config=BloomFilter())
+
+    indices = await table.list_indices()
+    assert len(indices) == 1
+    assert indices[0].index_type == "BloomFilter"
+    assert indices[0].columns == ["value"]
+
+    result = await table.query().where("value = 42").to_arrow()
+    assert result["id"].to_pylist() == [42]
+
+
+@pytest.mark.asyncio
+async def test_create_bloomfilter_index_with_params(db_async):
+    # number_of_items and probability are forwarded to Lance's builder.
+    data = pa.table({"id": list(range(100)), "value": list(range(100))})
+    table = await db_async.create_table("bloomfilter_params_table", data)
+    await table.create_index(
+        "value", config=BloomFilter(number_of_items=4096, probability=0.01)
+    )
+
+    indices = await table.list_indices()
+    assert len(indices) == 1
+    assert indices[0].index_type == "BloomFilter"
+
+    result = await table.query().where("value = 7").to_arrow()
+    assert result["id"].to_pylist() == [7]
 
 
 @pytest.mark.asyncio
@@ -615,6 +651,7 @@ def test_index_statistics_index_type_lists_all_supported_values():
         "LABEL_LIST",
         "NGRAM",
         "ZONEMAP",
+        "BLOOM_FILTER",
     }
 
     assert (

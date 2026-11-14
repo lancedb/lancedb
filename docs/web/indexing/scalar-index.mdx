@@ -26,13 +26,14 @@ Scalar indexes accelerate filters on values such as numbers, categories and
 strings. Use them for selective table queries or metadata filters combined
 with vector and full-text search.
 
-LanceDB supports five types of scalar indexes:
+LanceDB supports six types of scalar indexes:
 
 - `BTREE`: Stores column data in sorted order for binary search. Best for columns with many unique values.
 - `BITMAP`: Uses bitmaps to track value presence. Ideal for columns with few unique values (e.g., categories, tags).
 - `LABEL_LIST`: Special index for `List<T>` and `LargeList<T>` columns of primitive values supporting `array_has_all` and `array_has_any` queries.
 - `FM`: FM-Index over string or binary columns that accelerates substring search via `contains(col, 'needle')`.
 - `NGRAM`: Trigram index over UTF-8 string columns that accelerates substring search via `contains(col, 'needle')`, along with some `LIKE` and regular-expression filters.
+- `BLOOM_FILTER`: Per-block Bloom filters that skip blocks which cannot contain a value. Suited to equality and `IN` filters on columns with many unique values (e.g., IDs, hashes).
 
 <Tip title="Working with scalar indices">
 Use scalar indexes with:
@@ -52,6 +53,7 @@ Use scalar indexes with:
 | List of low cardinality of numbers or strings                   | `array_has_any`, `array_has_all`          | `LABEL_LIST` |
 | String or binary (`Utf8`, `LargeUtf8`, `Binary`, `LargeBinary`) | `contains(col, 'needle')`                 | `FM`         |
 | String (`Utf8`, `LargeUtf8`)                                    | `contains(col, 'needle')`, `LIKE`, regex  | `NGRAM`      |
+| Numbers or strings with many unique values                      | `=`, `in`                                 | `BLOOM_FILTER` |
 
 ## Scalar Index Operations
 
@@ -209,6 +211,57 @@ table.search().where("contains(text, 'needle')").limit(10).to_pandas()
 ```
 
 `list_indices()` reports the index type as `"NGram"`.
+
+## BloomFilter index for equality lookups
+
+The `BloomFilter` index is a scalar index for equality and `IN (...)` filters on
+columns with many unique values, such as IDs or hashes. It stores a small Bloom
+filter for each block of rows and skips the blocks that cannot contain the
+queried value. A Bloom filter can report a false positive but never a false
+negative, so the remaining blocks are still scanned and the results are the
+same with or without the index. It does not serve range filters; use `BTREE`
+for those.
+
+### Create a BloomFilter index
+
+Build a BloomFilter index with the async `create_index` API by passing the
+`BloomFilter` config in Python. In Rust, use
+`Index::BloomFilter(BloomFilterIndexBuilder::default())`.
+
+<CodeGroup>
+```python Python icon="python"
+from lancedb.index import BloomFilter
+
+await tbl.create_index("user_id", config=BloomFilter())
+```
+
+```rust Rust icon="rust"
+use lancedb::index::Index;
+use lancedb::index::scalar::BloomFilterIndexBuilder;
+
+tbl.create_index(&["user_id"], Index::BloomFilter(BloomFilterIndexBuilder::default()))
+    .execute()
+    .await?;
+```
+</CodeGroup>
+
+Two optional parameters tune the filters: `number_of_items` is the number of
+rows covered by each filter, and `probability` is the target false-positive
+rate (lower values use more space). Both use Lance's defaults when unset.
+
+```python
+await tbl.create_index(
+    "user_id", config=BloomFilter(number_of_items=4096, probability=0.01)
+)
+```
+
+After the index is built, equality and `IN` filters use it automatically:
+
+```python
+await tbl.query().where("user_id = 42").to_pandas()
+```
+
+`list_indices()` reports the index type as `"BloomFilter"`.
 
 ## Index UUID Columns
 

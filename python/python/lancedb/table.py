@@ -77,6 +77,7 @@ from .index import (
     Fm,
     NGram,
     ZoneMap,
+    BloomFilter,
     HnswPq,
     HnswSq,
     HnswFlat,
@@ -333,6 +334,7 @@ IndexConfigType = Union[
     Fm,
     NGram,
     ZoneMap,
+    BloomFilter,
     FTS,
 ]
 
@@ -1943,7 +1945,7 @@ class Table(ABC):
         config : IndexConfigType, optional
             The index configuration object. If provided, uses the new unified API.
             Can be one of: IvfFlat, IvfPq, IvfSq, IvfRq, HnswPq, HnswSq,
-            BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, FTS.
+            BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, BloomFilter, FTS.
         replace : bool, default True
             Whether to replace an existing index on this column.
         exist_ok : bool, default False
@@ -4436,7 +4438,7 @@ class LanceTable(Table):
         config : IndexConfigType, optional
             The index configuration object. If provided, uses the new unified API.
             Can be one of: IvfFlat, IvfPq, IvfSq, IvfRq, HnswPq, HnswSq,
-            BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, FTS.
+            BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, BloomFilter, FTS.
         replace : bool, default True
             Whether to replace an existing index on this column.
         exist_ok : bool, default False
@@ -6857,6 +6859,7 @@ class AsyncTable:
                 Fm,
                 NGram,
                 ZoneMap,
+                BloomFilter,
                 FTS,
             ]
         ] = None,
@@ -6938,13 +6941,14 @@ class AsyncTable:
                     Fm,
                     NGram,
                     ZoneMap,
+                    BloomFilter,
                     FTS,
                 ),
             ):
                 raise TypeError(
                     "config must be an instance of IvfSq, IvfPq, IvfRq, HnswPq, HnswSq,"
-                    " BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, or FTS, but got "
-                    + str(type(config))
+                    " BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, BloomFilter,"
+                    " or FTS, but got " + str(type(config))
                 )
         try:
             await self._inner.create_index(
@@ -6984,6 +6988,7 @@ class AsyncTable:
                 Fm,
                 NGram,
                 ZoneMap,
+                BloomFilter,
                 FTS,
             ]
         ] = None,
@@ -9046,6 +9051,7 @@ class IndexStatistics:
         "LABEL_LIST",
         "NGRAM",
         "ZONEMAP",
+        "BLOOM_FILTER",
     ]
     distance_type: Optional[Literal["l2", "cosine", "dot"]] = None
     num_indices: Optional[int] = None
