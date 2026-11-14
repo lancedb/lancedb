@@ -1435,6 +1435,79 @@ describe("remote connection", () => {
     expect(createIndexBody?.["custom_stop_words"]).toEqual(["the"]);
   });
 
+  it.each([
+    ["ZoneMap", () => Index.zoneMap(), { ["index_type"]: "ZONEMAP" }],
+    [
+      "default BloomFilter",
+      () => Index.bloomFilter(),
+      { ["index_type"]: "BLOOM_FILTER" },
+    ],
+    [
+      "BloomFilter numberOfItems",
+      () => Index.bloomFilter({ numberOfItems: 64 }),
+      { ["index_type"]: "BLOOM_FILTER", ["number_of_items"]: 64 },
+    ],
+    [
+      "BloomFilter probability",
+      () => Index.bloomFilter({ probability: 0.01 }),
+      { ["index_type"]: "BLOOM_FILTER", probability: 0.01 },
+    ],
+    [
+      "custom BloomFilter",
+      () => Index.bloomFilter({ numberOfItems: 64, probability: 0.01 }),
+      {
+        ["index_type"]: "BLOOM_FILTER",
+        ["number_of_items"]: 64,
+        probability: 0.01,
+      },
+    ],
+    [
+      "BloomFilter with a large numberOfItems",
+      () => Index.bloomFilter({ numberOfItems: Number.MAX_SAFE_INTEGER }),
+      {
+        ["index_type"]: "BLOOM_FILTER",
+        ["number_of_items"]: Number.MAX_SAFE_INTEGER,
+      },
+    ],
+  ])("sends %s options to remote tables", async (_, config, expected) => {
+    let createIndexBody: Record<string, unknown> | undefined;
+
+    await withMockDatabase(
+      (req, res) => {
+        if (req.url?.endsWith("/describe/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              name: "t",
+              version: 1,
+              schema: {
+                fields: [
+                  { name: "id", type: { type: "int64" }, nullable: false },
+                ],
+              },
+            }),
+          );
+        } else if (req.url?.endsWith("/create_index/")) {
+          let raw = "";
+          req.on("data", (chunk) => {
+            raw += chunk;
+          });
+          req.on("end", () => {
+            createIndexBody = JSON.parse(raw);
+            res.writeHead(200).end();
+          });
+        } else {
+          res.writeHead(404).end();
+        }
+      },
+      async (db) => {
+        const table = await db.openTable("t");
+        await table.createIndex("id", { config: config() });
+      },
+    );
+
+    expect(createIndexBody).toEqual({ column: "id", ...expected });
+  });
+
   it("diffs and cherry-picks remote branches", async () => {
     const sampleDiff = {
       fromBranch: "exp",

@@ -27,6 +27,37 @@ is small (i.e., less than a few hundreds).
 
 ***
 
+### bloomFilter()
+
+```ts
+static bloomFilter(options?): Index
+```
+
+Create a Bloom filter index.
+
+Bloom filters accelerate equality and membership filters by skipping groups
+of rows that cannot match. Candidate rows are checked to remove false
+positives. This index uses less space than a btree or bitmap index, but does
+not accelerate range filters. Unset options use Lance's defaults.
+
+#### Parameters
+
+* **options?**: [`BloomFilterOptions`](../interfaces/BloomFilterOptions.md)
+
+#### Returns
+
+[`Index`](Index.md)
+
+#### Example
+
+```ts
+await table.createIndex("id", {
+  config: Index.bloomFilter({ numberOfItems: 4096, probability: 0.01 }),
+});
+```
+
+***
+
 ### btree()
 
 ```ts
@@ -258,3 +289,33 @@ using an underlying bitmap index.
 #### Returns
 
 [`Index`](Index.md)
+
+***
+
+### zoneMap()
+
+```ts
+static zoneMap(): Index
+```
+
+Create a ZoneMap index.
+
+This index stores min/max summaries for ranges of rows and skips ranges that
+cannot match a filter. It works best for numeric or temporal columns whose
+values are correlated with row order, such as timestamps or sequential IDs.
+
+For strings, binary data, and supported types wider than eight bytes, this
+index enables per-fragment write seeds and activates a table capability.
+Upgrade all readers and writers before creating such an index: older clients
+cannot access the resulting snapshots. Dropping the index or restoring an
+older version does not remove the capability from subsequent snapshots.
+
+#### Returns
+
+[`Index`](Index.md)
+
+#### Example
+
+```ts
+await table.createIndex("timestamp", { config: Index.zoneMap() });
+```
