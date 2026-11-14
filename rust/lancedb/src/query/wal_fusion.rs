@@ -17,7 +17,10 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+#[cfg(feature = "remote")]
+use std::sync::Mutex;
+#[cfg(feature = "remote")]
 use std::time::{Duration, Instant};
 
 use arrow::row::{RowConverter, SortField};
@@ -104,14 +107,17 @@ where
 /// stop the memory outliving a write spec someone removed through another
 /// handle. Being late to notice keeps the query on the primary key, which on a
 /// base table is still a valid read; the window is what stops that lasting.
+#[cfg(feature = "remote")]
 const MEMORY_TTL: Duration = Duration::from_secs(30);
 
 /// A table's memory of having refused `_rowid`, backing
 /// [`BaseTable::hybrid_pk_fusion_learned`](crate::table::BaseTable::hybrid_pk_fusion_learned)
 /// for table types that keep one.
+#[cfg(feature = "remote")]
 #[derive(Debug, Default)]
 pub struct PkFusionMemory(Mutex<Option<Instant>>);
 
+#[cfg(feature = "remote")]
 impl PkFusionMemory {
     pub fn learned(&self) -> bool {
         self.0
