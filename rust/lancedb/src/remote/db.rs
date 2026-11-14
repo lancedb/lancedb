@@ -4433,14 +4433,15 @@ mod tests {
                 "page_token": (page == 0).then_some("next"),
             }).to_string()).unwrap()
         });
-        let mut filter = JobListFilter::default();
-        filter.table = Some("events".into());
-        filter.namespace_path = vec!["team".into(), "project".into()];
-        filter.branch = Some("experiment".into());
-        filter.state = Some(JobListState::InProgress);
-        filter.job_types = vec!["column_refresh".into(), "materialized_view_refresh".into()];
-        filter.created_at_gte_millis = Some(100);
-        filter.created_at_lt_millis = Some(200);
+        let filter = JobListFilter {
+            table: Some("events".into()),
+            namespace_path: vec!["team".into(), "project".into()],
+            branch: Some("experiment".into()),
+            state: Some(JobListState::InProgress),
+            job_types: vec!["column_refresh".into(), "materialized_view_refresh".into()],
+            created_at_gte_millis: Some(100),
+            created_at_lt_millis: Some(200),
+        };
         let mut jobs =
             conn.list_jobs_filtered(filter.clone(), ListingOptions::default().page_limit(1));
         assert_eq!(count.load(Ordering::SeqCst), 0);
@@ -4463,13 +4464,19 @@ mod tests {
         let conn = Connection::new_with_handler(|_| -> http::Response<String> {
             panic!("invalid filters must not reach the server")
         });
-        let mut namespace_only = JobListFilter::default();
-        namespace_only.namespace_path = vec!["team".into()];
-        let mut branch_only = JobListFilter::default();
-        branch_only.branch = Some("experiment".into());
-        let mut invalid_time = JobListFilter::default();
-        invalid_time.created_at_gte_millis = Some(200);
-        invalid_time.created_at_lt_millis = Some(100);
+        let namespace_only = JobListFilter {
+            namespace_path: vec!["team".into()],
+            ..Default::default()
+        };
+        let branch_only = JobListFilter {
+            branch: Some("experiment".into()),
+            ..Default::default()
+        };
+        let invalid_time = JobListFilter {
+            created_at_gte_millis: Some(200),
+            created_at_lt_millis: Some(100),
+            ..Default::default()
+        };
         for filter in [namespace_only, branch_only, invalid_time] {
             let mut jobs = conn.list_jobs_filtered(filter, ListingOptions::default());
             assert!(matches!(

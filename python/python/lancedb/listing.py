@@ -129,7 +129,10 @@ class Listing(Iterator[T], Generic[T]):
                 if start >= stop:
                     return []
                 self._fill(stop)
-                return list(islice(self._buffer, start, stop, step))
+                start, stop, step = key.indices(len(self._buffer))
+                return list(
+                    islice(self._buffer, start, stop, min(step, len(self._buffer) + 1))
+                )
             self._fill(None)
             return list(self._buffer)[key]
         position = index(key)

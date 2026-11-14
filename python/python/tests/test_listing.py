@@ -446,6 +446,7 @@ async def test_listing_length_and_slices_preserve_remaining_items(listing_server
     assert [job.job_id for job in items[::-1]] == ["d", "c", "b"]
     assert [job.job_id for job in items[1:]] == ["c", "d"]
     assert [job.job_id for job in items[:100:2]] == ["b", "d"]
+    assert [job.job_id for job in items[: 2**100 : 2**100]] == ["b"]
     with pytest.raises(IndexError):
         _ = items[3]
     assert [job.job_id for job in items] == ["b", "c", "d"]
@@ -466,3 +467,18 @@ async def test_listing_invalid_slice_does_not_fetch(listing_server):
     with pytest.raises(TypeError):
         _ = items[:1.5]
     assert requests == []
+
+
+@pytest.mark.asyncio
+async def test_listing_slice_failure_preserves_cache_and_retry_token(listing_server):
+    endpoint, requests, responses = listing_server
+    responses.extend([(200, response_page("jobs", ["a", "b"], "retry")), (401, {})])
+    db = await connection(endpoint, False)
+    items = db.list_jobs(page_limit=2)
+    with pytest.raises(HttpError):
+        _ = items[:3]
+    assert items.page_token() == "retry"
+    assert items.num_page_results() == 2
+    assert [job.job_id for job in items[:2]] == ["a", "b"]
+    assert [job.job_id for job in items] == ["a", "b"]
+    assert len(requests) == 2
