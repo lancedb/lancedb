@@ -76,6 +76,11 @@ Current supported type conversions:
 | `list`              | `pyarrow.List`    |
 | `BaseModel`         | `pyarrow.Struct`    |
 | `Vector(n)`         | `pyarrow.FixedSizeList(float32, n)` |
+| `pydantic.NaiveDatetime` | `pyarrow.timestamp("us")` |
+| `pydantic.AwareDatetime` | `pyarrow.timestamp("us", tz="UTC")` |
+
+`AwareDatetime` fields are stored in UTC by default. To store them in another
+time zone, set it on the field with `Field(json_schema_extra={"tz": "Asia/Shanghai"})`.
 
 LanceDB supports to create Apache Arrow Schema from a
 `pydantic.BaseModel`
