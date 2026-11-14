@@ -42,6 +42,22 @@ Supported parameters (to be passed in `create` method) are:
 |---|---|---|---|
 | `name` | `str` | `"jina-clip-v1"` | The model ID of the jina model to use |
 
+{/*
+Draft for the image download controls release (#5008). Move these rows into
+the parameter table above when the settings are released.
+
+| `allow_image_downloads` | `bool` | `True` | Set to `False` to disable image URL downloads. |
+| `image_download_timeout` | `float` | `10.0` | Positive, finite connect/read inactivity timeout, in seconds. |
+| `image_download_max_bytes` | `int` | `52428800` | Positive maximum response size in bytes (50 MiB). |
+
+Pass these options to `create(...)`. Image downloads accept only HTTP(S),
+including redirect destinations. The timeout bounds socket inactivity rather
+than total download duration. The byte limit applies to each response, rather
+than decoded image memory or an entire batch. Disabling URL downloads still
+allows local paths, image bytes, and PIL images. Applications must still validate
+untrusted image references, including hosts and redirect destinations.
+*/}
+
 Usage Example:
 
 <CodeGroup>

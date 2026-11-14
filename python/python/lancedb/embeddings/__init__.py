@@ -6,6 +6,7 @@
 from .base import (
     EmbeddingFunction,
     EmbeddingFunctionConfig,
+    ImageEmbeddingFunction,
     TextEmbeddingFunction,
     UntrustedEmbeddingConfigError,
 )
@@ -35,6 +36,7 @@ from .siglip import SigLipEmbeddings
 __all__ = [
     "EmbeddingFunction",
     "EmbeddingFunctionConfig",
+    "ImageEmbeddingFunction",
     "TextEmbeddingFunction",
     "UntrustedEmbeddingConfigError",
     "EmbeddingFunctionRegistry",
