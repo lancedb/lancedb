@@ -42,7 +42,7 @@ jobs:
       with:
         fetch-depth: 0
         lfs: true
-    - uses: pnpm/action-setup@v6
+    - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       with:
         version: 11.1.1
     - uses: actions/setup-node@v6
@@ -52,14 +52,14 @@ jobs:
         node-version: 24
         cache: 'pnpm'
         cache-dependency-path: nodejs/pnpm-lock.yaml
-    - uses: actions-rust-lang/setup-rust-toolchain@v1
+    - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
       with:
         components: rustfmt, clippy
     - name: Install dependencies
       run: |
         sudo apt update
         sudo apt install -y protobuf-compiler libssl-dev
-    - uses: Swatinem/rust-cache@v2
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       with:
         # Restore everywhere, but only save from main. Per-PR saves are
         # unreadable outside their own branch anyway, since GitHub scopes
@@ -98,7 +98,7 @@ jobs:
       with:
         fetch-depth: 0
         lfs: true
-    - uses: pnpm/action-setup@v6
+    - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       with:
         version: 11.1.1
     - uses: actions/setup-node@v6
@@ -110,7 +110,7 @@ jobs:
         node-version: 24
         cache: 'pnpm'
         cache-dependency-path: nodejs/pnpm-lock.yaml
-    - uses: Swatinem/rust-cache@v2
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       with:
         # Restore everywhere, but only save from main. Per-PR saves are
         # unreadable outside their own branch anyway, since GitHub scopes
@@ -188,7 +188,7 @@ jobs:
       with:
         fetch-depth: 0
         lfs: true
-    - uses: pnpm/action-setup@v6
+    - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       with:
         version: 11.1.1
     - uses: actions/setup-node@v6
@@ -196,7 +196,7 @@ jobs:
         node-version: 24
         cache: 'pnpm'
         cache-dependency-path: nodejs/pnpm-lock.yaml
-    - uses: Swatinem/rust-cache@v2
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       with:
         # Same crate, profile and target as the `linux` job above, so reuse
         # its cache: rust-cache keys on the job id by default, and this job
@@ -249,7 +249,7 @@ jobs:
       with:
         fetch-depth: 0
         lfs: true
-    - uses: pnpm/action-setup@v6
+    - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       with:
         version: 11.1.1
     - uses: actions/setup-node@v6
@@ -259,11 +259,11 @@ jobs:
         cache: 'pnpm'
         cache-dependency-path: nodejs/pnpm-lock.yaml
     # Use the same pinned compiler for cache selection and the native build.
-    - uses: actions-rust-lang/setup-rust-toolchain@v1
+    - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
       with:
         cache: false
         rustflags: ""
-    - uses: Swatinem/rust-cache@v2
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       with:
         # Restore everywhere, but only save from main. Per-PR saves are
         # unreadable outside their own branch anyway, since GitHub scopes
