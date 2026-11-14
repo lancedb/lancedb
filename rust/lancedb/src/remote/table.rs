@@ -701,9 +701,13 @@ impl<S: HttpSend> RemoteTable<S> {
 
     async fn submit_create_index(&self, mut index: IndexBuilder) -> Result<Option<String>> {
         self.check_mutable().await?;
-        let request = self
+        let mut request = self
             .client
             .post(&format!("/v1/table/{}/create_index/", self.identifier));
+        if index.exist_ok {
+            request = request.query(&[("exist_ok", true)]);
+            index.replace = false;
+        }
 
         let column = match index.columns.len() {
             0 => {
@@ -2258,7 +2262,7 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
         num_partitions: usize,
     ) -> Result<AddResult> {
         if let Some(tracker) = &output.tracker {
-            tracker.use_wire_bytes();
+            tracker.use_acknowledged_parts();
         }
         let freshness_request = self.snapshot_freshness_headers();
         let upload_id = self.create_multipart_write(output.retries).await?;
@@ -2658,6 +2662,13 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .submit_materialized_view_job(statement, self.namespace.clone())
             .await?;
         match submission {
+            crate::remote::sql::materialized_view::MaterializedViewJobSubmission::AlreadyExists => {
+                Err(Error::Runtime {
+                    message:
+                        "REFRESH MATERIALIZED VIEW returned a create-only already_exists status"
+                            .into(),
+                })
+            }
             crate::remote::sql::materialized_view::MaterializedViewJobSubmission::Registry {
                 job_id,
             } => Ok(Job::new_typed(Box::new(MaterializedViewRefreshJob {
@@ -4558,10 +4569,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
     async fn prewarm_index(&self, index_name: &str) -> Result<()> {
         let encoded_name = urlencoding::encode(index_name);
-        let request = self.client.post(&format!(
+        let request = self.apply_branch_query(self.client.post(&format!(
             "/v1/table/{}/index/{encoded_name}/prewarm/",
             self.identifier
-        ));
+        )));
         let (request_id, response) = self.send(request, true).await?;
         if response.status() == StatusCode::NOT_FOUND {
             return Err(Error::IndexNotFound {
@@ -4577,9 +4588,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             "/v1/table/{}/page_cache/prewarm/",
             self.identifier
         ));
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "columns": columns.unwrap_or_default(),
         });
+        self.apply_branch_body(&mut body);
         request = request.json(&body);
         let (request_id, response) = self.send(request, true).await?;
         self.check_table_response(&request_id, response).await?;
@@ -13029,6 +13041,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_prewarm_data_sends_the_checked_out_branch() {
+        use lance::dataset::refs::Ref;
+
+        let table =
+            Table::new_with_handler_version("my_table", semver::Version::new(0, 5, 0), |request| {
+                match request.url().path() {
+                    "/v1/table/my_table/branches/create/" => {
+                        http::Response::builder().status(200).body("{}").unwrap()
+                    }
+                    "/v1/table/my_table/page_cache/prewarm/" => {
+                        let body = request_body_json(&request);
+                        assert_eq!(body["branch"], "dev");
+                        assert_eq!(body["columns"], json!(["payload"]));
+                        http::Response::builder()
+                            .status(202)
+                            .body(r#"{"job_id":"prewarm-job"}"#)
+                            .unwrap()
+                    }
+                    path => panic!("unexpected request path: {path}"),
+                }
+            });
+        let branch = table
+            .create_branch("dev", Ref::Version(None, None))
+            .await
+            .unwrap();
+        branch
+            .prewarm_data(Some(vec!["payload".into()]))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_prewarm_index_sends_the_checked_out_branch() {
+        use lance::dataset::refs::Ref;
+
+        let table =
+            Table::new_with_handler_version("my_table", semver::Version::new(0, 5, 0), |request| {
+                match request.url().path() {
+                    "/v1/table/my_table/branches/create/" => {
+                        http::Response::builder().status(200).body("{}").unwrap()
+                    }
+                    "/v1/table/my_table/index/my_index/prewarm/" => {
+                        let branch = request
+                            .url()
+                            .query_pairs()
+                            .find(|(key, _)| key == "branch")
+                            .map(|(_, value)| value.into_owned());
+                        assert_eq!(branch.as_deref(), Some("feature/dev"));
+                        http::Response::builder()
+                            .status(202)
+                            .body(r#"{"job_id":"prewarm-job"}"#)
+                            .unwrap()
+                    }
+                    path => panic!("unexpected request path: {path}"),
+                }
+            });
+        let branch = table
+            .create_branch("feature/dev", Ref::Version(None, None))
+            .await
+            .unwrap();
+        branch.prewarm_index("my_index").await.unwrap();
+    }
+
+    #[tokio::test]
     async fn test_drop_index() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
@@ -18037,6 +18113,42 @@ mod tests {
             .unwrap();
         branch.checkout(1).await.unwrap();
         branch.restore().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_index_exist_ok_query_and_replacement_policy() {
+        for exist_ok in [false, true] {
+            for background in [false, true] {
+                let table = Table::new_with_handler("my_table", move |request| {
+                    match request.url().path() {
+                        "/v1/table/my_table/describe/" => simple_describe_response(),
+                        "/v1/table/my_table/create_index/" => {
+                            assert_eq!(request.url().query(), exist_ok.then_some("exist_ok=true"));
+                            let body = request_body_json(&request);
+                            assert_eq!(
+                                body.get("replace"),
+                                exist_ok.then_some(&serde_json::Value::Bool(false))
+                            );
+                            assert!(body.get("exist_ok").is_none());
+                            http::Response::builder()
+                                .status(200)
+                                .body("{}".into())
+                                .unwrap()
+                        }
+                        path => panic!("unexpected request path: {path}"),
+                    }
+                });
+                let builder = table
+                    .create_index(&["id"], Index::BTree(Default::default()))
+                    .replace(true)
+                    .exist_ok(exist_ok);
+                if background {
+                    builder.execute_async().await.unwrap().wait().await.unwrap();
+                } else {
+                    builder.execute().await.unwrap();
+                }
+            }
+        }
     }
 
     #[tokio::test]

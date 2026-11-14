@@ -705,6 +705,7 @@ class LanceNamespaceDBConnection(DBConnection):
         with_no_data: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        exist_ok: bool = False,
     ) -> "MaterializedView":
         """Define a materialized view over a table in the root namespace.
         See
@@ -723,6 +724,7 @@ class LanceNamespaceDBConnection(DBConnection):
                         with_no_data=with_no_data,
                         auto_refresh_enabled=auto_refresh_enabled,
                         auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+                        exist_ok=exist_ok,
                     )
                 ).name
             )
@@ -741,6 +743,7 @@ class LanceNamespaceDBConnection(DBConnection):
         with_no_data: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        exist_ok: bool = False,
     ) -> Job[None]:
         job = LOOP.run(
             self._inner.create_materialized_view_async(
@@ -753,6 +756,7 @@ class LanceNamespaceDBConnection(DBConnection):
                 with_no_data=with_no_data,
                 auto_refresh_enabled=auto_refresh_enabled,
                 auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+                exist_ok=exist_ok,
             )
         )
         return Job(job)
@@ -1352,6 +1356,7 @@ class AsyncLanceNamespaceDBConnection:
         with_no_data: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        exist_ok: bool = False,
     ) -> "AsyncMaterializedView":
         """Define a materialized view over a table in the root namespace."""
         view = await self._inner.create_materialized_view(
@@ -1364,6 +1369,7 @@ class AsyncLanceNamespaceDBConnection:
             with_no_data=with_no_data,
             auto_refresh_enabled=auto_refresh_enabled,
             auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+            exist_ok=exist_ok,
         )
         # Reopen through the namespace so the view's table carries the
         # namespace client and pushdown configuration a bare inner table lacks.
@@ -1381,6 +1387,7 @@ class AsyncLanceNamespaceDBConnection:
         with_no_data: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        exist_ok: bool = False,
     ) -> AsyncJob[None]:
         """Submit materialized-view creation and return its job."""
         return await self._inner.create_materialized_view_async(
@@ -1393,6 +1400,7 @@ class AsyncLanceNamespaceDBConnection:
             with_no_data=with_no_data,
             auto_refresh_enabled=auto_refresh_enabled,
             auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+            exist_ok=exist_ok,
         )
 
     async def open_materialized_view(self, name: str) -> "AsyncMaterializedView":

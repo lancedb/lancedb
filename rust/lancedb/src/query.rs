@@ -42,7 +42,7 @@ use lance_index::vector::DIST_COL;
 use crate::error::{Error, Result};
 use crate::rerankers::rrf::RRFReranker;
 use crate::rerankers::{NormalizeMethod, Reranker, check_reranker_result};
-use crate::table::BaseTable;
+use crate::table::{BaseTable, NativeTableExt};
 use crate::utils::{MaxBatchLengthStream, TimeoutStream};
 use crate::{ApproxMode, DistanceType};
 use crate::{
@@ -1564,14 +1564,32 @@ impl VectorQuery {
             vector_query.inner_execute_with_options(internal_options)
         )?;
 
+        // A reranker can replace schema metadata. Only the two producing
+        // streams can establish the snapshot of a remote hybrid result.
+        let snapshot = |schema: SchemaRef| {
+            schema
+                .metadata()
+                .get("lancedb:query_version")
+                .zip(schema.metadata().get("lancedb:query_snapshot"))
+                .map(|(version, identity)| (version.clone(), identity.clone()))
+        };
+        let stream_schemas = (fts_results.schema(), vec_results.schema());
+        let fts_snapshot = snapshot(stream_schemas.0.clone());
+        let vec_snapshot = snapshot(stream_schemas.1.clone());
+        let query_snapshot = fts_snapshot.filter(|value| Some(value) == vec_snapshot.as_ref());
+
         let (fts_results, vec_results) = try_join!(
             fts_results.try_collect::<Vec<_>>(),
             vec_results.try_collect::<Vec<_>>()
         )?;
 
-        // try to get the schema to use when combining batches.
-        // if either
-        let (fts_schema, vec_schema) = hybrid::query_schemas(&fts_results, &vec_results);
+        // Preserve remote output schemas even when a leg has no batches.
+        // The WAL primary-key fallback retains its synthesized score schema.
+        let (fts_schema, vec_schema) = if self.parent.as_native().is_none() && pk_fusion.is_none() {
+            stream_schemas
+        } else {
+            hybrid::query_schemas(&fts_results, &vec_results)
+        };
 
         // concatenate all the batches together
         let mut fts_results = concat_batches(&fts_schema, fts_results.iter())?;
@@ -1611,6 +1629,16 @@ impl VectorQuery {
             .await?;
 
         check_reranker_result(&results)?;
+
+        if self.parent.as_native().is_none() {
+            let metadata = results.schema_metadata_mut();
+            metadata.remove("lancedb:query_version");
+            metadata.remove("lancedb:query_snapshot");
+            if let Some((version, identity)) = query_snapshot {
+                metadata.insert("lancedb:query_version".into(), version);
+                metadata.insert("lancedb:query_snapshot".into(), identity);
+            }
+        }
 
         let limit = self.request.base.limit.unwrap_or(DEFAULT_TOP_K);
         if results.num_rows() > limit {

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import importlib
+import hashlib
 import json
 import subprocess
 import sys
@@ -628,6 +629,102 @@ def test_binding_passes_initialization_as_constants():
         version(text=col("body"), model=object())
 
 
+def test_vendored_package_resources_survive_an_isolated_import(
+    tmp_path, helper_package
+):
+    package = helper_package(
+        "fx_vendor",
+        {
+            "__init__.py": "from .vendor.model import predict",
+            "vendor/__init__.py": "",
+            "vendor/model.py": """
+                import hashlib
+                import json
+                from importlib.resources import files
+
+                def predict(value):
+                    root = files("fx_vendor")
+                    payload = root.joinpath("label-maps/payload.bin").read_bytes()
+                    metadata = json.loads(root.joinpath("models.json").read_text())
+                    source = root.joinpath("vendor/model.py").read_bytes()
+                    source_digest = hashlib.sha256(source).hexdigest()
+                    assert source_digest == metadata["source_sha256"]
+                    assert hashlib.sha256(payload).hexdigest() == metadata["sha256"]
+                    return value + metadata["offset"]
+            """,
+            "models.json": "{}",
+        },
+    )
+    payload = b"\x00\xff\r\nvendored model data"
+    package_root = Path(package.__file__).parent
+    (package_root / "label-maps").mkdir()
+    (package_root / "label-maps/payload.bin").write_bytes(payload)
+    module_path = package_root / "vendor/model.py"
+    module_bytes = (
+        module_path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    )
+    module_path.write_bytes(module_bytes)
+    (package_root / "models.json").write_bytes(
+        json.dumps(
+            {
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "source_sha256": hashlib.sha256(module_bytes).hexdigest(),
+                "offset": 7,
+            }
+        ).encode()
+        + b"\r\n"
+    )
+
+    entry = helper_package(
+        "fx_vendor_entry",
+        {
+            "__init__.py": """
+        import fx_vendor
+        from lancedb import function
+
+        @function(code=[fx_vendor])
+        def vendored(value: int) -> int:
+            return fx_vendor.predict(value)
+    """
+        },
+    )
+    vendored = entry.vendored
+
+    first_digest = vendored.registration_request.artifact.digest
+    bundle = json.loads(artifact(vendored))
+    isolated = tmp_path / "isolated"
+    isolated.mkdir()
+    for name, content in bundle["files"].items():
+        target = isolated / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content.encode("utf-8"))
+    for name, content in bundle["resources"].items():
+        target = isolated / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(base64.b64decode(content))
+    assert (isolated / "fx_vendor/models.json").read_bytes().endswith(b"\r\n")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            "import sys; sys.path.insert(0, sys.argv[1]); "
+            "from user_function import vendored; assert vendored(3) == 10",
+            str(isolated),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    (package_root / "models.json").write_text('{"offset": 8}')
+    assert (
+        function(code=[package])(
+            vendored._function
+        ).registration_request.artifact.digest
+        != first_digest
+    )
+
+
 def test_code_packages_ship_as_a_bundle_and_version_with_their_source(
     tmp_path, helper_package
 ):
@@ -672,14 +769,13 @@ def test_code_packages_ship_as_a_bundle_and_version_with_their_source(
         first = define()
     assert len(caught) == 1
     warning = str(caught[0].message)
-    assert "fx_helpers/fixtures/data.json" in warning
+    assert "fx_helpers/fixtures/data.json" not in warning
     assert "fx_helpers/not-a-module.py" in warning
-    assert warning.index("fx_helpers/fixtures/data.json") < warning.index(
-        "fx_helpers/not-a-module.py"
-    )
-    assert "remove 'fx_helpers' from code=" in warning
-    assert "pip=" in warning
-    assert "conda=" in warning
+
+    assert "safe relative names" in warning
+    assert "importable Python module names" in warning
+    resources = json.loads(artifact(first))["resources"]
+    assert base64.b64decode(resources["fx_helpers/fixtures/data.json"]) == b"{}"
     assert "__pycache__" not in warning
     assert ".pyc" not in warning
     shipped = bundle_files(first)
@@ -732,7 +828,7 @@ def test_code_package_cache_artifacts_do_not_warn(helper_package):
     ]
 
 
-def test_code_package_nonidentifier_resource_dir_warns_at_boundary(helper_package):
+def test_code_package_resources_keep_nonidentifier_directories(helper_package):
     resources = helper_package(
         "fx_resources",
         {
@@ -748,11 +844,9 @@ def test_code_package_nonidentifier_resource_dir_warns_at_boundary(helper_packag
         def resource_boundary(value: int) -> int:
             return value
 
-    assert len(caught) == 1
-    warning = str(caught[0].message)
-    assert "fx_resources/label-maps/" in warning
-    assert "remove 'fx_resources' from code=" in warning
-    assert "labels.json" not in warning
+    assert not caught
+    resources = json.loads(artifact(resource_boundary))["resources"]
+    assert base64.b64decode(resources["fx_resources/label-maps/labels.json"]) == b"{}"
     assert sorted(bundle_files(resource_boundary)) == [
         "fx_resources/__init__.py",
         "user_function.py",

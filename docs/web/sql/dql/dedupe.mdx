@@ -55,6 +55,15 @@ current deployments.
 a subset of partitions and `id_column` are pair-query-only options, accepted
 by [`duplicate_pairs`](/sql/dql/duplicate-pairs#input) but refused here.
 
+## Index and snapshot requirements {#requirements}
+
+Use one compatible, current vector index covering the source snapshot.
+Full scans reject unindexed fragments. Comparisons stay within physical IVF
+partitions and index segments; this does not enumerate cross-partition or
+cross-segment duplicates. Quantized-index distances use encoded vector
+representations. See [recall and scale limits](/curation/dedupe#limits) before
+treating the result as globally exact deduplication.
+
 ## Output {#output}
 
 One row per duplicate group, **in the table's own schema** -- every column of

@@ -576,6 +576,7 @@ class RemoteDBConnection(DBConnection):
         source_version: Optional[int] = None,
         source_tag: Optional[str] = None,
         is_shallow: bool = True,
+        exist_ok: bool = False,
     ) -> Table:
         """Clone a table from a source table.
 
@@ -595,6 +596,8 @@ class RemoteDBConnection(DBConnection):
         is_shallow: bool, default True
             Whether to perform a shallow clone (True) or deep clone (False).
             Currently only shallow clone is supported.
+        exist_ok: bool, default False
+            Return the existing target unchanged instead of cloning over it.
 
         Returns
         -------
@@ -612,6 +615,7 @@ class RemoteDBConnection(DBConnection):
                 source_version=source_version,
                 source_tag=source_tag,
                 is_shallow=is_shallow,
+                exist_ok=exist_ok,
             )
         )
         return RemoteTable(
@@ -799,6 +803,7 @@ class RemoteDBConnection(DBConnection):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
     ) -> MaterializedView:
@@ -813,6 +818,7 @@ class RemoteDBConnection(DBConnection):
                 where=where,
                 limit=limit,
                 with_no_data=with_no_data,
+                exist_ok=exist_ok,
                 auto_refresh_enabled=auto_refresh_enabled,
                 auto_refresh_interval_seconds=auto_refresh_interval_seconds,
             )
@@ -837,6 +843,7 @@ class RemoteDBConnection(DBConnection):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
     ) -> Job[None]:
@@ -849,6 +856,7 @@ class RemoteDBConnection(DBConnection):
                 where=where,
                 limit=limit,
                 with_no_data=with_no_data,
+                exist_ok=exist_ok,
                 auto_refresh_enabled=auto_refresh_enabled,
                 auto_refresh_interval_seconds=auto_refresh_interval_seconds,
             )
@@ -992,11 +1000,15 @@ class RemoteDBConnection(DBConnection):
         definition: FunctionDefinition,
         *,
         secrets: Optional[Sequence[EnvVarSecret]] = None,
+        exist_ok: bool = False,
         namespace_path: Optional[List[str]] = None,
     ) -> Job[FunctionVersion]:
         job = LOOP.run(
             self._conn.create_function_async(
-                definition, secrets=secrets, namespace_path=namespace_path
+                definition,
+                secrets=secrets,
+                exist_ok=exist_ok,
+                namespace_path=namespace_path,
             )
         )
         return Job(job)
@@ -1087,6 +1099,7 @@ class RemoteDBConnection(DBConnection):
         azure_client_secret_secret: Optional[Union[str, SecretReference]] = None,
         gcp_credentials_json_secret: Optional[Union[str, SecretReference]] = None,
         huggingface_token_secret: Optional[Union[str, SecretReference]] = None,
+        exist_ok: bool = False,
         namespace_path: Optional[List[str]] = None,
     ) -> StorageIntegrationInfo:
         return LOOP.run(
@@ -1104,6 +1117,7 @@ class RemoteDBConnection(DBConnection):
                 azure_client_secret_secret=azure_client_secret_secret,
                 gcp_credentials_json_secret=gcp_credentials_json_secret,
                 huggingface_token_secret=huggingface_token_secret,
+                exist_ok=exist_ok,
                 namespace_path=namespace_path,
             )
         )
@@ -1197,10 +1211,17 @@ class RemoteDBConnection(DBConnection):
 
     @override
     def create_view(
-        self, name: str, query: str, *, namespace_path: Optional[List[str]] = None
+        self,
+        name: str,
+        query: str,
+        *,
+        exist_ok: bool = False,
+        namespace_path: Optional[List[str]] = None,
     ) -> ViewDescription:
         return LOOP.run(
-            self._conn.create_view(name, query, namespace_path=namespace_path)
+            self._conn.create_view(
+                name, query, exist_ok=exist_ok, namespace_path=namespace_path
+            )
         )
 
     @override
