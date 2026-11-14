@@ -920,7 +920,6 @@ impl FTSQuery {
         request.select = Select::columns(&["_score"]);
         request.order_by = None;
         request.with_row_id = false;
-        request.prefilter = true;
         request.reranker = None;
         future_into_py(self_.py(), async move {
             let mut stream = inner.execute().await.infer_error()?;

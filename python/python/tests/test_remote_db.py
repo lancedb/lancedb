@@ -7529,7 +7529,7 @@ def test_remote_fts_operator_and_count(operator):
         assert "offset" not in body
         assert body["columns"] == ["_score"]
         assert body["filter"] == "text IS NOT NULL"
-        assert body["prefilter"] is True
+        assert body["prefilter"] is False
         return pa.table({"_score": [1.0] * 25})
 
     with query_test_table(
