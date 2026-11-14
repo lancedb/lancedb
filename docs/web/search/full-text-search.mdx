@@ -182,6 +182,29 @@ BM25 scores depend on the indexed corpus and its term statistics. Compare
 rankings on the dataset you will search; treat scores as relative relevance
 values rather than probabilities.
 
+### Match any word or every word {#term-operators}
+
+A multi-word string such as `"happy puppy"` uses **OR**: a row can match either
+term. Writing `"happy AND puppy"` does not select an AND operator; the string
+is analyzed as search text. To require both terms, construct a match query:
+
+```python
+from lancedb.query import FullTextOperator, MatchQuery
+
+query = MatchQuery("happy puppy", "text", operator=FullTextOperator.AND)
+results = table.search(query, query_type="fts").limit(10).to_list()
+```
+
+AND requires all analyzed terms, without requiring adjacency or order. Use
+[`PhraseQuery`](#phrase-vs-terms-queries) for an ordered phrase, or combine
+separate queries with [`&` and `|`](#boolean-queries). Python `and` and `or`
+do not build queries.
+
+On Enterprise, the existing [`fts()` SQL reference](/sql/dql/fts#term-operators)
+shows the equivalent JSON (`"operator":"And"`), `_score`, and a
+[`COUNT(*)` workaround](/sql/dql/fts#count) for counting matches without a
+top-k limit. `len(results)` counts only the returned result page.
+
 ### Keeping the index up to date {#keeping-the-index-up-to-date}
 
 In LanceDB Embedded, new rows can remain outside the FTS index until you optimize the table.
@@ -395,6 +418,13 @@ table.create_index("text", config=FTS(with_position=True, remove_stop_words=Fals
 </CodeGroup>
 
 Storing token positions increases the index size and adds indexing work.
+On Enterprise, wait for the replacement index to finish before issuing the
+phrase query, using `table.wait_for_index(["text_idx"])` with your actual
+index name. An existing index without positions must be rebuilt; changing the
+query does not add positions. A phrase query against such an index is rejected
+with an error asking you to recreate it with positions, rather than returning
+an empty match set. See [FTS index options](/indexing/fts-index#fts-parameters)
+and the [SQL phrase reference](/sql/dql/fts#phrase).
 
 ### Fuzzy Search {#fuzzy-search}
 

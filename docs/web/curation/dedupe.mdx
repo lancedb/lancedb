@@ -136,12 +136,60 @@ SELECT * FROM dedupe(
 See [Refresh a materialized view](/feature-engineering/refresh-materialized-view)
 for manual and automatic refresh options to keep it current as new records land.
 
-## At production scale {#production}
+## Index, snapshot and recall limits {#limits}
 
-[LeRobotDataset](/integrations/lerobotdataset) runs the same `dedupe`
-call over 27.6 million real embedding rows to remove near-static frames from a
-robotics training set in under 30 seconds -- the mechanism does not change
-with scale, only the table it runs against.
+These are Enterprise SQL table functions, not standard SQL or a registered
+Python Function. They require one compatible current vector index covering
+the scanned snapshot. Wait for indexing to finish after ingestion and inspect
+index coverage before running a full scan. Unindexed fragments are rejected;
+deleted rows are excluded at the pinned dataset version.
+
+The scan compares candidates **within each physical IVF partition and index
+segment**. It does not compare across partitions or segments. Scanning every
+partition therefore does not establish global all-pairs recall. Quantized
+indexes compare their encoded vector representations; `IVF_FLAT` compares the
+stored vectors. Thresholds must match the index's metric: L2 is squared L2,
+cosine is `1 - cosine`, dot distance is `1 - dot`, and Hamming counts differing
+bits. Inspect close examples and known duplicates before choosing a threshold.
+
+`duplicate_pairs` reports `dataset_version`, `segment_id` and `partition_id`.
+Retain those with the index configuration and source version when comparing
+runs. Pass `id_column` for application IDs, rather than treating physical row
+addresses as durable identifiers. A new append, index change or bridge between
+components can change groups and representatives.
+
+## Efficient use and scale qualification {#production}
+
+Start with [`duplicate_pairs` partition sampling](/sql/dql/duplicate-pairs#sampling),
+using a recorded seed and a bounded partition count. Inspect pair density and
+threshold quality before running `dedupe`, which always scans every partition.
+Sampling partitions is not uniform row sampling and can miss rare groups.
+`resolution='connected_components'` merges transitive chains;
+`direct_representative` uses direct representative relationships instead.
+
+Pair work grows quadratically within dense partitions, and a loose threshold
+can emit a quadratic number of edges. An outer `LIMIT` is not a resource
+budget for upstream pair finding or group resolution. Avoid repeatedly
+materializing all pairs in a Python list; select needed columns, aggregate on
+the server, and persist a reviewed result when repeated reads justify it.
+Measure peak memory, spill storage, elapsed time and pair count on
+representative partitions before increasing scope.
+
+The [LeRobotDataset integration](/integrations/lerobotdataset) illustrates a
+27.6-million-row data workflow. Its timings are not a versioned qualification
+of this deduplication path on arbitrary indexes or hardware. A 10-billion-row
+run is not qualified by that example. Qualify source/index versions, partition
+sizes, metric, threshold, worker resources, spill limits and correctness on your
+deployment before extrapolating. There is no universal row-count or latency
+guarantee in this guide.
+
+For text shingles and MinHash signatures, use the distinct
+[MinHash workflow](/enterprise/sql-minhash). Vector distance deduplication and
+MinHash/Jaccard text deduplication have different indexes and thresholds.
+
+Agents can follow the repository's
+[vector deduplication skill](https://github.com/lancedb/lancedb/blob/main/.agents/skills/lancedb-vector-dedup/SKILL.md)
+to apply these checks without inventing Function options or scale guarantees.
 
 ## Continue with the curated data {#next}
 

@@ -60,6 +60,13 @@ only [`dedupe`](/sql/dql/dedupe#input) accepts it.
 
 ## Output {#output}
 
+See [`dedupe` index prerequisites](/sql/dql/dedupe#requirements) and the
+[recall limits](/curation/dedupe#limits). Pairs are found within each physical
+partition and index segment, not across them. A full scan requires complete
+index coverage; sampling is a diagnostic view of the selected indexed
+partitions and does not prove coverage or recall for the rest of the table.
+
+
 One row per close pair found, in a fixed schema independent of the source
 table:
 

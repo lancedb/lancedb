@@ -33,6 +33,46 @@ print(job.status())
 ```
 </CodeGroup>
 
+## Cached properties and live calls {#snapshots}
+
+Python job properties describe the last observation; reading them does not
+contact the server. Submission need not fetch the full registry record, so
+some properties can initially be `None`.
+
+| Surface | Contract |
+| --- | --- |
+| `state` | Last observed lifecycle state. It does not update on its own. |
+| `job_type`, `creation_ms` | Cached job kind and creation time in epoch milliseconds. |
+| `spec` | Complete, job-specific submitted specification. Read this separately from the bounded `repr(job)` display. |
+| `result` | Cached, job-specific reported data; it is not necessarily the typed object returned by `wait()`. |
+| `failure` | Cached `JobFailureInfo`, when the server reports a terminal failure. |
+| `status()` | Live lifecycle request. For registry jobs it also caches the full record. A failed state is returned without raising a job-failure exception; request errors can still raise. |
+| `refresh()` | Fetch and cache the current record without waiting for completion. |
+| `events(...)` | Separate live request returning a `pyarrow.Table` of recorded events; it does not refresh the properties. |
+| `wait(...)` | Poll until completion and return the operation's typed result, or raise on failure/cancellation. Refresh afterward when you need the complete final registry record. |
+
+For example, poll a registry handle and then retrieve its final details:
+
+```python
+import time
+
+state = job.status()
+while state == "running":
+    print(job.state)
+    time.sleep(2)
+    state = job.status()
+
+result = job.wait()
+job.refresh()
+print(result)
+print(job.spec)
+```
+
+The four lifecycle strings below are the usual SDK contract; newer server
+states may pass through an older client. Do not infer execution progress from
+`state` alone. Structured progress methods and queue fields require matching
+SDK/server support; see [refresh admission](/feature-engineering/refresh-column#admission).
+
 ## Submit and wait for a job {#waiting}
 
 1. **Submit the operation.** Keep the returned job handle. For an Enterprise
@@ -132,6 +172,32 @@ for info in db.list_jobs(page_limit=50):
     print(info.job_id, info.job_type, info.state)
 ```
 </CodeGroup>
+
+`list_jobs` yields `JobInfo` summaries, newest creation time first, rather than
+live `Job` handles. Open an ID to inspect its full record. `page_limit` bounds
+each server request, not the total yielded items, and `page_token` resumes a
+listing. It is a lazy iterator: iteration performs requests and can raise
+request errors. To materialize it, use `list(db.list_jobs(...))`; it does not
+support list indexing, `len()`, or a `.to_list()` method.
+
+`Listing.num_page_results()` reports cached items remaining in the current
+page and `Listing.page_token()` reports the next request's token. Drain the
+cached items before saving that token, or resuming can skip them. A `None`
+token after the final page can coexist with unread cached items. A resumed
+listing is not a transactionally frozen view of jobs submitted in the meantime.
+
+`events.schema` describes the Arrow response. Use `events.to_pylist()` for
+Python row dictionaries, not dictionary access on the table itself. Event
+columns include lifecycle state, time and origin/claim information; optional
+work counters and diagnostic details depend on job type and server version.
+Empty results retain their schema. Events are newest first and belong to the
+requested job; child events are separate. An event count is not a completed-row
+count, and a running job can have no terminal `result` while producing events.
+
+For a Function refresh, `wait()` returns a `RefreshColumnResult` such as
+`rows_assigned`, `rows_failed`, `rows_remaining`, `source_version` and optional
+`published_version`. Other job types have different results. Do not parse the
+printed representation to recover a spec, result or progress measurement.
 
 Event responses have [row limits](/basics/limits#jobs). An explicit limit can
 request more than the default, but it does not guarantee a complete event
