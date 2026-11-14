@@ -23,8 +23,8 @@ use crate::connection::create_table::CreateTableBuilder;
 use crate::data::scannable::Scannable;
 use crate::database::listing::ListingDatabase;
 use crate::database::{
-    CloneTableRequest, Database, DatabaseOptions, ExecuteQueryRequest, JobInfo, OpenTableRequest,
-    PauseJobStatus, ReadConsistency, ResumeJobStatus, TableNamesRequest,
+    CloneTableRequest, Database, DatabaseOptions, ExecuteQueryRequest, JobInfo, JobListFilter,
+    OpenTableRequest, PauseJobStatus, ReadConsistency, ResumeJobStatus, TableNamesRequest,
 };
 use crate::embeddings::{EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
@@ -1363,6 +1363,37 @@ impl Connection {
         Listing::new(options, move |options| {
             let database = database.clone();
             async move { database.list_jobs(options).await }
+        })
+    }
+
+    /// List jobs using server-side filters, without scanning all history in the client.
+    ///
+    /// Filters are preserved on every page, including when resuming with a saved
+    /// token. Requests and errors occur during iteration, as with [`Self::list_jobs`].
+    ///
+    /// ```
+    /// # async fn example(connection: &lancedb::Connection) -> lancedb::Result<()> {
+    /// use futures::TryStreamExt;
+    /// use lancedb::{database::JobListFilter, listing::ListingOptions};
+    /// let mut filter = JobListFilter::default();
+    /// filter.table = Some("events".into());
+    /// let mut jobs = connection.list_jobs_filtered(filter, ListingOptions::default().page_limit(5));
+    /// if let Some(job) = jobs.try_next().await? {
+    ///     println!("{}", job.job_id);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn list_jobs_filtered(
+        &self,
+        filter: JobListFilter,
+        options: ListingOptions,
+    ) -> Listing<JobInfo> {
+        let database = self.database().clone();
+        Listing::new(options, move |options| {
+            let database = database.clone();
+            let filter = filter.clone();
+            async move { database.list_jobs_filtered(filter, options).await }
         })
     }
 

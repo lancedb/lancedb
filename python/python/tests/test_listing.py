@@ -326,3 +326,143 @@ async def test_listing_invalid_limit_does_not_fetch(listing_server, kind, page_l
     with pytest.raises(ValueError, match="limit"):
         await items.__anext__()
     assert requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("namespace", [[], ["team", "project"]])
+@pytest.mark.parametrize("multiple_types", [False, True])
+async def test_job_filters_persist_across_pages_and_resume(
+    listing_server, asynchronous, namespace, multiple_types
+):
+    endpoint, requests, responses = listing_server
+    responses.extend(
+        (200, response_page("jobs", names, token))
+        for names, token in [(["a"], "empty"), ([], "last"), (["b"], None)]
+    )
+    db = await connection(endpoint, asynchronous)
+    types = ["column_refresh", "materialized_view_refresh"]
+    filters = dict(
+        table="events",
+        namespace_path=namespace,
+        branch="experiment",
+        state="in_progress",
+        created_at_gte_millis=100,
+        created_at_lt_millis=200,
+        **({"job_types": types} if multiple_types else {"job_type": types[0]}),
+    )
+    items = db.list_jobs(page_limit=1, **filters)
+    assert requests == []
+    assert (await advance(items, asynchronous)).job_id == "a"
+    assert len(requests) == 1
+    resumed = db.list_jobs(page_token=items.page_token(), page_limit=1, **filters)
+    assert (await advance(resumed, asynchronous)).job_id == "b"
+    assert resumed.page_token() is None
+    assert len(requests) == 3
+    expected = dict(
+        limit=1,
+        table_ref={
+            "db_name": "dev",
+            "table_id": {"namespace_path": namespace, "table_name": "events"},
+            "branch_name": "experiment",
+        },
+        state="in_progress",
+        job_types=types if multiple_types else types[:1],
+        created_at_gte_millis=100,
+        created_at_lt_millis=200,
+    )
+    for (_, path, body), token in zip(requests, [None, "empty", "last"]):
+        assert path == "/v1/jobs/list"
+        assert body == {**expected, **({"page_token": token} if token else {})}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize(
+    "filters, message",
+    [
+        ({"namespace_path": ["team"]}, "require a table"),
+        ({"branch": "experiment"}, "require a table"),
+        ({"created_at_gte_millis": 200, "created_at_lt_millis": 200}, "less than"),
+        ({"created_at_gte_millis": 201, "created_at_lt_millis": 200}, "less than"),
+        ({"job_type": "column_refresh", "job_types": []}, "only one"),
+        ({"state": "unknown"}, "state must be"),
+    ],
+)
+async def test_invalid_job_filters_do_not_fetch(
+    listing_server, asynchronous, filters, message
+):
+    endpoint, requests, _ = listing_server
+    db = await connection(endpoint, asynchronous)
+    with pytest.raises(ValueError, match=message):
+        items = db.list_jobs(**filters)
+        await advance(items, asynchronous)
+    assert requests == []
+
+
+@pytest.mark.asyncio
+async def test_listing_slice_and_index_fetch_only_needed_pages(listing_server):
+    endpoint, requests, responses = listing_server
+    responses.extend(
+        (200, response_page("jobs", names, token))
+        for names, token in [(["a", "b"], "second"), (["c", "d"], "last")]
+    )
+    db = await connection(endpoint, False)
+    items = db.list_jobs(table="events", page_limit=2)
+    assert items[:0] == []
+    assert items[5:2] == []
+    assert requests == []
+    assert [job.job_id for job in items[:2]] == ["a", "b"]
+    assert len(requests) == 1
+    assert items.num_page_results() == 2
+    assert items.page_token() == "second"
+    assert items[1].job_id == "b"
+    assert next(items).job_id == "a"
+    assert [job.job_id for job in items[:2]] == ["b", "c"]
+    assert len(requests) == 2
+    assert items.num_page_results() == 3
+    assert items.page_token() == "last"
+    assert [job.job_id for job in items[0:3:2][:1]] == ["b"]
+    assert len(requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_listing_length_and_slices_preserve_remaining_items(listing_server):
+    endpoint, requests, responses = listing_server
+    responses.extend(
+        (200, response_page("jobs", names, token))
+        for names, token in [(["a", "b"], "empty"), ([], "last"), (["c", "d"], None)]
+    )
+    db = await connection(endpoint, False)
+    items = db.list_jobs(page_limit=2)
+    assert bool(items)
+    assert len(requests) == 1
+    assert next(items).job_id == "a"
+    assert len(items) == 3
+    assert len(requests) == 3
+    assert items.num_page_results() == 3
+    assert items.page_token() is None
+    assert items[-1].job_id == "d"
+    assert [job.job_id for job in items[::-1]] == ["d", "c", "b"]
+    assert [job.job_id for job in items[1:]] == ["c", "d"]
+    assert [job.job_id for job in items[:100:2]] == ["b", "d"]
+    with pytest.raises(IndexError):
+        _ = items[3]
+    assert [job.job_id for job in items] == ["b", "c", "d"]
+    assert len(items) == 0
+    assert not items
+    assert len(requests) == 3
+
+
+@pytest.mark.asyncio
+async def test_listing_invalid_slice_does_not_fetch(listing_server):
+    endpoint, requests, _ = listing_server
+    db = await connection(endpoint, False)
+    items = db.list_jobs()
+    with pytest.raises(ValueError, match="step"):
+        _ = items[::0]
+    with pytest.raises(TypeError):
+        _ = items["invalid"]
+    with pytest.raises(TypeError):
+        _ = items[:1.5]
+    assert requests == []

@@ -1555,13 +1555,40 @@ class DBConnection(EnforceOverrides):
         )
 
     def list_jobs(
-        self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
+        self,
+        *,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+        table: Optional[str] = None,
+        namespace_path: Optional[List[str]] = None,
+        branch: Optional[str] = None,
+        state: Optional[
+            Literal["in_progress", "succeeded", "failed", "canceled", "timed_out"]
+        ] = None,
+        job_type: Optional[str] = None,
+        job_types: Optional[List[str]] = None,
+        created_at_gte_millis: Optional[int] = None,
+        created_at_lt_millis: Optional[int] = None,
     ) -> Listing[JobInfo]:
-        """List server-side jobs across the database's tables.
+        """List server-side jobs, optionally filtered before pagination.
 
-        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
-        ``page_token`` resumes from a saved token. Requests and errors occur during
-        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        ``table`` names a table in ``namespace_path`` (the root by default).
+        ``branch`` narrows that table to one branch; omitting it includes all
+        branches. Namespace and branch filters require ``table``.
+        ``state`` uses registry states such as ``in_progress``, ``succeeded``,
+        ``failed``, ``timed_out``, and ``canceled``, rather than the SDK's
+        ``running``/``finished`` labels. Set either ``job_type`` or ``job_types``.
+        Creation-time bounds are Unix milliseconds, inclusive at
+        ``created_at_gte_millis`` and exclusive at ``created_at_lt_millis``.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total.
+        Resume a ``page_token`` with the same filters. Requests and errors occur
+        during iteration. See [pagination state][lancedb.listing.AsyncListing].
+
+        For example, to inspect up to five jobs without fetching all history::
+
+            jobs = db.list_jobs(table="events", page_limit=5)
+            first_five = jobs[:5]
         """
         raise NotImplementedError(
             _append_doc_url(
@@ -2750,16 +2777,54 @@ class LanceDBConnection(DBConnection):
 
     @override
     def list_jobs(
-        self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
+        self,
+        *,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+        table: Optional[str] = None,
+        namespace_path: Optional[List[str]] = None,
+        branch: Optional[str] = None,
+        state: Optional[
+            Literal["in_progress", "succeeded", "failed", "canceled", "timed_out"]
+        ] = None,
+        job_type: Optional[str] = None,
+        job_types: Optional[List[str]] = None,
+        created_at_gte_millis: Optional[int] = None,
+        created_at_lt_millis: Optional[int] = None,
     ) -> Listing[JobInfo]:
-        """List server-side jobs across the database's tables.
+        """List server-side jobs, optionally filtered before pagination.
 
-        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
-        ``page_token`` resumes from a saved token. Requests and errors occur during
-        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        ``table`` names a table in ``namespace_path`` (the root by default).
+        ``branch`` narrows that table to one branch; omitting it includes all
+        branches. Namespace and branch filters require ``table``.
+        ``state`` uses registry states such as ``in_progress``, ``succeeded``,
+        ``failed``, ``timed_out``, and ``canceled``, rather than the SDK's
+        ``running``/``finished`` labels. Set either ``job_type`` or ``job_types``.
+        Creation-time bounds are Unix milliseconds, inclusive at
+        ``created_at_gte_millis`` and exclusive at ``created_at_lt_millis``.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total.
+        Resume a ``page_token`` with the same filters. Requests and errors occur
+        during iteration. See [pagination state][lancedb.listing.AsyncListing].
+
+        For example, to inspect up to five jobs without fetching all history::
+
+            jobs = db.list_jobs(table="events", page_limit=5)
+            first_five = jobs[:5]
         """
         return Listing(
-            self._conn.list_jobs(page_token=page_token, page_limit=page_limit)
+            self._conn.list_jobs(
+                page_token=page_token,
+                page_limit=page_limit,
+                table=table,
+                namespace_path=namespace_path,
+                branch=branch,
+                state=state,
+                job_type=job_type,
+                job_types=job_types,
+                created_at_gte_millis=created_at_gte_millis,
+                created_at_lt_millis=created_at_lt_millis,
+            )
         )
 
     @override
@@ -4323,16 +4388,58 @@ class AsyncConnection(object):
         )
 
     def list_jobs(
-        self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
+        self,
+        *,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+        table: Optional[str] = None,
+        namespace_path: Optional[List[str]] = None,
+        branch: Optional[str] = None,
+        state: Optional[
+            Literal["in_progress", "succeeded", "failed", "canceled", "timed_out"]
+        ] = None,
+        job_type: Optional[str] = None,
+        job_types: Optional[List[str]] = None,
+        created_at_gte_millis: Optional[int] = None,
+        created_at_lt_millis: Optional[int] = None,
     ) -> AsyncListing[JobInfo]:
-        """List server-side jobs across the database's tables.
+        """List server-side jobs, optionally filtered before pagination.
 
-        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
-        ``page_token`` resumes from a saved token. Requests and errors occur during
-        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        ``table`` names a table in ``namespace_path`` (the root by default).
+        ``branch`` narrows that table to one branch; omitting it includes all
+        branches. Namespace and branch filters require ``table``.
+        ``state`` uses registry states such as ``in_progress``, ``succeeded``,
+        ``failed``, ``timed_out``, and ``canceled``, rather than the SDK's
+        ``running``/``finished`` labels. Set either ``job_type`` or ``job_types``.
+        Creation-time bounds are Unix milliseconds, inclusive at
+        ``created_at_gte_millis`` and exclusive at ``created_at_lt_millis``.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total.
+        Resume a ``page_token`` with the same filters. Requests and errors occur
+        during iteration. See [pagination state][lancedb.listing.AsyncListing].
+
+        For example, to inspect up to five jobs without fetching all history::
+
+            jobs = db.list_jobs(table="events", page_limit=5)
+            first_five = []
+            async for job in jobs:
+                first_five.append(job)
+                if len(first_five) == 5:
+                    break
         """
         return AsyncListing(
-            self._inner.list_jobs(page_token=page_token, page_limit=page_limit)
+            self._inner.list_jobs(
+                page_token=page_token,
+                page_limit=page_limit,
+                table=table,
+                namespace_path=namespace_path,
+                branch=branch,
+                state=state,
+                job_type=job_type,
+                job_types=job_types,
+                created_at_gte_millis=created_at_gte_millis,
+                created_at_lt_millis=created_at_lt_millis,
+            )
         )
 
     async def cancel_job(self, job_id: str) -> bool:
