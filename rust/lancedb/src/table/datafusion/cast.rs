@@ -441,9 +441,12 @@ mod tests {
     use std::sync::Arc;
 
     use arrow::buffer::OffsetBuffer;
+    use arrow_array::cast::AsArray;
+    use arrow_array::types::{Float32Type, UInt8Type};
     use arrow_array::{
-        Array, Float32Array, Float64Array, Int32Array, Int64Array, ListArray, RecordBatch,
-        StringArray, StructArray, UInt32Array, UInt64Array,
+        Array, ArrayRef, Decimal128Array, FixedSizeListArray, Float32Array, Float64Array,
+        Int32Array, Int64Array, ListArray, RecordBatch, StringArray, StructArray, UInt32Array,
+        UInt64Array,
     };
     use arrow_schema::{DataType, Field, FieldRef, Fields, Schema};
     use datafusion::prelude::SessionContext;
@@ -823,6 +826,105 @@ mod tests {
         let stream = casted.execute(0, ctx.task_ctx()).unwrap();
         let result: Result<Vec<RecordBatch>, _> = stream.try_collect().await;
         assert!(result.is_err(), "expected overflow error at execution time");
+    }
+
+    // Arrow casts a float or decimal to an integer by truncating it toward zero and reports
+    // only overflow, so without a check 2.7 would be written as 2.
+    #[rstest::rstest]
+    #[case::float_to_int(
+        Arc::new(Float64Array::from(vec![Some(4.0), None, Some(2.7)])) as ArrayRef,
+        DataType::Int32,
+        "2.7"
+    )]
+    #[case::float_vector_to_uint8_vector(
+        Arc::new(FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+            vec![Some(vec![Some(1.0), Some(2.0)]), Some(vec![Some(0.5), Some(1.75)])],
+            2,
+        )) as ArrayRef,
+        DataType::new_fixed_size_list(DataType::UInt8, 2, true),
+        "0.5"
+    )]
+    #[case::decimal_to_int(
+        Arc::new(
+            Decimal128Array::from(vec![200, 275])
+                .with_precision_and_scale(5, 2)
+                .unwrap(),
+        ) as ArrayRef,
+        DataType::Int64,
+        "2.75"
+    )]
+    #[tokio::test]
+    async fn test_cast_dropping_fraction_errors(
+        #[case] input: ArrayRef,
+        #[case] table_type: DataType,
+        #[case] value: &str,
+    ) {
+        let input_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "a",
+                input.data_type().clone(),
+                true,
+            )])),
+            vec![input],
+        )
+        .unwrap();
+
+        let table_schema = Schema::new(vec![Field::new("a", table_type, true)]);
+
+        let plan = plan_from_batch(input_batch).await;
+        let casted = cast_to_table_schema(plan, &table_schema).unwrap();
+
+        let ctx = SessionContext::new();
+        let stream = casted.execute(0, ctx.task_ctx()).unwrap();
+        let result: Result<Vec<RecordBatch>, _> = stream.try_collect().await;
+        let err = result.expect_err("expected a truncation error").to_string();
+        assert!(err.contains(value), "unexpected error: {err}");
+    }
+
+    #[tokio::test]
+    async fn test_cast_integral_floats_to_int() {
+        let vector_type = |item| DataType::new_fixed_size_list(item, 2, true);
+        let input_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("a", DataType::Float64, true),
+                Field::new("v", vector_type(DataType::Float32), true),
+            ])),
+            vec![
+                Arc::new(Float64Array::from(vec![Some(4.0), Some(-0.0), None])),
+                Arc::new(
+                    FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+                        vec![
+                            Some(vec![Some(1.0), Some(255.0)]),
+                            None,
+                            Some(vec![Some(0.0), None]),
+                        ],
+                        2,
+                    ),
+                ),
+            ],
+        )
+        .unwrap();
+
+        let table_schema = Schema::new(vec![
+            Field::new("a", DataType::Int32, true),
+            Field::new("v", vector_type(DataType::UInt8), true),
+        ]);
+
+        let plan = plan_from_batch(input_batch).await;
+        let casted = cast_to_table_schema(plan, &table_schema).unwrap();
+        let result = collect(casted).await;
+
+        let a: &Int32Array = result.column(0).as_any().downcast_ref().unwrap();
+        assert_eq!(a.iter().collect::<Vec<_>>(), vec![Some(4), Some(0), None]);
+        let expected = FixedSizeListArray::from_iter_primitive::<UInt8Type, _, _>(
+            vec![
+                Some(vec![Some(1), Some(255)]),
+                None,
+                Some(vec![Some(0), None]),
+            ],
+            2,
+        );
+        assert_eq!(result.column(1).as_fixed_size_list(), &expected);
     }
 
     #[tokio::test]
