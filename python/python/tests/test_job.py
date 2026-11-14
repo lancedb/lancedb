@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from lancedb.exceptions import JobCancelledError, JobFailedError
+from lancedb.db import DBConnection
 from lancedb.job import AsyncJob, Job, _progress_eta
 from lancedb.remote.errors import HttpError, RetryError
 
@@ -738,6 +739,113 @@ async def test_wait_progress_false_keeps_legacy_inner_wait_call():
             return None
 
     assert await AsyncJob(NoProgressArgument()).wait(progress=False) is None
+
+
+class _RegistrationQuery:
+    id = "registration-query"
+    job_type = "query"
+    _description = None
+
+    def __init__(self, error=None):
+        self.ready = asyncio.Event()
+        self.error = error
+        self.state = "running"
+        self.wait_calls = 0
+        self.cancel_calls = 0
+
+    async def status(self):
+        return self.state
+
+    async def wait(self, progress=None):
+        self.wait_calls += 1
+        await self.ready.wait()
+        if self.error is not None:
+            self.state = (
+                "cancelled" if isinstance(self.error, JobCancelledError) else "failed"
+            )
+            raise self.error
+        self.state = "finished"
+        return '{"version": "1"}'
+
+    async def cancel(self):
+        self.cancel_calls += 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync", [False, True])
+async def test_query_progress_observes_one_registration_waiter(sync, monkeypatch):
+    monkeypatch.setattr("lancedb.job._QUERY_PROGRESS_INTERVAL_SECONDS", 0)
+    inner = _RegistrationQuery()
+    job = AsyncJob(inner, json.loads)
+    updates = []
+
+    def observe(snapshot):
+        updates.append(snapshot)
+        if len(updates) == 2:
+            inner.ready.set()
+
+    if sync:
+        result = await asyncio.to_thread(Job(job).wait, progress=observe)
+    else:
+        result = await job.wait(progress=observe)
+    assert result == {"version": "1"}
+    assert inner.wait_calls == 1
+    assert inner.cancel_calls == 0
+    assert updates[0]["state"] == "running"
+    assert updates[-1]["state"] == "finished"
+    assert all(snapshot["job_id"] == inner.id for snapshot in updates)
+    elapsed = [snapshot["client_elapsed_time_millis"] for snapshot in updates]
+    assert elapsed == sorted(elapsed)
+    assert elapsed[0] >= 0
+    assert all("phase" not in snapshot for snapshot in updates)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        JobFailedError("bake failed", job_id="registration-query"),
+        JobCancelledError("cancelled"),
+    ],
+)
+async def test_query_progress_preserves_terminal_exceptions(error):
+    inner = _RegistrationQuery(error)
+    inner.ready.set()
+    updates = []
+    with pytest.raises(type(error)) as raised:
+        await AsyncJob(inner).wait(progress=updates.append)
+    assert raised.value is error
+    assert updates[-1]["state"] == inner.state
+    assert inner.wait_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_query_progress_timeout_keeps_registration_available_on_same_handle():
+    inner = _RegistrationQuery()
+    job = AsyncJob(inner, json.loads)
+    updates = []
+    with pytest.raises(TimeoutError, match="keep this handle"):
+        await job.wait(timeout=timedelta(seconds=0.01), progress=updates.append)
+    assert inner.state == "running"
+    assert inner.cancel_calls == 0
+    inner.ready.set()
+    assert await job.wait(progress=updates.append) == {"version": "1"}
+    assert inner.wait_calls == 2
+    assert updates[-1]["state"] == "finished"
+
+
+def test_blocking_create_function_forwards_progress_to_registration_handle():
+    connection = MagicMock()
+    definition = object()
+    progress = object()
+    result = DBConnection.create_function(connection, definition, progress=progress)
+    connection.create_function_async.assert_called_once_with(
+        definition, secrets=None, exist_ok=False, namespace_path=None
+    )
+    connection.create_function_async.return_value.wait.assert_called_once_with(
+        progress=progress
+    )
+    assert result is connection.create_function_async.return_value.wait.return_value
 
 
 @pytest.mark.asyncio

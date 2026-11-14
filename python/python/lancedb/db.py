@@ -1018,6 +1018,7 @@ class DBConnection(EnforceOverrides):
         secrets: Optional[Sequence[EnvVarSecret]] = None,
         exist_ok: bool = False,
         namespace_path: Optional[List[str]] = None,
+        progress: Any = False,
     ) -> FunctionVersion:
         """Build and register a scalar Python function, then return its version.
 
@@ -1040,6 +1041,9 @@ class DBConnection(EnforceOverrides):
         namespace_path : list of str, optional
             The namespace holding the Function. None or an empty list is the
             root namespace.
+        progress : bool, callable, or tqdm-like object, default False
+            Display lifecycle state and elapsed time, or receive structured
+            snapshots through a callback. See [Job.wait][lancedb.job.Job.wait].
 
         Examples
         --------
@@ -1060,7 +1064,7 @@ class DBConnection(EnforceOverrides):
             secrets=secrets,
             exist_ok=exist_ok,
             namespace_path=namespace_path,
-        ).wait()
+        ).wait(progress=progress)
 
     def create_function_async(
         self,
