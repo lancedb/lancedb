@@ -1837,6 +1837,7 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         wait_timeout=None,
         name=None,
         train=True,
+        exist_ok=False,
     )
 
     # Test with target_partition_size
@@ -1862,6 +1863,7 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         wait_timeout=None,
         name=None,
         train=True,
+        exist_ok=False,
     )
 
     # target_partition_size has a default value,
@@ -1886,6 +1888,7 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         wait_timeout=None,
         name=None,
         train=True,
+        exist_ok=False,
     )
 
     table.create_index(
@@ -1902,6 +1905,7 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         wait_timeout=None,
         name=None,
         train=True,
+        exist_ok=False,
     )
 
     table.create_index(
@@ -1922,6 +1926,7 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         wait_timeout=None,
         name=None,
         train=True,
+        exist_ok=False,
     )
 
     table.create_index(
@@ -1942,6 +1947,7 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         wait_timeout=None,
         name=None,
         train=True,
+        exist_ok=False,
     )
 
 
@@ -2073,6 +2079,7 @@ def test_create_index_name_and_train_parameters(
         wait_timeout=None,
         name="my_custom_index",
         train=True,
+        exist_ok=False,
     )
 
     # Test with train=False
@@ -2084,6 +2091,7 @@ def test_create_index_name_and_train_parameters(
         wait_timeout=None,
         name=None,
         train=False,
+        exist_ok=False,
     )
 
     # Test with both name and train
@@ -2095,6 +2103,7 @@ def test_create_index_name_and_train_parameters(
         wait_timeout=None,
         name="my_index_name",
         train=True,
+        exist_ok=False,
     )
 
 
@@ -2132,6 +2141,7 @@ def test_create_index_new_api(mock_create_index, mem_db: DBConnection):
         wait_timeout=None,
         name=None,
         train=True,
+        exist_ok=False,
     )
 
     # Scalar index via new API
@@ -2143,6 +2153,7 @@ def test_create_index_new_api(mock_create_index, mem_db: DBConnection):
         wait_timeout=None,
         name=None,
         train=True,
+        exist_ok=False,
     )
 
     # FTS index via new API
@@ -2154,6 +2165,7 @@ def test_create_index_new_api(mock_create_index, mem_db: DBConnection):
         wait_timeout=None,
         name=None,
         train=True,
+        exist_ok=False,
     )
 
 
@@ -6292,3 +6304,87 @@ async def test_async_computed_auto_refresh_uses_server_interval(tmp_path):
     metadata = (await table.schema()).field("doubled").metadata
     assert metadata[b"computed_column.auto_refresh_enabled"] == b"true"
     assert b"computed_column.auto_refresh_interval_seconds" not in metadata
+
+
+@pytest.mark.parametrize(
+    "method",
+    ["create_index", "create_index_async", "create_scalar_index", "create_fts_index"],
+)
+@pytest.mark.parametrize("name", [None, "kept_index"])
+def test_index_exist_ok_preserves_definition_and_version(mem_db, method, name):
+    table = mem_db.create_table(
+        "keep_index", [{"id": i, "text": f"document {i}"} for i in range(20)]
+    )
+    column = "text" if method == "create_fts_index" else "id"
+    config = FTS() if column == "text" else BTree()
+    table.create_index(column, config=config, name=name, exist_ok=True)
+    before = table.version
+    original = table.list_indices()
+    kwargs = dict(name=name, exist_ok=True)
+    if method in ("create_index", "create_index_async"):
+        kwargs["config"] = config
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        result = getattr(table, method)(column, **kwargs)
+    if method == "create_index_async":
+        result.wait()
+    assert table.version == before
+    assert [(index.name, index.index_type) for index in table.list_indices()] == [
+        (index.name, index.index_type) for index in original
+    ]
+    with pytest.raises((ValueError, RuntimeError), match="already exists"):
+        table.create_index(column, config=config, name=name, replace=False)
+    table.create_index(column, config=config, name=name)
+    assert table.version > before
+
+
+@pytest.mark.parametrize(
+    "column,name,existing",
+    [
+        ("vector", "kept", "kept"),
+        ("`docs`.`nested.dot`", None, "docs.`nested.dot`_idx"),
+    ],
+)
+def test_accelerated_index_exist_ok_skips_gpu_validation(column, name, existing):
+    dataset = MagicMock()
+    dataset.list_indices.return_value = [{"name": existing}]
+    with patch("lancedb.table._validate_index_accelerator") as validate:
+        table_module._create_accelerated_index(
+            dataset, column=column, accelerator="cuda", name=name, exist_ok=True
+        )
+    validate.assert_not_called()
+    dataset.create_index.assert_not_called()
+
+
+def test_accelerated_index_exist_ok_preserves_concurrent_winner():
+    dataset = MagicMock()
+    dataset.list_indices.side_effect = [[], [{"name": "vector_idx"}]]
+    dataset.create_index.side_effect = RuntimeError("concurrent create")
+    with patch("lancedb.table._validate_index_accelerator"):
+        table_module._create_accelerated_index(
+            dataset, column="vector", accelerator="cuda", replace=True, exist_ok=True
+        )
+    assert dataset.create_index.call_args.kwargs["replace"] is False
+    assert dataset.create_index.call_args.kwargs["name"] == "vector_idx"
+
+
+@pytest.mark.parametrize("column", ["`user-id`", "`user:id`", "nested.`user-id`"])
+def test_index_exist_ok_matches_lance_default_name(mem_db, column):
+    table = mem_db.create_table(
+        "quoted_index",
+        [{"user-id": 1, "user:id": 2, "nested": {"user-id": 4}}],
+    )
+    table.create_index(column, config=BTree())
+    before = table.version
+    table.create_index(column, config=BTree(), exist_ok=True)
+    assert table.version == before
+    assert len(table.list_indices()) == 1
+
+
+def test_fts_exist_ok_matches_quoted_default_name(mem_db):
+    table = mem_db.create_table("quoted_fts", [{"body-text": "keep this document"}])
+    table.create_index("`body-text`", config=FTS())
+    before = table.version
+    table.create_index("`body-text`", config=FTS(), exist_ok=True)
+    assert table.version == before
+    assert len(table.list_indices()) == 1

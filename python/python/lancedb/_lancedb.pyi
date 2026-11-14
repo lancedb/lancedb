@@ -591,6 +591,7 @@ class Table:
         *,
         name: Optional[str],
         train: Optional[bool],
+        exist_ok: bool = False,
     ): ...
     async def create_index_async(
         self,
@@ -615,6 +616,7 @@ class Table:
         *,
         name: Optional[str],
         train: Optional[bool],
+        exist_ok: bool = False,
     ) -> Job: ...
     async def list_versions(self) -> List[Dict[str, Any]]: ...
     async def version(self) -> int: ...
