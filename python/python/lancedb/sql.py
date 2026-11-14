@@ -3,7 +3,7 @@
 
 """Handles to SQL queries running on a LanceDB Enterprise database."""
 
-from typing import Any, Mapping, Optional, Sequence, Union
+from typing import Any, Mapping, Optional, Sequence, Union, cast
 from uuid import UUID
 
 import numpy as np
@@ -29,7 +29,8 @@ also ``$<name>``.
 def _parameter_array(value: Any) -> pa.Array:
     """One parameter as a one-element array of its own type."""
     if isinstance(value, pa.Scalar):
-        return pa.array([value.as_py()], type=value.type)
+        # The stubs omit the generic Scalar overload supported at runtime.
+        return pa.repeat(cast(Any, value), 1)
     # A 1-D array is a vector: keep its element type and make it the
     # fixed-size list a vector column stores, rather than a list of Python
     # floats that would come back as float64.
