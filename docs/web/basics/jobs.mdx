@@ -222,6 +222,36 @@ by the jobs API.
 `estimated_remaining_time_millis` is a best-effort client-side estimate. It is
 omitted while a job is initializing, queued, or paused, and when there is no
 positive progress rate from two compatible samples.
+
+### Inspect a slow Function worker
+
+On a supported Enterprise server, Python's `Job.stack(worker_id)` and
+`await AsyncJob.stack(worker_id)` capture Python thread stacks from a running
+Function refresh worker. Rust provides `job.stack(worker_id).await?`.
+TypeScript does not yet expose this method. Stack inspection requires the
+system operate privilege.
+
+Select a worker ID from the job's progress warnings or recorded events. For
+example, inspect a worker named in the current no-progress or slow-split warnings:
+
+```python
+job = db.open_job(job_id)
+snapshot = job.progress() or {}
+warnings = snapshot.get("warnings", [])
+if warnings:
+    evidence = job.stack(warnings[0]["worker_id"])
+    print(evidence["status"], evidence["omitted_sessions"])
+    for session in evidence["stacks"]:
+        print(session["status"], session["captured_at_millis"])
+        print(session["stack"], session["truncated"])
+```
+
+`unavailable` and `unsupported` are explicit capture statuses; missing frames
+do not establish that a worker is healthy or finished. Captures are bounded and
+may reuse a recent sample. They contain Python frames without source text,
+locals or native frames. Local operations and SQL-backed query handles do not
+support stack inspection. For a worker that already timed out, inspect the
+recorded failure events for retained traceback evidence.
 */}
 
 ## Embedded and Enterprise execution {#in-process}
