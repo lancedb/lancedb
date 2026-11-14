@@ -139,6 +139,46 @@ compound temporal representation cannot read those signatures. A deployment
 must include the corresponding Lance Namespace and Sophon support; this
 client-side declaration does not add server support.
 
+### Maps and decimals {#maps-decimals}
+
+A `dict[str, T]` annotation declares an Arrow map with a non-nullable `utf8`
+key. A plain `T` value is non-nullable; annotate `dict[str, Optional[T]]` for
+nullable values. An explicit `pa.map_(...)` schema preserves the value field's
+own `nullable` flag:
+
+```python
+@function
+def word_counts(text: str) -> dict[str, int]:
+    ...
+```
+
+Map keys must be non-nullable `utf8`; `keys_sorted=True` is not supported, and
+Blob v2 values inside a map are not supported.
+
+`Decimal` carries no precision or scale by itself, so a bare `Decimal`
+annotation is rejected. Declare both explicitly with `Annotated`, or use an
+explicit Arrow schema:
+
+```python
+from decimal import Decimal
+from typing import Annotated
+
+import pyarrow as pa
+
+
+@function
+def add_tax(
+    amount: Annotated[Decimal, pa.decimal128(12, 2)],
+) -> Annotated[Decimal, pa.decimal128(12, 2)]:
+    ...
+```
+
+`decimal128` and `decimal256` keep the declared precision and scale in the
+canonical signature; no default is chosen. Map and decimal signatures are sent
+as canonical Arrow JSON. A deployment must support those types; an older
+Enterprise server may reject the registration, and this client-side
+declaration does not add server support.
+
 ## Connect and create a table {#table}
 
 The remaining steps run against your Enterprise deployment. Replace the database
