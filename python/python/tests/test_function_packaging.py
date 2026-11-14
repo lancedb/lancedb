@@ -9,6 +9,7 @@ import base64
 import importlib
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import textwrap
@@ -17,6 +18,7 @@ import warnings
 from pathlib import Path
 from typing import Annotated, Optional, get_type_hints
 
+import numpy as np
 import pyarrow as pa
 import pytest
 
@@ -234,10 +236,15 @@ def test_function_can_return_a_list_from_a_generator_expression():
 @pytest.mark.parametrize(
     ("global_value", "value_type"),
     [
-        ("pa.struct([('label', pa.string())])", "StructType"),
-        ("(1, (pa.int64(),))", "DataType"),
-        ("{'label': 1}", "dict"),
         ("float('inf')", "float"),
+        ("{'label': float('nan')}", "float"),
+        ("[1, (2, object())]", "object"),
+        ("{'labels': range(2)}", "range"),
+        ("pa.array([1])", "Int64Array"),
+        ("np.array(['label'])", "ndarray with dtype <U5"),
+        ("np.array([1.0], dtype=np.longdouble)", "ndarray with dtype"),
+        ("np.datetime64('2026-01-01')", "datetime64 with dtype datetime64[D]"),
+        ("np.ma.masked_array([1.0])", "MaskedArray"),
     ],
 )
 def test_unsupported_global_names_value_and_remedy(
@@ -254,8 +261,8 @@ def test_unsupported_global_names_value_and_remedy(
     module = helper_package(
         "fx_unsupported_global",
         {
-            "__init__.py": f"import pyarrow as pa\nCAPTURED_VALUE = {global_value}\n"
-            + definition
+            "__init__.py": "import numpy as np\nimport pyarrow as pa\n"
+            f"CAPTURED_VALUE = {global_value}\n" + definition
         },
     )
     with pytest.raises(TypeError) as error:
@@ -282,6 +289,226 @@ def test_supported_nested_literal_global_still_packages(helper_package):
     exec(compile(artifact(definition), "user_function.py", "exec"), namespace)
     assert namespace["uses_global"](3) == 4
     assert namespace["CAPTURED_VALUE"] == module.CAPTURED_VALUE
+
+
+@pytest.mark.parametrize("kind", ["function", "class"])
+def test_arrow_and_structured_globals_are_captured(helper_package, kind):
+    body = (
+        "    if x is None:\n"
+        "        return (LABELS, EMPTY, ARROW, WEIGHTS, NUMPY)\n"
+        "    rows = [{'label': 'pick', 'score': LABELS['pick']}] * len(x)\n"
+        "    return pa.array(rows, type=OUT_TYPE)\n"
+    )
+    definition = (
+        "class judge:\n    def __call__(self, x: pa.Array) -> pa.Array:\n"
+        + textwrap.indent(body, "    ")
+        if kind == "class"
+        else "def judge(x: pa.Array) -> pa.Array:\n" + body
+    )
+    module = helper_package(
+        "fx_structured_global",
+        {
+            "__init__.py": textwrap.dedent("""
+                import numpy as np
+                import pyarrow as pa
+
+                OUT_TYPE = pa.struct(
+                    [pa.field("label", pa.string()), pa.field("score", pa.int32())]
+                )
+                LABELS = {
+                    "pick": 0,
+                    "place": 1,
+                    "nested": [None, (1.5, b"x"), {"deep": frozenset({"b", "a"})}],
+                }
+                EMPTY = ([], {}, set(), frozenset(), ())
+                ARROW = {
+                    "field": pa.field(
+                        "score", pa.int32(), nullable=False, metadata={"unit": "pts"}
+                    ),
+                    "schema": pa.schema(
+                        [pa.field("label", pa.dictionary(pa.int8(), pa.utf8(), True))],
+                        metadata={"version": "1"},
+                    ),
+                    "tensor": pa.fixed_shape_tensor(pa.float32(), [2, 2]),
+                }
+                WEIGHTS = np.array([[0.1, 0.2], [0.3, 0.4]], dtype=np.float32)
+                NUMPY = (
+                    np.float32(0.5),
+                    np.True_,
+                    np.uint64(2**64 - 1),
+                    np.array(1.5),
+                    np.zeros((0, 3), dtype=np.int16),
+                    np.array([1.0, -0.0], dtype=">f8"),
+                )
+            """)
+            + definition
+        },
+    )
+    out_type = module.OUT_TYPE
+    packaged = function(
+        input_schema=pa.schema([pa.field("x", pa.int64(), nullable=False)]),
+        output_schema=pa.field("out", out_type, nullable=False),
+    )(module.judge)
+    source = artifact(packaged).decode()
+    assert "import numpy as _lancedb_numpy" in source
+    assert "import pyarrow as _lancedb_pyarrow" in source
+
+    namespace = {}
+    exec(compile(source, "user_function.py", "exec"), namespace)
+    call = namespace["judge"]() if kind == "class" else namespace["judge"]
+    result = call(pa.array([1, 2]))
+    assert result.type == out_type
+    assert result.to_pylist() == [{"label": "pick", "score": 0}] * 2
+    assert namespace["OUT_TYPE"] == out_type
+
+    assert namespace["LABELS"] == module.LABELS
+    assert list(namespace["LABELS"]) == list(module.LABELS)
+    assert namespace["EMPTY"] == module.EMPTY
+    assert [type(value) for value in namespace["EMPTY"]] == [
+        type(value) for value in module.EMPTY
+    ]
+    for key, value in module.ARROW.items():
+        assert namespace["ARROW"][key].equals(value, check_metadata=True)
+        assert type(namespace["ARROW"][key]) is type(value)
+
+    weights = namespace["WEIGHTS"]
+    assert weights.dtype == module.WEIGHTS.dtype
+    assert np.array_equal(weights, module.WEIGHTS)
+    for captured, original in zip(namespace["NUMPY"], module.NUMPY, strict=True):
+        assert type(captured) is type(original)
+        assert captured.dtype == original.dtype
+        assert np.shape(captured) == np.shape(original)
+        assert np.array_equal(captured, original)
+    assert np.signbit(namespace["NUMPY"][-1][1])
+
+
+def test_captured_containers_are_copied_when_decorated(helper_package):
+    module = helper_package(
+        "fx_captured_copy",
+        {
+            "__init__.py": """
+                SHARED = [1, 2]
+                CONFIG = {"shared": SHARED, "again": SHARED}
+
+                def uses_config(value: int) -> int:
+                    return value + len(CONFIG["shared"]) + len(SHARED)
+            """
+        },
+    )
+    definition = function(module.uses_config)
+    module.SHARED.append(3)
+
+    namespace = {}
+    exec(compile(artifact(definition), "user_function.py", "exec"), namespace)
+    assert namespace["SHARED"] == [1, 2]
+    assert namespace["CONFIG"] == {"shared": [1, 2], "again": [1, 2]}
+    assert namespace["CONFIG"]["shared"] is not namespace["CONFIG"]["again"]
+    assert namespace["CONFIG"]["shared"] is not namespace["SHARED"]
+    assert namespace["uses_config"](1) == 5
+
+
+def test_captured_sets_package_deterministically(tmp_path):
+    script = tmp_path / "sets.py"
+    script.write_text(
+        textwrap.dedent(
+            """
+            import json
+
+            from lancedb import function
+
+            WORDS = {f"word{index}" for index in range(20)}
+            MIXED = frozenset({("pair", 1), b"bytes", None, 2.5, "text"})
+
+            @function
+            def known(word: str) -> bool:
+                return word in WORDS or word in MIXED
+
+            print(json.dumps([
+                known.registration_request.artifact.digest,
+                list(WORDS),
+            ]))
+            """
+        )
+    )
+    runs = []
+    for seed in ("0", "1", "2", "3"):
+        result = subprocess.run(
+            [sys.executable, str(script)],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONHASHSEED": seed},
+        )
+        assert result.returncode == 0, result.stderr
+        runs.append(json.loads(result.stdout))
+    # Hash randomization reorders the client's set; the artifact must not change.
+    assert len({tuple(order) for _, order in runs}) > 1
+    assert len({digest for digest, _ in runs}) == 1
+
+
+@pytest.mark.parametrize(
+    ("global_value", "message"),
+    [
+        ("list(range(300_000))", "too large to capture"),
+        ("np.zeros(2_000_000)", "too large to capture"),
+        ("'x' * (1024 * 1024)", "too large to capture"),
+        ("functools.reduce(lambda inner, _: [inner], range(40), [])", "32 levels"),
+        ("_cycle()", "contains itself"),
+        ("pa.schema([pa.field('x', pa.list_(_Extension()))])", "defined in Python"),
+    ],
+)
+def test_captured_value_limits_name_the_global(helper_package, global_value, message):
+    module = helper_package(
+        "fx_captured_limits",
+        {
+            "__init__.py": textwrap.dedent("""
+                import functools
+
+                import numpy as np
+                import pyarrow as pa
+
+                class _Extension(pa.ExtensionType):
+                    def __init__(self):
+                        super().__init__(pa.int64(), "fx.extension")
+
+                    def __arrow_ext_serialize__(self):
+                        return b""
+
+                    @classmethod
+                    def __arrow_ext_deserialize__(cls, storage_type, serialized):
+                        return cls()
+
+                def _cycle():
+                    value = []
+                    value.append(value)
+                    return value
+            """)
+            + f"CAPTURED_VALUE = {global_value}\n"
+            "def uses_global(value: int) -> int:\n"
+            "    return value if CAPTURED_VALUE else 0\n"
+        },
+    )
+    with pytest.raises((TypeError, ValueError)) as error:
+        function(module.uses_global)
+    assert "CAPTURED_VALUE" in str(error.value)
+    assert message in str(error.value)
+    assert "inside the function or class body" in str(error.value)
+
+
+def test_captured_sets_keep_their_builtins(helper_package):
+    module = helper_package(
+        "fx_captured_builtins",
+        {
+            "__init__.py": """
+                STOP = frozenset({"a"})
+                frozenset = ("shadowed",)
+
+                def uses_sets(word: str) -> bool:
+                    return word in STOP or word in frozenset
+            """
+        },
+    )
+    with pytest.raises(ValueError, match="cannot package 'frozenset'"):
+        function(module.uses_sets)
 
 
 @pytest.mark.parametrize("annotation", ["Array", "RecordBatch"])
