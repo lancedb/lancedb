@@ -498,11 +498,36 @@ def probe_library(name: str) -> str:
     return native_diagnostics.find_library(name)
 ```
 
-Captured literal globals support `None`, booleans, integers, strings, bytes,
-finite floats, and tuples of these values. Construct other objects, including
-PyArrow types and schemas, inside the Function or helper module instead. Values
-used only in the decorator's `input_schema` or `output_schema` are not captured
-globals and can be defined outside the Function.
+Captured globals are copied into the Function's source. They can be `None`,
+booleans, integers, strings, bytes, and finite floats; tuples, lists, dicts,
+sets, and frozensets of supported values; PyArrow data types, fields, and
+schemas; and NumPy arrays and scalars of bool, integer, `float16`, `float32`,
+and `float64` dtypes. The copy is taken when the decorator runs and rebuilt in
+each worker process, so later changes on either side are not shared. NumPy
+values need `numpy` in the remote environment; declare it with `pip=` or
+`conda=`. Each value is limited to 1 MiB of source and 32 levels of nesting;
+load larger data inside the Function, for example from a table or a package
+resource shipped with `code=`. Construct other objects inside the Function or
+helper module instead. Values used only in the decorator's `input_schema` or
+`output_schema` are not captured globals and can be defined outside the
+Function.
+
+```python
+import pyarrow as pa
+from lancedb import function
+
+LABELS = {"pick": 0, "place": 1}
+RESULT = pa.struct([pa.field("label", pa.string()), pa.field("id", pa.int32())])
+
+
+@function(
+    input_schema=pa.schema([pa.field("action", pa.string(), nullable=False)]),
+    output_schema=pa.field("result", RESULT, nullable=False),
+)
+def label(action: pa.Array) -> pa.Array:
+    rows = [{"label": name, "id": LABELS[name]} for name in action.to_pylist()]
+    return pa.array(rows, type=RESULT)
+```
 
 Annotate a blob input with `lancedb.BlobReader` for lazy, seekable access, or
 with `bytes` to materialize its contents before the Function runs. Reader

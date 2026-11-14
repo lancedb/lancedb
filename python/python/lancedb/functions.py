@@ -1554,22 +1554,40 @@ def _is_function_decorator(node: ast.expr) -> bool:
     )
 
 
-def _literal_source(value: Any, name: str) -> str:
-    if value is None or type(value) in (bool, int, str, bytes):
-        return repr(value)
-    if type(value) is float and math.isfinite(value):
-        return repr(value)
-    if type(value) is tuple:
-        children = ", ".join(_literal_source(child, name) for child in value)
-        if len(value) == 1:
-            children += ","
-        return f"({children})"
-    raise TypeError(
+# A captured value is inlined into the artifact source; larger data belongs in a
+# table or a package resource.
+_MAX_CAPTURED_SOURCE = 1024 * 1024
+# Far below CPython's parser nesting limit.
+_MAX_CAPTURED_DEPTH = 32
+_CAPTURE_REMEDY = "Define this value inside the function or class body instead."
+
+
+def _unsupported_capture(name: str, kind: str) -> TypeError:
+    return TypeError(
         "Function source references an unsupported global value of type "
-        f"{type(value).__name__} in {name!r}. Only None, bool, int, str, bytes, "
-        "finite float, and tuples of these literals can be captured. "
-        "Define this value inside the function or class body instead."
+        f"{kind} in {name!r}. Captured globals can be None, bool, int, str, "
+        "bytes, or finite float values; tuples, lists, dicts, sets, or frozensets "
+        "of supported values; PyArrow data types, fields, or schemas; or NumPy "
+        "arrays or scalars of bool, integer, float16, float32, or float64 dtypes. "
+        + _CAPTURE_REMEDY
     )
+
+
+def _python_extension_type(data_type: pa.DataType) -> Optional[pa.ExtensionType]:
+    """The first extension type within `data_type` whose class is defined in
+    Python. IPC carries only its name, so it deserializes as the storage type
+    wherever that class is not registered."""
+    if isinstance(data_type, pa.ExtensionType):
+        return data_type
+    if isinstance(data_type, pa.BaseExtensionType):
+        return _python_extension_type(data_type.storage_type)
+    if isinstance(data_type, pa.DictionaryType):
+        return _python_extension_type(data_type.value_type)
+    for index in range(data_type.num_fields):
+        found = _python_extension_type(data_type.field(index).type)
+        if found is not None:
+            return found
+    return None
 
 
 _DYNAMIC_NAMESPACE_ACCESS = frozenset(
@@ -1870,7 +1888,7 @@ class _SourcePackager:
 
     The module holds the definition plus exactly the module-level names it
     references: modules as imports, importable classes and functions as
-    imports, literals inline, and functions and classes defined in
+    imports, captured values inline, and functions and classes defined in
     ``__main__`` by source, recursively, dependencies first.
     """
 
@@ -1878,6 +1896,7 @@ class _SourcePackager:
         self._code_modules = code_modules
         self._requirements = requirements
         self._imports: dict[str, str] = {}
+        self._support_imports: dict[str, str] = {}
         self._definitions: list[str] = []
         self._packaged: set[int] = set()
         self._names: dict[str, Any] = {}
@@ -1886,8 +1905,13 @@ class _SourcePackager:
     def package(self, target: Any, signature: FunctionSignature) -> str:
         entry = self._definition(target, entry=True, signature=signature)
         parts = [_SOURCE_HEADER]
-        if self._imports:
-            parts.extend(["", *(self._imports[name] for name in sorted(self._imports))])
+        # Captured values are rebuilt with the support modules, so those come first.
+        imports = [
+            *(self._support_imports[alias] for alias in sorted(self._support_imports)),
+            *(self._imports[name] for name in sorted(self._imports)),
+        ]
+        if imports:
+            parts.extend(["", *imports])
         for definition in self._definitions:
             parts.extend(["", definition])
         parts.extend(["", entry, ""])
@@ -2008,8 +2032,8 @@ class _SourcePackager:
 
     def _global_source(self, name: str, value: Any) -> str:
         """One module-level line that rebinds `name` to `value` in the artifact:
-        an import for modules and importable classes/functions, a literal
-        otherwise."""
+        an import for modules and importable classes/functions, a captured
+        copy otherwise."""
         if value is BlobReader:
             return f"from lance_blob import BlobReader as {name}"
         if isinstance(value, types.ModuleType):
@@ -2042,7 +2066,148 @@ class _SourcePackager:
             if imported is value:
                 self._require_importable(module_name)
                 return f"from {module_name} import {qualname} as {name}"
-        return f"{name} = {_literal_source(value, name)}"
+        return f"{name} = {self._captured_source(name, value)}"
+
+    def _captured_source(self, name: str, value: Any) -> str:
+        """An expression that rebuilds a copy of the global `name`.
+
+        Literals and containers are written as Python literals, with set
+        elements sorted by their source so the artifact does not depend on hash
+        randomization. Arrow values are rebuilt from Arrow's IPC schema encoding
+        and NumPy values from their dtype and elements.
+        """
+        remaining = _MAX_CAPTURED_SOURCE
+        enclosing: set[int] = set()
+
+        def too_large() -> ValueError:
+            return ValueError(
+                f"Function global {name!r} is too large to capture: its source "
+                f"exceeds {_MAX_CAPTURED_SOURCE} characters. Load large data inside "
+                "the function or class body instead, for example from a table or a "
+                "package resource shipped with code=."
+            )
+
+        def charge(source: str, nested: Sequence[str] = ()) -> str:
+            nonlocal remaining
+            remaining -= len(source) - sum(map(len, nested))
+            if remaining < 0:
+                raise too_large()
+            return source
+
+        def emit(value: Any) -> str:
+            if value is None or type(value) in (bool, int, str, bytes):
+                return charge(repr(value))
+            if type(value) is float and math.isfinite(value):
+                return charge(repr(value))
+            if isinstance(value, (pa.DataType, pa.Field, pa.Schema)):
+                return charge(self._arrow_source(name, value))
+            numpy = sys.modules.get("numpy")
+            if numpy is not None and (
+                type(value) is numpy.ndarray or isinstance(value, numpy.generic)
+            ):
+                return emit_numpy(numpy, value)
+            if type(value) in (tuple, list, dict, set, frozenset):
+                return emit_container(value)
+            raise _unsupported_capture(name, type(value).__name__)
+
+        def emit_numpy(numpy: types.ModuleType, value: Any) -> str:
+            # These convert to exact Python values; longdouble stays a NumPy scalar.
+            if value.dtype.kind not in "biuf" or value.dtype.type is numpy.longdouble:
+                raise _unsupported_capture(
+                    name, f"{type(value).__name__} with dtype {value.dtype}"
+                )
+            # Every element takes at least one character; check before tolist().
+            if value.size > remaining:
+                raise too_large()
+            alias = self._support_module("numpy")
+            dtype = repr(value.dtype.str)
+            if isinstance(value, numpy.generic):
+                item = emit(value.item())
+                return charge(f"{alias}.dtype({dtype}).type({item})", (item,))
+            elements = emit(value.tolist())
+            source = f"{alias}.array({elements}, dtype={dtype})"
+            # Nested lists cannot spell an empty array of more than one dimension.
+            if value.size == 0 and value.ndim > 1:
+                source += f".reshape({value.shape!r})"
+            return charge(source, (elements,))
+
+        def emit_container(value: Any) -> str:
+            if id(value) in enclosing:
+                raise ValueError(
+                    f"Function global {name!r} contains itself and cannot be "
+                    "captured. " + _CAPTURE_REMEDY
+                )
+            if len(enclosing) == _MAX_CAPTURED_DEPTH:
+                raise ValueError(
+                    f"Function global {name!r} nests containers more than "
+                    f"{_MAX_CAPTURED_DEPTH} levels deep and cannot be captured. "
+                    + _CAPTURE_REMEDY
+                )
+            enclosing.add(id(value))
+            if type(value) is dict:
+                entries = [(emit(key), emit(child)) for key, child in value.items()]
+                children = [part for entry in entries for part in entry]
+                listed = ", ".join(f"{key}: {child}" for key, child in entries)
+                source = f"{{{listed}}}"
+            else:
+                children = [emit(child) for child in value]
+                if type(value) in (set, frozenset):
+                    listed = ", ".join(sorted(children))
+                else:
+                    listed = ", ".join(children)
+                if type(value) is tuple:
+                    source = f"({listed},)" if len(children) == 1 else f"({listed})"
+                elif type(value) is list:
+                    source = f"[{listed}]"
+                elif type(value) is set:
+                    source = (
+                        f"{{{listed}}}" if children else f"{self._builtin('set')}()"
+                    )
+                else:
+                    items = f"{{{listed}}}" if children else ""
+                    source = f"{self._builtin('frozenset')}({items})"
+            enclosing.remove(id(value))
+            return charge(source, children)
+
+        return emit(value)
+
+    def _arrow_source(
+        self, name: str, value: Union[pa.DataType, pa.Field, pa.Schema]
+    ) -> str:
+        if isinstance(value, pa.Schema):
+            schema, suffix = value, ""
+        elif isinstance(value, pa.Field):
+            schema, suffix = pa.schema([value]), ".field(0)"
+        else:
+            schema, suffix = pa.schema([pa.field("", value)]), ".field(0).type"
+        for data_type in schema.types:
+            extension = _python_extension_type(data_type)
+            if extension is not None:
+                raise TypeError(
+                    f"Function global {name!r} uses the Arrow extension type "
+                    f"{extension.extension_name!r}, which is defined in Python and "
+                    "cannot be captured. " + _CAPTURE_REMEDY
+                )
+        alias = self._support_module("pyarrow")
+        # Schema IPC keeps nullability, metadata, and nested fields exactly.
+        data = schema.serialize().to_pybytes()
+        return f"{alias}.ipc.read_schema({alias}.py_buffer({data!r})){suffix}"
+
+    def _support_module(self, module: str) -> str:
+        """The artifact's private alias for a module that rebuilds captured
+        values."""
+        alias = f"_lancedb_{module}"
+        if alias not in self._support_imports:
+            self._require_importable(module)
+            self._claim(alias, ("support", module))
+            self._support_imports[alias] = f"import {module} as {alias}"
+        return alias
+
+    def _builtin(self, name: str) -> str:
+        """A builtin called by captured source, which the artifact must not
+        rebind."""
+        self._claim(name, ("builtin", name))
+        return name
 
     def _require_importable(self, module_name: str) -> None:
         """Warn about an import the Function's environment may not be able to
@@ -2696,8 +2861,11 @@ def function(
     - modules, and classes and functions importable from an installed
       package, become imports; the package must be declared in ``pip`` or
       ``conda``;
-    - literals (``None``, ``bool``, ``int``, ``str``, ``bytes``, finite
-      ``float``, and tuples containing only these literals) are inlined;
+    - values are copied into the source: ``None``, ``bool``, ``int``,
+      ``str``, ``bytes``, and finite ``float``; tuples, lists, dicts, sets,
+      and frozensets of supported values; PyArrow data types, fields, and
+      schemas; and NumPy arrays and scalars of ``bool``, integer,
+      ``float16``, ``float32``, and ``float64`` dtypes;
     - functions and classes defined in ``__main__``, such as notebook cells,
       are packaged by source, together with what they reference;
     - modules and packages listed in ``code`` are shipped as Python source and
@@ -2715,12 +2883,26 @@ def function(
     image. Warnings follow normal Python warning filters and may be promoted
     to errors. Declare every third-party import in ``pip`` or ``conda`` even
     when it happens to be installed on the registration host.
-    Other global values, including Arrow types and schemas, lists, dictionaries,
-    sets, and NumPy arrays, cannot be captured as literals. Define them inside
-    the function or class body instead.
-    Closures, lambdas, nested definitions, mutable module-level objects, and a
-    non-standard ``__builtins__`` are rejected where they can be seen and
+    Closures, lambdas, nested definitions, other mutable module-level objects,
+    and a non-standard ``__builtins__`` are rejected where they can be seen and
     otherwise unsupported.
+
+    **Captured values.** A captured value is copied when the decorator runs
+    and rebuilt in every worker process. Later changes on the client do not
+    reach the Function, changes a worker makes stay in that process, and
+    globals that share an object on the client become separate copies.
+    Dictionaries keep their insertion order and set elements are written in a
+    canonical order, so the same values always package to the same source.
+    Floats, including NumPy elements, must be finite. Arrow values are rebuilt
+    from Arrow's IPC schema encoding, which preserves nullability, metadata,
+    and nested fields; extension types defined in Python cannot be captured.
+    NumPy values keep their dtype and shape and need ``numpy`` in the remote
+    environment, so declare it in ``pip`` or ``conda``. Each captured value is
+    limited to 1 MiB of source and 32 levels of nesting, and cannot contain
+    itself. Load larger data inside the function or class body, for example
+    from a table or a package resource shipped with ``code``. Define other
+    values, such as instances of your own classes, inside the function or
+    class body as well.
 
     **Namespace restrictions.** The packaged source cannot import ``sys``,
     ``builtins``, ``importlib``, ``inspect``, ``gc``, ``ctypes``, or ``types``,
