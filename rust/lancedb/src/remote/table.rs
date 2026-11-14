@@ -10802,6 +10802,83 @@ mod tests {
         assert_eq!(result.version, 8);
     }
 
+    #[tokio::test]
+    async fn test_add_nullable_scalar_function_column_sends_atomic_null_declaration() {
+        let table = Table::new_with_handler("my_table", |request| {
+            match request.url().path() {
+            "/v1/table/my_table/describe/" => http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"version":1,"schema":{"fields":[{"name":"description","nullable":true,"type":{"type":"string"}}]}}"#,
+                )
+                .unwrap(),
+            "/v1/table/my_table/add_columns/" => {
+                let actual: serde_json::Value = serde_json::from_slice(
+                    request.body().unwrap().as_bytes().unwrap(),
+                )
+                .unwrap();
+                assert_eq!(
+                    actual["new_columns"],
+                    serde_json::json!([
+                        {"name": "maybe", "all_null": true}
+                    ])
+                );
+                assert_eq!(
+                    actual["function"]["application"]["output"],
+                    serde_json::json!({
+                        "kind": "scalar",
+                        "arrow_type": "int64",
+                        "nullable": true
+                    })
+                );
+                assert_eq!(
+                    actual["function"]["output_schema"],
+                    serde_json::json!({
+                        "fields": [{
+                            "name": "maybe",
+                            "nullable": true,
+                            "type": {"type": "int64"}
+                        }]
+                    })
+                );
+                assert_eq!(
+                    actual["function"]["outputs"],
+                    serde_json::json!([
+                        {
+                            "result_field": "$value",
+                            "output_name": "maybe",
+                            "output_ordinal": 0
+                        }
+                    ])
+                );
+                assert!(actual["function"].get("assignment").is_none());
+                assert_eq!(actual["auto_refresh_enabled"], serde_json::json!(true));
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version":8}"#)
+                    .unwrap()
+            }
+            path => panic!("Unexpected path: {path}"),
+        }
+        });
+        let application = crate::function::FunctionApplication::from_json(
+            r#"{
+                "function":{"name":"nullable_scalar","version":"1","object_id":"fixture","location":"memory:///fixture","manifest_digest":"sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"},
+                "inputs":[{"parameter":"text","kind":"column","value":{"path":"description"}}],
+                "output":{"kind":"scalar","arrow_type":"int64","nullable":true}
+            }"#,
+        )
+        .unwrap();
+
+        let result = table
+            .add_columns()
+            .function_as("maybe", application)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(result.version, 8);
+    }
+
     /// The fixture binding's table: `title` and `body` bound as inputs, its
     /// two outputs declared, plus an unbound `spare`.
     fn fixture_bound_schema() -> Schema {

@@ -1032,8 +1032,8 @@ pub struct OutputMapping {
     pub nullable: bool,
 }
 
-/// Internal physical column preserving the parent validity of a flattened
-/// named-struct result.
+/// Internal physical column preserving assignment of a nullable scalar result
+/// or the parent validity of a flattened named-struct result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AssignmentMapping {
     pub output_name: String,
