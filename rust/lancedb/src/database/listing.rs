@@ -881,8 +881,13 @@ impl ListingDatabase {
                 let table = self.open_table(req).await?;
 
                 let table_schema = table.schema().await?;
+                // Lance doesn't store every Arrow detail (such as the name and nullability of a
+                // fixed-size list's child), so also accept a schema that it stores as this one.
+                let matches = table_schema.as_ref() == data_schema
+                    || lance::datatypes::Schema::try_from(data_schema)
+                        .is_ok_and(|schema| arrow_schema::Schema::from(&schema) == *table_schema);
 
-                if table_schema.as_ref() != data_schema {
+                if !matches {
                     return Err(Error::Schema {
                         message: "Provided schema does not match existing table schema".to_string(),
                     });
