@@ -575,13 +575,11 @@ class ResolvedEnvironmentProvenance(_RemoteValue):
 
 
 class ResolvedEnvironment(_RemoteValue):
-    """Actual installed distributions and registration warnings.
+    """Actual installed distributions and registration warnings for one platform.
 
-    A missing value on [FunctionVersion][lancedb.functions.FunctionVersion]
-    means the version or environment cache predates measurement. It is unknown
-    data, not an empty installed-package list. Versions are retained verbatim,
-    including local labels; package ``source`` is retained only when the
-    producer recorded it.
+    A missing value means its measurement is unknown, not an empty
+    installed-package list. Versions are retained verbatim, including local
+    labels; package ``source`` is retained only when the producer recorded it.
     """
 
     packages: tuple[ResolvedPackage, ...]
@@ -598,7 +596,8 @@ class FunctionEnvironment(NamedTuple):
     [FunctionVersion.resolved_environment][lancedb.functions.FunctionVersion.resolved_environment].
     It adds no wire field and performs no second parse. ``requested`` is the
     runtime specification supplied at registration; ``resolved`` is measured
-    data and is ``None`` when unknown.
+    data and is ``None`` when unknown. For per-platform multiarchitecture
+    measurements, use ``FunctionVersion.environment_report``.
     """
 
     requested: Optional[PythonRuntimeSpec]
@@ -657,11 +656,14 @@ class FunctionVersion(_RemoteValue):
 
     ``runtime`` is the runtime specification requested at registration. It is
     not evidence of what was installed. ``resolved_environment`` is measured
-    data: actual package names and complete versions, optional per-package
-    source, provenance, and registration warnings. ``None`` for either field
-    means the server or environment cache predates exposure, not an empty
-    value. ``environment`` is a convenience view with ``requested`` and
-    ``resolved`` members over the same fields.
+    data for a single-platform image: actual package names and complete
+    versions, optional per-package source, provenance, and registration
+    warnings. ``resolved_environments`` is the corresponding map for a
+    multiarchitecture image, keyed by OCI ``os/architecture``. It is never
+    flattened into an aggregate package list. ``None`` or an empty map means
+    unknown data, not an empty installed environment. ``environment`` is a
+    convenience view with ``requested`` and ``resolved`` members over the same
+    fields.
     """
 
     name: str
@@ -684,6 +686,9 @@ class FunctionVersion(_RemoteValue):
     result_stability: Optional[str] = None
     runtime: Optional[PythonRuntimeSpec] = None
     resolved_environment: Optional[ResolvedEnvironment] = None
+    resolved_environments: Mapping[str, ResolvedEnvironment] = Field(
+        default_factory=dict
+    )
 
     @field_validator("batch_size", mode="before")
     @classmethod
@@ -707,6 +712,16 @@ class FunctionVersion(_RemoteValue):
             requested=self.runtime,
             resolved=self.resolved_environment,
         )
+
+    @property
+    def environment_report(self) -> Mapping[str, ResolvedEnvironment]:
+        """Per-platform measured reports, keyed by OCI ``os/architecture``.
+
+        This is the same map as ``resolved_environments`` and is never
+        flattened. Single-platform images use ``resolved_environment`` instead;
+        an absent platform means its measurement is unknown.
+        """
+        return self.resolved_environments
 
     def __call__(self, **arguments: Any) -> FunctionApplication:
         """Bind this exact version to named table columns.

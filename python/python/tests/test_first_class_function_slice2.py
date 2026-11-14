@@ -113,6 +113,32 @@ def _function_version_with_resolved_environment():
     return version
 
 
+def _function_version_with_resolved_environments():
+    version = json.loads(
+        (FIXTURES / "remote_function_version.canonical.json").read_text()
+    )
+    version["runtime"] = json.loads(
+        normalize_score.registration_request.runtime.to_canonical_json()
+    )
+    version["resolved_environments"] = {
+        "linux/amd64": {
+            "packages": [
+                {
+                    "name": "torch",
+                    "version": "2.9.0+cu130",
+                    "source": "https://packages.example/simple",
+                }
+            ],
+            "warnings": ["amd64 environment warning"],
+        },
+        "linux/arm64": {
+            "packages": [],
+            "warnings": ["arm64 environment warning"],
+        },
+    }
+    return version
+
+
 def test_scalar_function_matches_shared_registration_golden_and_remains_callable():
     assert isinstance(normalize_score, FunctionDefinition)
     assert normalize_score(25.0) == 0.25
@@ -2195,6 +2221,55 @@ def test_function_version_reads_requested_and_resolved_environments():
         FunctionVersion.from_json(json.dumps(invalid))
 
 
+def test_function_version_reads_resolved_environments_by_platform():
+    legacy = json.loads(
+        (FIXTURES / "remote_function_version.canonical.json").read_text()
+    )
+    legacy_version = FunctionVersion.from_json(json.dumps(legacy))
+    assert legacy_version.resolved_environment is None
+    assert legacy_version.resolved_environments == {}
+    assert legacy_version.environment_report == {}
+
+    payload = _function_version_with_resolved_environments()
+    version = FunctionVersion.from_json(json.dumps(payload))
+    assert version.resolved_environment is None
+    assert version.resolved_environments == version.environment_report
+    assert set(version.environment_report) == {"linux/amd64", "linux/arm64"}
+    assert (
+        version.environment_report["linux/amd64"].packages[0].version == "2.9.0+cu130"
+    )
+    assert version.environment_report["linux/arm64"].packages == ()
+    assert version.environment_report["linux/arm64"].warnings == (
+        "arm64 environment warning",
+    )
+
+    encoded = json.loads(version.to_canonical_json())
+    assert "resolved_environment" not in encoded
+    assert (
+        encoded["resolved_environments"]["linux/amd64"]["packages"][0]["version"]
+        == "2.9.0+cu130"
+    )
+    assert encoded["resolved_environments"]["linux/arm64"]["packages"] == []
+    assert FunctionVersion.from_json(version.to_canonical_json()) == version
+
+    missing_platform = json.loads(json.dumps(payload))
+    del missing_platform["resolved_environments"]["linux/arm64"]
+    missing_version = FunctionVersion.from_json(json.dumps(missing_platform))
+    assert "linux/arm64" not in missing_version.environment_report
+    assert "linux/amd64" in missing_version.environment_report
+
+    empty_map = json.loads(json.dumps(payload))
+    empty_map["resolved_environments"] = {}
+    empty_version = FunctionVersion.from_json(json.dumps(empty_map))
+    assert empty_version.resolved_environments == {}
+    assert "resolved_environments" not in json.loads(empty_version.to_canonical_json())
+
+    invalid = json.loads(json.dumps(payload))
+    del invalid["resolved_environments"]["linux/amd64"]["packages"]
+    with pytest.raises(ValueError):
+        FunctionVersion.from_json(json.dumps(invalid))
+
+
 @pytest.mark.asyncio
 async def test_registration_job_emits_server_environment_warnings_once():
     payload = _function_version_with_resolved_environment()
@@ -2220,6 +2295,38 @@ async def test_registration_job_emits_server_environment_warnings_once():
     )
     assert version.environment.resolved.warnings == tuple(
         payload["resolved_environment"]["warnings"]
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert await job.wait() is not None
+    assert caught == []
+
+
+@pytest.mark.asyncio
+async def test_registration_job_emits_per_platform_environment_warnings():
+    payload = _function_version_with_resolved_environments()
+
+    class InnerJob:
+        async def wait(self):
+            return json.dumps(payload)
+
+    class Inner:
+        async def create_function_async(
+            self, request_json, namespace_path=None, *, exist_ok=False
+        ):
+            return InnerJob()
+
+    connection = object.__new__(AsyncConnection)
+    connection._inner = Inner()
+    job = await connection.create_function_async(normalize_score)
+    with pytest.warns(UserWarning) as recorded:
+        version = await job.wait()
+    assert [str(w.message) for w in recorded] == [
+        "amd64 environment warning",
+        "arm64 environment warning",
+    ]
+    assert version.environment_report["linux/arm64"].warnings == (
+        "arm64 environment warning",
     )
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -2261,6 +2368,18 @@ async def test_catalog_readback_does_not_replay_registration_warnings():
     assert caught == []
     assert version.environment.resolved.packages[0].version == "2.9.0+cu130"
     assert listed[0].environment.resolved == version.resolved_environment
+
+
+@pytest.mark.asyncio
+async def test_catalog_readback_does_not_replay_per_platform_warnings():
+    payload = _function_version_with_resolved_environments()
+    connection = AsyncConnection(_RawFunctionCatalog(payload, encode=True))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        version = await connection.get_function("embed")
+        listed = [item async for item in connection.list_functions()]
+    assert caught == []
+    assert version.environment_report == listed[0].environment_report
 
 
 def _assert_execution_control_encoding(version):

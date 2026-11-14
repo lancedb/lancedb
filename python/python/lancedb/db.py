@@ -157,9 +157,11 @@ def _normalize_function_version(version: Optional[Union[int, str]]) -> Optional[
 def _function_registration_decoder():
     """Parse a registration result and emit its server warnings once.
 
-    The warnings are part of the registration job result, not a new client-side
-    package policy. Catalog get/list readbacks use ``FunctionVersion.from_json``
-    directly and therefore do not replay them.
+    The warnings come from the scalar environment or, for a multiarchitecture
+    image, each measured platform entry. They are part of the registration job
+    result, not a new client-side package policy. Catalog get/list readbacks
+    use ``FunctionVersion.from_json`` directly and therefore do not replay
+    them.
     """
     warned = False
 
@@ -167,9 +169,16 @@ def _function_registration_decoder():
         nonlocal warned
         version = FunctionVersion.from_json(payload)
         if not warned:
-            resolved = version.resolved_environment
-            if resolved is not None:
-                for message in resolved.warnings:
+            environments = [
+                environment
+                for environment in (
+                    version.resolved_environment,
+                    *version.resolved_environments.values(),
+                )
+                if environment is not None
+            ]
+            for environment in environments:
+                for message in environment.warnings:
                     warnings.warn(message, UserWarning, stacklevel=3)
             warned = True
         return version

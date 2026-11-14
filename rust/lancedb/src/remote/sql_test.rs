@@ -3135,6 +3135,14 @@ async fn function_creation_and_description_use_sql_query_handles() {
                 "transformers resolved to transformers==4.57.1 but is not pinned exactly; add transformers==4.57.1 to pin it."
             ]
         });
+        version_json["resolved_environments"] = serde_json::json!({
+            "linux/amd64": {
+                "packages": [{"name": "torch", "version": "2.9.0+cu130"}]
+            },
+            "linux/arm64": {
+                "packages": []
+            }
+        });
         if with_models {
             let models = serde_json::json!([{
                 "repo": "sentence-transformers/all-MiniLM-L6-v2",
@@ -3186,6 +3194,12 @@ async fn function_creation_and_description_use_sql_query_handles() {
             created.resolved_environment().unwrap().packages[0].version,
             "2.9.0+cu130"
         );
+        assert_eq!(created.resolved_environments().len(), 2);
+        assert!(
+            created.resolved_environments()["linux/arm64"]
+                .packages
+                .is_empty()
+        );
         // Assert the actual SQL body, after the same native JSON decode used
         // by the Python binding, rather than only the Python declaration.
         {
@@ -3219,6 +3233,14 @@ async fn function_creation_and_description_use_sql_query_handles() {
                 .is_none()
         );
         assert_eq!(
+            created_json["resolved_environments"]["linux/amd64"]["packages"][0]["version"],
+            "2.9.0+cu130"
+        );
+        assert_eq!(
+            created_json["resolved_environments"]["linux/arm64"]["packages"],
+            serde_json::json!([])
+        );
+        assert_eq!(
             client.describe(id).await.unwrap().status,
             QueryStatus::Finished
         );
@@ -3243,6 +3265,7 @@ async fn function_creation_and_description_use_sql_query_handles() {
                 .as_deref(),
             Some("torch==2.9.0+cu130")
         );
+        assert_eq!(described.resolved_environments().len(), 2);
         let described_json: serde_json::Value =
             serde_json::from_str(&described.to_canonical_json().unwrap()).unwrap();
         assert_eq!(described_json["image"].get("models"), expected_models);
@@ -3278,6 +3301,7 @@ async fn function_creation_and_description_use_sql_query_handles() {
                 .len(),
             1
         );
+        assert_eq!(listed.items[0].resolved_environments().len(), 2);
         let listed_json: serde_json::Value =
             serde_json::from_str(&listed.items[0].to_canonical_json().unwrap()).unwrap();
         assert_eq!(listed_json["image"].get("models"), expected_models);

@@ -196,6 +196,7 @@ installed. `version.runtime` is the specification sent at registration.
 version = db.get_function("double")
 print(version.runtime)                    # requested runtime, or None for legacy
 print(version.environment.resolved)       # measured environment, or None for legacy
+print(version.environment_report)         # platform -> measured environment map
 
 if version.environment.resolved is not None:
     for package in version.environment.resolved.packages:
@@ -209,6 +210,14 @@ wire shape. The canonical JSON exposes top-level `runtime` and
 environment cache predates measurement; it is unknown, not an empty installed
 package list. A package's `source` is present only when the submitted lock
 retained it, and provenance fields are reported without client-side guessing.
+
+For a multiarchitecture image, the scalar field is absent and
+`version.resolved_environments` (also available as
+`version.environment_report`) maps OCI `os/architecture` keys to the measured
+environment for that platform. A missing platform key means its measurement is
+unknown; an empty `packages` list inside a key is a measured empty environment
+and is retained. The SDK never merges platforms or fabricates an aggregate
+package list.
 
 The corresponding canonical payload has this shape:
 
@@ -240,10 +249,26 @@ The corresponding canonical payload has this shape:
 }
 ```
 
+The multiarchitecture form has the same package shape per platform:
+
+```json
+{
+  "resolved_environments": {
+    "linux/amd64": {
+      "packages": [{"name": "torch", "version": "2.9.0+cu130"}]
+    },
+    "linux/arm64": {
+      "packages": []
+    }
+  }
+}
+```
+
 Environment warnings are part of the registration result. Waiting on
 `create_function_async(...)` (or calling `create_function`) emits each server
-warning as a Python `UserWarning`; `get_function` and `list_functions`
-read the same version but do not replay those registration warnings.
+warning from the scalar or per-platform measurements as a Python `UserWarning`;
+`get_function` and `list_functions` read the same version but do not
+replay those registration warnings.
 
 ## Try it in SQL {#try-sql}
 

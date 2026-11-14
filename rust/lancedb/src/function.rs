@@ -558,11 +558,10 @@ pub struct ResolvedEnvironmentProvenance {
     pub torch_version: Option<String>,
 }
 
-/// Actual installed distributions and registration warnings for one immutable
-/// Function version.
+/// Actual installed distributions and registration warnings for one native
+/// Function environment.
 ///
-/// A missing `resolved_environment` on [`FunctionVersion`] means the version or
-/// environment cache predates measurement. It is unknown data, not an empty
+/// A missing environment means its measurement is unknown, not an empty
 /// installed-package list. The field keeps the complete versions and only the
 /// provenance the producer recorded; SDK readers do not recompute package
 /// policy.
@@ -632,7 +631,9 @@ impl<'de> Deserialize<'de> for RowTimeoutSeconds {
 /// decoding, but they are not part of this value and are omitted from
 /// canonical JSON. Known fields retain their complete values, while unknown
 /// fields inside the open [`FunctionImage::descriptor`] JSON object remain
-/// available.
+/// available. Single-platform measurements use `resolved_environment`;
+/// multiarchitecture measurements use `resolved_environments`, keyed by OCI
+/// `os/architecture`, without flattening the platforms.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionVersion {
     name: String,
@@ -689,10 +690,19 @@ pub struct FunctionVersion {
     runtime: Option<PythonRuntimeSpec>,
     /// Actual installed distributions, provenance, and registration warnings.
     ///
-    /// `None` means the version or environment cache predates measurement; it
-    /// does not mean that the environment contained no packages.
+    /// This is the single-platform compatibility field. `None` on a
+    /// multiarchitecture version is expected; use
+    /// [`Self::resolved_environments`] for its per-platform measurements.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     resolved_environment: Option<ResolvedEnvironment>,
+    /// Measurements for a multiarchitecture image, keyed by OCI
+    /// `os/architecture`.
+    ///
+    /// Unmeasured platforms are absent. An empty map is unknown, not an
+    /// aggregate of packages from the available platforms. Single-platform
+    /// images use [`Self::resolved_environment`] instead.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    resolved_environments: BTreeMap<String, ResolvedEnvironment>,
 }
 
 impl FunctionVersion {
@@ -791,14 +801,25 @@ impl FunctionVersion {
         self.runtime.as_ref()
     }
 
-    /// Actual installed distributions and registration warnings, when measured
-    /// by the server.
+    /// Actual installed distributions and registration warnings for a
+    /// single-platform image, when measured by the server.
     ///
     /// `None` is unknown, not an empty environment. Package versions are
     /// retained verbatim, including local labels such as `+cu130`; `source`
     /// remains absent when the producer did not retain it.
     pub fn resolved_environment(&self) -> Option<&ResolvedEnvironment> {
         self.resolved_environment.as_ref()
+    }
+
+    /// Per-platform measurements for a multiarchitecture image, keyed by OCI
+    /// `os/architecture`.
+    ///
+    /// The map is returned without flattening or synthesis. A missing platform
+    /// means its measurement is unknown; an empty environment value is a
+    /// measured empty environment and is retained. Single-platform images use
+    /// [`Self::resolved_environment`] instead.
+    pub fn resolved_environments(&self) -> &BTreeMap<String, ResolvedEnvironment> {
+        &self.resolved_environments
     }
 
     pub fn signature(&self) -> &FunctionSignature {
@@ -1512,6 +1533,7 @@ mod tests {
         let legacy = FunctionVersion::from_json(VERSION).unwrap();
         assert!(legacy.runtime().is_none());
         assert!(legacy.resolved_environment().is_none());
+        assert!(legacy.resolved_environments().is_empty());
 
         document["runtime"] = serde_json::json!({
             "kind": "python",
@@ -1547,6 +1569,7 @@ mod tests {
 
         let version = FunctionVersion::from_json(&document.to_string()).unwrap();
         assert_eq!(version.runtime().unwrap().kind(), "python");
+        assert!(version.resolved_environments().is_empty());
         let resolved = version.resolved_environment().unwrap();
         assert_eq!(resolved.packages[0].version, "2.9.0+cu130");
         assert_eq!(
@@ -1579,6 +1602,85 @@ mod tests {
         assert_eq!(FunctionVersion::from_json(&encoded).unwrap(), version);
 
         document["resolved_environment"] = serde_json::json!({"warnings": []});
+        assert!(FunctionVersion::from_json(&document.to_string()).is_err());
+    }
+
+    #[test]
+    fn function_version_preserves_resolved_environments_by_platform() {
+        const VERSION: &str = include_str!(
+            "../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
+        );
+        let mut document: Value = serde_json::from_str(VERSION).unwrap();
+        document["runtime"] = serde_json::json!({
+            "kind": "python",
+            "python_version": "3.12",
+            "environment": {
+                "kind": "pip",
+                "packages": ["vllm==0.11.0"]
+            }
+        });
+        document["resolved_environments"] = serde_json::json!({
+            "linux/amd64": {
+                "packages": [
+                    {"name": "torch", "version": "2.9.0+cu130"}
+                ],
+                "warnings": ["amd64 measurement"]
+            },
+            "linux/arm64": {
+                "packages": [],
+                "warnings": ["arm64 measurement"]
+            }
+        });
+
+        let version = FunctionVersion::from_json(&document.to_string()).unwrap();
+        assert!(version.resolved_environment().is_none());
+        let environments = version.resolved_environments();
+        assert_eq!(environments.len(), 2);
+        assert_eq!(
+            environments["linux/amd64"].packages[0].version,
+            "2.9.0+cu130"
+        );
+        assert!(environments["linux/arm64"].packages.is_empty());
+        assert_eq!(environments["linux/arm64"].warnings, ["arm64 measurement"]);
+
+        let encoded = version.to_canonical_json().unwrap();
+        let encoded_value: Value = serde_json::from_str(&encoded).unwrap();
+        assert!(encoded_value.get("resolved_environment").is_none());
+        assert_eq!(
+            encoded_value["resolved_environments"]["linux/amd64"]["packages"][0]["version"],
+            "2.9.0+cu130"
+        );
+        assert_eq!(
+            encoded_value["resolved_environments"]["linux/arm64"]["packages"],
+            serde_json::json!([])
+        );
+        assert_eq!(FunctionVersion::from_json(&encoded).unwrap(), version);
+
+        document["resolved_environments"]
+            .as_object_mut()
+            .unwrap()
+            .remove("linux/arm64");
+        let missing_platform = FunctionVersion::from_json(&document.to_string()).unwrap();
+        assert!(
+            missing_platform
+                .resolved_environments()
+                .get("linux/arm64")
+                .is_none()
+        );
+
+        document["resolved_environments"] = serde_json::json!({});
+        let empty_map = FunctionVersion::from_json(&document.to_string()).unwrap();
+        assert!(empty_map.resolved_environments().is_empty());
+        assert!(
+            !empty_map
+                .to_canonical_json()
+                .unwrap()
+                .contains("resolved_environments")
+        );
+
+        document["resolved_environments"] = serde_json::json!({
+            "linux/amd64": {"warnings": []}
+        });
         assert!(FunctionVersion::from_json(&document.to_string()).is_err());
     }
 
