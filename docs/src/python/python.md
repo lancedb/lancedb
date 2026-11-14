@@ -1420,3 +1420,15 @@ name; omitting it allows matching reads of any revision. Prefixes must be concre
 paths without wildcards or traversal. This integration does not make Hugging Face
 a writable database location for `ATTACH DATABASE`. Dataset SQL sources select a
 matching integration automatically, with no integration argument in the query.
+
+
+### Function package resources
+
+`@function(code=[my_package])` includes the package’s Python modules and data
+files, including vendored subpackages. Resource paths and bytes are preserved,
+so `importlib.resources` and package integrity checks work after deployment.
+Changing a resource changes the Function artifact digest. This requires a server
+that accepts `python_bundle.resources`.
+
+Caches, hidden paths, symlinks and unsafe paths are excluded. Use `pip=` or
+`conda=` for platform-specific dependencies and `models=` for large model snapshots.
