@@ -350,9 +350,9 @@ def test_quickstart_derived_feature(db_path_factory):
     flatten_stats(table)
 
     # --8<-- [start:quickstart_add_feature]
-    from lancedb import col, udf
+    from lancedb import col, function
 
-    @udf
+    @function
     def quality_score(
         motion: float, sharpness: float, exposure: float, framing: float
     ) -> float:
@@ -385,9 +385,9 @@ def test_quickstart_derived_feature_on_a_deployment(deployment):
     table = create_frames(deployment)
     flatten_stats(table)
 
-    from lancedb import col, udf
+    from lancedb import col, function
 
-    @udf
+    @function
     def quality_score(
         motion: float, sharpness: float, exposure: float, framing: float
     ) -> float:

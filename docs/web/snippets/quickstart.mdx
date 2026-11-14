@@ -2,7 +2,7 @@
 
 export const PyQuickstartAddData = "table.add(\n    [\n        {\n            \"frame_id\": \"4\",\n            \"video_id\": \"clip-2\",\n            \"caption\": \"a gripper lowering a cup onto the table\",\n            \"stats\": {\"motion\": 5, \"sharpness\": 4, \"exposure\": 4, \"framing\": 2},\n            \"embedding\": [0.3, 0.9, 0.6, 0.8],\n        }\n    ]\n)\n";
 
-export const PyQuickstartAddFeature = "from lancedb import col, udf\n\n@udf\ndef quality_score(\n    motion: float, sharpness: float, exposure: float, framing: float\n) -> float:\n    return (motion + sharpness + exposure + framing) / 4.0\n\nversion = db.create_function_async(quality_score).wait()\ntable.add_columns(\n    {\n        \"quality_score\": version(\n            motion=col(\"motion\"),\n            sharpness=col(\"sharpness\"),\n            exposure=col(\"exposure\"),\n            framing=col(\"framing\"),\n        )\n    }\n)\ntable.refresh_column(\"quality_score\")\n";
+export const PyQuickstartAddFeature = "from lancedb import col, function\n\n@function\ndef quality_score(\n    motion: float, sharpness: float, exposure: float, framing: float\n) -> float:\n    return (motion + sharpness + exposure + framing) / 4.0\n\nversion = db.create_function_async(quality_score).wait()\ntable.add_columns(\n    {\n        \"quality_score\": version(\n            motion=col(\"motion\"),\n            sharpness=col(\"sharpness\"),\n            exposure=col(\"exposure\"),\n            framing=col(\"framing\"),\n        )\n    }\n)\ntable.refresh_column(\"quality_score\")\n";
 
 export const PyQuickstartAddFeatureEnterprise = "job = table.refresh_column_async(\"quality_score\")\njob.wait()\n";
 
