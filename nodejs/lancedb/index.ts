@@ -91,6 +91,7 @@ export type {
   BlobInput,
   BlobOptions,
   BlobRange,
+  BlobRangeRequest,
   BlobReadOptions,
   BlobUri,
 } from "./blob";

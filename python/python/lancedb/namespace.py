@@ -696,8 +696,9 @@ class LanceNamespaceDBConnection(DBConnection):
     def create_materialized_view(
         self,
         name: str,
-        source: MaterializedViewSource,
+        source: Optional[MaterializedViewSource] = None,
         *,
+        query: Optional[str] = None,
         select: "SelectArg" = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
@@ -715,6 +716,7 @@ class LanceNamespaceDBConnection(DBConnection):
                     self._inner.create_materialized_view(
                         name,
                         source,
+                        query=query,
                         select=select,
                         where=where,
                         limit=limit,
@@ -730,8 +732,9 @@ class LanceNamespaceDBConnection(DBConnection):
     def create_materialized_view_async(
         self,
         name: str,
-        source: MaterializedViewSource,
+        source: Optional[MaterializedViewSource] = None,
         *,
+        query: Optional[str] = None,
         select: "SelectArg" = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
@@ -743,6 +746,7 @@ class LanceNamespaceDBConnection(DBConnection):
             self._inner.create_materialized_view_async(
                 name,
                 source,
+                query=query,
                 select=select,
                 where=where,
                 limit=limit,
@@ -1339,8 +1343,9 @@ class AsyncLanceNamespaceDBConnection:
     async def create_materialized_view(
         self,
         name: str,
-        source: MaterializedViewSource,
+        source: Optional[MaterializedViewSource] = None,
         *,
+        query: Optional[str] = None,
         select: "SelectArg" = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
@@ -1352,6 +1357,7 @@ class AsyncLanceNamespaceDBConnection:
         view = await self._inner.create_materialized_view(
             name,
             source,
+            query=query,
             select=select,
             where=where,
             limit=limit,
@@ -1366,8 +1372,9 @@ class AsyncLanceNamespaceDBConnection:
     async def create_materialized_view_async(
         self,
         name: str,
-        source: MaterializedViewSource,
+        source: Optional[MaterializedViewSource] = None,
         *,
+        query: Optional[str] = None,
         select: "SelectArg" = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
@@ -1379,6 +1386,7 @@ class AsyncLanceNamespaceDBConnection:
         return await self._inner.create_materialized_view_async(
             name,
             source,
+            query=query,
             select=select,
             where=where,
             limit=limit,

@@ -1303,6 +1303,24 @@ impl Connection {
         self.database().list_gpu_classes().await
     }
 
+    /// Read the responding server's build and Function runtime information.
+    ///
+    /// This request does not submit a query, Function, or job. It requires
+    /// System Usage permission. Embedded databases and older servers without
+    /// `GET /v1/server/info` return [`Error::NotSupported`]. During a rolling
+    /// upgrade, separate requests can report different query-node builds.
+    ///
+    /// ```no_run
+    /// # async fn example(db: &lancedb::Connection) -> lancedb::Result<()> {
+    /// let info = db.server_info().await?;
+    /// println!("{:?}", info.query_node);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn server_info(&self) -> Result<crate::server_info::ServerInfo> {
+        self.database().server_info().await
+    }
+
     /// List server-side jobs across the database's tables.
     ///
     /// Results are fetched lazily, one page at a time. See [`Listing`]

@@ -5510,6 +5510,7 @@ def blob_remote_table(
     *,
     server_version=Version("0.5.0"),
     location=None,
+    range_capability=None,
     version_header="1",
     framing="file",
     requests=None,
@@ -5531,6 +5532,8 @@ def blob_remote_table(
             request.send_response(200)
             request.send_header("Content-Type", "application/json")
             request.send_header("phalanx-version", str(server_version))
+            if range_capability is not None:
+                request.send_header("x-lancedb-blob-ranges", range_capability)
             request.end_headers()
             response = dict(BLOB_DESCRIBE_RESPONSE)
             response["version"] = body.get("version") or state["version"]
@@ -5638,6 +5641,42 @@ def blob_remote_table(
             writer_factory = pa.ipc.new_file if framing == "file" else pa.ipc.new_stream
             with writer_factory(request.wfile, response_table.schema) as writer:
                 writer.write_table(response_table, max_chunksize=1)
+        elif (
+            range_capability == "1"
+            and request.path == "/v1/table/test/fetch_blob_ranges/"
+        ):
+            size = int(request.headers["Content-Length"])
+            body = json.loads(request.rfile.read(size))
+            payloads = {10: b"alpha", 20: None, 30: b"gamma", 40: b""}
+            values = []
+            for item in body["ranges"]:
+                row, offset, length = (
+                    item[key] for key in ("row_id", "offset", "length")
+                )
+                error = None
+                if row not in payloads:
+                    error = "only 1 exist"
+                elif payloads[row] is not None and offset + length > len(payloads[row]):
+                    error = "range exceeds blob size"
+                if error:
+                    request.send_response(400)
+                    request.end_headers()
+                    request.wfile.write(error.encode())
+                    return
+                payload = payloads[row]
+                values.append(
+                    None if payload is None else payload[offset : offset + length]
+                )
+            response_table = pa.table(
+                {"value": pa.array(values, type=pa.large_binary())}
+            )
+            request.send_response(200)
+            request.send_header("Content-Type", "application/vnd.apache.arrow.stream")
+            request.send_header("x-lancedb-version", "1")
+            request.send_header("x-lancedb-query-snapshot", "v1:" + "a" * 64)
+            request.end_headers()
+            with pa.ipc.new_stream(request.wfile, response_table.schema) as writer:
+                writer.write_table(response_table)
         elif request.path == "/v1/table/test/fetch_blobs/":
             content_len = int(request.headers.get("Content-Length", 0))
             body = json.loads(request.rfile.read(content_len))
@@ -5945,8 +5984,11 @@ def test_sync_remote_blob_pandas_avoids_storage_access(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("use_async", [False, True])
-async def test_remote_fetch_blob_ranges(use_async):
-    with blob_remote_table() as remote_table:
+@pytest.mark.parametrize("range_capability", [None, "0", "2", "1"])
+async def test_remote_fetch_blob_ranges(use_async, range_capability):
+    with blob_remote_table(
+        server_version="1.13.0-beta.0", range_capability=range_capability
+    ) as remote_table:
         table = remote_table._table if use_async else remote_table
         requests = [
             (30, 2, 3),
@@ -6539,6 +6581,93 @@ def test_remote_job_handle_reports_its_own_detail():
             "limit": 500,
             "filter": "state = 'claim_complete'",
         }
+
+
+@pytest.mark.parametrize("is_async", [False, True])
+@pytest.mark.parametrize("known_build", [False, True])
+@pytest.mark.asyncio
+async def test_remote_server_info(is_async, known_build):
+    requests = []
+    expected = {
+        "query_node": {
+            "release": "1.2.3",
+            "git_sha": "0123456789ab",
+            "build_date": "2024-01-01T00:00:00Z",
+        }
+        if known_build
+        else None,
+        "lance_version": "5.0.0",
+        "lancedb_version": "0.42.0",
+        "function_worker_protocol_version": 25,
+        "configured_query_node_image": "example.invalid/query:configured",
+        "configured_job_worker_image": "example.invalid/cpu:configured",
+        "configured_sql_job_image": "example.invalid/cli:configured",
+        "configured_gpu_worker_image": "example.invalid/worker:configured",
+    }
+
+    def handler(request):
+        requests.append((request.command, request.path))
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(expected).encode())
+
+    if is_async:
+        async with mock_lancedb_connection_async(handler) as db:
+            actual = await db.server_info()
+    else:
+        with mock_lancedb_connection(handler) as db:
+            actual = db.server_info()
+
+    assert actual == expected
+    assert json.loads(json.dumps(actual)) == expected
+    assert requests == [("GET", "/v1/server/info")]
+
+
+@pytest.mark.parametrize("is_async", [False, True])
+@pytest.mark.parametrize("status", [404, 403])
+@pytest.mark.asyncio
+async def test_remote_server_info_errors(is_async, status):
+    requests = []
+
+    def handler(request):
+        requests.append((request.command, request.path))
+        request.send_response(status)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(
+            json.dumps(
+                {
+                    "error": "discovery unavailable",
+                    "server": {
+                        "release": "1.2.3",
+                        "git_sha": "0123456789ab",
+                        "build_date": "2024-01-01T00:00:00Z",
+                    },
+                }
+            ).encode()
+        )
+
+    expected_error = NotImplementedError if status == 404 else HttpError
+    with pytest.raises(expected_error) as caught:
+        if is_async:
+            async with mock_lancedb_connection_async(handler) as db:
+                await db.server_info()
+        else:
+            with mock_lancedb_connection(handler) as db:
+                db.server_info()
+
+    if status == 404:
+        assert "/v1/server/info" in str(caught.value)
+    else:
+        # Permission responses do not carry the input-error classifier header.
+        # The native HTTP error and Python conversion must retain provenance.
+        assert "discovery unavailable" in str(caught.value)
+        assert "1.2.3" in str(caught.value)
+        assert "0123456789ab" in str(caught.value)
+        assert "2024-01-01T00:00:00Z" in str(caught.value)
+        assert caught.value.status_code == 403
+    assert requests == [("GET", "/v1/server/info")]
 
 
 @pytest.mark.parametrize("is_async", [False, True])
