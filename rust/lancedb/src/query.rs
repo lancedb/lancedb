@@ -1154,6 +1154,9 @@ pub struct VectorQueryRequest {
     /// None preserves Auto and fixed `nprobes`; any explicit value overrides
     /// `nprobes` while retaining explicit minimum and maximum bounds.
     pub search_effort: Option<f64>,
+    /// IVF partition-search concurrency. None preserves Lance's default.
+    /// See [`VectorQuery::query_parallelism`] for supported values.
+    pub query_parallelism: Option<i32>,
     /// The lower bound (inclusive) of the distance to search for.
     pub lower_bound: Option<f32>,
     /// The upper bound (exclusive) of the distance to search for.
@@ -1181,6 +1184,7 @@ impl Default for VectorQueryRequest {
             minimum_nprobes: None,
             maximum_nprobes: None,
             search_effort: None,
+            query_parallelism: None,
             lower_bound: None,
             upper_bound: None,
             ef: None,
@@ -1193,6 +1197,17 @@ impl Default for VectorQueryRequest {
 }
 
 impl VectorQueryRequest {
+    pub(crate) fn validate_query_parallelism(&self) -> Result<()> {
+        if let Some(parallelism) = self.query_parallelism
+            && parallelism < -1
+        {
+            return Err(Error::InvalidInput {
+                message: format!("query_parallelism must be >= -1, got {parallelism}"),
+            });
+        }
+        Ok(())
+    }
+
     pub(crate) fn validate_search_effort(&self) -> Result<()> {
         if let Some(effort) = self.search_effort
             && (!effort.is_finite() || !(0.0..=1.0).contains(&effort))
@@ -1449,6 +1464,34 @@ impl VectorQuery {
     pub fn ef(mut self, ef: usize) -> Self {
         self.request.ef = Some(ef);
         self
+    }
+
+    /// Set IVF partition-search concurrency for each vector query.
+    ///
+    /// `None` preserves Lance's default. `0` selects its automatic policy, which
+    /// may choose sequential execution depending on the index. `-1` uses the CPU
+    /// pool size; `1` selects sequential partition search; values greater than
+    /// `1` enable partition-parallel search, capped by the execution CPU budget.
+    /// Values below `-1` are rejected.
+    ///
+    /// This controls how selected IVF partitions are searched, not how many are
+    /// probed. It does not set the thread count for a brute-force scan without an
+    /// index. More concurrency may reduce latency but increase resource use.
+    /// Remote execution requires a server that supports this parameter.
+    ///
+    /// ```no_run
+    /// # use lancedb::{Table, Result};
+    /// # use lancedb::query::{QueryBase, ExecutableQuery};
+    /// # async fn search(table: &Table, vector: &[f32]) -> Result<()> {
+    /// let results = table.query().nearest_to(vector)?
+    ///     .query_parallelism(4)?.limit(10).execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn query_parallelism(mut self, parallelism: impl Into<Option<i32>>) -> Result<Self> {
+        self.request.query_parallelism = parallelism.into();
+        self.request.validate_query_parallelism()?;
+        Ok(self)
     }
 
     /// A multiplier to control how many additional rows are taken during the refine step

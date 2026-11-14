@@ -118,7 +118,8 @@ async fn can_execute_namespace_query(table: &NativeTable, query: &AnyQuery) -> R
 }
 
 fn requires_local_namespace_execution(query: &AnyQuery) -> bool {
-    // The namespace QueryTable request cannot represent approx_mode, search_effort or use_rte.
+    // The namespace request cannot represent approx_mode, search_effort,
+    // query_parallelism or use_rte.
     // For use_rte that is worse than a tuning miss: RTE read routing lives only
     // in `create_plan`, so a pushed-down query would return stale base-only data.
     if query.base().use_rte.is_some() || query.base().has_take() {
@@ -128,6 +129,7 @@ fn requires_local_namespace_execution(query: &AnyQuery) -> bool {
         query,
         AnyQuery::VectorQuery(vector_query)
             if vector_query.approx_mode.is_some() || vector_query.search_effort.is_some()
+                || vector_query.query_parallelism.is_some()
     )
 }
 
@@ -175,6 +177,7 @@ pub async fn create_plan(
     };
     query.base.check_filter()?;
     query.validate_search_effort()?;
+    query.validate_query_parallelism()?;
 
     let ds_ref = table.dataset.get().await?;
 
@@ -351,6 +354,9 @@ pub async fn create_plan(
 
     if let Some(ef) = query.ef {
         scanner.ef(ef);
+    }
+    if let Some(parallelism) = query.query_parallelism {
+        scanner.query_parallelism(parallelism);
     }
 
     scanner.distance_range(query.lower_bound, query.upper_bound);
@@ -900,6 +906,11 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
             };
 
             // Check for unsupported features
+            if vq.query_parallelism.is_some() {
+                return Err(Error::NotSupported {
+                    message: "namespace QueryTable does not support query_parallelism; execute the query locally".to_string(),
+                });
+            }
             if vq.search_effort.is_some() {
                 return Err(Error::NotSupported {
                     message: "namespace QueryTable does not support search_effort; execute the query locally".to_string(),
@@ -1282,6 +1293,16 @@ mod tests {
             ));
         }
 
+        for parallelism in [-1, 0, 1, 4] {
+            let query = AnyQuery::VectorQuery(VectorQueryRequest {
+                query_vector: vec![Arc::new(Float32Array::from(vec![1.0, 2.0]))],
+                query_parallelism: Some(parallelism),
+                ..Default::default()
+            });
+            assert!(requires_local_namespace_execution(&query));
+            assert!(matches!(convert_to_namespace_query(&query),
+                Err(Error::NotSupported { message }) if message.contains("query_parallelism")));
+        }
         let nprobes_query = AnyQuery::VectorQuery(VectorQueryRequest {
             query_vector: vec![Arc::new(Float32Array::from(vec![1.0, 2.0]))],
             nprobes: Some(20),

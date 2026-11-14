@@ -322,6 +322,27 @@ Prefer choosing either effort or a fixed count. If both are set, explicit
 `search_effort` overrides `nprobes`. Explicit min/max bounds still apply;
 setting them equal fixes the count.
 
+#### Set partition-search concurrency {#partition-search-concurrency}
+
+In Rust, use `VectorQuery::query_parallelism` to control how many selected IVF
+partitions can be searched concurrently:
+
+```rust
+let results = table.query().nearest_to(query_vector)?
+    .query_parallelism(4)?.limit(10).execute().await?;
+```
+
+The default is unset, preserving Lance's automatic policy. `0` explicitly selects
+Auto, `1` searches partitions sequentially, `-1` uses the available CPU pool, and
+larger positive values cap concurrency at that count and the execution CPU budget.
+Values below `-1` are invalid. Pass `None` to reset the setting.
+
+This setting changes concurrency, not the probe budget. It does not control
+brute-force scans without an IVF index. Benchmark latency and throughput together:
+giving one query more CPU can reduce capacity for concurrent queries. Remote
+execution requires server support; un-compacted RTE queries do not support this
+setting.
+
 #### Check result quality {#measure-auto-probe-recall}
 
 Auto was tuned toward roughly **95% average recall** in benchmark tests. That
