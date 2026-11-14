@@ -1662,6 +1662,7 @@ impl<S: HttpSend> RemoteTable<S> {
         query: &VectorQueryRequest,
     ) -> Result<Vec<serde_json::Value>> {
         query.validate_search_effort()?;
+        query.validate_query_parallelism()?;
         self.apply_query_params(&mut body, &query.base)?;
 
         // Apply general parameters, before we dispatch based on number of query vectors.
@@ -1682,6 +1683,9 @@ impl<S: HttpSend> RemoteTable<S> {
         }
         if let Some(search_effort) = query.search_effort {
             body["search_effort"] = search_effort.into();
+        }
+        if let Some(parallelism) = query.query_parallelism {
+            body["query_parallelism"] = parallelism.into();
         }
         body["lower_bound"] = query.lower_bound.into();
         body["upper_bound"] = query.upper_bound.into();
@@ -8484,6 +8488,68 @@ mod tests {
             .search_effort(effort);
         assert!(matches!(result, Err(Error::InvalidInput { message })
             if message.contains("search_effort must be finite and in [0, 1]")));
+    }
+
+    #[rstest]
+    #[case(None)]
+    #[case(Some(-1))]
+    #[case(Some(0))]
+    #[case(Some(1))]
+    #[case(Some(4))]
+    #[tokio::test]
+    async fn test_query_parallelism_wire(#[case] parallelism: Option<i32>) {
+        let table = Table::new_with_handler("my_table", move |request| {
+            let body = request_body_json(&request);
+            if let Some(value) = parallelism {
+                assert_eq!(body["query_parallelism"], value);
+            } else {
+                assert!(body.get("query_parallelism").is_none());
+            }
+            let batch = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)])),
+                vec![Arc::new(Int32Array::from(vec![1]))],
+            )
+            .unwrap();
+            http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                .body(write_ipc_file(&batch))
+                .unwrap()
+        });
+        let batches: Vec<_> = table
+            .query()
+            .nearest_to(vec![0.1, 0.2])
+            .unwrap()
+            .query_parallelism(parallelism)
+            .unwrap()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+        assert_eq!(batches[0].num_rows(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_query_parallelism_invalid_request_never_reaches_remote() {
+        let table = Table::new_with_handler::<&str>("my_table", |_| panic!("invalid request sent"));
+        let mut request = table
+            .query()
+            .nearest_to(vec![0.1, 0.2])
+            .unwrap()
+            .into_request();
+        request.query_parallelism = Some(-2);
+        let error = table
+            .base_table()
+            .create_plan(&AnyQuery::VectorQuery(request), Default::default())
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("query_parallelism must be >= -1")
+        );
     }
 
     #[tokio::test]
