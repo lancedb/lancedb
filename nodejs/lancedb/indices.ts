@@ -216,6 +216,84 @@ export interface IvfRqOptions {
   sampleRate?: number;
 }
 
+export interface IvfSqOptions {
+  /**
+   * The number of IVF partitions to create.
+   *
+   * This value should generally scale with the number of rows in the dataset.
+   * When set, this takes precedence over `targetPartitionSize`. When omitted,
+   * the partition count is derived from `targetPartitionSize`.
+   *
+   * If this value is too large then the first part of the search (picking the
+   * right partition) will be slow. If this value is too small then the second
+   * part of the search (searching within a partition) will be slow.
+   */
+  numPartitions?: number;
+
+  /**
+   * The target number of rows in each IVF partition.
+   *
+   * This is an alternative to `numPartitions`. When it is set and
+   * `numPartitions` is not, the number of partitions is derived by dividing
+   * the number of rows by this value. When both are set, `numPartitions` is
+   * used and this value is ignored.
+   *
+   * Larger partitions mean fewer of them, which makes the first part of the
+   * search (picking the right partitions) faster and the second part
+   * (searching within a partition) slower.
+   */
+  targetPartitionSize?: number;
+
+  /**
+   * Distance type to use to build the index.
+   *
+   * Default value is "l2".
+   *
+   * This is used when training the index to calculate the IVF partitions
+   * (vectors are grouped in partitions with similar vectors according to this
+   * distance type) and during quantization.
+   *
+   * The distance type used to train an index MUST match the distance type used
+   * to search the index. Failure to do so will yield inaccurate results.
+   *
+   * The following distance types are available:
+   *
+   * "l2" - Euclidean distance.
+   * "cosine" - Cosine distance.
+   * "dot" - Dot product.
+   */
+  distanceType?: "l2" | "cosine" | "dot";
+
+  /**
+   * Max iterations to train IVF kmeans.
+   *
+   * When training an IVF index we use kmeans to calculate the partitions. This
+   * parameter controls how many iterations of kmeans to run.
+   *
+   * The default value is 50.
+   */
+  maxIterations?: number;
+
+  /**
+   * The number of vectors, per partition, to sample when training IVF kmeans.
+   *
+   * When an IVF index is trained, we need to calculate partitions. These are
+   * groups of vectors that are similar to each other. To do this we use an
+   * algorithm called kmeans.
+   *
+   * Running kmeans on a large dataset can be slow. To speed this up we run
+   * kmeans on a random sample of the data. This parameter controls the size of
+   * the sample. The total number of vectors used to train the index is
+   * `sample_rate * num_partitions`.
+   *
+   * Increasing this value might improve the quality of the index but in most
+   * cases the default should be sufficient.
+   *
+   * The default value is 256.
+   */
+  sampleRate?: number;
+}
+
 /**
  * Options to create an `HNSW_PQ` index
  */
@@ -742,6 +820,32 @@ export class Index {
         options?.distanceType,
         options?.numPartitions,
         options?.numBits,
+        options?.maxIterations,
+        options?.sampleRate,
+        options?.targetPartitionSize,
+      ),
+    );
+  }
+
+  /**
+   * Create an IvfSq index
+   *
+   * IVF-SQ (Scalar Quantization) compresses vectors using scalar quantization
+   * and organizes the quantized vectors into IVF partitions. It offers a
+   * balance between search speed and storage efficiency while keeping good
+   * recall.
+   *
+   * The partitioning process is called IVF and the `num_partitions` parameter
+   * controls how many groups to create.
+   *
+   * Note that training an IVF SQ index on a large dataset is a slow operation and
+   * currently is also a memory intensive operation.
+   */
+  static ivfSq(options?: Partial<IvfSqOptions>) {
+    return new Index(
+      LanceDbIndex.ivfSq(
+        options?.distanceType,
+        options?.numPartitions,
         options?.maxIterations,
         options?.sampleRate,
         options?.targetPartitionSize,

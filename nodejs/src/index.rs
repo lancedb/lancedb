@@ -7,7 +7,7 @@ use lancedb::index::Index as LanceDbIndex;
 use lancedb::index::scalar::{BTreeIndexBuilder, FmIndexBuilder, FtsIndexBuilder};
 use lancedb::index::vector::{
     IvfFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder,
-    IvfRqIndexBuilder,
+    IvfRqIndexBuilder, IvfSqIndexBuilder,
 };
 use lancedb::tokenize as lancedb_tokenize;
 use napi_derive::napi;
@@ -165,6 +165,36 @@ impl Index {
         }
         Ok(Self {
             inner: Mutex::new(Some(LanceDbIndex::IvfRq(ivf_rq_builder))),
+        })
+    }
+
+    #[napi(factory)]
+    pub fn ivf_sq(
+        distance_type: Option<String>,
+        num_partitions: Option<u32>,
+        max_iterations: Option<u32>,
+        sample_rate: Option<u32>,
+        target_partition_size: Option<u32>,
+    ) -> napi::Result<Self> {
+        let mut ivf_sq_builder = IvfSqIndexBuilder::default();
+        if let Some(distance_type) = distance_type {
+            let distance_type = parse_distance_type(distance_type)?;
+            ivf_sq_builder = ivf_sq_builder.distance_type(distance_type);
+        }
+        if let Some(num_partitions) = num_partitions {
+            ivf_sq_builder = ivf_sq_builder.num_partitions(num_partitions);
+        }
+        if let Some(target_partition_size) = target_partition_size {
+            ivf_sq_builder = ivf_sq_builder.target_partition_size(target_partition_size);
+        }
+        if let Some(max_iterations) = max_iterations {
+            ivf_sq_builder = ivf_sq_builder.max_iterations(max_iterations);
+        }
+        if let Some(sample_rate) = sample_rate {
+            ivf_sq_builder = ivf_sq_builder.sample_rate(sample_rate);
+        }
+        Ok(Self {
+            inner: Mutex::new(Some(LanceDbIndex::IvfSq(ivf_sq_builder))),
         })
     }
 
