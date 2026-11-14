@@ -7757,8 +7757,8 @@ class AsyncTable:
             fill_value=fill_value,
             allow_subschema=True,
         )
-        if isinstance(data, pa.Table):
-            data = pa.RecordBatchReader.from_batches(data.schema, data.to_batches())
+        _register_optional_converters()
+        data = to_scannable(data)
         return await self._inner.execute_merge_insert(
             data,
             dict(
@@ -7773,6 +7773,7 @@ class AsyncTable:
                 use_index=merge._use_index,
                 use_rte=merge._use_rte,
                 validate_single_shard=merge._validate_single_shard,
+                source_collect_threshold_bytes=merge._source_collect_threshold_bytes,
             ),
         )
 

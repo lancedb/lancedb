@@ -1731,11 +1731,15 @@ class LanceDBConnection(DBConnection):
         session: Optional[Session] = None,
         manifest_enabled: bool = False,
         namespace_client_properties: Optional[Dict[str, str]] = None,
+        merge_insert_source_collect_threshold_bytes: Optional[int] = None,
         _inner: Optional[LanceDbConnection] = None,
     ):
         self.storage_options = storage_options
         self._manifest_enabled = manifest_enabled
         self._namespace_client_properties = namespace_client_properties
+        self._merge_insert_source_collect_threshold_bytes = (
+            merge_insert_source_collect_threshold_bytes
+        )
         # The native connection does not expose the Python Session wrapper.
         # Keep the object supplied by the caller so this property stays
         # synchronous for debugger inspection.
@@ -1787,6 +1791,8 @@ class LanceDBConnection(DBConnection):
                 session,
                 manifest_enabled,
                 namespace_client_properties,
+                None,
+                merge_insert_source_collect_threshold_bytes,
             )
 
         # TODO: It would be nice if we didn't store self.storage_options but it is
@@ -1852,6 +1858,9 @@ class LanceDBConnection(DBConnection):
                 "storage_options": self.storage_options,
                 "manifest_enabled": self._manifest_enabled,
                 "namespace_client_properties": self._namespace_client_properties,
+                "merge_insert_source_collect_threshold_bytes": (
+                    self._merge_insert_source_collect_threshold_bytes
+                ),
                 "read_consistency_interval_seconds": (
                     rci.total_seconds() if rci else None
                 ),

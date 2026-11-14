@@ -2169,10 +2169,9 @@ impl Table {
 
     pub fn execute_merge_insert<'a>(
         self_: PyRef<'a, Self>,
-        data: Bound<'a, PyAny>,
+        data: PyScannable,
         parameters: MergeInsertParams,
     ) -> PyResult<Bound<'a, PyAny>> {
-        let batches: ArrowArrayStreamReader = ArrowArrayStreamReader::from_pyarrow_bound(&data)?;
         let on = parameters.on.iter().map(|s| s.as_str()).collect::<Vec<_>>();
         let mut builder = self_.inner_ref()?.merge_insert(&on);
         if parameters.when_matched_update_all {
@@ -2202,12 +2201,12 @@ impl Table {
         if let Some(validate_single_shard) = parameters.validate_single_shard {
             builder.validate_single_shard(validate_single_shard);
         }
+        if let Some(bytes) = parameters.source_collect_threshold_bytes {
+            builder.source_collect_threshold_bytes(bytes);
+        }
 
         future_into_py(self_.py(), async move {
-            let res = builder
-                .execute(Box::new(batches) as Box<dyn arrow::array::RecordBatchReader + Send>)
-                .await
-                .infer_error()?;
+            let res = builder.execute(data).await.infer_error()?;
             Ok(MergeResult::from(res))
         })
     }
@@ -2902,6 +2901,7 @@ pub struct MergeInsertParams {
     use_index: Option<bool>,
     use_rte: Option<bool>,
     validate_single_shard: Option<bool>,
+    source_collect_threshold_bytes: Option<usize>,
 }
 
 #[pyclass]

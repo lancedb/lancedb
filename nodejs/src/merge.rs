@@ -3,6 +3,7 @@
 
 use std::time::Duration;
 
+use arrow_array::RecordBatch;
 use lancedb::{ipc::ipc_file_to_batches, table::merge::MergeInsertBuilder};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -66,9 +67,26 @@ impl NativeMergeInsertBuilder {
 
     #[napi(catch_unwind)]
     pub async fn execute(&self, buf: Buffer) -> napi::Result<MergeResult> {
-        let data = ipc_file_to_batches(buf.to_vec()).map_err(|e| {
+        let reader = ipc_file_to_batches(buf.to_vec()).map_err(|e| {
             napi::Error::from_reason(format!("Failed to read IPC file: {}", convert_error(&e)))
         })?;
+        let schema = reader.schema();
+        // Decoded batches are rescannable, so the merge join sees their exact
+        // row count.
+        let mut data = reader
+            .map(|batch| {
+                batch.map_err(|e| {
+                    napi::Error::from_reason(format!(
+                        "Failed to read record batch from IPC file: {}",
+                        e
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        // An empty Vec has no schema, so keep the source schema in an empty batch.
+        if data.is_empty() {
+            data.push(RecordBatch::new_empty(schema));
+        }
 
         let this = self.clone();
 
