@@ -373,6 +373,16 @@ impl<S: HttpSend> crate::job::JobHandle for FreshnessJob<S> {
     async fn cancel(&self) -> Result<()> {
         crate::job::JobHandle::cancel(&self.inner).await
     }
+
+    async fn retry(&self) -> Result<Box<dyn crate::job::JobHandle>> {
+        Ok(Box::new(Self {
+            inner: self.inner.retry_attempt().await?,
+            freshness: self.freshness.clone(),
+            version: self.version.clone(),
+            tracked_result: self.tracked_result,
+            freshness_request: self.freshness_request,
+        }))
+    }
 }
 
 /// A registry-backed materialized-view refresh. Registry completion is only
@@ -4317,6 +4327,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         &self,
         request: &crate::function::FunctionErrorsRequest,
     ) -> Result<crate::function::FunctionErrors> {
+        let paged = request.page_token.is_some();
         let mut body = serde_json::json!({});
         if let Some(job_id) = &request.job_id {
             body["job_id"] = serde_json::json!(job_id);
@@ -4327,6 +4338,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         if let Some(limit) = request.limit {
             body["limit"] = serde_json::json!(limit);
         }
+        if let Some(token) = &request.page_token {
+            body["page_token"] = serde_json::json!(token);
+        }
         self.apply_branch_body(&mut body);
         let request = self
             .client
@@ -4335,11 +4349,16 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let (request_id, response) = self.send(request, true).await?;
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
-        serde_json::from_str(&body).map_err(|e| Error::Http {
-            source: format!("Failed to parse errors response: {}", e).into(),
-            request_id,
-            status_code: None,
-        })
+        let errors: crate::function::FunctionErrors =
+            serde_json::from_str(&body).map_err(|e| Error::Http {
+                source: format!("Failed to parse errors response: {}", e).into(),
+                request_id,
+                status_code: None,
+            })?;
+        if paged && errors.truncated && errors.page_token.is_none() {
+            return Err(Error::NotSupported {message: "server truncated Function errors without a page token; paged errors require server support".to_string()});
+        }
+        Ok(errors)
     }
 
     async fn function_column_statuses(
@@ -12564,6 +12583,83 @@ mod tests {
             saw_version.load(Ordering::SeqCst),
             "new refresh handle lost its published-version freshness fence"
         );
+    }
+
+    #[tokio::test]
+    async fn retrying_a_refresh_preserves_result_decoding_and_read_freshness() {
+        let saw_version = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = saw_version.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            let body = match request.url().path() {
+                "/v1/table/my_table/backfill_column" => r#"{"job_id":"attempt-1"}"#.to_string(),
+                "/v1/jobs/retry" => {
+                    let body: serde_json::Value =
+                        serde_json::from_slice(request.body().unwrap().as_bytes().unwrap())
+                            .unwrap();
+                    assert_eq!(body["job_id"], "attempt-1");
+                    r#"{"job_id":"attempt-2"}"#.to_string()
+                }
+                "/v1/jobs/describe" => refresh_done("attempt-2"),
+                "/v1/table/my_table/count_rows/" => {
+                    observed.store(
+                        request
+                            .headers()
+                            .get("x-lancedb-min-read-version")
+                            .and_then(|value| value.to_str().ok())
+                            == Some("8"),
+                        Ordering::SeqCst,
+                    );
+                    "1".to_string()
+                }
+                path => panic!("unexpected path {path}"),
+            };
+            http::Response::builder()
+                .status(if request.url().path().ends_with("backfill_column") {
+                    202
+                } else {
+                    200
+                })
+                .body(body)
+                .unwrap()
+        });
+        let submitted = table.refresh_column_async("doubled").await.unwrap();
+        let retry = submitted.retry().await.unwrap();
+        assert_eq!(retry.id(), Some("attempt-2"));
+        assert_eq!(retry.wait().await.unwrap().rows_assigned, 12);
+        table.count_rows(None).await.unwrap();
+        assert!(saw_version.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn paged_row_errors_preserve_tokens_and_refuse_silent_truncation() {
+        for legacy in [false, true] {
+            let table = Table::new_with_handler("my_table", move |request| {
+                let body: serde_json::Value =
+                    serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+                assert_eq!(body["page_token"], "");
+                assert_eq!(body["job_id"], "attempt-1");
+                let mut response = json!({"records":[],"fragments":[],"truncated":true});
+                if !legacy {
+                    response["page_token"] = json!("next");
+                }
+                http::Response::builder()
+                    .status(200)
+                    .body(response.to_string())
+                    .unwrap()
+            });
+            let result = table
+                .function_errors(
+                    crate::function::FunctionErrorsRequest::new()
+                        .job_id("attempt-1")
+                        .page_token(""),
+                )
+                .await;
+            if legacy {
+                assert!(matches!(result, Err(Error::NotSupported { .. })));
+            } else {
+                assert_eq!(result.unwrap().page_token.as_deref(), Some("next"));
+            }
+        }
     }
 
     /// Index submissions use the same freshness wrapper. Its wait must forward

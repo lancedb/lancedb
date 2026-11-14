@@ -37,3 +37,13 @@ optional limit: number;
 ```
 
 At most this many records (server default 10000, cap 100000).
+
+***
+
+### pageToken?
+
+```ts
+optional pageToken: string;
+```
+
+Empty starts paging for an exact jobId; otherwise continue that page.

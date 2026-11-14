@@ -82,6 +82,43 @@ impl Job {
     }
 
     #[getter]
+    pub fn job_id(&self) -> Option<String> {
+        self.inner.job_id()
+    }
+
+    #[getter]
+    pub fn operation_id(&self) -> Option<String> {
+        self.inner.operation_id()
+    }
+
+    #[getter]
+    pub fn attempt(&self) -> Option<u32> {
+        self.inner.attempt()
+    }
+
+    #[getter]
+    pub fn retry_of(&self) -> Option<String> {
+        self.inner.retry_of()
+    }
+
+    #[getter]
+    pub fn lifecycle_state(&self) -> Option<String> {
+        self.inner
+            .lifecycle_state()
+            .map(|state| state.as_str().to_string())
+    }
+
+    #[getter]
+    pub fn source_table_version(&self) -> Option<u64> {
+        self.inner.source_table_version()
+    }
+
+    #[getter]
+    pub fn execution_epoch(&self) -> Option<i64> {
+        self.inner.execution_epoch()
+    }
+
+    #[getter]
     pub fn job_type(&self) -> Option<String> {
         self.inner.job_type()
     }
@@ -132,6 +169,15 @@ impl Job {
         })
     }
 
+    pub fn retry(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            Ok(Job {
+                inner: Arc::new(inner.retry().await.infer_error()?),
+            })
+        })
+    }
+
     pub fn refresh(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
@@ -164,14 +210,19 @@ impl Job {
         future_into_py(self_.py(), async move { inner.stats().await.infer_error() })
     }
 
-    #[pyo3(signature = (*, limit=None, filter=None))]
+    #[pyo3(signature = (*, limit=None, filter=None, page_token=None))]
     pub fn events(
         self_: PyRef<'_, Self>,
         limit: Option<u32>,
         filter: Option<String>,
+        page_token: Option<String>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
-        let request = JobEventsRequest { limit, filter };
+        let request = JobEventsRequest {
+            limit,
+            filter,
+            page_token,
+        };
         future_into_py(self_.py(), async move {
             let batches = inner.events(request).await.infer_error()?;
             Python::attach(|py| {
@@ -294,6 +345,12 @@ impl JobFailureInfo {
 #[derive(Clone)]
 pub struct JobDescription {
     job_id: String,
+    operation_id: Option<String>,
+    attempt: Option<u32>,
+    retry_of: Option<String>,
+    lifecycle_state: Option<String>,
+    source_table_version: Option<u64>,
+    execution_epoch: Option<i64>,
     job_type: String,
     state: String,
     creation_ms: i64,
@@ -356,6 +413,14 @@ impl From<lancedb::database::JobDescription> for JobDescription {
         let progress_json = description.progress_snapshot().to_string();
         Self {
             job_id: description.job_id,
+            operation_id: description.operation_id,
+            attempt: description.attempt,
+            retry_of: description.retry_of,
+            lifecycle_state: description
+                .lifecycle_state
+                .map(|state| state.as_str().to_string()),
+            source_table_version: description.source_table_version,
+            execution_epoch: description.execution_epoch,
             job_type: description.job_type,
             state: description.state,
             creation_ms: description.creation_ms,

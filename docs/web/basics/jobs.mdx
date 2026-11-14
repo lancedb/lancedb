@@ -214,6 +214,170 @@ history.
 Draft for the Functions release. Add this section before "Embedded and
 Enterprise execution":
 
+### Typed states and attempt identity
+
+The existing `id` and string status APIs keep their behavior. For a detailed
+state, use Python's `status_typed()`, TypeScript's `statusTyped()`, or Rust's
+`status_typed()`. Known states are `created`, `queued`, `in_progress`,
+`succeeded`, `failed`, `canceled`, and `timed_out`. Unknown future states retain
+their original value and never establish success.
+
+The detail getters report the last observation. Call `status()` or `refresh()`
+to populate registry metadata:
+
+| Python field | Meaning |
+| --- | --- |
+| `job_id` | Identity of one attempt. Embedded identities last for the handle's lifetime and cannot be reopened. |
+| `operation_id` | Root of the explicit retry lineage, when reported. |
+| `attempt` | One-based attempt ordinal. Worker replacement does not increment it. |
+| `retry_of` | Immediate predecessor attempt, when reported. |
+| `source_table_version` | Source snapshot pinned for the attempt, when reported. |
+| `execution_epoch` | Execution fencing token, when reported. |
+
+TypeScript exposes the same fields in camel case. Older servers may omit
+lineage and pin metadata; a missing value is unknown.
+
+### Retry an exact attempt
+
+`retry()` requires a backend that supports exact-attempt retry. It selects a
+successor for an unsuccessful attempt, preserving resolved Function inputs,
+result decoding, and the submitting table's read freshness. Repeated requests
+for the same predecessor select the same successor. Retry the successor's ID
+to request another attempt. These guarantees require the supporting server
+protocol; Embedded handles without a replayable operation specification refuse
+durable retry.
+
+<CodeGroup>
+```python Python
+from lancedb import JobState
+
+job = db.open_job(job_id)
+if job.status_typed() in (JobState.FAILED, JobState.TIMED_OUT):
+    successor = job.retry()
+    result = successor.wait()
+```
+
+```typescript TypeScript
+const state = await job.statusTyped();
+if (state === "failed" || state === "timed_out") {
+  const successor = await job.retry();
+  await successor.wait();
+}
+```
+
+```rust Rust
+use lancedb::JobState;
+
+if matches!(
+    job.status_typed().await?,
+    JobState::Failed | JobState::TimedOut
+) {
+    let successor = job.retry().await?;
+    let result = successor.wait().await?;
+}
+```
+</CodeGroup>
+
+A wait timeout stops waiting without cancelling execution. Keep the handle
+and wait again; a timeout alone is not a reason to retry the operation.
+TypeScript and Rust also support wait deadlines:
+
+<CodeGroup>
+```python Python
+from datetime import timedelta
+
+result = job.wait(timeout=timedelta(minutes=10))
+```
+
+```typescript TypeScript
+await job.wait({ timeoutMs: 10 * 60 * 1000, progress: console.log });
+```
+
+```rust Rust
+use std::time::Duration;
+
+job.wait_timeout(Duration::from_secs(10 * 60)).await?;
+```
+</CodeGroup>
+
+### Retained history and row-error pages
+
+`events()` returns one retained event page. Pass its opaque continuation to
+the next call (`page_token` in Python/Rust, `pageToken` in TypeScript).
+`history()` follows those continuations, including empty pages. Python and
+TypeScript yield pages; Rust collects the retained batches. Event history
+requires a registry-backed handle and a supporting server.
+
+<CodeGroup>
+```python Python
+for page in job.history(limit=1000):
+    print(page.to_pylist())
+```
+
+```typescript TypeScript
+for await (const page of job.history({ limit: 1000 })) {
+  console.log(page.toArray());
+}
+```
+
+```rust Rust
+use lancedb::job::JobEventsRequest;
+
+for batch in job.history(JobEventsRequest::default().limit(1000)).await? {
+    println!("{batch:?}");
+}
+```
+</CodeGroup>
+
+For row diagnostics, opt into paging with an exact `job_id` and an empty
+`page_token`. Continue until the response omits its token, keeping the table,
+branch, job, and column filters unchanged. Records and capped-fragment
+summaries share the page budget. An empty page can still have a continuation.
+Explicit paging requires a supporting server; a server that truncates without
+returning a cursor is rejected rather than treated as complete.
+
+<CodeGroup>
+```python Python
+token = ""
+while token is not None:
+    errors = tbl.function_errors(job_id=job.job_id, limit=1000, page_token=token)
+    print(errors.records, errors.fragments)
+    token = errors.page_token
+```
+
+```typescript TypeScript
+let pageToken: string | undefined = "";
+while (pageToken !== undefined) {
+  const page = await tbl.functionErrors({ jobId, limit: 1000, pageToken });
+  console.log(page.records, page.fragments);
+  pageToken = page.pageToken ?? undefined;
+}
+```
+
+```rust Rust
+use lancedb::function::FunctionErrorsRequest;
+
+let job_id = job.job_id().expect("a registry-backed job");
+let mut token = Some(String::new());
+while let Some(current) = token {
+    let page = table
+        .function_errors(
+            FunctionErrorsRequest::new()
+                .job_id(job_id.clone())
+                .limit(1000)
+                .page_token(current),
+        )
+        .await?;
+    println!("{:?} {:?}", page.records, page.fragments);
+    token = page.page_token;
+}
+```
+</CodeGroup>
+
+Pages from an executing attempt are partial observations. Page a terminal
+attempt for its complete retained diagnostics; retained diagnostics are not a
+ledger of every attempted row.
+
 ### Progress snapshots and observers
 
 Enterprise registry handles expose a structured progress snapshot. This
@@ -225,7 +389,8 @@ observations; it does not start another polling loop. It is a synchronous
 observer and is not awaited. If it throws, `wait()` logs the error and continues
 waiting; callback exceptions do not reject `wait()`.
 
-```python
+<CodeGroup>
+```python Python
 def show_progress(progress):
     print(
         progress.get("state"),
@@ -242,7 +407,7 @@ if snapshot is not None:
 result = job.wait(progress=show_progress)
 ```
 
-```typescript
+```typescript TypeScript
 const showProgress = (progress: lancedb.JobProgress) => {
   console.log(
     progress.state,
@@ -261,7 +426,7 @@ if (snapshot !== null) {
 await job.wait(showProgress);
 ```
 
-```rust
+```rust Rust
 let job = table.refresh_column_async("embedding").await?;
 if let Some(progress) = job.progress().await? {
     println!(
@@ -284,6 +449,7 @@ let result = job
     })
     .await?;
 ```
+</CodeGroup>
 
 Job-type-specific counters are optional. A missing `rows_computed`,
 `rows_planned`, or `rows_remaining` field means the server did not report that

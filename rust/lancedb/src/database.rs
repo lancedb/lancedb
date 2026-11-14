@@ -287,6 +287,18 @@ impl JobInfo {
 #[derive(Debug, Clone)]
 pub struct JobDescription {
     pub job_id: String,
+    /// Root identity shared by the explicit retry lineage, when reported.
+    pub operation_id: Option<String>,
+    /// One-based attempt ordinal, when reported.
+    pub attempt: Option<u32>,
+    /// Immediate predecessor attempt, when reported.
+    pub retry_of: Option<String>,
+    /// Detailed state before folding it into legacy client labels.
+    pub lifecycle_state: Option<crate::job::JobState>,
+    /// Pinned source snapshot, when reported.
+    pub source_table_version: Option<u64>,
+    /// Most recent execution's fencing token, when reported.
+    pub execution_epoch: Option<i64>,
     pub job_type: String,
     /// Lifecycle state: "running", "finished", "failed", or "cancelled".
     pub state: String,
@@ -345,6 +357,25 @@ impl JobDescription {
             for (key, value) in progress {
                 snapshot.insert(key.clone(), value.clone());
             }
+        }
+        if let Some(operation_id) = &self.operation_id {
+            snapshot.insert("operation_id".to_string(), operation_id.clone().into());
+        }
+        snapshot.insert("job_id".to_string(), self.job_id.clone().into());
+        if let Some(attempt) = self.attempt {
+            snapshot.insert("attempt".to_string(), attempt.into());
+        }
+        if let Some(retry_of) = &self.retry_of {
+            snapshot.insert("retry_of".to_string(), retry_of.clone().into());
+        }
+        if let Some(state) = &self.lifecycle_state {
+            snapshot.insert("lifecycle_state".to_string(), state.as_str().into());
+        }
+        if let Some(version) = self.source_table_version {
+            snapshot.insert("source_table_version".to_string(), version.into());
+        }
+        if let Some(epoch) = self.execution_epoch {
+            snapshot.insert("execution_epoch".to_string(), epoch.into());
         }
         serde_json::Value::Object(snapshot)
     }

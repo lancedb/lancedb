@@ -115,7 +115,12 @@ export {
   Job,
   JobEventsOptions,
 } from "./job";
-export type { JobProgress, JobProgressCallback } from "./job";
+export type {
+  JobProgress,
+  JobProgressCallback,
+  JobState,
+  JobWaitOptions,
+} from "./job";
 
 export {
   AutoQuery,

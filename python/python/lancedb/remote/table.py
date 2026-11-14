@@ -1244,9 +1244,12 @@ class RemoteTable(Table):
         job_id: Optional[str] = None,
         column: Optional[str] = None,
         limit: Optional[int] = None,
+        page_token: Optional[str] = None,
     ):
         return LOOP.run(
-            self._table.function_errors(job_id=job_id, column=column, limit=limit)
+            self._table.function_errors(
+                job_id=job_id, column=column, limit=limit, page_token=page_token
+            )
         )
 
     def column_statuses(

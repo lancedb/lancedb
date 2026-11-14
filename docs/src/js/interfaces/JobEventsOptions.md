@@ -27,3 +27,13 @@ optional limit: number;
 ```
 
 Maximum event rows to return, up to the server maximum of 10,000.
+
+***
+
+### pageToken?
+
+```ts
+optional pageToken: string;
+```
+
+Opaque continuation from the preceding page's schema metadata.

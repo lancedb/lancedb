@@ -582,6 +582,7 @@ impl Table {
             job_id: options.job_id,
             column: options.column,
             limit,
+            page_token: options.page_token,
         };
         let errors = self
             .inner_ref()?
@@ -1691,6 +1692,8 @@ pub struct FunctionErrorsOptions {
     pub column: Option<String>,
     /// At most this many records (server default 10000, cap 100000).
     pub limit: Option<i64>,
+    /// Empty starts paging for an exact jobId; otherwise continue that page.
+    pub page_token: Option<String>,
 }
 
 /// Aggregate worker resources for one Enterprise Function refresh.
@@ -1912,6 +1915,8 @@ pub struct FunctionErrors {
     pub fragments: Vec<FunctionErrorFragment>,
     /// Whether the listing stopped at its limit.
     pub truncated: bool,
+    /// Continue the same job/filter. Absent for complete pages and older servers.
+    pub page_token: Option<String>,
 }
 
 /// One exact immutable Function revision attached to a table output.
@@ -2030,6 +2035,7 @@ impl From<lancedb::function::FunctionErrors> for FunctionErrors {
             records: errors.records.into_iter().map(Into::into).collect(),
             fragments: errors.fragments.into_iter().map(Into::into).collect(),
             truncated: errors.truncated,
+            page_token: errors.page_token,
         }
     }
 }
