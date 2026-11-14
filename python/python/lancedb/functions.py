@@ -29,7 +29,7 @@ import textwrap
 import types
 import warnings
 from collections.abc import Mapping, Sequence
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import (
@@ -1044,6 +1044,7 @@ _GRAMMAR_PRIMITIVES = (
     (pa.date32(), "date32"),
     (pa.date64(), "date64"),
 )
+_FUNCTION_TIMEUNITS = ("s", "ms", "us", "ns")
 
 
 def _canonical_arrow_type(
@@ -1267,6 +1268,26 @@ def _exact_arrow_type(
             ),
             "length": data_type.precision * 1000 + data_type.scale,
         }
+    if pa.types.is_timestamp(data_type):
+        unit = data_type.unit
+        if unit not in _FUNCTION_TIMEUNITS:
+            raise TypeError(f"unsupported Function timestamp unit: {unit!r}")
+        timezone = data_type.tz
+        if timezone == "-":
+            raise TypeError(
+                "unsupported Function timestamp timezone: '-' is reserved for "
+                "no timezone"
+            )
+        if unit == "us" and timezone is None:
+            return {"type": "timestamp"}
+        return {"type": f"timestamp:{unit}:{timezone if timezone is not None else '-'}"}
+    if pa.types.is_duration(data_type):
+        unit = data_type.unit
+        if unit not in _FUNCTION_TIMEUNITS:
+            raise TypeError(f"unsupported Function duration unit: {unit!r}")
+        if unit == "us":
+            return {"type": "duration"}
+        return {"type": f"duration:{unit}"}
     if pa.types.is_struct(data_type):
         fields = list(data_type)
         names = [field.name for field in fields]
@@ -1373,9 +1394,15 @@ def _annotation_type(annotation: Any) -> tuple[pa.DataType, bool]:
             raise TypeError(
                 "Annotated Function types require exactly one PyArrow DataType"
             )
-        # A struct value is written as a dict, and a Decimal has no precision
-        # or scale on its own; the Annotated metadata supplies both types.
-        if base is dict or get_origin(base) is dict or base is Decimal:
+        # A struct value is written as a dict, while Decimal and timedelta
+        # carry no precision or unit of their own; the Annotated metadata
+        # supplies those types.
+        if (
+            base is dict
+            or get_origin(base) is dict
+            or base is Decimal
+            or base is timedelta
+        ):
             base_nullable = False
         else:
             _, base_nullable = _annotation_type(base)
@@ -1401,6 +1428,8 @@ def _annotation_type(annotation: Any) -> tuple[pa.DataType, bool]:
     if annotation is date:
         return pa.date32(), nullable
     if annotation is datetime:
+        # Existing default: microsecond precision, no timezone. Other units
+        # and timezones require Annotated or an explicit schema.
         return pa.timestamp("us"), nullable
     if annotation is Decimal:
         raise TypeError(
@@ -1408,6 +1437,11 @@ def _annotation_type(annotation: Any) -> tuple[pa.DataType, bool]:
             "Annotated[Decimal, pyarrow.decimal128(precision, scale)], "
             "Annotated[Decimal, pyarrow.decimal256(precision, scale)], or an "
             "explicit schema"
+        )
+    if annotation is timedelta:
+        raise TypeError(
+            "timedelta Function annotations require an explicit unit; use "
+            "Annotated[timedelta, pyarrow.duration(unit)] or an explicit schema"
         )
     if get_origin(annotation) is list:
         arguments = get_args(annotation)
@@ -2758,7 +2792,11 @@ def function(
     ``Decimal`` has no precision or scale; use
     ``Annotated[Decimal, pyarrow.decimal128(precision, scale)]``,
     ``Annotated[Decimal, pyarrow.decimal256(precision, scale)]``, or an
-    explicit schema.
+    explicit schema. Bare ``datetime`` keeps its existing ``timestamp[us]`` default
+    without a timezone; other units and timezones require
+    ``Annotated[datetime, pyarrow.timestamp(unit, tz=...)]`` or an explicit
+    schema. A bare ``timedelta`` has no unit and is rejected; use
+    ``Annotated[timedelta, pyarrow.duration(unit)]`` or an explicit schema.
 
     **Large values.** A ``bytes`` parameter receives the whole value, which
     is held in memory with its row and counts against the server's per-row
@@ -2867,8 +2905,10 @@ def function(
         flag is preserved; a top-level named-struct field and a Blob v2 output
         must be non-nullable. Map and decimal fields use canonical Arrow JSON;
         a map key must be non-nullable utf8 and its value field keeps the
-        declared nullability. Required for batch annotations. When omitted, the
-        output is inferred from the return annotation.
+        declared nullability. Temporal fields use canonical Arrow JSON; the
+        microsecond/no-timezone case keeps the legacy timestamp/duration shape.
+        Required for batch annotations. When omitted, the output is inferred
+        from the return annotation.
     pip : sequence of str, optional
         Pip requirements for the remote environment. Syntax is validated at
         decoration time, including extras and environment markers. Named direct
