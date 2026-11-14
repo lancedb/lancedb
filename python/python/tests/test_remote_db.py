@@ -2991,6 +2991,69 @@ def test_remote_job_wait_raises_on_failure():
         assert exc_info.value.sql_job_id is None
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync", [True, False])
+@pytest.mark.parametrize("with_terminal_server", [True, False])
+async def test_remote_job_wait_preserves_terminal_build(sync, with_terminal_server):
+    from lancedb.exceptions import JobFailedError
+
+    message = "ValueError: corrupt frame at frame_index=207"
+    server = {
+        "release": "1.13.0-beta.0",
+        "git_sha": "2a7874ecd589",
+        "build_date": "2026-11-12T22:45:43Z",
+    }
+    result = {"terminal_server": server} if with_terminal_server else None
+
+    def handler(request):
+        assert request.path == "/v1/jobs/describe"
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.send_header(
+            "x-lancedb-server-build",
+            json.dumps({"release": "2.0.0", "git_sha": "new-query-node"}),
+        )
+        request.end_headers()
+        request.wfile.write(
+            json.dumps(
+                {
+                    "job_id": "job-provenance",
+                    "job_state": "FAILED",
+                    "failure": {
+                        "phase": "function_refresh_attempt_failed",
+                        "message": message,
+                        "traceback": "Traceback: original user code",
+                        "retryable": False,
+                    },
+                    "result": result,
+                }
+            ).encode()
+        )
+
+    if sync:
+        with mock_lancedb_connection(handler) as db:
+            job = db.open_job("job-provenance")
+            with pytest.raises(JobFailedError) as caught:
+                job.wait()
+    else:
+        async with mock_lancedb_connection_async(handler) as db:
+            job = await db.open_job("job-provenance")
+            with pytest.raises(JobFailedError) as caught:
+                await job.wait()
+
+    expected = f"Job job-provenance failed: {message}"
+    if with_terminal_server:
+        expected += (
+            " [server: 1.13.0-beta.0 (git 2a7874ecd589, built 2026-11-12T22:45:43Z)]"
+        )
+    expected += " (in function_refresh_attempt_failed)"
+    assert str(caught.value) == expected
+    assert caught.value.job_id == "job-provenance"
+    assert job.failure.message == message
+    assert job.failure.traceback == "Traceback: original user code"
+    assert job.result == result
+
+
 @pytest.mark.parametrize("server_version", ["0.2.0", "0.6.0"])
 def test_remote_json_fts_config(server_version):
     from lancedb.index import FTS
