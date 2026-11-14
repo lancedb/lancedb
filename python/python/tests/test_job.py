@@ -824,9 +824,13 @@ async def test_query_progress_display_has_no_row_counter_and_closes_on_failure(
     monkeypatch,
 ):
     tqdm_module = pytest.importorskip("tqdm.auto")
-    bar = MagicMock()
-    bar.n = 0
-    bar.total = None
+    bar = SimpleNamespace(
+        n=0,
+        total=None,
+        update=MagicMock(),
+        set_postfix_str=MagicMock(),
+        close=MagicMock(),
+    )
     constructor = MagicMock(return_value=bar)
     monkeypatch.setattr(tqdm_module, "tqdm", constructor)
     inner = _RegistrationQuery(JobFailedError("bake failed"))
