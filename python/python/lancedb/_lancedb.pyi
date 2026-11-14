@@ -185,9 +185,14 @@ class Connection(object):
         limit: Optional[int],
     ) -> list[str]: ...  # Deprecated: Use list_tables instead
     async def open_job(self, job_id: str) -> Job: ...
+    async def server_info(self) -> str: ...
     async def list_gpu_classes(self) -> list[GpuClass]: ...
     async def create_function_async(
-        self, request_json: str, namespace_path: Optional[List[str]] = None
+        self,
+        request_json: str,
+        namespace_path: Optional[List[str]] = None,
+        *,
+        exist_ok: bool = False,
     ) -> Job: ...
     async def get_function(
         self,
@@ -228,7 +233,12 @@ class Connection(object):
         self, name: str, namespace_path: Optional[List[str]] = None
     ) -> None: ...
     async def create_secret(
-        self, name: str, value: str, namespace_path: Optional[List[str]] = None
+        self,
+        name: str,
+        value: str,
+        namespace_path: Optional[List[str]] = None,
+        *,
+        exist_ok: bool = False,
     ) -> None: ...
     async def alter_secret(
         self, name: str, value: str, namespace_path: Optional[List[str]] = None
@@ -247,7 +257,12 @@ class Connection(object):
         self, name: str, namespace_path: Optional[List[str]] = None
     ) -> Tuple[str, int, int]: ...
     async def create_view(
-        self, name: str, query: str, namespace_path: Optional[List[str]] = None
+        self,
+        name: str,
+        query: str,
+        namespace_path: Optional[List[str]] = None,
+        *,
+        exist_ok: bool = False,
     ) -> Tuple[str, List[str], str, str, List[str], pa.Schema]: ...
     async def describe_view(
         self, name: str, namespace_path: Optional[List[str]] = None
@@ -332,6 +347,8 @@ class Connection(object):
         source_version: Optional[int] = None,
         source_tag: Optional[str] = None,
         is_shallow: bool = True,
+        *,
+        exist_ok: bool = False,
     ) -> Table: ...
     async def rename_table(
         self,
@@ -343,24 +360,30 @@ class Connection(object):
     async def create_materialized_view(
         self,
         name: str,
-        source: str,
+        source: Optional[str] = None,
         projections: Optional[List[Tuple[str, str]]] = None,
         filter: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        *,
+        query: Optional[str] = None,
+        exist_ok: bool = False,
     ) -> Table: ...
     async def create_materialized_view_async(
         self,
         name: str,
-        source: str,
+        source: Optional[str] = None,
         projections: Optional[List[Tuple[str, str]]] = None,
         filter: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        *,
+        query: Optional[str] = None,
+        exist_ok: bool = False,
     ) -> Job: ...
     def list_materialized_views(
         self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
@@ -392,6 +415,7 @@ class BlobFile:
     def seek(self, position: int) -> None: ...
     def tell(self) -> int: ...
     def size(self) -> int: ...
+    def set_buffer_size(self, size: int) -> None: ...
     def read_range(self, offset: int, length: int) -> bytes: ...
     def read_ranges(self, ranges: list[tuple[int, int]]) -> list[bytes]: ...
     def read_up_to(self, length: int) -> bytes: ...
@@ -413,6 +437,7 @@ class Job:
     async def cancel(self) -> None: ...
     async def refresh(self) -> None: ...
     async def timeline(self) -> str: ...
+    async def stats(self) -> Optional[str]: ...
     async def events(
         self,
         *,
@@ -538,6 +563,7 @@ class Table:
         progress: Optional[Any] = None,
         write_parallelism: Optional[int] = None,
         allow_external_blob_outside_bases: bool = False,
+        retries: Optional[int] = None,
     ) -> AddResult: ...
     async def update(
         self, updates: Dict[str, str], where: Optional[str]
@@ -566,6 +592,7 @@ class Table:
         *,
         name: Optional[str],
         train: Optional[bool],
+        exist_ok: bool = False,
     ): ...
     async def create_index_async(
         self,
@@ -590,6 +617,7 @@ class Table:
         *,
         name: Optional[str],
         train: Optional[bool],
+        exist_ok: bool = False,
     ) -> Job: ...
     async def list_versions(self) -> List[Dict[str, Any]]: ...
     async def version(self) -> int: ...
@@ -742,7 +770,12 @@ class Table:
     def take_row_ids(self, row_ids: list[int]) -> TakeQuery: ...
     async def blob_columns(self) -> list[str]: ...
     async def fetch_blobs(
-        self, column: str, row_ids: list[int]
+        self,
+        column: str,
+        row_ids: list[int],
+        *,
+        version: Optional[int] = None,
+        snapshot_identity: Optional[str] = None,
     ) -> pa.LargeBinaryArray: ...
     async def fetch_blob_ranges(
         self,
@@ -750,9 +783,11 @@ class Table:
         requests: Sequence[Sequence[int]],
     ) -> pa.LargeBinaryArray: ...
     async def fetch_blob_files(
-        self, column: str, row_ids: list[int]
+        self, column: str, row_ids: list[int], buffer_size: Optional[int] = None
     ) -> list[Optional[BlobFile]]: ...
-    async def open_blob_file(self, descriptor: str) -> BlobFile: ...
+    async def open_blob_file(
+        self, descriptor: str, buffer_size: Optional[int] = None
+    ) -> BlobFile: ...
     def vector_search(self) -> VectorQuery: ...
 
 class Tags:
@@ -1227,6 +1262,7 @@ async def connect_catalog(
     sql_host_override: Optional[str] = None,
     read_consistency_interval: Optional[float] = None,
     oauth_config: Optional[Any] = None,
+    storage_options: Optional[dict[str, str]] = None,
 ) -> Catalog: ...
 
 class NameListing:

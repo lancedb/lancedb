@@ -17,7 +17,7 @@ use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
-use crate::blob::{BlobFile, copy_blob_buffers, parse_row_ids, spawn_abortable};
+use crate::blob::{BlobFile, BlobRangeRequest, copy_blob_buffers, parse_row_ids, spawn_abortable};
 use crate::error::NapiErrorExt;
 use crate::index::Index;
 use crate::job::JobFailureInfo;
@@ -134,7 +134,7 @@ impl Table {
 
     #[napi(
         catch_unwind,
-        ts_args_type = "buf: Buffer, mode: string, progressCallback?: (progress: WriteProgressInfo) => void, allowExternalBlobOutsideBases?: boolean"
+        ts_args_type = "buf: Buffer, mode: string, progressCallback?: (progress: WriteProgressInfo) => void, allowExternalBlobOutsideBases?: boolean, retries?: number"
     )]
     pub async fn add(
         &self,
@@ -142,6 +142,7 @@ impl Table {
         mode: String,
         progress_callback: Option<ProgressFn>,
         allow_external_blob_outside_bases: Option<bool>,
+        retries: Option<u32>,
     ) -> napi::Result<AddResult> {
         let batches = ipc_file_to_batches(buf.to_vec())
             .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC file: {}", e)))?;
@@ -157,6 +158,11 @@ impl Table {
             })
             .collect::<Result<Vec<_>>>()?;
         let mut op = self.inner_ref()?.add(batches);
+        if let Some(retries) = retries {
+            let retries = u8::try_from(retries)
+                .map_err(|_| napi::Error::from_reason("retries must be between 0 and 255"))?;
+            op = op.retries(retries);
+        }
 
         op = if mode == "append" {
             op.mode(AddDataMode::Append)
@@ -414,7 +420,32 @@ impl Table {
                 .fetch_blobs(column.as_str(), &row_ids)
                 .await
                 .default_error()?;
-            Ok(copy_blob_buffers(array))
+            copy_blob_buffers(array)
+        })
+    }
+
+    #[napi(catch_unwind)]
+    pub fn fetch_blob_ranges<'env>(
+        &self,
+        env: &'env Env,
+        column: String,
+        requests: Vec<BlobRangeRequest>,
+        signal: Option<AbortSignal>,
+    ) -> napi::Result<PromiseRaw<'env, Vec<Option<Buffer>>>> {
+        let mut ranges = Vec::new();
+        ranges.try_reserve_exact(requests.len()).map_err(|error| {
+            napi::Error::from_reason(format!("cannot allocate blob range requests: {error}"))
+        })?;
+        for request in requests {
+            ranges.push(request.parse()?);
+        }
+        let table = self.inner_ref()?.clone();
+        spawn_abortable(env, signal, async move {
+            let array = table
+                .fetch_blob_ranges(column.as_str(), ranges)
+                .await
+                .default_error()?;
+            copy_blob_buffers(array)
         })
     }
 

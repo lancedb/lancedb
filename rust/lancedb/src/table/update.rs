@@ -26,6 +26,7 @@ pub struct UpdateBuilder {
     parent: Arc<dyn BaseTable>,
     pub(crate) filter: Option<String>,
     pub(crate) columns: Vec<(String, String)>,
+    pub(crate) retries: Option<u8>,
 }
 
 impl UpdateBuilder {
@@ -34,7 +35,15 @@ impl UpdateBuilder {
             parent,
             filter: None,
             columns: Vec::new(),
+            retries: None,
         }
+    }
+
+    /// Override the remote retry budget for this call. `0` disables retries.
+    /// Ambiguous write results are never replayed. Ignored by embedded tables.
+    pub fn retries(mut self, retries: u8) -> Self {
+        self.retries = Some(retries);
+        self
     }
 
     /// Limits the update operation to rows matching the given filter
@@ -94,11 +103,6 @@ pub(crate) async fn execute_update(
     // 1. Snapshot the current dataset
     let dataset = table.dataset.get().await?;
     crate::materialized_view::ensure_not_a_view(&table.name, &dataset.schema().metadata, "update")?;
-    super::computed_columns::ensure_not_function_bound(
-        &arrow_schema::Schema::from(dataset.schema()),
-        "update",
-        update.columns.iter().map(|(name, _)| name.as_str()),
-    )?;
     super::computed_columns::ensure_not_written(
         &arrow_schema::Schema::from(dataset.schema()),
         update.columns.iter().map(|(name, _)| name.as_str()),
@@ -464,26 +468,38 @@ mod tests {
         assert_eq!(0, tbl.count_rows(Some("i == 0".to_string())).await.unwrap());
     }
 
-    /// A Function binding protects only the columns it reads or writes; any
-    /// other column updates as on a plain table.
     #[tokio::test]
-    async fn update_on_a_function_table_refuses_only_bound_columns() {
+    async fn update_allows_function_inputs_but_protects_outputs() {
         let table = crate::table::computed_columns::test_support::bound_table().await;
-        let result = table.update().column("spare", "7").execute().await.unwrap();
+        let result = table
+            .update()
+            .column("title", "'changed'")
+            .execute()
+            .await
+            .unwrap();
         assert_eq!(result.rows_updated, 1);
-        for column in ["title", "search_text"] {
+        assert_eq!(
+            table
+                .count_rows(Some("title = 'changed' AND search_text = 'a b'".into()))
+                .await
+                .unwrap(),
+            1
+        );
+        for column in ["search_text", "search_token_count"] {
+            let version = table.version().await.unwrap();
             let err = table
                 .update()
-                .column(column, "'x'")
+                .column("title", "'must not commit'")
+                .column(column, "NULL")
                 .execute()
                 .await
                 .unwrap_err();
             assert!(
                 matches!(&err, crate::Error::InvalidInput { message }
-                    if message.contains(&format!("update of '{column}'"))
-                        && message.contains("a Function binding reads or writes it")),
+                if message.contains("is computed") && message.contains("cannot be written directly")),
                 "{column}: {err:?}"
             );
+            assert_eq!(table.version().await.unwrap(), version);
         }
     }
 }

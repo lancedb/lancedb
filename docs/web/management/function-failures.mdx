@@ -1,0 +1,151 @@
+---
+title: "Handle Function failures"
+sidebarTitle: "Function Failures"
+description: "Keep usable outputs, inspect row errors, retry by stable identity and isolate inputs that need attention."
+tag: "Early access"
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+A Function refresh can encounter a bad row, fail to initialize a model, lose
+a worker, or fail while publishing results. These need different remedies.
+This guide uses the existing [refresh error policy](/sql/dml/refresh-column#options)
+and Python error records; it does not require a new retry or quarantine API.
+
+## Choose a row-error policy {#policy}
+
+The default `fail` stops the job on a row error. `skip` writes null outputs for
+failed rows and records errors, subject to the refresh's failure limits:
+
+```python
+job = table.refresh_column_async(
+    "embedding",
+    error_policy="skip",
+    max_failed_rows=100,
+    max_failed_fraction=0.1,
+)
+result = job.wait()
+print(result.rows_assigned, result.rows_failed, result.rows_remaining)
+```
+
+Choose limits for your workload; these example limits stop work when more
+than 100 rows or more than 10% fail. `skip` does not make initialization,
+infrastructure or publication failures successful. If `wait()` raises,
+[refresh the job record](/basics/jobs#snapshots), inspect `job.failure`, and
+inspect any recorded row errors. A failed/cancelled job can have committed
+some output, but retention of every successful call is not guaranteed.
+External effects are not rolled back and can be repeated during recovery.
+
+## Inspect and group recorded errors {#inspect}
+
+Scope diagnostics to the job you are investigating:
+
+```python
+from collections import Counter
+
+errors = table.function_errors(job_id=job.id, column="embedding", limit=10000)
+groups = Counter((r.error_type, r.error_message) for r in errors.records)
+for cause, count in groups.most_common():
+    print(count, cause)
+for fragment in errors.fragments:
+    print(fragment.fragment_id, fragment.rows_skipped, fragment.rows_recorded)
+print("listing truncated:", errors.truncated)
+```
+
+Each record includes the Function name/version, table version, error type and
+message, creation time, and available row identities. `attempts` and traceback
+details depend on the server/image version. This client-side grouping counts
+only returned detail records. `truncated=True` or fragment summaries with
+more skipped than recorded rows mean it is incomplete; do not label it a full
+error census. See [`SHOW ERRORS`](/sql/ddl/job#errors) for SQL and its limits.
+
+Records are historical observations, not a deduplicated list of currently
+failed rows. Reading errors without `job_id` can include older attempts that
+have since succeeded. A null output can mean unfilled, skipped, or a computed
+nullable field; output nullness alone is not a current-error test.
+
+## Retry exactly identified rows {#retry}
+
+On tables with stable row IDs, supporting server/SDK versions return
+`record.row_id` from the refresh's pinned source version. Keep that table and
+branch identity with the records. Compaction can move physical addresses, so
+do not derive a row ID from fragment numbers or offsets.
+
+The following deliberately refuses incomplete or unidentified error sets.
+Review historical records against the current inputs before using them as a
+retry selection. Keep this selection small enough for a SQL predicate.
+
+```python
+if errors.truncated or any(f.rows_skipped > f.rows_recorded for f in errors.fragments):
+    raise RuntimeError("Inspect a narrower job/error set before selecting retries")
+if any(r.row_id is None for r in errors.records):
+    raise RuntimeError("This workflow requires stable row IDs in every error record")
+
+row_ids = sorted({int(r.row_id) for r in errors.records})
+if row_ids:
+    predicate = "_rowid IN (" + ", ".join(map(str, row_ids)) + ")"
+    retry_job = table.refresh_column_async("embedding", where=predicate)
+    retry_job.wait()
+```
+
+This recomputes every selected live row with the existing binding. It can
+repeat a row already repaired since the error was recorded. Inspect the retry
+job and its errors afterward; an older record need not disappear. On tables
+without stable row IDs, resolve errors to application keys at the recorded
+snapshot before retrying. Do not substitute `_rowaddr` after a rewrite.
+Python `where=` requires a supporting SDK such as `0.42.0b9`, not stable
+`0.41.0`, plus a matching server.
+
+## Repair with a newer Function {#new-version}
+
+Registering a new version does not change an existing column's immutable
+binding. To evaluate a fix while retaining old outputs, register the corrected
+callable and declare a separate output column. For example, with a corrected
+`embed_fixed` callable already defined and a `text` input column:
+
+```python
+from lancedb import col
+
+fixed = db.create_function(embed_fixed)
+table.add_columns(
+    {"embedding_repaired": fixed(text=col("text"))},
+    auto_refresh_enabled=False,
+)
+if row_ids:
+    repair_job = table.refresh_column_async("embedding_repaired", where=predicate)
+    repair_job.wait()
+```
+
+Only the reviewed failed-row selection is populated in the new column; other
+rows remain unfilled. Compare those outputs before deciding how readers
+should use them. This does not promise an in-place upgrade/retry operation or
+per-row producing-version lookup for a column containing mixed executions.
+Error records' Function versions describe failures, not the provenance of
+every successful row.
+
+## Quarantine inputs for review {#quarantine}
+
+Use an application-owned table of source table/branch, recorded table version,
+stable row ID or business key, Function version, cause and review disposition.
+Keep Blob payloads in the source table; a quarantine entry can refer to their
+source identity. Choose an ordinary table name such as `function_quarantine`,
+and explicitly exclude its reviewed IDs in subsequent input selections.
+
+Quarantine is an application workflow here: there is no implied built-in
+quarantine lifecycle, automatic current-error clearing or exactly-once retry.
+Do not delete source rows merely to hide an error. For very large failure sets,
+bounded error listings cannot select every row; use a smaller reviewed scope
+or wait for a deployment with the required complete selection support.
+
+Native retry policies, full current-error summaries, in-place version upgrades
+and materialized-view row-error handling have separate server/SDK prerequisites.
+Do not apply `REFRESH COLUMN` options to a materialized view and assume the
+same policy; consult the [MV refresh reference](/sql/dml/refresh-materialized-view)
+for your deployment's accepted options.
+
+## Continue {#next}
+
+- [Function lifecycle and failures](/management/function#failures)
+- [Conditional and list-element refresh](/feature-engineering/refresh-column#partial)
+- [Job results and events](/basics/jobs#snapshots)

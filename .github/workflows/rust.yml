@@ -154,6 +154,8 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: "stable"
+          # The explicit cache below runs after lock removal and only saves on main.
+          cache: false
       # Remove cargo.lock to force a fresh build
       - name: Remove Cargo.lock
         run: rm -f Cargo.lock
@@ -295,10 +297,12 @@ jobs:
         run: CARGO_ARGS="--profile ci" make -C ./lancedb remote-tests
 
   macos:
+    name: ${{ matrix.phase == 'tests' && format('macos ({0})', matrix.mac-runner) || format('macos-doc ({0})', matrix.mac-runner) }}
     timeout-minutes: 60
     strategy:
       matrix:
         mac-runner: ["macos-15", "macos-26"]
+        phase: [tests, doc]
     runs-on: "${{ matrix.mac-runner }}"
     defaults:
       run:
@@ -320,16 +324,17 @@ jobs:
       - name: Install dependencies
         run: brew install protobuf
       - name: Run tests
+        env:
+          CARGO_TEST_TARGETS: ${{ matrix.phase == 'doc' && '--doc' || '--lib --tests' }}
         run: |
           # Don't run the s3 integration tests since docker isn't available
           # on this image.
           ALL_FEATURES=`cargo metadata --format-version=1 --no-deps \
             | jq -r '.packages[] | .features | keys | .[]' \
             | grep -v s3-test | sort | uniq | paste -s -d "," -`
-          # Run doctests before test binaries fill the runner disk. Examples are
-          # already built by the Linux job, so avoid retaining them here.
-          cargo test --profile ci --features $ALL_FEATURES --locked --doc
-          cargo test --profile ci --features $ALL_FEATURES --locked --lib --tests
+          # Separate jobs give each phase its own time and disk budget. Examples
+          # are already built by the Linux job, so avoid retaining them here.
+          cargo test --profile ci --features $ALL_FEATURES --locked $CARGO_TEST_TARGETS
 
   windows:
     strategy:
@@ -344,6 +349,8 @@ jobs:
         working-directory: rust/lancedb
     steps:
       - uses: actions/checkout@v6
+      - name: Enable long paths for Lance dependencies
+        run: git config --global core.longpaths true
       - name: Set target
         run: rustup target add ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
@@ -381,6 +388,8 @@ jobs:
         working-directory: rust/lancedb
     steps:
       - uses: actions/checkout@v6
+      - name: Enable long paths for Lance dependencies
+        run: git config --global core.longpaths true
       - name: Set target
         run: rustup target add aarch64-pc-windows-msvc
       - uses: Swatinem/rust-cache@v2

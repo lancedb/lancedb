@@ -162,6 +162,10 @@ jobs:
         working-directory: nodejs
     steps:
       - uses: actions/checkout@v6
+      - name: Enable long paths for Windows dependencies
+        if: runner.os == 'Windows'
+        # Cargo also checks out Lance test fixtures below its git cache path.
+        run: git config --global core.longpaths true
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
         with:

@@ -90,6 +90,11 @@ pub(crate) trait JobHandle: Send + Sync {
         job_detail_not_supported("job timeline export")
     }
 
+    /// A printable report of recorded Function job metrics.
+    async fn stats(&self) -> Result<Option<String>> {
+        job_detail_not_supported("job statistics")
+    }
+
     /// The job's recorded lifecycle events.
     async fn events(&self, _request: JobEventsRequest) -> Result<Vec<RecordBatch>> {
         job_detail_not_supported("job event history")
@@ -276,6 +281,42 @@ impl Job<()> {
             cache.description = Some(description);
         }
         job
+    }
+
+    /// Decode this job's terminal payload as `T` when waiting.
+    ///
+    /// Use this after [`crate::Connection::open_job`] when the job's result
+    /// type is known. The job identity and cached description are preserved.
+    /// Missing or incompatible payloads are reported by [`Job::wait`].
+    /// A job that completed before its handle was created has only a unit
+    /// result; converting it fails immediately if `T` cannot decode JSON null.
+    ///
+    /// ```no_run
+    /// # async fn reopen(
+    /// #     db: &lancedb::Connection, id: &str,
+    /// # ) -> lancedb::Result<lancedb::function::RefreshColumnResult> {
+    /// let job = db.open_job(id).await?
+    ///     .into_typed::<lancedb::function::RefreshColumnResult>()?;
+    /// job.wait().await
+    /// # }
+    /// ```
+    pub fn into_typed<T>(self) -> Result<Job<T>>
+    where
+        T: Clone + DeserializeOwned + Send + Sync + 'static,
+    {
+        let inner = match self.inner {
+            JobInner::Handle { handle, .. } => JobInner::Handle {
+                handle,
+                decode: Arc::new(TerminalResult::decode::<T>),
+            },
+            JobInner::Completed(()) => {
+                JobInner::Completed(TerminalResult::local(Value::Null).decode::<T>()?)
+            }
+        };
+        Ok(Job {
+            inner,
+            cache: self.cache,
+        })
     }
 }
 
@@ -492,6 +533,29 @@ where
         match &self.inner {
             JobInner::Handle { handle, .. } => handle.timeline().await,
             JobInner::Completed(_) => job_detail_not_supported("job timeline export"),
+        }
+    }
+
+    /// Fetch a printable run report for a server-side Function job.
+    ///
+    /// The server report includes recorded phase timings, finishing-supervisor
+    /// slot occupancy, all-attempt split execution and batch latency, and
+    /// accepted-row throughput. Returns `None` for running jobs or when no recorded
+    /// profile is available, without waiting for completion. Requires server
+    /// support; local operations and SQL query handles do not support reports.
+    ///
+    /// ```no_run
+    /// # async fn report(job: &lancedb::job::Job) -> Result<(), Box<dyn std::error::Error>> {
+    /// if let Some(report) = job.stats().await? {
+    ///     println!("{report}");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn stats(&self) -> Result<Option<String>> {
+        match &self.inner {
+            JobInner::Handle { handle, .. } => handle.stats().await,
+            JobInner::Completed(_) => job_detail_not_supported("job statistics"),
         }
     }
 
@@ -746,6 +810,21 @@ mod tests {
     fn local_typed_result_decode_errors_are_runtime_errors() {
         assert!(matches!(
             TerminalResult::local(Value::Null).decode::<u64>(),
+            Err(Error::Runtime { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn completed_unit_job_can_be_retyped_as_unit() {
+        let job = Job::new_done().into_typed::<()>().unwrap();
+        job.wait().await.unwrap();
+        assert_eq!(job.state().as_deref(), Some("finished"));
+    }
+
+    #[test]
+    fn completed_unit_job_rejects_an_incompatible_result_type() {
+        assert!(matches!(
+            Job::new_done().into_typed::<u64>(),
             Err(Error::Runtime { .. })
         ));
     }

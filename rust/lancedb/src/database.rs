@@ -163,6 +163,8 @@ impl CreateTableRequest {
 /// sharing the same data, deletion, and index files.
 #[derive(Clone, Debug)]
 pub struct CloneTableRequest {
+    /// Preserve an existing target rather than returning a duplicate-name error.
+    pub exist_ok: bool,
     /// The name of the target table to create
     pub target_table_name: String,
     /// The namespace path for the target table. Empty list represents root namespace.
@@ -184,6 +186,7 @@ pub struct CloneTableRequest {
 impl CloneTableRequest {
     pub fn new(target_table_name: String, source_uri: String) -> Self {
         Self {
+            exist_ok: false,
             target_table_name,
             target_namespace_path: vec![],
             source_uri,
@@ -479,6 +482,13 @@ pub trait Database:
     async fn list_gpu_classes(&self) -> Result<Vec<GpuClass>> {
         gpu_class_catalog_not_supported()
     }
+
+    /// Read the responding remote server's build identity.
+    async fn server_info(&self) -> Result<crate::server_info::ServerInfo> {
+        Err(crate::Error::NotSupported {
+            message: "Server build discovery requires a remote LanceDB connection".into(),
+        })
+    }
     /// Create a materialized view through a remote catalog and return its
     /// initial-population job. Local connections use the native declaration
     /// path directly.
@@ -635,13 +645,14 @@ pub trait Database:
         secret_catalog_not_supported()
     }
 
-    /// Create a named Secret in this database. Fails if the name is taken, so
-    /// a create can never silently become a rotation.
+    /// Create a named Secret in this database. If the name is taken, fail unless
+    /// `exist_ok` is true, in which case the stored value is left unchanged.
     async fn create_secret(
         &self,
         _name: &str,
         _value: &str,
         _namespace_path: &[String],
+        _exist_ok: bool,
     ) -> Result<()> {
         secret_catalog_not_supported()
     }
@@ -685,6 +696,7 @@ pub trait Database:
         _name: &str,
         _query: &str,
         _namespace_path: &[String],
+        _exist_ok: bool,
     ) -> Result<ViewDescription> {
         view_ops_not_supported()
     }

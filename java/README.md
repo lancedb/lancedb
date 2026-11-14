@@ -1,5 +1,39 @@
 # LanceDB Java Enterprise Client
 
+## Installation
+
+Stable releases of `com.lancedb:lancedb-core` are published to Maven Central.
+
+Beta releases are published to `https://maven.fury.io/lancedb/` instead. They
+depend on Lance beta releases, which are published to `https://maven.lance.org`.
+To use a beta, add both repositories alongside Maven Central:
+
+```xml
+<repositories>
+    <repository>
+        <id>lancedb</id>
+        <url>https://maven.fury.io/lancedb/</url>
+    </repository>
+    <repository>
+        <id>lance</id>
+        <url>https://maven.lance.org</url>
+    </repository>
+</repositories>
+```
+
+For Gradle:
+
+```kotlin
+repositories {
+    mavenCentral()
+    maven { url = uri("https://maven.fury.io/lancedb/") }
+    maven { url = uri("https://maven.lance.org") }
+}
+```
+
+Use an explicit version, including the full `-beta.N` suffix. Beta versions are
+Maven releases, not `SNAPSHOT` versions.
+
 ## Configuration and Initialization
 
 ### LanceDB Cloud (legacy)

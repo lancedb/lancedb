@@ -176,7 +176,7 @@ ALTER TABLE t UNSET RTE
 ```
 </CodeGroup>
 
-The [real time engine](/tables/realtime-engine) puts a write-ahead log in front
+The [Realtime Engine](/tables/realtime-engine) puts a write-ahead log in front
 of the table, making small frequent writes cheap by batching them out of the
 commit path. `sharding` and `buckets` spread the log so concurrent writers do
 not contend on one place; `bucket` sharding names its `column`, which must be
@@ -204,6 +204,16 @@ Dropping, renaming, or retyping a column is an SDK operation
 [`alter_columns`](/management/table#schema)), not a SQL statement.
 
 ## CLONE {#clone}
+
+{/* Draft for the table-clone exist_ok release.
+
+Use `CREATE TABLE IF NOT EXISTS target CLONE source` to preserve an existing
+target unchanged. The Python equivalent is
+`db.clone_table("target", source_uri, exist_ok=True)`. Omitting the option reports
+an error for an existing target. A skipped clone does not copy rows or change
+the target's version history.
+
+*/}
 
 <CodeGroup>
 ```sql SQL icon="database"

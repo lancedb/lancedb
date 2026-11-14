@@ -99,13 +99,18 @@ impl SqlClient {
         name: &str,
         query: &str,
         namespace: &[String],
+        exist_ok: bool,
     ) -> Result<ViewDescription> {
         validate_view_name(name)?;
         validate_namespace(namespace)?;
         let namespace_path = namespace.to_vec();
+        let if_not_exists = if exist_ok { " IF NOT EXISTS" } else { "" };
         self.object_job(
             ExecuteQueryRequest {
-                query: format!("CREATE VIEW {} AS {query}", quote_identifier(name)),
+                query: format!(
+                    "CREATE VIEW{if_not_exists} {} AS {query}",
+                    quote_identifier(name)
+                ),
                 default_namespace_path: namespace.to_vec(),
                 parameters: None,
             },

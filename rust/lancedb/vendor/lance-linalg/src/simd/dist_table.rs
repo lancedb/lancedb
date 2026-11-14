@@ -23,13 +23,9 @@ type SumU16Fn = unsafe fn(&[u8], &[u8], usize, &mut [MaybeUninit<u16>]);
 
 lance_core::dispatch! {
     static SUM_U16: Dispatch<SumU16Fn> = {
-        #[cfg(all(target_arch = "x86_64", kernel_support = "avx512_dist_table"))]
+        #[cfg(target_arch = "x86_64")]
         {
             &[SUM_U16_AVX512, SUM_U16_AVX2, SUM_U16_SCALAR]
-        }
-        #[cfg(all(target_arch = "x86_64", not(kernel_support = "avx512_dist_table")))]
-        {
-            &[SUM_U16_AVX2, SUM_U16_SCALAR]
         }
         #[cfg(target_arch = "aarch64")]
         {
@@ -185,9 +181,7 @@ lance_core::target_kernel! {
     }
 }
 
-// The C object adds only `-mavx512f -mavx512bw` to the build's baseline
-// target (see build.rs).
-#[cfg(all(target_arch = "x86_64", kernel_support = "avx512_dist_table"))]
+#[cfg(target_arch = "x86_64")]
 lance_core::target_kernel! {
     #[target_features("avx512f", "avx512bw")]
     #[candidate(SUM_U16_AVX512: SumU16Fn)]
@@ -200,15 +194,12 @@ lance_core::target_kernel! {
         let n = dists.len();
         assert_row_major_bounds(n, code_len, codes, dist_table, BATCH_SIZE);
         for i in (0..n).step_by(BATCH_SIZE) {
-            let codes = &codes[i * code_len..(i + BATCH_SIZE) * code_len];
-            // The kernel reads `codes.len()` bytes of the codes and of the
-            // table, whose bounds are asserted above, and stores 32 outputs.
+            // The bounds asserted above cover every load of the batch.
             unsafe {
-                sum_4bit_dist_table_32bytes_batch_avx512(
-                    codes.as_ptr(),
-                    codes.len(),
-                    dist_table.as_ptr(),
-                    dists[i..i + BATCH_SIZE].as_mut_ptr().cast::<u16>(),
+                sum_dist_table_32bytes_batch_avx512(
+                    &codes[i * code_len..(i + BATCH_SIZE) * code_len],
+                    dist_table,
+                    &mut dists[i..i + BATCH_SIZE],
                 )
             }
         }
@@ -248,6 +239,11 @@ pub fn sum_4bit_dist_table_scalar(
     dist_table: &[u8],
     dists: &mut [u16],
 ) {
+    if code_len == 0 {
+        dists.fill(0);
+        return;
+    }
+
     let num_full_vectors = codes.len() / (BATCH_SIZE * code_len) * BATCH_SIZE;
     dists[..num_full_vectors].fill(0);
 
@@ -457,6 +453,11 @@ pub fn sum_4bit_hacc_dist_table_scalar(
     hacc_dist_table: &[u8],
     dists: &mut [u32],
 ) {
+    if code_len == 0 {
+        dists.fill(0);
+        return;
+    }
+
     let num_full_vectors = codes.len() / (BATCH_SIZE * code_len) * BATCH_SIZE;
     dists[..num_full_vectors].fill(0);
 
@@ -497,6 +498,11 @@ pub fn sum_4bit_dist_table_u16_scalar(
     dist_table: &[u16],
     dists: &mut [u32],
 ) {
+    if code_len == 0 {
+        dists.fill(0);
+        return;
+    }
+
     let num_full_vectors = codes.len() / (BATCH_SIZE * code_len) * BATCH_SIZE;
     dists[..num_full_vectors].fill(0);
 
@@ -672,6 +678,10 @@ unsafe fn sum_hacc_dist_table_32bytes_batch_avx2(
     _mm256_storeu_si256(dists.as_mut_ptr().add(24) as *mut __m256i, res3);
 }
 
+/// # Safety
+///
+/// The host must support `avx2`. `codes.len()` must be a multiple of 32,
+/// `dist_table.len() >= codes.len()` and `dists.len() >= 32`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 #[inline]
@@ -748,6 +758,78 @@ unsafe fn sum_dist_table_32bytes_batch_avx2(
     );
 
     _mm256_storeu_si256(dists.as_mut_ptr().add(16) as *mut __m256i, dis1);
+}
+
+/// As [`sum_dist_table_32bytes_batch_avx2`], one 64-byte step per iteration,
+/// masking the loads of a final step shorter than 64 bytes.
+///
+/// # Safety
+///
+/// The host must support `avx512f` and `avx512bw`. `codes.len()` must be a
+/// multiple of 32, `dist_table.len() >= codes.len()` and `dists.len() >= 32`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw")]
+#[inline]
+unsafe fn sum_dist_table_32bytes_batch_avx512(
+    codes: &[u8],
+    dist_table: &[u8],
+    dists: &mut [MaybeUninit<u16>],
+) {
+    let low_mask = _mm512_set1_epi8(0x0f);
+    let mut accu0 = _mm512_setzero_si512();
+    let mut accu1 = _mm512_setzero_si512();
+    let mut accu2 = _mm512_setzero_si512();
+    let mut accu3 = _mm512_setzero_si512();
+
+    for i in (0..codes.len()).step_by(64) {
+        let remaining = codes.len() - i;
+        let (c, lut_vec) = if remaining >= 64 {
+            (
+                _mm512_loadu_si512(codes.as_ptr().add(i) as *const __m512i),
+                _mm512_loadu_si512(dist_table.as_ptr().add(i) as *const __m512i),
+            )
+        } else {
+            // Only an odd `code_len` reaches here, leaving exactly 32 bytes,
+            // so the shift cannot overflow.
+            let load_mask: __mmask64 = (1 << remaining) - 1;
+            (
+                _mm512_maskz_loadu_epi8(load_mask, codes.as_ptr().add(i) as *const i8),
+                _mm512_maskz_loadu_epi8(load_mask, dist_table.as_ptr().add(i) as *const i8),
+            )
+        };
+
+        let lo = _mm512_and_si512(c, low_mask);
+        let hi = _mm512_and_si512(_mm512_srli_epi16::<4>(c), low_mask);
+
+        let res_lo = _mm512_shuffle_epi8(lut_vec, lo);
+        let res_hi = _mm512_shuffle_epi8(lut_vec, hi);
+
+        accu0 = _mm512_add_epi16(accu0, res_lo);
+        accu1 = _mm512_add_epi16(accu1, _mm512_srli_epi16::<8>(res_lo));
+        accu2 = _mm512_add_epi16(accu2, res_hi);
+        accu3 = _mm512_add_epi16(accu3, _mm512_srli_epi16::<8>(res_hi));
+    }
+
+    // merge the low 4 bits
+    accu0 = _mm512_sub_epi16(accu0, _mm512_slli_epi16::<8>(accu1));
+    // merge the high 4 bits
+    accu2 = _mm512_sub_epi16(accu2, _mm512_slli_epi16::<8>(accu3));
+
+    // Fold the four 128-bit lanes, each summing a 16-byte column of the batch,
+    // into the 32 outputs: low nibbles in the low half, high in the high half.
+    let ret1 = _mm512_add_epi16(
+        _mm512_mask_blend_epi64(0xF0, accu0, accu1),
+        _mm512_shuffle_i64x2::<0x4E>(accu0, accu1),
+    );
+    let ret2 = _mm512_add_epi16(
+        _mm512_mask_blend_epi64(0xF0, accu2, accu3),
+        _mm512_shuffle_i64x2::<0x4E>(accu2, accu3),
+    );
+    let ret = _mm512_add_epi16(
+        _mm512_shuffle_i64x2::<0x88>(ret1, ret2),
+        _mm512_shuffle_i64x2::<0xDD>(ret1, ret2),
+    );
+    _mm512_storeu_si512(dists.as_mut_ptr() as *mut __m512i, ret);
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -2524,18 +2606,6 @@ unsafe fn sum_f32_transposed_block_neon<const GROUPS: usize>(
     }
 }
 
-// We implement the AVX512 version in C because AVX512 is not stable yet in Rust,
-// implement it in Rust once we upgrade rust to 1.89.0.
-unsafe extern "C" {
-    #[cfg(all(kernel_support = "avx512_dist_table", target_arch = "x86_64"))]
-    pub fn sum_4bit_dist_table_32bytes_batch_avx512(
-        codes: *const u8,
-        code_length: usize,
-        dist_table: *const u8,
-        dists: *mut u16,
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2645,7 +2715,7 @@ mod tests {
         use rand::{Rng, SeedableRng};
         let mut rng = rand::rngs::StdRng::seed_from_u64(99);
 
-        for code_len in [1, 3, 16, 191, 192, 1024] {
+        for code_len in [0, 1, 3, 16, 191, 192, 1024] {
             let n = BATCH_SIZE * 4;
             let codes: Vec<u8> = (0..n * code_len).map(|_| rng.random::<u8>()).collect();
             let dist_table: Vec<u16> = (0..BATCH_SIZE * code_len)
@@ -2672,7 +2742,7 @@ mod tests {
     /// `u16` table exactly, across [`SAFE_U16_CODE_LEN`] chunk boundaries.
     #[rstest::rstest]
     fn test_sum_4bit_hacc_dist_table_candidates_match_u16_reference(
-        #[values(1, 3, 16, 191, 192, 1024)] code_len: usize,
+        #[values(0, 1, 3, 16, 191, 192, 1024)] code_len: usize,
     ) {
         use rand::{Rng, SeedableRng};
         let mut rng = rand::rngs::StdRng::seed_from_u64(101 + code_len as u64);
@@ -2684,7 +2754,7 @@ mod tests {
         let mut hacc_dist_table = Vec::new();
         transfer_4bit_dist_table_u16(&dist_table, &mut hacc_dist_table);
 
-        let mut expected = vec![0u32; n];
+        let mut expected = vec![u32::MAX; n];
         sum_4bit_dist_table_u16_scalar(code_len, &codes, &dist_table, &mut expected);
 
         for candidate in SUM_HACC.candidates() {
@@ -2715,19 +2785,19 @@ mod tests {
     /// does. Three batches check that rows do not bleed across batch boundaries.
     #[rstest::rstest]
     fn test_sum_4bit_dist_table_candidates_match_scalar(
-        #[values(1, 2, 3, 16, 95, 96, 128, 191, 192, 1024, 8192)] code_len: usize,
+        #[values(0, 1, 2, 3, 16, 95, 96, 128, 191, 192, 1024, 8192)] code_len: usize,
         #[values(1, 3)] num_batches: usize,
     ) {
         use rand::{Rng, SeedableRng};
         let mut rng = rand::rngs::StdRng::seed_from_u64((code_len * 100 + num_batches) as u64);
         let n = BATCH_SIZE * num_batches;
-        let max_entry = (u16::MAX as usize / (2 * code_len)).min(u8::MAX as usize) as u8;
+        let max_entry = (u16::MAX as usize / (2 * code_len).max(1)).min(u8::MAX as usize) as u8;
         let codes: Vec<u8> = (0..n * code_len).map(|_| rng.random::<u8>()).collect();
         let dist_table: Vec<u8> = (0..BATCH_SIZE * code_len)
             .map(|_| rng.random_range(0..=max_entry))
             .collect();
 
-        let mut expected = vec![0u16; n];
+        let mut expected = vec![u16::MAX; n];
         sum_4bit_dist_table_scalar(code_len, &codes, &dist_table, &mut expected);
 
         for candidate in SUM_U16.candidates() {

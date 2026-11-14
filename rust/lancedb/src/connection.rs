@@ -51,7 +51,13 @@ pub use lance_file::version::LanceFileVersion;
 use lance_io::object_store::StorageOptions;
 use lance_io::object_store::{StorageOptionsAccessor, StorageOptionsProvider};
 
+mod create_secret;
 mod create_table;
+mod create_view;
+
+pub use create_view::CreateViewBuilder;
+
+pub use create_secret::CreateSecretBuilder;
 
 pub(crate) fn merge_storage_options(
     store_params: &mut ObjectStoreParams,
@@ -427,6 +433,21 @@ impl CloneTableBuilder {
         }
     }
 
+    /// Preserve an existing target without reading or cloning the source.
+    /// Defaults to false, which reports a duplicate-name error.
+    ///
+    /// ```no_run
+    /// # async fn example(db: &lancedb::Connection) -> lancedb::Result<()> {
+    /// let table = db.clone_table("snapshot", "s3://bucket/source.lance")
+    ///     .exist_ok(true).execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn exist_ok(mut self, exist_ok: bool) -> Self {
+        self.request.exist_ok = exist_ok;
+        self
+    }
+
     /// Set the source version to clone from
     pub fn source_version(mut self, version: u64) -> Self {
         self.request.source_version = Some(version);
@@ -627,7 +648,8 @@ impl Connection {
     /// Creates a new table by cloning from an existing source table.
     /// By default, this performs a shallow clone where the new table shares
     /// the underlying data files with the source table.
-    /// The target table name must be unused. An existing table is left unchanged.
+    /// The target table name must be unused by default. Use
+    /// [`CloneTableBuilder::exist_ok`] to open an existing target unchanged.
     ///
     /// # Parameters
     /// - `target_table_name`: The name of the new table to create
@@ -853,20 +875,30 @@ impl Connection {
 
     /// Create a named Secret in this database.
     ///
-    /// Fails if the name is taken, so a create can never silently become a
-    /// rotation. There is no API that reads a stored credential back; the only
+    /// Fails if the name is taken unless [`CreateSecretBuilder::exist_ok`] is true,
+    /// in which case the existing value is left unchanged. There is no API that
+    /// reads a stored credential back; the only
     /// consumer is a Function that binds the Secret by name. LanceDB Embedded databases
     /// return [`Error::NotSupported`].
-    pub async fn create_secret(
+    ///
+    /// ```
+    /// # async fn example(connection: &lancedb::Connection) -> lancedb::Result<()> {
+    /// connection.create_secret("api-key", "credential", &[]).exist_ok(true).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn create_secret(
         &self,
         name: impl AsRef<str>,
         value: impl AsRef<str>,
         namespace_path: &[String],
-    ) -> Result<()> {
-        validate_secret_reference(name.as_ref(), namespace_path)?;
-        self.internal
-            .create_secret(name.as_ref(), value.as_ref(), namespace_path)
-            .await
+    ) -> CreateSecretBuilder {
+        CreateSecretBuilder::new(
+            self.internal.clone(),
+            name.as_ref().to_owned(),
+            value.as_ref().to_owned(),
+            namespace_path.to_vec(),
+        )
     }
 
     /// Replace the credential behind an existing Secret.
@@ -963,9 +995,10 @@ impl Connection {
     /// refused now rather than at the first read. A view holds no rows, and
     /// its readers see its sources as they are at read time.
     ///
-    /// There is no replace: a name already taken is an error, and changing a
-    /// view is a drop followed by a create, each authorized against what it
-    /// actually touches. LanceDB Embedded databases return [`Error::NotSupported`].
+    /// A name already taken is an error unless [`CreateViewBuilder::exist_ok`] is
+    /// true, which returns the stored definition and schema without changing them.
+    /// Changing a view is a drop followed by a create, each authorized against what
+    /// it actually touches. LanceDB Embedded databases return [`Error::NotSupported`].
     ///
     /// # Example
     ///
@@ -998,16 +1031,18 @@ impl Connection {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn create_view(
+    pub fn create_view(
         &self,
         name: impl AsRef<str>,
         query: impl AsRef<str>,
         namespace_path: &[String],
-    ) -> Result<ViewDescription> {
-        validate_view_reference(name.as_ref(), namespace_path)?;
-        self.internal
-            .create_view(name.as_ref(), query.as_ref(), namespace_path)
-            .await
+    ) -> CreateViewBuilder {
+        CreateViewBuilder::new(
+            self.internal.clone(),
+            name.as_ref().to_owned(),
+            query.as_ref().to_owned(),
+            namespace_path.to_vec(),
+        )
     }
 
     /// What this database records about one view: its defining query and the
@@ -1288,6 +1323,24 @@ impl Connection {
     /// [`Error::NotSupported`].
     pub async fn list_gpu_classes(&self) -> Result<Vec<GpuClass>> {
         self.database().list_gpu_classes().await
+    }
+
+    /// Read the responding server's build and Function runtime information.
+    ///
+    /// This request does not submit a query, Function, or job. It requires
+    /// System Usage permission. Embedded databases and older servers without
+    /// `GET /v1/server/info` return [`Error::NotSupported`]. During a rolling
+    /// upgrade, separate requests can report different query-node builds.
+    ///
+    /// ```no_run
+    /// # async fn example(db: &lancedb::Connection) -> lancedb::Result<()> {
+    /// let info = db.server_info().await?;
+    /// println!("{:?}", info.query_node);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn server_info(&self) -> Result<crate::server_info::ServerInfo> {
+        self.database().server_info().await
     }
 
     /// List server-side jobs across the database's tables.
@@ -2750,6 +2803,14 @@ mod tests {
             "unexpected clone error: {err:?}"
         );
 
+        let preserved = db
+            .clone_table(target, "missing-source.lance")
+            .exist_ok(true)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(preserved.name(), target);
+
         // Reopen both tables to verify that the failed clone left their data and versions intact.
         for (name, expected_data) in [("source", source_data), ("target", target_data)] {
             let table = db.open_table(name).execute().await.unwrap();
@@ -2767,8 +2828,9 @@ mod tests {
         }
     }
 
+    #[rstest::rstest]
     #[tokio::test]
-    async fn test_clone_table() {
+    async fn test_clone_table(#[values(false, true)] exist_ok: bool) {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
         let db = connect(uri).execute().await.unwrap();
@@ -2793,6 +2855,7 @@ mod tests {
         // Clone the table
         let cloned_table = db
             .clone_table("cloned_table", source_uri)
+            .exist_ok(exist_ok)
             .execute()
             .await
             .unwrap();

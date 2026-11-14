@@ -34,13 +34,22 @@ impl SqlClient {
         validate_function_name(&request.name)?;
         validate_namespace(namespace)?;
         let name = quote_identifier(&request.name);
+        let if_not_exists = if request.exist_ok {
+            " IF NOT EXISTS"
+        } else {
+            ""
+        };
         let mut body = serde_json::to_value(request).map_err(|error| Error::Runtime {
             message: error.to_string(),
         })?;
         body.as_object_mut().unwrap().remove("name");
+        body.as_object_mut().unwrap().remove("exist_ok");
         self.object_job(
             ExecuteQueryRequest {
-                query: format!("CREATE FUNCTION {name} FROM {}", literal(&body.to_string())),
+                query: format!(
+                    "CREATE FUNCTION{if_not_exists} {name} FROM {}",
+                    literal(&body.to_string())
+                ),
                 default_namespace_path: namespace.to_vec(),
                 parameters: None,
             },

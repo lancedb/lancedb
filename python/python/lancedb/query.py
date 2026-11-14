@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
@@ -194,20 +195,57 @@ def _unsupported_blob_pandas_error(reason: str) -> RuntimeError:
     )
 
 
-def _supports_local_blob_fetch(
+def _supports_blob_fetch(
     async_table: "AsyncTable", pushdown_operations: Iterable[str]
 ) -> bool:
-    # Remote tables and QueryTable pushdown answer queries on a server, so a
-    # fetch through this handle could read another version.
-    return async_table._inner._is_native() and "QueryTable" not in pushdown_operations
+    # Remote queries carry their producing snapshot in response metadata.
+    # Namespace QueryTable pushdown has no equivalent snapshot contract.
+    return (
+        not async_table._inner._is_native() or "QueryTable" not in pushdown_operations
+    )
+
+
+def _remote_blob_snapshot(schema: pa.Schema) -> tuple[int, str]:
+    value = (schema.metadata or {}).get(b"lancedb:query_version", b"")
+    if not value.isdigit() or not 0 < int(value) < 2**64:
+        raise NotImplementedError(
+            "blob_mode='bytes' requires a stable table snapshot: the query response "
+            "has a missing, invalid, or inconsistent x-lancedb-query-version header. "
+            "Upgrade the server and use a table without Realtime/MemWAL, or use "
+            "blob_mode='descriptions'."
+        )
+    identity = (schema.metadata or {}).get(b"lancedb:query_snapshot", b"")
+    if not re.fullmatch(rb"v1:[0-9a-f]{64}", identity):
+        raise NotImplementedError(
+            "blob_mode='bytes' requires a trustworthy query snapshot identity: "
+            "missing or unsupported x-lancedb-query-snapshot. Upgrade the server "
+            "on every serving node, or use blob_mode='descriptions'."
+        )
+    return int(value), identity.decode("ascii")
+
+
+def _merge_query_snapshot(result: pa.Table, *sources: pa.Table) -> pa.Table:
+    """Preserve a snapshot only when every query leg used the same identity."""
+    keys = (b"lancedb:query_version", b"lancedb:query_snapshot")
+    snapshots = {
+        tuple((source.schema.metadata or {}).get(key) for key in keys)
+        for source in sources
+    }
+    metadata = dict(result.schema.metadata or {})
+    for key in keys:
+        metadata.pop(key, None)
+    snapshot = next(iter(snapshots)) if len(snapshots) == 1 else None
+    if snapshot is not None and all(value is not None for value in snapshot):
+        metadata.update(zip(keys, snapshot))
+    return result.replace_schema_metadata(metadata)
 
 
 def _blob_bytes_without_snapshot_error() -> NotImplementedError:
     return NotImplementedError(
         "blob_mode='bytes' cannot safely materialize blob columns without a "
-        "stable table snapshot. LanceDB Enterprise and namespace QueryTable pushdown "
-        "run the query on a server, so the blob fetch could read another table "
-        "version. Use blob_mode='descriptions' to inspect descriptors. To read "
+        "stable table snapshot. Namespace QueryTable pushdown does not bind "
+        "the query and blob fetches to one table version. "
+        "Use blob_mode='descriptions' to inspect descriptors. To read "
         "payloads, select row IDs with with_row_id(True), then call "
         "table.fetch_blobs(column, row_ids) or table.fetch_blob_files(column, "
         "row_ids). Keep the source unchanged between selection and fetching."
@@ -1297,9 +1335,9 @@ class LanceQueryBuilder(ABC):
             columns without pylance. Other local blob v2 queries return
             descriptors in ``"lazy"`` and ``"descriptions"`` modes, or payloads
             in ``"bytes"`` mode, through :meth:`to_arrow`.
-            LanceDB Enterprise blob queries support only ``"descriptions"`` until a
-            stable
-            table snapshot can bind the query and blob fetches.
+            Enterprise queries support ``"bytes"`` at the query response's
+            snapshot and ``"descriptions"`` without payload reads. Remote
+            ``"lazy"`` handles are not supported.
         **kwargs
             Forwarded to pyarrow.Table.to_pandas after query execution and
             optional flattening.
@@ -1307,6 +1345,10 @@ class LanceQueryBuilder(ABC):
         validate_blob_mode(blob_mode)
         if _is_remote_query_table(self._table):
             blob_sources = self._validated_blob_sources(blob_mode)
+            if blob_mode == "bytes":
+                return flatten_columns(
+                    self.to_arrow(timeout=timeout, blob_mode=blob_mode), flatten
+                ).to_pandas(**kwargs)
             return _finish_remote_pandas(
                 self.to_arrow(timeout=timeout),
                 blob_mode=blob_mode,
@@ -1629,7 +1671,8 @@ class LanceQueryBuilder(ABC):
             _query_is_plain_blob_scan(query)
             and getattr(self, "_reranker", None) is None
             and not _query_needs_lance_scanner(self)
-            and _supports_local_blob_fetch(
+            and self._table._table._inner._is_native()
+            and _supports_blob_fetch(
                 self._table._table,
                 getattr(self._table, "_pushdown_operations", ()),
             )
@@ -1650,11 +1693,12 @@ class LanceQueryBuilder(ABC):
         if blob_mode != "bytes":
             return blob_sources
         reject_unfetchable_blob_columns(schema, self._columns, blob_sources)
-        if blob_sources and not _supports_local_blob_fetch(
+        if blob_sources and not _supports_blob_fetch(
             self._table._table, getattr(self._table, "_pushdown_operations", ())
         ):
             raise _blob_bytes_without_snapshot_error()
-        reject_unmatched_blob_outputs(self._blob_output_schema(), blob_sources)
+        if not _is_remote_query_table(self._table):
+            reject_unmatched_blob_outputs(self._blob_output_schema(), blob_sources)
         return blob_sources
 
     def _blob_output_schema(self) -> pa.Schema:
@@ -1667,9 +1711,20 @@ class LanceQueryBuilder(ABC):
             return tbl
         if blob_mode == "descriptions":
             return strip_auto_row_ids(tbl, blob_sources)
-        return replace_blob_columns_with_bytes_sync(
-            tbl, blob_sources, self._table.fetch_blobs
-        )
+        reject_unmatched_blob_outputs(tbl.schema, blob_sources)
+        if _is_remote_query_table(self._table) and blob_sources:
+            version, identity = _remote_blob_snapshot(tbl.schema)
+
+            async def fetch_at_version(column, row_ids):
+                return await self._table._table._inner.fetch_blobs(
+                    column, row_ids, version=version, snapshot_identity=identity
+                )
+
+            def fetch_blobs(column, row_ids):
+                return LOOP.run(fetch_at_version(column, row_ids))
+        else:
+            fetch_blobs = self._table.fetch_blobs
+        return replace_blob_columns_with_bytes_sync(tbl, blob_sources, fetch_blobs)
 
     def _finalize_blob_query_table(
         self,
@@ -2386,6 +2441,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             rs_table = result_set.read_all()
             result_set = self._reranker.rerank_vector(self._str_query, rs_table)
             check_reranker_result(result_set)
+            result_set = _merge_query_snapshot(result_set, rs_table)
             # convert result_set back to RecordBatchReader
             result_set = pa.RecordBatchReader.from_batches(
                 result_set.schema, result_set.to_batches()
@@ -2599,8 +2655,10 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         query = self._query_for_scan(blob_sources)
         results = self._table._execute_query(query, timeout=timeout).read_all()
         if self._reranker is not None:
+            source = results
             results = self._reranker.rerank_fts(self._query, results)
             check_reranker_result(results)
+            results = _merge_query_snapshot(results, source)
         return self._finalize_blob_query_table(
             results, blob_mode=blob_mode, blob_sources=blob_sources
         )
@@ -2847,6 +2905,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             with_row_ids=True,
             offset=self._offset,
         )
+        results = _merge_query_snapshot(results, fts_results, vector_results)
         return self._finish_hybrid_results(
             results, blob_mode=blob_mode, blob_sources=blob_sources
         )
@@ -3559,9 +3618,8 @@ class AsyncQueryBase(object):
             _query_is_plain_blob_scan(query)
             and getattr(self, "_reranker", None) is None
             and not _query_needs_lance_scanner(self)
-            and _supports_local_blob_fetch(
-                self._table, self._table._pushdown_operations
-            )
+            and self._table._inner._is_native()
+            and _supports_blob_fetch(self._table, self._table._pushdown_operations)
         )
 
     def select(self, columns: Union[List[str], dict[str, str]]) -> Self:
@@ -3766,11 +3824,14 @@ class AsyncQueryBase(object):
         if blob_mode != "bytes":
             return blob_sources
         reject_unfetchable_blob_columns(schema, projection, blob_sources)
-        if blob_sources and not _supports_local_blob_fetch(
+        if blob_sources and not _supports_blob_fetch(
             self._table, self._table._pushdown_operations
         ):
             raise _blob_bytes_without_snapshot_error()
-        reject_unmatched_blob_outputs(await self._blob_output_schema(), blob_sources)
+        if self._table._inner._is_native():
+            reject_unmatched_blob_outputs(
+                await self._blob_output_schema(), blob_sources
+            )
         return blob_sources
 
     async def _blob_output_schema(self) -> pa.Schema:
@@ -3783,9 +3844,21 @@ class AsyncQueryBase(object):
             return tbl
         if blob_mode == "descriptions":
             return strip_auto_row_ids(tbl, blob_sources)
-        return await replace_blob_columns_with_bytes(
-            tbl, blob_sources, self._table.fetch_blobs
-        )
+        reject_unmatched_blob_outputs(tbl.schema, blob_sources)
+        if (
+            self._table is not None
+            and not self._table._inner._is_native()
+            and blob_sources
+        ):
+            version, identity = _remote_blob_snapshot(tbl.schema)
+
+            async def fetch_blobs(column, row_ids):
+                return await self._table._inner.fetch_blobs(
+                    column, row_ids, version=version, snapshot_identity=identity
+                )
+        else:
+            fetch_blobs = self._table.fetch_blobs
+        return await replace_blob_columns_with_bytes(tbl, blob_sources, fetch_blobs)
 
     async def to_arrow(
         self,
@@ -3811,7 +3884,8 @@ class AsyncQueryBase(object):
             ``fetch_blobs`` reads. ``"descriptions"`` returns them without it.
             ``"bytes"`` returns payload bytes for supported row-addressable blob
             columns and raises for blobs inside lists.
-            LanceDB Enterprise and namespace query pushdown refuse ``"bytes"``.
+            Enterprise queries fetch bytes at the version reported by the query
+            response. Namespace query pushdown refuses ``"bytes"``.
         """
         blob_sources = await self._validated_blob_sources(blob_mode)
         if blob_mode == "bytes" and blob_sources:
@@ -3893,9 +3967,9 @@ class AsyncQueryBase(object):
             columns without pylance. Other local blob v2 queries return
             descriptors in ``"lazy"`` and ``"descriptions"`` modes, or payloads
             in ``"bytes"`` mode, through :meth:`to_arrow`.
-            LanceDB Enterprise blob queries support only ``"descriptions"`` until a
-            stable
-            table snapshot can bind the query and blob fetches.
+            Enterprise queries support ``"bytes"`` at the query response's
+            snapshot and ``"descriptions"`` without payload reads. Remote
+            ``"lazy"`` handles are not supported.
         **kwargs
             Forwarded to pyarrow.Table.to_pandas after query execution and
             optional flattening.
@@ -3903,6 +3977,9 @@ class AsyncQueryBase(object):
         validate_blob_mode(blob_mode)
         if self._table is not None and not self._table._inner._is_native():
             await self._validated_blob_sources(blob_mode)
+            if blob_mode == "bytes":
+                tbl = await self.to_arrow(timeout=timeout, blob_mode=blob_mode)
+                return flatten_columns(tbl, flatten).to_pandas(**kwargs)
             return await self._remote_to_pandas(
                 flatten=flatten, timeout=timeout, blob_mode=blob_mode, **kwargs
             )
@@ -4508,7 +4585,9 @@ class AsyncFTSQuery(AsyncStandardQuery):
         )
         results = pa.Table.from_batches(await reader.read_all(), reader.schema)
         if self._reranker:
+            source = results
             results = self._reranker.rerank_fts(self.get_query(), results)
+            results = _merge_query_snapshot(results, source)
         return AsyncRecordBatchReader(results, max_batch_length=max_batch_length)
 
 
@@ -4835,7 +4914,9 @@ class AsyncVectorQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         )
         results = pa.Table.from_batches(await reader.read_all(), reader.schema)
         if self._reranker:
+            source = results
             results = self._reranker.rerank_vector(self._query_string, results)
+            results = _merge_query_snapshot(results, source)
         return AsyncRecordBatchReader(results, max_batch_length=max_batch_length)
 
 
@@ -5027,6 +5108,7 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         ):
             result = result.drop(["_rowid"])
 
+        result = _merge_query_snapshot(result, fts_results, vector_results)
         return AsyncRecordBatchReader(result, max_batch_length=max_batch_length)
 
     async def explain_plan(self, verbose: Optional[bool] = False):

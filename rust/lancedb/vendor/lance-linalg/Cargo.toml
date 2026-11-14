@@ -1,6 +1,6 @@
 [package]
 name = "lance-linalg"
-version = "15.0.0-beta.18"
+version = "15.0.0-beta.21"
 publish = false
 edition = { workspace = true }
 license = { workspace = true }

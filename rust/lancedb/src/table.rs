@@ -832,6 +832,16 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "blob_columns is not supported on this table type".into(),
         })
     }
+    /// Bind a remote payload reader to an identity from its producing query.
+    async fn query_snapshot_with_identity(
+        &self,
+        _version: u64,
+        _identity: &str,
+    ) -> Result<Arc<dyn BaseTable>> {
+        Err(Error::NotSupported {
+            message: "query snapshot identities are not supported on this table type".into(),
+        })
+    }
     /// Materialize blob bytes for the given row ids. See [`Table::fetch_blobs`].
     async fn fetch_blobs(&self, _column: &str, _row_ids: &[u64]) -> Result<LargeBinaryArray> {
         Err(Error::NotSupported {
@@ -1352,6 +1362,19 @@ impl Table {
         })
     }
 
+    /// Create an independent remote handle constrained by a query response.
+    #[doc(hidden)]
+    pub async fn query_snapshot_with_identity(&self, version: u64, identity: &str) -> Result<Self> {
+        Ok(Self {
+            inner: self
+                .inner
+                .query_snapshot_with_identity(version, identity)
+                .await?,
+            database: self.database.clone(),
+            embedding_registry: self.embedding_registry.clone(),
+        })
+    }
+
     /// Count the number of rows in this dataset.
     ///
     /// # Arguments
@@ -1429,8 +1452,13 @@ impl Table {
     /// ranges for the same blob. The output has the same length and order as
     /// the requests. Null blobs produce null output slots; empty ranges on
     /// non-null blobs produce empty byte strings.
-    /// LanceDB Enterprise tables read through version-pinned [`BlobFile`] handles using
-    /// HTTP byte-range requests.
+    /// LanceDB Enterprise uses the batched endpoint when the server advertises
+    /// support, splitting calls at 1024 ranges and 64 MiB of requested bytes.
+    /// Individual larger ranges are partitioned and reassembled into one result.
+    /// Older servers use descriptor queries and [`Self::fetch_blob_files`] range
+    /// reads. Both protocols read one exact branch and version without changing
+    /// this handle's checkout. The final materialized output still occupies memory.
+    /// Errors from an advertised endpoint propagate without switching protocols.
     ///
     /// `_rowid` values stay valid after compaction when the table has stable
     /// row ids. One missing or deleted row id rejects the whole request; no
@@ -1463,10 +1491,14 @@ impl Table {
         column: impl AsRef<str>,
         requests: impl IntoIterator<Item = BlobRangeRequest>,
     ) -> Result<LargeBinaryArray> {
-        let requests = requests.into_iter().collect::<Vec<_>>();
-        self.inner
-            .fetch_blob_ranges(column.as_ref(), &requests)
-            .await
+        let mut ranges = Vec::new();
+        for request in requests {
+            ranges.try_reserve(1).map_err(|error| Error::InvalidInput {
+                message: format!("cannot allocate blob range requests: {error}"),
+            })?;
+            ranges.push(request);
+        }
+        self.inner.fetch_blob_ranges(column.as_ref(), &ranges).await
     }
 
     /// Open lazy [`BlobFile`] handles for the given row ids.
@@ -4113,14 +4145,18 @@ impl BaseTable for NativeTable {
     }
 
     async fn create_index(&self, opts: IndexBuilder) -> Result<()> {
-        let prepared = self.prepare_index(&opts).await?;
+        let Some(prepared) = self.prepare_index(&opts).await? else {
+            return Ok(());
+        };
         self.build_index(opts, prepared).await
     }
 
     async fn create_index_async(&self, opts: IndexBuilder) -> Result<Job> {
         // Prepare before spawning so bad input is reported by this call rather
         // than only by the job.
-        let prepared = self.prepare_index(&opts).await?;
+        let Some(prepared) = self.prepare_index(&opts).await? else {
+            return Ok(Job::new_done());
+        };
         let table = self.clone();
         Ok(Job::spawned(tokio::spawn(async move {
             table.build_index(opts, prepared).await

@@ -24,6 +24,7 @@ use super::stream::{PROTOCOL_HEADER, PROTOCOL_VERSION, QueryResponse};
 use super::*;
 use crate::Connection;
 use crate::database::Database;
+use crate::embeddings::MemoryRegistry;
 use crate::materialized_view::CreateMaterializedViewRequest;
 use crate::remote::RemoteCatalogOptions;
 use crate::remote::client::HeaderProvider;
@@ -32,6 +33,53 @@ use crate::remote::db::RemoteDatabase;
 use crate::remote::table::RemoteTable;
 use crate::storage_integration::{CreateStorageIntegrationRequest, SecretReference};
 use crate::table::BaseTable;
+
+#[test]
+fn server_info_survives_flight_error_and_job_wrapping() {
+    for with_job in [false, true] {
+        let mut status = tonic::Status::invalid_argument("invalid query");
+        status
+            .metadata_mut()
+            .insert("x-lancedb-error-code", "invalid_query".parse().unwrap());
+        let build = serde_json::json!({
+            "release": "1.2.3", "git_sha": "0123456789ab", "build_date": "2024-01-01T00:00:00Z"
+        })
+        .to_string();
+        status.metadata_mut().insert_bin(
+            "x-lancedb-server-build-bin",
+            tonic::metadata::MetadataValue::from_bytes(build.as_bytes()),
+        );
+        if with_job {
+            status
+                .metadata_mut()
+                .insert(SQL_JOB_ID_METADATA_KEY, "job-original".parse().unwrap());
+        }
+        let error = sql_status_error("request-original", &status);
+        let text = error.to_string();
+        assert!(text.contains("invalid query"), "{text}");
+        assert!(text.contains("1.2.3"), "{text}");
+        assert!(text.contains("0123456789ab"), "{text}");
+        assert!(text.contains("2024-01-01T00:00:00Z"), "{text}");
+        assert_eq!(
+            error.remote_error_metadata().unwrap().error_code.as_deref(),
+            Some("invalid_query")
+        );
+        match error {
+            Error::JobFailed { job_id, .. } if with_job => {
+                assert_eq!(job_id.as_deref(), Some("job-original"))
+            }
+            Error::Sql {
+                grpc_code,
+                request_id,
+                ..
+            } if !with_job => {
+                assert_eq!(grpc_code, tonic::Code::InvalidArgument as i32);
+                assert_eq!(request_id, "request-original");
+            }
+            other => panic!("unexpected error classification: {other}"),
+        }
+    }
+}
 
 #[derive(Debug, Default)]
 struct DelayedHeaderProvider {
@@ -607,7 +655,15 @@ impl FlightService for TestSqlService {
             ));
         }
         if query == "SELECT exchange stall" {
-            return Ok(Response::new(futures::stream::pending().boxed()));
+            let dropped = DropSignal(self.exchange_drops.clone());
+            return Ok(Response::new(
+                futures::stream::pending()
+                    .map(move |message| {
+                        let _dropped = &dropped;
+                        message
+                    })
+                    .boxed(),
+            ));
         }
         let rows =
             parameters.ok_or_else(|| Status::invalid_argument("exchange without parameters"))?;
@@ -990,13 +1046,26 @@ async fn an_abandoned_reader_leaves_the_rows_for_the_next_one() {
 async fn a_reader_that_times_out_reports_the_failure() {
     let mut client_config = ClientConfig::default();
     client_config.timeout_config.timeout = Some(Duration::from_millis(200));
-    let (client, _shutdown) = start_sql_service(TestSqlService::default(), client_config).await;
+    let service = TestSqlService::default();
+    let drops = service.exchange_drops.clone();
+    let (client, _shutdown) = start_sql_service(service, client_config).await;
 
-    let stalled = client
-        .execute(parameterized("SELECT exchange stall", parameter_row()))
-        .await
-        .unwrap();
+    // Real loopback I/O must finish before the clock can advance to the timeout.
+    // A blocking task inhibits Tokio's automatic clock advance during submission.
+    tokio::time::pause();
+    let submission_client = client.clone();
+    let stalled = tokio::task::spawn_blocking(move || {
+        tokio::runtime::Handle::current().block_on(
+            submission_client.execute(parameterized("SELECT exchange stall", parameter_row())),
+        )
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
     assert_overall_timeout(stalled.reader().await, "result");
+    tokio::time::resume();
+    wait_for(&drops, 1, "a timed-out reader must end the call").await;
     let Err(retried) = stalled.reader().await else {
         panic!("the rows are gone, so a second reader cannot succeed");
     };
@@ -1070,6 +1139,61 @@ async fn catalog_connections_use_explicit_sql_endpoint_and_database_scope() {
 }
 
 #[tokio::test]
+async fn remote_query_builder_sends_the_complete_query() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let incoming = futures::stream::try_unfold(listener, |listener| async {
+        let (socket, _) = listener.accept().await?;
+        Ok::<_, std::io::Error>(Some((socket, listener)))
+    });
+    let service = TestSqlService {
+        adaptive: true,
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(
+        tonic::transport::Server::builder()
+            .add_service(FlightServiceServer::new(service))
+            .serve_with_incoming_shutdown(incoming, async {
+                let _ = shutdown_rx.await;
+            }),
+    );
+    let connection = crate::connect("db://analytics")
+        .region("us-east-1")
+        .api_key("test-key")
+        .host_override("http://127.0.0.1:1")
+        .sql_host_override(&format!("grpc://{address}"))
+        .execute()
+        .await
+        .unwrap();
+    for query in [
+        "SELECT kind, count(*) AS n FROM events GROUP BY kind",
+        "SELECT id, c.text FROM docs, chunk(body) AS c",
+        "SELECT id, tag FROM events, UNNEST(tags) AS tag",
+        "SELECT a.id FROM a JOIN b ON a.id = b.id",
+    ] {
+        connection
+            .create_materialized_view_from_query("result", query)
+            .auto_refresh_enabled(false)
+            .execute_async()
+            .await
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        assert_eq!(
+            statements.lock().unwrap().last().unwrap(),
+            &format!(
+                "CREATE MATERIALIZED VIEW \"result\" WITH (auto_refresh_enabled = false) AS {query}"
+            )
+        );
+    }
+    shutdown_tx.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn remote_create_uses_sql_and_preserves_options_and_namespace() {
     for defer in [false, true] {
         let service = TestSqlService {
@@ -1096,6 +1220,7 @@ async fn remote_create_uses_sql_and_preserves_options_and_namespace() {
         ] {
             let job = db
                 .create_materialized_view_async(CreateMaterializedViewRequest {
+                    exist_ok: false,
                     name: "adults".into(),
                     namespace_path: vec!["team".into(), "reports".into()],
                     query: "SELECT * FROM people".into(),
@@ -1178,6 +1303,7 @@ async fn remote_create_returns_the_registry_job_from_the_early_status_row() {
 
     let job = db
         .create_materialized_view_async(CreateMaterializedViewRequest {
+            exist_ok: false,
             name: "adults".into(),
             namespace_path: vec!["team".into(), "reports".into()],
             query: "SELECT * FROM people".into(),
@@ -1203,6 +1329,63 @@ async fn remote_create_returns_the_registry_job_from_the_early_status_row() {
             .all(|header| header.namespace_path == "team$reports")
     );
     shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
+async fn remote_create_if_not_exists_accepts_a_completed_noop_without_a_registry_job() {
+    for defer in [false, true] {
+        let service = TestSqlService {
+            adaptive: true,
+            defer,
+            materialized_view_job_handle_supported: true,
+            ..Default::default()
+        };
+        let statement = "CREATE MATERIALIZED VIEW IF NOT EXISTS \"adults\" AS SELECT * FROM people";
+        service.result_overrides.lock().unwrap().insert(
+            statement.into(),
+            RecordBatch::try_from_iter([
+                (
+                    "status",
+                    Arc::new(StringArray::from(vec!["already_exists"])) as arrow_array::ArrayRef,
+                ),
+                (
+                    "job_id",
+                    Arc::new(StringArray::from(vec![""])) as arrow_array::ArrayRef,
+                ),
+            ])
+            .unwrap(),
+        );
+        let statements = service.statements.clone();
+        let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let db = RemoteDatabase::new_mock(|request| -> http::Response<String> {
+            panic!(
+                "a skipped creation must not poll a registry job: {}",
+                request.url()
+            );
+        })
+        .with_sql_client(client);
+        let job = db
+            .create_materialized_view_async(CreateMaterializedViewRequest {
+                exist_ok: true,
+                name: "adults".into(),
+                namespace_path: vec!["team".into()],
+                query: "SELECT * FROM people".into(),
+                with_no_data: false,
+                auto_refresh_enabled: None,
+                auto_refresh_interval_seconds: None,
+            })
+            .await
+            .unwrap();
+        if defer {
+            assert!(job.id().is_none());
+        } else {
+            assert_eq!(job.job_type().as_deref(), Some("query"));
+        }
+        job.wait().await.unwrap();
+        assert_eq!(job.status().await.unwrap(), "finished");
+        assert_eq!(*statements.lock().unwrap(), [statement]);
+        shutdown.send(()).unwrap();
+    }
 }
 
 #[tokio::test]
@@ -1270,6 +1453,7 @@ async fn remote_create_registry_handle_reopens_describes_and_cancels() {
 
     let job = db
         .create_materialized_view_async(CreateMaterializedViewRequest {
+            exist_ok: false,
             name: "adults".into(),
             namespace_path: vec!["team".into(), "reports".into()],
             query: "SELECT * FROM people".into(),
@@ -2963,7 +3147,16 @@ async fn function_creation_and_description_use_sql_query_handles() {
     const REQUEST: &str = include_str!(
         "../../tests/fixtures/first_class_functions/v1/remote_function_registration_request.json"
     );
-    for (defer, with_models) in [(false, false), (false, true), (true, false), (true, true)] {
+    for (defer, with_models, exist_ok) in [
+        (false, false, false),
+        (false, true, false),
+        (true, false, false),
+        (true, true, false),
+        (false, false, true),
+        (false, true, true),
+        (true, false, true),
+        (true, true, true),
+    ] {
         let mut request_json: serde_json::Value = serde_json::from_str(REQUEST).unwrap();
         request_json["batch_size"] = serde_json::json!(2);
         request_json["max_concurrency"] = serde_json::json!(4);
@@ -2989,9 +3182,11 @@ async fn function_creation_and_description_use_sql_query_handles() {
         let expected_models = version_json["image"].get("models");
         let mut expected_request = request_json.clone();
         expected_request.as_object_mut().unwrap().remove("name");
-        let request =
+        let mut request =
             crate::function::FunctionRegistrationRequest::from_json(&request_json.to_string())
                 .unwrap();
+        assert!(!request.exist_ok);
+        request.exist_ok = exist_ok;
         let result = RecordBatch::try_from_iter(vec![(
             "definition",
             Arc::new(StringArray::from(vec![version_json.to_string()])) as ArrayRef,
@@ -3027,7 +3222,10 @@ async fn function_creation_and_description_use_sql_query_handles() {
         {
             let seen = statements.lock().unwrap();
             let encoded = seen[0]
-                .strip_prefix(r#"CREATE FUNCTION "normalize_score" FROM '"#)
+                .strip_prefix(&format!(
+                    "CREATE FUNCTION{} \"normalize_score\" FROM '",
+                    if exist_ok { " IF NOT EXISTS" } else { "" }
+                ))
                 .unwrap()
                 .strip_suffix('\'')
                 .unwrap();
@@ -3214,29 +3412,55 @@ async fn secret_writes_bind_credentials_and_never_put_them_in_sql() {
         };
         let exchanges = service.exchanges.clone();
         let statements = service.statements.clone();
+        let headers = service.headers.clone();
         let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
         let db = RemoteDatabase::new_mock(|request| -> http::Response<String> {
             panic!("unexpected REST request: {}", request.url().path());
         })
         .with_sql_client(client);
-        db.create_secret("api-key", "credential's value", &["team".into()])
+        let connection = Connection::new(
+            Arc::new(db),
+            Arc::new(crate::embeddings::MemoryRegistry::new()),
+        );
+        connection
+            .create_secret("api-key", "credential's value", &["team".into()])
             .await
             .unwrap();
-        db.alter_secret("api-key", "rotated-value", &["team".into()])
+        connection
+            .create_secret("api-key", "ignored-value", &["team".into()])
+            .exist_ok(true)
             .await
             .unwrap();
-        db.drop_secret("api-key", &["team".into()]).await.unwrap();
+        connection
+            .alter_secret("api-key", "rotated-value", &["team".into()])
+            .await
+            .unwrap();
+        connection
+            .drop_secret("api-key", &["team".into()])
+            .await
+            .unwrap();
         assert_eq!(
             statements.lock().unwrap().as_slice(),
             ["DROP SECRET IF EXISTS \"api-key\""]
         );
         let seen = exchanges.lock().unwrap();
-        assert_eq!(seen.len(), 2);
+        assert_eq!(seen.len(), 3);
         assert_eq!(
             seen[0].0,
             "CREATE SECRET \"api-key\" TYPE = GENERIC_STRING SECRET_STRING = $1"
         );
-        assert_eq!(seen[1].0, "ALTER SECRET \"api-key\" SET SECRET_STRING = $1");
+        assert_eq!(
+            seen[1].0,
+            "CREATE SECRET IF NOT EXISTS \"api-key\" TYPE = GENERIC_STRING SECRET_STRING = $1"
+        );
+        assert_eq!(seen[2].0, "ALTER SECRET \"api-key\" SET SECRET_STRING = $1");
+        assert!(
+            headers
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|header| header.namespace_path == "team")
+        );
         assert_eq!(
             seen[0]
                 .1
@@ -3251,6 +3475,18 @@ async fn secret_writes_bind_credentials_and_never_put_them_in_sql() {
         );
         assert_eq!(
             seen[1]
+                .1
+                .as_ref()
+                .unwrap()
+                .column(0)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+                .value(0),
+            "ignored-value"
+        );
+        assert_eq!(
+            seen[2]
                 .1
                 .as_ref()
                 .unwrap()
@@ -3549,25 +3785,48 @@ async fn view_create_and_describe_return_metadata_through_sql() {
             ..Default::default()
         };
         let statements = service.statements.clone();
+        let headers = service.headers.clone();
         let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
         let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
             panic!("unexpected REST request");
         })
         .with_sql_client(client);
-        let created = db
+        let connection = Connection::new(Arc::new(db), Arc::new(MemoryRegistry::new()));
+        let created = connection
             .create_view("adults", "SELECT name FROM people", &["team".into()])
             .await
             .unwrap();
-        let described = db.describe_view("adults", &["team".into()]).await.unwrap();
+        let existing = connection
+            .create_view(
+                "adults",
+                "SELECT replacement FROM other_people",
+                &["team".into()],
+            )
+            .exist_ok(true)
+            .await
+            .unwrap();
+        let described = connection
+            .describe_view("adults", &["team".into()])
+            .await
+            .unwrap();
         assert_eq!(created, described);
+        assert_eq!(existing, described);
         assert_eq!(created.schema.fields()[0].name(), "name");
         assert_eq!(created.default_namespace_path, ["team"]);
         assert_eq!(
             statements.lock().unwrap().as_slice(),
             [
                 "CREATE VIEW \"adults\" AS SELECT name FROM people",
+                "CREATE VIEW IF NOT EXISTS \"adults\" AS SELECT replacement FROM other_people",
                 "DESCRIBE VIEW \"adults\""
             ]
+        );
+        assert!(
+            headers
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|header| header.namespace_path == "team")
         );
         shutdown.send(()).unwrap();
     }

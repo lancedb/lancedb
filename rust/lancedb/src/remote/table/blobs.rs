@@ -3,6 +3,11 @@
 
 //! Cloud blob column listing, whole-byte fetch, and seekable HTTP byte-range handles.
 
+mod aggregate;
+
+use aggregate::BlobAccumulator;
+use arrow_buffer::{Buffer, OffsetBuffer};
+
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
@@ -28,13 +33,15 @@ use crate::remote::client::{HttpSend, RequestResultExt, RestfulLanceDbClient};
 use crate::table::{AnyQuery, BaseTable};
 
 use super::{
-    FreshnessHeaders, FreshnessState, ReadSnapshot, RemoteTable, VERSION_HEADER,
-    freshness_headers_snapshot,
+    FreshnessHeaders, FreshnessState, QUERY_SNAPSHOT_HEADER, ReadSnapshot, RemoteTable,
+    VERSION_HEADER, check_query_snapshot_response, freshness_headers_snapshot,
+    valid_query_snapshot_identity,
 };
 
 // The Cloud route rejects larger row-id lists. Its separate 64 MiB byte limit
 // is handled by splitting a rejected request below.
 const MAX_FETCH_BLOBS_ROW_IDS: usize = 1024;
+const MAX_FETCH_BLOB_RANGE_BYTES: u64 = 64 * 1024 * 1024;
 
 fn is_fetch_blobs_byte_limit_error(error: &Error) -> bool {
     matches!(error, Error::Http {
@@ -88,6 +95,7 @@ struct TableBlobRangeRequester<S: HttpSend> {
     version: Option<u64>,
     branch: Option<String>,
     source_uri: Option<String>,
+    expected_query_snapshot: Option<String>,
     source_commit_micros: Option<u64>,
     row_is_address: bool,
     freshness: Arc<std::sync::Mutex<FreshnessState>>,
@@ -120,6 +128,9 @@ impl<S: HttpSend> BlobRangeRequester for TableBlobRangeRequester<S> {
                 .apply(self.client.get(&self.path))
                 .header(header::RANGE, range_header)
         };
+        if let Some(identity) = &self.expected_query_snapshot {
+            request = request.header(QUERY_SNAPSHOT_HEADER, identity);
+        }
         if let Some(version) = version.or(self.version) {
             request = request.query(&[("version", version)]);
         }
@@ -135,6 +146,10 @@ impl<S: HttpSend> BlobRangeRequester for TableBlobRangeRequester<S> {
             request = request.query(&[("source_commit_micros", timestamp)]);
         }
         let (request_id, response) = self.client.send_with_retry(request, None, true).await?;
+        if response.status().is_success() || response.status() == StatusCode::RANGE_NOT_SATISFIABLE
+        {
+            check_query_snapshot_response(self.expected_query_snapshot.as_deref(), &response)?;
+        }
         // Preserve 416 size-probe responses so the caller can detect empty blobs.
         if response.status() == StatusCode::RANGE_NOT_SATISFIABLE
             && matches!(mode, RangeRequestMode::SizeProbe)
@@ -159,9 +174,25 @@ impl<S: HttpSend> BlobRangeRequester for TableBlobRangeRequester<S> {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct RemoteBlobState {
     cursor: u64,
+    buffer_size: usize,
+}
+
+impl Default for RemoteBlobState {
+    fn default() -> Self {
+        Self {
+            cursor: 0,
+            buffer_size: BlobFile::DEFAULT_READ_BUFFER_SIZE,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct RemoteBlobBuffer {
+    start: u64,
+    bytes: Bytes,
 }
 
 /// Seekable Cloud blob handle over HTTP Range.
@@ -171,6 +202,9 @@ struct RemoteBlobState {
 pub struct RemoteBlobFile {
     requester: Arc<dyn BlobRangeRequester>,
     state: Mutex<RemoteBlobState>,
+    // Never held across I/O: close can release cached bytes even while a read
+    // holds the cursor lock. A reader may retain its own prefix until it ends.
+    buffer: std::sync::Mutex<RemoteBlobBuffer>,
     closed: AtomicBool,
     size: u64,
     version: Option<u64>,
@@ -181,6 +215,7 @@ impl RemoteBlobFile {
         Self {
             requester,
             state: Mutex::new(RemoteBlobState::default()),
+            buffer: std::sync::Mutex::new(RemoteBlobBuffer::default()),
             closed: AtomicBool::new(false),
             size,
             version,
@@ -190,6 +225,18 @@ impl RemoteBlobFile {
     /// Close the handle without waiting for an in-flight read.
     pub(crate) async fn close(&self) -> lance_core::Result<()> {
         self.closed.store(true, Ordering::Release);
+        self.buffer.lock().unwrap().bytes = Bytes::new();
+        Ok(())
+    }
+
+    pub(crate) async fn set_buffer_size(&self, size: usize) -> lance_core::Result<()> {
+        self.ensure_open()?;
+        let mut state = self.state.lock().await;
+        self.ensure_open()?;
+        if state.buffer_size != size {
+            state.buffer_size = size;
+            self.buffer.lock().unwrap().bytes = Bytes::new();
+        }
         Ok(())
     }
 
@@ -228,7 +275,7 @@ impl RemoteBlobFile {
         let BlobRangeResponse {
             request_id,
             response,
-            _permit,
+            _permit: permit,
         } = self
             .requester
             .request_range(&range_header, RangeRequestMode::DataRead, self.version)
@@ -236,19 +283,9 @@ impl RemoteBlobFile {
             .map_err(remote_blob_error)?;
         self.ensure_open()?;
         validate_partial_response(&response, range.clone(), self.size)?;
-        let bytes = response
-            .bytes()
-            .await
-            .err_to_http(request_id)
-            .map_err(remote_blob_error)?;
+        let bytes = read_blob_body(response, range.end - range.start, request_id).await?;
+        drop(permit);
         self.ensure_open()?;
-        if bytes.len() as u64 != range.end - range.start {
-            return Err(remote_blob_error(format!(
-                "byte range returned {} bytes, expected {}",
-                bytes.len(),
-                range.end - range.start
-            )));
-        }
         Ok(bytes)
     }
 
@@ -275,7 +312,16 @@ impl RemoteBlobFile {
         let remaining = usize::try_from(remaining).map_err(|_| {
             lance_core::Error::invalid_input("remaining blob length exceeds addressable memory")
         })?;
-        self.read_up_to_locked(&mut state, remaining).await
+        // Joining a small cached prefix to a large tail would copy the entire
+        // blob while both allocations are live. Match the native reader's
+        // bounded reuse rule for whole-blob reads.
+        let held_len = cached_prefix(&self.buffer.lock().unwrap(), state.cursor, remaining).len();
+        if remaining > held_len.saturating_mul(2) {
+            self.buffer.lock().unwrap().bytes = Bytes::new();
+        }
+        let bytes = self.read_up_to_locked(&mut state, remaining).await?;
+        self.buffer.lock().unwrap().bytes = Bytes::new();
+        Ok(bytes)
     }
 
     pub(crate) async fn read_up_to(&self, len: usize) -> lance_core::Result<Bytes> {
@@ -296,14 +342,51 @@ impl RemoteBlobFile {
             return Ok(Bytes::new());
         }
 
-        // A partial read must release its HTTP response before returning. Keeping
-        // it open across calls would hold a connection slot indefinitely and
-        // prevent other handles from making progress.
-        let end = state.cursor + target_len as u64;
-        let bytes = self.read_range(state.cursor..end).await?;
+        let prefix = cached_prefix(&self.buffer.lock().unwrap(), state.cursor, target_len);
+        if prefix.len() == target_len {
+            state.cursor += target_len as u64;
+            return Ok(prefix);
+        }
+        let fetch_start = state.cursor + prefix.len() as u64;
+        let still_need = target_len - prefix.len();
+        let fetch_len = if state.buffer_size == 0 {
+            still_need as u64
+        } else {
+            (state.buffer_size.max(still_need) as u64).min(self.size - fetch_start)
+        };
+        // Fully consume the response before retaining only its Bytes. read_range
+        // releases both the connection and the concurrency permit before return.
+        let data = self
+            .read_range(fetch_start..fetch_start + fetch_len)
+            .await?;
         self.ensure_open()?;
-        state.cursor = end;
-        Ok(bytes)
+        let tail = data.slice(..still_need);
+        let result = if prefix.is_empty() {
+            tail
+        } else {
+            let mut joined = Vec::new();
+            joined.try_reserve_exact(target_len).map_err(|error| {
+                remote_blob_error(format!(
+                    "cannot allocate blob read of {target_len} bytes: {error}"
+                ))
+            })?;
+            joined.extend_from_slice(&prefix);
+            joined.extend_from_slice(&tail);
+            Bytes::from(joined)
+        };
+        {
+            let mut buffer = self.buffer.lock().unwrap();
+            // Serialize publishing a new window with close clearing the cache.
+            self.ensure_open()?;
+            if state.buffer_size != 0 {
+                buffer.start = fetch_start;
+                buffer.bytes = data;
+            } else {
+                buffer.bytes = Bytes::new();
+            }
+        }
+        state.cursor += target_len as u64;
+        Ok(result)
     }
 
     pub(crate) async fn seek(&self, new_cursor: u64) -> lance_core::Result<()> {
@@ -324,6 +407,83 @@ impl RemoteBlobFile {
     pub(crate) fn size(&self) -> u64 {
         self.size
     }
+}
+
+/// Collect a range without retaining a second payload's worth of network chunks.
+async fn read_blob_body(
+    response: Response,
+    expected: u64,
+    request_id: String,
+) -> lance_core::Result<Bytes> {
+    let expected = usize::try_from(expected).map_err(|_| {
+        lance_core::Error::invalid_input("blob range length exceeds addressable memory")
+    })?;
+    let length_error = |received| {
+        remote_blob_error(format!(
+            "byte range returned {received} bytes, expected {expected}"
+        ))
+    };
+    let mut chunks = response.bytes_stream();
+    let first = chunks
+        .try_next()
+        .await
+        .err_to_http(request_id.clone())
+        .map_err(remote_blob_error)?
+        .ok_or_else(|| length_error(0))?;
+    if first.len() > expected {
+        return Err(length_error(first.len()));
+    }
+    if first.len() == expected {
+        while let Some(chunk) = chunks
+            .try_next()
+            .await
+            .err_to_http(request_id.clone())
+            .map_err(remote_blob_error)?
+        {
+            if !chunk.is_empty() {
+                return Err(length_error(expected.saturating_add(chunk.len())));
+            }
+        }
+        return Ok(first);
+    }
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(expected).map_err(|error| {
+        remote_blob_error(format!(
+            "cannot allocate blob range of {expected} bytes: {error}"
+        ))
+    })?;
+    bytes.extend_from_slice(&first);
+    drop(first);
+    while let Some(chunk) = chunks
+        .try_next()
+        .await
+        .err_to_http(request_id.clone())
+        .map_err(remote_blob_error)?
+    {
+        let received = bytes.len().saturating_add(chunk.len());
+        if received > expected {
+            return Err(length_error(received));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    if bytes.len() != expected {
+        return Err(length_error(bytes.len()));
+    }
+    Ok(Bytes::from(bytes))
+}
+
+fn cached_prefix(buffer: &RemoteBlobBuffer, cursor: u64, length: usize) -> Bytes {
+    let Some(offset) = cursor.checked_sub(buffer.start) else {
+        return Bytes::new();
+    };
+    let Ok(offset) = usize::try_from(offset) else {
+        return Bytes::new();
+    };
+    if offset >= buffer.bytes.len() {
+        return Bytes::new();
+    }
+    let end = offset.saturating_add(length).min(buffer.bytes.len());
+    buffer.bytes.slice(offset..end)
 }
 
 fn remote_blob_error(error: impl std::fmt::Display) -> lance_core::Error {
@@ -381,7 +541,11 @@ impl<S: HttpSend> RemoteTable<S> {
         // A dotted path needs client-side validation because the server may
         // report an internal type mismatch when the path crosses a list. Use
         // an already cached schema for top-level list fields as well.
-        if column.contains('.') || self.schema_cache.try_get().is_some() {
+        // Guarded readers must validate the producing identity on the server
+        // before consulting any schema resolved from a later logical binding.
+        if self.expected_query_snapshot.is_none()
+            && (column.contains('.') || self.schema_cache.try_get().is_some())
+        {
             let schema = self.schema().await?;
             crate::blob::reject_list_blob_column(schema.as_ref(), column)?;
         }
@@ -389,6 +553,9 @@ impl<S: HttpSend> RemoteTable<S> {
     }
 
     async fn explain_list_blob_bad_request(&self, column: &str, error: Error) -> Error {
+        if self.expected_query_snapshot.is_some() {
+            return error;
+        }
         let is_bad_request = match &error {
             Error::Http {
                 status_code: Some(code),
@@ -434,10 +601,13 @@ impl<S: HttpSend> RemoteTable<S> {
             read_snapshot.version = Some(self.describe_read_snapshot(read_snapshot).await?.version);
         }
         let mut pending: Vec<&[u64]> = row_ids.chunks(MAX_FETCH_BLOBS_ROW_IDS).rev().collect();
-        let mut chunks = Vec::new();
+        let mut blobs = BlobAccumulator::new(row_ids.len())?;
         while let Some(ids) = pending.pop() {
-            match self.fetch_blobs_chunk(column, ids, read_snapshot).await {
-                Ok(blobs) => chunks.push(blobs),
+            match self
+                .fetch_blobs_chunk(column, ids, read_snapshot, &mut blobs)
+                .await
+            {
+                Ok(()) => {}
                 Err(error) if is_fetch_blobs_byte_limit_error(&error) => {
                     // A single-request call may turn into several requests after a
                     // byte-cap error. No bytes from the failed request were used.
@@ -455,7 +625,15 @@ impl<S: HttpSend> RemoteTable<S> {
                             Some(file) => Some(file.read().await?),
                             None => None,
                         };
-                        chunks.push(LargeBinaryArray::from(vec![blob.as_deref()]));
+                        let blob = match blob {
+                            Some(bytes) => LargeBinaryArray::new(
+                                OffsetBuffer::new(vec![0, bytes.len() as i64].into()),
+                                Buffer::from(bytes),
+                                None,
+                            ),
+                            None => LargeBinaryArray::new_null(1),
+                        };
+                        blobs.append(&blob)?;
                     } else {
                         let mid = ids.len() / 2;
                         pending.push(&ids[mid..]);
@@ -466,15 +644,7 @@ impl<S: HttpSend> RemoteTable<S> {
             }
         }
 
-        if chunks.len() == 1 {
-            return Ok(chunks.pop().unwrap());
-        }
-        let chunk_refs: Vec<&dyn Array> = chunks.iter().map(|chunk| chunk as &dyn Array).collect();
-        Ok(arrow::compute::concat(&chunk_refs)?
-            .as_any()
-            .downcast_ref::<LargeBinaryArray>()
-            .expect("concatenating LargeBinary arrays returns LargeBinary")
-            .clone())
+        Ok(blobs.finish()?)
     }
 
     async fn fetch_blobs_chunk(
@@ -482,7 +652,8 @@ impl<S: HttpSend> RemoteTable<S> {
         column: &str,
         row_ids: &[u64],
         read_snapshot: ReadSnapshot,
-    ) -> Result<LargeBinaryArray> {
+        blobs: &mut BlobAccumulator,
+    ) -> Result<()> {
         let mut body = serde_json::json!({
             "version": read_snapshot.version,
             "column": column,
@@ -494,15 +665,23 @@ impl<S: HttpSend> RemoteTable<S> {
             .client
             .post(&format!("/v1/table/{}/fetch_blobs/", self.identifier))
             .json(&body);
+        let request = if let Some(identity) = &self.expected_query_snapshot {
+            request.header(QUERY_SNAPSHOT_HEADER, identity)
+        } else {
+            request
+        };
         let (request_id, response) = self
             .send_with_freshness(request, true, read_snapshot.freshness)
             .await?;
+        if response.status().is_success() {
+            check_query_snapshot_response(self.expected_query_snapshot.as_deref(), &response)?;
+        }
         let mut stream = match self.read_arrow_response(&request_id, response).await {
             Ok(stream) => stream,
             Err(error) => return Err(self.explain_list_blob_bad_request(column, error).await),
         };
 
-        let mut blob_chunks: Vec<Arc<dyn Array>> = Vec::new();
+        let mut rows = 0;
         while let Some(batch) = stream.try_next().await? {
             let blob_column = batch.column_by_name(column).ok_or_else(|| Error::Http {
                 source: format!("fetch_blobs response is missing the '{column}' column").into(),
@@ -525,28 +704,19 @@ impl<S: HttpSend> RemoteTable<S> {
                     status_code: None,
                 });
             }
-            blob_chunks.push(arrow::compute::cast(blob_column, &DataType::LargeBinary)?);
-        }
-        let blobs = if blob_chunks.is_empty() {
-            LargeBinaryArray::from(Vec::<Option<&[u8]>>::new())
-        } else {
-            let blob_chunk_refs: Vec<&dyn Array> = blob_chunks.iter().map(AsRef::as_ref).collect();
-            arrow::compute::concat(&blob_chunk_refs)?
+            let array = arrow::compute::cast(blob_column, &DataType::LargeBinary)?;
+            let array = array
                 .as_any()
                 .downcast_ref::<LargeBinaryArray>()
-                .ok_or_else(|| Error::Http {
-                    source: "fetch_blobs could not read the concatenated response as LargeBinary"
-                        .into(),
-                    request_id: request_id.clone(),
-                    status_code: None,
-                })?
-                .clone()
-        };
-        if blobs.len() != row_ids.len() {
+                .expect("casting to LargeBinary returns LargeBinary");
+            rows += array.len();
+            blobs.append(array)?;
+        }
+        if rows != row_ids.len() {
             return Err(Error::Http {
                 source: format!(
                     "fetch_blobs returned {} rows for {} row ids",
-                    blobs.len(),
+                    rows,
                     row_ids.len()
                 )
                 .into(),
@@ -554,11 +724,88 @@ impl<S: HttpSend> RemoteTable<S> {
                 status_code: None,
             });
         }
-        Ok(blobs)
+        Ok(())
     }
 
-    /// Materialize ranges through version-pinned handles, preserving nulls and order.
+    /// Materialize ranges using the protocol advertised by a successful describe.
     pub(super) async fn fetch_blob_ranges_impl(
+        &self,
+        column: &str,
+        requests: &[BlobRangeRequest],
+    ) -> Result<LargeBinaryArray> {
+        let mut blobs = BlobAccumulator::new(requests.len())?;
+        if requests.is_empty() {
+            return Ok(blobs.finish()?);
+        }
+        for request in requests {
+            request
+                .offset
+                .checked_add(request.length)
+                .ok_or_else(|| Error::InvalidInput {
+                    message: "blob range offset + length overflows u64".into(),
+                })?;
+        }
+        self.reject_list_blob_path_if_known(column).await?;
+        if !self.blob_ranges_supported.load(Ordering::Relaxed) {
+            return self.fetch_blob_ranges_legacy(column, requests).await;
+        }
+        // Select the protocol before issuing data requests. An advertised endpoint
+        // failing in a mixed deployment must fail truthfully, without fallback.
+        let mut snapshot = self.snapshot_read_state().await;
+        let mut identity = self.expected_query_snapshot.clone();
+        let mut index = 0;
+        let mut consumed = 0;
+        let mut ranges = Vec::new();
+        ranges
+            .try_reserve_exact(MAX_FETCH_BLOBS_ROW_IDS)
+            .map_err(|error| Error::InvalidInput {
+                message: format!("cannot allocate blob range requests: {error}"),
+            })?;
+        while index < requests.len() {
+            ranges.clear();
+            let continuation = consumed != 0;
+            let mut budget = MAX_FETCH_BLOB_RANGE_BYTES;
+            while index < requests.len() && ranges.len() < MAX_FETCH_BLOBS_ROW_IDS {
+                let request = requests[index];
+                let remaining = request.length - consumed;
+                if budget == 0 && remaining != 0 {
+                    break;
+                }
+                let length = remaining.min(budget);
+                // The full range was checked above; all subranges fit within it.
+                ranges.push(BlobRangeRequest::new(
+                    request.row_id,
+                    request.offset + consumed,
+                    length,
+                ));
+                consumed += length;
+                budget -= length;
+                if consumed == request.length {
+                    index += 1;
+                    consumed = 0;
+                } else {
+                    break;
+                }
+            }
+            let array = self
+                .fetch_blob_ranges_chunk(column, &ranges, &mut snapshot, &mut identity)
+                .await?;
+            // A null has no bytes to partition. Avoid sending arbitrarily many
+            // empty fragments for a null with a very large requested length.
+            if consumed != 0 && array.is_null(array.len() - 1) {
+                index += 1;
+                consumed = 0;
+            }
+            if continuation {
+                blobs.append_continuation(&array)?;
+            } else {
+                blobs.append(&array)?;
+            }
+        }
+        Ok(blobs.finish()?)
+    }
+
+    async fn fetch_blob_ranges_legacy(
         &self,
         column: &str,
         requests: &[BlobRangeRequest],
@@ -570,22 +817,174 @@ impl<S: HttpSend> RemoteTable<S> {
         let files = self.fetch_blob_files_impl(column, &row_ids).await?;
         let mut builder = LargeBinaryBuilder::with_capacity(requests.len(), 0);
         for (file, request) in files.into_iter().zip(requests) {
-            let end =
-                request
-                    .offset
-                    .checked_add(request.length)
-                    .ok_or_else(|| Error::InvalidInput {
-                        message: "blob range offset + length overflows u64".into(),
-                    })?;
             match file {
                 Some(file) => {
-                    let bytes = file.read_range(request.offset..end).await?;
+                    // Overflow was checked before selecting either protocol.
+                    let bytes = file
+                        .read_range(request.offset..request.offset + request.length)
+                        .await?;
                     builder.append_value(bytes);
                 }
                 None => builder.append_null(),
             }
         }
         Ok(builder.finish())
+    }
+
+    async fn fetch_blob_ranges_chunk(
+        &self,
+        column: &str,
+        ranges: &[BlobRangeRequest],
+        snapshot: &mut ReadSnapshot,
+        identity: &mut Option<String>,
+    ) -> Result<LargeBinaryArray> {
+        let _permit = self
+            .client
+            .blob_request_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("blob request semaphore is never closed");
+        let body = serde_json::json!({
+            "column": column,
+            "version": snapshot.version,
+            "branch": self.branch,
+            "ranges": ranges,
+        });
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/fetch_blob_ranges/", self.identifier))
+            .json(&body);
+        let request = if let Some(expected) = identity.as_deref() {
+            request.header(super::QUERY_SNAPSHOT_HEADER, expected)
+        } else {
+            request
+        };
+        let (request_id, response) = self
+            .send_with_freshness(request, false, snapshot.freshness)
+            .await?;
+        // The range operation defines 400 as invalid input. Let the established
+        // checker decode structured/plain server errors before normalizing it.
+        let response = self
+            .check_table_response(&request_id, response)
+            .await
+            .map_err(|error| {
+                if let Error::Http {
+                    source,
+                    request_id,
+                    status_code: Some(StatusCode::BAD_REQUEST),
+                } = error
+                {
+                    Error::InvalidInput {
+                        message: format!("fetch_blob_ranges (request {request_id}): {source}"),
+                    }
+                } else {
+                    error
+                }
+            })?;
+        let invalid = |message: String| Error::Http {
+            source: format!("fetch_blob_ranges: {message}").into(),
+            request_id: request_id.clone(),
+            status_code: None,
+        };
+        let version = response.headers().get(&VERSION_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|version| *version != 0)
+            .ok_or_else(|| invalid("missing or invalid x-lancedb-version; a server supporting the batched range endpoint is required".into()))?;
+        if snapshot.version.is_some_and(|expected| expected != version) {
+            return Err(invalid(format!(
+                "response version {version} differs from requested version {:?}",
+                snapshot.version
+            )));
+        }
+        // Do not decode or accept any payload before establishing/verifying the
+        // identity. A later partition can never replace the original expectation.
+        check_query_snapshot_response(identity.as_deref(), &response)?;
+        if identity.is_none() {
+            let actual = response.headers().get(super::QUERY_SNAPSHOT_HEADER)
+                .and_then(|value| value.to_str().ok())
+                .filter(|value| valid_query_snapshot_identity(value))
+                .ok_or_else(|| Error::NotSupported {
+                    message: "Batched Blob ranges require a snapshot identity; upgrade every serving node".into(),
+                })?;
+            *identity = Some(actual.to_owned());
+        }
+        snapshot.version = Some(version);
+        // This endpoint's contract is stream framing. Keep the bounded, fallible
+        // IPC path from #4979 instead of buffering an Arrow file response.
+        let content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        if !content_type
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .eq_ignore_ascii_case(crate::remote::ARROW_STREAM_CONTENT_TYPE)
+        {
+            return Err(invalid(format!(
+                "expected Arrow IPC stream, got '{content_type}'"
+            )));
+        }
+        let mut stream = super::ipc_stream::read_ipc_stream(
+            response.bytes_stream(),
+            request_id.clone(),
+            Some(version),
+        )
+        .await?;
+        let schema = stream.schema();
+        if !matches!(
+            schema
+                .field_with_name("value")
+                .map(|field| field.data_type()),
+            Ok(DataType::LargeBinary)
+        ) {
+            return Err(invalid(
+                "response requires a LargeBinary column named 'value'".into(),
+            ));
+        }
+        let mut blobs = BlobAccumulator::new(ranges.len())?;
+        let mut rows = 0usize;
+        let mut bytes = 0u64;
+        while let Some(batch) = stream.try_next().await? {
+            let array = batch
+                .column_by_name("value")
+                .and_then(|column| column.as_any().downcast_ref::<LargeBinaryArray>())
+                .ok_or_else(|| {
+                    invalid("response requires a LargeBinary column named 'value'".into())
+                })?;
+            let end = rows
+                .checked_add(array.len())
+                .filter(|end| *end <= ranges.len())
+                .ok_or_else(|| invalid("response has more rows than requested".into()))?;
+            let offsets = array.value_offsets();
+            bytes = bytes
+                .checked_add((offsets[array.len()] - offsets[0]) as u64)
+                .filter(|bytes| *bytes <= MAX_FETCH_BLOB_RANGE_BYTES)
+                .ok_or_else(|| invalid("response exceeds 64 MiB of range bytes".into()))?;
+            for (i, range) in ranges[rows..end].iter().enumerate() {
+                if array.is_valid(i) && array.value_length(i) as u64 != range.length {
+                    return Err(invalid(format!(
+                        "row {} returned {} bytes for requested length {}",
+                        rows + i,
+                        array.value_length(i),
+                        range.length
+                    )));
+                }
+            }
+            blobs.append(array)?;
+            rows = end;
+        }
+        if rows != ranges.len() {
+            return Err(invalid(format!(
+                "returned {rows} rows for {} ranges",
+                ranges.len()
+            )));
+        }
+        Ok(blobs.finish()?)
     }
 
     /// Open seekable handles for `row_ids`.
@@ -878,6 +1277,7 @@ impl<S: HttpSend> RemoteTable<S> {
             version: read_snapshot.version,
             branch: source.map_or_else(|| self.branch.clone(), |source| source.branch.clone()),
             source_uri: source.map(|source| source.uri.clone()),
+            expected_query_snapshot: self.expected_query_snapshot.clone(),
             source_commit_micros: source.map(|source| source.committed_at_micros),
             row_is_address: source.is_some_and(|source| source.row_is_address),
             freshness: Arc::new(std::sync::Mutex::new(read_snapshot.freshness_state)),
@@ -1497,8 +1897,153 @@ mod tests {
             let error = table.fetch_blob_ranges("image", &ranges).await.unwrap_err();
             assert!(error.to_string().contains(message), "{error}");
             // Missing rows and invalid ranges fail without reading any bytes.
-            assert_eq!(requests.lock().unwrap().len(), 1);
+            assert!(matches!(error, Error::InvalidInput { .. }));
+            assert_eq!(
+                requests.lock().unwrap().len(),
+                usize::from(!message.contains("overflows"))
+            );
         }
+    }
+
+    #[tokio::test]
+    async fn remote_blob_ranges_keep_producing_query_identity_from_first_request() {
+        const IDENTITY: &str =
+            "v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let calls = Arc::new(StdMutex::new(Vec::new()));
+        let captured = calls.clone();
+        let table = RemoteTable::new_mock(
+            "my_table".into(),
+            move |request| {
+                assert_eq!(
+                    request.url().path(),
+                    "/v1/table/my_table/fetch_blob_ranges/"
+                );
+                assert_eq!(
+                    request.headers()[super::super::QUERY_SNAPSHOT_HEADER],
+                    IDENTITY
+                );
+                let body: serde_json::Value =
+                    serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+                assert_eq!(body["version"], 42);
+                let rows = body["ranges"].as_array().unwrap().len();
+                captured.lock().unwrap().push(rows);
+                let batch = RecordBatch::try_from_iter([(
+                    "value",
+                    Arc::new(LargeBinaryArray::from(vec![Some(b"A".as_slice()); rows]))
+                        as Arc<dyn Array>,
+                )])
+                .unwrap();
+                let mut bytes = Vec::new();
+                let mut writer =
+                    arrow_ipc::writer::StreamWriter::try_new(&mut bytes, &batch.schema()).unwrap();
+                writer.write(&batch).unwrap();
+                writer.finish().unwrap();
+                drop(writer);
+                http::Response::builder()
+                    .status(200)
+                    .header("content-type", "application/vnd.apache.arrow.stream")
+                    .header(VERSION_HEADER, "42")
+                    .header(super::super::QUERY_SNAPSHOT_HEADER, IDENTITY)
+                    .body(bytes)
+                    .unwrap()
+            },
+            Some(Version::new(1, 13, 0)),
+        );
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-lancedb-blob-ranges", "1".parse().unwrap());
+        table.seed_blob_ranges_capability(&headers);
+        let snapshot = table
+            .query_snapshot_with_identity(42, IDENTITY)
+            .await
+            .unwrap();
+        let ranges = snapshot
+            .fetch_blob_ranges("image", &[BlobRangeRequest::new(10, 0, 1); 1025])
+            .await
+            .unwrap();
+        assert_eq!(
+            ranges,
+            LargeBinaryArray::from(vec![Some(b"A".as_slice()); 1025])
+        );
+        assert_eq!(*calls.lock().unwrap(), [1024, 1]);
+        assert!(table.snapshot_read_state().await.version.is_none());
+    }
+
+    #[tokio::test]
+    async fn remote_blob_ranges_cancel_releases_the_only_request_permit() {
+        use std::sync::atomic::AtomicUsize;
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let started = entered.clone();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let captured = calls.clone();
+        let table = Arc::new(RemoteTable::new_mock_with_version_and_config(
+            "my_table".into(),
+            move |request| {
+                assert!(request.url().path().ends_with("/fetch_blob_ranges/"));
+                if captured.fetch_add(1, Ordering::SeqCst) == 0 {
+                    started.notify_one();
+                    http::Response::builder()
+                        .status(200)
+                        .header("content-type", "application/vnd.apache.arrow.stream")
+                        .header(VERSION_HEADER, "7")
+                        .header(
+                            super::super::QUERY_SNAPSHOT_HEADER,
+                            format!("v1:{}", "a".repeat(64)),
+                        )
+                        .body(reqwest::Body::wrap_stream(futures::stream::pending::<
+                            std::result::Result<Bytes, std::io::Error>,
+                        >()))
+                        .unwrap()
+                } else {
+                    http::Response::builder()
+                        .status(400)
+                        .header("x-lancedb-error-code", "invalid_input")
+                        .body(reqwest::Body::from(
+                            r#"{"error":"range exceeds blob size"}"#,
+                        ))
+                        .unwrap()
+                }
+            },
+            Some(Version::new(1, 13, 0)),
+            crate::remote::ClientConfig {
+                blob_request_concurrency: Some(1),
+                ..Default::default()
+            },
+        ));
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-lancedb-blob-ranges", "1".parse().unwrap());
+        table.seed_blob_ranges_capability(&headers);
+        let reader_table = table.clone();
+        let reader = tokio::spawn(async move {
+            reader_table
+                .fetch_blob_ranges("image", &[BlobRangeRequest::new(10, 0, 1); 1025])
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), entered.notified())
+            .await
+            .unwrap();
+        reader.abort();
+        assert!(reader.await.unwrap_err().is_cancelled());
+        let error = tokio::time::timeout(
+            Duration::from_secs(5),
+            table.fetch_blob_ranges("image", &[BlobRangeRequest::new(10, 0, 1)]),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert!(matches!(error, Error::InvalidInput { .. }));
+        assert!(error.to_string().contains("range exceeds blob size"));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn remote_blob_ranges_reject_overflow_before_http() {
+        let (table, requests) = mock_take_blob_table(vec![], Some("7"));
+        let error = table
+            .fetch_blob_ranges("image", &[BlobRangeRequest::new(20, u64::MAX, 1)])
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("overflows u64"), "{error}");
+        assert!(requests.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1893,9 +2438,8 @@ mod tests {
             [
                 ("bytes=0-0".to_string(), None),
                 ("bytes=5-8".to_string(), Some("5".to_string())),
-                ("bytes=0-3".to_string(), Some("5".to_string())),
                 (
-                    format!("bytes=10-{}", PAYLOAD.len() - 1),
+                    format!("bytes=0-{}", PAYLOAD.len() - 1),
                     Some("5".to_string())
                 ),
             ]
@@ -1943,7 +2487,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remote_blob_file_releases_response_after_each_partial_read() {
+    async fn remote_blob_file_reuses_prefetched_bytes_across_reads_and_seeks() {
         let requests = Arc::new(StdMutex::new(Vec::new()));
         let table = mock_remote_blob_table(requests.clone());
         let file = table
@@ -1961,7 +2505,41 @@ mod tests {
         assert_eq!(file.tell().await.unwrap(), 24);
         assert_eq!(
             requests.lock().unwrap().as_slice(),
-            ["bytes=0-0", "bytes=0-3", "bytes=4-6", "bytes=20-23"]
+            ["bytes=0-0", &format!("bytes=0-{}", PAYLOAD.len() - 1)]
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_buffer_boundaries_and_disabled_read_ahead() {
+        let requests = Arc::new(StdMutex::new(Vec::new()));
+        let table = mock_remote_blob_table(requests.clone());
+        let file = table
+            .probe_files("image", &[10])
+            .await
+            .unwrap()
+            .pop()
+            .flatten()
+            .unwrap();
+        file.set_buffer_size(4).await.unwrap();
+        assert_eq!(file.read_up_to(3).await.unwrap(), &PAYLOAD[..3]);
+        assert_eq!(file.read_up_to(3).await.unwrap(), &PAYLOAD[3..6]);
+        file.seek(5).await.unwrap();
+        assert_eq!(file.read_up_to(2).await.unwrap(), &PAYLOAD[5..7]);
+        assert_eq!(file.read_range(5..6).await.unwrap(), &PAYLOAD[5..6]);
+        assert_eq!(file.tell().await.unwrap(), 7);
+        file.set_buffer_size(0).await.unwrap();
+        assert_eq!(file.read_up_to(1).await.unwrap(), &PAYLOAD[7..8]);
+        assert_eq!(file.read_up_to(1).await.unwrap(), &PAYLOAD[8..9]);
+        assert_eq!(
+            requests.lock().unwrap().as_slice(),
+            [
+                "bytes=0-0",
+                "bytes=0-3",
+                "bytes=4-7",
+                "bytes=5-5",
+                "bytes=7-7",
+                "bytes=8-8"
+            ]
         );
     }
 
@@ -2198,6 +2776,7 @@ mod tests {
             .flatten()
             .unwrap();
 
+        file.set_buffer_size(0).await.unwrap();
         let error = file.read_up_to(10).await.unwrap_err();
         assert!(
             error.to_string().contains("returned 5 bytes, expected 10"),
@@ -2324,6 +2903,7 @@ mod tests {
             file.read_up_to(1).await.unwrap_err(),
             file.seek(0).await.unwrap_err(),
             file.tell().await.unwrap_err(),
+            file.set_buffer_size(0).await.unwrap_err(),
         ] {
             assert!(error.to_string().contains("already closed"), "got: {error}");
         }
@@ -2530,10 +3110,114 @@ mod tests {
         assert!(error.to_string().contains("206"), "got: {error}");
     }
 
+    #[tokio::test]
+    async fn impossible_range_capacity_returns_an_error() {
+        let size = isize::MAX as u64 + 1;
+        let table = RemoteTable::new_mock(
+            "videos".to_string(),
+            move |request| {
+                let range = request
+                    .headers()
+                    .get(header::RANGE)
+                    .unwrap()
+                    .to_str()
+                    .unwrap();
+                let end = if range == "bytes=0-0" { 0 } else { size - 1 };
+                http::Response::builder()
+                    .status(StatusCode::PARTIAL_CONTENT)
+                    .header(header::CONTENT_RANGE, format!("bytes 0-{end}/{size}"))
+                    .header(VERSION_HEADER, "5")
+                    .body(vec![1])
+                    .unwrap()
+            },
+            Some(Version::new(0, 5, 0)),
+        );
+        let file = table
+            .probe_files("image", &[10])
+            .await
+            .unwrap()
+            .pop()
+            .flatten()
+            .unwrap();
+        let error = file.read().await.unwrap_err();
+        assert!(
+            error.to_string().contains("cannot allocate blob range"),
+            "{error}"
+        );
+        assert_eq!(file.tell().await.unwrap(), 0);
+    }
+
+    #[derive(Debug)]
+    struct TrackedRangeBody {
+        bytes: Vec<u8>,
+        dropped: Arc<AtomicBool>,
+    }
+
+    impl AsRef<[u8]> for TrackedRangeBody {
+        fn as_ref(&self) -> &[u8] {
+            &self.bytes
+        }
+    }
+
+    impl Drop for TrackedRangeBody {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::Release);
+        }
+    }
+
+    #[tokio::test]
+    async fn close_releases_existing_cache_after_in_flight_read_ends() {
+        for cancel in [false, true] {
+            let release = Arc::new(tokio::sync::Barrier::new(2));
+            let started = Arc::new(tokio::sync::Notify::new());
+            let dropped = Arc::new(AtomicBool::new(false));
+            let file = Arc::new(RemoteBlobFile::new(
+                Arc::new(BlockingRangeRequester {
+                    release: release.clone(),
+                    started: started.clone(),
+                    block_start: 4,
+                    tracked: Some(dropped.clone()),
+                }),
+                PAYLOAD.len() as u64,
+                Some(5),
+            ));
+            file.set_buffer_size(4).await.unwrap();
+            assert_eq!(file.read_up_to(1).await.unwrap().as_ref(), &PAYLOAD[..1]);
+            file.seek(3).await.unwrap();
+            assert!(
+                !dropped.load(Ordering::Acquire),
+                "warm cache was not retained"
+            );
+            let reader = {
+                let file = file.clone();
+                tokio::spawn(async move { file.read_up_to(2).await })
+            };
+            started.notified().await;
+            tokio::time::timeout(Duration::from_millis(50), file.close())
+                .await
+                .expect("close waited for I/O")
+                .unwrap();
+            if cancel {
+                reader.abort();
+                assert!(reader.await.unwrap_err().is_cancelled());
+            } else {
+                release.wait().await;
+                let error = reader.await.unwrap().unwrap_err();
+                assert!(error.to_string().contains("already closed"), "{error}");
+            }
+            assert!(
+                dropped.load(Ordering::Acquire),
+                "closed handle retained its old window (cancel={cancel})"
+            );
+        }
+    }
+
     #[derive(Debug)]
     struct BlockingRangeRequester {
         release: Arc<tokio::sync::Barrier>,
         started: Arc<tokio::sync::Notify>,
+        block_start: usize,
+        tracked: Option<Arc<AtomicBool>>,
     }
 
     #[async_trait::async_trait]
@@ -2544,17 +3228,31 @@ mod tests {
             _mode: RangeRequestMode,
             _version: Option<u64>,
         ) -> Result<BlobRangeResponse> {
-            if range_header == "bytes=0-3" {
+            let (start, end) = range_header
+                .strip_prefix("bytes=")
+                .unwrap()
+                .split_once('-')
+                .unwrap();
+            let start: usize = start.parse().unwrap();
+            let end: usize = end.parse().unwrap();
+            if start == self.block_start {
                 self.started.notify_one();
                 self.release.wait().await;
             }
+            let bytes = match &self.tracked {
+                Some(dropped) if start == 0 => Bytes::from_owner(TrackedRangeBody {
+                    bytes: PAYLOAD[start..=end].to_vec(),
+                    dropped: dropped.clone(),
+                }),
+                _ => Bytes::copy_from_slice(&PAYLOAD[start..=end]),
+            };
             let response = http::Response::builder()
                 .status(StatusCode::PARTIAL_CONTENT)
                 .header(
                     header::CONTENT_RANGE,
-                    format!("bytes 0-{}/{}", PAYLOAD.len() - 1, PAYLOAD.len()),
+                    format!("bytes {start}-{end}/{}", PAYLOAD.len()),
                 )
-                .body(PAYLOAD.to_vec())
+                .body(bytes)
                 .unwrap();
             Ok(("hung".to_string(), Response::from(response)).into())
         }
@@ -2567,6 +3265,8 @@ mod tests {
         let requester: Arc<dyn BlobRangeRequester> = Arc::new(BlockingRangeRequester {
             release: release.clone(),
             started: started.clone(),
+            block_start: 0,
+            tracked: None,
         });
         let file = Arc::new(RemoteBlobFile::new(
             requester,

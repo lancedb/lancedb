@@ -45,6 +45,7 @@ from lancedb.query import (
     LanceVectorQueryBuilder,
     MatchQuery,
 )
+from lancedb.index import BTree
 from lancedb.remote import ClientConfig
 from lancedb.remote.errors import (
     AlreadyExistsError,
@@ -59,18 +60,122 @@ import pyarrow as pa
 from utils import start_server_thread
 
 
-def make_mock_http_handler(handler):
+def make_mock_http_handler(handler, *, buffer_body=True):
     class MockLanceDBHandler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
             handler(self)
 
         def do_POST(self):
-            handler(self)
+            if not buffer_body:
+                handler(self)
+                return
 
-        def do_PUT(self):
-            handler(self)
+            # HTTP/1.0 closes after the response. Leaving a streamed upload unread
+            # can reset the connection while the client is still writing its body.
+            # Keep the original framing so handlers can inspect the actual request.
+            source = self.rfile
+            body = bytearray()
+            if self.headers.get("Transfer-Encoding") == "chunked":
+                while True:
+                    line = source.readline()
+                    assert line.endswith(b"\r\n")
+                    body.extend(line)
+                    size = int(line.split(b";")[0], 16)
+                    if size == 0:
+                        while True:
+                            line = source.readline()
+                            assert line.endswith(b"\r\n")
+                            body.extend(line)
+                            if line == b"\r\n":
+                                break
+                        break
+                    chunk = source.read(size + 2)
+                    assert len(chunk) == size + 2 and chunk[-2:] == b"\r\n"
+                    body.extend(chunk)
+            else:
+                size = int(self.headers.get("Content-Length", 0))
+                body.extend(source.read(size))
+                assert len(body) == size
+            self.rfile = io.BytesIO(body)
+            try:
+                handler(self)
+            finally:
+                self.rfile.close()
+                self.rfile = source
+
+        do_PUT = do_POST
 
     return MockLanceDBHandler
+
+
+@pytest.mark.parametrize("chunked", [False, True])
+@pytest.mark.parametrize("read_body", [False, True])
+def test_mock_http_handler_waits_for_body(chunked, read_body):
+    body = (
+        b"7;ext=value\r\npayload\r\n0\r\nX-Trailer: value\r\n\r\n"
+        if chunked
+        else b"payload"
+    )
+    received = []
+
+    def handler(request):
+        if read_body:
+            assert (request.headers.get("Transfer-Encoding") == "chunked") == chunked
+            received.append(request.rfile.read(len(body)))
+        request.send_response(200)
+        request.end_headers()
+
+    with http.server.HTTPServer(
+        ("127.0.0.1", 0), make_mock_http_handler(handler)
+    ) as server:
+        thread = start_server_thread(server)
+        try:
+            with socket.create_connection(server.server_address, timeout=2) as client:
+                framing = (
+                    "Transfer-Encoding: chunked" if chunked else "Content-Length: 7"
+                )
+                client.sendall(
+                    f"POST / HTTP/1.0\r\nHost: localhost\r\n{framing}\r\n\r\n".encode()
+                )
+                client.settimeout(0.1)
+                with pytest.raises(TimeoutError):
+                    client.recv(1024)
+                client.settimeout(2)
+                client.sendall(body)
+                assert client.recv(1024).startswith(b"HTTP/1.0 200")
+        finally:
+            server.shutdown()
+            thread.join()
+    assert received == ([body] if read_body else [])
+
+
+@pytest.mark.parametrize("disconnect", [False, True])
+def test_mock_http_handler_allows_early_failure(disconnect):
+    def handler(request):
+        if disconnect:
+            request.connection.shutdown(socket.SHUT_RDWR)
+            request.close_connection = True
+        else:
+            request.send_response(413)
+            request.end_headers()
+
+    with http.server.HTTPServer(
+        ("127.0.0.1", 0), make_mock_http_handler(handler, buffer_body=False)
+    ) as server:
+        thread = start_server_thread(server)
+        try:
+            with socket.create_connection(server.server_address, timeout=2) as client:
+                client.sendall(
+                    b"POST / HTTP/1.0\r\nHost: localhost\r\nContent-Length: 7\r\n\r\n"
+                )
+                response = client.recv(1024)
+                if disconnect:
+                    assert response == b""
+                else:
+                    assert response.startswith(b"HTTP/1.0 413")
+        finally:
+            server.shutdown()
+            thread.join()
 
 
 @pytest.mark.parametrize("db_name", ["a" * 64, "invalid..database"])
@@ -80,9 +185,9 @@ def test_connect_rejects_invalid_cloud_dns_hostname(db_name):
 
 
 @contextlib.contextmanager
-def mock_lancedb_connection(handler, **client_config):
+def mock_lancedb_connection(handler, *, buffer_body=True, **client_config):
     with http.server.ThreadingHTTPServer(
-        ("127.0.0.1", 0), make_mock_http_handler(handler)
+        ("127.0.0.1", 0), make_mock_http_handler(handler, buffer_body=buffer_body)
     ) as server:
         port = server.server_address[1]
         handle = start_server_thread(server)
@@ -108,9 +213,9 @@ def mock_lancedb_connection(handler, **client_config):
 
 
 @contextlib.asynccontextmanager
-async def mock_lancedb_connection_async(handler, **client_config):
+async def mock_lancedb_connection_async(handler, *, buffer_body=True, **client_config):
     with http.server.HTTPServer(
-        ("127.0.0.1", 0), make_mock_http_handler(handler)
+        ("127.0.0.1", 0), make_mock_http_handler(handler, buffer_body=buffer_body)
     ) as server:
         port = server.server_address[1]
         handle = start_server_thread(server)
@@ -133,6 +238,76 @@ async def mock_lancedb_connection_async(handler, **client_config):
         finally:
             server.shutdown()
             handle.join()
+
+
+@pytest.mark.parametrize("sync_api", [False, True])
+@pytest.mark.parametrize("retries", [None, 0])
+@pytest.mark.parametrize("status", [429, 504])
+@pytest.mark.asyncio
+async def test_add_retry_override(sync_api, retries, status):
+    attempts = 0
+
+    def handler(request):
+        nonlocal attempts
+        if request.path.endswith("/describe/"):
+            payload = {
+                "version": 1,
+                "schema": {
+                    "fields": [
+                        {"name": "id", "type": {"type": "int64"}, "nullable": True}
+                    ]
+                },
+            }
+            request.send_response(200)
+            request.end_headers()
+            request.wfile.write(json.dumps(payload).encode())
+            return
+        assert request.path.endswith("/insert/")
+        body = bytearray()
+        if request.headers.get("Transfer-Encoding") == "chunked":
+            while True:
+                size = int(request.rfile.readline().strip(), 16)
+                if size == 0:
+                    request.rfile.readline()
+                    break
+                body.extend(request.rfile.read(size))
+                request.rfile.read(2)
+        else:
+            body.extend(
+                request.rfile.read(int(request.headers.get("Content-Length", 0)))
+            )
+        assert pa.ipc.open_stream(body).read_all().to_pylist() == [{"id": 1}]
+        attempts += 1
+        request.send_response(status if attempts == 1 else 200)
+        request.end_headers()
+        request.wfile.write(b'{"version": 2}')
+
+    config = {
+        "retry_config": {
+            "retries": 3,
+            "statuses": [429, 504],
+            "backoff_factor": 0,
+            "backoff_jitter": 0,
+        }
+    }
+    expected_success = status == 429 and retries is None
+    if sync_api:
+        with mock_lancedb_connection(handler, **config) as db:
+            table = db.open_table("test")
+            if expected_success:
+                assert table.add([{"id": 1}], retries=retries).version == 2
+            else:
+                with pytest.raises((HttpError, RetryError)):
+                    table.add([{"id": 1}], retries=retries)
+    else:
+        async with mock_lancedb_connection_async(handler, **config) as db:
+            table = await db.open_table("test")
+            if expected_success:
+                assert (await table.add([{"id": 1}], retries=retries)).version == 2
+            else:
+                with pytest.raises((HttpError, RetryError)):
+                    await table.add([{"id": 1}], retries=retries)
+    assert attempts == (2 if expected_success else 1)
 
 
 @pytest.fixture
@@ -1248,7 +1423,7 @@ async def test_create_table_timeout_is_actionable(timeout_config):
         request.close_connection = True
 
     async with mock_lancedb_connection_async(
-        handler, timeout_config=timeout_config
+        handler, buffer_body=False, timeout_config=timeout_config
     ) as db:
         batch = pa.record_batch({"id": [1, 2]})
         reader = pa.RecordBatchReader.from_batches(batch.schema, [batch])
@@ -2555,6 +2730,188 @@ async def test_remote_job_wait_disconnection_timeout_can_be_resumed(sync):
     assert "db.open_job('job-1')" in str(exc.value)
     assert isinstance(exc.value.__cause__, HttpError)
     assert exc.value.__cause__.is_transport_error is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync", [False, True])
+async def test_remote_job_stats_returns_native_optional_report(sync):
+    report = "Function job: finished\nWorker utilization: unavailable\n"
+    paths = []
+
+    def handler(request):
+        payload = json.loads(request.rfile.read(int(request.headers["Content-Length"])))
+        assert payload == {"job_id": "refresh-1"}
+        paths.append(request.path)
+        if request.path == "/v1/jobs/describe":
+            response = {
+                "job_id": "refresh-1",
+                "job_type": "function_refresh",
+                "job_state": "IN_PROGRESS",
+                "creation_ms": 1000,
+            }
+        elif request.path == "/v1/jobs/stats":
+            available = paths.count("/v1/jobs/stats") > 1
+            response = {
+                "job_id": "refresh-1",
+                "profile": {"future_field": True} if available else None,
+                "report": report if available else None,
+            }
+        else:
+            raise AssertionError(f"unexpected request: {request.path}")
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(response).encode())
+
+    if sync:
+        with mock_lancedb_connection(handler) as db:
+            job = db.open_job("refresh-1")
+            assert job.stats() is None
+            assert job.stats() == report
+    else:
+        async with mock_lancedb_connection_async(handler) as db:
+            job = await db.open_job("refresh-1")
+            assert await job.stats() is None
+            assert await job.stats() == report
+    assert paths == ["/v1/jobs/describe", "/v1/jobs/stats", "/v1/jobs/stats"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync", [False, True])
+@pytest.mark.parametrize(
+    "job_type", ["function_refresh", "computed_refresh", "refresh_column"]
+)
+@pytest.mark.parametrize("running", [False, True])
+@pytest.mark.parametrize("rows_failed", [0, 8])
+async def test_reopened_refresh_job_wait_returns_typed_result(
+    sync, job_type, running, rows_failed
+):
+    terminal_result = {
+        "rows_assigned": 400 - rows_failed,
+        "rows_failed": rows_failed,
+        "rows_remaining": 0,
+        "source_version": 7,
+        "published_version": 8,
+        "summary": {"future_field": True},
+    }
+    polls = 0
+
+    def handler(request):
+        nonlocal polls
+        assert request.path == "/v1/jobs/describe"
+        payload = json.loads(request.rfile.read(int(request.headers["Content-Length"])))
+        assert payload == {"job_id": "refresh-1"}
+        polls += 1
+        in_progress = running and polls <= 2
+        response = {
+            "job_id": "refresh-1",
+            "job_type": job_type,
+            "job_state": "IN_PROGRESS" if in_progress else "DONE",
+            "creation_ms": 1000,
+            "spec": {"column": "derived"},
+        }
+        if not in_progress:
+            response["result"] = terminal_result
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(response).encode())
+
+    observed = []
+    if sync:
+        with mock_lancedb_connection(handler) as db:
+            job = db.open_job("refresh-1")
+            assert job.id == "refresh-1"
+            assert job.spec == {"column": "derived"}
+            result = job.wait(timeout=timedelta(seconds=5), progress=observed.append)
+            assert job.wait() == result
+            job.refresh()
+            assert job.result == terminal_result
+    else:
+        async with mock_lancedb_connection_async(handler) as db:
+            job = await db.open_job("refresh-1")
+            assert job.id == "refresh-1"
+            assert job.spec == {"column": "derived"}
+            result = await job.wait(
+                timeout=timedelta(seconds=5), progress=observed.append
+            )
+            assert await job.wait() == result
+            await job.refresh()
+            assert job.result == terminal_result
+
+    assert isinstance(result, lancedb.RefreshColumnResult)
+    assert result == lancedb.RefreshColumnResult.model_validate(terminal_result)
+    assert result.rows_failed == rows_failed
+    assert observed[-1]["state"] == "finished"
+    if running:
+        assert observed[0]["state"] == "running"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync", [False, True])
+@pytest.mark.parametrize("terminal_result", [None, {}])
+async def test_reopened_refresh_job_rejects_missing_or_invalid_result(
+    sync, terminal_result
+):
+    def handler(request):
+        assert request.path == "/v1/jobs/describe"
+        request.rfile.read(int(request.headers["Content-Length"]))
+        request.send_response(200)
+        request.end_headers()
+        request.wfile.write(
+            json.dumps(
+                {
+                    "job_id": "refresh-1",
+                    "job_type": "function_refresh",
+                    "job_state": "DONE",
+                    "result": terminal_result,
+                }
+            ).encode()
+        )
+
+    if sync:
+        with mock_lancedb_connection(handler) as db:
+            job = db.open_job("refresh-1")
+            with pytest.raises(HttpError, match="typed job"):
+                job.wait()
+    else:
+        async with mock_lancedb_connection_async(handler) as db:
+            job = await db.open_job("refresh-1")
+            with pytest.raises(HttpError, match="typed job"):
+                await job.wait()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync", [False, True])
+async def test_reopened_unit_job_ignores_additive_result_payload(sync):
+    terminal_result = {"future_field": True}
+
+    def handler(request):
+        assert request.path == "/v1/jobs/describe"
+        request.rfile.read(int(request.headers["Content-Length"]))
+        request.send_response(200)
+        request.end_headers()
+        request.wfile.write(
+            json.dumps(
+                {
+                    "job_id": "index-1",
+                    "job_type": "create_index",
+                    "job_state": "DONE",
+                    "result": terminal_result,
+                }
+            ).encode()
+        )
+
+    if sync:
+        with mock_lancedb_connection(handler) as db:
+            job = db.open_job("index-1")
+            assert job.wait() is None
+            assert job.result == terminal_result
+    else:
+        async with mock_lancedb_connection_async(handler) as db:
+            job = await db.open_job("index-1")
+            assert await job.wait() is None
+            assert job.result == terminal_result
 
 
 @pytest.mark.parametrize("payload", [b"{", b"{}"])
@@ -4938,10 +5295,14 @@ def test_remote_schema_restores_blob_extensions(use_async, with_pylance, nested)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("use_async", [False, True])
-@pytest.mark.parametrize("mode", ["merge", "overwrite"])
+@pytest.mark.parametrize(
+    "mode,part_status",
+    [("merge", 200), ("overwrite", 200), ("overwrite", 503)],
+    ids=["merge", "overwrite", "overwrite-retry"],
+)
 @pytest.mark.parametrize("target_with_ranges", [False, True])
 async def test_remote_writes_normalize_blob_layouts(
-    use_async, mode, target_with_ranges
+    use_async, mode, part_status, target_with_ranges, mem_db
 ):
     description = json.loads(json.dumps(BLOB_DESCRIBE_RESPONSE))
     if target_with_ranges:
@@ -4950,29 +5311,77 @@ async def test_remote_writes_normalize_blob_layouts(
             for name in ("position", "size")
         )
     received = []
+    paths = []
+    staged = {}
+    part_attempts = []
+    published = mem_db.create_table(
+        "published",
+        [{"id": 0, "image": b"before"}],
+        schema=pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")]),
+    )
 
     def handler(request):
-        if request.path == "/v1/table/test/describe/":
+        path = urlparse(request.path).path
+        query = parse_qs(urlparse(request.path).query)
+        status = 200
+        if path == "/v1/table/test/describe/":
             response = description
         else:
-            expected = "merge_insert" if mode == "merge" else "insert"
-            assert urlparse(request.path).path == f"/v1/table/test/{expected}/"
-            if request.headers.get("Transfer-Encoding") == "chunked":
-                body = bytearray()
-                while size := int(request.rfile.readline().split(b";")[0], 16):
-                    body.extend(request.rfile.read(size))
-                    assert request.rfile.read(2) == b"\r\n"
-                assert request.rfile.read(2) == b"\r\n"
+            paths.append(path.removeprefix("/v1/table/test/"))
+            body = request.rfile.read()
+            if path == "/v1/table/test/multipart_write/create":
+                assert mode == "overwrite"
+                assert paths == ["multipart_write/create"]
+                assert not query and not body
+                response = {"upload_id": "blob-overwrite"}
+            elif path == "/v1/table/test/insert/":
+                assert mode == "overwrite"
+                assert query["mode"] == ["overwrite"]
+                assert query["upload_id"] == ["blob-overwrite"]
+                part_id = query["upload_part_id"][0]
+                assert str(uuid.UUID(part_id)) == part_id
+                part_attempts.append((part_id, body))
+                assert published.version == 1
+                assert published.search().select(["id"]).to_list() == [{"id": 0}]
+                if staged:
+                    assert staged == {part_id: body}
+                else:
+                    staged[part_id] = body
+                    assert body[-8:] == b"\xff\xff\xff\xff\x00\x00\x00\x00"
+                    received.append(pa.ipc.open_stream(body).read_all())
+                status = part_status if len(part_attempts) == 1 else 200
+                response = {}
+            elif path == "/v1/table/test/multipart_write/complete":
+                assert mode == "overwrite"
+                assert query == {"upload_id": ["blob-overwrite"]} and not body
+                expected_attempts = 2 if part_status == 503 else 1
+                assert paths == ["multipart_write/create"] + [
+                    "insert/"
+                ] * expected_attempts + ["multipart_write/complete"]
+                assert len(staged) == len(received) == 1
+                assert part_attempts == [part_attempts[0]] * expected_attempts
+                assert published.version == 1
+                published.add(received[0], mode="overwrite")
+                response = {"version": published.version}
             else:
-                body = request.rfile.read(int(request.headers["Content-Length"]))
-            received.append(pa.ipc.open_stream(body).read_all())
-            response = {
-                "version": 2,
-                "num_updated_rows": 0,
-                "num_inserted_rows": 2,
-                "num_deleted_rows": 0,
-            }
-        request.send_response(200)
+                assert mode == "merge"
+                assert path == "/v1/table/test/merge_insert/"
+                # merge_insert still streams a chunked body; preserve its framing.
+                if request.headers.get("Transfer-Encoding") == "chunked":
+                    stream = io.BytesIO(body)
+                    body = bytearray()
+                    while size := int(stream.readline().split(b";")[0], 16):
+                        body.extend(stream.read(size))
+                        assert stream.read(2) == b"\r\n"
+                    assert stream.read(2) == b"\r\n"
+                received.append(pa.ipc.open_stream(body).read_all())
+                response = {
+                    "version": 2,
+                    "num_updated_rows": 0,
+                    "num_inserted_rows": 2,
+                    "num_deleted_rows": 0,
+                }
+        request.send_response(status)
         request.send_header("Content-Type", "application/json")
         request.send_header("phalanx-version", "0.5.0")
         request.end_headers()
@@ -5005,7 +5414,23 @@ async def test_remote_writes_normalize_blob_layouts(
         else:
             result = table.add(data, mode="overwrite")
         if use_async:
-            await result
+            result = await result
+        assert result.version == 2
+
+    if mode == "overwrite":
+        assert published.version == 2
+        hits = published.search().select(["id"]).with_row_id(True).to_arrow()
+        by_id = dict(zip(hits["id"].to_pylist(), hits["_rowid"].to_pylist()))
+        assert set(by_id) == {1, 2}
+        row_ids = [by_id[1], by_id[2]]
+        assert published.fetch_blobs("image", row_ids).to_pylist() == [b"payload", None]
+        payload, null = published.fetch_blob_files("image", row_ids)
+        assert null is None
+        with payload:
+            assert payload.read_range(1, 3) == b"ayl"
+            assert payload.read() == b"payload"
+    else:
+        assert paths == ["merge_insert/"]
 
     assert len(received) == 1
     images = received[0]["image"].combine_chunks()
@@ -5082,14 +5507,37 @@ def blob_descriptor_take_table():
 
 
 @contextlib.contextmanager
-def blob_remote_table(*, server_version=Version("0.5.0"), location=None):
+def blob_remote_table(
+    *,
+    server_version=Version("0.5.0"),
+    location=None,
+    range_capability=None,
+    version_header="1",
+    framing="file",
+    requests=None,
+    state=None,
+    empty=False,
+    schema_version=None,
+    search_scores=False,
+    snapshot_supported=True,
+    identity_header="v1:" + "a" * 64,
+    verify_identity=True,
+):
+    if state is None:
+        state = {"version": 1}
+
     def handler(request):
         if request.path == "/v1/table/test/describe/":
+            content_len = int(request.headers.get("Content-Length", 0))
+            body = json.loads(request.rfile.read(content_len)) if content_len else {}
             request.send_response(200)
             request.send_header("Content-Type", "application/json")
             request.send_header("phalanx-version", str(server_version))
+            if range_capability is not None:
+                request.send_header("x-lancedb-blob-ranges", range_capability)
             request.end_headers()
             response = dict(BLOB_DESCRIBE_RESPONSE)
+            response["version"] = body.get("version") or state["version"]
             if location is not None:
                 response["location"] = str(location)
             request.wfile.write(json.dumps(response).encode())
@@ -5122,9 +5570,22 @@ def blob_remote_table(*, server_version=Version("0.5.0"), location=None):
         elif request.path == "/v1/table/test/query/":
             content_len = int(request.headers.get("Content-Length", 0))
             body = json.loads(request.rfile.read(content_len))
+            if requests is not None:
+                requests.append(("query", body))
             columns = body.get("columns")
-            assert columns in (None, ["id", "image"], ["id"], ["image"])
-            if columns == ["id"]:
+            assert columns in (
+                None,
+                ["id", "image"],
+                ["id"],
+                ["image"],
+                {"payload": "image"},
+            )
+            if isinstance(columns, dict):
+                response_table = blob_query_response_table().select(["image", "_rowid"])
+                response_table = response_table.rename_columns(["payload", "_rowid"])
+                if not body.get("with_row_id", False):
+                    response_table = response_table.drop(["_rowid"])
+            elif columns == ["id"]:
                 response_table = blob_query_response_table().select(["id"])
             else:
                 if columns == ["image"]:
@@ -5141,31 +5602,344 @@ def blob_remote_table(*, server_version=Version("0.5.0"), location=None):
                     response_table = blob_query_response_table()
                 if not body.get("with_row_id", False):
                     response_table = response_table.drop(["_rowid"])
+            if search_scores and not body.get("filter", "").startswith("_rowid IN"):
+                if body.get("vector"):
+                    response_table = response_table.append_column(
+                        "_distance", pa.array([0.1, 0.2, 0.3], type=pa.float32())
+                    )
+                elif body.get("full_text_query"):
+                    response_table = response_table.append_column(
+                        "_score", pa.array([3.0, 2.0, 1.0], type=pa.float32())
+                    )
+            if empty:
+                response_table = response_table.slice(0, 0)
+            if schema_version is not None:
+                response_table = response_table.replace_schema_metadata(
+                    {
+                        b"lancedb:query_version": schema_version.encode(),
+                        b"lancedb:query_snapshot": ("v1:" + "f" * 64).encode(),
+                    }
+                )
             request.send_response(200)
-            request.send_header("Content-Type", "application/vnd.apache.arrow.file")
-            request.send_header("x-lancedb-version", "1")
+            request.send_header(
+                "Content-Type", f"application/vnd.apache.arrow.{framing}"
+            )
+            header = (
+                version_header(body) if callable(version_header) else version_header
+            )
+            if header is not None:
+                request.send_header("x-lancedb-version", header)
+                if snapshot_supported:
+                    request.send_header("x-lancedb-query-version", header)
+                    identity = (
+                        identity_header(body)
+                        if callable(identity_header)
+                        else identity_header
+                    )
+                    if identity is not None:
+                        request.send_header("x-lancedb-query-snapshot", identity)
             request.end_headers()
-            with pa.ipc.new_file(request.wfile, response_table.schema) as writer:
+            writer_factory = pa.ipc.new_file if framing == "file" else pa.ipc.new_stream
+            with writer_factory(request.wfile, response_table.schema) as writer:
+                writer.write_table(response_table, max_chunksize=1)
+        elif (
+            range_capability == "1"
+            and request.path == "/v1/table/test/fetch_blob_ranges/"
+        ):
+            size = int(request.headers["Content-Length"])
+            body = json.loads(request.rfile.read(size))
+            payloads = {10: b"alpha", 20: None, 30: b"gamma", 40: b""}
+            values = []
+            for item in body["ranges"]:
+                row, offset, length = (
+                    item[key] for key in ("row_id", "offset", "length")
+                )
+                error = None
+                if row not in payloads:
+                    error = "only 1 exist"
+                elif payloads[row] is not None and offset + length > len(payloads[row]):
+                    error = "range exceeds blob size"
+                if error:
+                    request.send_response(400)
+                    request.end_headers()
+                    request.wfile.write(error.encode())
+                    return
+                payload = payloads[row]
+                values.append(
+                    None if payload is None else payload[offset : offset + length]
+                )
+            response_table = pa.table(
+                {"value": pa.array(values, type=pa.large_binary())}
+            )
+            request.send_response(200)
+            request.send_header("Content-Type", "application/vnd.apache.arrow.stream")
+            request.send_header("x-lancedb-version", "1")
+            request.send_header("x-lancedb-query-snapshot", "v1:" + "a" * 64)
+            request.end_headers()
+            with pa.ipc.new_stream(request.wfile, response_table.schema) as writer:
                 writer.write_table(response_table)
         elif request.path == "/v1/table/test/fetch_blobs/":
             content_len = int(request.headers.get("Content-Length", 0))
             body = json.loads(request.rfile.read(content_len))
             assert body["column"] == "image"
-            assert body["row_ids"] == [10, 20, 30]
+            if requests is not None:
+                requests.append(("fetch_blobs", body))
+            payloads = {10: b"alpha", 20: None, 30: b"gamma", 40: b""}
+            if state["version"] > 1 and body.get("version") != 1:
+                payloads = {row: b"new-version" for row in payloads}
             response_table = pa.table(
-                {"image": pa.array([b"alpha", None, b"gamma"], type=pa.large_binary())}
+                {
+                    "image": pa.array(
+                        [payloads[row] for row in body["row_ids"]],
+                        type=pa.large_binary(),
+                    )
+                }
             )
             request.send_response(200)
             request.send_header("Content-Type", "application/vnd.apache.arrow.stream")
+            if verify_identity and request.headers.get("x-lancedb-query-snapshot"):
+                request.send_header(
+                    "x-lancedb-query-snapshot",
+                    request.headers["x-lancedb-query-snapshot"],
+                )
             request.end_headers()
             with pa.ipc.new_stream(request.wfile, response_table.schema) as writer:
                 writer.write_table(response_table)
+        elif request.path == "/v1/table/test/insert/":
+            if request.headers.get("Transfer-Encoding") == "chunked":
+                while size := int(request.rfile.readline().split(b";")[0], 16):
+                    request.rfile.read(size)
+                    assert request.rfile.read(2) == b"\r\n"
+                assert request.rfile.read(2) == b"\r\n"
+            else:
+                request.rfile.read(int(request.headers.get("Content-Length", 0)))
+            state["version"] += 1
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(json.dumps({"version": state["version"]}).encode())
         else:
             request.send_response(404)
             request.end_headers()
 
     with mock_lancedb_connection(handler) as db:
         yield db.open_table("test")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
+@pytest.mark.parametrize("framing", ["file", "stream"])
+@pytest.mark.parametrize("method", ["to_arrow", "to_list", "to_pandas", "to_batches"])
+async def test_remote_blob_bytes_conversion(use_async, framing, method):
+    if method == "to_pandas":
+        pytest.importorskip("pandas")
+    requests = []
+    with blob_remote_table(framing=framing, requests=requests) as remote_table:
+        table = remote_table._table if use_async else remote_table
+        query = table.query() if use_async else table.search()
+        query = query.select(["id", "image"])
+        if method == "to_batches":
+            kwargs = {"max_batch_length" if use_async else "batch_size": 1}
+            reader = query.to_batches(blob_mode="bytes", **kwargs)
+            if use_async:
+                reader = await reader
+                batches = [batch async for batch in reader]
+            else:
+                batches = list(reader)
+            assert all(batch.num_rows == 1 for batch in batches)
+            result = pa.Table.from_batches(batches, schema=reader.schema).to_pylist()
+        else:
+            result = getattr(query, method)(blob_mode="bytes")
+            if use_async:
+                result = await result
+            if method == "to_arrow":
+                assert result.schema.field("image").type == pa.large_binary()
+                result = result.to_pylist()
+            elif method == "to_pandas":
+                result = result.to_dict("records")
+        assert result == [
+            {"id": 1, "image": b"alpha"},
+            {"id": 2, "image": None},
+            {"id": 3, "image": b"gamma"},
+        ]
+        fetches = [body for path, body in requests if path == "fetch_blobs"]
+        assert fetches
+        assert all(body["version"] == 1 for body in fetches)
+        assert [row for body in fetches for row in body["row_ids"]] == [10, 20, 30]
+        descriptor_queries = [
+            body
+            for path, body in requests
+            if path == "query" and body.get("filter", "").startswith("_rowid IN")
+        ]
+        assert all(body["version"] == 1 for body in descriptor_queries)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
+@pytest.mark.parametrize("framing", ["file", "stream"])
+async def test_remote_blob_bytes_keeps_query_snapshot_during_writes(use_async, framing):
+    requests = []
+    state = {"version": 1}
+    with blob_remote_table(
+        framing=framing, requests=requests, state=state
+    ) as remote_table:
+        table = remote_table._table if use_async else remote_table
+        query = table.query() if use_async else table.search()
+        kwargs = {"max_batch_length" if use_async else "batch_size": 1}
+        reader = query.select(["id", "image"]).to_batches(blob_mode="bytes", **kwargs)
+        if use_async:
+            reader = await reader
+        # The query has selected v1; commit v2 before consuming any payloads.
+        write = table.add([{"id": 4, "image": b"new-version"}])
+        if use_async:
+            await write
+        version = await table.version() if use_async else table.version
+        assert version == 2
+        if use_async:
+            rows = [row async for batch in reader for row in batch.to_pylist()]
+        else:
+            rows = [row for batch in reader for row in batch.to_pylist()]
+        assert [row["image"] for row in rows] == [b"alpha", None, b"gamma"]
+        fetches = [body for path, body in requests if path == "fetch_blobs"]
+        assert all(body["version"] == 1 for body in fetches)
+        # Snapshot fetches must not check out the caller's live handle.
+        version = await table.version() if use_async else table.version
+        assert version == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
+@pytest.mark.parametrize("version_header", [None, "invalid", "0", "-1", str(2**64)])
+async def test_remote_blob_bytes_invalid_snapshot(use_async, version_header):
+    requests = []
+    with blob_remote_table(
+        version_header=version_header, requests=requests, schema_version="1"
+    ) as remote_table:
+        table = remote_table._table if use_async else remote_table
+        query = table.query() if use_async else table.search()
+        with pytest.raises(NotImplementedError, match="x-lancedb-query-version"):
+            result = query.to_arrow(blob_mode="bytes")
+            if use_async:
+                await result
+    assert not any(path == "fetch_blobs" for path, _ in requests)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
+@pytest.mark.parametrize("framing", ["file", "stream"])
+async def test_remote_blob_bytes_empty_results(use_async, framing):
+    requests = []
+    with blob_remote_table(
+        empty=True, framing=framing, requests=requests
+    ) as remote_table:
+        table = remote_table._table if use_async else remote_table
+        query = table.query() if use_async else table.search()
+        result = query.to_arrow(blob_mode="bytes")
+        if use_async:
+            result = await result
+        assert result.num_rows == 0
+        assert result.schema.field("image").type == pa.large_binary()
+        assert result.column_names == ["id", "image"]
+    assert not any(path == "fetch_blobs" for path, _ in requests)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
+@pytest.mark.parametrize("kind", ["vector", "fts", "hybrid"])
+@pytest.mark.parametrize("rerank", [False, True])
+async def test_remote_blob_bytes_search_queries(use_async, kind, rerank):
+    with blob_remote_table(search_scores=True) as remote_table:
+        if use_async:
+            query = remote_table._table.query()
+            if kind in ("vector", "hybrid"):
+                query = query.nearest_to([1.0, 2.0])
+            if kind in ("fts", "hybrid"):
+                query = query.nearest_to_text("hello")
+        elif kind == "vector":
+            query = remote_table.search([1.0, 2.0], vector_column_name="vector")
+        elif kind == "fts":
+            query = remote_table.search("hello", query_type="fts")
+        else:
+            query = (
+                remote_table.search(query_type="hybrid", vector_column_name="vector")
+                .vector([1.0, 2.0])
+                .text("hello")
+            )
+        if rerank:
+            from lancedb.rerankers import RRFReranker
+
+            class StripMetadataReranker(RRFReranker):
+                def rerank_vector(self, query, vector_results):
+                    return vector_results.append_column(
+                        "_relevance_score", pa.array([3.0, 2.0, 1.0])
+                    ).replace_schema_metadata(None)
+
+                def rerank_fts(self, query, fts_results):
+                    return self.rerank_vector(query, fts_results)
+
+                def rerank_hybrid(self, query, vector_results, fts_results):
+                    return (
+                        super()
+                        .rerank_hybrid(query, vector_results, fts_results)
+                        .replace_schema_metadata(None)
+                    )
+
+            kwargs = {"query_string": "hello"} if kind == "vector" else {}
+            query = query.rerank(StripMetadataReranker(), **kwargs)
+        result = query.select(["id", "image"]).to_arrow(blob_mode="bytes")
+        if use_async:
+            result = await result
+        assert result["image"].to_pylist() == [b"alpha", None, b"gamma"]
+        assert "_rowid" not in result.column_names
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
+async def test_remote_blob_bytes_hybrid_rejects_different_snapshots(use_async):
+    def header(body):
+        return "2" if body.get("full_text_query") else "1"
+
+    requests = []
+    with blob_remote_table(
+        search_scores=True, version_header=header, requests=requests
+    ) as remote_table:
+        if use_async:
+            query = (
+                remote_table._table.query()
+                .nearest_to([1.0, 2.0])
+                .nearest_to_text("hello")
+            )
+        else:
+            query = (
+                remote_table.search(query_type="hybrid", vector_column_name="vector")
+                .vector([1.0, 2.0])
+                .text("hello")
+            )
+        with pytest.raises(
+            NotImplementedError, match="inconsistent x-lancedb-query-version"
+        ):
+            result = query.select(["id", "image"]).to_arrow(blob_mode="bytes")
+            if use_async:
+                await result
+    assert not any(path == "fetch_blobs" for path, _ in requests)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
+@pytest.mark.parametrize("with_row_id", [False, True])
+async def test_remote_blob_bytes_alias_and_explicit_row_ids(use_async, with_row_id):
+    with blob_remote_table() as remote_table:
+        query = remote_table._table.query() if use_async else remote_table.search()
+        query = query.select({"payload": "image"})
+        if with_row_id:
+            query = query.with_row_id() if use_async else query.with_row_id(True)
+        result = query.to_arrow(blob_mode="bytes")
+        if use_async:
+            result = await result
+        assert result["payload"].to_pylist() == [b"alpha", None, b"gamma"]
+        assert ("_rowid" in result.column_names) == with_row_id
+        if with_row_id:
+            assert result["_rowid"].to_pylist() == [10, 20, 30]
 
 
 def test_remote_blob_columns_and_fetch():
@@ -5189,7 +5963,7 @@ def test_sync_remote_blob_pandas_avoids_storage_access(
         raise AssertionError("remote storage must not be opened")
 
     monkeypatch.setattr(lance, "dataset", fail_dataset)
-    with blob_remote_table(location=location) as table:
+    with blob_remote_table(location=location, version_header=None) as table:
         monkeypatch.setattr(table, "to_lance", fail_dataset)
         query = table.search().select(["id", "image"])
         if blob_mode == "descriptions":
@@ -5202,14 +5976,20 @@ def test_sync_remote_blob_pandas_avoids_storage_access(
                 NotImplementedError, match="stable table snapshot"
             ) as exc:
                 query.to_pandas(blob_mode=blob_mode)
-            assert "fetch_blobs(column, row_ids)" in str(exc.value)
-            assert "with_row_id(True)" in str(exc.value)
+            if blob_mode == "bytes":
+                assert "x-lancedb-query-version" in str(exc.value)
+            else:
+                assert "fetch_blobs(column, row_ids)" in str(exc.value)
+                assert "with_row_id(True)" in str(exc.value)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("use_async", [False, True])
-async def test_remote_fetch_blob_ranges(use_async):
-    with blob_remote_table() as remote_table:
+@pytest.mark.parametrize("range_capability", [None, "0", "2", "1"])
+async def test_remote_fetch_blob_ranges(use_async, range_capability):
+    with blob_remote_table(
+        server_version="1.13.0-beta.0", range_capability=range_capability
+    ) as remote_table:
         table = remote_table._table if use_async else remote_table
         requests = [
             (30, 2, 3),
@@ -5287,7 +6067,7 @@ async def test_async_remote_blob_descriptions_to_pandas_uses_server(monkeypatch)
 @pytest.mark.asyncio
 @pytest.mark.parametrize("blob_mode", ["bytes", "lazy"])
 async def test_async_remote_blob_pandas_rejects_unpinned_fetch(monkeypatch, blob_mode):
-    with blob_remote_table() as remote_table:
+    with blob_remote_table(version_header=None) as remote_table:
         table = remote_table._table
 
         async def fail_uri():
@@ -5312,8 +6092,8 @@ async def test_async_remote_blob_pandas_rejects_unpinned_fetch(monkeypatch, blob
 
 
 @pytest.mark.parametrize("method", ["to_arrow", "to_list"])
-def test_remote_search_bytes_refused_before_query(monkeypatch, method):
-    with blob_remote_table() as table:
+def test_remote_search_bytes_requires_response_version(method):
+    with blob_remote_table(version_header=None) as table:
         query = table.search().select(["id", "image"])
         descriptions = getattr(query, method)(blob_mode="descriptions")
         images = (
@@ -5323,19 +6103,15 @@ def test_remote_search_bytes_refused_before_query(monkeypatch, method):
         )
         assert "_lance_row_id" not in images[0]
 
-        def fail_query(*args, **kwargs):
-            raise AssertionError("bytes must be refused before the query runs")
-
-        monkeypatch.setattr(table, "_execute_query", fail_query)
-        with pytest.raises(NotImplementedError, match="stable table snapshot"):
+        with pytest.raises(NotImplementedError, match="x-lancedb-query-version"):
             getattr(query, method)(blob_mode="bytes")
         with pytest.raises(ValueError, match="blob_mode must be one of"):
             table.to_pandas(blob_mode="handles")
 
 
 @pytest.mark.asyncio
-async def test_async_remote_to_arrow_bytes_refused_before_query(monkeypatch):
-    with blob_remote_table() as remote_table:
+async def test_async_remote_to_arrow_bytes_requires_response_version(monkeypatch):
+    with blob_remote_table(version_header=None) as remote_table:
         table = remote_table._table
 
         async def fail_fetch(*args, **kwargs):
@@ -5343,8 +6119,7 @@ async def test_async_remote_to_arrow_bytes_refused_before_query(monkeypatch):
 
         monkeypatch.setattr(table, "fetch_blobs", fail_fetch)
         query = table.query().select(["id", "image"])
-        monkeypatch.setattr(query, "to_batches", fail_fetch)
-        with pytest.raises(NotImplementedError, match="stable table snapshot"):
+        with pytest.raises(NotImplementedError, match="x-lancedb-query-version"):
             await query.to_arrow(blob_mode="bytes")
         with pytest.raises(NotImplementedError, match="stable table snapshot"):
             await table.to_arrow(blob_mode="bytes")
@@ -5441,7 +6216,7 @@ def test_remote_blob_query_to_pandas():
 
 @pytest.mark.parametrize("blob_mode", ["default", "lazy", "bytes"])
 def test_remote_blob_query_to_pandas_rejects_unpinned_fetch(monkeypatch, blob_mode):
-    with blob_remote_table() as table:
+    with blob_remote_table(version_header=None) as table:
 
         def fail_fetch(*args, **kwargs):
             raise AssertionError("blob fetch must not use an unpinned remote table")
@@ -5807,6 +6582,93 @@ def test_remote_job_handle_reports_its_own_detail():
             "limit": 500,
             "filter": "state = 'claim_complete'",
         }
+
+
+@pytest.mark.parametrize("is_async", [False, True])
+@pytest.mark.parametrize("known_build", [False, True])
+@pytest.mark.asyncio
+async def test_remote_server_info(is_async, known_build):
+    requests = []
+    expected = {
+        "query_node": {
+            "release": "1.2.3",
+            "git_sha": "0123456789ab",
+            "build_date": "2024-01-01T00:00:00Z",
+        }
+        if known_build
+        else None,
+        "lance_version": "5.0.0",
+        "lancedb_version": "0.42.0",
+        "function_worker_protocol_version": 25,
+        "configured_query_node_image": "example.invalid/query:configured",
+        "configured_job_worker_image": "example.invalid/cpu:configured",
+        "configured_sql_job_image": "example.invalid/cli:configured",
+        "configured_gpu_worker_image": "example.invalid/worker:configured",
+    }
+
+    def handler(request):
+        requests.append((request.command, request.path))
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(expected).encode())
+
+    if is_async:
+        async with mock_lancedb_connection_async(handler) as db:
+            actual = await db.server_info()
+    else:
+        with mock_lancedb_connection(handler) as db:
+            actual = db.server_info()
+
+    assert actual == expected
+    assert json.loads(json.dumps(actual)) == expected
+    assert requests == [("GET", "/v1/server/info")]
+
+
+@pytest.mark.parametrize("is_async", [False, True])
+@pytest.mark.parametrize("status", [404, 403])
+@pytest.mark.asyncio
+async def test_remote_server_info_errors(is_async, status):
+    requests = []
+
+    def handler(request):
+        requests.append((request.command, request.path))
+        request.send_response(status)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(
+            json.dumps(
+                {
+                    "error": "discovery unavailable",
+                    "server": {
+                        "release": "1.2.3",
+                        "git_sha": "0123456789ab",
+                        "build_date": "2024-01-01T00:00:00Z",
+                    },
+                }
+            ).encode()
+        )
+
+    expected_error = NotImplementedError if status == 404 else HttpError
+    with pytest.raises(expected_error) as caught:
+        if is_async:
+            async with mock_lancedb_connection_async(handler) as db:
+                await db.server_info()
+        else:
+            with mock_lancedb_connection(handler) as db:
+                db.server_info()
+
+    if status == 404:
+        assert "/v1/server/info" in str(caught.value)
+    else:
+        # Permission responses do not carry the input-error classifier header.
+        # The native HTTP error and Python conversion must retain provenance.
+        assert "discovery unavailable" in str(caught.value)
+        assert "1.2.3" in str(caught.value)
+        assert "0123456789ab" in str(caught.value)
+        assert "2024-01-01T00:00:00Z" in str(caught.value)
+        assert caught.value.status_code == 403
+    assert requests == [("GET", "/v1/server/info")]
 
 
 @pytest.mark.parametrize("is_async", [False, True])
@@ -6504,3 +7366,153 @@ def test_remote_optimize_rejects_explicit_pruning_before_submitting():
             table.optimize(delete_unverified=True)
 
     assert server.tickets == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
+@pytest.mark.parametrize("framing", ["file", "stream"])
+async def test_remote_blob_bytes_rejects_legacy_watermark(use_async, framing):
+    requests = []
+    with blob_remote_table(
+        framing=framing,
+        snapshot_supported=False,
+        version_header="1",
+        schema_version="1",
+        requests=requests,
+    ) as remote_table:
+        table = remote_table._table if use_async else remote_table
+        query = table.query() if use_async else table.search()
+        descriptors = query.to_arrow(blob_mode="descriptions")
+        if use_async:
+            descriptors = await descriptors
+        assert descriptors.num_rows == 3
+        assert pa.types.is_struct(descriptors.schema.field("image").type)
+        query = table.query() if use_async else table.search()
+        with pytest.raises(NotImplementedError, match="x-lancedb-query-version"):
+            result = query.to_arrow(blob_mode="bytes")
+            if use_async:
+                await result
+    assert not any(path == "fetch_blobs" for path, _ in requests)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
+@pytest.mark.parametrize("identity_header", [None, "", "v2:" + "a" * 64, "v1:broken"])
+async def test_remote_blob_bytes_requires_trustworthy_identity(
+    use_async, identity_header
+):
+    requests = []
+    with blob_remote_table(
+        identity_header=identity_header, schema_version="1", requests=requests
+    ) as remote_table:
+        table = remote_table._table if use_async else remote_table
+        query = table.query() if use_async else table.search()
+        # Ordinary descriptors still work, even with forged Arrow schema metadata.
+        result = query.to_arrow(blob_mode="descriptions")
+        if use_async:
+            result = await result
+        assert result.num_rows == 3
+        with pytest.raises(NotImplementedError, match="x-lancedb-query-snapshot"):
+            result = query.to_arrow(blob_mode="bytes")
+            if use_async:
+                await result
+    assert not any(path == "fetch_blobs" for path, _ in requests)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
+async def test_remote_blob_bytes_rejects_unverified_serving_node(use_async):
+    with blob_remote_table(verify_identity=False) as remote_table:
+        table = remote_table._table if use_async else remote_table
+        query = table.query() if use_async else table.search()
+        with pytest.raises(
+            NotImplementedError, match="did not verify the query snapshot identity"
+        ):
+            result = query.to_arrow(blob_mode="bytes")
+            if use_async:
+                await result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
+async def test_remote_blob_bytes_hybrid_rejects_same_version_different_incarnations(
+    use_async,
+):
+    requests = []
+
+    def identity(body):
+        return "v1:" + ("b" if body.get("full_text_query") else "a") * 64
+
+    with blob_remote_table(
+        search_scores=True, identity_header=identity, requests=requests
+    ) as remote_table:
+        if use_async:
+            query = (
+                remote_table._table.query()
+                .nearest_to([1.0, 2.0])
+                .nearest_to_text("hello")
+            )
+        else:
+            query = (
+                remote_table.search(query_type="hybrid", vector_column_name="vector")
+                .vector([1.0, 2.0])
+                .text("hello")
+            )
+        with pytest.raises(
+            NotImplementedError, match="inconsistent x-lancedb-query-version"
+        ):
+            result = query.select(["id", "image"]).to_arrow(blob_mode="bytes")
+            if use_async:
+                await result
+    assert not any(path == "fetch_blobs" for path, _ in requests)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_async", [False, True])
+@pytest.mark.parametrize("background", [False, True])
+@pytest.mark.parametrize("kwargs", [{}, {"exist_ok": False}, {"exist_ok": True}])
+async def test_remote_index_exist_ok_wire(is_async, background, kwargs):
+    received = []
+
+    def handler(request):
+        parsed = urlparse(request.path)
+        body = request.rfile.read(int(request.headers.get("Content-Length", 0)))
+        if parsed.path.endswith("/create_index/"):
+            received.append((parse_qs(parsed.query), json.loads(body)))
+            payload = {}
+        elif parsed.path.endswith("/describe/"):
+            payload = dict(
+                version=1,
+                schema=dict(
+                    fields=[dict(name="id", type={"type": "int64"}, nullable=False)]
+                ),
+            )
+        elif parsed.path.endswith("/create/"):
+            payload = {}
+        else:
+            raise AssertionError(request.path)
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(payload).encode())
+
+    method = "create_index_async" if background else "create_index"
+    if is_async:
+        async with mock_lancedb_connection_async(handler) as db:
+            table = await db.create_table("test", [{"id": 1}])
+            result = await getattr(table, method)("id", config=BTree(), **kwargs)
+            if background:
+                await result.wait()
+    else:
+        with mock_lancedb_connection(handler) as db:
+            table = db.create_table("test", [{"id": 1}])
+            result = getattr(table, method)("id", config=BTree(), **kwargs)
+            if background:
+                result.wait()
+    query, body = received[0]
+    assert query == ({"exist_ok": ["true"]} if kwargs.get("exist_ok") else {})
+    assert "exist_ok" not in body
+    if kwargs.get("exist_ok"):
+        assert body["replace"] is False
+    else:
+        assert "replace" not in body

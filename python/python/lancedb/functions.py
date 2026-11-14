@@ -22,6 +22,7 @@ import symtable
 import json
 import linecache
 import math
+import os
 import re
 import sys
 import textwrap
@@ -29,6 +30,7 @@ import types
 import warnings
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime
+from pathlib import Path
 from typing import (
     Annotated,
     Any,
@@ -1529,6 +1531,17 @@ def _infer_signature(
     return FunctionSignature(inputs=tuple(inputs), output=output)
 
 
+def _is_vectorized_callable(function: Callable[..., Any], *, method: bool) -> bool:
+    parameters = _callable_parameters(function)
+    if method:
+        parameters = parameters[1:]
+    annotations = get_type_hints(function, include_extras=True)
+    annotated = tuple(annotations.get(parameter.name) for parameter in parameters)
+    return (len(annotated) == 1 and annotated[0] is pa.RecordBatch) or (
+        bool(annotated) and all(annotation is pa.Array for annotation in annotated)
+    )
+
+
 # Both spellings strip from packaged source; `udf` is the deprecated alias.
 _DECORATOR_NAMES = frozenset({"function", "udf"})
 
@@ -1570,10 +1583,23 @@ _NAMESPACE_MODULES = frozenset(
 )
 
 
-def _namespace_acquisition(
-    definition: ast.FunctionDef, references: set[str]
-) -> list[str]:
-    found = set(references & _DYNAMIC_NAMESPACE_ACCESS)
+_NAMESPACE_HELPER_HINT = (
+    "Move this code into an importable helper module supplied with code=, pip=, "
+    "or conda=, then import and call the helper from the Function."
+)
+
+
+def _namespace_import_error(modules: Sequence[str]) -> ValueError:
+    return ValueError(
+        f"@function cannot package imports from namespace-access modules: {modules!r}. "
+        f"Imports of {', '.join(sorted(_NAMESPACE_MODULES))} (including submodules) "
+        "are blocked because they can access names outside the packaged "
+        "Function's reconstructed module namespace. " + _NAMESPACE_HELPER_HINT
+    )
+
+
+def _namespace_imports(definition: Union[ast.FunctionDef, ast.ClassDef]) -> list[str]:
+    found: set[str] = set()
     for node in ast.walk(definition):
         if isinstance(node, ast.Import):
             found.update(
@@ -1883,11 +1909,17 @@ class _SourcePackager:
         )
         source = ast.unparse(definition)
         references = _module_references(f"{_SOURCE_HEADER}\n\n{source}\n")
-        dynamic = _namespace_acquisition(definition, references)
+        dynamic = sorted(references & _DYNAMIC_NAMESPACE_ACCESS)
         if dynamic:
             raise ValueError(
-                f"@function cannot package dynamic namespace access: {dynamic!r}"
+                f"@function cannot package dynamic namespace access: {dynamic!r}. "
+                "These operations can access names outside the packaged "
+                "Function's reconstructed module namespace. Reference dependencies "
+                "explicitly. " + _NAMESPACE_HELPER_HINT
             )
+        namespace_imports = _namespace_imports(definition)
+        if namespace_imports:
+            raise _namespace_import_error(namespace_imports)
         self._warn_unshipped_direct_imports(definition)
         self._packaged.add(id(target))
         self._claim(target.__name__, ("definition", id(target)))
@@ -1982,10 +2014,7 @@ class _SourcePackager:
             return f"from lance_blob import BlobReader as {name}"
         if isinstance(value, types.ModuleType):
             if value.__name__.split(".")[0] in _NAMESPACE_MODULES:
-                raise ValueError(
-                    "@function cannot package dynamic namespace access: "
-                    f"{value.__name__!r}"
-                )
+                raise _namespace_import_error([value.__name__])
             try:
                 imported = importlib.import_module(value.__name__)
             except ImportError:
@@ -2077,18 +2106,12 @@ class _SourcePackager:
                 self._require_importable(node.module)
 
 
-def _code_files(modules: Sequence[Any]) -> tuple[dict[str, str], frozenset[str]]:
-    """The Python source files of the modules and packages in ``code=``,
-    keyed by their path on the Function's import path.
-
-    Package resources are not part of the source artifact. Warn about files
-    and excluded directories that the walk leaves behind instead of silently
-    producing a Function that will fail later on the worker.
-    """
-    import os
-    from pathlib import Path
-
+def _code_files(
+    modules: Sequence[Any],
+) -> tuple[dict[str, str], dict[str, str], frozenset[str]]:
+    """Source and byte-preserving package resources on the Function import path."""
     files: dict[str, str] = {}
+    resources: dict[str, str] = {}
     names: set[str] = set()
     for module in modules:
         if not isinstance(module, types.ModuleType):
@@ -2122,35 +2145,50 @@ def _code_files(modules: Sequence[Any]) -> tuple[dict[str, str], frozenset[str]]
             sources = []
             skipped = set()
             for directory, subdirectories, filenames in os.walk(root):
-                # Only importable modules travel: data files, caches, and
-                # directories that are not identifiers cannot be imported.
                 kept = []
                 for child in sorted(subdirectories):
-                    if child == "__pycache__":
+                    path = Path(directory) / child
+                    if child == "__pycache__" or child.startswith("."):
                         continue
-                    if _SOURCE_PATH_COMPONENT.fullmatch(child):
+                    if not path.is_symlink() and re.fullmatch(
+                        r"[A-Za-z0-9_][A-Za-z0-9_.-]*", child
+                    ):
                         kept.append(child)
                     else:
-                        relative = (Path(directory) / child).relative_to(root)
+                        relative = path.relative_to(root)
                         skipped.add(f"{name}/{relative.as_posix()}/")
                 subdirectories[:] = kept
                 for filename in sorted(filenames):
+                    path = Path(directory) / filename
                     stem, suffix = os.path.splitext(filename)
-                    if suffix in {".pyc", ".pyo"}:
+                    if suffix in {".pyc", ".pyo"} or filename.startswith("."):
                         continue
-                    if suffix == ".py" and _SOURCE_PATH_COMPONENT.fullmatch(stem):
-                        sources.append(Path(directory) / filename)
+                    relative = path.relative_to(root)
+                    key = f"{name}/{relative.as_posix()}"
+                    if (
+                        path.is_symlink()
+                        or not path.is_file()
+                        or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", filename)
+                    ):
+                        skipped.add(key)
+                    elif suffix == ".py":
+                        if all(
+                            _SOURCE_PATH_COMPONENT.fullmatch(part)
+                            for part in relative.with_suffix("").parts
+                        ):
+                            sources.append(path)
+                        else:
+                            skipped.add(key)
                     else:
-                        relative = (Path(directory) / filename).relative_to(root)
-                        skipped.add(f"{name}/{relative.as_posix()}")
+                        resources[key] = base64.b64encode(path.read_bytes()).decode(
+                            "ascii"
+                        )
             if skipped:
-                skipped_paths = ", ".join(sorted(skipped))
                 warnings.warn(
-                    f"code= ships Python .py modules only; package {name!r} "
-                    f"will not include: {skipped_paths}. Install a package that "
-                    "includes the required resources with pip= or conda=, and "
-                    f"remove {name!r} from code= so the copied package cannot "
-                    "shadow the installed distribution.",
+                    "code= cannot ship these package paths: "
+                    f"{', '.join(sorted(skipped))}. "
+                    "Use regular files with safe relative names and importable "
+                    "Python module names.",
                     UserWarning,
                 )
             for path in sources:
@@ -2161,12 +2199,12 @@ def _code_files(modules: Sequence[Any]) -> tuple[dict[str, str], frozenset[str]]
             if not file or not file.endswith(".py"):
                 raise ValueError(f"code= ships Python source; module {name!r} has none")
             files[f"{name}.py"] = _source_text(Path(file))
-    return files, frozenset(names)
+    return files, resources, frozenset(names)
 
 
 def _source_text(path) -> str:
     try:
-        return path.read_text(encoding="utf-8")
+        return path.read_bytes().decode("utf-8")
     except UnicodeDecodeError as error:
         raise ValueError(f"code= ships UTF-8 source; {path} is not UTF-8") from error
 
@@ -2286,7 +2324,9 @@ class FunctionDefinition:
     once per row. A callable whose parameters are all annotated as
     ``pyarrow.Array`` receives whole Arrow arrays and returns a
     ``pyarrow.Array`` instead. This authoring choice is independent of the
-    internal artifact adapter in the registration request.
+    internal artifact adapter in the registration request. GPU Functions should
+    use the Arrow form when the model supports batches: a scalar GPU callable is
+    invoked once per row and leaves the model's own batching unavailable.
     """
 
     def __init__(
@@ -2408,14 +2448,29 @@ class FunctionDefinition:
             signature = signature._copy(update={"initialization": initialization})
         else:
             signature = _infer_signature(function, input_schema, output_schema)
-        code_files, code_modules = _code_files(code)
+        if gpu_marker is not None:
+            call = _class_call(function) if is_class else function
+            if not _is_vectorized_callable(call, method=is_class):
+                warnings.warn(
+                    f"GPU Function {function_name!r} uses a scalar callable, so each "
+                    "row invokes it separately and its model batch is not inferred. "
+                    "For GPU throughput, annotate every input as pyarrow.Array or "
+                    "take one pyarrow.RecordBatch, provide input_schema and "
+                    "output_schema, and batch inside that callable.",
+                    UserWarning,
+                    stacklevel=3,
+                )
+        code_files, code_resources, code_modules = _code_files(code)
         entry_source = _SourcePackager(
             code_modules, frozenset(_requirement_name(package) for package in packages)
         ).package(function, signature)
         if code_files:
             kind = _PYTHON_BUNDLE_ARTIFACT
+            bundle = {"files": {**code_files, _SOURCE_ENTRY_FILE: entry_source}}
+            if code_resources:
+                bundle["resources"] = code_resources
             source = json.dumps(
-                {"files": {**code_files, _SOURCE_ENTRY_FILE: entry_source}},
+                bundle,
                 ensure_ascii=False,
                 sort_keys=True,
                 separators=(",", ":"),
@@ -2663,13 +2718,28 @@ def function(
     Other global values, including Arrow types and schemas, lists, dictionaries,
     sets, and NumPy arrays, cannot be captured as literals. Define them inside
     the function or class body instead.
-    Closures, lambdas, nested definitions, mutable module-level
-    objects, code that reaches the module namespace another way
-    (``globals()``/``eval``, ``sys.modules``, ``builtins``), and a
+    Closures, lambdas, nested definitions, mutable module-level objects, and a
     non-standard ``__builtins__`` are rejected where they can be seen and
-    otherwise unsupported. Changing any packaged source, including a module in
-    ``code``, produces a new Function version; the environment built from
-    ``pip`` or ``conda`` is reused.
+    otherwise unsupported.
+
+    **Namespace restrictions.** The packaged source cannot import ``sys``,
+    ``builtins``, ``importlib``, ``inspect``, ``gc``, ``ctypes``, or ``types``,
+    including submodules such as ``ctypes.util`` and ``importlib.metadata``.
+    Referencing a module-level alias for one of these modules is also rejected.
+    References to ``globals``, ``locals``, ``vars``, ``eval``, ``exec``,
+    ``compile``, or ``__import__`` are rejected as dynamic namespace access.
+    These restrictions are conservative: even ordinary uses such as
+    ``ctypes.util.find_library`` or ``sys.version`` are blocked because these
+    modules can reach names outside the reconstructed Function namespace.
+    Move such code into an importable helper module supplied with ``code=``,
+    ``pip=``, or ``conda=``, then import and call the helper from the Function.
+    Helpers imported normally keep their own module namespace; these checks do
+    not scan their bodies. A helper defined in ``__main__`` is packaged by source
+    and is subject to the same checks.
+
+    Changing any packaged source, including a module in ``code``, produces a
+    new Function version; the environment built from ``pip`` or ``conda`` is
+    reused.
 
     Parameters
     ----------
@@ -2746,13 +2816,15 @@ def function(
         immutable Function version; per-refresh aggregate GPU budgets are
         selected through ``refresh_column`` instead of registration.
     code : sequence of module, optional
-        Top-level modules or packages whose importable ``.py`` files ship
-        with the Function and are importable by their own names. Package data
-        files are not copied. To use a package that includes required data
-        resources, install it with ``pip=`` or ``conda=`` and remove that
-        package from ``code=`` so the copied Python package cannot shadow the
-        installed distribution. ``@function`` warns when it skips files from a
-        package in ``code=``.
+        Top-level modules or packages shipped with the Function and importable
+        by their own names. Package resources, including binary data and
+        vendored subpackages, retain their relative paths and exact bytes.
+        Source and resource changes both create a new Function version.
+        Caches and hidden paths are excluded. Symlinks and unsafe paths are
+        skipped with a warning. Compiled dependencies must match the remote
+        runtime; use ``pip=`` or ``conda=`` for platform-specific distributions
+        and ``models=`` for large model snapshots. Resource bundles require
+        server support for the ``python_bundle.resources`` field.
     models : sequence of HuggingFaceModel, optional
         Immutable Hugging Face repository snapshots prepared in the worker
         node cache before user code starts. A Function may declare a

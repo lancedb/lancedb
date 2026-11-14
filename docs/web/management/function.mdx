@@ -111,6 +111,19 @@ with `db.get_function(name, version=...)`. The version may be an integer or
 its string form. Omit `version` to resolve and return the latest currently
 visible revision.
 
+{/* Draft for the function exist_ok release.
+
+Use `exist_ok=True` on `create_function` or `create_function_async` to return
+the existing named version without changing its code, credentials or settings.
+This requires a deployment that supports the option. The default retains the
+current behavior of registering a new version.
+
+```python
+version = db.create_function(embed, exist_ok=True)
+```
+
+*/}
+
 <Note>
 The SQL command submits an internal `create_function` image-build job and
 waits for publication. The SDK returns the SQL query handle. Query handles
@@ -407,6 +420,9 @@ full worked example.
 
 ## Failure handling {#failures}
 
+For the full skip, inspect, grouped-error, stable-row-ID retry and quarantine
+workflow, see [Handle Function failures](/management/function-failures).
+
 By default, a Function that raises fails the refresh job. Choose how the
 refresh handles row errors with its error policy:
 
@@ -482,6 +498,47 @@ In practice this means a function should be self-contained: take its inputs as
 arguments, import what it needs at module level, and avoid capturing state from
 the surrounding scope.
 
+### Supported global captures {#captures}
+
+The Python SDK's source packager captures only these literal values:
+
+| Module-level value | Packaging behavior |
+| --- | --- |
+| `None`, exact `bool`, `int`, `str`, `bytes`, finite `float` | Inlined as a snapshot at registration. |
+| Tuples containing only those values, including nested tuples | Recursively inlined. |
+| Imported modules, importable functions/classes | Reconstructed as imports; declare their packages in `pip` or `conda`, or ship local source with `code`. |
+| Arrow types/schemas, lists, dictionaries, sets, NumPy arrays, non-finite floats, other objects | Not captured as literals. Construct them inside the Function or class. |
+
+For example, a module-level `OUT_TYPE = pa.list_(pa.float32(), 3)` referenced
+from the Function body is unsupported. Construct the type where it is used:
+
+```python
+import pyarrow as pa
+from lancedb import function
+
+@function(
+    input_schema=pa.schema([pa.field("value", pa.float32(), nullable=False)]),
+    output_schema=pa.list_(pa.float32(), 3),
+)
+def make_vector(value: pa.Array) -> pa.Array:
+    out_type = pa.list_(pa.float32(), 3)
+    return pa.array([[v, v, v] for v in value.to_pylist()], type=out_type)
+```
+
+Decorator schema arguments are serialized as the signature; this restriction
+concerns values referenced by the packaged body. For an expensive constant or
+model, build it in a class Function's `__init__` and keep it on `self`.
+
+Later mutations of a client global do not update a registered version. Register
+a new version to change captured literals or source. The diagnostic fix in
+[SDK #4938](https://github.com/lancedb/lancedb/pull/4938) names the unsupported
+global and its type; it does not add Arrow/container capture support. There is
+no supported arbitrary-object serialization or documented container-size limit
+to rely on for those rejected types.
+
+See the [Function type matrix](/curation/create-function#signature-types) for
+what can travel as row inputs and outputs rather than captured globals.
+
 Pass `code=[module, ...]` to ship additional helper modules into the same
 image, for logic the function imports but that does not belong inlined into
 it -- a model-loading helper shared by several Functions, for example.
@@ -499,13 +556,20 @@ def caption(jpeg: bytes) -> str:
 </CodeGroup>
 
 Each module in `code` is captured and shipped the same way the function
-itself is: as source, snapshotted at registration. Only `.py` source files are
-included; package data such as JSON, YAML, prompt, or tokenizer files is not
-copied. `@function` warns before registration when it skips such files from a
-package in `code`, naming the affected paths. To use a package that includes
-the required resources, install it with `pip=` or `conda=` and remove that
-package from `code`; otherwise the Python-only copied package shadows the
-installed distribution.
+itself is: as source, snapshotted at registration. Packages also include regular
+data files such as JSON, YAML, prompts, and tokenizer files, including resources
+inside vendored subpackages. Resource paths and bytes are preserved for
+`importlib.resources` and package integrity checks. Changing a resource changes
+the Function artifact's identity. Caches, hidden paths, symlinks, and unsafe
+paths are excluded.
+
+Package resources require matching SDK and server support. Upgrade query nodes
+and Function image-building workers before registering resource bundles; older
+servers reject them. Older SDKs ship only Python source and warn when excluding
+package data. On deployments without resource-bundle support, install the
+package with `pip=` or `conda=` and omit it from `code` so the copied package does
+not shadow the installed distribution. Use environment dependencies for
+platform-specific packages and `models=` for large model snapshots.
 
 ## Drop it {#drop}
 
