@@ -1563,3 +1563,4 @@ def test_namespace_fts_count_fast_search(tmp_path):
     assert query.use_rte(False).count_rows() == 15
     query = pushed.search("gripper", query_type="fts").fast_search()
     assert query.count_rows() == 15
+    assert len(query.limit(100).to_list()) == 15

@@ -126,6 +126,10 @@ fn requires_local_namespace_execution(query: &AnyQuery) -> bool {
     if query.base().use_rte.is_some() || query.base().has_take() {
         return true;
     }
+    if matches!(query, AnyQuery::Query(query) if query.fast_search && query.full_text_search.is_some())
+    {
+        return true;
+    }
     matches!(
         query,
         AnyQuery::VectorQuery(vector_query)

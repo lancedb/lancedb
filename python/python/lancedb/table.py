@@ -139,6 +139,11 @@ def _requires_local_namespace_execution(query: Query) -> bool:
         or query.take_row_ids is not None
         or query.search_effort is not None
         or query.approx_mode is not None
+        or (
+            query.full_text_query is not None
+            and query.fast_search is True
+            and query.vector is None
+        )
     )
 
 
