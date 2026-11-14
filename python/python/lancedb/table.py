@@ -3509,7 +3509,7 @@ class Table(ABC):
         upgrade and retry failures atomically. ``include_quarantined=True``
         explicitly releases quarantined rows before retrying them.
 
-        >>> job = table.retry_failed("sharpness", function_version="2")  # doctest: +SKIP
+        >>> job = table.retry_failed("sharpness")  # doctest: +SKIP
         >>> result = job.wait()  # doctest: +SKIP
         """
         return self.refresh_column_async(

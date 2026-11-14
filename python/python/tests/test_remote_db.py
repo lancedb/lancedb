@@ -7643,25 +7643,24 @@ def test_function_error_rows_returns_all_inputs_and_preserves_multiple_column_er
     db = lancedb.connect(tmp_path)
     table = db.create_table("inputs", [{"id": index} for index in range(16)])
     inputs = table.search().with_row_id(True).limit(16).to_arrow()
-    records = []
-    for row_id in inputs.column("_rowid").to_pylist():
-        records.append(
-            SimpleNamespace(
-                column="first",
-                row_id=row_id,
-                row_address=999999,
-                row_offset=0,
-                input=None,
-                error_type="ValueError",
-                error_message="corrupt",
-                attempts=3,
-                function_version="1",
-                job_id="first",
-                first_seen_at_millis=100,
-                last_seen_at_millis=200,
-                quarantined=False,
-            )
+    records = [
+        SimpleNamespace(
+            column="first",
+            row_id=row_id,
+            row_address=999999,
+            row_offset=0,
+            input=None,
+            error_type="ValueError",
+            error_message="corrupt",
+            attempts=3,
+            function_version="1",
+            job_id="first",
+            first_seen_at_millis=100,
+            last_seen_at_millis=200,
+            quarantined=False,
         )
+        for row_id in inputs.column("_rowid").to_pylist()
+    ]
     duplicate = copy.copy(records[0])
     duplicate.column = "second"
     records.append(duplicate)

@@ -1007,7 +1007,8 @@ class _FunctionErrors:
             )
         if self._history:
             raise ValueError(
-                "Source-row lookup requires current failures; read retained history through records"
+                "Source-row lookup requires current failures; "
+                "read retained history through records"
             )
         if self.truncated or self.fragments:
             raise ValueError(
@@ -1017,7 +1018,8 @@ class _FunctionErrors:
         for record in self.records:
             if record.input is not None or record.row_offset is None:
                 raise ValueError(
-                    "This error names a Function invocation; inspect its input source identities"
+                    "This error names a Function invocation; "
+                    "inspect its input source identities"
                 )
             identity = (
                 record.row_id if record.row_id is not None else record.row_address
@@ -1052,7 +1054,8 @@ class _FunctionErrors:
                     matches.append(record)
         if found != identities.keys():
             raise ValueError(
-                "Some failed inputs are no longer addressable in this snapshot; refresh the error listing or use a historical snapshot"
+                "Some failed inputs are no longer addressable in this snapshot; "
+                "refresh the error listing or use a historical snapshot"
             )
         rows = rows.take(pa.array(indices, type=pa.int64()))
         fields = [
