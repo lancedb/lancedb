@@ -188,12 +188,39 @@ A multi-word string such as `"happy puppy"` uses **OR**: a row can match either
 term. Writing `"happy AND puppy"` does not select an AND operator; the string
 is analyzed as search text. To require both terms, construct a match query:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 from lancedb.query import FullTextOperator, MatchQuery
 
 query = MatchQuery("happy puppy", "text", operator=FullTextOperator.AND)
 results = table.search(query, query_type="fts").limit(10).to_list()
 ```
+
+```typescript TypeScript icon="square-js"
+import { MatchQuery, Operator } from "@lancedb/lancedb";
+
+const query = new MatchQuery("happy puppy", "text", { operator: Operator.And });
+const results = await tbl.query().fullTextSearch(query).limit(10).toArray();
+```
+
+```rust Rust icon="rust"
+use lance_index::scalar::{
+    FullTextSearchQuery,
+    inverted::query::{MatchQuery, Operator},
+};
+use lancedb::query::{ExecutableQuery, QueryBase};
+
+let query = MatchQuery::new("happy puppy".to_owned())
+    .with_column(Some("text".to_owned()))
+    .with_operator(Operator::And);
+let results = tbl
+    .query()
+    .full_text_search(FullTextSearchQuery::new_query(query.into()))
+    .limit(10)
+    .execute()
+    .await?;
+```
+</CodeGroup>
 
 AND requires all analyzed terms, without requiring adjacency or order. Use
 [`PhraseQuery`](#phrase-vs-terms-queries) for an ordered phrase, or combine
