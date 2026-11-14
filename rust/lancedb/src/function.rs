@@ -972,10 +972,6 @@ pub struct FunctionRegistrationRequest {
     pub refresh_lock: bool,
 }
 
-fn is_false(value: &bool) -> bool {
-    !*value
-}
-
 impl FunctionRegistrationRequest {
     /// Decode a registration request supplied by an SDK language binding.
     pub fn from_json(json: &str) -> Result<Self> {
