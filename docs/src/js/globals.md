@@ -194,6 +194,7 @@
 - [IntoSql](type-aliases/IntoSql.md)
 - [IntoVector](type-aliases/IntoVector.md)
 - [JobProgressCallback](type-aliases/JobProgressCallback.md)
+- [JobState](type-aliases/JobState.md)
 - [MaterializedViewSelect](type-aliases/MaterializedViewSelect.md)
 - [MultiVector](type-aliases/MultiVector.md)
 - [QueryParameterValue](type-aliases/QueryParameterValue.md)

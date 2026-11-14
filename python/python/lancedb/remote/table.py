@@ -1334,10 +1334,11 @@ class RemoteTable(Table):
         column: Optional[str] = None,
         limit: Optional[int] = None,
         history: bool = False,
+        page_token: Optional[str] = None,
     ):
         return LOOP.run(
             self._table.function_errors(
-                job_id=job_id, column=column, limit=limit, history=history
+                job_id=job_id, column=column, limit=limit, history=history, page_token=page_token, page_token=page_token
             )
         ).as_sync(self)
 

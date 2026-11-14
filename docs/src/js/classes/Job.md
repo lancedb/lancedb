@@ -26,6 +26,20 @@ extra round trip on every call:
 
 ## Accessors
 
+### attempt
+
+```ts
+get attempt(): null | number
+```
+
+One-based attempt ordinal. Worker replacement does not increment it.
+
+#### Returns
+
+`null` \| `number`
+
+***
+
 ### creationMs
 
 ```ts
@@ -40,17 +54,31 @@ When the job was created, in milliseconds since the epoch.
 
 ***
 
+### executionEpoch
+
+```ts
+get executionEpoch(): null | number
+```
+
+Most recent execution's fencing token, when reported.
+
+#### Returns
+
+`null` \| `number`
+
+***
+
 ### failure
 
 ```ts
-get failure(): null | JobFailureInfo
+get failure(): any
 ```
 
 Why the job failed, when it failed and the server reports a reason.
 
 #### Returns
 
-`null` \| [`JobFailureInfo`](../interfaces/JobFailureInfo.md)
+`any`
 
 ***
 
@@ -73,6 +101,20 @@ durable resume tokens.
 
 ***
 
+### jobId
+
+```ts
+get jobId(): null | string
+```
+
+Stable attempt identity. Local IDs cannot be reopened on a server.
+
+#### Returns
+
+`null` \| `string`
+
+***
+
 ### jobType
 
 ```ts
@@ -81,6 +123,34 @@ get jobType(): null | string
 
 "query" immediately for SQL-backed handles; otherwise the cached
 server-reported job type. Null for in-process handles.
+
+#### Returns
+
+`null` \| `string`
+
+***
+
+### lifecycleState
+
+```ts
+get lifecycleState(): null | JobState
+```
+
+Detailed state last observed; unknown values never establish success.
+
+#### Returns
+
+`null` \| [`JobState`](../type-aliases/JobState.md)
+
+***
+
+### operationId
+
+```ts
+get operationId(): null | string
+```
+
+Root of the explicit retry lineage, when reported.
 
 #### Returns
 
@@ -101,6 +171,34 @@ instead.
 #### Returns
 
 `any`
+
+***
+
+### retryOf
+
+```ts
+get retryOf(): null | string
+```
+
+Immediate predecessor attempt, when reported.
+
+#### Returns
+
+`null` \| `string`
+
+***
+
+### sourceTableVersion
+
+```ts
+get sourceTableVersion(): null | number
+```
+
+Source snapshot pinned for this attempt, when reported.
+
+#### Returns
+
+`null` \| `number`
 
 ***
 
@@ -175,6 +273,24 @@ per fragment. `filter` is a SQL-like expression over the `state`,
 
 ***
 
+### history()
+
+```ts
+history(options?): AsyncGenerator<Table<any>, any, unknown>
+```
+
+Walk retained history one page at a time using the server's continuation.
+
+#### Parameters
+
+* **options?**: [`JobEventsOptions`](../interfaces/JobEventsOptions.md)
+
+#### Returns
+
+`AsyncGenerator`&lt;`Table`&lt;`any`&gt;, `any`, `unknown`&gt;
+
+***
+
 ### progress()
 
 ```ts
@@ -208,6 +324,20 @@ its full record, then cache it for the getters above.
 
 ***
 
+### retry()
+
+```ts
+retry(): Promise<Job>
+```
+
+Select this exact attempt's pinned successor. Requires backend support.
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&gt;
+
+***
+
 ### status()
 
 ```ts
@@ -223,6 +353,20 @@ terminal failure state. Also refreshes the getters above.
 #### Returns
 
 `Promise`&lt;`string`&gt;
+
+***
+
+### statusTyped()
+
+```ts
+statusTyped(): Promise<JobState>
+```
+
+Refresh and return the detailed lifecycle state.
+
+#### Returns
+
+`Promise`&lt;[`JobState`](../type-aliases/JobState.md)&gt;
 
 ***
 
