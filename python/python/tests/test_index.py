@@ -23,11 +23,13 @@ from lancedb.index import (
     Fm,
     NGram,
     ZoneMap,
+    ScalarPlugin,
     HnswPq,
     HnswSq,
     HnswFlat,
     FTS,
 )
+import lancedb
 from lancedb.table import IndexStatistics
 
 
@@ -300,6 +302,132 @@ async def test_create_zonemap_index(db_async):
     # The index narrows a range scan without changing its results.
     result = await table.query().where("value >= 90").to_arrow()
     assert sorted(result["id"].to_pylist()) == list(range(90, 100))
+
+
+def plugin_table_data():
+    return pa.table(
+        {"id": [1, 2, 3, 4], "text": ["abc", "xyz", None, ""]},
+        schema=pa.schema([("id", pa.int32()), ("text", pa.string())]),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "index_type, params, column, expected_type, predicate, expected_ids",
+    [
+        ("ZoneMap", None, "id", "ZoneMap", "id >= 2 AND id < 4", [2, 3]),
+        ("  BTREE ", None, "id", "BTree", "id = 3", [3]),
+        (
+            "bloomfilter",
+            {"number_of_items": 2, "probability": 0.01},
+            "text",
+            "BloomFilter",
+            "text = 'abc'",
+            [1],
+        ),
+        (
+            "BloomFilter",
+            '{"number_of_items": 2}',
+            "text",
+            "BloomFilter",
+            "text = 'abc'",
+            [1],
+        ),
+    ],
+)
+async def test_create_scalar_plugin_index(
+    db_async, index_type, params, column, expected_type, predicate, expected_ids
+):
+    # Lance's built-in plugins, created by name, are listed with the same type
+    # as their dedicated configs and serve the filters those configs serve.
+    table = await db_async.create_table("plugin_table", plugin_table_data())
+    config = ScalarPlugin(index_type, params)
+    await table.create_index(column, config=config, name="plugin_idx")
+
+    indices = await table.list_indices()
+    assert [(i.name, i.index_type, i.columns) for i in indices] == [
+        ("plugin_idx", expected_type, [column])
+    ]
+    stats = await table.index_stats("plugin_idx")
+    assert stats.num_indexed_rows == 4
+
+    query = table.query().where(predicate)
+    assert "ScalarIndexQuery" in await query.explain_plan()
+    result = await query.to_arrow()
+    assert sorted(result["id"].to_pylist()) == expected_ids
+
+
+@pytest.mark.asyncio
+async def test_scalar_plugin_without_lancedb_type_lists_plugin_name(db_async):
+    data = pa.table({"text": ["alpha beta", "beta gamma", "gamma delta"]})
+    table = await db_async.create_table("minhash_table", data)
+    await table.create_index("text", config=ScalarPlugin("minhashlsh"))
+
+    indices = await table.list_indices()
+    assert len(indices) == 1
+    assert indices[0].index_type == "MinHashLsh"
+    assert 'index_type="MinHashLsh"' in repr(indices[0])
+    stats = await table.index_stats(indices[0].name)
+    assert stats.index_type == "MinHashLsh"
+
+
+def test_scalar_plugin_sync_table_and_job(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("plugin_table", plugin_table_data())
+
+    table.create_index("id", config=ScalarPlugin("zonemap"))
+    job = table.create_index_async(
+        "text",
+        config=ScalarPlugin("bloomfilter", {"probability": 0.01}),
+        name="text_bloom",
+    )
+    job.wait()
+
+    types = {index.name: index.index_type for index in table.list_indices()}
+    assert types == {"id_idx": "ZoneMap", "text_bloom": "BloomFilter"}
+    assert "ScalarIndexQuery" in table.search().where("text = 'abc'").explain_plan()
+
+
+@pytest.mark.parametrize(
+    "kwargs, error, match",
+    [
+        ({"index_type": ""}, ValueError, "must not be empty"),
+        ({"index_type": "  "}, ValueError, "must not be empty"),
+        ({"index_type": None}, TypeError, "index_type must be a str"),
+        ({"index_type": "zonemap", "params": "[1]"}, ValueError, "got list"),
+        ({"index_type": "zonemap", "params": "null"}, ValueError, "got NoneType"),
+        ({"index_type": "zonemap", "params": "{x"}, ValueError, "not valid JSON"),
+        ({"index_type": "zonemap", "params": [1]}, TypeError, "got list"),
+        ({"index_type": "zonemap", "params": 1}, TypeError, "got int"),
+    ],
+)
+def test_scalar_plugin_rejects_invalid_config(kwargs, error, match):
+    with pytest.raises(error, match=match):
+        ScalarPlugin(**kwargs)
+
+
+@pytest.mark.asyncio
+async def test_scalar_plugin_errors_reach_the_caller(db_async):
+    table = await db_async.create_table("plugin_table", plugin_table_data())
+
+    # The native layer checks the params again, after the dataclass is mutated.
+    config = ScalarPlugin("zonemap")
+    config.params = "[1]"
+    with pytest.raises(ValueError, match="must be a JSON object, got an array"):
+        await table.create_index("id", config=config)
+
+    with pytest.raises(
+        ValueError, match="No scalar index plugin found for name 'nosuchplugin'"
+    ):
+        await table.create_index("id", config=ScalarPlugin("NoSuchPlugin"))
+    with pytest.raises(ValueError, match="ngram index can only be created on a Utf8"):
+        await table.create_index("id", config=ScalarPlugin("ngram"))
+    with pytest.raises(RuntimeError, match='invalid type: string "many"'):
+        await table.create_index(
+            "text",
+            config=ScalarPlugin("bloomfilter", {"number_of_items": "many"}),
+        )
+    assert await table.list_indices() == []
 
 
 @pytest.mark.asyncio

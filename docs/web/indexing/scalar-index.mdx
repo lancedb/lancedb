@@ -210,6 +210,51 @@ table.search().where("contains(text, 'needle')").limit(10).to_pandas()
 
 `list_indices()` reports the index type as `"NGram"`.
 
+## Create a plugin index by name
+
+LanceDB can create a scalar index of any type recognized by a registered database
+plugin. For index types without a dedicated configuration, pass the type name and
+optional parameters using `ScalarPlugin` in Python, `Index.plugin()` in TypeScript,
+or `Index::Plugin(PluginIndexBuilder)` in Rust. Prefer a dedicated configuration,
+such as `BTree`, when one is available.
+
+Index type names are case-insensitive. Surrounding whitespace is ignored.
+Parameters are a JSON object and are passed as given. Each plugin defines its
+parameters and defaults; refer to the plugin's documentation for guidance.
+Python and TypeScript also accept parameters as a string holding a JSON object.
+
+<CodeGroup>
+```python Python icon="python"
+from lancedb.index import ScalarPlugin
+
+await tbl.create_index(
+    "id", config=ScalarPlugin("bloomfilter", {"number_of_items": 4096})
+)
+```
+
+```typescript TypeScript icon="square-js"
+import { Index } from "@lancedb/lancedb";
+
+await tbl.createIndex("id", {
+  config: Index.plugin("bloomfilter", { number_of_items: 4096 }),
+});
+```
+
+```rust Rust icon="rust"
+use lancedb::index::Index;
+use lancedb::index::scalar::PluginIndexBuilder;
+use serde_json::json;
+
+let bloom_filter = PluginIndexBuilder::new("bloomfilter")?
+    .params(json!({"number_of_items": 4096}))?;
+tbl.create_index(&["id"], Index::Plugin(bloom_filter))
+    .execute()
+    .await?;
+```
+</CodeGroup>
+
+An unknown plugin name or invalid parameters cause index creation to fail.
+
 ## Index UUID Columns
 
 LanceDB supports scalar indexes on UUID columns (stored as `FixedSizeBinary(16)`), enabling efficient lookups and filtering on UUID-based primary keys.

@@ -776,6 +776,12 @@ impl<S: HttpSend> RemoteTable<S> {
             Index::NGram(p) => ("NGRAM", Some(to_json(p)?)),
             Index::BloomFilter(p) => ("BLOOM_FILTER", Some(to_json(p)?)),
             Index::RTree(p) => ("RTREE", Some(to_json(p)?)),
+            // Keep generic plugin requests distinct from built-in index handling.
+            // The plugin's params are nested below rather than flattened.
+            Index::Plugin(p) => {
+                body["plugin_type"] = p.index_type().to_uppercase().into();
+                ("PLUGIN", None)
+            }
             Index::FTS(p) => {
                 validate_fts_field(&field)?;
                 let mut params = to_json(p)?;
@@ -813,6 +819,14 @@ impl<S: HttpSend> RemoteTable<S> {
             for (key, value) in params.as_object().expect("params should be a JSON object") {
                 body[key] = value.clone();
             }
+        }
+        // A plugin's params are arbitrary, so they go under a single `params`
+        // key. Flattened, they could overwrite request fields such as `column`,
+        // `name`, `replace` or `branch`.
+        if let Index::Plugin(plugin) = &index.index
+            && let Some(params) = plugin.parameters()
+        {
+            body["params"] = serde_json::Value::Object(params.clone());
         }
         self.apply_branch_body(&mut body);
 
@@ -8955,6 +8969,103 @@ mod tests {
             .execute()
             .await
             .unwrap();
+    }
+
+    /// Generic index requests use `PLUGIN` and a separate `plugin_type`. Params
+    /// stay nested so they cannot replace routing fields or request metadata.
+    #[tokio::test]
+    async fn test_create_plugin_index_nests_params() {
+        use crate::index::scalar::PluginIndexBuilder;
+
+        let colliding_params = json!({
+            "column": "not_a",
+            "name": "not_my_index",
+            "replace": true,
+            "index_type": "BTREE",
+            "plugin_type": "ZONEMAP",
+            "branch": "not_my_branch",
+            "keys": ["label", "confidence"],
+        });
+        let cases = [
+            (
+                PluginIndexBuilder::new(" ZoneMap ").unwrap(),
+                None,
+                true,
+                json!({"column": "a", "index_type": "PLUGIN", "plugin_type": "ZONEMAP"}),
+            ),
+            (
+                PluginIndexBuilder::new("BloomFilter")
+                    .unwrap()
+                    .params(json!({"number_of_items": 4096}))
+                    .unwrap(),
+                None,
+                true,
+                json!({
+                    "column": "a",
+                    "index_type": "PLUGIN",
+                    "plugin_type": "BLOOMFILTER",
+                    "params": {"number_of_items": 4096},
+                }),
+            ),
+            (
+                PluginIndexBuilder::new("listelement")
+                    .unwrap()
+                    .params(colliding_params.clone())
+                    .unwrap(),
+                Some("my_index"),
+                false,
+                json!({
+                    "column": "a",
+                    "index_type": "PLUGIN",
+                    "plugin_type": "LISTELEMENT",
+                    "name": "my_index",
+                    "replace": false,
+                    "params": colliding_params,
+                }),
+            ),
+            (
+                PluginIndexBuilder::new("zonemap")
+                    .unwrap()
+                    .params(json!({}))
+                    .unwrap(),
+                None,
+                true,
+                json!({"column": "a", "index_type": "PLUGIN", "plugin_type": "ZONEMAP", "params": {}}),
+            ),
+        ];
+
+        for (plugin, name, replace, expected_body) in cases {
+            let table = Table::new_with_handler("my_table", move |request| {
+                assert_eq!(request.method(), "POST");
+                match request.url().path() {
+                    "/v1/table/my_table/describe/" => {
+                        let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
+                        http::Response::builder()
+                            .status(200)
+                            .body(describe_response(&schema))
+                            .unwrap()
+                    }
+                    "/v1/table/my_table/create_index/" => {
+                        let body = request.body().unwrap().as_bytes().unwrap();
+                        let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+                        assert_eq!(body, expected_body);
+                        http::Response::builder()
+                            .status(200)
+                            .body("{}".to_string())
+                            .unwrap()
+                    }
+                    path => panic!("Unexpected path: {}", path),
+                }
+            });
+
+            let mut builder = table
+                .create_index(&["a"], Index::Plugin(plugin))
+                .replace(replace);
+            if let Some(name) = name {
+                builder = builder.name(name.to_string());
+            }
+            builder.execute().await.unwrap();
+        }
     }
 
     #[tokio::test]

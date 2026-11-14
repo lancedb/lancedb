@@ -258,3 +258,46 @@ using an underlying bitmap index.
 #### Returns
 
 [`Index`](Index.md)
+
+***
+
+### plugin()
+
+```ts
+static plugin(indexType, params?): Index
+```
+
+Create a scalar index of a type recognized by a registered database plugin.
+
+Use this for index types without a dedicated factory on `Index`.
+Prefer a dedicated factory when one is available.
+
+An unknown plugin name or invalid parameters cause `createIndex` to fail.
+
+#### Parameters
+
+* **indexType**: `string`
+    The index type, case-insensitive.
+    Surrounding whitespace is ignored. Must not be empty.
+
+* **params?**: `string` \| `Record`&lt;`string`, `unknown`&gt;
+    The index parameters, as an object or as a string
+    holding a JSON object. They are passed as given. Each plugin defines
+    its parameters and defaults; refer to the plugin's documentation
+    for guidance.
+
+#### Returns
+
+[`Index`](Index.md)
+
+#### Throws
+
+If `indexType` is empty, or `params` is not a JSON object.
+
+#### Example
+
+```ts
+await table.createIndex("id", {
+  config: Index.plugin("bloomfilter", { number_of_items: 4096 }),
+});
+```

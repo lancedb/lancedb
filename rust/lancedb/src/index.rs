@@ -16,7 +16,8 @@ use crate::{DistanceType, Error, Result, job::Job, table::BaseTable};
 use self::{
     scalar::{
         BTreeIndexBuilder, BitmapIndexBuilder, BloomFilterIndexBuilder, FmIndexBuilder,
-        LabelListIndexBuilder, NGramIndexBuilder, RTreeIndexBuilder, ZoneMapIndexBuilder,
+        LabelListIndexBuilder, NGramIndexBuilder, PluginIndexBuilder, RTreeIndexBuilder,
+        ZoneMapIndexBuilder,
     },
     vector::{
         IvfHnswFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder,
@@ -73,6 +74,24 @@ pub enum Index {
     /// An R-tree index accelerates spatial intersection filters on GeoArrow geometries.
     /// Native creation requires the `geo` feature.
     RTree(RTreeIndexBuilder),
+
+    /// Configure a scalar index of a type recognized by a registered database plugin.
+    ///
+    /// Select the type by name and provide optional JSON parameters with
+    /// [`PluginIndexBuilder`]. Prefer a dedicated variant when one is available.
+    ///
+    /// ```
+    /// use lancedb::index::{Index, scalar::PluginIndexBuilder};
+    ///
+    /// # async fn create_zonemap(table: &lancedb::Table) -> lancedb::Result<()> {
+    /// table
+    ///     .create_index(&["timestamp"], Index::Plugin(PluginIndexBuilder::new("zonemap")?))
+    ///     .execute()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    Plugin(PluginIndexBuilder),
 
     /// Full text search index using BM25.
     ///

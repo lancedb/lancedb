@@ -2,7 +2,8 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 from dataclasses import dataclass
-from typing import List, Literal, Optional
+import json
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from ._lancedb import (
     IndexConfig,
@@ -145,6 +146,84 @@ class ZoneMap:
     """
 
     pass
+
+
+@dataclass
+class ScalarPlugin:
+    """Configure a scalar index of a type recognized by a registered database plugin.
+
+    Use this for index types without a dedicated configuration class.
+    Prefer a dedicated class, such as [BTree][lancedb.index.BTree], when one
+    is available.
+
+    An unknown plugin name or invalid parameters cause index creation to fail.
+
+    Examples
+    --------
+    >>> from lancedb.index import ScalarPlugin
+    >>> ScalarPlugin("bloomfilter", params={"number_of_items": 4096})
+    ScalarPlugin(index_type='bloomfilter', params={'number_of_items': 4096})
+
+    Pass it as ``config`` to ``create_index``:
+
+    >>> table.create_index(  # doctest: +SKIP
+    ...     "id",
+    ...     config=ScalarPlugin("bloomfilter", '{"probability": 0.01}'),
+    ... )
+
+    Attributes
+    ----------
+    index_type: str
+        The index type, case-insensitive. Surrounding whitespace is ignored.
+        Must not be empty.
+    params: dict or str, optional
+        The index parameters, as a dict or as a string holding a JSON object.
+        They are passed as given. Each plugin defines its parameters and
+        defaults; refer to the plugin's documentation for guidance.
+
+    Raises
+    ------
+    ValueError
+        If ``index_type`` is empty, or ``params`` is a string that is not a
+        JSON object.
+    TypeError
+        If ``index_type`` is not a string, or ``params`` is not a dict, a
+        string or None.
+    """
+
+    index_type: str
+    params: Optional[Union[Dict[str, Any], str]] = None
+
+    def __post_init__(self):
+        if not isinstance(self.index_type, str):
+            raise TypeError(
+                "ScalarPlugin index_type must be a str, got "
+                + type(self.index_type).__name__
+            )
+        if not self.index_type.strip():
+            raise ValueError("ScalarPlugin index_type must not be empty")
+        if isinstance(self.params, str):
+            try:
+                parsed = json.loads(self.params)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"ScalarPlugin params are not valid JSON: {e}") from e
+            if not isinstance(parsed, dict):
+                raise ValueError(
+                    "ScalarPlugin params must be a JSON object, got "
+                    + type(parsed).__name__
+                )
+        elif self.params is not None and not isinstance(self.params, dict):
+            raise TypeError(
+                "ScalarPlugin params must be a dict, a JSON string or None, got "
+                + type(self.params).__name__
+            )
+
+    @property
+    def _params_json(self) -> Optional[str]:
+        # Read by the native layer, which checks again that this is an object.
+        if self.params is None or isinstance(self.params, str):
+            return self.params
+        return json.dumps(self.params)
 
 
 @dataclass
@@ -1001,4 +1080,5 @@ __all__ = [
     "LabelList",
     "Fm",
     "NGram",
+    "ScalarPlugin",
 ]

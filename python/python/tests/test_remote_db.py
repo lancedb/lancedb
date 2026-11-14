@@ -3012,6 +3012,74 @@ def test_remote_json_fts_config(server_version):
     assert request["block_size"] == 256
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
+async def test_remote_scalar_plugin_nests_params(use_async):
+    from lancedb.index import ScalarPlugin
+
+    received_requests = []
+
+    def handler(request):
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        if request.path == "/v1/table/test/describe/":
+            fields = [{"name": "id", "type": {"type": "int32"}, "nullable": False}]
+            request.wfile.write(
+                json.dumps({"version": 1, "schema": {"fields": fields}}).encode()
+            )
+        elif request.path == "/v1/table/test/create_index/":
+            received_requests.append(read_json_body(request))
+            request.wfile.write(b"{}")
+        else:
+            raise AssertionError(f"Unexpected request: {request.path}")
+
+    cases = [
+        (ScalarPlugin(" ZoneMap "), {}),
+        (
+            ScalarPlugin("bloomfilter", {"number_of_items": 4096, "column": "not_id"}),
+            {"name": "id_bloom", "replace": False},
+        ),
+        (ScalarPlugin("bloomfilter", '{"probability": 0.01}'), {}),
+        (ScalarPlugin("zonemap", {}), {}),
+    ]
+
+    if use_async:
+        async with mock_lancedb_connection_async(handler) as db:
+            table = await db.open_table("test")
+            for config, options in cases:
+                await table.create_index("id", config=config, **options)
+    else:
+        with mock_lancedb_connection(handler) as db:
+            table = db.open_table("test")
+            for config, options in cases:
+                table.create_index("id", config=config, **options)
+
+    assert received_requests == [
+        {"column": "id", "index_type": "PLUGIN", "plugin_type": "ZONEMAP"},
+        {
+            "column": "id",
+            "index_type": "PLUGIN",
+            "plugin_type": "BLOOMFILTER",
+            "name": "id_bloom",
+            "replace": False,
+            "params": {"number_of_items": 4096, "column": "not_id"},
+        },
+        {
+            "column": "id",
+            "index_type": "PLUGIN",
+            "plugin_type": "BLOOMFILTER",
+            "params": {"probability": 0.01},
+        },
+        {
+            "column": "id",
+            "index_type": "PLUGIN",
+            "plugin_type": "ZONEMAP",
+            "params": {},
+        },
+    ]
+
+
 @pytest.mark.parametrize(
     "rq_kwargs", [{}, {"num_bits": None}, {"num_bits": 1}, {"num_bits": 4}]
 )

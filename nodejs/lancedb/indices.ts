@@ -835,6 +835,37 @@ export class Index {
   }
 
   /**
+   * Create a scalar index of a type recognized by a registered database plugin.
+   *
+   * Use this for index types without a dedicated factory on `Index`.
+   * Prefer a dedicated factory when one is available.
+   *
+   * An unknown plugin name or invalid parameters cause `createIndex` to fail.
+   *
+   * @param indexType - The index type, case-insensitive.
+   *   Surrounding whitespace is ignored. Must not be empty.
+   * @param params - The index parameters, as an object or as a string
+   *   holding a JSON object. They are passed as given. Each plugin defines
+   *   its parameters and defaults; refer to the plugin's documentation
+   *   for guidance.
+   * @throws If `indexType` is empty, or `params` is not a JSON object.
+   *
+   * @example
+   * ```ts
+   * await table.createIndex("id", {
+   *   config: Index.plugin("bloomfilter", { number_of_items: 4096 }),
+   * });
+   * ```
+   */
+  static plugin(indexType: string, params?: Record<string, unknown> | string) {
+    const paramsJson =
+      params === undefined || typeof params === "string"
+        ? params
+        : JSON.stringify(params);
+    return new Index(LanceDbIndex.plugin(indexType, paramsJson));
+  }
+
+  /**
    * Create a full text search index
    *
    * A full text search index is an index on a string column, so that you can conduct full
