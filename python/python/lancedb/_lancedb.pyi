@@ -117,7 +117,7 @@ class PyExpr:
 
 def expr_col(name: str) -> PyExpr: ...
 def expr_lit(
-    value: Union[bool, int, float, str, bytes, date, datetime, Decimal],
+    value: Union[bool, int, float, str, bytes, date, datetime, Decimal, None],
 ) -> PyExpr: ...
 def expr_func(name: str, args: List[PyExpr]) -> PyExpr: ...
 
@@ -663,6 +663,8 @@ class Table:
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
         resource_budget: Optional[dict[str, int]] = None,
+        supervisor_resources: Optional[dict[str, int]] = None,
+        planning_workers: Optional[dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[str] = None,
@@ -683,6 +685,8 @@ class Table:
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
         resource_budget: Optional[dict[str, int]] = None,
+        supervisor_resources: Optional[dict[str, int]] = None,
+        planning_workers: Optional[dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[str] = None,

@@ -6013,6 +6013,31 @@ def test_refresh_column_rejects_invalid_batch_size(tmp_path, method, batch_size)
             {"resource_budget": {"cpu_millis": 1000, "memory_bytes": 1024}},
             "resource_budget",
         ),
+        (
+            {
+                "supervisor_resources": {
+                    "cpu_millis": 1000,
+                    "memory_bytes": 1024,
+                    "ephemeral_storage_bytes": 2048,
+                }
+            },
+            "supervisor_resources",
+        ),
+        (
+            {
+                "planning_workers": {
+                    "resources": {
+                        "cpu_millis": 1000,
+                        "memory_bytes": 1024,
+                        "ephemeral_storage_bytes": 2048,
+                    },
+                    "max_workers": 2,
+                    "rows_per_worker": 100,
+                    "fragments_per_worker": 1,
+                }
+            },
+            "planning_workers",
+        ),
         ({"num_workers": 2}, "num_workers"),
         ({"max_executor_processes_per_worker": 2}, "max_executor_processes_per_worker"),
     ],

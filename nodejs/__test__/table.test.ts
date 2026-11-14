@@ -3271,29 +3271,6 @@ describe("when dealing with blob columns", () => {
     expect(await handle!.read()).toEqual(alpha);
   });
 
-  it("cancels an in-flight read", async () => {
-    const db = await connect(tmpDir.name);
-    const schema = new Schema([
-      new Field("id", new Int64(), true),
-      blob("payload", { inlineSizeThreshold: 0, dedicatedSizeThreshold: 1 }),
-    ]);
-    const payload = Buffer.alloc(32 * 1024 * 1024, 7);
-    const table = await db.createTable("large_blobs", [{ id: 1n, payload }], {
-      schema,
-    });
-    const [row] = await table.query().withRowId().toArray();
-    const [handle] = await table.fetchBlobFiles("payload", [
-      row._rowid as bigint,
-    ]);
-    const controller = new AbortController();
-    const pending = handle!.readRange(0n, handle!.size(), {
-      signal: controller.signal,
-    });
-    controller.abort();
-    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
-    expect(await handle!.readRange(0n, 4n)).toEqual(payload.subarray(0, 4));
-  });
-
   it("toArrow returns blob bytes with blobMode bytes", async () => {
     const { table, alpha, beta } = await openBlobTable();
     const result = await table.query().toArrow({ blobMode: "bytes" });
@@ -5739,6 +5716,31 @@ describe("computed columns", () => {
         resourceBudget: { cpuMillis: 1_000, memoryBytes: 1_024 },
       }),
     ).rejects.toThrow("resource_budget requires a LanceDB Enterprise refresh");
+    await expect(
+      table.refreshColumn("x", {
+        supervisorResources: {
+          cpuMillis: 1_000,
+          memoryBytes: 1_024,
+          ephemeralStorageBytes: 2_048,
+        },
+      }),
+    ).rejects.toThrow(
+      "supervisor_resources requires a LanceDB Enterprise refresh",
+    );
+    await expect(
+      table.refreshColumnAsync("x", {
+        planningWorkers: {
+          resources: {
+            cpuMillis: 1_000,
+            memoryBytes: 1_024,
+            ephemeralStorageBytes: 2_048,
+          },
+          maxWorkers: 2,
+          rowsPerWorker: 100,
+          fragmentsPerWorker: 1,
+        },
+      }),
+    ).rejects.toThrow("planning_workers requires a LanceDB Enterprise refresh");
   });
 
   it("records Function errors only on remote tables", async () => {

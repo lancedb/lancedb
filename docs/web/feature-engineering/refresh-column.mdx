@@ -400,6 +400,101 @@ for changing only the aggregate GPU budget. It cannot be combined with the
 complete resource budget. Omitting both preserves the server's existing
 defaults.
 
+{/*
+Draft for the Function refresh control-plane resource release.
+
+`resource_budget` above sizes the Function workers. Two independent options
+size the refresh control plane for a registered Function.
+`supervisor_resources` sets the CPU, memory and ephemeral-storage limits of
+the supervisor pod. `planning_workers` sets the resources of one planning
+worker and the sizing of the CPU-only planning fleet: `max_workers`,
+`rows_per_worker` and `fragments_per_worker`. Every field is required and
+must be positive. Omitting either option leaves the server's configured
+defaults unchanged, and either can be combined with `resource_budget`.
+
+<CodeGroup>
+```python Python icon="python"
+job = table.refresh_column_async(
+    "embedding",
+    supervisor_resources={
+        "cpu_millis": 2_000,
+        "memory_bytes": 4 * 1024**3,
+        "ephemeral_storage_bytes": 10 * 1024**3,
+    },
+    planning_workers={
+        "resources": {
+            "cpu_millis": 1_000,
+            "memory_bytes": 2 * 1024**3,
+            "ephemeral_storage_bytes": 5 * 1024**3,
+        },
+        "max_workers": 4,
+        "rows_per_worker": 100_000,
+        "fragments_per_worker": 8,
+    },
+)
+job.wait()
+```
+
+```rust Rust icon="rust"
+use lancedb::table::{
+    FunctionRefreshPlanningConfig,
+    FunctionRefreshPodResources,
+    RefreshColumnOptions,
+};
+
+let _job = table
+    .refresh_column_async_with_options(
+        "embedding",
+        RefreshColumnOptions::default()
+            .supervisor_resources(
+                FunctionRefreshPodResources::new(
+                    2_000,
+                    4 * 1024 * 1024 * 1024,
+                    10 * 1024 * 1024 * 1024,
+                ),
+            )
+            .planning_workers(
+                FunctionRefreshPlanningConfig::new(
+                    FunctionRefreshPodResources::new(
+                        1_000,
+                        2 * 1024 * 1024 * 1024,
+                        5 * 1024 * 1024 * 1024,
+                    ),
+                    4,
+                    100_000,
+                    8,
+                ),
+            ),
+    )
+    .await?;
+```
+
+```typescript TypeScript icon="typescript"
+const job = await table.refreshColumnAsync("embedding", {
+  supervisorResources: {
+    cpuMillis: 2_000,
+    memoryBytes: 4 * 1024 ** 3,
+    ephemeralStorageBytes: 10 * 1024 ** 3,
+  },
+  planningWorkers: {
+    resources: {
+      cpuMillis: 1_000,
+      memoryBytes: 2 * 1024 ** 3,
+      ephemeralStorageBytes: 5 * 1024 ** 3,
+    },
+    maxWorkers: 4,
+    rowsPerWorker: 100_000,
+    fragmentsPerWorker: 8,
+  },
+});
+await job.wait();
+```
+</CodeGroup>
+
+The SDK validates the shape and sends these values only with this explicit
+refresh request. A supporting LanceDB Enterprise server is required.
+*/}
+
 These examples configure only the explicit refresh shown. A registered
 Function declaration can separately set `auto_refresh_resource_budget` on
 `add_columns`; that declaration controls the budget for its automatic
@@ -456,6 +551,39 @@ three attempts, including the first call. Import `FunctionRetryPolicy`
 from `lancedb.functions`. Use `FunctionRetryPolicy(max_attempts=1)` to
 disable user-error retries. Omitting the override preserves the registered
 policy.
+
+<CodeGroup>
+```python Python icon="python"
+from lancedb.functions import FunctionRetryPolicy
+
+job = table.refresh_column_async(
+    "embedding",
+    retry_policy=FunctionRetryPolicy(transient=True, max_attempts=3),
+)
+job.wait()
+```
+
+```rust Rust icon="rust"
+use lancedb::{function::FunctionRetryPolicy, table::RefreshColumnOptions};
+
+let mut retry_policy = FunctionRetryPolicy::transient();
+retry_policy.max_attempts = 3;
+
+let _job = table
+    .refresh_column_async_with_options(
+        "embedding",
+        RefreshColumnOptions::default().retry_policy(retry_policy),
+    )
+    .await?;
+```
+
+```typescript TypeScript icon="typescript"
+const job = await table.refreshColumnAsync("embedding", {
+  retryPolicy: { transient: true, maxAttempts: 3 },
+});
+await job.wait();
+```
+</CodeGroup>
 
 This requires a supporting LanceDB Enterprise server as well as an SDK
 that exposes these options. An older Function image may need

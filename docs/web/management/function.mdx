@@ -66,11 +66,43 @@ your process, without the database, so unit tests stay ordinary tests:
 
 Where annotations cannot express the Arrow type precisely, pass `input_schema`
 and `output_schema` together: one without the other is rejected. A scalar
-output must be non-nullable, because a physical NULL is what marks a
-computed-column row as unfilled. A named-struct output may declare nullable
-fields: whether a row has a result at all is the struct's own validity, which
-Enterprise keeps in a separate internal column when it expands the result into
-sibling columns, so a null field is a value rather than a missing row.
+output is non-nullable by default. Annotate the return as `Optional[T]` or
+`T | None`, or pass a nullable output field, to declare a nullable scalar:
+
+```python
+import pyarrow as pa
+
+from lancedb import function
+
+
+@function(
+    input_schema=pa.schema([pa.field("value", pa.int64(), nullable=False)]),
+    output_schema=pa.field("result", pa.int64(), nullable=True),
+)
+def maybe_double(value: int) -> int | None:
+    return None if value == 0 else value * 2
+```
+
+The signature sent in the registration request then carries the nullable
+scalar:
+
+```json
+{
+  "inputs": [{"name": "value", "arrow_type": "int64", "nullable": false}],
+  "output": {"kind": "scalar", "arrow_type": "int64", "nullable": true}
+}
+```
+
+<Note>
+Nullable scalar outputs require an Enterprise server that supports them;
+older servers reject the registration. On a supporting server, a computed
+`NULL` counts as a filled result, independently of its stored value.
+</Note>
+
+A named-struct output may declare nullable fields: whether a row has a result
+at all is the struct's own validity, which Enterprise keeps in a separate
+internal column when it expands the result into sibling columns, so a null
+field is a value rather than a missing row.
 
 ## Connect and create a table {#table}
 
@@ -212,6 +244,52 @@ The column is declared empty; the function has not run yet. A mapping with one
 function application keeps its scalar or named-struct result in the named
 column. A bare named-struct application expands its result fields as one atomic
 binding, with aliases from `rename(columns=...)`.
+
+{/* Draft for the Function literal binding release.
+
+### Bind a constant input {#literal-inputs}
+
+<Note>
+Literal inputs require an SDK that supports binding metadata version 2 and an
+Enterprise deployment with matching literal declaration and execution support.
+Upgrading the SDK alone does not enable this server capability. Older clients
+reject version 2 bindings; column-only bindings continue to use version 1.
+</Note>
+
+Use `lit(...)` to pass the same value for every row while another parameter
+reads a column. For example, using the table above:
+
+<CodeGroup>
+```python Python icon="python"
+from lancedb import col, function, lit
+
+
+@function
+def multiply(value: float, factor: int) -> float:
+    return value * factor
+
+
+multiplier = db.create_function_async(multiply).wait()
+table.add_columns(
+    {"scaled": multiplier(value=col("value"), factor=lit(16))},
+    auto_refresh_enabled=False,
+)
+```
+</CodeGroup>
+
+Supported scalar constants are booleans, strings, integers from `-(2**63)`
+through `2**64 - 1`, and `None` for a nullable parameter. Each value must match
+the parameter's declared type. Floating-point, binary, date, datetime and
+decimal constants are not supported in Function input bindings, even though
+`lit(...)` accepts them in other SQL expressions. Bind a direct literal;
+expressions such as `lit(16) + lit(8)` are not supported here.
+
+The constant belongs to the column binding, so the Function version and its
+image stay the same. Only column inputs contribute table dependencies. Refresh
+`scaled` to fill it. To change the constant to `lit(8)`, drop and redeclare the
+column using the same `multiplier` version; the new binding needs a refresh.
+
+*/}
 
 ### Bind more than one input, or fill more than one column {#multi}
 
