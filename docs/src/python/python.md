@@ -578,6 +578,8 @@ with BlobReader(read_range, len(payload)) as reader:
 
 ::: lancedb.functions.InputBinding
 
+::: lancedb.functions.LiteralInputBinding
+
 ::: lancedb.functions.OutputMapping
 
 ::: lancedb.functions.AssignmentMapping

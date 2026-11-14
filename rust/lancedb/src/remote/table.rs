@@ -10769,9 +10769,17 @@ mod tests {
         }
     }
 
+    #[rstest]
+    #[case::column_only(None)]
+    #[case::sixteen(Some(serde_json::json!(16)))]
+    #[case::eight(Some(serde_json::json!(8)))]
+    #[case::null(Some(serde_json::Value::Null))]
     #[tokio::test]
-    async fn test_add_scalar_function_column_sends_atomic_null_declaration() {
-        let table = Table::new_with_handler("my_table", |request| {
+    async fn test_add_scalar_function_column_sends_atomic_null_declaration(
+        #[case] literal: Option<serde_json::Value>,
+    ) {
+        let expected_literal = literal.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
             match request.url().path() {
             "/v1/table/my_table/describe/" => http::Response::builder()
                 .status(200)
@@ -10789,6 +10797,13 @@ mod tests {
                 ))
                 .unwrap();
                 expected["auto_refresh_enabled"] = serde_json::json!(true);
+                if let Some(literal) = &expected_literal {
+                    expected["function"]["binding_metadata_version"] = serde_json::json!(2);
+                    expected["function"]["application"]["inputs"]
+                        .as_array_mut().unwrap().push(serde_json::json!({
+                            "parameter": "num_frames", "kind": "literal", "value": literal,
+                        }));
+                }
                 assert_eq!(actual, expected);
                 http::Response::builder()
                     .status(200)
@@ -10798,12 +10813,24 @@ mod tests {
             path => panic!("Unexpected path: {path}"),
         }
         });
-        let application = crate::function::FunctionApplication::from_json(
+        let mut application: serde_json::Value = serde_json::from_str(
             r#"{
                 "function":{"name":"embed","version":"1","object_id":"fixture","location":"memory:///fixture","manifest_digest":"sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"},
                 "inputs":[{"parameter":"text","kind":"column","value":{"path":"description"}}],
                 "output":{"kind":"scalar","arrow_type":"list<float32>","nullable":false}
             }"#,
+        )
+        .unwrap();
+        if let Some(literal) = literal {
+            application["inputs"]
+                .as_array_mut()
+                .unwrap()
+                .push(serde_json::json!({
+                    "parameter": "num_frames", "kind": "literal", "value": literal,
+                }));
+        }
+        let application = crate::function::FunctionApplication::from_json(
+            &serde_json::to_string(&application).unwrap(),
         )
         .unwrap();
 
@@ -10934,19 +10961,64 @@ mod tests {
 
     /// Only a column the binding uses is refused, and it is refused before
     /// any request goes out; the rest reach the server as usual.
+    #[rstest]
+    #[case::column_only(false)]
+    #[case::literal(true)]
     #[tokio::test]
-    async fn test_add_columns_scopes_to_the_columns_a_binding_uses() {
-        let table = Table::new_with_handler("my_table", |request| match request.url().path() {
-            "/v1/table/my_table/describe/" => http::Response::builder()
-                .status(200)
-                .body(describe_response(&fixture_bound_schema()))
-                .unwrap(),
-            "/v1/table/my_table/add_columns/" => http::Response::builder()
-                .status(200)
-                .body(r#"{"version":10}"#.to_string())
-                .unwrap(),
-            path => panic!("Unexpected path: {path}"),
-        });
+    async fn test_add_columns_scopes_to_the_columns_a_binding_uses(#[case] literal: bool) {
+        let mut schema = fixture_bound_schema();
+        if literal {
+            let key = crate::table::computed_columns::FUNCTION_BINDINGS_META_KEY;
+            let mut metadata = schema.metadata().clone();
+            let mut envelope: serde_json::Value =
+                serde_json::from_str(metadata.get(key).unwrap()).unwrap();
+            envelope["version"] = serde_json::json!(2);
+            envelope["bindings"][0]["inputs"]
+                .as_array_mut()
+                .unwrap()
+                .pop();
+            envelope["bindings"][0]["literal_inputs"] =
+                serde_json::json!([{"parameter": "body", "value": null}]);
+            let binding =
+                crate::function::FunctionBinding::from_json(&envelope["bindings"][0].to_string())
+                    .unwrap();
+            let fields = schema
+                .fields()
+                .iter()
+                .map(|field| {
+                    let mut field = field.as_ref().clone();
+                    if let Some(output) = binding
+                        .outputs()
+                        .iter()
+                        .find(|output| output.output_name == *field.name())
+                    {
+                        field = field.with_metadata(
+                            crate::table::computed_columns::function_computed_column_metadata(
+                                binding.binding_id(),
+                                output.output_ordinal,
+                                &["title".into()],
+                            ),
+                        );
+                    }
+                    field
+                })
+                .collect::<Vec<_>>();
+            metadata.insert(key.to_string(), envelope.to_string());
+            schema = Schema::new_with_metadata(fields, metadata);
+        }
+        let allowed_schema = schema.clone();
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_response(&allowed_schema))
+                    .unwrap(),
+                "/v1/table/my_table/add_columns/" => http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version":10}"#.to_string())
+                    .unwrap(),
+                path => panic!("Unexpected path: {path}"),
+            });
         table
             .add_columns()
             .computed("doubled", "spare * 2")
@@ -10963,13 +11035,14 @@ mod tests {
             .await
             .unwrap();
 
-        let table = Table::new_with_handler("my_table", |request| match request.url().path() {
-            "/v1/table/my_table/describe/" => http::Response::builder()
-                .status(200)
-                .body(describe_response(&fixture_bound_schema()))
-                .unwrap(),
-            path => panic!("mutation request must not be sent: {path}"),
-        });
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_response(&schema))
+                    .unwrap(),
+                path => panic!("mutation request must not be sent: {path}"),
+            });
         for name in ["title", "search_text"] {
             let err = table
                 .add_columns()
@@ -11327,7 +11400,7 @@ mod tests {
             "/v1/table/my_table/describe/" => http::Response::builder()
                 .status(200)
                 .body(
-                    r#"{"version":1,"schema":{"fields":[{"name":"x","nullable":true,"type":{"type":"int32"}}],"metadata":{"lancedb::function_bindings":"{\"version\":2,\"bindings\":[]}"}}}"#,
+                    r#"{"version":1,"schema":{"fields":[{"name":"x","nullable":true,"type":{"type":"int32"}}],"metadata":{"lancedb::function_bindings":"{\"version\":3,\"bindings\":[]}"}}}"#,
                 )
                 .unwrap(),
             path => panic!("mutation request must not be sent: {path}"),

@@ -203,6 +203,10 @@ pub const FUNCTION_BINDINGS_META_KEY: &str = "lancedb::function_bindings";
 /// Version of the schema-level Function binding envelope.
 pub const FUNCTION_BINDINGS_VERSION: u32 = 1;
 
+/// Envelope version required when a Function binding contains constant inputs.
+/// Older readers reject this version instead of dropping those inputs.
+pub const FUNCTION_LITERAL_BINDINGS_VERSION: u32 = 2;
+
 /// Field metadata key holding `{fragment id -> input signature}` as JSON,
 /// recorded by the refresh that last computed each fragment. Outside the
 /// declaration namespace on purpose: a declaration is immutable through
@@ -329,6 +333,17 @@ struct FunctionBindingEnvelope {
 
 /// Encode immutable Function bindings for schema-level persistence.
 pub fn function_bindings_metadata(bindings: &[FunctionBinding]) -> Result<String> {
+    bindings
+        .iter()
+        .try_for_each(FunctionBinding::validate_inputs)?;
+    let version = if bindings
+        .iter()
+        .any(|binding| !binding.literal_inputs().is_empty())
+    {
+        FUNCTION_LITERAL_BINDINGS_VERSION
+    } else {
+        FUNCTION_BINDINGS_VERSION
+    };
     let bindings = bindings
         .iter()
         .map(serde_json::to_value)
@@ -336,12 +351,10 @@ pub fn function_bindings_metadata(bindings: &[FunctionBinding]) -> Result<String
         .map_err(|e| Error::InvalidInput {
             message: format!("invalid Function binding metadata: {e}"),
         })?;
-    serde_json::to_string(&FunctionBindingEnvelope {
-        version: FUNCTION_BINDINGS_VERSION,
-        bindings,
-    })
-    .map_err(|e| Error::InvalidInput {
-        message: format!("invalid Function binding metadata: {e}"),
+    serde_json::to_string(&FunctionBindingEnvelope { version, bindings }).map_err(|e| {
+        Error::InvalidInput {
+            message: format!("invalid Function binding metadata: {e}"),
+        }
     })
 }
 
@@ -355,9 +368,12 @@ pub fn function_bindings(schema: &ArrowSchema) -> Result<Vec<FunctionBinding>> {
         .bindings
         .into_iter()
         .map(|binding| {
-            serde_json::from_value(binding).map_err(|e| Error::InvalidInput {
-                message: format!("invalid Function binding metadata: {e}"),
-            })
+            let binding: FunctionBinding =
+                serde_json::from_value(binding).map_err(|e| Error::InvalidInput {
+                    message: format!("invalid Function binding metadata: {e}"),
+                })?;
+            binding.validate_inputs()?;
+            Ok(binding)
         })
         .collect()
 }
@@ -370,13 +386,28 @@ fn function_binding_envelope(schema: &ArrowSchema) -> Result<Option<FunctionBind
         serde_json::from_str(raw).map_err(|e| Error::InvalidInput {
             message: format!("invalid Function binding metadata: {e}"),
         })?;
-    if envelope.version != FUNCTION_BINDINGS_VERSION {
+    if !matches!(
+        envelope.version,
+        FUNCTION_BINDINGS_VERSION | FUNCTION_LITERAL_BINDINGS_VERSION
+    ) {
         return Err(Error::NotSupported {
             message: format!(
                 "Function binding metadata version {} is not supported by this client",
                 envelope.version
             ),
         });
+    }
+    if envelope.version == FUNCTION_BINDINGS_VERSION
+        && envelope.bindings.iter().any(|binding| {
+            binding
+                .get("literal_inputs")
+                .and_then(Value::as_array)
+                .is_some_and(|inputs| !inputs.is_empty())
+        })
+    {
+        return Err(invalid_function(
+            "literal Function bindings require metadata version 2",
+        ));
     }
     Ok(Some(envelope))
 }
@@ -401,6 +432,7 @@ pub(crate) fn ensure_supported_function_metadata(schema: &ArrowSchema) -> Result
         .collect::<Result<Vec<FunctionBinding>>>()?;
     let mut binding_ids = BTreeSet::new();
     for binding in &bindings {
+        binding.validate_inputs()?;
         if !binding_ids.insert(binding.binding_id().to_string()) {
             return Err(Error::InvalidInput {
                 message: format!("duplicate Function binding '{}'", binding.binding_id()),
@@ -821,6 +853,7 @@ fn ensure_known_binding_shape(value: &Value) -> Result<()> {
             "binding_id",
             "function",
             "inputs",
+            "literal_inputs",
             "outputs",
             "assignment",
             "input_schema",
@@ -830,6 +863,14 @@ fn ensure_known_binding_shape(value: &Value) -> Result<()> {
         "binding",
     )?;
     let object = value.as_object().unwrap();
+    if let Some(inputs) = object.get("literal_inputs") {
+        for input in inputs
+            .as_array()
+            .ok_or_else(|| invalid_function("Function literal_inputs must be an array"))?
+        {
+            reject_unknown_object_fields(input, &["parameter", "value"], "literal input binding")?;
+        }
+    }
     reject_unknown_object_fields(
         object
             .get("function")
@@ -1305,6 +1346,7 @@ fn nullable_scalar_allows_assignment(output: &OutputMapping) -> Result<bool> {
 }
 
 fn ensure_binding_matches_schema(schema: &ArrowSchema, binding: &FunctionBinding) -> Result<()> {
+    binding.validate_inputs()?;
     let mut input_fields = Vec::with_capacity(binding.inputs().len());
     for input in binding.inputs() {
         let resolved = resolve_field_path(schema, &input.field_path)?;
@@ -1349,6 +1391,52 @@ fn ensure_binding_matches_schema(schema: &ArrowSchema, binding: &FunctionBinding
             )));
         }
         input_fields.push(parameter_field);
+    }
+    if !binding.literal_inputs().is_empty() {
+        // Column types still come from the table. Literal types come from the
+        // complete signature schema persisted by the Enterprise service.
+        let declared: JsonArrowSchema =
+            serde_json::from_value(binding.input_schema().cloned().ok_or_else(|| {
+                invalid_function("literal Function binding requires an input schema")
+            })?)
+            .map_err(|e| invalid_function(format!("invalid Function input schema: {e}")))?;
+        let mut columns = input_fields
+            .into_iter()
+            .map(|field| (field.name().clone(), field))
+            .collect::<HashMap<_, _>>();
+        let mut literals = binding
+            .literal_inputs()
+            .iter()
+            .map(|input| (input.parameter.as_str(), &input.value))
+            .collect::<HashMap<_, _>>();
+        input_fields = Vec::with_capacity(declared.fields.len());
+        for field in &declared.fields {
+            if let Some(column) = columns.remove(&field.name) {
+                input_fields.push(column);
+            } else if let Some(value) = literals.remove(field.name.as_str()) {
+                let field =
+                    lance_namespace::schema::convert_json_arrow_field(field).map_err(|e| {
+                        invalid_function(format!("invalid Function literal field: {e}"))
+                    })?;
+                if field.is_blob_v2() || (value.is_null() && !field.is_nullable()) {
+                    return Err(invalid_function(format!(
+                        "invalid literal for Function parameter '{}'",
+                        field.name()
+                    )));
+                }
+                input_fields.push(field);
+            } else {
+                return Err(invalid_function(format!(
+                    "Function input schema has an unknown or duplicate parameter '{}'",
+                    field.name
+                )));
+            }
+        }
+        if !columns.is_empty() || !literals.is_empty() {
+            return Err(invalid_function(
+                "Function input schema is missing bound parameters",
+            ));
+        }
     }
     let input_schema =
         lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(input_fields))
@@ -1501,6 +1589,10 @@ pub(crate) fn plan_function_application(
                 "duplicate Function parameter '{}'",
                 input.parameter
             )));
+        }
+        if input.kind == "literal" {
+            crate::function::validate_literal(&input.value)?;
+            continue;
         }
         if input.kind != "column" {
             return Err(Error::NotSupported {
@@ -1680,7 +1772,15 @@ pub(crate) fn plan_function_application(
 
     Ok(FunctionDeclarationPlan {
         application: application.clone(),
-        binding_metadata_version: FUNCTION_BINDINGS_VERSION,
+        binding_metadata_version: if application
+            .inputs()
+            .iter()
+            .any(|input| input.kind == "literal")
+        {
+            FUNCTION_LITERAL_BINDINGS_VERSION
+        } else {
+            FUNCTION_BINDINGS_VERSION
+        },
         input_bindings,
         input_schema,
         output_schema: JsonArrowSchema::new(output_fields),
@@ -4739,6 +4839,129 @@ mod tests {
     }
 
     #[test]
+    fn test_literal_function_application_keeps_only_column_dependencies() {
+        let mut value = serde_json::to_value(single_input_application("title")).unwrap();
+        value["inputs"] = serde_json::json!([
+            {"parameter": "count", "kind": "literal", "value": 16},
+            {"parameter": "text", "kind": "column", "value": {"path": "title"}},
+            {"parameter": "optional", "kind": "literal", "value": null}
+        ]);
+        let application = FunctionApplication::from_json(&value.to_string()).unwrap();
+        let plan =
+            plan_function_application(&function_input_schema(), &application, Some("result"))
+                .unwrap();
+        assert_eq!(plan.binding_metadata_version, 2);
+        assert_eq!(plan.input_bindings.len(), 1);
+        assert_eq!(plan.input_bindings[0].parameter, "text");
+        assert_eq!(plan.input_bindings[0].field_path, "title");
+        assert_eq!(plan.input_schema.fields.len(), 1);
+        assert_eq!(plan.input_schema.fields[0].name, "text");
+        assert_eq!(
+            serde_json::to_value(plan.application).unwrap()["inputs"],
+            value["inputs"]
+        );
+        value["inputs"][0]["parameter"] = serde_json::json!("text");
+        let duplicate = FunctionApplication::from_json(&value.to_string()).unwrap();
+        assert!(
+            plan_function_application(&function_input_schema(), &duplicate, Some("result"))
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate Function parameter")
+        );
+    }
+
+    #[test]
+    fn test_literal_function_metadata_survives_schema_mutation_guards() {
+        let legacy = FunctionBinding::from_json(include_str!(
+            "../../tests/fixtures/first_class_functions/v1/remote_function_binding.json"
+        ))
+        .unwrap();
+        let legacy_envelope: Value = serde_json::from_str(
+            &function_bindings_metadata(std::slice::from_ref(&legacy)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(legacy_envelope["version"], 1);
+        let mut value = serde_json::to_value(&legacy).unwrap();
+        value["inputs"].as_array_mut().unwrap().pop();
+        value["literal_inputs"] = serde_json::json!([{"parameter": "body", "value": null}]);
+        let binding = FunctionBinding::from_json(&value.to_string()).unwrap();
+        let raw = function_bindings_metadata(std::slice::from_ref(&binding)).unwrap();
+        let mut envelope: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(envelope["version"], 2);
+        assert_eq!(
+            envelope["bindings"][0]["literal_inputs"],
+            value["literal_inputs"]
+        );
+        let schema = valid_function_binding_schema(true, true, &binding);
+        let schema = schema.with_metadata(HashMap::from([(
+            FUNCTION_BINDINGS_META_KEY.to_string(),
+            raw.clone(),
+        )]));
+        ensure_supported_function_metadata(&schema).unwrap();
+        let decoded = function_bindings(&schema).unwrap();
+        assert_eq!(decoded.as_slice(), std::slice::from_ref(&binding));
+        assert_eq!(function_bindings_metadata(&decoded).unwrap(), raw);
+        assert!(!protected_roots(&decoded).unwrap().contains("body"));
+
+        envelope["version"] = serde_json::json!(1);
+        let downgraded = schema.clone().with_metadata(HashMap::from([(
+            FUNCTION_BINDINGS_META_KEY.to_string(),
+            envelope.to_string(),
+        )]));
+        assert!(
+            function_bindings(&downgraded)
+                .unwrap_err()
+                .to_string()
+                .contains("require metadata version 2")
+        );
+
+        value["literal_inputs"][0]["parameter"] = serde_json::json!("title");
+        assert!(
+            FunctionBinding::from_json(&value.to_string())
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate Function parameter")
+        );
+    }
+
+    #[test]
+    fn test_literal_function_binding_requires_complete_input_schema() {
+        let mut value: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/first_class_functions/v1/remote_function_binding.json"
+        ))
+        .unwrap();
+        value["inputs"].as_array_mut().unwrap().pop();
+        value["literal_inputs"] = serde_json::json!([{"parameter": "body", "value": null}]);
+        value["input_schema"]["fields"][1]["nullable"] = serde_json::json!(false);
+        let binding = FunctionBinding::from_json(&value.to_string()).unwrap();
+        let schema = valid_function_binding_schema(true, true, &binding);
+        assert!(
+            ensure_binding_matches_schema(&schema, &binding)
+                .unwrap_err()
+                .to_string()
+                .contains("invalid literal")
+        );
+        value["input_schema"]["fields"]
+            .as_array_mut()
+            .unwrap()
+            .pop();
+        let missing = FunctionBinding::from_json(&value.to_string()).unwrap();
+        assert!(
+            ensure_binding_matches_schema(&schema, &missing)
+                .unwrap_err()
+                .to_string()
+                .contains("missing bound parameters")
+        );
+        value["literal_inputs"][0]["value"] = serde_json::json!(1.5);
+        assert!(
+            FunctionBinding::from_json(&value.to_string())
+                .unwrap_err()
+                .to_string()
+                .contains("floating-point Function literals")
+        );
+    }
+
+    #[test]
     fn test_function_binding_metadata_survives_schema_round_trip() {
         let binding = FunctionBinding::from_json(include_str!(
             "../../tests/fixtures/first_class_functions/v1/remote_function_binding.json"
@@ -5391,7 +5614,7 @@ mod tests {
             function_input_schema().fields().to_vec(),
             HashMap::from([(
                 FUNCTION_BINDINGS_META_KEY.to_string(),
-                r#"{"version":2,"bindings":[]}"#.to_string(),
+                r#"{"version":3,"bindings":[]}"#.to_string(),
             )]),
         );
         let err = plan_function_application(&mixed_schema, &named_struct_application("{}"), None)
