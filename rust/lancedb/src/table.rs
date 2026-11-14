@@ -2295,6 +2295,30 @@ impl Table {
     /// refreshes ignore the batch-size and GPU options, and reject resource
     /// budgets, publication thresholds, and other Enterprise-only options.
     ///
+    /// Native failed-row retry and upgrades require Enterprise workflow version
+    /// 1 or later. The SDK checks the server capability before submitting them.
+    /// An upgrade targets an existing immutable version of the same Function.
+    ///
+    /// ```
+    /// # use lancedb::{Table, table::RefreshColumnOptions};
+    /// use lancedb::function::FunctionRecompute;
+    /// # async fn retry_and_upgrade(table: &Table) -> lancedb::Result<()> {
+    /// let retry = table.refresh_column_async_with_options(
+    ///     "embedding",
+    ///     RefreshColumnOptions::default()
+    ///         .retry_errors(true)
+    ///         .retry_error_type("ValueError"),
+    /// ).await?;
+    /// retry.wait().await?;
+    /// let upgrade = table.refresh_column_async_with_options(
+    ///     "embedding",
+    ///     RefreshColumnOptions::default().upgrade("2", FunctionRecompute::Failed),
+    /// ).await?;
+    /// upgrade.wait().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
     /// ```
     /// # use lancedb::{Table, table::RefreshColumnOptions};
     /// # async fn refresh(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
@@ -2394,6 +2418,9 @@ impl Table {
     /// A record carries a stable `row_id` when the refresh source used stable
     /// row IDs. Prefer it over the physical `row_address` for retries:
     /// compaction and rewrite can change the address.
+    /// With Enterprise workflow version 1, the default lists current failures;
+    /// [`FunctionErrorsRequest::history`] selects retained historical attempts.
+    /// Earlier servers retain their existing default behavior.
     ///
     /// LanceDB Enterprise only, and the caller needs read access
     /// to the table, since a message carries the value that failed.
@@ -2421,6 +2448,23 @@ impl Table {
 
     /// Quarantine current failures, or release them with `quarantined=false`.
     /// Normal and automatic Function refreshes skip quarantined rows.
+    /// Requires Enterprise workflow version 1 or later.
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// use lancedb::function::FunctionQuarantineOptions;
+    /// # async fn quarantine(table: &Table) -> lancedb::Result<()> {
+    /// let count = table.quarantine_function_errors(
+    ///     "embedding",
+    ///     FunctionQuarantineOptions {
+    ///         after_attempts: Some(3),
+    ///         ..Default::default()
+    ///     },
+    /// ).await?;
+    /// println!("quarantined {count} rows");
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn quarantine_function_errors(
         &self,
         column: &str,
@@ -2433,6 +2477,23 @@ impl Table {
 
     /// Read the producing Function version and job for each returned row.
     /// Inspect `truncated` before treating this as a complete snapshot.
+    /// Requires Enterprise workflow version 1 or later.
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// use lancedb::function::FunctionProvenanceOptions;
+    /// # async fn provenance(table: &Table) -> lancedb::Result<()> {
+    /// let values = table.function_provenance(
+    ///     "embedding", FunctionProvenanceOptions::default(),
+    /// ).await?;
+    /// if !values.truncated {
+    ///     for value in values.records {
+    ///         println!("{:?}: {}", value.row_id, value.function_version);
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn function_provenance(
         &self,
         column: &str,

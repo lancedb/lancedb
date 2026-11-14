@@ -3340,6 +3340,9 @@ class Table(ABC):
         error_policy: {"fail", "skip"}, optional
             Action after failure or retry exhaustion. Skip records the error
             and attempt count, subject to the server's failure limits.
+            Workflow version 1 servers default to skip with a 5% failure ceiling
+            and publish successful output before reporting a threshold failure.
+            Older deployments retain their existing defaults.
         max_failed_fraction: float, optional
             Under a skip policy, fail the job once more than this share of
             rows (0 to 1) has failed. LanceDB Enterprise only.
@@ -3357,6 +3360,23 @@ class Table(ABC):
         max_executor_processes_per_worker: int, optional
             Cap on executor processes per Function worker. LanceDB
             Enterprise only.
+        retry_errors: bool, default False
+            Select current failed rows on the server. Cannot be combined with
+            ``where``. Requires Enterprise workflow version 1 or later.
+        retry_job_id: str, optional
+            Restrict a failed-row retry to errors recorded by this job.
+        retry_error_type: str, optional
+            Restrict a failed-row retry to this exception class.
+        include_quarantined: bool, default False
+            Explicitly release and include quarantined rows in a failed-row retry.
+        function_version: str, optional
+            Atomically rebind this column's Function to the specified immutable
+            version. Requires Enterprise workflow version 1 or later.
+        recompute: {"failed", "all", "none"}, optional
+            Which rows to recompute during an upgrade. Requires
+            ``function_version``; the default is ``all``. ``failed`` selects
+            current failures, and ``none`` preserves existing values. Quarantined
+            rows stay excluded unless explicitly included in a failed-row retry.
 
         Returns
         -------
@@ -3454,6 +3474,9 @@ class Table(ABC):
         error_policy: {"fail", "skip"}, optional
             Action after failure or retry exhaustion. Skip records the error
             and attempt count, subject to the server's failure limits.
+            Workflow version 1 servers default to skip with a 5% failure ceiling
+            and publish successful output before reporting a threshold failure.
+            Older deployments retain their existing defaults.
         max_failed_fraction: float, optional
             Under a skip policy, fail the job once more than this share of
             rows (0 to 1) has failed. LanceDB Enterprise only.
@@ -3471,6 +3494,23 @@ class Table(ABC):
         max_executor_processes_per_worker: int, optional
             Cap on executor processes per Function worker. LanceDB
             Enterprise only.
+        retry_errors: bool, default False
+            Select current failed rows on the server. Cannot be combined with
+            ``where``. Requires Enterprise workflow version 1 or later.
+        retry_job_id: str, optional
+            Restrict a failed-row retry to errors recorded by this job.
+        retry_error_type: str, optional
+            Restrict a failed-row retry to this exception class.
+        include_quarantined: bool, default False
+            Explicitly release and include quarantined rows in a failed-row retry.
+        function_version: str, optional
+            Atomically rebind this column's Function to the specified immutable
+            version. Requires Enterprise workflow version 1 or later.
+        recompute: {"failed", "all", "none"}, optional
+            Which rows to recompute during an upgrade. Requires
+            ``function_version``; the default is ``all``. ``failed`` selects
+            current failures, and ``none`` preserves existing values. Quarantined
+            rows stay excluded unless explicitly included in a failed-row retry.
 
         Returns
         -------
@@ -3583,12 +3623,14 @@ class Table(ABC):
         """
         The per-row errors Function refreshes recorded on this table.
 
-        A refresh running under a skip policy records each row it skipped
-        with the input that failed and the error. This lists those records,
-        newest job first, plus a summary for any fragment whose per-row
-        detail was capped. LanceDB Enterprise only; reading errors
-        needs read access to the table, since a message carries the value
-        that failed.
+        A refresh running under a skip policy records each row it skipped.
+        On servers advertising workflow version 1 or later, the default lists
+        current unresolved failures, deduplicated by row and Function column,
+        with attempt counts and first/last failure times. ``history=True``
+        returns retained observations, including repaired failures. Older servers
+        keep their legacy listing behavior and reject explicit history requests.
+        LanceDB Enterprise only; reading errors needs table read access because
+        messages can include the input that failed.
 
         Parameters
         ----------
@@ -3598,6 +3640,10 @@ class Table(ABC):
             Only errors on this column.
         limit: int, optional
             At most this many records (server default 10000, cap 100000).
+        history: bool, default False
+            Include retained historical errors instead of current failures.
+            Requires Enterprise workflow version 1 or later. Historical records
+            cannot be used with the current-input ``rows()`` helper.
 
         Returns
         -------
@@ -8340,6 +8386,9 @@ class AsyncTable:
         error_policy: {"fail", "skip"}, optional
             Action after failure or retry exhaustion. Skip records the error
             and attempt count, subject to the server's failure limits.
+            Workflow version 1 servers default to skip with a 5% failure ceiling
+            and publish successful output before reporting a threshold failure.
+            Older deployments retain their existing defaults.
         max_failed_fraction: float, optional
             Under a skip policy, fail the job once more than this share of
             rows (0 to 1) has failed. LanceDB Enterprise only.
@@ -8357,6 +8406,23 @@ class AsyncTable:
         max_executor_processes_per_worker: int, optional
             Cap on executor processes per Function worker. LanceDB
             Enterprise only.
+        retry_errors: bool, default False
+            Select current failed rows on the server. Cannot be combined with
+            ``where``. Requires Enterprise workflow version 1 or later.
+        retry_job_id: str, optional
+            Restrict a failed-row retry to errors recorded by this job.
+        retry_error_type: str, optional
+            Restrict a failed-row retry to this exception class.
+        include_quarantined: bool, default False
+            Explicitly release and include quarantined rows in a failed-row retry.
+        function_version: str, optional
+            Atomically rebind this column's Function to the specified immutable
+            version. Requires Enterprise workflow version 1 or later.
+        recompute: {"failed", "all", "none"}, optional
+            Which rows to recompute during an upgrade. Requires
+            ``function_version``; the default is ``all``. ``failed`` selects
+            current failures, and ``none`` preserves existing values. Quarantined
+            rows stay excluded unless explicitly included in a failed-row retry.
 
         Returns
         -------
@@ -8465,12 +8531,14 @@ class AsyncTable:
         """
         The per-row errors Function refreshes recorded on this table.
 
-        A refresh running under a skip policy records each row it skipped
-        with the input that failed and the error. This lists those records,
-        newest job first, plus a summary for any fragment whose per-row
-        detail was capped. LanceDB Enterprise only; reading errors
-        needs read access to the table, since a message carries the value
-        that failed.
+        A refresh running under a skip policy records each row it skipped.
+        On servers advertising workflow version 1 or later, the default lists
+        current unresolved failures, deduplicated by row and Function column,
+        with attempt counts and first/last failure times. ``history=True``
+        returns retained observations, including repaired failures. Older servers
+        keep their legacy listing behavior and reject explicit history requests.
+        LanceDB Enterprise only; reading errors needs table read access because
+        messages can include the input that failed.
 
         Parameters
         ----------
@@ -8480,10 +8548,14 @@ class AsyncTable:
             Only errors on this column.
         limit: int, optional
             At most this many records (server default 10000, cap 100000).
+        history: bool, default False
+            Include retained historical errors instead of current failures.
+            Requires Enterprise workflow version 1 or later. Historical records
+            cannot be used with the current-input ``rows()`` helper.
 
         Returns
         -------
-        FunctionErrors
+        AsyncFunctionErrors
             ``records``, ``fragments`` and ``truncated``, the last saying
             whether the listing stopped at its limit.
 
@@ -8660,6 +8732,9 @@ class AsyncTable:
         error_policy: {"fail", "skip"}, optional
             Action after failure or retry exhaustion. Skip records the error
             and attempt count, subject to the server's failure limits.
+            Workflow version 1 servers default to skip with a 5% failure ceiling
+            and publish successful output before reporting a threshold failure.
+            Older deployments retain their existing defaults.
         max_failed_fraction: float, optional
             Under a skip policy, fail the job once more than this share of
             rows (0 to 1) has failed. LanceDB Enterprise only.
@@ -8677,6 +8752,23 @@ class AsyncTable:
         max_executor_processes_per_worker: int, optional
             Cap on executor processes per Function worker. LanceDB
             Enterprise only.
+        retry_errors: bool, default False
+            Select current failed rows on the server. Cannot be combined with
+            ``where``. Requires Enterprise workflow version 1 or later.
+        retry_job_id: str, optional
+            Restrict a failed-row retry to errors recorded by this job.
+        retry_error_type: str, optional
+            Restrict a failed-row retry to this exception class.
+        include_quarantined: bool, default False
+            Explicitly release and include quarantined rows in a failed-row retry.
+        function_version: str, optional
+            Atomically rebind this column's Function to the specified immutable
+            version. Requires Enterprise workflow version 1 or later.
+        recompute: {"failed", "all", "none"}, optional
+            Which rows to recompute during an upgrade. Requires
+            ``function_version``; the default is ``all``. ``failed`` selects
+            current failures, and ``none`` preserves existing values. Quarantined
+            rows stay excluded unless explicitly included in a failed-row retry.
 
         Returns
         -------
