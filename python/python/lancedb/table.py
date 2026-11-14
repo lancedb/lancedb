@@ -3011,7 +3011,7 @@ class Table(ABC):
         delete_unverified: bool = False,
         retrain: bool = False,
         compaction_options: Optional[CompactionOptions] = None,
-    ):
+    ) -> OptimizeStats:
         """
         Optimize the on-disk data and indices for better performance.
 
@@ -3070,6 +3070,15 @@ class Table(ABC):
             ``target_rows_per_fragment`` from the expected row size to bound later
             passes. This does not cap the first pass over an existing oversized
             fragment; see [CompactionOptions][lancedb.table.CompactionOptions].
+
+        Returns
+        -------
+        OptimizeStats
+            The statistics of the optimization operation, containing:
+            - compaction: Statistics from file compaction (fragments and
+              files removed/added).
+            - prune: Statistics from pruning old versions (bytes and old
+              versions removed).
 
         Notes
         -----
@@ -5516,7 +5525,7 @@ class LanceTable(Table):
         delete_unverified: bool = False,
         retrain: bool = False,
         compaction_options: Optional[CompactionOptions] = None,
-    ):
+    ) -> OptimizeStats:
         """
         Optimize the on-disk data and indices for better performance.
 
@@ -5561,6 +5570,15 @@ class LanceTable(Table):
             passes. This does not cap the first pass over an existing oversized
             fragment; see [CompactionOptions][lancedb.table.CompactionOptions].
 
+        Returns
+        -------
+        OptimizeStats
+            The statistics of the optimization operation, containing:
+            - compaction: Statistics from file compaction (fragments and
+              files removed/added).
+            - prune: Statistics from pruning old versions (bytes and old
+              versions removed).
+
         Notes
         -----
         The frequency an application should call optimize is based on the frequency of
@@ -5569,7 +5587,7 @@ class LanceTable(Table):
         you have added or modified 100,000 or more records or run more than 20 data
         modification operations.
         """
-        LOOP.run(
+        return LOOP.run(
             self._table._do_optimize(
                 _optimize_cleanup_since_ms(cleanup_older_than, retrain),
                 delete_unverified,
@@ -8943,6 +8961,15 @@ class AsyncTable:
             ``target_rows_per_fragment`` from the expected row size to bound later
             passes. This does not cap the first pass over an existing oversized
             fragment; see [CompactionOptions][lancedb.table.CompactionOptions].
+
+        Returns
+        -------
+        OptimizeStats
+            The statistics of the optimization operation, containing:
+            - compaction: Statistics from file compaction (fragments and
+              files removed/added).
+            - prune: Statistics from pruning old versions (bytes and old
+              versions removed).
 
         Notes
         -----

@@ -5394,7 +5394,10 @@ def test_sync_optimize(mem_db: DBConnection):
 
     table.add([{"vector": [2.0, 2.0], "item": "baz", "price": 30.0}])
     assert table.count_rows() == 3
-    table.optimize()
+    opt_stats = table.optimize()
+    assert opt_stats is not None
+    assert opt_stats.compaction is not None
+    assert opt_stats.prune is not None
     stats = table.index_stats("price_idx")
     assert stats["num_indexed_rows"] == 3
 
@@ -5415,7 +5418,10 @@ async def test_sync_optimize_in_async(mem_db: DBConnection):
 
     table.add([{"vector": [2.0, 2.0], "item": "baz", "price": 30.0}])
     assert table.count_rows() == 3
-    table.optimize()
+    opt_stats = table.optimize()
+    assert opt_stats is not None
+    assert opt_stats.compaction is not None
+    assert opt_stats.prune is not None
 
 
 @pytest.mark.asyncio
