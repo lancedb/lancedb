@@ -22,6 +22,8 @@ bytes.workspace = true
 lancedb.workspace = true
 datafusion-common.workspace = true
 lance-core.workspace = true
+# Maturin includes path dependencies in source distributions; retain the cosine patch.
+lance-linalg = { path = "../rust/lancedb/vendor/lance-linalg" }
 lance-arrow.workspace = true
 lance-namespace.workspace = true
 lance-namespace-impls.workspace = true
