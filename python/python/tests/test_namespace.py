@@ -1540,6 +1540,49 @@ class TestPushdownOperations:
         with pytest.raises(RuntimeError, match="local execution reached"):
             table._execute_query(Query())
 
+    @pytest.mark.parametrize("api", ["table_pandas", "query_pandas", "analyze_plan"])
+    def test_branch_query_policy_covers_every_executor(self, tmp_path, api):
+        # Gatekeeper regression case from #5038 (verbatim): with a blob
+        # column in the schema, to_pandas() opens a Lance dataset directly
+        # and analyze_plan() calls the native analyzer directly, so both
+        # bypassed the branch-query guard in _execute_query/_execute_batches
+        # and returned branch rows to a principal the namespace denies.
+        pytest.importorskip("pandas")
+        pytest.importorskip("lance")
+        setup = lancedb.connect_namespace("dir", {"root": str(tmp_path)})
+        table = setup.create_table(
+            "t", schema=pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+        )
+        table.add([{"id": 1, "image": b"one"}, {"id": 2, "image": b"two"}])
+        table.branches.create("b1")
+
+        class DenyingNamespace(LanceNamespace):
+            def namespace_id(self):
+                return "branch-query-policy-repro"
+
+            def describe_table(self, request):
+                return DescribeTableResponse(location=table.uri)
+
+            def query_table(self, request):
+                raise PermissionError("namespace query denied")
+
+        db = LanceNamespaceDBConnection(
+            DenyingNamespace(), namespace_client_pushdown_operations=["QueryTable"]
+        )
+        with pytest.raises(PermissionError, match="namespace query denied"):
+            db.open_table("t").search().to_list()
+        branch = db.open_table("t", branch="b1")
+        with pytest.raises(ValueError, match="Cannot run a query on branch"):
+            branch.to_arrow()
+
+        with pytest.raises(ValueError, match="Cannot run a query on branch"):
+            if api == "table_pandas":
+                assert branch.to_pandas()["id"].tolist() == [1, 2]
+            elif api == "query_pandas":
+                assert branch.search().to_pandas()["id"].tolist() == [1, 2]
+            else:
+                assert "output_rows=1" in branch.search().where("id = 1").analyze_plan()
+
     def test_probe_fields_pass_through_independently(self):
         request = _query_to_namespace_request(
             ["geneva", "hist"],
@@ -1711,6 +1754,58 @@ class TestAsyncPushdownOperations:
             await branch.to_arrow()
         with pytest.raises((ValueError, RuntimeError), match="branch"):
             await branch.query().to_arrow()
+
+    @pytest.mark.parametrize("api", ["table_pandas", "query_pandas", "analyze_plan"])
+    async def test_async_branch_query_policy_covers_every_executor(self, tmp_path, api):
+        # Async mirror of test_branch_query_policy_covers_every_executor:
+        # with a blob column in the schema, to_pandas() opens a Lance
+        # dataset directly and analyze_plan() calls the native analyzer
+        # directly, so both bypassed the branch-query guard and returned
+        # branch rows to a principal the namespace denies.
+        pytest.importorskip("pandas")
+        pytest.importorskip("lance")
+        setup = lancedb.connect_namespace_async("dir", {"root": str(tmp_path)})
+        table = await setup.create_table(
+            "t", schema=pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+        )
+        await table.add([{"id": 1, "image": b"one"}, {"id": 2, "image": b"two"}])
+        await table.branches.create("b1")
+        location = await table.uri()
+
+        class DenyingNamespace(LanceNamespace):
+            def namespace_id(self):
+                return "branch-query-policy-repro-async"
+
+            def describe_table(self, request):
+                return DescribeTableResponse(location=location)
+
+            def query_table(self, request):
+                raise PermissionError("namespace query denied")
+
+        db = AsyncLanceNamespaceDBConnection(
+            DenyingNamespace(),
+            namespace_client_pushdown_operations=["QueryTable"],
+        )
+        # The denial surfaces as a RuntimeError wrapping the namespace
+        # PermissionError on the async path (via the Rust query executor).
+        with pytest.raises(
+            (PermissionError, RuntimeError), match="namespace query denied"
+        ):
+            await (await db.open_table("t")).query().to_arrow()
+        branch = await db.open_table("t", branch="b1")
+        with pytest.raises(ValueError, match="Cannot run a query on branch"):
+            await branch.to_arrow()
+
+        with pytest.raises(ValueError, match="Cannot run a query on branch"):
+            if api == "table_pandas":
+                assert (await branch.to_pandas())["id"].tolist() == [1, 2]
+            elif api == "query_pandas":
+                assert (await branch.query().to_pandas())["id"].tolist() == [1, 2]
+            else:
+                assert (
+                    "output_rows=1"
+                    in await branch.query().where("id = 1").analyze_plan()
+                )
 
     async def test_async_table_branch_head_with_pushdown_fails_clearly(self):
         # head() runs through query().limit().to_arrow(), the same public

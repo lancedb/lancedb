@@ -4249,6 +4249,10 @@ class LanceTable(Table):
         -------
         pd.DataFrame
         """
+        # to_pandas() reads the table's storage directly (via Lance for blob
+        # columns), bypassing _execute_query, so a branch handle with
+        # QueryTable pushdown configured must fail here instead.
+        self._check_branch_query_allowed()
         validate_blob_mode(blob_mode)
         if blob_mode == "descriptions" or not schema_has_blob_field(self.schema):
             arrow_tbl = self.to_arrow()
@@ -5378,6 +5382,11 @@ class LanceTable(Table):
         *,
         distributed_metrics: AnalyzePlanDistributedMetrics = "aggregate",
     ) -> str:
+        # analyze_plan() executes the query directly in the native analyzer,
+        # bypassing _execute_query, so a branch handle with QueryTable
+        # pushdown configured must fail here instead of scanning branch
+        # storage and exposing filtered row counts.
+        self._check_branch_query_allowed()
         return LOOP.run(
             self._table._analyze_plan(query, distributed_metrics=distributed_metrics)
         )
@@ -6762,6 +6771,10 @@ class AsyncTable:
         -------
         pd.DataFrame
         """
+        # to_pandas() reads the table's storage directly (via Lance for blob
+        # columns), bypassing _execute_query, so a branch handle with
+        # QueryTable pushdown configured must fail here instead.
+        self._check_branch_query_allowed()
         validate_blob_mode(blob_mode)
         schema = await self.schema()
         if blob_mode == "descriptions" or not schema_has_blob_field(schema):
@@ -7708,6 +7721,11 @@ class AsyncTable:
         distributed_metrics: AnalyzePlanDistributedMetrics = "aggregate",
     ) -> str:
         # This method is used by the sync table
+        # analyze_plan() executes the query directly in the native analyzer,
+        # bypassing _execute_query, so a branch handle with QueryTable
+        # pushdown configured must fail here instead of scanning branch
+        # storage and exposing filtered row counts.
+        self._check_branch_query_allowed()
         async_query = self._sync_query_to_async(query)
         return await async_query.analyze_plan(distributed_metrics)
 
