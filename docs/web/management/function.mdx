@@ -362,11 +362,11 @@ dependencies are part of its definition:
 | `conda`, `conda_channels` | conda packages instead of pip; channels in priority order |
 | `env` | environment variables |
 | `python_version` | Python major/minor for the execution environment, defaulting to yours |
-| `gpu` | whether every execution requires a GPU |
+| `gpu` | GPU class and count per worker, such as `"A10G:2"` or `"H100:4"`; `"any:2"` accepts any eligible class; a class alone requests one GPU, and omitting it uses CPU workers |
 
 <CodeGroup>
 ```python Python icon="python"
-@function(gpu=True)
+@function(gpu="default")
 def extract_frame(video: BlobReader, ts: float) -> bytes:
     ...  # runs only on a GPU-capable worker
 ```
@@ -505,7 +505,7 @@ its model-loading code factored into a sibling module instead of inlined:
 ```python Python icon="python"
 import caption_worker  # a sibling module with the model-loading logic
 
-@function(gpu=True, code=[caption_worker])
+@function(gpu="default", code=[caption_worker])
 def caption(jpeg: bytes) -> str:
     return caption_worker.run(jpeg)
 ```

@@ -144,7 +144,7 @@ from lancedb import BlobReader
 
 @function(
     name="extract_frame",
-    gpu=True,
+    gpu="default",
     pip=["av==13.1.0", "pillow==11.0.0"],
     input_schema=pa.schema([
         lancedb.blob("video"),
