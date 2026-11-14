@@ -121,4 +121,19 @@ def _arrow_from_list(data: list) -> pa.Table:
         dicts = [model_to_dict(d) for d in data]
         return pa.Table.from_pylist(dicts, schema=schema)
 
+    # PyArrow's Table.from_pylist infers column schema exclusively from the keys
+    # present in the first row. If subsequent dicts introduce additional nullable keys,
+    # they are silently discarded. Normalize the list of dicts to preserve all observed keys.
+    if isinstance(data[0], dict):
+        all_keys = list(
+            dict.fromkeys(
+                k for d in data if isinstance(d, dict) for k in d.keys()
+            )
+        )
+        if any(len(d) != len(all_keys) for d in data if isinstance(d, dict)):
+            data = [
+                {k: d.get(k) for k in all_keys} if isinstance(d, dict) else d
+                for d in data
+            ]
+
     return pa.Table.from_pylist(data)
