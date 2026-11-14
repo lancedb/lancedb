@@ -1060,8 +1060,8 @@ Prewarm one or more columns of data in the table.
     This will load the column data into the page cache so that future queries that
     read those columns avoid the initial cold-start latency.  This call initiates
     prewarming and returns once the request is accepted; the warming itself may
-    continue in the background.  Calling it on already-prewarmed columns is a
-    no-op on the server.
+    continue in the background. Submission uses SQL PREWARM and needs Flight
+    SQL connectivity. Use [prewarmDataAsync](Table.md#prewarmdataasync) to retain the job handle.
     Prewarming is generally useful for columns used in filters or projections.
     Large columns (e.g. high-dimensional vectors or binary data) may not be
     practical to prewarm.
@@ -1070,6 +1070,44 @@ Prewarm one or more columns of data in the table.
 #### Returns
 
 `Promise`&lt;`void`&gt;
+
+***
+
+### prewarmDataAsync()
+
+```ts
+abstract prewarmDataAsync(options?): Promise<Job>
+```
+
+Submit data prewarm through SQL and return its durable warming-job handle.
+
+The table handle supplies the branch and namespace. Requires a compatible
+SQL PREWARM server and Flight SQL connectivity. Standard authorization
+requires table Select and database/namespace Usage. Status/wait use generic
+HTTP job APIs; events and cancellation retain their own privileges.
+No REST fallback or option-dropping retry is performed. Historical-version
+handles are unsupported; call `checkoutLatest()` first.
+
+Submission returns after acceptance. Use `job.wait()` for completion, or
+save `job.id` and reopen it with `db.openJob(id)`. A timeout does not cancel
+the job. After `job.refresh()`, `job.spec.table_version` is the pinned version.
+
+#### Parameters
+
+* **options?**: [`PrewarmDataOptions`](../interfaces/PrewarmDataOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&gt;
+
+#### Example
+
+```ts
+const job = await table.prewarmDataAsync({
+  columns: ["video"], filter: "quality > 0.7", concurrency: 4,
+});
+await job.wait();
+```
 
 ***
 

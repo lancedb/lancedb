@@ -128,6 +128,7 @@
 - [OpenTableOptions](interfaces/OpenTableOptions.md)
 - [OptimizeOptions](interfaces/OptimizeOptions.md)
 - [OptimizeStats](interfaces/OptimizeStats.md)
+- [PrewarmDataOptions](interfaces/PrewarmDataOptions.md)
 - [QueryExecutionOptions](interfaces/QueryExecutionOptions.md)
 - [RTEStats](interfaces/RTEStats.md)
 - [RTEWriteSpec](interfaces/RTEWriteSpec.md)
