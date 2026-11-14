@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use arrow_array::RecordBatch;
 use lancedb::job::JobEventsRequest;
@@ -40,6 +41,45 @@ impl Job {
         self.inner.id().map(str::to_string)
     }
 
+    #[napi(getter)]
+    pub fn job_id(&self) -> Option<String> {
+        self.inner.job_id()
+    }
+
+    #[napi(getter)]
+    pub fn operation_id(&self) -> Option<String> {
+        self.inner.operation_id()
+    }
+
+    #[napi(getter)]
+    pub fn attempt(&self) -> Option<u32> {
+        self.inner.attempt()
+    }
+
+    #[napi(getter)]
+    pub fn retry_of(&self) -> Option<String> {
+        self.inner.retry_of()
+    }
+
+    #[napi(getter)]
+    pub fn lifecycle_state(&self) -> Option<String> {
+        self.inner
+            .lifecycle_state()
+            .map(|state| state.as_str().to_string())
+    }
+
+    #[napi(getter)]
+    pub fn source_table_version(&self) -> Option<f64> {
+        self.inner
+            .source_table_version()
+            .map(|version| version as f64)
+    }
+
+    #[napi(getter)]
+    pub fn execution_epoch(&self) -> Option<i64> {
+        self.inner.execution_epoch()
+    }
+
     /// The operation's current lifecycle state: "running", "finished",
     /// "failed", or "cancelled".
     ///
@@ -67,21 +107,43 @@ impl Job {
     /// backend poller without starting another polling loop.
     #[napi(
         catch_unwind,
-        ts_args_type = "progressCallback?: (progress: Record<string, unknown>) => void"
+        ts_args_type = "progressCallback?: (progress: Record<string, unknown>) => void, timeoutMs?: number"
     )]
-    pub async fn wait(&self, progress_callback: Option<JobProgressFn>) -> napi::Result<()> {
-        if let Some(progress_callback) = progress_callback {
-            self.inner
-                .wait_with_progress(move |description| {
+    pub async fn wait(
+        &self,
+        progress_callback: Option<JobProgressFn>,
+        timeout_ms: Option<f64>,
+    ) -> napi::Result<()> {
+        let timeout = timeout_ms
+            .map(|millis| {
+                Duration::try_from_secs_f64(millis / 1000.0).map_err(|_| {
+                    napi::Error::from_reason("timeoutMs must be finite and non-negative")
+                })
+            })
+            .transpose()?;
+        match (progress_callback, timeout) {
+            (None, None) => self.inner.wait().await.default_error(),
+            (None, Some(timeout)) => self.inner.wait_timeout(timeout).await.default_error(),
+            (Some(progress_callback), timeout) => {
+                let callback = move |description: &lancedb::database::JobDescription| {
                     progress_callback.call(
                         description.progress_snapshot(),
                         ThreadsafeFunctionCallMode::NonBlocking,
                     );
-                })
-                .await
-                .default_error()
-        } else {
-            self.inner.wait().await.default_error()
+                };
+                match timeout {
+                    Some(timeout) => self
+                        .inner
+                        .wait_with_progress_timeout(timeout, callback)
+                        .await
+                        .default_error(),
+                    None => self
+                        .inner
+                        .wait_with_progress(callback)
+                        .await
+                        .default_error(),
+                }
+            }
         }
     }
 
@@ -144,10 +206,19 @@ impl Job {
     /// This job's recorded lifecycle events, as an Arrow IPC stream buffer.
     /// The TypeScript wrapper turns it into an Arrow table.
     #[napi(catch_unwind)]
-    pub async fn events(&self, limit: Option<u32>, filter: Option<String>) -> napi::Result<Buffer> {
+    pub async fn events(
+        &self,
+        limit: Option<u32>,
+        filter: Option<String>,
+        page_token: Option<String>,
+    ) -> napi::Result<Buffer> {
         let batches = self
             .inner
-            .events(JobEventsRequest { limit, filter })
+            .events(JobEventsRequest {
+                limit,
+                filter,
+                page_token,
+            })
             .await
             .default_error()?;
         batches_to_ipc_buffer(&batches)

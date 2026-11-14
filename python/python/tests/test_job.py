@@ -9,10 +9,42 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import pyarrow as pa
 
 from lancedb.exceptions import JobCancelledError, JobFailedError
-from lancedb.job import AsyncJob, Job, _progress_eta
+from lancedb.job import AsyncJob, Job, JobState, _progress_eta
 from lancedb.remote.errors import HttpError, RetryError
+
+
+@pytest.mark.parametrize("sync", [False, True])
+def test_local_jobs_retain_identity_and_typed_state(sync):
+    job = AsyncJob(None)
+    if sync:
+        job = Job(job)
+    assert job.job_id == job.operation_id
+    assert job.job_id == job.job_id
+    assert job.attempt == 1
+    assert job.retry_of is None
+    assert job.lifecycle_state is JobState.SUCCEEDED
+
+
+def test_unknown_job_state_is_preserved_without_becoming_success():
+    state = JobState("future_publication_state")
+    assert state.value == "future_publication_state"
+    assert not state.is_terminal
+    assert not state.is_success
+
+
+@pytest.mark.asyncio
+async def test_history_follows_page_tokens():
+    first = pa.table({"event_seq": [2, 1]}).replace_schema_metadata(
+        {b"lancedb.job_coordinator.page_token": b"next"}
+    )
+    last = pa.table({"event_seq": [0]})
+    inner = SimpleNamespace(events=AsyncMock(side_effect=[first, last]))
+    pages = [page async for page in AsyncJob(inner).history(limit=2)]
+    assert [page["event_seq"].to_pylist() for page in pages] == [[2, 1], [0]]
+    assert inner.events.call_args_list[1].kwargs["page_token"] == "next"
 
 
 @pytest.mark.parametrize("sync", [False, True])

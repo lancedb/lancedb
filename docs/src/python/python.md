@@ -424,6 +424,33 @@ code that used the former LanceDB Enterprise-only argument order.
 
 ## Functions and Jobs
 
+Jobs retain an attempt identity through `job_id`, and explicit server retries
+report `operation_id`, `attempt`, and `retry_of` when the server supports them.
+`lifecycle_state` and `status_typed()` expose detailed `JobState` values while
+the existing string `status()` remains available. Unknown future states retain
+their value and never imply success. `source_table_version` identifies the
+attempt's pinned input snapshot when reported.
+
+```python
+from datetime import timedelta
+from lancedb import JobState
+
+job = db.open_job(job_id)
+state = job.status_typed()
+if state is JobState.SUCCEEDED:
+    print(job.operation_id, job.attempt, job.source_table_version)
+job.wait(timeout=timedelta(seconds=5))
+for page in job.history(limit=1000):
+    print(page)
+```
+
+A wait timeout leaves execution running and the handle reusable. Cancellation
+can be refused when publication has already acquired its commit claim; inspect
+the job again to learn that attempt's outcome. Local in-process handles have a
+stable identity for their lifetime and share typed lifecycle and wait semantics;
+their IDs cannot be reopened after a process restart. Event history, durable
+retries, and per-row Function errors require a backend that records them.
+
 A `@function` definition is also a local callable. Call a decorated function
 directly with row inputs, or call a decorated class with its initialization fields
 and then call the returned instance; call `close()` if the class defines it. This
@@ -601,6 +628,8 @@ with BlobReader(read_range, len(payload)) as reader:
 ::: lancedb.FunctionColumnAutoRefreshStatus
 
 ::: lancedb.job.Job
+
+::: lancedb.job.JobState
 
 ::: lancedb.job.AsyncJob
 

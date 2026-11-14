@@ -6,6 +6,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::time::Duration;
 
 use arrow_array::RecordBatch;
 use async_trait::async_trait;
@@ -18,6 +19,9 @@ use uuid::Uuid;
 use crate::database::JobDescription;
 use crate::docs::DocLink;
 use crate::error::{Error, JobFailure, Result};
+
+mod state;
+pub use state::JobState;
 
 /// Observer called with each description fetched by a job's existing wait
 /// poller. Keeping this callback on the poller avoids a second lifecycle or
@@ -39,6 +43,8 @@ pub struct JobEventsRequest {
     /// `emitted_from`, `emitted_by`, and `claim_entity`. For example
     /// `state = 'claim_complete'` selects only per-claim completions.
     pub filter: Option<String>,
+    /// Opaque continuation from the preceding page's Arrow schema metadata.
+    pub page_token: Option<String>,
 }
 
 impl JobEventsRequest {
@@ -51,6 +57,22 @@ impl JobEventsRequest {
         self.filter = Some(filter.into());
         self
     }
+
+    /// Continue a previous page without deriving a cursor from its row count.
+    pub fn page_token(mut self, token: impl Into<String>) -> Self {
+        self.page_token = Some(token.into());
+        self
+    }
+}
+
+/// The continuation returned with one event page. Absence means the page is complete.
+pub fn job_event_page_token(batches: &[RecordBatch]) -> Option<&str> {
+    batches
+        .first()?
+        .schema_ref()
+        .metadata()
+        .get("lancedb.job_coordinator.page_token")
+        .map(String::as_str)
 }
 
 fn job_detail_not_supported<T>(what: &str) -> Result<T> {
@@ -192,7 +214,9 @@ enum JobInner<T> {
 #[derive(Default)]
 struct JobCache {
     state: Option<String>,
+    lifecycle_state: Option<JobState>,
     description: Option<JobDescription>,
+    local_operation_id: Option<String>,
 }
 
 /// A handle to an operation that may still be running.
@@ -255,7 +279,9 @@ impl Job<()> {
             inner: JobInner::Completed(()),
             cache: RwLock::new(JobCache {
                 state: Some("finished".to_string()),
+                lifecycle_state: Some(JobState::Succeeded),
                 description: None,
+                local_operation_id: Some(Uuid::new_v4().to_string()),
             }),
         }
     }
@@ -278,6 +304,12 @@ impl Job<()> {
         {
             let mut cache = job.cache_write();
             cache.state = Some(description.state.clone());
+            cache.lifecycle_state = Some(
+                description
+                    .lifecycle_state
+                    .clone()
+                    .unwrap_or_else(|| JobState::from(description.state.as_str())),
+            );
             cache.description = Some(description);
         }
         job
@@ -342,7 +374,9 @@ where
 {
     /// A typed job running as a task in this process.
     pub(crate) fn spawned(task: JoinHandle<Result<T>>) -> Self {
-        Self::new_typed(Box::new(SpawnedJob::new(task)))
+        let job = Self::new_typed(Box::new(SpawnedJob::new(task)));
+        job.cache_write().local_operation_id = Some(Uuid::new_v4().to_string());
+        job
     }
 
     pub(crate) fn from_query_task<F, Fut>(
@@ -355,11 +389,13 @@ where
         Fut: Future<Output = Result<()>> + Send + 'static,
     {
         let cancellation: Cancellation = Arc::new(move || Box::pin(cancel()));
-        Self::new_typed(Box::new(SpawnedJob::new_with_cancellation(
+        let job = Self::new_typed(Box::new(SpawnedJob::new_with_cancellation(
             query_id,
             task,
             cancellation,
-        )))
+        )));
+        job.cache_write().local_operation_id = Some(query_id.to_string());
+        job
     }
 }
 
@@ -407,13 +443,21 @@ where
                 let state = description.state.clone();
                 let mut cache = self.cache_write();
                 cache.state = Some(state.clone());
+                cache.lifecycle_state = Some(
+                    description
+                        .lifecycle_state
+                        .clone()
+                        .unwrap_or_else(|| JobState::from(state.as_str())),
+                );
                 cache.description = Some(description);
                 Ok(state)
             }
             // An in-process job knows its own state and nothing more.
             Err(Error::NotSupported { .. }) => {
                 let state = handle.status().await?;
-                self.cache_write().state = Some(state.clone());
+                let mut cache = self.cache_write();
+                cache.state = Some(state.clone());
+                cache.lifecycle_state = Some(JobState::from(state.as_str()));
                 Ok(state)
             }
             Err(err) => Err(err),
@@ -444,6 +488,68 @@ where
     /// backend. `None` until the handle has.
     pub fn state(&self) -> Option<String> {
         self.cache_read().state.clone()
+    }
+
+    /// Detailed state last observed, preserving unknown future server values.
+    /// Local operations use the same typed states; legacy `state()` is unchanged.
+    pub fn lifecycle_state(&self) -> Option<JobState> {
+        let cache = self.cache_read();
+        cache
+            .lifecycle_state
+            .clone()
+            .or_else(|| cache.state.as_deref().map(JobState::from))
+    }
+
+    /// Refresh the state and return its forward-compatible typed form.
+    pub async fn status_typed(&self) -> Result<JobState> {
+        self.refresh_state().await?;
+        Ok(self.lifecycle_state().expect("refresh records a state"))
+    }
+
+    /// Identity of this attempt. Local identities cannot be passed to
+    /// `Connection::open_job` and last for the lifetime of this handle.
+    pub fn job_id(&self) -> Option<String> {
+        self.id()
+            .map(str::to_string)
+            .or_else(|| self.cache_read().local_operation_id.clone())
+    }
+
+    /// Root of this attempt's explicit retry lineage. Older servers may omit it.
+    pub fn operation_id(&self) -> Option<String> {
+        let cache = self.cache_read();
+        cache
+            .description
+            .as_ref()
+            .and_then(|description| description.operation_id.clone())
+            .or_else(|| cache.local_operation_id.clone())
+    }
+
+    /// One-based retry attempt. Worker replacement does not increment it.
+    pub fn attempt(&self) -> Option<u32> {
+        let cache = self.cache_read();
+        cache
+            .description
+            .as_ref()
+            .and_then(|description| description.attempt)
+            .or_else(|| cache.local_operation_id.as_ref().map(|_| 1))
+    }
+
+    /// Immediate predecessor attempt, when supplied by the backend.
+    pub fn retry_of(&self) -> Option<String> {
+        self.with_description(|description| description.retry_of.clone())
+            .flatten()
+    }
+
+    /// Source snapshot pinned for this attempt, when supplied by the backend.
+    pub fn source_table_version(&self) -> Option<u64> {
+        self.with_description(|description| description.source_table_version)
+            .flatten()
+    }
+
+    /// Most recent execution's fencing token, when supplied by the backend.
+    pub fn execution_epoch(&self) -> Option<i64> {
+        self.with_description(|description| description.execution_epoch)
+            .flatten()
     }
 
     /// The whole server-side record this handle last observed. The accessors
@@ -514,6 +620,27 @@ where
         }
     }
 
+    /// Collect retained event pages, following the backend's opaque cursors.
+    /// `limit` is the size of each page; it is not a total history limit.
+    pub async fn history(&self, mut request: JobEventsRequest) -> Result<Vec<RecordBatch>> {
+        let mut batches = Vec::new();
+        loop {
+            let page = self.events(request.clone()).await?;
+            let next = job_event_page_token(&page).map(str::to_string);
+            let done = next.is_none();
+            if next.is_some() && next == request.page_token {
+                return Err(Error::Runtime {
+                    message: "job history repeated its page token".to_string(),
+                });
+            }
+            batches.extend(page);
+            if done {
+                return Ok(batches);
+            }
+            request.page_token = next;
+        }
+    }
+
     /// Fetch a recorded Function job timeline as Chrome Trace Event JSON.
     ///
     /// The snapshot opens in Perfetto or Chrome tracing. It contains retained
@@ -569,6 +696,25 @@ where
         self.wait_with_progress_opt(None).await
     }
 
+    /// Wait for at most `timeout` without cancelling the operation. The same
+    /// handle can be waited on again after [`Error::Timeout`].
+    pub async fn wait_timeout(&self, timeout: Duration) -> Result<T> {
+        tokio::time::timeout(timeout, self.wait()).await.map_err(|_| Error::Timeout {
+            message: format!("job {:?} is still running after {} seconds; waiting timed out without cancelling it", self.job_id(), timeout.as_secs_f64()),
+        })?
+    }
+
+    /// Wait with a progress observer and a deadline. Timing out leaves the
+    /// operation running and the handle reusable, just like [`Self::wait_timeout`].
+    pub async fn wait_with_progress_timeout<F>(&self, timeout: Duration, progress: F) -> Result<T>
+    where
+        F: FnMut(&JobDescription) + Send + 'static,
+    {
+        tokio::time::timeout(timeout, self.wait_with_progress(progress)).await.map_err(|_| Error::Timeout {
+            message: format!("job {:?} is still running after {} seconds; waiting timed out without cancelling it", self.job_id(), timeout.as_secs_f64()),
+        })?
+    }
+
     /// Wait for the operation while observing progress from the backend's
     /// existing wait poller. The callback is called once for each description
     /// the poller fetches, including the terminal observation when the server
@@ -588,7 +734,9 @@ where
                 // Waiting already established a terminal state; record it so
                 // the detail accessors do not need another round trip for it.
                 if let Some(state) = terminal_state(&settled) {
-                    self.cache_write().state = Some(state.to_string());
+                    let mut cache = self.cache_write();
+                    cache.state = Some(state.to_string());
+                    cache.lifecycle_state = Some(JobState::from(state));
                 }
                 (decode)(settled?)
             }

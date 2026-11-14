@@ -7,9 +7,20 @@ import asyncio
 import reprlib
 import time
 from datetime import timedelta
+from enum import Enum
 from os import PathLike
 from pathlib import Path
-from typing import Any, Callable, Generic, Optional, TypeVar, cast
+from typing import (
+    Any,
+    AsyncIterator,
+    Callable,
+    Generic,
+    Iterator,
+    Optional,
+    TypeVar,
+    cast,
+)
+from uuid import uuid4
 
 import pyarrow as pa
 
@@ -28,7 +39,44 @@ __all__ = [
     "JobDescription",
     "JobFailureInfo",
     "JobInfo",
+    "JobState",
 ]
+
+
+class JobState(str, Enum):
+    """Detailed lifecycle of one attempt, retaining unknown future values."""
+
+    CREATED = "created"
+    QUEUED = "queued"
+    IN_PROGRESS = "in_progress"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELED = "canceled"
+    TIMED_OUT = "timed_out"
+
+    @classmethod
+    def _missing_(cls, value):
+        if not isinstance(value, str):
+            return None
+        aliases = {
+            "running": cls.IN_PROGRESS,
+            "finished": cls.SUCCEEDED,
+            "cancelled": cls.CANCELED,
+        }
+        if value in aliases:
+            return aliases[value]
+        member = str.__new__(cls, value)
+        member._name_ = None
+        member._value_ = value
+        return member
+
+    @property
+    def is_terminal(self) -> bool:
+        return self in (self.SUCCEEDED, self.FAILED, self.CANCELED, self.TIMED_OUT)
+
+    @property
+    def is_success(self) -> bool:
+        return self == self.SUCCEEDED
 
 
 def _timeout_message(
@@ -203,6 +251,7 @@ class AsyncJob(Generic[T]):
         self._inner = inner
         self._result_decoder = result_decoder
         self._last_progress_snapshot = None
+        self._local_job_id = str(uuid4()) if inner is None else None
 
     def _enrich_progress(self, snapshot):
         enriched = _with_progress_eta(self._last_progress_snapshot, snapshot)
@@ -231,6 +280,55 @@ class AsyncJob(Generic[T]):
         if self._inner is None:
             return "finished"
         return await self._inner.status()
+
+    @property
+    def job_id(self) -> Optional[str]:
+        """Stable attempt identity; local IDs cannot be reopened on a server."""
+        return (
+            getattr(self._inner, "job_id", self.id)
+            if self._inner is not None
+            else self._local_job_id
+        )
+
+    @property
+    def operation_id(self) -> Optional[str]:
+        """Root of the explicit retry lineage, when known."""
+        return (
+            getattr(self._inner, "operation_id", None)
+            if self._inner is not None
+            else self._local_job_id
+        )
+
+    @property
+    def attempt(self) -> Optional[int]:
+        """One-based attempt ordinal; worker replacement does not increment it."""
+        return getattr(self._inner, "attempt", None) if self._inner is not None else 1
+
+    @property
+    def retry_of(self) -> Optional[str]:
+        """Immediate predecessor attempt, when supplied by the backend."""
+        return getattr(self._inner, "retry_of", None)
+
+    @property
+    def lifecycle_state(self) -> Optional[JobState]:
+        """Detailed state last observed; unknown values never imply success."""
+        raw = getattr(self._inner, "lifecycle_state", None) or self.state
+        return JobState(raw) if raw is not None else None
+
+    async def status_typed(self) -> JobState:
+        """Refresh and return the detailed, forward-compatible lifecycle state."""
+        state = await self.status()
+        return self.lifecycle_state or JobState(state)
+
+    @property
+    def source_table_version(self) -> Optional[int]:
+        """Source snapshot pinned for this attempt, when reported."""
+        return getattr(self._inner, "source_table_version", None)
+
+    @property
+    def execution_epoch(self) -> Optional[int]:
+        """Most recent execution's fencing token, when reported."""
+        return getattr(self._inner, "execution_epoch", None)
 
     async def progress(self) -> Optional[dict[str, Any]]:
         """Fetch a structured progress snapshot.
@@ -481,6 +579,7 @@ class AsyncJob(Generic[T]):
         *,
         limit: Optional[int] = None,
         filter: Optional[str] = None,
+        page_token: Optional[str] = None,
     ) -> "pa.Table":
         """This job's recorded lifecycle events.
 
@@ -508,7 +607,29 @@ class AsyncJob(Generic[T]):
                     "jobs",
                 )
             )
-        return await self._inner.events(limit=limit, filter=filter)
+        if page_token is None:
+            return await self._inner.events(limit=limit, filter=filter)
+        return await self._inner.events(
+            limit=limit, filter=filter, page_token=page_token
+        )
+
+    async def history(
+        self, *, limit: Optional[int] = None, filter: Optional[str] = None
+    ) -> AsyncIterator["pa.Table"]:
+        """Walk retained history in pages, following opaque server continuations."""
+        token = None
+        while True:
+            page = await self.events(limit=limit, filter=filter, page_token=token)
+            yield page
+            next_token = (page.schema.metadata or {}).get(
+                b"lancedb.job_coordinator.page_token"
+            )
+            if next_token is None:
+                return
+            next_token = next_token.decode()
+            if next_token == token:
+                raise RuntimeError("job history repeated its page token")
+            token = next_token
 
     def __repr__(self) -> str:
         return _job_repr("AsyncJob", self)
@@ -566,7 +687,46 @@ class Job(Generic[T]):
     """Synchronous counterpart of `AsyncJob` with the same result type."""
 
     def __init__(self, inner: Optional[AsyncJob[T]]):
-        self._inner = inner
+        self._inner = inner if inner is not None else AsyncJob(None)
+
+    @property
+    def job_id(self) -> Optional[str]:
+        """Stable attempt identity. See :attr:`AsyncJob.job_id`."""
+        return self._inner.job_id
+
+    @property
+    def operation_id(self) -> Optional[str]:
+        """Root retry identity. See :attr:`AsyncJob.operation_id`."""
+        return self._inner.operation_id
+
+    @property
+    def attempt(self) -> Optional[int]:
+        """One-based attempt ordinal. See :attr:`AsyncJob.attempt`."""
+        return self._inner.attempt
+
+    @property
+    def retry_of(self) -> Optional[str]:
+        """Immediate predecessor. See :attr:`AsyncJob.retry_of`."""
+        return self._inner.retry_of
+
+    @property
+    def lifecycle_state(self) -> Optional[JobState]:
+        """Detailed state last observed. See :attr:`AsyncJob.lifecycle_state`."""
+        return self._inner.lifecycle_state
+
+    def status_typed(self) -> JobState:
+        """Refresh the detailed lifecycle state. See :meth:`AsyncJob.status_typed`."""
+        return LOOP.run(self._inner.status_typed())
+
+    @property
+    def source_table_version(self) -> Optional[int]:
+        """Pinned source snapshot. See :attr:`AsyncJob.source_table_version`."""
+        return self._inner.source_table_version
+
+    @property
+    def execution_epoch(self) -> Optional[int]:
+        """Execution fencing token. See :attr:`AsyncJob.execution_epoch`."""
+        return self._inner.execution_epoch
 
     @property
     def id(self) -> Optional[str]:
@@ -711,6 +871,7 @@ class Job(Generic[T]):
         *,
         limit: Optional[int] = None,
         filter: Optional[str] = None,
+        page_token: Optional[str] = None,
     ) -> "pa.Table":
         """This job's recorded lifecycle events.
 
@@ -723,7 +884,20 @@ class Job(Generic[T]):
                     "jobs",
                 )
             )
-        return LOOP.run(self._inner.events(limit=limit, filter=filter))
+        return LOOP.run(
+            self._inner.events(limit=limit, filter=filter, page_token=page_token)
+        )
+
+    def history(
+        self, *, limit: Optional[int] = None, filter: Optional[str] = None
+    ) -> Iterator["pa.Table"]:
+        """Walk retained history in pages. See :meth:`AsyncJob.history`."""
+        pages = self._inner.history(limit=limit, filter=filter)
+        try:
+            while (page := LOOP.run(anext(pages, None))) is not None:
+                yield page
+        finally:
+            LOOP.run(pages.aclose())
 
     def __repr__(self) -> str:
         return _job_repr("Job", self)
