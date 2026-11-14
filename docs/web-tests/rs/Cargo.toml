@@ -1,3 +1,7 @@
+# Standalone crate pinned to a published lancedb release, not part of the root
+# workspace. Without this, cargo commands here fail to resolve the workspace.
+[workspace]
+
 [package]
 name = "rs"
 version = "0.1.0"

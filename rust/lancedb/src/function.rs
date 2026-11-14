@@ -111,7 +111,7 @@ fn from_json<T: DeserializeOwned>(json: &str) -> Result<T> {
     serde_json::from_str(json).map_err(invalid_json)
 }
 
-fn validate_literal(value: &Value) -> Result<()> {
+pub(crate) fn validate_literal(value: &Value) -> Result<()> {
     match value {
         Value::Number(number) if number.is_f64() => Err(Error::InvalidInput {
             message: "floating-point Function literals are not part of the Slice 1 canonical wire contract"
@@ -834,6 +834,9 @@ fn validate_row_timeout_value(value: Option<f64>) -> std::result::Result<(), &'s
 /// database already holds, which Sophon resolves inside the remote runtime.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FunctionRegistrationRequest {
+    /// Preserve an existing named Function version instead of registering a new one.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub exist_ok: bool,
     /// Default retries of failed user-code calls. Enterprise only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_policy: Option<FunctionRetryPolicy>,
@@ -874,6 +877,10 @@ pub struct FunctionRegistrationRequest {
     /// Model snapshots prepared by the service before user code runs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub models: Vec<HuggingFaceModel>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl FunctionRegistrationRequest {
@@ -1011,6 +1018,18 @@ pub struct InputBinding {
     pub nullable: bool,
 }
 
+/// Constant value bound to a Function parameter for every input row.
+///
+/// Values use the same canonical JSON domain as [`ApplicationInput`]. The
+/// Enterprise service validates their types against the exact Function version.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiteralInputBinding {
+    /// Function parameter name, distinct from all column-bound parameters.
+    pub parameter: String,
+    /// Immutable canonical JSON value.
+    pub value: Value,
+}
+
 /// Ordered result-field to table-field mapping for a Function binding.
 ///
 /// `nullable` describes the logical Function result. Physical computed-column
@@ -1025,8 +1044,8 @@ pub struct OutputMapping {
     pub nullable: bool,
 }
 
-/// Internal physical column preserving the parent validity of a flattened
-/// named-struct result.
+/// Internal physical column preserving assignment of a nullable scalar result
+/// or the parent validity of a flattened named-struct result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AssignmentMapping {
     pub output_name: String,
@@ -1039,6 +1058,8 @@ pub struct FunctionBinding {
     binding_id: String,
     function: FunctionVersionRef,
     inputs: Vec<InputBinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    literal_inputs: Vec<LiteralInputBinding>,
     outputs: Vec<OutputMapping>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     assignment: Option<AssignmentMapping>,
@@ -1069,6 +1090,30 @@ impl FunctionBinding {
         &self.inputs
     }
 
+    /// Constants supplied for every row; these are not table dependencies.
+    pub fn literal_inputs(&self) -> &[LiteralInputBinding] {
+        &self.literal_inputs
+    }
+
+    pub(crate) fn validate_inputs(&self) -> Result<()> {
+        let mut parameters = std::collections::HashSet::new();
+        for parameter in self
+            .inputs
+            .iter()
+            .map(|input| &input.parameter)
+            .chain(self.literal_inputs.iter().map(|input| &input.parameter))
+        {
+            if !parameters.insert(parameter) {
+                return Err(invalid_json(format!(
+                    "duplicate Function parameter '{parameter}'"
+                )));
+            }
+        }
+        self.literal_inputs
+            .iter()
+            .try_for_each(|input| validate_literal(&input.value))
+    }
+
     pub fn outputs(&self) -> &[OutputMapping] {
         &self.outputs
     }
@@ -1091,7 +1136,20 @@ impl FunctionBinding {
     }
 }
 
-impl_json!(FunctionBinding);
+impl FunctionBinding {
+    /// Decode an immutable binding, validating its canonical input values.
+    pub fn from_json(json: &str) -> Result<Self> {
+        let binding: Self = from_json(json)?;
+        binding.validate_inputs()?;
+        Ok(binding)
+    }
+
+    /// Encode this binding without dropping its constant inputs.
+    pub fn to_canonical_json(&self) -> Result<String> {
+        self.validate_inputs()?;
+        canonical_json(self)
+    }
+}
 
 /// Stable terminal result of an expression-backed or Function-backed column
 /// refresh [`crate::Job`].

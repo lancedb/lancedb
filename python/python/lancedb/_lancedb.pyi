@@ -117,7 +117,7 @@ class PyExpr:
 
 def expr_col(name: str) -> PyExpr: ...
 def expr_lit(
-    value: Union[bool, int, float, str, bytes, date, datetime, Decimal],
+    value: Union[bool, int, float, str, bytes, date, datetime, Decimal, None],
 ) -> PyExpr: ...
 def expr_func(name: str, args: List[PyExpr]) -> PyExpr: ...
 
@@ -188,7 +188,11 @@ class Connection(object):
     async def server_info(self) -> str: ...
     async def list_gpu_classes(self) -> list[GpuClass]: ...
     async def create_function_async(
-        self, request_json: str, namespace_path: Optional[List[str]] = None
+        self,
+        request_json: str,
+        namespace_path: Optional[List[str]] = None,
+        *,
+        exist_ok: bool = False,
     ) -> Job: ...
     async def get_function(
         self,
@@ -253,7 +257,12 @@ class Connection(object):
         self, name: str, namespace_path: Optional[List[str]] = None
     ) -> Tuple[str, int, int]: ...
     async def create_view(
-        self, name: str, query: str, namespace_path: Optional[List[str]] = None
+        self,
+        name: str,
+        query: str,
+        namespace_path: Optional[List[str]] = None,
+        *,
+        exist_ok: bool = False,
     ) -> Tuple[str, List[str], str, str, List[str], pa.Schema]: ...
     async def describe_view(
         self, name: str, namespace_path: Optional[List[str]] = None
@@ -338,6 +347,8 @@ class Connection(object):
         source_version: Optional[int] = None,
         source_tag: Optional[str] = None,
         is_shallow: bool = True,
+        *,
+        exist_ok: bool = False,
     ) -> Table: ...
     async def rename_table(
         self,
@@ -358,6 +369,7 @@ class Connection(object):
         auto_refresh_interval_seconds: Optional[float] = None,
         *,
         query: Optional[str] = None,
+        exist_ok: bool = False,
     ) -> Table: ...
     async def create_materialized_view_async(
         self,
@@ -371,6 +383,7 @@ class Connection(object):
         auto_refresh_interval_seconds: Optional[float] = None,
         *,
         query: Optional[str] = None,
+        exist_ok: bool = False,
     ) -> Job: ...
     def list_materialized_views(
         self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
@@ -424,6 +437,7 @@ class Job:
     async def cancel(self) -> None: ...
     async def refresh(self) -> None: ...
     async def timeline(self) -> str: ...
+    async def stats(self) -> Optional[str]: ...
     async def events(
         self,
         *,
@@ -578,6 +592,7 @@ class Table:
         *,
         name: Optional[str],
         train: Optional[bool],
+        exist_ok: bool = False,
     ): ...
     async def create_index_async(
         self,
@@ -602,6 +617,7 @@ class Table:
         *,
         name: Optional[str],
         train: Optional[bool],
+        exist_ok: bool = False,
     ) -> Job: ...
     async def list_versions(self) -> List[Dict[str, Any]]: ...
     async def version(self) -> int: ...
@@ -647,6 +663,8 @@ class Table:
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
         resource_budget: Optional[dict[str, int]] = None,
+        supervisor_resources: Optional[dict[str, int]] = None,
+        planning_workers: Optional[dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[str] = None,
@@ -667,6 +685,8 @@ class Table:
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
         resource_budget: Optional[dict[str, int]] = None,
+        supervisor_resources: Optional[dict[str, int]] = None,
+        planning_workers: Optional[dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[str] = None,

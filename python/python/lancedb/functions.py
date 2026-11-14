@@ -158,11 +158,15 @@ def _validate_literal(value):
                 "Function integer literal is outside the canonical JSON range"
             )
     elif isinstance(value, Mapping):
+        if not all(isinstance(key, str) for key in value):
+            raise TypeError("Function literal object keys must be strings")
         for child in value.values():
             _validate_literal(child)
     elif isinstance(value, (list, tuple)):
         for child in value:
             _validate_literal(child)
+    elif value is not None and not isinstance(value, (bool, str)):
+        raise TypeError(f"unsupported Function literal type: {type(value).__name__}")
     return value
 
 
@@ -193,7 +197,7 @@ class _RemoteValue(BaseModel):
         known = {}
         for name, field in self.__class__.model_fields.items():
             value = getattr(self, name)
-            if value is None:
+            if value is None and not field.is_required():
                 continue
             if not field.is_required():
                 default_factory = field.default_factory
@@ -312,7 +316,11 @@ class FunctionResultField(_OpenRemoteValue):
 
 
 class FunctionOutput(_OpenRemoteValue):
-    """Scalar or ordered named-struct output; unknown kinds remain decodable."""
+    """Scalar or ordered named-struct output; unknown kinds remain decodable.
+
+    A scalar output may be nullable. A named-struct output has no top-level
+    nullability; its fields carry their own flags.
+    """
 
     kind: str
     arrow_type: Optional[str] = None
@@ -622,10 +630,17 @@ class FunctionVersion(_RemoteValue):
         return _validate_row_timeout(value)
 
     def __call__(self, **arguments: Any) -> FunctionApplication:
-        """Bind this exact version to named table columns.
+        """Bind this exact version to named table columns and constant inputs.
 
         Every input must be a direct [lancedb.col][lancedb.expr.col]
-        reference. A Function that declares initialization fields takes their
+        reference or [lancedb.lit][lancedb.expr.lit] constant. Constants support
+        integers, strings, booleans, and null; floating-point, binary and
+        temporal literals are not in the canonical Function input contract.
+        The Enterprise service must support literal bindings and validates
+        constants against this exact version's input signature. To change a
+        constant, redeclare the column using the same Function version.
+
+        A Function that declares initialization fields takes their
         values as further keyword arguments; they are constants of this
         binding, fixed for every row, and every instance the binding runs is
         created with them. A non-nullable field without a default must be
@@ -654,7 +669,7 @@ class FunctionVersion(_RemoteValue):
         ...     "embedding": embed(text=col("body"), model="small", dimensions=512)
         ... })
         """
-        from lancedb.expr import Expr
+        from lancedb.expr import Expr, _NOT_LITERAL
 
         parameters = tuple(parameter.name for parameter in self.signature.inputs)
         fields = {field.name: field for field in self.signature.initialization}
@@ -678,17 +693,27 @@ class FunctionVersion(_RemoteValue):
         bindings = []
         for parameter in parameters:
             value = arguments[parameter]
-            if not isinstance(value, Expr) or value._column_path is None:
+            if isinstance(value, Expr) and value._literal_value is not _NOT_LITERAL:
+                bindings.append(
+                    ApplicationInput(
+                        parameter=parameter,
+                        kind="literal",
+                        value=value._literal_value,
+                    )
+                )
+            elif isinstance(value, Expr) and value._column_path is not None:
+                bindings.append(
+                    ApplicationInput(
+                        parameter=parameter,
+                        kind="column",
+                        value={"path": value._column_path},
+                    )
+                )
+            else:
                 raise TypeError(
-                    f"Function input {parameter!r} must be a direct col(...) reference"
+                    f"Function input {parameter!r} must be a direct col(...) reference "
+                    "or lit(...) constant"
                 )
-            bindings.append(
-                ApplicationInput(
-                    parameter=parameter,
-                    kind="column",
-                    value={"path": value._column_path},
-                )
-            )
         initialization = {}
         for name in fields:
             if name in arguments:
@@ -872,6 +897,18 @@ class InputBinding(_RemoteValue):
     nullable: bool
 
 
+class LiteralInputBinding(_RemoteValue):
+    """Constant supplied to a Function parameter for every input row."""
+
+    parameter: str
+    value: Any
+
+    @field_validator("value")
+    @classmethod
+    def _validate_value(cls, value):
+        return _validate_literal(value)
+
+
 class OutputMapping(_RemoteValue):
     """One stable result-field mapping."""
 
@@ -896,12 +933,20 @@ class FunctionBinding(_RemoteValue):
     binding_id: str
     function: FunctionVersionRef
     inputs: tuple[InputBinding, ...]
+    literal_inputs: tuple[LiteralInputBinding, ...] = ()
     outputs: tuple[OutputMapping, ...]
     assignment: Optional[AssignmentMapping] = None
     input_schema: Optional[Mapping[str, Any]] = None
     output_schema: Optional[Mapping[str, Any]] = None
     initialization: Optional[str] = None
     """Standard base64 of the validated one-row Arrow IPC initialization stream."""
+
+    @model_validator(mode="after")
+    def _validate_input_parameters(self):
+        parameters = [input.parameter for input in (*self.inputs, *self.literal_inputs)]
+        if len(parameters) != len(set(parameters)):
+            raise ValueError("Function binding input parameters must be unique")
+        return self
 
     def initialization_row(self) -> Optional[dict[str, Any]]:
         """The initialization values this binding creates instances with."""
@@ -1427,12 +1472,12 @@ def _function_output(output: pa.DataType | pa.Field | pa.Schema) -> FunctionOutp
                 "output_schema must be a PyArrow DataType, Field, or Schema"
             )
         _validate_exact_arrow_field(field)
-        if field.nullable:
-            raise ValueError("Function output must be non-nullable")
+        if field.nullable and _is_blob_v2_field(field):
+            raise ValueError("Blob v2 Function output must be non-nullable")
         return FunctionOutput(
             kind="scalar",
             arrow_type=_canonical_arrow_field(field, collection_blobs=True),
-            nullable=False,
+            nullable=field.nullable,
         )
 
     if not fields:
@@ -1532,9 +1577,9 @@ def _infer_signature(
         output = _function_output(output_schema)
     else:
         output_type, output_nullable = _annotation_type(annotations["return"])
-        if output_nullable:
-            raise ValueError("Function output must be non-nullable")
-        output = _function_output(pa.field("result", output_type, nullable=False))
+        output = _function_output(
+            pa.field("result", output_type, nullable=output_nullable)
+        )
     if inputs is not None:
         return FunctionSignature(inputs=inputs, output=output)
 
@@ -2678,11 +2723,14 @@ def function(
     ``None`` for a null value. PyArrow fields are nullable unless declared
     otherwise, so most columns need ``Optional``. For Arrow types annotations
     cannot express precisely, pass ``input_schema``, ``output_schema``, or
-    both; the one omitted is inferred. Scalar outputs must be non-nullable.
-    Every named-struct field may be nullable; Enterprise preserves the
-    struct's validity when the result is expanded into sibling columns.
-    Bare ``datetime`` keeps its existing ``timestamp[us]`` default without a
-    timezone; other units and timezones require
+    both; the one omitted is inferred. A scalar output is non-nullable by
+    default; annotate the return as ``Optional[T]`` or ``T | None``, or pass a
+    nullable ``output_schema`` field, to declare a nullable scalar. The
+    deployment must accept nullable scalar outputs; an older server rejects
+    the registration. Every named-struct field may be nullable; Enterprise
+    preserves the struct's validity when the result is expanded into sibling
+    columns. Bare ``datetime`` keeps its existing ``timestamp[us]`` default
+    without a timezone; other units and timezones require
     ``Annotated[datetime, pyarrow.timestamp(unit, tz=...)]`` or an explicit
     schema. A bare ``timedelta`` has no unit and is rejected; use
     ``Annotated[timedelta, pyarrow.duration(unit)]`` or an explicit schema.
@@ -2790,8 +2838,9 @@ def function(
         Required for batch annotations. When omitted, inputs are inferred from
         the parameter annotations.
     output_schema : pyarrow.DataType, pyarrow.Field, or pyarrow.Schema, optional
-        Explicit scalar or named-struct output. Scalar outputs must be
-        non-nullable. Temporal fields use canonical Arrow JSON; the
+        Explicit scalar or named-struct output. A scalar field's ``nullable``
+        flag is preserved; a top-level named-struct field and a Blob v2 output
+        must be non-nullable. Temporal fields use canonical Arrow JSON; the
         microsecond/no-timezone case keeps the legacy timestamp/duration
         shape. Required for batch annotations. When omitted, the output is
         inferred from the return annotation.
@@ -3005,6 +3054,7 @@ __all__ = [
     "FunctionVersionRef",
     "HuggingFaceModel",
     "InputBinding",
+    "LiteralInputBinding",
     "OutputMapping",
     "PythonEnvironmentSpec",
     "PythonAdapterSpec",

@@ -1361,6 +1361,42 @@ def test_duration_annotation_and_explicit_schema_serialization():
     assert explicit_round_trip.output.arrow_type == '{"type":"duration"}'
 
 
+def test_nullable_scalar_output_annotation_and_explicit_schema():
+    input_schema = pa.schema([pa.field("value", pa.int64(), nullable=False)])
+
+    @function(input_schema=input_schema)
+    def optional_annotation(value: int) -> Optional[int]:
+        return None if value == 0 else value * 2
+
+    @function(input_schema=input_schema)
+    def optional_union(value: int) -> int | None:
+        return None if value == 0 else value * 2
+
+    @function(
+        input_schema=input_schema,
+        output_schema=pa.field("result", pa.int64(), nullable=True),
+    )
+    def explicit_schema(value: int):
+        return None if value == 0 else value * 2
+
+    for definition in (optional_annotation, optional_union, explicit_schema):
+        signature = definition.registration_request.signature
+        assert (signature.output.kind, signature.output.arrow_type) == (
+            "scalar",
+            "int64",
+        )
+        assert signature.output.nullable is True
+        assert json.loads(signature.to_canonical_json())["output"] == {
+            "kind": "scalar",
+            "arrow_type": "int64",
+            "nullable": True,
+        }
+        assert (
+            FunctionSignature.from_json(signature.to_canonical_json()).output.nullable
+            is True
+        )
+
+
 def test_blob_fields_use_the_scalar_function_semantic_type():
     @function(
         input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
@@ -1995,12 +2031,6 @@ def test_annotation_and_explicit_schema_validation_fail_closed():
         def unsupported(value: set[str]) -> str:
             return ""
 
-    with pytest.raises(ValueError, match="output must be non-nullable"):
-
-        @function
-        def nullable_output(value: int) -> Optional[int]:
-            return value
-
     with pytest.raises(TypeError, match=r"missing Function annotations: \['return'\]"):
 
         @function(input_schema=pa.schema([pa.field("value", pa.int64())]))
@@ -2020,10 +2050,25 @@ def test_annotation_and_explicit_schema_validation_fail_closed():
 
         @function(
             input_schema=pa.schema([pa.field("value", pa.int64())]),
-            output_schema=pa.field("result", pa.int64(), nullable=True),
+            output_schema=pa.field(
+                "result",
+                pa.struct([pa.field("value", pa.int64(), nullable=False)]),
+                nullable=True,
+            ),
         )
-        def nullable_explicit(value):
-            return value
+        def nullable_struct(value):
+            return {"value": value}
+
+    with pytest.raises(
+        ValueError, match="Blob v2 Function output must be non-nullable"
+    ):
+
+        @function(
+            input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
+            output_schema=lancedb.blob("result", nullable=True),
+        )
+        def nullable_blob(image):
+            return image
 
     for invalid_field in [
         pa.field("", pa.int32(), nullable=False),

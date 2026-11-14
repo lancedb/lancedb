@@ -45,6 +45,7 @@ from lancedb.query import (
     LanceVectorQueryBuilder,
     MatchQuery,
 )
+from lancedb.index import BTree
 from lancedb.remote import ClientConfig
 from lancedb.remote.errors import (
     AlreadyExistsError,
@@ -2075,6 +2076,23 @@ def test_remote_create_index_async_returns_job():
                 "gpu_count": 2,
             }
         },
+        {
+            "supervisor_resources": {
+                "cpu_millis": 2000,
+                "memory_bytes": 4 * 1024**3,
+                "ephemeral_storage_bytes": 10 * 1024**3,
+            },
+            "planning_workers": {
+                "resources": {
+                    "cpu_millis": 1000,
+                    "memory_bytes": 2 * 1024**3,
+                    "ephemeral_storage_bytes": 5 * 1024**3,
+                },
+                "max_workers": 4,
+                "rows_per_worker": 100_000,
+                "fragments_per_worker": 8,
+            },
+        },
         {"gpu_class": "a10g", "gpu_count": 2},
         {
             "retry_policy": {"transient": True, "max_attempts": 3},
@@ -2121,6 +2139,9 @@ async def test_remote_refresh_async_returns_typed_terminal_result(
                     **budget,
                     "gpu_count": budget.get("gpu_count", 0),
                 }
+            for key in ("supervisor_resources", "planning_workers"):
+                if refresh_kwargs.get(key) is not None:
+                    expected[key] = refresh_kwargs[key]
             if refresh_kwargs.get("retry_policy") is not None:
                 expected["retry_policy"] = lancedb.FunctionRetryPolicy.model_validate(
                     refresh_kwargs["retry_policy"]
@@ -2348,6 +2369,51 @@ def test_remote_refresh_async_forwards_progress_from_submitted_handle():
                 }
             },
             "unsupported key 'unknown'",
+        ),
+        (
+            {
+                "supervisor_resources": {
+                    "cpu_millis": 0,
+                    "memory_bytes": 1,
+                    "ephemeral_storage_bytes": 1,
+                }
+            },
+            "supervisor_resources.cpu_millis",
+        ),
+        (
+            {
+                "supervisor_resources": {
+                    "cpu_millis": 1,
+                    "memory_bytes": 1,
+                }
+            },
+            "supervisor_resources.ephemeral_storage_bytes",
+        ),
+        (
+            {
+                "supervisor_resources": {
+                    "cpu_millis": 1,
+                    "memory_bytes": 1,
+                    "ephemeral_storage_bytes": 1,
+                    "unknown": 1,
+                }
+            },
+            "unsupported key 'unknown'",
+        ),
+        (
+            {
+                "planning_workers": {
+                    "resources": {
+                        "cpu_millis": 1,
+                        "memory_bytes": 1,
+                        "ephemeral_storage_bytes": 1,
+                    },
+                    "max_workers": 0,
+                    "rows_per_worker": 1,
+                    "fragments_per_worker": 1,
+                }
+            },
+            "planning_workers.max_workers",
         ),
         (
             {"max_executor_processes_per_worker": -2},
@@ -2733,6 +2799,50 @@ async def test_remote_job_wait_disconnection_timeout_can_be_resumed(sync):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("sync", [False, True])
+async def test_remote_job_stats_returns_native_optional_report(sync):
+    report = "Function job: finished\nWorker utilization: unavailable\n"
+    paths = []
+
+    def handler(request):
+        payload = json.loads(request.rfile.read(int(request.headers["Content-Length"])))
+        assert payload == {"job_id": "refresh-1"}
+        paths.append(request.path)
+        if request.path == "/v1/jobs/describe":
+            response = {
+                "job_id": "refresh-1",
+                "job_type": "function_refresh",
+                "job_state": "IN_PROGRESS",
+                "creation_ms": 1000,
+            }
+        elif request.path == "/v1/jobs/stats":
+            available = paths.count("/v1/jobs/stats") > 1
+            response = {
+                "job_id": "refresh-1",
+                "profile": {"future_field": True} if available else None,
+                "report": report if available else None,
+            }
+        else:
+            raise AssertionError(f"unexpected request: {request.path}")
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(response).encode())
+
+    if sync:
+        with mock_lancedb_connection(handler) as db:
+            job = db.open_job("refresh-1")
+            assert job.stats() is None
+            assert job.stats() == report
+    else:
+        async with mock_lancedb_connection_async(handler) as db:
+            job = await db.open_job("refresh-1")
+            assert await job.stats() is None
+            assert await job.stats() == report
+    assert paths == ["/v1/jobs/describe", "/v1/jobs/stats", "/v1/jobs/stats"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync", [False, True])
 @pytest.mark.parametrize(
     "job_type", ["function_refresh", "computed_refresh", "refresh_column"]
 )
@@ -2944,6 +3054,69 @@ def test_remote_job_wait_raises_on_failure():
             job.wait()
         assert exc_info.value.job_id == "job-2"
         assert exc_info.value.sql_job_id is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync", [True, False])
+@pytest.mark.parametrize("with_terminal_server", [True, False])
+async def test_remote_job_wait_preserves_terminal_build(sync, with_terminal_server):
+    from lancedb.exceptions import JobFailedError
+
+    message = "ValueError: corrupt frame at frame_index=207"
+    server = {
+        "release": "1.13.0-beta.0",
+        "git_sha": "2a7874ecd589",
+        "build_date": "2026-11-12T22:45:43Z",
+    }
+    result = {"terminal_server": server} if with_terminal_server else None
+
+    def handler(request):
+        assert request.path == "/v1/jobs/describe"
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.send_header(
+            "x-lancedb-server-build",
+            json.dumps({"release": "2.0.0", "git_sha": "new-query-node"}),
+        )
+        request.end_headers()
+        request.wfile.write(
+            json.dumps(
+                {
+                    "job_id": "job-provenance",
+                    "job_state": "FAILED",
+                    "failure": {
+                        "phase": "function_refresh_attempt_failed",
+                        "message": message,
+                        "traceback": "Traceback: original user code",
+                        "retryable": False,
+                    },
+                    "result": result,
+                }
+            ).encode()
+        )
+
+    if sync:
+        with mock_lancedb_connection(handler) as db:
+            job = db.open_job("job-provenance")
+            with pytest.raises(JobFailedError) as caught:
+                job.wait()
+    else:
+        async with mock_lancedb_connection_async(handler) as db:
+            job = await db.open_job("job-provenance")
+            with pytest.raises(JobFailedError) as caught:
+                await job.wait()
+
+    expected = f"Job job-provenance failed: {message}"
+    if with_terminal_server:
+        expected += (
+            " [server: 1.13.0-beta.0 (git 2a7874ecd589, built 2026-11-12T22:45:43Z)]"
+        )
+    expected += " (in function_refresh_attempt_failed)"
+    assert str(caught.value) == expected
+    assert caught.value.job_id == "job-provenance"
+    assert job.failure.message == message
+    assert job.failure.traceback == "Traceback: original user code"
+    assert job.result == result
 
 
 @pytest.mark.parametrize("server_version", ["0.2.0", "0.6.0"])
@@ -7420,3 +7593,54 @@ async def test_remote_blob_bytes_hybrid_rejects_same_version_different_incarnati
             if use_async:
                 await result
     assert not any(path == "fetch_blobs" for path, _ in requests)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_async", [False, True])
+@pytest.mark.parametrize("background", [False, True])
+@pytest.mark.parametrize("kwargs", [{}, {"exist_ok": False}, {"exist_ok": True}])
+async def test_remote_index_exist_ok_wire(is_async, background, kwargs):
+    received = []
+
+    def handler(request):
+        parsed = urlparse(request.path)
+        body = request.rfile.read(int(request.headers.get("Content-Length", 0)))
+        if parsed.path.endswith("/create_index/"):
+            received.append((parse_qs(parsed.query), json.loads(body)))
+            payload = {}
+        elif parsed.path.endswith("/describe/"):
+            payload = dict(
+                version=1,
+                schema=dict(
+                    fields=[dict(name="id", type={"type": "int64"}, nullable=False)]
+                ),
+            )
+        elif parsed.path.endswith("/create/"):
+            payload = {}
+        else:
+            raise AssertionError(request.path)
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(payload).encode())
+
+    method = "create_index_async" if background else "create_index"
+    if is_async:
+        async with mock_lancedb_connection_async(handler) as db:
+            table = await db.create_table("test", [{"id": 1}])
+            result = await getattr(table, method)("id", config=BTree(), **kwargs)
+            if background:
+                await result.wait()
+    else:
+        with mock_lancedb_connection(handler) as db:
+            table = db.create_table("test", [{"id": 1}])
+            result = getattr(table, method)("id", config=BTree(), **kwargs)
+            if background:
+                result.wait()
+    query, body = received[0]
+    assert query == ({"exist_ok": ["true"]} if kwargs.get("exist_ok") else {})
+    assert "exist_ok" not in body
+    if kwargs.get("exist_ok"):
+        assert body["replace"] is False
+    else:
+        assert "replace" not in body

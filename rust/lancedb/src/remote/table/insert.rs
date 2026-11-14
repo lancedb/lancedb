@@ -480,6 +480,7 @@ impl<S: HttpSend + 'static> PartRequestCtx<'_, S> {
         let started = Instant::now();
         let mut pending = Some(first);
         let mut has_batch = false;
+        let mut part_rows = 0;
         let mut input_ended = false;
         loop {
             let batch = match pending.take().or_else(|| queued.pop_front()) {
@@ -520,6 +521,7 @@ impl<S: HttpSend + 'static> PartRequestCtx<'_, S> {
                 // A single row and its schema cannot be split further.
             }
             has_batch = true;
+            part_rows += batch.num_rows();
             if writer.get_ref().len() as u64 >= max_bytes
                 || max_duration.is_some_and(|limit| started.elapsed() >= limit)
             {
@@ -536,7 +538,7 @@ impl<S: HttpSend + 'static> PartRequestCtx<'_, S> {
             match self.send_part_request(request, freshness).await {
                 Ok(()) => {
                     if let Some(tracker) = tracker {
-                        tracker.record_bytes(body.len());
+                        tracker.record_acknowledged_part(part_rows, body.len());
                     }
                     return Ok(input_ended);
                 }
@@ -1648,7 +1650,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_multipart_records_acknowledged_bytes() {
+    async fn test_multipart_records_acknowledged_rows_and_bytes() {
         use crate::table::write_progress::{ProgressCallback, WriteProgress, WriteProgressTracker};
         use futures::StreamExt;
 
@@ -1667,14 +1669,18 @@ mod tests {
         ];
         let input = input_plan_from_batches(schema, batches).await;
 
-        let observed = Arc::new(Mutex::new(Vec::<usize>::new()));
+        let observed = Arc::new(Mutex::new(Vec::<(usize, usize)>::new()));
         let observed_cb = observed.clone();
         let callback: ProgressCallback = Arc::new(Mutex::new(move |p: &WriteProgress| {
-            observed_cb.lock().unwrap().push(p.output_bytes());
+            observed_cb
+                .lock()
+                .unwrap()
+                .push((p.output_rows(), p.output_bytes()));
         }));
         let tracker = Arc::new(WriteProgressTracker::new(callback, None));
 
-        // Count encoded bytes once when the part is acknowledged.
+        tracker.use_acknowledged_parts();
+        // Count rows from all encoded batches once when the part is acknowledged.
         let exec = RemoteWriteExec::new_multipart(
             "my_table".to_string(),
             "my_table".to_string(),
@@ -1697,6 +1703,7 @@ mod tests {
             "batches should all land in a single part"
         );
         let observed = observed.lock().unwrap();
+        assert_eq!(observed.last().unwrap().0, 6);
         assert!(
             observed.len() == 1,
             "expected one progress update per acknowledged part: {observed:?}"
@@ -1706,7 +1713,7 @@ mod tests {
             "progress bytes should be monotonic: {observed:?}"
         );
         assert!(
-            *observed.last().unwrap() > 0,
+            observed.last().unwrap().1 > 0,
             "final progress should report bytes: {observed:?}"
         );
     }

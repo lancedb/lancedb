@@ -197,6 +197,7 @@ def test_sync_remote_create_uses_public_async_connection(query):
             where=None,
             limit=None,
             with_no_data=False,
+            exist_ok=False,
             auto_refresh_enabled=None,
             auto_refresh_interval_seconds=None,
         ):
@@ -729,6 +730,7 @@ def test_remote_create_forwards_refresh_options_without_interval_default(options
                 "filter": None,
                 "limit": None,
                 "with_no_data": False,
+                "exist_ok": False,
                 "auto_refresh_enabled": options.get("auto_refresh_enabled"),
                 "auto_refresh_interval_seconds": options.get(
                     "auto_refresh_interval_seconds"

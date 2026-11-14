@@ -1,6 +1,6 @@
 [package]
 name = "lancedb"
-version = "0.42.0-beta.12"
+version = "0.42.0-beta.13"
 edition.workspace = true
 description = "LanceDB: A serverless, low-latency vector database for AI applications"
 license.workspace = true
@@ -118,7 +118,7 @@ lance-testing = { workspace = true }
 # production remote feature so Python wheels do not resolve its Axum 0.7 stack.
 lance-namespace-impls = { workspace = true, features = ["rest-adapter"] }
 tempfile = { workspace = true }
-random_word = { version = "0.4.3", features = ["en"] }
+random_word = { version = "1.0.0", features = ["en"] }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "test-util"] }
 uuid = { workspace = true }
 walkdir = "2"
