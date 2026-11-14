@@ -261,8 +261,11 @@ pub enum OptimizeAction {
     /// options and custom `remap_options` return [`crate::Error::NotSupported`]
     /// before submission. The server must support these SQL options; errors
     /// from older servers are returned without dropping the settings.
-    /// The source-row budget admits whole tasks and may perform no work when
-    /// the first task exceeds it. Zero I/O buffer size disables byte-based I/O
+    /// The source-row budget admits whole tasks. On current Enterprise servers,
+    /// worker planning fails if the budget cannot admit the first useful task,
+    /// reporting its required live rows and source fragment count. Older servers
+    /// may instead finish without rewriting data in this case.
+    /// Zero I/O buffer size disables byte-based I/O
     /// backpressure. Use a positive size to limit I/O read-ahead; this is not a
     /// total-memory limit. Row targets, source-row budgets, and batch sizes must
     /// be positive.
@@ -298,10 +301,11 @@ pub enum OptimizeAction {
     /// # }
     /// ```
     ///
-    /// A branch-scoped table handle compacts that branch. The branch is not
-    /// validated to exist before the job is submitted, so a nonexistent
-    /// branch fails the compaction job asynchronously rather than failing
-    /// this call.
+    /// A branch-scoped table handle compacts that branch. Current Enterprise
+    /// servers validate the table and branch through the service catalog before
+    /// creating the compaction job, so a nonexistent branch fails submission.
+    /// Older servers may accept submission and fail the compaction job
+    /// asynchronously instead.
     Compact {
         options: CompactionOptions,
         remap_options: Option<Arc<dyn IndexRemapperOptions>>,
