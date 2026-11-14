@@ -10,8 +10,92 @@ availability:
 
 A Function refresh can encounter a bad row, fail to initialize a model, lose
 a worker, or fail while publishing results. These need different remedies.
-This guide uses the existing [refresh error policy](/sql/dml/refresh-column#options)
-and Python error records; it does not require a new retry or quarantine API.
+The native workflow below is draft guidance for an unreleased SDK and a
+matching Enterprise server. The recipes that follow it remain available for
+older deployments.
+
+## Draft native workflow: server contract version 1 {#native}
+
+This section requires the SDK changes in [PR #5048](https://github.com/lancedb/lancedb/pull/5048)
+and an Enterprise deployment advertising `workflow_version >= 1` in its
+Function error response. No released SDK or Enterprise version is implied by
+this draft. The SDK checks this capability before submitting native retry,
+upgrade, quarantine, history or provenance requests, and rejects unsupported
+servers before changing the column.
+
+New Function refreshes default to `error_policy="skip"` with a 5% failed-row
+ceiling. Successful outputs are published before a threshold failure is
+reported; failed rows and grouped causes remain available. Explicit `fail`
+still stops on a row error. Initialization, infrastructure and publication
+failures remain job failures. External effects can repeat during recovery.
+
+Read current unresolved failures, group their causes and inspect their inputs:
+
+```python
+errors = table.function_errors(column="embedding")
+print(errors.summary())
+inputs = errors.rows(columns=["text"])
+print(inputs)  # Includes a __function_error struct for each failed column.
+
+history = table.function_errors(column="embedding", history=True)
+print(history.records)  # Retained attempts, including repaired failures.
+```
+
+The default listing deduplicates failures by row and Function column, retaining
+attempt counts and first/last failure times. `summary()` and `rows()` refuse
+incomplete selections; narrow a truncated request before inspecting it.
+Historical records cannot be joined to current inputs through `rows()`.
+Stable row IDs survive compaction; older physical-only records are rejected
+for exact retry if their fragments have been rewritten.
+
+Select retry rows on the server, optionally by exception class or job:
+
+```python
+retry_job = table.retry_failed("embedding", error_type="ValueError")
+retry_job.wait()
+```
+
+Upgrade the existing Function binding and choose which values to recompute:
+
+```python
+upgrade_job = table.upgrade_column("embedding", version="2", recompute="failed")
+upgrade_job.wait()
+provenance = table.function_provenance("embedding")
+if not provenance.truncated:
+    print(provenance.records)
+```
+
+The immutable target version must already exist for the same Function.
+`recompute="failed"` selects current failures; `"all"` recomputes all live rows;
+`"none"` changes the binding while preserving existing values. The default is
+`"all"`. New and changed inputs use the new version. Producing-version records
+identify successful values written by this workflow; older values without
+recorded provenance do not acquire an invented producing version.
+
+Quarantine failures that need input repair, then explicitly include them when
+they are ready to retry:
+
+```python
+table.quarantine_failed("embedding", after_attempts=3)
+retry_job = table.retry_failed("embedding", include_quarantined=True)
+retry_job.wait()
+```
+
+Ordinary and automatic refreshes exclude quarantined rows, including during
+an `"all"` upgrade. Explicit inclusion releases quarantine before the retry.
+Async tables expose the same operations with `await`; `function_errors()`
+returns `AsyncFunctionErrors`, and its `rows()` method is also awaited.
+
+The native contract also applies skip/5% defaults to newly created materialized
+views, with errors identified by Function invocation and source input. Column
+retry and upgrade helpers apply to Function columns; use the materialized-view
+refresh reference for view refresh options.
+
+## Older-deployment recipes {#older-deployments}
+
+The following sections describe deployments without workflow version 1. Their
+legacy defaults, error-history semantics and application-managed quarantine
+remain unchanged.
 
 ## Choose a row-error policy {#policy}
 
