@@ -29,6 +29,7 @@ class CohereEmbeddingFunction(TextEmbeddingFunction):
             * embed-multilingual-v3.0
             * embed-english-light-v3.0
             * embed-multilingual-light-v3.0
+            * embed-v4.0 (1536-dimensional by default)
 
         The v2.0 models (embed-english-v2.0, embed-english-light-v2.0 and
         embed-multilingual-v2.0) were retired by Cohere on April 4, 2026.
@@ -100,6 +101,9 @@ class CohereEmbeddingFunction(TextEmbeddingFunction):
             return 1024
         elif self.name in ["embed-english-light-v3.0", "embed-multilingual-light-v3.0"]:
             return 384
+        elif self.name == "embed-v4.0":
+            # Default output dimension of embed-v4.0
+            return 1536
         elif self.name == "embed-english-v2.0":
             return 4096
         elif self.name == "embed-multilingual-v2.0":
