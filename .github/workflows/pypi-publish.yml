@@ -14,6 +14,7 @@ on:
       - .github/actions/setup-protoc/action.yml
       - ci/check_cargo_lock.py
       - ci/check_sdist.py
+      - ci/check_python_wheel.py
       - python/pyproject.toml
       - python/Cargo.toml
       - python/vendor/**
@@ -170,6 +171,102 @@ jobs:
           name: wheels-windows
           path: target/wheels/lancedb-*.whl
           if-no-files-found: error
+  free-threaded-linux:
+    name: Python 3.15t Linux ${{ matrix.config.platform }}
+    timeout-minutes: ${{ matrix.config.platform == 'aarch64' && 150 || 90 }}
+    strategy:
+      matrix:
+        config:
+          - platform: x86_64
+            runner: ubuntu-2404-8x-x64
+            arm_build: false
+          - platform: aarch64
+            runner: ubuntu-2404-8x-arm64
+            arm_build: true
+    runs-on: ${{ matrix.config.runner }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          lfs: true
+      - name: Set up free-threaded Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.15t"
+      - uses: ./.github/workflows/build_linux_wheel
+        with:
+          python-minor-version: 15
+          maturin-version: "1.15.0"
+          arm-build: ${{ matrix.config.arm_build }}
+          manylinux: "2_28"
+          args: "--release --strip --interpreter python3.15t --no-default-features --features free-threaded,fp16kernels"
+      - name: Validate free-threaded wheel ABI and metadata
+        shell: bash
+        run: python ci/check_python_wheel.py cp315t --platform-fragment manylinux_2_28_${{ matrix.config.platform }} target/wheels/lancedb-*.whl
+      - uses: actions/upload-artifact@v7
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          name: wheels-free-threaded-linux-${{ matrix.config.platform }}
+          path: target/wheels/lancedb-*.whl
+          if-no-files-found: error
+  free-threaded-mac:
+    name: Python 3.15t macOS ARM64
+    timeout-minutes: 120
+    runs-on: warp-macos-14-arm64-6x
+    env:
+      MACOSX_DEPLOYMENT_TARGET: 10.15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          lfs: true
+      - name: Set up free-threaded Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.15t"
+      - uses: ./.github/workflows/build_mac_wheel
+        with:
+          python-minor-version: 15
+          maturin-version: "1.15.0"
+          args: "--release --strip --interpreter python3.15t --no-default-features --features free-threaded,fp16kernels"
+      - name: Validate free-threaded wheel ABI and metadata
+        shell: bash
+        run: python ci/check_python_wheel.py cp315t --platform-fragment macosx_11_0_arm64 target/wheels/lancedb-*.whl
+      - uses: actions/upload-artifact@v7
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          name: wheels-free-threaded-mac-aarch64
+          path: target/wheels/lancedb-*.whl
+          if-no-files-found: error
+  free-threaded-windows:
+    name: Python 3.15t Windows x64
+    timeout-minutes: 180
+    runs-on: windows-2025-8x-x64
+    env:
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          lfs: true
+      - name: Set up free-threaded Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.15t"
+      - uses: ./.github/workflows/build_windows_wheel
+        with:
+          python-minor-version: 15
+          maturin-version: "1.15.0"
+          args: "--release --strip --interpreter python3.15t --no-default-features --features free-threaded"
+      - name: Validate free-threaded wheel ABI and metadata
+        shell: bash
+        run: python ci/check_python_wheel.py cp315t --platform-fragment win_amd64 target/wheels/lancedb-*.whl
+      - uses: actions/upload-artifact@v7
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          name: wheels-free-threaded-windows-x86_64
+          path: target/wheels/lancedb-*.whl
+          if-no-files-found: error
   sdist:
     name: Python sdist
     timeout-minutes: 60
@@ -256,7 +353,14 @@ jobs:
   publish:
     name: Publish wheels and sdist
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux, mac, windows, sdist]
+    needs:
+      - linux
+      - mac
+      - windows
+      - free-threaded-linux
+      - free-threaded-mac
+      - free-threaded-windows
+      - sdist
     runs-on: ubuntu-latest
     permissions:
       id-token: write

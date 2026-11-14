@@ -3,12 +3,16 @@ name: build_wheel
 description: "Build a lance wheel"
 inputs:
   python-minor-version:
-    description: "10, 11, 12, 13, 14"
+    description: "Python minor version for the requested interpreter (e.g. 10, 14, 15)"
     required: true
   args:
     description: "--release"
     required: false
     default: ""
+  maturin-version:
+    description: "Version of maturin to use for this wheel build"
+    required: false
+    default: "1.12.4"
 runs:
   using: "composite"
   steps:
@@ -20,7 +24,7 @@ runs:
       uses: PyO3/maturin-action@v1
       with:
         command: build
-        maturin-version: "1.12.4"
+        maturin-version: ${{ inputs.maturin-version }}
         args: ${{ inputs.args }}
         docker-options: "-e PIP_EXTRA_INDEX_URL='https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/'"
         working-directory: python

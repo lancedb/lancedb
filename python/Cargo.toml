@@ -30,7 +30,7 @@ env_logger.workspace = true
 log.workspace = true
 # Maturin enables extension-module mode for Python builds. Keeping it out of
 # Cargo features lets Rust unit tests link against libpython.
-pyo3 = { version = "0.29", features = ["abi3-py310", "chrono", "uuid"] }
+pyo3 = { version = "0.29", features = ["chrono", "uuid"] }
 chrono.workspace = true
 pyo3-async-runtimes = { version = "0.29", features = [
     "attributes",
@@ -51,7 +51,12 @@ libc = "0.2"
 pyo3-build-config = "0.29"
 
 [features]
-default = ["remote", "lancedb/aws", "lancedb/gcs", "lancedb/azure", "lancedb/dynamodb", "lancedb/oss", "lancedb/huggingface", "lancedb/cos", "lancedb/goosefs", "lancedb/metrics-otel"]
+default = ["stable-abi", "default-python"]
+# Keep stable ABI selection separate so the free-threaded wheel can use its
+# native CPython ABI without changing the default Python distribution.
+stable-abi = ["pyo3/abi3-py310"]
+default-python = ["remote", "lancedb/aws", "lancedb/gcs", "lancedb/azure", "lancedb/dynamodb", "lancedb/oss", "lancedb/huggingface", "lancedb/cos", "lancedb/goosefs", "lancedb/metrics-otel"]
+free-threaded = ["default-python"]
 fp16kernels = ["lancedb/fp16kernels"]
 remote = ["lancedb/remote"]
 experimental-functions = ["lancedb/experimental-functions"]

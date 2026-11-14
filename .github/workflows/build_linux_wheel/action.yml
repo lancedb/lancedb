@@ -3,12 +3,16 @@ name: build-linux-wheel
 description: "Build a manylinux wheel for lance"
 inputs:
   python-minor-version:
-    description: "10, 11, 12, 13"
+    description: "Python minor version for the requested interpreter (e.g. 10, 13, 15)"
     required: true
   args:
     description: "--release"
     required: false
     default: ""
+  maturin-version:
+    description: "Version of maturin to use for this wheel build"
+    required: false
+    default: "1.12.4"
   arm-build:
     description: "Build for arm64 instead of x86_64"
     # Note: this does *not* mean the host is arm64, since we might be cross-compiling.
@@ -56,7 +60,7 @@ runs:
       if: ${{ inputs.arm-build == 'false' }}
       uses: PyO3/maturin-action@v1
       with:
-        maturin-version: "1.12.4"
+        maturin-version: ${{ inputs.maturin-version }}
         command: build
         working-directory: python
         docker-options: "-e PIP_EXTRA_INDEX_URL='https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/' -e PROTOC=/usr/local/bin/protoc -e PROTOC_VERSION=${{ steps.protoc.outputs.version }} -e PROTOC_SHA256=${{ steps.protoc.outputs.linux-x86_64-sha256 }} ${{ inputs.rustflags != '' && format('-e RUSTFLAGS={0}', inputs.rustflags) || '' }}"
@@ -74,7 +78,7 @@ runs:
       if: ${{ inputs.arm-build == 'true' }}
       uses: PyO3/maturin-action@v1
       with:
-        maturin-version: "1.12.4"
+        maturin-version: ${{ inputs.maturin-version }}
         command: build
         working-directory: python
         docker-options: "-e PIP_EXTRA_INDEX_URL='https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/' -e PROTOC=/usr/local/bin/protoc -e PROTOC_VERSION=${{ steps.protoc.outputs.version }} -e PROTOC_SHA256=${{ steps.protoc.outputs.linux-aarch_64-sha256 }} ${{ inputs.rustflags != '' && format('-e RUSTFLAGS={0}', inputs.rustflags) || '' }}"
