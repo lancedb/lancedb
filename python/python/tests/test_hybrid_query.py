@@ -579,6 +579,37 @@ def test_normalize_scores():
             )
 
 
+@pytest.mark.parametrize("normalize", ["score", "rank"])
+def test_hybrid_single_fts_match_keeps_fts_weight(tmp_path, normalize):
+    from lancedb.rerankers import LinearCombinationReranker
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "test",
+        [
+            {"text": "apple banana", "vector": [0.0, 0.0]},
+            {"text": "zebra unicorn", "vector": [0.1, 0.0]},
+            {"text": "cherry grape", "vector": [5.0, 5.0]},
+        ],
+    )
+    table.create_fts_index("text")
+
+    results = (
+        table.search(query_type="hybrid")
+        .vector([0.0, 0.0])
+        .text("zebra")
+        .rerank(LinearCombinationReranker(weight=0.3), normalize=normalize)
+        .limit(3)
+        .to_arrow()
+    )
+
+    assert results["text"].to_pylist() == [
+        "zebra unicorn",
+        "apple banana",
+        "cherry grape",
+    ]
+
+
 def test_hybrid_query_rejects_query_with_vector(sync_table: Table):
     # Pins the full message: the space between "hybrid search." and "But" is
     # load-bearing (see the _validate_query literal concatenation).

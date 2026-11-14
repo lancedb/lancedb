@@ -3004,7 +3004,9 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             fts_results = fts_results.set_column(
                 score_i,
                 fts_results.field(score_i),
-                LanceHybridQueryBuilder._normalize_scores(fts_results.column(score_i)),
+                LanceHybridQueryBuilder._normalize_scores(
+                    fts_results.column(score_i), tie_value=1.0
+                ),
             )
 
         results = reranker.rerank_hybrid(fts_query, vector_results, fts_results)
@@ -3065,7 +3067,9 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         return results
 
     @staticmethod
-    def _normalize_scores(scores: pa.Array, invert=False) -> pa.Array:
+    def _normalize_scores(
+        scores: pa.Array, invert=False, tie_value: float = 0.0
+    ) -> pa.Array:
         if len(scores) == 0:
             return scores
         # normalize the scores by subtracting the min and dividing by the max
@@ -3074,9 +3078,10 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
         if not pc.equal(rng, pa.scalar(0.0)).as_py():
             scores = pc.divide(pc.subtract(scores, min), rng)
-        elif not pc.equal(max, pa.scalar(0.0)).as_py():
-            # If rng is 0, then we at least want the scores to be 0
-            scores = pc.subtract(scores, min)
+        else:
+            # All scores are equal, so they are equally relevant. Distances
+            # tie at 0 (best), while higher-is-better scores tie at 1.
+            scores = pc.add(pc.subtract(scores, min), pa.scalar(tie_value, scores.type))
 
         if invert:
             scores = pc.subtract(1, scores)
