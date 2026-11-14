@@ -481,7 +481,14 @@ def _blob_input_to_arrow(data: Any, schema: Optional[pa.Schema]) -> Optional[pa.
             return None
         values = {name: [row.get(name) for row in data] for name in names}
         rows = [{**row, **{name: None for name in names}} for row in data]
-        table = pa.Table.from_pylist(rows)
+        all_keys = dict.fromkeys(
+            k for row in rows if isinstance(row, dict) for k in row
+        )
+        normalized_rows = [
+            {**{k: None for k in all_keys}, **row} if isinstance(row, dict) else row
+            for row in rows
+        ]
+        table = pa.Table.from_pylist(normalized_rows)
     elif _check_for_pandas(data) and isinstance(data, pd.DataFrame):
         names = {
             field.name
@@ -580,9 +587,18 @@ def _into_pyarrow_reader(
         else:
             data = _serialize_json_values(data, schema)
             table = _blob_input_to_arrow(data, schema)
-            return (
-                table if table is not None else pa.Table.from_pylist(data)
-            ).to_reader()
+            if table is None:
+                all_keys = dict.fromkeys(
+                    k for row in data if isinstance(row, dict) for k in row
+                )
+                normalized = [
+                    {**{k: None for k in all_keys}, **row}
+                    if isinstance(row, dict)
+                    else row
+                    for row in data
+                ]
+                table = pa.Table.from_pylist(normalized)
+            return table.to_reader()
     elif _check_for_pandas(data) and isinstance(data, pd.DataFrame):
         table = _blob_input_to_arrow(data, schema)
         if table is None:
