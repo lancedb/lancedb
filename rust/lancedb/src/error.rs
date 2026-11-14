@@ -781,6 +781,16 @@ impl From<polars::prelude::PolarsError> for Error {
     }
 }
 
+#[cfg(feature = "serde")]
+impl From<serde_arrow::Error> for Error {
+    fn from(source: serde_arrow::Error) -> Self {
+        Self::Other {
+            message: format!("Error in serde Arrow integration: {source}"),
+            source: Some(Box::new(source)),
+        }
+    }
+}
+
 #[cfg(feature = "sentence-transformers")]
 impl From<hf_hub::api::sync::ApiError> for Error {
     fn from(source: hf_hub::api::sync::ApiError) -> Self {

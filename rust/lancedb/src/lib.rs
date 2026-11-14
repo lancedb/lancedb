@@ -48,6 +48,8 @@
 //!   Install any `metrics`-compatible recorder to collect them.
 //! - `metrics-otel` - Add a pull-based adapter (the `metrics_otel` module) over
 //!   the `metrics` facade for bridging metrics into OpenTelemetry or similar.
+//! - `serde` - Convert between Rust structs and Arrow data with `from_structs`,
+//!   `from_structs_with_schema` and `IntoStructs` in the [`arrow`] module.
 //!
 //! ### Quick Start
 //!
