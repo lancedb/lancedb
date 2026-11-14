@@ -540,32 +540,42 @@ class LanceModel(pydantic.BaseModel):
         """
         from .embeddings import EmbeddingFunctionConfig
 
-        vec_and_function = []
-        for name, field_info in cls.safe_get_fields().items():
-            if field_info.exclude is True:
-                continue
+        fields = [
+            (name, field_info)
+            for name, field_info in cls.safe_get_fields().items()
+            if field_info.exclude is not True
+        ]
 
-            func = get_extras(field_info, "vector_column_for")
-            if func is not None:
-                vec_and_function.append([name, func])
+        def columns_for(func, tag):
+            # Match on identity, not ==: two instances of the same function are
+            # equal pydantic models (GH594).
+            return [name for name, info in fields if get_extras(info, tag) is func]
 
         configs = []
-        for vec, func in vec_and_function:
-            for source, field_info in cls.safe_get_fields().items():
-                if field_info.exclude is True:
-                    continue
-                src_func = get_extras(field_info, "source_column_for")
-                if src_func is func:
-                    # note we can't use == here since the function is a pydantic
-                    # model so two instances of the same function are ==, so if you
-                    # have multiple vector columns from multiple sources, both will
-                    # be mapped to the same source column
-                    # GH594
-                    configs.append(
-                        EmbeddingFunctionConfig(
-                            source_column=source, vector_column=vec, function=func
-                        )
+        for vec, field_info in fields:
+            func = get_extras(field_info, "vector_column_for")
+            if func is None:
+                continue
+            sources = columns_for(func, "source_column_for")
+            if not sources:
+                continue
+            if len(sources) > 1:
+                # One function instance with several source columns pairs
+                # sources and vectors in declaration order.
+                vectors = columns_for(func, "vector_column_for")
+                if len(sources) != len(vectors):
+                    raise ValueError(
+                        f"Cannot pair the source columns ({', '.join(sources)}) "
+                        f"with the vector columns ({', '.join(vectors)}) of one "
+                        "embedding function. Declare one vector column per source "
+                        "column, or call .create() once per source column."
                     )
+                sources = [sources[vectors.index(vec)]]
+            configs.append(
+                EmbeddingFunctionConfig(
+                    source_column=sources[0], vector_column=vec, function=func
+                )
+            )
         return configs
 
 
