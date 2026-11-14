@@ -12,6 +12,8 @@ from .base import TextEmbeddingFunction
 from .registry import register
 from .utils import api_key_not_found_help, TEXT
 
+MAX_BATCH_SIZE = 96
+
 
 @register("cohere")
 class CohereEmbeddingFunction(TextEmbeddingFunction):
@@ -129,11 +131,16 @@ class CohereEmbeddingFunction(TextEmbeddingFunction):
             The texts to embed
         """
         self._init_client()
-        rs = CohereEmbeddingFunction.client.embed(
-            texts=texts, model=self.name, **kwargs
-        )
+        # Cohere's embed endpoint accepts at most 96 texts per call
+        texts = list(texts)
+        embeddings = []
+        for i in range(0, len(texts), MAX_BATCH_SIZE):
+            rs = CohereEmbeddingFunction.client.embed(
+                texts=texts[i : i + MAX_BATCH_SIZE], model=self.name, **kwargs
+            )
+            embeddings.extend(rs.embeddings)
 
-        return [emb for emb in rs.embeddings]
+        return embeddings
 
     def _init_client(self):
         cohere = attempt_import_or_raise("cohere")
