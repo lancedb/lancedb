@@ -1319,6 +1319,7 @@ impl Connection {
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (*, page_token=None, page_limit=None, table=None, namespace_path=None, branch=None, state=None, job_type=None, job_types=None, created_at_gte_millis=None, created_at_lt_millis=None))]
     pub fn list_jobs(
         &self,
