@@ -583,7 +583,7 @@ export abstract class Connection {
    * result, failure and event history, so there is no separate
    * connection-level call for any of them.
    */
-  abstract openJob(jobId: string): Promise<Job>;
+  abstract openJob<T = void>(jobId: string): Promise<Job<T>>;
 
   /**
    * Iterate lazily over server-side jobs across the database's tables.
@@ -1017,8 +1017,8 @@ export class LocalConnection extends Connection {
     );
   }
 
-  async openJob(jobId: string): Promise<Job> {
-    return new Job(await this.inner.openJob(jobId));
+  async openJob<T = void>(jobId: string): Promise<Job<T>> {
+    return new Job<T>(await this.inner.openJob(jobId));
   }
 
   listJobs(options: ListingOptions = {}): Listing<JobInfo> {

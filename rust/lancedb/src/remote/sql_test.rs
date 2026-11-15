@@ -4552,3 +4552,69 @@ async fn remote_prewarm_rejects_historical_checkout_without_submitting() {
     assert!(statements.lock().unwrap().is_empty());
     shutdown.send(()).unwrap();
 }
+
+#[tokio::test]
+async fn remote_compaction_tracks_registry_job_and_real_result() {
+    use crate::table::optimize::CompactionOverrides;
+    let service = TestSqlService {
+        adaptive: true,
+        result: RecordBatch::try_from_iter([(
+            "job_id",
+            Arc::new(StringArray::from(vec!["compacting-job"])) as ArrayRef,
+        )])
+        .unwrap(),
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let polls = Arc::new(AtomicUsize::new(0));
+    let observed = polls.clone();
+    let client = client_with_handler(move |request| {
+        assert_eq!(request.url().path(), "/v1/jobs/describe");
+        let body: serde_json::Value =
+            serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+        assert_eq!(body["job_id"], "compacting-job");
+        observed.fetch_add(1, Ordering::SeqCst);
+        http::Response::builder()
+            .status(200)
+            .body(
+                serde_json::json!({
+            "job_id":"compacting-job","job_type":"compact","job_state":"DONE",
+            "result":{"partial_commit":false,"rows_succeeded":12,"rows_failed":0,
+                "completion_percentage":100.0,"files_added":1,"files_removed":3,
+                "fragments_added":1,"fragments_removed":3}})
+                .to_string(),
+            )
+            .unwrap()
+    });
+    let table = RemoteTable::new_with_sql_client(
+        client,
+        "analytics".into(),
+        "events".into(),
+        vec!["team".into(), "inner".into()],
+        "team$inner$events".into(),
+        Default::default(),
+        Some(sql),
+    )
+    .with_branch(Some("experiment".into()));
+    let job = table
+        .compact_async(CompactionOverrides {
+            target_rows_per_fragment: Some(100),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(job.id(), Some("compacting-job"));
+    assert_eq!(polls.load(Ordering::SeqCst), 0);
+    let result = job.wait().await.unwrap();
+    assert_eq!(result.rows_succeeded, 12);
+    assert_eq!(result.fragments_removed, Some(3));
+    assert!(!result.more_work);
+    assert_eq!(
+        *statements.lock().unwrap(),
+        [
+            "OPTIMIZE \"events\" REWRITE DATA WITH (branch = 'experiment', target_rows_per_fragment = 100)"
+        ]
+    );
+    shutdown.send(()).unwrap();
+}

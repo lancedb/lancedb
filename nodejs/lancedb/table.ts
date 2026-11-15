@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import { CompactionResult, decodeCompactionResult } from "./compaction";
+
 import {
   Table as ArrowTable,
   Data,
@@ -1236,6 +1238,28 @@ export abstract class Table {
    */
   abstract restore(): Promise<void>;
   /**
+   * Submit remote compaction and return its durable job after acceptance.
+   *
+   * Uses SQL OPTIMIZE, inheriting branch and namespace from this table. Requires
+   * a compatible remote server and table Ownership plus parent Usage. Local and
+   * historical-version handles are unsupported. Existing optimize() behavior is unchanged.
+   * Waiting tracks the rewrite itself and returns actual row/file statistics.
+   * Missing result payloads are errors; older workers can omit file counts.
+   * Status, progress, events and cancellation reuse the generic HTTP job APIs.
+   * Reopen with db.openJob<CompactionResult>(job.id!). A wait timeout does not cancel work.
+   *
+   * @example
+   * const job = await table.compactAsync({ targetRowsPerFragment: 1000 });
+   * const result = await job.wait();
+   * console.log(result.rowsSucceeded, result.fragmentsRemoved);
+   */
+  async compactAsync(
+    _options?: CompactionOptions,
+  ): Promise<Job<CompactionResult>> {
+    throw new Error("compaction jobs are only supported on remote tables");
+  }
+
+  /**
    * Optimize the on-disk data and indices for better performance.
    *
    * Modeled after ``VACUUM`` in PostgreSQL.
@@ -1919,20 +1943,18 @@ export class LocalTable extends Table {
     return this.inner.currentBranch() ?? null;
   }
 
+  async compactAsync(
+    options?: CompactionOptions,
+  ): Promise<Job<CompactionResult>> {
+    validateCompactionOptions(options);
+    return new Job(
+      await this.inner.compactAsync(options),
+      decodeCompactionResult,
+    );
+  }
+
   async optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats> {
-    // JavaScript callers can supply extra keys that TypeScript would reject.
-    // Refuse them before the native binding can silently discard a work limit.
-    const supported = new Set([
-      "targetRowsPerFragment",
-      "maxSourceRows",
-      "ioBufferSize",
-      "batchSize",
-    ]);
-    for (const key of Object.keys(options?.compactionOptions ?? {})) {
-      if (!supported.has(key)) {
-        throw new Error(`Unsupported compaction option: ${key}`);
-      }
-    }
+    validateCompactionOptions(options?.compactionOptions);
     return await this.inner.optimize(
       options?.cleanupOlderThan?.getTime(),
       options?.deleteUnverified,
@@ -2231,4 +2253,20 @@ function rowIdsToBigInts(rowIds: readonly (bigint | number)[]): bigint[] {
     }
     return BigInt(id);
   });
+}
+
+function validateCompactionOptions(options?: CompactionOptions): void {
+  // JavaScript callers can supply extra keys that TypeScript would reject.
+  // Refuse them before the native binding can silently discard a work limit.
+  const supported = new Set([
+    "targetRowsPerFragment",
+    "maxSourceRows",
+    "ioBufferSize",
+    "batchSize",
+  ]);
+  for (const key of Object.keys(options ?? {})) {
+    if (!supported.has(key)) {
+      throw new Error(`Unsupported compaction option: ${key}`);
+    }
+  }
 }

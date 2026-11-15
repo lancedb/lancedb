@@ -5818,3 +5818,19 @@ describe("computed columns", () => {
     expect(rows.map((r) => r.doubled).sort()).toEqual([10, 2]);
   });
 });
+
+describe("durable compaction validation", () => {
+  test("rejects local tables and unknown options", async () => {
+    const db = await connect(`memory://compaction-job-${Date.now()}`);
+    const table = await db.createTable("test", [{ id: 1 }]);
+    await expect(table.compactAsync()).rejects.toThrow(
+      "only supported on remote tables",
+    );
+    await expect(
+      table.compactAsync({ unrecognizedLimit: 1 } as never),
+    ).rejects.toThrow("Unsupported compaction option");
+    await expect(
+      table.compactAsync({ targetRowsPerFragment: 0 }),
+    ).rejects.toThrow("safe integer");
+  });
+});

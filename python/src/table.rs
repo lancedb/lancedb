@@ -370,6 +370,16 @@ fn parse_compaction_options(options: Option<&Bound<'_, PyDict>>) -> PyResult<Com
 
     for (key, value) in options.iter() {
         let key: String = key.extract()?;
+        // Python bool is an int subclass: never turn True into a one-row budget.
+        if matches!(
+            key.as_str(),
+            "target_rows_per_fragment" | "max_source_rows" | "io_buffer_size" | "batch_size"
+        ) && value.is_instance_of::<PyBool>()
+        {
+            return Err(PyValueError::new_err(format!(
+                "{key} must be an integer, not a bool"
+            )));
+        }
         match key.as_str() {
             "target_rows_per_fragment" => {
                 parsed.target_rows_per_fragment = positive_u32(&value, &key)?
@@ -2116,6 +2126,29 @@ impl Table {
                 inner: Arc::new(file),
                 closed: AtomicBool::new(false),
             })
+        })
+    }
+
+    /// Submit remote compaction and retain its durable job and actual result.
+    #[pyo3(signature = (compaction_options=None))]
+    pub fn compact_async<'py>(
+        self_: PyRef<'py, Self>,
+        compaction_options: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        let target_specified = compaction_options
+            .map(|options| options.contains("target_rows_per_fragment"))
+            .transpose()?
+            .unwrap_or(false);
+        let options = parse_compaction_options(compaction_options)?;
+        let mut overrides =
+            lancedb::table::optimize::CompactionOverrides::try_from(options).infer_error()?;
+        if !target_specified {
+            overrides.target_rows_per_fragment = None;
+        }
+        future_into_py(self_.py(), async move {
+            let job = inner.compact_async(overrides).await.infer_error()?;
+            Ok(crate::job::Job::new_typed(job))
         })
     }
 

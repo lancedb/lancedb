@@ -4007,19 +4007,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         options: crate::table::optimize::CompactionOverrides,
     ) -> Result<OptimizeStats> {
         self.check_mutable().await?;
-        let compaction_options = optimize::compaction_sql_options(&options)?;
+        let statement = optimize::statement(&self.name, self.branch.as_deref(), &options)?;
         let sql_client = self.sql_client.clone().ok_or_else(|| Error::NotSupported {
             message: "SQL is unavailable for this remote table client".to_string(),
         })?;
-        let mut statement = format!("OPTIMIZE {} REWRITE DATA", quote_sql_identifier(&self.name));
-        let mut sql_options = Vec::new();
-        if let Some(branch) = &self.branch {
-            sql_options.push(format!("branch = {}", quote_sql_string(branch)));
-        }
-        sql_options.extend(compaction_options);
-        if !sql_options.is_empty() {
-            statement.push_str(&format!(" WITH ({})", sql_options.join(", ")));
-        }
         // `OptimizeStats` carries `lance::dataset::optimize` metric types that
         // are not `Serialize`/`Deserialize`/`Clone`, which `Job<T>` requires,
         // so the job itself only signals completion; the real (placeholder)
@@ -4036,6 +4027,42 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             prune: None,
         })
     }
+    async fn compact_async(
+        &self,
+        options: crate::table::optimize::CompactionOverrides,
+    ) -> Result<Job<crate::table::CompactionResult>> {
+        self.check_mutable().await?;
+        let statement = optimize::statement(&self.name, self.branch.as_deref(), &options)?;
+        let client = self
+            .sql_client
+            .as_ref()
+            .ok_or_else(|| Error::NotSupported {
+                message: "compaction jobs require a Flight SQL endpoint".into(),
+            })?;
+        let query = client
+            .execute(crate::database::ExecuteQueryRequest {
+                query: statement,
+                default_namespace_path: self.namespace.clone(),
+                parameters: None,
+            })
+            .await
+            .map_err(optimize::map_optimize_error)?;
+        let mut reader = query.reader().await.map_err(optimize::map_optimize_error)?;
+        let mut batches = Vec::new();
+        while let Some(batch) = reader
+            .try_next()
+            .await
+            .map_err(optimize::map_optimize_error)?
+        {
+            batches.push(batch);
+        }
+        let job_id = optimize::receipt(&batches)?;
+        Ok(Job::new_typed(Box::new(RemoteJob::new(
+            self.client.clone(),
+            job_id,
+        ))))
+    }
+
     async fn add_columns(
         &self,
         transforms: NewColumnTransform,
