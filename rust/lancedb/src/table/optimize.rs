@@ -51,9 +51,9 @@ pub struct CompactionResult {
     pub rows_failed: u64,
     /// Percentage of planned live rows committed, from 0 to 100.
     pub completion_percentage: f64,
-    /// Data files added by committed rewrites, when reported by the server.
+    /// Files added by committed rewrites, including deletion files, when reported.
     pub files_added: Option<u64>,
-    /// Data files removed by committed rewrites, when reported by the server.
+    /// Files removed by committed rewrites, including deletion files, when reported.
     pub files_removed: Option<u64>,
     /// Fragments added by committed rewrites, when reported by the server.
     pub fragments_added: Option<u64>,

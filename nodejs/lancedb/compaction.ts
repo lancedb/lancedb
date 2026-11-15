@@ -13,9 +13,9 @@ export interface CompactionResult {
   rowsFailed: number;
   /** Percentage of planned live rows committed, from 0 to 100. */
   completionPercentage: number;
-  /** Data files added by committed rewrites; null if an older worker omitted it. */
+  /** Files added, including deletion files; null if an older worker omitted it. */
   filesAdded: number | null;
-  /** Data files removed by committed rewrites; null if an older worker omitted it. */
+  /** Files removed, including deletion files; null if an older worker omitted it. */
   filesRemoved: number | null;
   /** Fragments added by committed rewrites; null if an older worker omitted it. */
   fragmentsAdded: number | null;

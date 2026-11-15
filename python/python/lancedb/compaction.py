@@ -16,6 +16,7 @@ class CompactionResult:
     partial progress. ``more_work`` means a bounded run left eligible work for
     another invocation. File/fragment counts are None if an older worker did
     not report them; they are never inferred from unrelated table versions.
+    File counts include deletion files as well as data files.
     """
 
     partial_commit: bool

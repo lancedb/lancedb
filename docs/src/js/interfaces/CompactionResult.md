@@ -26,7 +26,7 @@ Percentage of planned live rows committed, from 0 to 100.
 filesAdded: null | number;
 ```
 
-Data files added by committed rewrites; null if an older worker omitted it.
+Files added, including deletion files; null if an older worker omitted it.
 
 ***
 
@@ -36,7 +36,7 @@ Data files added by committed rewrites; null if an older worker omitted it.
 filesRemoved: null | number;
 ```
 
-Data files removed by committed rewrites; null if an older worker omitted it.
+Files removed, including deletion files; null if an older worker omitted it.
 
 ***
 
