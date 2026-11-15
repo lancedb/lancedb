@@ -938,6 +938,23 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn compact_async(
+        &self,
+        options: Option<CompactionOptions>,
+    ) -> napi::Result<crate::job::Job> {
+        let options = options
+            .map(CompactionOptions::into_overrides)
+            .transpose()?
+            .unwrap_or_default();
+        let job = self
+            .inner_ref()?
+            .compact_async(options)
+            .await
+            .default_error()?;
+        Ok(crate::job::Job::new_typed(job))
+    }
+
+    #[napi(catch_unwind)]
     pub async fn optimize(
         &self,
         before_timestamp_ms: Option<i64>,

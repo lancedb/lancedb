@@ -665,3 +665,5 @@ export {
 } from "./catalog";
 
 export { Listing, ListingOptions } from "./listing";
+
+export type { CompactionResult } from "./compaction";

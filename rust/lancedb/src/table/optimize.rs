@@ -32,6 +32,35 @@ pub use lance::dataset::optimize::{CompactionMode, CompactionOptions, IndexRemap
 
 const MAX_ARROW_FIXED_SIZE_LIST_CHILD_INDEX: u64 = u32::MAX as u64;
 
+/// Actual outcome of one remote compaction job, returned by its job handle.
+///
+/// A successful bounded run can leave more work for another invocation. A
+/// partial commit reports uncommitted rows rather than inventing file counts.
+/// File/fragment counts are unknown (`None`) when an older worker omitted them.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct CompactionResult {
+    /// A complete bounded plan left eligible work for a later invocation.
+    #[serde(default)]
+    pub more_work: bool,
+    /// Some planned groups were not committed.
+    pub partial_commit: bool,
+    /// Live source rows in committed rewrite groups.
+    pub rows_succeeded: u64,
+    /// Planned live rows not committed by this job.
+    pub rows_failed: u64,
+    /// Percentage of planned live rows committed, from 0 to 100.
+    pub completion_percentage: f64,
+    /// Data files added by committed rewrites, when reported by the server.
+    pub files_added: Option<u64>,
+    /// Data files removed by committed rewrites, when reported by the server.
+    pub files_removed: Option<u64>,
+    /// Fragments added by committed rewrites, when reported by the server.
+    pub fragments_added: Option<u64>,
+    /// Fragments removed by committed rewrites, when reported by the server.
+    pub fragments_removed: Option<u64>,
+}
+
 struct PrecomputedCompactionPlanner {
     plan: Mutex<Option<CompactionPlan>>,
 }

@@ -86,6 +86,7 @@ pub mod freshness;
 pub mod function_column_status;
 pub mod merge;
 pub mod optimize;
+pub use optimize::CompactionResult;
 mod prewarm;
 pub use prewarm::PrewarmDataOptions;
 pub(crate) mod primary_key;
@@ -890,6 +891,15 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn tags(&self) -> Result<Box<dyn Tags + '_>>;
     /// Optimize the dataset.
     async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats>;
+    /// Submit remote compaction and retain its durable job and actual outcome.
+    async fn compact_async(
+        &self,
+        _options: optimize::CompactionOverrides,
+    ) -> Result<Job<CompactionResult>> {
+        Err(Error::NotSupported {
+            message: "compaction jobs are only supported on remote tables".into(),
+        })
+    }
     /// Compact with optional fields, preserving remote policy inheritance.
     async fn compact(&self, options: optimize::CompactionOverrides) -> Result<OptimizeStats> {
         self.optimize(OptimizeAction::Compact {
@@ -2072,6 +2082,37 @@ impl Table {
     /// ```
     pub async fn compact(&self, options: optimize::CompactionOverrides) -> Result<OptimizeStats> {
         self.inner.compact(options).await
+    }
+
+    /// Submit remote compaction and return its durable job after acceptance.
+    ///
+    /// Uses SQL `OPTIMIZE ... REWRITE DATA` with the table handle's namespace
+    /// and branch. The four fields of [`optimize::CompactionOverrides`] retain
+    /// server defaults when omitted. Requires a compatible remote SQL server
+    /// and table Ownership plus database/namespace Usage under Standard authorization.
+    /// Historical-version and local handles are unsupported.
+    ///
+    /// Unlike [`Self::optimize`], waiting on this handle waits for compaction
+    /// itself and returns actual [`CompactionResult`] values. Status, progress,
+    /// events, and cancellation use the generic HTTP job APIs. A timeout or
+    /// dropping the handle does not cancel work. Missing result payloads are
+    /// errors, never placeholder zero statistics. An older worker may omit
+    /// file counts, represented as `None`. Reopen with
+    /// `connection.open_job(id).await?.into_typed::<CompactionResult>()?`.
+    ///
+    /// ```no_run
+    /// # async fn compact(table: &lancedb::Table) -> lancedb::Result<()> {
+    /// let job = table.compact_async(Default::default()).await?;
+    /// let result = job.wait().await?;
+    /// println!("Committed {} rows", result.rows_succeeded);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn compact_async(
+        &self,
+        options: optimize::CompactionOverrides,
+    ) -> Result<Job<CompactionResult>> {
+        self.inner.compact_async(options).await
     }
 
     /// Language-binding entry point retaining optional compaction fields.

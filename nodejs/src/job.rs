@@ -17,7 +17,7 @@ type JobProgressFn =
 /// A handle to an operation that may still be running.
 #[napi]
 pub struct Job {
-    inner: Arc<lancedb::Job>,
+    inner: Arc<lancedb::Job<std::result::Result<Option<serde_json::Value>, String>>>,
 }
 
 impl Job {
@@ -26,7 +26,19 @@ impl Job {
         T: Clone + Send + Sync + 'static,
     {
         Self {
-            inner: Arc::new(inner.map(|_| ())),
+            inner: Arc::new(inner.map(|_| Ok(None))),
+        }
+    }
+    pub(crate) fn new_typed<T>(inner: lancedb::Job<T>) -> Self
+    where
+        T: Clone + serde::Serialize + Send + Sync + 'static,
+    {
+        Self {
+            inner: Arc::new(inner.map(|result| {
+                serde_json::to_value(result)
+                    .map(Some)
+                    .map_err(|error| format!("failed to serialize typed job result: {error}"))
+            })),
         }
     }
 }
@@ -70,7 +82,19 @@ impl Job {
         ts_args_type = "progressCallback?: (progress: Record<string, unknown>) => void"
     )]
     pub async fn wait(&self, progress_callback: Option<JobProgressFn>) -> napi::Result<()> {
-        if let Some(progress_callback) = progress_callback {
+        self.wait_result(progress_callback).await.map(|_| ())
+    }
+
+    /// The typed terminal value used by result-returning SDK operations.
+    #[napi(
+        catch_unwind,
+        ts_args_type = "progressCallback?: (progress: Record<string, unknown>) => void"
+    )]
+    pub async fn wait_result(
+        &self,
+        progress_callback: Option<JobProgressFn>,
+    ) -> napi::Result<Option<serde_json::Value>> {
+        let result = if let Some(progress_callback) = progress_callback {
             self.inner
                 .wait_with_progress(move |description| {
                     progress_callback.call(
@@ -79,10 +103,11 @@ impl Job {
                     );
                 })
                 .await
-                .default_error()
+                .default_error()?
         } else {
-            self.inner.wait().await.default_error()
-        }
+            self.inner.wait().await.default_error()?
+        };
+        result.map_err(napi::Error::from_reason)
     }
 
     /// Request cancellation. Cancelling a finished operation is a no-op.

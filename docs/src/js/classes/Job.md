@@ -4,7 +4,7 @@
 
 [@lancedb/lancedb](../globals.md) / Job
 
-# Class: Job
+# Class: Job&lt;T&gt;
 
 A handle to an operation that may still be running.
 
@@ -19,6 +19,10 @@ extra round trip on every call:
   rest of the record.
 - Registry details are null until one of those runs. Query handles report
   jobType "query" immediately.
+
+## Type Parameters
+
+• **T** = `void`
 
 ## Accessors
 
@@ -241,7 +245,7 @@ printing it.
 ### wait()
 
 ```ts
-wait(progressCallback?): Promise<void>
+wait(progressCallback?): Promise<T>
 ```
 
 Wait until the operation reaches a terminal state.
@@ -259,4 +263,4 @@ callback exception does not reject `wait`.
 
 #### Returns
 
-`Promise`&lt;`void`&gt;
+`Promise`&lt;`T`&gt;

@@ -63,6 +63,73 @@ separately from [`cleanup`](/maintenance/cleanup). The two are distinct jobs
 even though `optimize()` bundles both in one LanceDB Embedded call.
 </Note>
 
+## Track on-demand Enterprise compaction {#compaction-jobs}
+
+On compatible Enterprise deployments, `compact_async()` / `compactAsync()`
+submits SQL `OPTIMIZE ... REWRITE DATA` and returns a durable job handle.
+The table handle supplies the namespace and branch. The existing remote
+`optimize()` call keeps returning after submission with placeholder statistics;
+use the job-returning API to wait for the actual rewrite and obtain its result.
+
+<CodeGroup>
+```python Python
+from datetime import timedelta
+
+job = table.compact_async(
+    compaction_options={"target_rows_per_fragment": 1000, "batch_size": 128}
+)
+result = job.wait(timeout=timedelta(minutes=10))
+print(result.rows_succeeded, result.fragments_removed, result.fragments_added)
+
+# Resume from another process with the same connection settings.
+result = db.open_job(job.id).wait()
+```
+```typescript TypeScript
+import type { CompactionResult } from "@lancedb/lancedb";
+
+const job = await table.compactAsync({
+  targetRowsPerFragment: 1000, batchSize: 128,
+});
+const result = await job.wait();
+console.log(result.rowsSucceeded, result.fragmentsRemoved, result.fragmentsAdded);
+
+if (job.id !== null) {
+  await (await db.openJob<CompactionResult>(job.id)).wait();
+}
+```
+```rust Rust
+use lancedb::table::{CompactionResult, optimize::CompactionOverrides};
+
+let job = table.compact_async(CompactionOverrides {
+    target_rows_per_fragment: Some(1000),
+    batch_size: Some(128),
+    ..Default::default()
+}).await?;
+let result = job.wait().await?;
+println!("Committed {} rows", result.rows_succeeded);
+
+if let Some(id) = job.id() {
+    db.open_job(id).await?.into_typed::<CompactionResult>()?.wait().await?;
+}
+```
+</CodeGroup>
+
+The result describes this job's committed rewrites, not a comparison of table
+versions that could include concurrent writes. `partial_commit` identifies an
+incomplete commit; `rows_failed` counts planned rows left uncommitted.
+`more_work` means a bounded run left eligible work for another invocation.
+A genuine no-op reports zero file/fragment counts; counts omitted by an older
+worker are `None` in Python/Rust or `null` in TypeScript. A server that publishes
+no compaction result raises an error when waiting, rather than fabricating zero
+statistics.
+
+Submission requires Flight SQL connectivity and, under Standard authorization,
+table Ownership plus Usage on the database and namespace hierarchy. Status,
+progress, events, and cancellation use the generic HTTP job APIs and their
+existing permissions. A wait timeout or dropping the handle does not cancel
+the job. Local tables and historical-version checkouts are unsupported by the
+job-returning API; ordinary embedded `optimize()` remains available.
+
 ## Retraining indexes {#retrain}
 
 Folding new rows into an index preserves the structure the index was trained on.

@@ -2662,3 +2662,47 @@ describe("lazy resource listings", () => {
     });
   }
 });
+
+describe("remote compaction job results", () => {
+  test.each([true, false])(
+    "reopens typed compaction result (counts=%s)",
+    async (counts) => {
+      await withMockDatabase(
+        (request, response) => {
+          expect(request.url).toBe("/v1/jobs/describe");
+          const result = JSON.parse(`{
+            "partial_commit": false,
+            "rows_succeeded": 12,
+            "rows_failed": 0,
+            "completion_percentage": 100
+          }`);
+          if (counts) {
+            Object.assign(
+              result,
+              JSON.parse(`{
+              "files_added": 1,
+              "files_removed": 3,
+              "fragments_added": 1,
+              "fragments_removed": 3
+            }`),
+            );
+          }
+          response.writeHead(200, { "Content-Type": "application/json" });
+          response.end(
+            `{"job_id":"compacting-job","job_type":"compact","job_state":"DONE","result":${JSON.stringify(result)}}`,
+          );
+        },
+        async (db) => {
+          const job =
+            await db.openJob<import("../lancedb").CompactionResult>(
+              "compacting-job",
+            );
+          const result = await job.wait();
+          expect(result.rowsSucceeded).toBe(12);
+          expect(result.moreWork).toBe(false);
+          expect(result.fragmentsRemoved).toBe(counts ? 3 : null);
+        },
+      );
+    },
+  );
+});

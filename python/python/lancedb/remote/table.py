@@ -78,6 +78,7 @@ from ..table import (
     BlobMode,
     Branches,
     CompactionOptions,
+    CompactionResult,
     IndexStatistics,
     Query,
     Table,
@@ -1104,6 +1105,13 @@ class RemoteTable(Table):
             stacklevel=2,
         )
         pass
+
+    def compact_async(
+        self, *, compaction_options: Optional[CompactionOptions] = None
+    ) -> Job[CompactionResult]:
+        return Job(
+            LOOP.run(self._table.compact_async(compaction_options=compaction_options))
+        )
 
     def optimize(
         self,

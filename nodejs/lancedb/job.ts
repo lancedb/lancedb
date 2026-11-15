@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import { Table as ArrowTable, tableFromIPC } from "apache-arrow";
+import { decodeCompactionResult } from "./compaction";
 import { JobFailureInfo, Job as NativeJob } from "./native";
 
 /** Which of a job's events {@link Job.events} returns. */
@@ -71,11 +72,18 @@ export type JobProgressCallback = (progress: JobProgress) => void;
  *
  * @hideconstructor
  */
-export class Job {
+export class Job<T = void> {
   private readonly inner: NativeJob;
 
-  constructor(inner: NativeJob) {
+  private readonly resultDecoder?: (value: unknown) => T;
+
+  constructor(inner: NativeJob, resultDecoder?: (value: unknown) => T) {
     this.inner = inner;
+    this.resultDecoder =
+      resultDecoder ??
+      (inner.jobType === "compact"
+        ? (decodeCompactionResult as (value: unknown) => T)
+        : undefined);
   }
 
   /**
@@ -162,17 +170,22 @@ export class Job {
    * throws, the error is logged with `console.warn` and waiting continues; a
    * callback exception does not reject `wait`.
    */
-  async wait(progressCallback?: JobProgressCallback): Promise<void> {
-    if (progressCallback === undefined) {
-      return this.inner.wait();
+  async wait(progressCallback?: JobProgressCallback): Promise<T> {
+    const callback =
+      progressCallback === undefined
+        ? undefined
+        : (progress: Record<string, unknown>) => {
+            try {
+              progressCallback(this.enrichProgress(progress));
+            } catch (error) {
+              console.warn("Job progress callback threw:", error);
+            }
+          };
+    if (this.resultDecoder !== undefined) {
+      return this.resultDecoder(await this.inner.waitResult(callback));
     }
-    return this.inner.wait((progress) => {
-      try {
-        progressCallback(this.enrichProgress(progress));
-      } catch (error) {
-        console.warn("Job progress callback threw:", error);
-      }
-    });
+    await this.inner.wait(callback);
+    return undefined as T;
   }
 
   /** Request cancellation. Cancelling a finished operation is a no-op. */

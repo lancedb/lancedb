@@ -794,6 +794,9 @@ class Table:
     async def update_field_metadata(
         self, updates: list[dict[str, Any]]
     ) -> UpdateFieldMetadataResult: ...
+    async def compact_async(
+        self, compaction_options: Optional[Dict[str, Any]] = None
+    ) -> Job: ...
     async def optimize(
         self,
         *,

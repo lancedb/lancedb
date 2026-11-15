@@ -305,6 +305,40 @@ It is a no-op when no writers are cached.
 
 ***
 
+### compactAsync()
+
+```ts
+compactAsync(_options?): Promise<Job<CompactionResult>>
+```
+
+Submit remote compaction and return its durable job after acceptance.
+
+Uses SQL OPTIMIZE, inheriting branch and namespace from this table. Requires
+a compatible remote server and table Ownership plus parent Usage. Local and
+historical-version handles are unsupported. Existing optimize() behavior is unchanged.
+Waiting tracks the rewrite itself and returns actual row/file statistics.
+Missing result payloads are errors; older workers can omit file counts.
+Status, progress, events and cancellation reuse the generic HTTP job APIs.
+Reopen with db.openJob<CompactionResult>(job.id!). A wait timeout does not cancel work.
+
+#### Parameters
+
+* **\_options?**: [`CompactionOptions`](../interfaces/CompactionOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&lt;[`CompactionResult`](../interfaces/CompactionResult.md)&gt;&gt;
+
+#### Example
+
+```ts
+const job = await table.compactAsync({ targetRowsPerFragment: 1000 });
+const result = await job.wait();
+console.log(result.rowsSucceeded, result.fragmentsRemoved);
+```
+
+***
+
 ### compactRTE()
 
 ```ts
@@ -423,7 +457,7 @@ await table.createIndex("my_float_col");
 ### createIndexAsync()
 
 ```ts
-abstract createIndexAsync(column, options?): Promise<Job>
+abstract createIndexAsync(column, options?): Promise<Job<void>>
 ```
 
 Create an index, returning a handle to the indexing job.
@@ -444,7 +478,7 @@ account for the replacement caveat described in [Table.createIndex](Table.md#cre
 
 #### Returns
 
-`Promise`&lt;[`Job`](Job.md)&gt;
+`Promise`&lt;[`Job`](Job.md)&lt;`void`&gt;&gt;
 
 ***
 
@@ -1076,7 +1110,7 @@ Prewarm one or more columns of data in the table.
 ### prewarmDataAsync()
 
 ```ts
-abstract prewarmDataAsync(options?): Promise<Job>
+abstract prewarmDataAsync(options?): Promise<Job<void>>
 ```
 
 Submit data prewarm through SQL and return its durable warming-job handle.
@@ -1098,7 +1132,7 @@ the job. After `job.refresh()`, `job.spec.table_version` is the pinned version.
 
 #### Returns
 
-`Promise`&lt;[`Job`](Job.md)&gt;
+`Promise`&lt;[`Job`](Job.md)&lt;`void`&gt;&gt;
 
 #### Example
 
@@ -1238,7 +1272,7 @@ number of rows filled and the new version number of the table.
 ### refreshColumnAsync()
 
 ```ts
-abstract refreshColumnAsync(column, options?): Promise<Job>
+abstract refreshColumnAsync(column, options?): Promise<Job<void>>
 ```
 
 Like [Table#refreshColumn](Table.md#refreshcolumn), but returns a handle to the refresh
@@ -1291,7 +1325,7 @@ LanceDB Enterprise it is the server's backfill job.
 
 #### Returns
 
-`Promise`&lt;[`Job`](Job.md)&gt;
+`Promise`&lt;[`Job`](Job.md)&lt;`void`&gt;&gt;
 
 #### Example
 

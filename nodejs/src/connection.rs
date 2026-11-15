@@ -567,7 +567,14 @@ impl Connection {
     #[napi(catch_unwind)]
     pub async fn open_job(&self, job_id: String) -> napi::Result<crate::job::Job> {
         let job = self.get_inner()?.open_job(&job_id).await.default_error()?;
-        Ok(crate::job::Job::new(job))
+        if job.job_type().as_deref() == Some("compact") {
+            Ok(crate::job::Job::new_typed(
+                job.into_typed::<lancedb::table::CompactionResult>()
+                    .default_error()?,
+            ))
+        } else {
+            Ok(crate::job::Job::new(job))
+        }
     }
 
     /// List server-side jobs across the database's tables.

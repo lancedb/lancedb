@@ -49,6 +49,7 @@ from .types import BlobMode
 from lancedb.arrow import peek_reader
 from lancedb.background_loop import LOOP, embedding_executor
 from lancedb.job import AsyncJob, Job, _typed_job
+from lancedb.compaction import CompactionResult
 from .dependencies import (
     _check_for_hugging_face,
     _check_for_lance,
@@ -3060,6 +3061,33 @@ class Table(ABC):
         compaction for you automatically.
         """
 
+    def compact_async(
+        self, *, compaction_options: Optional[CompactionOptions] = None
+    ) -> Job[CompactionResult]:
+        """Submit remote compaction and return a durable job after acceptance.
+
+        Uses SQL OPTIMIZE with the table handle's branch and namespace. Supports
+        the four per-job settings in
+        [CompactionOptions][lancedb.table.CompactionOptions].
+        Requires a compatible remote server, table Ownership and parent Usage.
+        Local and historical-version handles are unsupported. Existing
+        ``optimize()`` retains its return-on-submission behavior remotely.
+
+        ``job.wait()`` waits for the actual rewrite and returns
+        [CompactionResult][lancedb.compaction.CompactionResult]. Partial/bounded
+        runs report uncommitted rows and ``more_work``; unknown file statistics
+        are None. Servers without a result payload raise an error rather than
+        returning fabricated zero statistics. Wait timeouts do not cancel work.
+        Save ``job.id`` and reopen with ``db.open_job(id)``. Monitoring and
+        cancellation use generic HTTP job APIs and their existing permissions.
+
+        >>> job = table.compact_async(  # doctest: +SKIP
+        ...     compaction_options={"target_rows_per_fragment": 1000})
+        >>> result = job.wait()  # doctest: +SKIP
+        >>> print(result.rows_succeeded)  # doctest: +SKIP
+        """
+        raise NotImplementedError("compaction jobs are only supported on remote tables")
+
     @abstractmethod
     def optimize(
         self,
@@ -5734,6 +5762,13 @@ class LanceTable(Table):
         stats = self.to_lance().optimize.compact_files(*args, **kwargs)
         self.checkout_latest()
         return stats
+
+    def compact_async(
+        self, *, compaction_options: Optional[CompactionOptions] = None
+    ) -> Job[CompactionResult]:
+        return Job(
+            LOOP.run(self._table.compact_async(compaction_options=compaction_options))
+        )
 
     def optimize(
         self,
@@ -9350,6 +9385,19 @@ class AsyncTable:
     def current_branch(self) -> Optional[str]:
         """The branch this table handle is scoped to, or ``None`` for ``main``."""
         return self._inner.current_branch()
+
+    async def compact_async(
+        self, *, compaction_options: Optional[CompactionOptions] = None
+    ) -> AsyncJob[CompactionResult]:
+        """Submit remote compaction; await the returned job for actual results.
+
+        See [Table.compact_async][lancedb.table.Table.compact_async] for options,
+        permissions, completion semantics and compatibility requirements.
+        """
+        return _typed_job(
+            await self._inner.compact_async(compaction_options),
+            CompactionResult.from_json,
+        )
 
     async def optimize(
         self,
