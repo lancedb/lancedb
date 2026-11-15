@@ -81,6 +81,18 @@ export interface JobProgress {
 /** Callback for progress snapshots observed while waiting for a job. */
 export type JobProgressCallback = (progress: JobProgress) => void;
 
+/** Client-side controls for waiting without cancelling the underlying job. */
+export interface JobWaitOptions {
+  /**
+   * Maximum wait in milliseconds, including status requests and polling backoff.
+   * Must be a nonnegative safe integer. Omit to wait indefinitely; zero allows
+   * only an immediately ready result.
+   */
+  timeoutMs?: number;
+  /** Observe progress using the same poller that waits for completion. */
+  onProgress?: JobProgressCallback;
+}
+
 /**
  * A handle to an operation that may still be running.
  *
@@ -197,8 +209,47 @@ export class Job<T = void> {
    * synchronous observer: its return value is ignored and not awaited. If it
    * throws, the error is logged with `console.warn` and waiting continues; a
    * callback exception does not reject `wait`.
+   *
+   * Pass an options object to set a client-side timeout. Expiry rejects with an
+   * error and stops this wait, including pending status requests and backoff.
+   * The operation continues; use the same handle to wait again. Registry jobs
+   * can also be reopened with `Connection.openJob`; query IDs cannot.
+   *
+   * @example
+   * ```ts
+   * const result = await job.wait({ timeoutMs: 60_000, onProgress: console.log });
+   * ```
    */
-  async wait(progressCallback?: JobProgressCallback): Promise<T> {
+  async wait(
+    optionsOrProgress?: JobWaitOptions | JobProgressCallback,
+  ): Promise<T> {
+    const options: JobWaitOptions =
+      typeof optionsOrProgress === "function"
+        ? { onProgress: optionsOrProgress }
+        : (optionsOrProgress ?? {});
+    if (typeof options !== "object" || Array.isArray(options)) {
+      throw new TypeError(
+        "wait expects an options object or a progress callback",
+      );
+    }
+    for (const key of Object.keys(options)) {
+      if (key !== "timeoutMs" && key !== "onProgress") {
+        throw new TypeError(`Unknown job wait option: ${key}`);
+      }
+    }
+    const { timeoutMs, onProgress: progressCallback } = options;
+    if (
+      timeoutMs !== undefined &&
+      (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0)
+    ) {
+      throw new RangeError("timeoutMs must be a nonnegative safe integer");
+    }
+    if (
+      progressCallback !== undefined &&
+      typeof progressCallback !== "function"
+    ) {
+      throw new TypeError("onProgress must be a function");
+    }
     const callback =
       progressCallback === undefined
         ? undefined
@@ -210,9 +261,11 @@ export class Job<T = void> {
             }
           };
     if (this.resultDecoder !== undefined) {
-      return this.resultDecoder(await this.inner.waitResult(callback));
+      return this.resultDecoder(
+        await this.inner.waitResult(callback, timeoutMs),
+      );
     }
-    await this.inner.wait(callback);
+    await this.inner.wait(callback, timeoutMs);
     return undefined as T;
   }
 

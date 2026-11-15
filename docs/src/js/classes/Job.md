@@ -245,7 +245,7 @@ printing it.
 ### wait()
 
 ```ts
-wait(progressCallback?): Promise<T>
+wait(optionsOrProgress?): Promise<T>
 ```
 
 Wait until the operation reaches a terminal state.
@@ -257,10 +257,21 @@ synchronous observer: its return value is ignored and not awaited. If it
 throws, the error is logged with `console.warn` and waiting continues; a
 callback exception does not reject `wait`.
 
+Pass an options object to set a client-side timeout. Expiry rejects with an
+error and stops this wait, including pending status requests and backoff.
+The operation continues; use the same handle to wait again. Registry jobs
+can also be reopened with `Connection.openJob`; query IDs cannot.
+
 #### Parameters
 
-* **progressCallback?**: [`JobProgressCallback`](../type-aliases/JobProgressCallback.md)
+* **optionsOrProgress?**: [`JobWaitOptions`](../interfaces/JobWaitOptions.md) \| [`JobProgressCallback`](../type-aliases/JobProgressCallback.md)
 
 #### Returns
 
 `Promise`&lt;`T`&gt;
+
+#### Example
+
+```ts
+const result = await job.wait({ timeoutMs: 60_000, onProgress: console.log });
+```

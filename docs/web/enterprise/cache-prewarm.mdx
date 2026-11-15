@@ -109,7 +109,7 @@ const job = await table.prewarmDataAsync({
   concurrency: 4,
 });
 console.log(job.id);
-const result = await job.wait(progress => console.log(progress));
+const result = await job.wait({ timeoutMs: 600_000, onProgress: console.log });
 console.log(result.tableVersion, result.executorsCompleted);
 
 // Reattach using the same database connection settings.
@@ -120,6 +120,8 @@ if (job.id !== null) {
 </Tab>
 <Tab title="Rust">
 ```rust
+use std::time::Duration;
+use lancedb::job::JobWaitOptions;
 use lancedb::table::{PrewarmDataOptions, PrewarmDataResult};
 
 let job = table
@@ -131,7 +133,9 @@ let job = table
     )
     .await?;
 println!("{:?}", job.id());
-let result = job.wait().await?;
+let result = job.wait_with_options(
+    JobWaitOptions::new().timeout(Duration::from_secs(600)),
+).await?;
 println!("Snapshot {}: {:?} executors completed", result.table_version, result.executors_completed);
 
 // Reattach using the same database connection settings.

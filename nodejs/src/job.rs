@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use arrow_array::RecordBatch;
-use lancedb::job::JobEventsRequest;
+use lancedb::job::{JobEventsRequest, JobWaitOptions};
 use napi::bindgen_prelude::Buffer;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
@@ -79,34 +79,55 @@ impl Job {
     /// backend poller without starting another polling loop.
     #[napi(
         catch_unwind,
-        ts_args_type = "progressCallback?: (progress: Record<string, unknown>) => void"
+        ts_args_type = "progressCallback?: (progress: Record<string, unknown>) => void, timeoutMs?: number"
     )]
-    pub async fn wait(&self, progress_callback: Option<JobProgressFn>) -> napi::Result<()> {
-        self.wait_result(progress_callback).await.map(|_| ())
+    pub async fn wait(
+        &self,
+        progress_callback: Option<JobProgressFn>,
+        timeout_ms: Option<f64>,
+    ) -> napi::Result<()> {
+        self.wait_result(progress_callback, timeout_ms)
+            .await
+            .map(|_| ())
     }
 
     /// The typed terminal value used by result-returning SDK operations.
     #[napi(
         catch_unwind,
-        ts_args_type = "progressCallback?: (progress: Record<string, unknown>) => void"
+        ts_args_type = "progressCallback?: (progress: Record<string, unknown>) => void, timeoutMs?: number"
     )]
     pub async fn wait_result(
         &self,
         progress_callback: Option<JobProgressFn>,
+        timeout_ms: Option<f64>,
     ) -> napi::Result<Option<serde_json::Value>> {
-        let result = if let Some(progress_callback) = progress_callback {
-            self.inner
-                .wait_with_progress(move |description| {
-                    progress_callback.call(
-                        description.progress_snapshot(),
-                        ThreadsafeFunctionCallMode::NonBlocking,
-                    );
-                })
-                .await
-                .default_error()?
-        } else {
-            self.inner.wait().await.default_error()?
-        };
+        let mut options = JobWaitOptions::new();
+        if let Some(timeout_ms) = timeout_ms {
+            const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+            if !timeout_ms.is_finite()
+                || timeout_ms.fract() != 0.0
+                || !(0.0..=MAX_SAFE_INTEGER).contains(&timeout_ms)
+            {
+                return Err(napi::Error::new(
+                    napi::Status::InvalidArg,
+                    "timeoutMs must be a nonnegative safe integer",
+                ));
+            }
+            options = options.timeout(Duration::from_millis(timeout_ms as u64));
+        }
+        if let Some(progress_callback) = progress_callback {
+            options = options.progress(move |description| {
+                progress_callback.call(
+                    description.progress_snapshot(),
+                    ThreadsafeFunctionCallMode::NonBlocking,
+                );
+            });
+        }
+        let result = self
+            .inner
+            .wait_with_options(options)
+            .await
+            .default_error()?;
         result.map_err(napi::Error::from_reason)
     }
 

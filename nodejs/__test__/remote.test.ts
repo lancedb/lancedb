@@ -2766,3 +2766,166 @@ describe("data prewarm typed results", () => {
     },
   );
 });
+
+describe("job wait deadlines", () => {
+  function response(kind: string, done: boolean) {
+    const result =
+      kind === "compact"
+        ? '{"partial_commit":false,"rows_succeeded":12,"rows_failed":0,"completion_percentage":100}'
+        : kind === "prewarm_page_cache"
+          ? '{"table_version":42,"executors_targeted":2,"executors_completed":2}'
+          : "null";
+    return `{"job_id":"bounded-job","job_type":"${kind}","job_state":"${done ? "DONE" : "IN_PROGRESS"}","result":${done ? result : "null"}}`;
+  }
+
+  test.each(["compact", "prewarm_page_cache", "create_index"])(
+    "%s stops polling at timeout, resumes, and reopens",
+    async (kind) => {
+      let done = false;
+      let describes = 0;
+      const progress: JobProgress[] = [];
+      await withMockDatabase(
+        (request, res) => {
+          expect(request.url).toBe("/v1/jobs/describe");
+          describes++;
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(response(kind, done));
+        },
+        async (db) => {
+          const fallback = setTimeout(() => {
+            done = true;
+          }, 1000);
+          try {
+            const job = await db.openJob("bounded-job");
+            await expect(
+              job.wait({ timeoutMs: 50, onProgress: (p) => progress.push(p) }),
+            ).rejects.toThrow(/bounded-job.*continues/);
+            expect(job.state).toBe("running");
+            await new Promise((resolve) => setImmediate(resolve));
+            const requestsAtTimeout = describes;
+            const updatesAtTimeout = progress.length;
+            await new Promise((resolve) => setTimeout(resolve, 350));
+            expect(describes).toBe(requestsAtTimeout);
+            expect(progress).toHaveLength(updatesAtTimeout);
+            done = true;
+            const result = await job.wait({
+              timeoutMs: 1000,
+              onProgress: (p) => progress.push(p),
+            });
+            await new Promise((resolve) => setImmediate(resolve));
+            expect(progress.some((p) => p.state === "finished")).toBe(true);
+            expect(job.state).toBe("finished");
+            expect(result).toEqual(
+              kind === "compact"
+                ? expect.objectContaining({ rowsSucceeded: 12 })
+                : kind === "prewarm_page_cache"
+                  ? expect.objectContaining({ tableVersion: 42 })
+                  : undefined,
+            );
+            // Existing callback-only and argument-free calls remain supported.
+            expect(await job.wait((p) => progress.push(p))).toEqual(result);
+            expect(await job.wait()).toEqual(result);
+            const reopened = await db.openJob("bounded-job");
+            expect(await reopened.wait({ timeoutMs: 1000 })).toEqual(result);
+          } finally {
+            clearTimeout(fallback);
+          }
+        },
+      );
+    },
+  );
+
+  it("bounds a pending HTTP response and permits a later wait", async () => {
+    let slow = false;
+    let requests = 0;
+    await withMockDatabase(
+      (request, res) => {
+        expect(request.url).toBe("/v1/jobs/describe");
+        requests++;
+        const send = () => {
+          if (!res.destroyed) {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(response("prewarm_page_cache", slow));
+          }
+        };
+        if (slow) setTimeout(send, 300);
+        else send();
+      },
+      async (db) => {
+        const job = await db.openJob("bounded-job");
+        slow = true;
+        await expect(job.wait({ timeoutMs: 50 })).rejects.toThrow("continues");
+        expect(job.state).toBe("running");
+        const stoppedAt = requests;
+        await new Promise((resolve) => setTimeout(resolve, 350));
+        expect(requests).toBe(stoppedAt);
+        const result = await job.wait({ timeoutMs: 1000 });
+        expect(result).toEqual(expect.objectContaining({ tableVersion: 42 }));
+      },
+    );
+  });
+
+  it("accepts zero timeout and validates options before polling", async () => {
+    let requests = 0;
+    let done = false;
+    await withMockDatabase(
+      (_request, res) => {
+        requests++;
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(response("compact", done));
+      },
+      async (db) => {
+        const fallback = setTimeout(() => {
+          done = true;
+        }, 1000);
+        try {
+          const job = await db.openJob("bounded-job");
+          for (const timeoutMs of [
+            -1,
+            1.5,
+            Number.NaN,
+            Number.POSITIVE_INFINITY,
+            Number.MAX_SAFE_INTEGER + 1,
+            "10",
+            true,
+          ]) {
+            await expect(
+              job.wait({ timeoutMs: timeoutMs as number }),
+            ).rejects.toThrow("nonnegative safe integer");
+          }
+          await expect(job.wait({ timeout: 10 } as never)).rejects.toThrow(
+            "Unknown job wait option",
+          );
+          await expect(job.wait({ onProgress: 7 } as never)).rejects.toThrow(
+            "onProgress must be a function",
+          );
+          await expect(job.wait(10 as never)).rejects.toThrow("options object");
+          expect(requests).toBe(1);
+          await expect(job.wait({ timeoutMs: 0 })).rejects.toThrow("Timeout");
+        } finally {
+          clearTimeout(fallback);
+        }
+      },
+    );
+  });
+
+  test.each(["FAILED", "CANCELLED"])(
+    "preserves a %s outcome when a timeout is configured",
+    async (state) => {
+      await withMockDatabase(
+        (_request, res) => {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(
+            `{"job_id":"bounded-job","job_type":"compact","job_state":"${state}"}`,
+          );
+        },
+        async (db) => {
+          const job = await db.openJob("bounded-job");
+          await expect(job.wait({ timeoutMs: 1000 })).rejects.toThrow(
+            state === "FAILED" ? /failed/i : /cancelled/i,
+          );
+        },
+      );
+    },
+  );
+});

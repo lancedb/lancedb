@@ -92,7 +92,7 @@ import type { CompactionResult } from "@lancedb/lancedb";
 const job = await table.compactAsync({
   targetRowsPerFragment: 1000, batchSize: 128,
 });
-const result = await job.wait();
+const result = await job.wait({ timeoutMs: 600_000 });
 console.log(result.rowsSucceeded, result.fragmentsRemoved, result.fragmentsAdded);
 
 if (job.id !== null) {
@@ -100,6 +100,8 @@ if (job.id !== null) {
 }
 ```
 ```rust Rust
+use std::time::Duration;
+use lancedb::job::JobWaitOptions;
 use lancedb::table::{CompactionResult, optimize::CompactionOverrides};
 
 let job = table.compact_async(CompactionOverrides {
@@ -107,7 +109,9 @@ let job = table.compact_async(CompactionOverrides {
     batch_size: Some(128),
     ..Default::default()
 }).await?;
-let result = job.wait().await?;
+let result = job.wait_with_options(
+    JobWaitOptions::new().timeout(Duration::from_secs(600)),
+).await?;
 println!("Committed {} rows", result.rows_succeeded);
 
 if let Some(id) = job.id() {

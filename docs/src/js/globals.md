@@ -120,6 +120,7 @@
 - [JobFailureInfo](interfaces/JobFailureInfo.md)
 - [JobInfo](interfaces/JobInfo.md)
 - [JobProgress](interfaces/JobProgress.md)
+- [JobWaitOptions](interfaces/JobWaitOptions.md)
 - [ListingOptions](interfaces/ListingOptions.md)
 - [MaterializedViewDefinition](interfaces/MaterializedViewDefinition.md)
 - [MemtableStats](interfaces/MemtableStats.md)
