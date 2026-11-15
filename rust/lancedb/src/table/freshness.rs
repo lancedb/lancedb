@@ -3460,15 +3460,18 @@ mod tests {
     }
 
     #[rstest::rstest]
-    #[case::input_same_rows("body", "a", true)]
-    #[case::input_other_rows("body", "c", false)]
-    #[case::output_same_rows("search_text", "a", true)]
-    #[case::output_other_rows("search_text", "c", false)]
+    #[case::input_same_rows("body", "a", true, 1)]
+    #[case::input_other_rows("body", "c", false, 1)]
+    #[case::input_no_rows("body", "missing", false, 0)]
+    #[case::output_same_rows("search_text", "a", true, 1)]
+    #[case::output_other_rows("search_text", "c", false, 1)]
+    #[case::output_no_rows("search_text", "missing", false, 0)]
     #[tokio::test]
     async fn function_write_preserves_prior_invalidation(
         #[case] changed_column: &str,
         #[case] title: &str,
         #[case] dirty_product: bool,
+        #[case] expected_updated_rows: u64,
     ) {
         let table = fresh_function_table().await;
         let native = table.as_native().unwrap();
@@ -3489,14 +3492,20 @@ mod tests {
         );
         native.dataset.update(result.new_dataset.as_ref().clone());
 
-        table
+        let before_version = table.version().await.unwrap();
+        let update = table
             .update()
             .only_if(format!("title = '{title}'"))
             .column("spare", "1")
             .execute()
             .await
             .unwrap();
+        assert_eq!(update.rows_updated, expected_updated_rows);
         let dataset = native.dataset.get().await.unwrap();
+        if expected_updated_rows == 0 {
+            assert_eq!(update.version, before_version);
+            assert_eq!(dataset.version().version, before_version);
+        }
         let stale = function_plan(&dataset, "search_text").await;
         assert_eq!(stale.is_dirty(3), dirty_product, "{stale:?}");
         if !dirty_product {

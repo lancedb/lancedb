@@ -130,13 +130,14 @@ pub(crate) async fn execute_update(
     let operation = builder.build()?;
     let res = operation.execute().await?;
     let mut new_dataset = res.new_dataset.as_ref().clone();
-    if let Err(error) = super::freshness::preserve_function_freshness(
-        &mut new_dataset,
-        super::freshness::FunctionWrite::Update {
-            columns: &written_columns,
-        },
-    )
-    .await
+    if res.rows_updated > 0
+        && let Err(error) = super::freshness::preserve_function_freshness(
+            &mut new_dataset,
+            super::freshness::FunctionWrite::Update {
+                columns: &written_columns,
+            },
+        )
+        .await
     {
         log::warn!("update committed but Function freshness could not be preserved: {error}");
     }
