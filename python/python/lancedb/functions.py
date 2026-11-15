@@ -2124,11 +2124,12 @@ class _SourcePackager:
             if isinstance(value, numpy.generic):
                 item = emit(value.item())
                 return charge(f"{alias}.dtype({dtype}).type({item})", (item,))
+            if value.size == 0:
+                return charge(
+                    f"{alias}.array([], dtype={dtype}).reshape({value.shape!r})"
+                )
             elements = emit(value.tolist())
             source = f"{alias}.array({elements}, dtype={dtype})"
-            # Nested lists cannot spell an empty array of more than one dimension.
-            if value.size == 0 and value.ndim > 1:
-                source += f".reshape({value.shape!r})"
             return charge(source, (elements,))
 
         def emit_container(value: Any) -> str:

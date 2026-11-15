@@ -382,6 +382,36 @@ def test_arrow_and_structured_globals_are_captured(helper_package, kind):
     assert np.signbit(namespace["NUMPY"][-1][1])
 
 
+@pytest.mark.parametrize("kind", ["function", "class"])
+@pytest.mark.parametrize("shape", [(0,), (0, 3), (2, 0, 3), (500_000, 0)])
+def test_empty_numpy_captures_preserve_shape_without_expanding(
+    helper_package, kind, shape
+):
+    definition = (
+        "class empty_size:\n    def __call__(self, value: int) -> int:\n"
+        "        return value + EMPTY.size\n"
+        if kind == "class"
+        else "def empty_size(value: int) -> int:\n    return value + EMPTY.size\n"
+    )
+    module = helper_package(
+        "fx_empty_numpy_global",
+        {
+            "__init__.py": "import numpy as np\n"
+            f"EMPTY = np.empty({shape!r}, dtype='>i2')\n" + definition
+        },
+    )
+    source = artifact(function(module.empty_size))
+    assert len(source) < 1024
+    namespace = {}
+    exec(compile(source, "user_function.py", "exec"), namespace)
+    captured = namespace["EMPTY"]
+    assert captured.shape == shape
+    assert captured.dtype == module.EMPTY.dtype
+    assert captured.size == 0
+    call = namespace["empty_size"]() if kind == "class" else namespace["empty_size"]
+    assert call(7) == 7
+
+
 def test_captured_containers_are_copied_when_decorated(helper_package):
     module = helper_package(
         "fx_captured_copy",
