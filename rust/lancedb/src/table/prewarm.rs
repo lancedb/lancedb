@@ -44,6 +44,27 @@ impl PrewarmDataOptions {
     }
 }
 
+/// Reported outcome of a remote data-prewarm job. Counts describe executor work;
+/// absent measurements remain unknown rather than being inferred as zero.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct PrewarmDataResult {
+    /// Source snapshot captured by the submitted prewarm.
+    pub table_version: u64,
+    /// Reported executors targeted; unknown on older workers.
+    pub executors_targeted: Option<u64>,
+    /// Executors that reached a successful or partial terminal state.
+    pub executors_completed: Option<u64>,
+    /// Subset of completed executors that reported partial warming.
+    pub executors_partial: Option<u64>,
+    /// Reported fragments selected; unknown on older workers.
+    pub fragments_selected: Option<u64>,
+    /// Reported ranges completed; unknown on older workers.
+    pub ranges_completed: Option<u64>,
+    /// Reported bytes read; unknown on older workers.
+    pub bytes_read: Option<u64>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,25 +115,4 @@ mod tests {
                 .contains("only supported on remote tables")
         );
     }
-}
-
-/// Reported outcome of a remote data-prewarm job. Counts describe executor work;
-/// absent measurements remain unknown rather than being inferred as zero.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[non_exhaustive]
-pub struct PrewarmDataResult {
-    /// Source snapshot captured by the submitted prewarm.
-    pub table_version: u64,
-    /// Reported executors targeted; unknown on older workers.
-    pub executors_targeted: Option<u64>,
-    /// Executors that reached a successful or partial terminal state.
-    pub executors_completed: Option<u64>,
-    /// Subset of completed executors that reported partial warming.
-    pub executors_partial: Option<u64>,
-    /// Reported fragments selected; unknown on older workers.
-    pub fragments_selected: Option<u64>,
-    /// Reported ranges completed; unknown on older workers.
-    pub ranges_completed: Option<u64>,
-    /// Reported bytes read; unknown on older workers.
-    pub bytes_read: Option<u64>,
 }
