@@ -23,7 +23,7 @@ use lancedb::{
     connection::Connection as LanceConnection,
     connection::NamespaceClientPushdownOperation,
     database::namespace::LanceNamespaceDatabase,
-    database::{CreateTableMode, Database, ReadConsistency},
+    database::{CreateTableMode, Database, JobListFilter, JobListState, ReadConsistency},
     function::{GpuClass as LanceGpuClass, RefreshColumnResult},
     graph::PropertyGraphDefinition,
     materialized_view::CreateMaterializedViewBuilder,
@@ -1319,15 +1319,47 @@ impl Connection {
         ))
     }
 
-    #[pyo3(signature = (*, page_token=None, page_limit=None))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (*, page_token=None, page_limit=None, table=None, namespace_path=None, state=None, job_type=None, job_types=None, created_at_gte_millis=None, created_at_lt_millis=None))]
     pub fn list_jobs(
         &self,
         page_token: Option<String>,
         page_limit: Option<u32>,
+        table: Option<String>,
+        namespace_path: Option<Vec<String>>,
+        state: Option<String>,
+        job_type: Option<String>,
+        job_types: Option<Vec<String>>,
+        created_at_gte_millis: Option<i64>,
+        created_at_lt_millis: Option<i64>,
     ) -> PyResult<crate::listing::JobListing> {
+        if job_type.is_some() && job_types.is_some() {
+            return Err(PyValueError::new_err(
+                "set only one of job_type and job_types",
+            ));
+        }
+        let mut filter = JobListFilter::default();
+        filter.table = table;
+        filter.namespace_path = namespace_path.unwrap_or_default();
+        filter.state = state
+            .as_deref()
+            .map(|state| match state {
+                "in_progress" => Ok(JobListState::InProgress),
+                "succeeded" => Ok(JobListState::Succeeded),
+                "failed" => Ok(JobListState::Failed),
+                "canceled" => Ok(JobListState::Canceled),
+                "timed_out" => Ok(JobListState::TimedOut),
+                _ => Err(PyValueError::new_err(
+                    "state must be one of: in_progress, succeeded, failed, canceled, timed_out",
+                )),
+            })
+            .transpose()?;
+        filter.job_types = job_types.unwrap_or_else(|| job_type.into_iter().collect());
+        filter.created_at_gte_millis = created_at_gte_millis;
+        filter.created_at_lt_millis = created_at_lt_millis;
         Ok(crate::listing::JobListing::new(
             self.get_inner()?
-                .list_jobs(crate::listing::options(page_token, page_limit)),
+                .list_jobs_filtered(filter, crate::listing::options(page_token, page_limit)),
         ))
     }
 

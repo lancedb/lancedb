@@ -177,14 +177,51 @@ for info in db.list_jobs(page_limit=50):
 live `Job` handles. Open an ID to inspect its full record. `page_limit` bounds
 each server request, not the total yielded items, and `page_token` resumes a
 listing. It is a lazy iterator: iteration performs requests and can raise
-request errors. To materialize it, use `list(db.list_jobs(...))`; it does not
-support list indexing, `len()`, or a `.to_list()` method.
+request errors. Use `list(db.list_jobs(...))` to collect all remaining results;
+there is no `.to_list()` method.
 
-`Listing.num_page_results()` reports cached items remaining in the current
-page and `Listing.page_token()` reports the next request's token. Drain the
-cached items before saving that token, or resuming can skip them. A `None`
-token after the final page can coexist with unread cached items. A resumed
-listing is not a transactionally frozen view of jobs submitted in the meantime.
+<Note>
+Job filters and synchronous `Listing` indexing, slicing, and `len()` require
+a Python SDK release that includes these APIs. Older SDKs expose only
+`page_token` and `page_limit`; collect results with `list(...)` before indexing
+or counting them. Filtering also requires a matching Enterprise server that
+supports the requested filters.
+</Note>
+
+Filter jobs on the server before pagination with `table`, `state`, `job_type`
+or `job_types`, and creation-time bounds. `table` names a table in
+`namespace_path` (the root by default) and includes all its branches. Requests
+stay scoped to the connected database. Creation times are Unix milliseconds:
+`created_at_gte_millis` is inclusive and `created_at_lt_millis` is exclusive.
+Choose either `job_type` or `job_types`.
+
+The `state` filter uses registry states: `in_progress`, `succeeded`, `failed`,
+`canceled`, and `timed_out`. These differ from the SDK lifecycle labels such
+as `running` and `finished` returned in `JobInfo.state`.
+
+```python
+jobs = db.list_jobs(table="events", state="in_progress", page_limit=5)
+first_five = jobs[:5]
+for info in first_five:
+    print(info.job_id, info.state)
+```
+
+Synchronous indexing and slicing refer to the remaining results without
+consuming them. A bounded forward slice such as `jobs[:5]` fetches only enough
+pages to reach its stop. `len(jobs)` returns the remaining count by fetching
+and caching every remaining result. Negative indexes and open-ended or reverse
+slices also fetch and cache all remaining results. These operations can raise
+request errors; later iteration drains their cache. `AsyncListing` remains an
+async iterator: use `async for` to read it.
+
+`Listing.num_page_results()` reports cached items available without another
+request, including items retained by indexing, slicing, or counting.
+`Listing.page_token()` reports the next request's token. Drain all cached
+items before saving that token, or resuming can skip them. Resume with the same
+filters, for example `db.list_jobs(table="events", state="in_progress",
+page_token=saved_token, page_limit=5)`. A `None` token after the final page can
+coexist with unread cached items. A resumed listing is not a transactionally
+frozen view of jobs submitted in the meantime.
 
 `events.schema` describes the Arrow response. Use `events.to_pylist()` for
 Python row dictionaries. Common event columns are `event_seq` (int64), `state`
