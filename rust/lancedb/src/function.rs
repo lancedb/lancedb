@@ -1261,6 +1261,46 @@ impl FunctionBinding {
     }
 }
 
+/// One byte-bounded size tier of a Function refresh plan.
+///
+/// A row belongs to the first tier whose `max_row_bytes` admits its total
+/// descriptor payload size. The final tier has no upper bound and carries the
+/// largest configured worker class.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionRefreshTier {
+    /// Inclusive upper bound of the rows this tier admits. `None` on the last
+    /// tier, which also serves rows larger than every configured class.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_row_bytes: Option<u64>,
+    /// Worker resource class selected for this tier.
+    pub worker_class: String,
+    /// Worker container memory limit for `worker_class`.
+    pub worker_memory_bytes: u64,
+    /// Logical UDF executor budget derived from the worker limit.
+    pub executor_budget_bytes: u64,
+    /// Byte target for one materialized Blob input batch on this tier.
+    pub batch_bytes: u64,
+    /// Rows assigned to this tier.
+    pub rows: u64,
+    /// Byte-bounded batches the assigned rows form at `batch_bytes`.
+    pub batches: u64,
+}
+
+/// Descriptor-derived tier plan for one Function refresh.
+///
+/// The plan is computed from Blob descriptor sizes before any payload read. It
+/// names the same worker classes the refresh supervisor uses for routing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionRefreshPlan {
+    /// Worker class the supervisor starts ordinary work on.
+    pub default_worker_class: String,
+    /// Row cap supplied through the `batch_size` override, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_size: Option<u32>,
+    /// Tiers ordered from the smallest to the largest worker class.
+    pub tiers: Vec<FunctionRefreshTier>,
+}
+
 /// Stable terminal result of an expression-backed or Function-backed column
 /// refresh [`crate::Job`].
 ///
@@ -1279,6 +1319,10 @@ pub struct RefreshColumnResult {
     /// Table version made visible by the refresh, when one was published.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub published_version: Option<u64>,
+    /// Descriptor-derived tier plan, when the refresh is Function-backed and
+    /// its inputs expose Blob descriptor sizes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<FunctionRefreshPlan>,
 }
 
 /// Which per-row errors [`crate::Table::function_errors`] lists. Every
@@ -1408,6 +1452,48 @@ impl RefreshColumnResult {
 }
 
 impl_json!(RefreshColumnResult);
+
+#[cfg(test)]
+mod refresh_result_tests {
+    use super::{FunctionRefreshPlan, FunctionRefreshTier, RefreshColumnResult};
+
+    fn result(plan: Option<FunctionRefreshPlan>) -> RefreshColumnResult {
+        RefreshColumnResult {
+            rows_assigned: 3,
+            rows_failed: 0,
+            rows_remaining: 0,
+            source_version: 7,
+            published_version: Some(8),
+            plan,
+        }
+    }
+
+    #[test]
+    fn absent_plan_stays_out_of_the_terminal_payload() {
+        let encoded = serde_json::to_value(result(None)).unwrap();
+        assert!(encoded.get("plan").is_none());
+    }
+
+    #[test]
+    fn descriptor_plan_round_trips_through_the_terminal_payload() {
+        let plan = FunctionRefreshPlan {
+            default_worker_class: "medium".to_string(),
+            batch_size: Some(1),
+            tiers: vec![FunctionRefreshTier {
+                max_row_bytes: None,
+                worker_class: "large".to_string(),
+                worker_memory_bytes: 16 << 30,
+                executor_budget_bytes: 11 << 30,
+                batch_bytes: 1 << 20,
+                rows: 3,
+                batches: 2,
+            }],
+        };
+        let encoded = serde_json::to_value(result(Some(plan.clone()))).unwrap();
+        let decoded: RefreshColumnResult = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.plan, Some(plan));
+    }
+}
 
 #[cfg(test)]
 mod conda_environment_tests {
