@@ -64,6 +64,10 @@ _SIGMA_SPLIT_PRIME = 3000017
 
 DEFAULT_READ_BATCH_SIZE = 64
 DEFAULT_PREFETCH_BATCHES = 4
+# 8 blocks of the recommended block_size=512 give max_shuffle_distance 4,096,
+# which matched 1-phase validation loss in GPT-2 pretraining; S3 throughput
+# was flat across window sizes.
+DEFAULT_WINDOW_BLOCKS = 8
 
 
 def _build_bounded_permutation(n: int, max_distance: int, seed: int) -> np.ndarray:
@@ -590,7 +594,12 @@ class StreamingDataset(IterableDataset):
         is set, sparse takes of just the live rows) rather than one row-id
         take per row, which is far cheaper on object storage.  ``None`` (the
         default) uses 1-phase shuffling, which permutes every row
-        individually up front.  If
+        individually up front.  512 is a good starting point: 128-2,048
+        matched 1-phase validation loss in GPT-2 pretraining, and S3
+        throughput was flat from 128 to 65,536.  Throughput comes from
+        reading many splits in parallel, so use DataLoader workers (and
+        ``num_splits`` of at least the worker count); with no workers,
+        2-phase can be slower than 1-phase.  If
         ``block_size`` doesn't evenly divide the (live) row count, the
         trailing partial block is discarded rather than read as an
         undersized final block; likewise, if the block count doesn't evenly
@@ -599,7 +608,8 @@ class StreamingDataset(IterableDataset):
     window_blocks:
         Number of blocks kept in RAM per split at once in 2-phase mode.
         Larger windows shuffle across more rows at the cost of more memory;
-        must be at least 1.  Requires ``block_size``.  Defaults to 4.
+        must be at least 1.  Requires ``block_size``.  Defaults to
+        ``DEFAULT_WINDOW_BLOCKS`` (8).
     max_shuffle_distance:
         Bounds how far, in rows, 2-phase shuffling may displace a row from
         its position in unshuffled (block, then row) order.  Requires
@@ -1128,7 +1138,9 @@ class StreamingDataset(IterableDataset):
             # _TwoPhaseSplitReader) is derived from it so that a split
             # holds roughly window_blocks blocks in RAM at once. Passing
             # max_shuffle_distance explicitly overrides that derivation.
-            self._window_blocks = window_blocks if window_blocks is not None else 4
+            self._window_blocks = (
+                window_blocks if window_blocks is not None else DEFAULT_WINDOW_BLOCKS
+            )
             self._max_shuffle_distance = (
                 max_shuffle_distance
                 if max_shuffle_distance is not None

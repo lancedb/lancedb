@@ -3560,6 +3560,24 @@ def test_two_phase_respects_max_shuffle_distance(lance_table):
         )
 
 
+@pytest.mark.parametrize(
+    "kwargs,expected_window,expected_distance",
+    [
+        pytest.param({}, 8, 80, id="defaults"),
+        pytest.param({"window_blocks": 2}, 2, 20, id="window_override"),
+        pytest.param({"max_shuffle_distance": 15}, 8, 15, id="distance_override"),
+    ],
+)
+def test_two_phase_window_defaults(
+    lance_table, kwargs, expected_window, expected_distance
+):
+    ds = StreamingDataset(
+        lance_table, num_splits=1, shuffle_seed=SHUFFLE_SEED, block_size=10, **kwargs
+    )
+    assert ds._window_blocks == expected_window
+    assert ds._max_shuffle_distance == expected_distance
+
+
 def test_two_phase_filter_counts_live_rows(tmp_path):
     """block_size counts only rows passing filter; dead rows never appear."""
     db = lancedb.connect(tmp_path)
