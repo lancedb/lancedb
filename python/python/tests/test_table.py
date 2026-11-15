@@ -3448,7 +3448,8 @@ def test_merge_insert(mem_db: DBConnection):
         table.merge_insert("a")
         .when_matched_update_all()
         .when_not_matched_insert_all()
-        .execute(new_data, timeout=timedelta(seconds=10))
+        .use_index(False)
+        .execute(new_data, timeout=timedelta(seconds=10), retries=0)
     )
     assert merge_insert_res.version == 2
     assert merge_insert_res.num_inserted_rows == 1
@@ -3527,7 +3528,7 @@ def test_merge_insert(mem_db: DBConnection):
     # timeout
     with pytest.raises(Exception, match="merge insert timed out"):
         table.merge_insert("a").when_matched_update_all().execute(
-            new_data, timeout=timedelta(0)
+            new_data, timeout=timedelta(0), retries=255
         )
 
 

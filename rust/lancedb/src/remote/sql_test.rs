@@ -14,7 +14,6 @@ use arrow_flight::{
     FlightInfo, HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
 };
 use arrow_schema::{DataType, Field, Schema};
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures::stream::BoxStream;
 use futures::{StreamExt, TryStreamExt};
 use tonic::metadata::MetadataMap;
@@ -2919,25 +2918,54 @@ async fn remote_optimize_full_rejects_explicit_pruning_options() {
     assert_rejected_before_submission(None, None, Some(true)).await;
 }
 
+fn sql_listing_batch(column: &str, values: &[&str], token: Option<&str>) -> RecordBatch {
+    let mut columns: Vec<(&str, ArrayRef)> = Vec::new();
+    if column == "name" {
+        columns.push((
+            "namespace_path",
+            Arc::new(StringArray::from(vec![
+                r#"["team","reports"]"#;
+                values.len()
+            ])),
+        ));
+    }
+    columns.push((column, Arc::new(StringArray::from(values.to_vec()))));
+    let batch = RecordBatch::try_from_iter(columns).unwrap();
+    let metadata = token
+        .map(|token| HashMap::from([("lancedb.next_page_token".to_owned(), token.to_owned())]))
+        .unwrap_or_default();
+    let schema = Arc::new(batch.schema().as_ref().clone().with_metadata(metadata));
+    RecordBatch::try_new(schema, batch.columns().to_vec()).unwrap()
+}
+
 #[tokio::test]
-async fn remote_mv_listing_uses_scoped_sql_keyset_pagination() {
+async fn remote_mv_listing_uses_server_continuation_tokens() {
     for defer in [false, true] {
-        let result = RecordBatch::try_from_iter(vec![(
-            "name",
-            Arc::new(StringArray::from(vec!["a", "b'c", "z"])) as ArrayRef,
-        )])
-        .unwrap();
+        let token = "server'opaque:token";
+        let next_sql =
+            "SHOW MATERIALIZED VIEWS IN \"team$reports\" LIMIT 2 FROM 'server''opaque:token'";
         let service = TestSqlService {
             adaptive: true,
             defer,
-            result,
+            result_overrides: Arc::new(std::sync::Mutex::new(HashMap::from([
+                (
+                    "SHOW MATERIALIZED VIEWS IN \"team$reports\" LIMIT 2".to_owned(),
+                    sql_listing_batch("name", &["a", "b"], Some(token)),
+                ),
+                (next_sql.to_owned(), sql_listing_batch("name", &["z"], None)),
+            ]))),
             ..Default::default()
         };
         let statements = service.statements.clone();
         let headers = service.headers.clone();
-        let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
-        let db = RemoteDatabase::new_mock(|request| -> http::Response<String> {
-            panic!("unexpected REST request: {}", request.url().path());
+        let (client, shutdown) = start_sql_service_with_prefix(
+            service,
+            ClientConfig::default(),
+            Some("tenant/production"),
+        )
+        .await;
+        let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
+            panic!("unexpected REST request")
         })
         .with_sql_client(client);
         let namespace = vec!["team".to_owned(), "reports".to_owned()];
@@ -2948,41 +2976,31 @@ async fn remote_mv_listing_uses_scoped_sql_keyset_pagination() {
             )
             .await
             .unwrap();
-        assert_eq!(first.items, ["a", "b'c"]);
-        let token = first.page_token.unwrap();
-        db.list_materialized_views(
-            &namespace,
-            crate::listing::ListingOptions::default()
-                .page_limit(2)
-                .page_token(&token),
-        )
-        .await
-        .unwrap();
+        assert_eq!(first.items, ["a", "b"]);
+        assert_eq!(first.page_token.as_deref(), Some(token));
+        let second = db
+            .list_materialized_views(
+                &namespace,
+                crate::listing::ListingOptions::default()
+                    .page_limit(2)
+                    .page_token(first.page_token.unwrap()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(second.items, ["z"]);
+        assert!(second.page_token.is_none());
         assert_eq!(
             *statements.lock().unwrap(),
             [
-                "SHOW MATERIALIZED VIEWS LIMIT 3",
-                "SHOW MATERIALIZED VIEWS WHERE name > 'b''c' LIMIT 3"
+                "SHOW MATERIALIZED VIEWS IN \"team$reports\" LIMIT 2",
+                next_sql
             ]
         );
-        assert!(
-            headers
-                .lock()
-                .unwrap()
-                .iter()
-                .all(|header| header.namespace_path == "team$reports")
-        );
-        for (path, token) in [(vec![], token), (namespace, "invalid".into())] {
-            assert!(matches!(
-                db.list_materialized_views(
-                    &path,
-                    crate::listing::ListingOptions::default().page_token(token)
-                )
-                .await,
-                Err(Error::InvalidInput { .. })
-            ));
+        for header in headers.lock().unwrap().iter() {
+            assert_eq!(header.database, "analytics");
+            assert_eq!(header.database_prefix, "tenant/production");
+            assert_eq!(header.namespace_path, "team$reports");
         }
-        assert_eq!(statements.lock().unwrap().len(), 2);
         shutdown.send(()).unwrap();
     }
 }
@@ -3123,7 +3141,10 @@ async fn storage_integration_methods_use_sql_with_namespace_and_typed_metadata()
         let statements = statements.lock().unwrap();
         assert!(statements[0].contains("STORAGE_AWS_REGION = 'us-east-1'"));
         assert_eq!(statements[1], "DESCRIBE STORAGE INTEGRATION \"raw\"");
-        assert_eq!(statements[2], "SHOW STORAGE INTEGRATIONS");
+        assert_eq!(
+            statements[2],
+            "SHOW STORAGE INTEGRATIONS IN \"platform$aws\" LIMIT 1000"
+        );
         assert_eq!(statements[3], "DROP STORAGE INTEGRATION \"raw\"");
         assert!(statements[4].contains(
             "STORAGE_AWS_ACCESS_KEY_ID_SECRET = \"platform/raw\".\"credentials\".\"key\""
@@ -3171,6 +3192,38 @@ async fn function_creation_and_description_use_sql_query_handles() {
         version_json["max_concurrency"] = serde_json::json!(4);
         version_json["row_timeout_seconds"] = serde_json::json!(8.0);
         version_json["result_stability"] = serde_json::json!("input_and_context");
+        version_json["runtime"] = request_json["runtime"].clone();
+        version_json["resolved_environment"] = serde_json::json!({
+            "packages": [
+                {
+                    "name": "torch",
+                    "version": "2.9.0+cu130",
+                    "source": "https://packages.example/simple"
+                },
+                {
+                    "name": "transformers",
+                    "version": "4.57.1"
+                }
+            ],
+            "provenance": {
+                "configured_index_urls": ["https://packages.example/simple"],
+                "configured_find_links": [],
+                "resolved_indexes": ["https://packages.example/simple"],
+                "cuda_toolkit": "12.8",
+                "torch_version": "torch==2.9.0+cu130"
+            },
+            "warnings": [
+                "transformers resolved to transformers==4.57.1 but is not pinned exactly; add transformers==4.57.1 to pin it."
+            ]
+        });
+        version_json["resolved_environments"] = serde_json::json!({
+            "linux/amd64": {
+                "packages": [{"name": "torch", "version": "2.9.0+cu130"}]
+            },
+            "linux/arm64": {
+                "packages": []
+            }
+        });
         if with_models {
             let models = serde_json::json!([{
                 "repo": "sentence-transformers/all-MiniLM-L6-v2",
@@ -3217,6 +3270,17 @@ async fn function_creation_and_description_use_sql_query_handles() {
         assert_eq!(created.max_concurrency(), Some(4));
         assert_eq!(created.row_timeout_seconds(), Some(8.0));
         assert_eq!(created.result_stability(), Some("input_and_context"));
+        assert_eq!(created.runtime().unwrap().kind(), "python");
+        assert_eq!(
+            created.resolved_environment().unwrap().packages[0].version,
+            "2.9.0+cu130"
+        );
+        assert_eq!(created.resolved_environments().len(), 2);
+        assert!(
+            created.resolved_environments()["linux/arm64"]
+                .packages
+                .is_empty()
+        );
         // Assert the actual SQL body, after the same native JSON decode used
         // by the Python binding, rather than only the Python declaration.
         {
@@ -3241,6 +3305,23 @@ async fn function_creation_and_description_use_sql_query_handles() {
         assert_eq!(created_json["row_timeout_seconds"], 8.0);
         assert_eq!(created_json["result_stability"], "input_and_context");
         assert_eq!(
+            created_json["resolved_environment"]["packages"][0]["version"],
+            "2.9.0+cu130"
+        );
+        assert!(
+            created_json["resolved_environment"]["packages"][1]
+                .get("source")
+                .is_none()
+        );
+        assert_eq!(
+            created_json["resolved_environments"]["linux/amd64"]["packages"][0]["version"],
+            "2.9.0+cu130"
+        );
+        assert_eq!(
+            created_json["resolved_environments"]["linux/arm64"]["packages"],
+            serde_json::json!([])
+        );
+        assert_eq!(
             client.describe(id).await.unwrap().status,
             QueryStatus::Finished
         );
@@ -3253,6 +3334,19 @@ async fn function_creation_and_description_use_sql_query_handles() {
         assert_eq!(described.max_concurrency(), Some(4));
         assert_eq!(described.row_timeout_seconds(), Some(8.0));
         assert_eq!(described.result_stability(), Some("input_and_context"));
+        assert_eq!(described.runtime().unwrap().kind(), "python");
+        assert_eq!(
+            described
+                .resolved_environment()
+                .unwrap()
+                .provenance
+                .as_ref()
+                .unwrap()
+                .torch_version
+                .as_deref(),
+            Some("torch==2.9.0+cu130")
+        );
+        assert_eq!(described.resolved_environments().len(), 2);
         let described_json: serde_json::Value =
             serde_json::from_str(&described.to_canonical_json().unwrap()).unwrap();
         assert_eq!(described_json["image"].get("models"), expected_models);
@@ -3279,6 +3373,16 @@ async fn function_creation_and_description_use_sql_query_handles() {
             listed.items[0].result_stability(),
             Some("input_and_context")
         );
+        assert_eq!(listed.items[0].runtime().unwrap().kind(), "python");
+        assert_eq!(
+            listed.items[0]
+                .resolved_environment()
+                .unwrap()
+                .warnings
+                .len(),
+            1
+        );
+        assert_eq!(listed.items[0].resolved_environments().len(), 2);
         let listed_json: serde_json::Value =
             serde_json::from_str(&listed.items[0].to_canonical_json().unwrap()).unwrap();
         assert_eq!(listed_json["image"].get("models"), expected_models);
@@ -3289,6 +3393,58 @@ async fn function_creation_and_description_use_sql_query_handles() {
         let seen = statements.lock().unwrap();
         assert_eq!(seen[1], "DESCRIBE FUNCTION \"embed\" WITH (version = '1')");
         assert_eq!(seen[2], "DESCRIBE FUNCTION \"embed\"");
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn function_creation_refresh_lock_is_forwarded_only_when_true() {
+    const VERSION: &str = include_str!(
+        "../../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
+    );
+    const REQUEST: &str = include_str!(
+        "../../tests/fixtures/first_class_functions/v1/remote_function_registration_request.json"
+    );
+    for (refresh_lock, expect_field) in [(false, false), (true, true)] {
+        let mut request_json: serde_json::Value = serde_json::from_str(REQUEST).unwrap();
+        if refresh_lock {
+            request_json["refresh_lock"] = serde_json::json!(true);
+        }
+        let request =
+            crate::function::FunctionRegistrationRequest::from_json(&request_json.to_string())
+                .unwrap();
+        assert_eq!(request.refresh_lock, refresh_lock);
+        let result = RecordBatch::try_from_iter(vec![(
+            "definition",
+            Arc::new(StringArray::from(vec![VERSION.to_string()])) as ArrayRef,
+        )])
+        .unwrap();
+        let service = TestSqlService {
+            adaptive: true,
+            defer: false,
+            result,
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let db = RemoteDatabase::new_mock(|request| -> http::Response<String> {
+            panic!("unexpected REST request: {}", request.url().path());
+        })
+        .with_sql_client(client.clone());
+        let job = db.create_function_async(request, &[]).await.unwrap();
+        job.wait().await.unwrap();
+        let seen = statements.lock().unwrap();
+        let encoded = seen[0]
+            .strip_prefix(r#"CREATE FUNCTION "normalize_score" FROM '"#)
+            .unwrap()
+            .strip_suffix('\'')
+            .unwrap();
+        let sent: serde_json::Value = serde_json::from_str(&encoded.replace("''", "'")).unwrap();
+        assert_eq!(sent.get("refresh_lock").is_some(), expect_field);
+        if expect_field {
+            assert_eq!(sent["refresh_lock"], serde_json::json!(true));
+        }
+        drop(seen);
         shutdown.send(()).unwrap();
     }
 }
@@ -3535,29 +3691,20 @@ async fn secret_description_uses_the_sql_metadata_projection() {
 }
 
 #[tokio::test]
-async fn secret_listing_uses_bounded_sql_and_scoped_cursors() {
+async fn secret_listing_uses_server_continuation_tokens() {
     for defer in [false, true] {
-        let first_result = RecordBatch::try_from_iter(vec![(
-            "name",
-            Arc::new(StringArray::from(vec!["api-key", "hf'prod", "openai-prod"])) as ArrayRef,
-        )])
-        .unwrap();
-        let second_result = RecordBatch::try_from_iter(vec![(
-            "name",
-            Arc::new(StringArray::from(vec!["openai-prod"])) as ArrayRef,
-        )])
-        .unwrap();
-        let result_overrides = Arc::new(std::sync::Mutex::new(HashMap::from([
-            ("SHOW SECRETS LIMIT 3".to_string(), first_result),
-            (
-                "SHOW SECRETS WHERE name > 'hf''prod' LIMIT 3".to_string(),
-                second_result,
-            ),
-        ])));
+        let token = "server'opaque:token";
+        let next_sql = "SHOW SECRETS IN \"team$reports\" LIMIT 2 FROM 'server''opaque:token'";
         let service = TestSqlService {
             adaptive: true,
             defer,
-            result_overrides,
+            result_overrides: Arc::new(std::sync::Mutex::new(HashMap::from([
+                (
+                    "SHOW SECRETS IN \"team$reports\" LIMIT 2".to_owned(),
+                    sql_listing_batch("name", &["a", "b"], Some(token)),
+                ),
+                (next_sql.to_owned(), sql_listing_batch("name", &["z"], None)),
+            ]))),
             ..Default::default()
         };
         let statements = service.statements.clone();
@@ -3569,11 +3716,10 @@ async fn secret_listing_uses_bounded_sql_and_scoped_cursors() {
         )
         .await;
         let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
-            panic!("unexpected REST request");
+            panic!("unexpected REST request")
         })
         .with_sql_client(client);
         let namespace = vec!["team".to_owned(), "reports".to_owned()];
-
         let first = db
             .list_secrets(
                 &namespace,
@@ -3581,90 +3727,144 @@ async fn secret_listing_uses_bounded_sql_and_scoped_cursors() {
             )
             .await
             .unwrap();
-        assert_eq!(first.items, ["api-key", "hf'prod"]);
-        let token = first.page_token.expect("a third row must produce a token");
-
+        assert_eq!(first.items, ["a", "b"]);
+        assert_eq!(first.page_token.as_deref(), Some(token));
         let second = db
             .list_secrets(
                 &namespace,
                 crate::listing::ListingOptions::default()
                     .page_limit(2)
-                    .page_token(&token),
+                    .page_token(first.page_token.unwrap()),
             )
             .await
             .unwrap();
-        assert_eq!(second.items, ["openai-prod"]);
+        assert_eq!(second.items, ["z"]);
         assert!(second.page_token.is_none());
-
         assert_eq!(
             *statements.lock().unwrap(),
-            [
-                "SHOW SECRETS LIMIT 3",
-                "SHOW SECRETS WHERE name > 'hf''prod' LIMIT 3"
-            ]
+            ["SHOW SECRETS IN \"team$reports\" LIMIT 2", next_sql]
         );
-        {
-            let headers = headers.lock().unwrap();
-            assert!(!headers.is_empty());
-            for header in headers.iter() {
-                assert_eq!(header.database, "analytics");
-                assert_eq!(header.database_prefix, "tenant/production");
-                assert_eq!(header.namespace_path, "team$reports");
-            }
+        for header in headers.lock().unwrap().iter() {
+            assert_eq!(header.database, "analytics");
+            assert_eq!(header.database_prefix, "tenant/production");
+            assert_eq!(header.namespace_path, "team$reports");
         }
-
-        for (path, token) in [
-            (vec!["other".to_owned()], token),
-            (namespace.clone(), "invalid".to_owned()),
-        ] {
-            assert!(matches!(
-                db.list_secrets(
-                    &path,
-                    crate::listing::ListingOptions::default().page_token(token)
-                )
-                .await,
-                Err(Error::InvalidInput { .. })
-            ));
-        }
-        assert_eq!(statements.lock().unwrap().len(), 2);
         shutdown.send(()).unwrap();
     }
 }
 
 #[tokio::test]
-async fn secret_listing_handles_empty_pages_and_rejects_invalid_limits() {
-    let empty = RecordBatch::try_from_iter(vec![(
-        "name",
-        Arc::new(StringArray::from(Vec::<String>::new())) as ArrayRef,
-    )])
-    .unwrap();
+async fn storage_integration_listing_uses_server_continuation_tokens() {
+    for defer in [false, true] {
+        let token = "server'opaque:token";
+        let next_sql =
+            "SHOW STORAGE INTEGRATIONS IN \"team$reports\" LIMIT 2 FROM 'server''opaque:token'";
+        let service = TestSqlService {
+            adaptive: true,
+            defer,
+            result_overrides: Arc::new(std::sync::Mutex::new(HashMap::from([
+                (
+                    "SHOW STORAGE INTEGRATIONS IN \"team$reports\" LIMIT 2".to_owned(),
+                    sql_listing_batch("name", &["a", "b"], Some(token)),
+                ),
+                (next_sql.to_owned(), sql_listing_batch("name", &["z"], None)),
+            ]))),
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let headers = service.headers.clone();
+        let (client, shutdown) = start_sql_service_with_prefix(
+            service,
+            ClientConfig::default(),
+            Some("tenant/production"),
+        )
+        .await;
+        let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
+            panic!("unexpected REST request")
+        })
+        .with_sql_client(client);
+        let namespace = vec!["team".to_owned(), "reports".to_owned()];
+        let first = db
+            .list_storage_integrations(
+                &namespace,
+                crate::listing::ListingOptions::default().page_limit(2),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.items, ["a", "b"]);
+        assert_eq!(first.page_token.as_deref(), Some(token));
+        let second = db
+            .list_storage_integrations(
+                &namespace,
+                crate::listing::ListingOptions::default()
+                    .page_limit(2)
+                    .page_token(first.page_token.unwrap()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(second.items, ["z"]);
+        assert!(second.page_token.is_none());
+        assert_eq!(
+            *statements.lock().unwrap(),
+            [
+                "SHOW STORAGE INTEGRATIONS IN \"team$reports\" LIMIT 2",
+                next_sql
+            ]
+        );
+        for header in headers.lock().unwrap().iter() {
+            assert_eq!(header.database, "analytics");
+            assert_eq!(header.database_prefix, "tenant/production");
+            assert_eq!(header.namespace_path, "team$reports");
+        }
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn secret_listing_preserves_empty_continuations_and_validates_page_options() {
     let service = TestSqlService {
         adaptive: true,
         defer: true,
-        result: empty,
+        result_overrides: Arc::new(std::sync::Mutex::new(HashMap::from([
+            (
+                "SHOW SECRETS IN \"team$reports\" LIMIT 2".to_owned(),
+                sql_listing_batch("name", &[], Some("continue-empty")),
+            ),
+            (
+                "SHOW SECRETS IN \"team$reports\" LIMIT 2 FROM 'continue-empty'".to_owned(),
+                sql_listing_batch("name", &["last"], None),
+            ),
+        ]))),
         ..Default::default()
     };
     let statements = service.statements.clone();
     let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
     let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
-        panic!("unexpected REST request");
+        panic!("unexpected REST request")
     })
     .with_sql_client(client);
     let namespace = vec!["team".to_owned(), "reports".to_owned()];
-
     let page = db
         .list_secrets(
             &namespace,
-            crate::listing::ListingOptions::default()
-                .page_limit(2)
-                .page_token(""),
+            crate::listing::ListingOptions::default().page_limit(2),
         )
         .await
         .unwrap();
     assert!(page.items.is_empty());
-    assert!(page.page_token.is_none());
-
-    for limit in [0, i32::MAX as u32 + 1] {
+    assert_eq!(page.page_token.as_deref(), Some("continue-empty"));
+    let last = db
+        .list_secrets(
+            &namespace,
+            crate::listing::ListingOptions::default()
+                .page_limit(2)
+                .page_token(page.page_token.unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(last.items, ["last"]);
+    assert!(last.page_token.is_none());
+    for limit in [10_001, u32::MAX] {
         assert!(matches!(
             db.list_secrets(
                 &namespace,
@@ -3674,12 +3874,29 @@ async fn secret_listing_handles_empty_pages_and_rejects_invalid_limits() {
             Err(Error::InvalidInput { .. })
         ));
     }
-    assert_eq!(*statements.lock().unwrap(), ["SHOW SECRETS LIMIT 3"]);
+    assert!(
+        db.list_secrets(
+            &namespace,
+            crate::listing::ListingOptions::default().page_token("")
+        )
+        .await
+        .is_err()
+    );
+    let zero = db
+        .list_secrets(
+            &namespace,
+            crate::listing::ListingOptions::default().page_limit(0),
+        )
+        .await
+        .unwrap();
+    assert!(zero.items.is_empty());
+    assert!(zero.page_token.is_none());
+    assert_eq!(statements.lock().unwrap().len(), 2);
     shutdown.send(()).unwrap();
 }
 
 #[tokio::test]
-async fn function_listing_uses_bounded_sql_and_scoped_version_cursors() {
+async fn function_listing_uses_server_tokens_for_numeric_revision_pages() {
     const VERSION: &str = include_str!(
         "../../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
     );
@@ -3689,74 +3906,65 @@ async fn function_listing_uses_bounded_sql_and_scoped_version_cursors() {
     let mut tenth: serde_json::Value = serde_json::from_str(VERSION).unwrap();
     tenth["version"] = serde_json::json!("10");
     let tenth = tenth.to_string();
-    let result = RecordBatch::try_from_iter(vec![(
-        "definition",
-        Arc::new(StringArray::from(vec![
-            VERSION,
-            second.as_str(),
-            tenth.as_str(),
-        ])) as ArrayRef,
-    )])
-    .unwrap();
-    let service = TestSqlService {
-        adaptive: true,
-        defer: true,
-        result,
-        ..Default::default()
-    };
-    service.result_overrides.lock().unwrap().insert(
-        "SHOW FUNCTIONS HISTORY WITH (limit = 3, include_definition = true, after_name = 'embed', after_version = '2')".into(),
-        RecordBatch::try_from_iter(vec![("definition", Arc::new(StringArray::from(vec![tenth.as_str()])) as ArrayRef)]).unwrap(),
-    );
-    let statements = service.statements.clone();
-    let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
-    let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
-        panic!("unexpected REST request");
-    })
-    .with_sql_client(client);
-    let first = db
-        .list_functions(
-            &["team".into()],
-            crate::listing::ListingOptions::default().page_limit(2),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        first
-            .items
-            .iter()
-            .map(|item| item.version())
-            .collect::<Vec<_>>(),
-        ["1", "2"]
-    );
-    let token = first.page_token.unwrap();
-    let second = db
-        .list_functions(
-            &["team".into()],
-            crate::listing::ListingOptions::default()
-                .page_limit(2)
-                .page_token(token.clone()),
-        )
-        .await
-        .unwrap();
-    assert_eq!(second.items.len(), 1);
-    assert_eq!(second.items[0].version(), "10");
-    assert!(second.page_token.is_none());
-    assert!(
-        db.list_functions(
-            &["other".into()],
-            crate::listing::ListingOptions::default()
-                .page_limit(2)
-                .page_token(token)
-        )
-        .await
-        .is_err()
-    );
-    let seen = statements.lock().unwrap();
-    assert_eq!(seen.len(), 2);
-    assert!(seen[0].starts_with("SHOW FUNCTIONS HISTORY WITH (limit = 3,"));
-    assert!(seen[1].contains("after_version = '2'"));
-    shutdown.send(()).unwrap();
+    for defer in [false, true] {
+        let service = TestSqlService {
+            adaptive: true,
+            defer,
+            result_overrides: Arc::new(std::sync::Mutex::new(HashMap::from([
+                (
+                    "SHOW FUNCTIONS HISTORY IN \"team\" LIMIT 2".to_owned(),
+                    sql_listing_batch("definition", &[VERSION, &second], Some("revision-cursor")),
+                ),
+                (
+                    "SHOW FUNCTIONS HISTORY IN \"team\" LIMIT 2 FROM 'revision-cursor'".to_owned(),
+                    sql_listing_batch("definition", &[&tenth], None),
+                ),
+            ]))),
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
+            panic!("unexpected REST request")
+        })
+        .with_sql_client(client);
+        let first = db
+            .list_functions(
+                &["team".into()],
+                crate::listing::ListingOptions::default().page_limit(2),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            first
+                .items
+                .iter()
+                .map(|item| item.version())
+                .collect::<Vec<_>>(),
+            ["1", "2"]
+        );
+        assert_eq!(first.page_token.as_deref(), Some("revision-cursor"));
+        let last = db
+            .list_functions(
+                &["team".into()],
+                crate::listing::ListingOptions::default()
+                    .page_limit(2)
+                    .page_token(first.page_token.unwrap()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(last.items.len(), 1);
+        assert_eq!(last.items[0].version(), "10");
+        assert!(last.page_token.is_none());
+        assert_eq!(
+            *statements.lock().unwrap(),
+            [
+                "SHOW FUNCTIONS HISTORY IN \"team\" LIMIT 2",
+                "SHOW FUNCTIONS HISTORY IN \"team\" LIMIT 2 FROM 'revision-cursor'"
+            ]
+        );
+        shutdown.send(()).unwrap();
+    }
 }
 
 #[tokio::test]
@@ -3864,29 +4072,20 @@ async fn view_drop_uses_a_repeatable_query_job() {
 }
 
 #[tokio::test]
-async fn view_listing_uses_bounded_sql_and_scoped_cursors() {
+async fn view_listing_uses_server_continuation_tokens() {
     for defer in [false, true] {
-        let first_result = RecordBatch::try_from_iter(vec![(
-            "name",
-            Arc::new(StringArray::from(vec!["adults", "hf'prod", "openai-prod"])) as ArrayRef,
-        )])
-        .unwrap();
-        let second_result = RecordBatch::try_from_iter(vec![(
-            "name",
-            Arc::new(StringArray::from(vec!["openai-prod"])) as ArrayRef,
-        )])
-        .unwrap();
-        let result_overrides = Arc::new(std::sync::Mutex::new(HashMap::from([
-            ("SHOW VIEWS LIMIT 3".to_string(), first_result),
-            (
-                "SHOW VIEWS WHERE name > 'hf''prod' LIMIT 3".to_string(),
-                second_result,
-            ),
-        ])));
+        let token = "server'opaque:token";
+        let next_sql = "SHOW VIEWS IN \"team$reports\" LIMIT 2 FROM 'server''opaque:token'";
         let service = TestSqlService {
             adaptive: true,
             defer,
-            result_overrides,
+            result_overrides: Arc::new(std::sync::Mutex::new(HashMap::from([
+                (
+                    "SHOW VIEWS IN \"team$reports\" LIMIT 2".to_owned(),
+                    sql_listing_batch("name", &["a", "b"], Some(token)),
+                ),
+                (next_sql.to_owned(), sql_listing_batch("name", &["z"], None)),
+            ]))),
             ..Default::default()
         };
         let statements = service.statements.clone();
@@ -3898,107 +4097,39 @@ async fn view_listing_uses_bounded_sql_and_scoped_cursors() {
         )
         .await;
         let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
-            panic!("unexpected REST request");
+            panic!("unexpected REST request")
         })
         .with_sql_client(client);
-        let connection = Connection::new(
-            Arc::new(db),
-            Arc::new(crate::embeddings::MemoryRegistry::new()),
-        );
         let namespace = vec!["team".to_owned(), "reports".to_owned()];
-
-        let first = connection
+        let first = db
             .list_views(
                 &namespace,
                 crate::listing::ListingOptions::default().page_limit(2),
             )
-            .next_page()
             .await
-            .unwrap()
             .unwrap();
-        assert_eq!(first.items, ["adults", "hf'prod"]);
-        let token = first.page_token.expect("a third row must produce a token");
-
-        let second = connection
+        assert_eq!(first.items, ["a", "b"]);
+        assert_eq!(first.page_token.as_deref(), Some(token));
+        let second = db
             .list_views(
                 &namespace,
                 crate::listing::ListingOptions::default()
                     .page_limit(2)
-                    .page_token(&token),
+                    .page_token(first.page_token.unwrap()),
             )
-            .next_page()
             .await
-            .unwrap()
             .unwrap();
-        assert_eq!(second.items, ["openai-prod"]);
+        assert_eq!(second.items, ["z"]);
         assert!(second.page_token.is_none());
-
         assert_eq!(
             *statements.lock().unwrap(),
-            [
-                "SHOW VIEWS LIMIT 3",
-                "SHOW VIEWS WHERE name > 'hf''prod' LIMIT 3"
-            ]
+            ["SHOW VIEWS IN \"team$reports\" LIMIT 2", next_sql]
         );
-        {
-            let headers = headers.lock().unwrap();
-            assert!(!headers.is_empty());
-            for header in headers.iter() {
-                assert_eq!(header.database, "analytics");
-                assert_eq!(header.database_prefix, "tenant/production");
-                assert_eq!(header.namespace_path, "team$reports");
-            }
+        for header in headers.lock().unwrap().iter() {
+            assert_eq!(header.database, "analytics");
+            assert_eq!(header.database_prefix, "tenant/production");
+            assert_eq!(header.namespace_path, "team$reports");
         }
-
-        let encode_token =
-            |kind: &str, database: &str, prefix: Option<&str>, path: &[String], last: &str| {
-                URL_SAFE_NO_PAD.encode(
-                    serde_json::to_vec(&(kind, database, prefix, path.to_vec(), last)).unwrap(),
-                )
-            };
-        for forged in [
-            encode_token(
-                "secret",
-                "analytics",
-                Some("tenant/production"),
-                &namespace,
-                "hf'prod",
-            ),
-            encode_token(
-                "view",
-                "billing",
-                Some("tenant/production"),
-                &namespace,
-                "hf'prod",
-            ),
-            encode_token("view", "analytics", Some("other"), &namespace, "hf'prod"),
-            encode_token(
-                "view",
-                "analytics",
-                Some("tenant/production"),
-                &["other".to_owned()],
-                "hf'prod",
-            ),
-            "not-a-json-token".to_string(),
-        ] {
-            let mut listing = connection.list_views(
-                &namespace,
-                crate::listing::ListingOptions::default().page_token(forged),
-            );
-            assert!(matches!(
-                listing.next_page().await,
-                Err(Error::InvalidInput { .. })
-            ));
-        }
-        let mut listing = connection.list_views(
-            &["other".to_owned()],
-            crate::listing::ListingOptions::default().page_token(&token),
-        );
-        assert!(matches!(
-            listing.next_page().await,
-            Err(Error::InvalidInput { .. })
-        ));
-        assert_eq!(statements.lock().unwrap().len(), 2);
         shutdown.send(()).unwrap();
     }
 }

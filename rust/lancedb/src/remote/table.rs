@@ -20,7 +20,7 @@ use crate::error::{HttpErrorSource, RemoteErrorMetadata};
 use crate::expr::expr_to_sql_string;
 use crate::index::Index;
 use crate::index::IndexStatistics;
-use crate::index::scalar::FtsQuery;
+use crate::index::scalar::{FtsQuery, Operator};
 use crate::index::waiter::{MAX_WAIT, wait_for_index};
 use crate::job::Job;
 use crate::materialized_view::{MaterializedViewInfo, RefreshMaterializedViewResult};
@@ -1374,6 +1374,20 @@ impl<S: HttpSend> RemoteTable<S> {
                     "query": full_text_search.query.clone(),
                 });
             } else {
+                let has_and = match &full_text_search.query {
+                    FtsQuery::Match(query) => query.operator == Operator::And,
+                    FtsQuery::MultiMatch(query) => query
+                        .match_queries
+                        .iter()
+                        .any(|query| query.operator == Operator::And),
+                    _ => false,
+                };
+                if has_and {
+                    return Err(Error::NotSupported {
+                        message: "AND full-text queries require server version 0.3.0 or later"
+                            .into(),
+                    });
+                }
                 body["full_text_query"] = serde_json::json!({
                     "columns": full_text_search.columns().into_iter().collect::<Vec<_>>(),
                     "query": full_text_search.query.query(),
@@ -3707,7 +3721,17 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                     return Ok(merge_result);
                 }
                 Err(err) if rescannable && self.is_retryable_write_error(&err) => {
+                    let status = err.status_code();
                     retry_counter.increment_from_error(err)?;
+                    log::warn!(
+                        "Retrying merge insert {} after status {:?}; attempt {}",
+                        retry_counter.request_id,
+                        status.map(|s| s.as_u16()),
+                        u16::from(retry_counter.request_failures)
+                            + u16::from(retry_counter.connect_failures)
+                            + u16::from(retry_counter.read_failures)
+                            + 1,
+                    );
                     tokio::time::sleep(retry_counter.next_sleep_time()).await;
                     merge = merge.reset_state()?;
                     continue;

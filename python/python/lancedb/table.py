@@ -91,6 +91,7 @@ from .functions import (
 from .merge import LanceMergeInsertBuilder
 from .pydantic import LanceModel, model_to_dict
 from .query import (
+    FullTextOperator,
     AnalyzePlanDistributedMetrics,
     AsyncFTSQuery,
     AsyncHybridQuery,
@@ -138,6 +139,11 @@ def _requires_local_namespace_execution(query: Query) -> bool:
         or query.take_row_ids is not None
         or query.search_effort is not None
         or query.approx_mode is not None
+        or (
+            query.full_text_query is not None
+            and query.fast_search is True
+            and query.vector is None
+        )
     )
 
 
@@ -2443,6 +2449,8 @@ class Table(ABC):
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
         fast_search: Optional[bool] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search](https://lancedb.com/docs/search/vector-search/)
@@ -2505,6 +2513,10 @@ class Table(ABC):
 
             - If `query` is a string, then the query type is "vector" if the
             table has embedding functions else the query type is "fts"
+
+        operator: "AND" or "OR", optional
+            Combine terms in a string full-text query; the default is OR.
+            Use ``query_type="fts"`` when the table also has embeddings.
 
         Returns
         -------
@@ -2810,6 +2822,7 @@ class Table(ABC):
         new_data: DATA,
         on_bad_vectors: OnBadVectorsType,
         fill_value: float,
+        retries: Optional[int] = None,
     ) -> MergeResult: ...
 
     @abstractmethod
@@ -5060,6 +5073,8 @@ class LanceTable(Table):
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
         fast_search: Optional[bool] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> LanceVectorQueryBuilder: ...
 
     @overload
@@ -5071,6 +5086,8 @@ class LanceTable(Table):
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
         fast_search: Optional[bool] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> LanceFtsQueryBuilder: ...
 
     @overload
@@ -5084,6 +5101,8 @@ class LanceTable(Table):
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
         fast_search: Optional[bool] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> LanceHybridQueryBuilder: ...
 
     @overload
@@ -5095,6 +5114,8 @@ class LanceTable(Table):
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
         fast_search: Optional[bool] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> LanceEmptyQueryBuilder: ...
 
     def search(
@@ -5107,6 +5128,8 @@ class LanceTable(Table):
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
         fast_search: Optional[bool] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search](https://lancedb.com/docs/search/vector-search/)
@@ -5167,6 +5190,10 @@ class LanceTable(Table):
             If None then the search is performed on all indexed columns.
             For now, only one column can be searched at a time.
 
+        operator: "AND" or "OR", optional
+            Combine terms in a string full-text query; the default is OR.
+            Use ``query_type="fts"`` when the table also has embeddings.
+
         Returns
         -------
         LanceQueryBuilder
@@ -5192,6 +5219,7 @@ class LanceTable(Table):
             ordering_field_name=ordering_field_name,
             fts_columns=fts_columns or [],
             fast_search=fast_search,
+            operator=operator,
         )
 
     @classmethod
@@ -5443,9 +5471,10 @@ class LanceTable(Table):
         new_data: DATA,
         on_bad_vectors: OnBadVectorsType,
         fill_value: float,
+        retries: Optional[int] = None,
     ) -> MergeResult:
         return LOOP.run(
-            self._table._do_merge(merge, new_data, on_bad_vectors, fill_value)
+            self._table._do_merge(merge, new_data, on_bad_vectors, fill_value, retries)
         )
 
     @property
@@ -7374,6 +7403,8 @@ class AsyncTable:
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> AsyncQuery: ...
 
     @overload
@@ -7384,6 +7415,8 @@ class AsyncTable:
         query_type: Literal["auto"] = ...,
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> Union[AsyncHybridQuery, AsyncFTSQuery, AsyncVectorQuery]: ...
 
     @overload
@@ -7394,6 +7427,8 @@ class AsyncTable:
         query_type: Literal["hybrid"] = ...,
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> AsyncHybridQuery: ...
 
     @overload
@@ -7404,6 +7439,8 @@ class AsyncTable:
         query_type: Literal["auto"] = ...,
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> AsyncVectorQuery: ...
 
     @overload
@@ -7414,6 +7451,8 @@ class AsyncTable:
         query_type: Literal["fts"] = ...,
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> AsyncFTSQuery: ...
 
     @overload
@@ -7424,6 +7463,8 @@ class AsyncTable:
         query_type: Literal["vector"] = ...,
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> AsyncVectorQuery: ...
 
     async def search(
@@ -7435,6 +7476,8 @@ class AsyncTable:
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> Union[AsyncQuery, AsyncHybridQuery, AsyncFTSQuery, AsyncVectorQuery]:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search](https://lancedb.com/docs/search/vector-search/)
@@ -7478,12 +7521,20 @@ class AsyncTable:
             - If `query` is a string, then the query type is "vector" if the
               table has embedding functions else the query type is "fts"
 
+        operator: "AND" or "OR", optional
+            Combine terms in a string full-text query; the default is OR.
+            Use ``query_type="fts"`` when the table also has embeddings.
+
         Returns
         -------
         AsyncQuery, AsyncHybridQuery, AsyncFTSQuery, or AsyncVectorQuery
             A query builder object representing the query.
         """
 
+        if operator is not None:
+            operator = FullTextOperator(operator)
+            if not isinstance(query, str) or query_type not in ("auto", "fts"):
+                raise ValueError("operator requires a string full-text query")
         if query is None:
             return self.query()
 
@@ -7602,13 +7653,17 @@ class AsyncTable:
                 )
                 vector_query = await make_embedding(embedding_conf, query)
 
+        if operator is not None and query_type != "fts":
+            raise ValueError("operator requires a string full-text query")
         if query_type == "vector":
             builder = self.query().nearest_to(vector_query)
             if vector_column_name:
                 builder = builder.column(vector_column_name)
             return builder
         elif query_type == "fts":
-            return self.query().nearest_to_text(query, columns=fts_columns)
+            return self.query().nearest_to_text(
+                query, columns=fts_columns, operator=operator
+            )
         elif query_type == "hybrid":
             builder = self.query().nearest_to(vector_query)
             if vector_column_name:
@@ -7718,7 +7773,9 @@ class AsyncTable:
 
         if query.full_text_query:
             async_query = async_query.nearest_to_text(
-                query.full_text_query.query, query.full_text_query.columns
+                query.full_text_query.query,
+                query.full_text_query.columns,
+                operator=query.full_text_query.operator,
             )
 
         return async_query
@@ -7777,6 +7834,7 @@ class AsyncTable:
         new_data: DATA,
         on_bad_vectors: OnBadVectorsType,
         fill_value: float,
+        retries: Optional[int] = None,
     ) -> MergeResult:
         schema = await self.schema()
         if on_bad_vectors is None:
@@ -7808,6 +7866,7 @@ class AsyncTable:
                 use_rte=merge._use_rte,
                 validate_single_shard=merge._validate_single_shard,
             ),
+            retries=retries,
         )
 
     async def delete(self, where: Union[str, Expr]) -> DeleteResult:

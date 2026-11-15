@@ -238,6 +238,45 @@ pub enum ReadConsistency {
     Strong,
 }
 
+/// Registry lifecycle states accepted when filtering jobs.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobListState {
+    /// A job that has not reached a terminal state.
+    InProgress,
+    /// A job that completed successfully.
+    Succeeded,
+    /// A job that failed.
+    Failed,
+    /// A job that was canceled.
+    Canceled,
+    /// A job that exceeded its timeout.
+    TimedOut,
+}
+
+/// Server-side filters applied before job pagination.
+///
+/// Continuation tokens must be resumed with the same filters. Creation times
+/// are Unix timestamps in milliseconds; the lower bound is inclusive and the
+/// upper bound is exclusive.
+#[derive(Clone, Debug, Default)]
+#[non_exhaustive]
+pub struct JobListFilter {
+    /// Table name within `namespace_path`, including all its branches; absent means all tables.
+    pub table: Option<String>,
+    /// Namespace of `table`; requires a table name.
+    pub namespace_path: Vec<String>,
+    /// Registry state, such as `in_progress`, `succeeded`, or `failed`.
+    /// These are server states, rather than the labels in [`JobInfo::state`].
+    pub state: Option<JobListState>,
+    /// Include jobs of any of these types; empty means all types.
+    pub job_types: Vec<String>,
+    /// Inclusive creation-time lower bound.
+    pub created_at_gte_millis: Option<i64>,
+    /// Exclusive creation-time upper bound.
+    pub created_at_lt_millis: Option<i64>,
+}
+
 /// A row from [`Database::list_jobs`]: one server-side job (index build,
 /// compaction, column refresh, ...).
 #[derive(Debug, Clone)]
@@ -780,6 +819,14 @@ pub trait Database:
     /// Fetch one page of server-side jobs across the database's tables.
     async fn list_jobs(&self, _options: ListingOptions) -> Result<ListingPage<JobInfo>> {
         job_op_not_supported("list_jobs")
+    }
+    /// Fetch one page of jobs matching server-side filters.
+    async fn list_jobs_filtered(
+        &self,
+        _filter: JobListFilter,
+        _options: ListingOptions,
+    ) -> Result<ListingPage<JobInfo>> {
+        job_op_not_supported("list_jobs_filtered")
     }
     /// Request cancellation of a job by id. Returns true if the server
     /// accepted the cancellation, false if no such job exists. Cancelling an

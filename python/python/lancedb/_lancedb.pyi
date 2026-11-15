@@ -300,7 +300,19 @@ class Connection(object):
         page_limit: Optional[int] = None,
     ) -> NameListing: ...
     def list_jobs(
-        self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
+        self,
+        *,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+        table: Optional[str] = None,
+        namespace_path: Optional[List[str]] = None,
+        state: Optional[
+            Literal["in_progress", "succeeded", "failed", "canceled", "timed_out"]
+        ] = None,
+        job_type: Optional[str] = None,
+        job_types: Optional[List[str]] = None,
+        created_at_gte_millis: Optional[int] = None,
+        created_at_lt_millis: Optional[int] = None,
     ) -> JobListing: ...
     async def cancel_job(self, job_id: str) -> bool: ...
     async def pause_job(self, job_id: str) -> str: ...
@@ -565,6 +577,12 @@ class Table:
         allow_external_blob_outside_bases: bool = False,
         retries: Optional[int] = None,
     ) -> AddResult: ...
+    async def execute_merge_insert(
+        self,
+        data: pa.RecordBatchReader,
+        parameters: Dict[str, Any],
+        retries: Optional[int] = None,
+    ) -> MergeResult: ...
     async def update(
         self, updates: Dict[str, str], where: Optional[str]
     ) -> UpdateResult: ...
@@ -925,6 +943,7 @@ class FTSQuery:
     def add_query_vector(self, query_vec: pa.Array) -> None: ...
     def nearest_to(self, query_vec: pa.Array) -> HybridQuery: ...
     def order_by(self, ordering: Optional[List[ColumnOrdering]]): ...
+    async def count_rows(self) -> int: ...
     async def output_schema(self) -> pa.Schema: ...
     async def execute(
         self, max_batch_length: Optional[int], timeout: Optional[timedelta]

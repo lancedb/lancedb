@@ -542,6 +542,163 @@ describe("remote connection", () => {
     expect(attempts).toBe(scenario.attempts);
   });
 
+  it.each(
+    [409, 429, 502, 503, 504].flatMap((status) =>
+      [undefined, 0, 2].flatMap((retries) =>
+        [[], ["analytics", "features"]].map((namespacePath) => ({
+          status,
+          retries,
+          namespacePath,
+        })),
+      ),
+    ),
+  )("applies per-call merge retries: %j", async (scenario) => {
+    let attempts = 0;
+    const identifier = [...scenario.namespacePath, "items"].join("$");
+    const succeeds =
+      [409, 429].includes(scenario.status) && scenario.retries !== 0;
+    await withMockDatabase(
+      (req, res) => {
+        const url = new URL(req.url ?? "", "http://localhost");
+        if (url.pathname === `/v1/table/${identifier}/describe/`) {
+          res.writeHead(200).end(
+            JSON.stringify({
+              version: 1,
+              schema: {
+                fields: [
+                  { name: "id", type: { type: "int64" }, nullable: true },
+                ],
+              },
+            }),
+          );
+          return;
+        }
+        const chunks: Buffer[] = [];
+        req.on("data", (chunk) => chunks.push(chunk));
+        req.on("end", () => {
+          try {
+            expect(url.pathname).toBe(`/v1/table/${identifier}/merge_insert/`);
+            expect(url.searchParams.get("use_index")).toBe("false");
+            expect(req.headers["x-request-timeout-ms"]).toBe("10000");
+            // Rust compresses the batches; Arrow JS can inspect the schema without a codec.
+            const reader = RecordBatchReader.from(Buffer.concat(chunks)).open();
+            expect(reader.schema.fields.map((field) => field.name)).toEqual([
+              "id",
+            ]);
+          } finally {
+            attempts++;
+            res
+              .writeHead(attempts === 1 ? scenario.status : 200)
+              .end('{"version":2}');
+          }
+        });
+      },
+      async (db) => {
+        const table = await db.openTable("items", scenario.namespacePath);
+        const merge = table
+          .mergeInsert("id")
+          .whenNotMatchedInsertAll()
+          .useIndex(false);
+        const result = merge.execute([{ id: 1n }], {
+          timeoutMs: 10_000,
+          retries: scenario.retries,
+        });
+        if (succeeds) {
+          await expect(result).resolves.toMatchObject({ version: 2 });
+        } else {
+          await expect(result).rejects.toThrow();
+        }
+      },
+      {
+        clientConfig: {
+          retryConfig: {
+            retries: 3,
+            statuses: [409, 429, 502, 503, 504],
+            backoffFactor: 0,
+            backoffJitter: 0,
+          },
+        },
+      },
+    );
+    expect(attempts).toBe(succeeds ? 2 : 1);
+  });
+
+  it("isolates merge retry overrides across reused builders and reads", async () => {
+    let attempts = 0;
+    let readAttempts = 0;
+    await withMockDatabase(
+      (req, res) => {
+        if (req.url?.endsWith("/describe/")) {
+          res.writeHead(200).end(
+            JSON.stringify({
+              version: 1,
+              schema: {
+                fields: [
+                  { name: "id", type: { type: "int64" }, nullable: true },
+                ],
+              },
+            }),
+          );
+          return;
+        }
+        req.resume();
+        req.on("end", () => {
+          if (req.url?.endsWith("/count_rows/")) {
+            readAttempts++;
+            res.writeHead(readAttempts % 2 ? 429 : 200).end("1");
+          } else {
+            attempts++;
+            res
+              .writeHead([1, 2, 4, 6].includes(attempts) ? 429 : 200)
+              .end('{"version":2}');
+            expect(req.url).toContain("/merge_insert/");
+          }
+        });
+      },
+      async (db) => {
+        const table = await db.openTable("items");
+        const merge = table.mergeInsert("id").whenNotMatchedInsertAll();
+        for (const retries of [
+          -1,
+          256,
+          1.5,
+          Number.NaN,
+          Number.POSITIVE_INFINITY,
+        ]) {
+          await expect(
+            merge.execute([{ id: 1n }], { retries }),
+          ).rejects.toThrow("retries must be an integer between 0 and 255");
+        }
+        expect(attempts).toBe(0);
+        await expect(
+          merge.execute([{ id: 1n }], { retries: 0 }),
+        ).rejects.toThrow();
+        expect(attempts).toBe(1);
+        await expect(merge.execute([{ id: 1n }])).resolves.toMatchObject({
+          version: 2,
+        });
+        await expect(
+          merge.execute([{ id: 1n }], { retries: 255 }),
+        ).resolves.toMatchObject({ version: 2 });
+        expect(attempts).toBe(5);
+        await expect(table.countRows()).resolves.toBe(1);
+        expect(readAttempts).toBe(2);
+        await expect(
+          table
+            .mergeInsert("id")
+            .whenNotMatchedInsertAll()
+            .execute([{ id: 1n }]),
+        ).resolves.toMatchObject({ version: 2 });
+        expect(attempts).toBe(7);
+      },
+      {
+        clientConfig: {
+          retryConfig: { retries: 3, backoffFactor: 0, backoffJitter: 0 },
+        },
+      },
+    );
+  });
+
   it("should accept partial connection options", async () => {
     await connect("db://test", {
       apiKey: "fake",
@@ -2161,10 +2318,30 @@ describe("remote connection jobs surface", () => {
         queue_reason: "Waiting for Function worker capacity",
       });
     const descriptions = [
-      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"queue_reason":"Waiting for Function worker capacity","progress":${progress(20, 80, 3000, unknownFleet)}}`,
-      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"queue_reason":"Waiting for Function worker capacity","progress":${progress(20, 80, 2000, knownFleet)}}`,
-      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"queue_reason":"Waiting for Function worker capacity","progress":${progress(40, 60, 1000, unknownFleet)}}`,
-      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"DONE","creation_ms":1000,"result":{},"progress":${progress(60, 0, 0, unknownFleet)}}`,
+      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"queue_reason":"Waiting for Function worker capacity","progress":${progress(
+        20,
+        80,
+        3000,
+        unknownFleet,
+      )}}`,
+      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"queue_reason":"Waiting for Function worker capacity","progress":${progress(
+        20,
+        80,
+        2000,
+        knownFleet,
+      )}}`,
+      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"queue_reason":"Waiting for Function worker capacity","progress":${progress(
+        40,
+        60,
+        1000,
+        unknownFleet,
+      )}}`,
+      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"DONE","creation_ms":1000,"result":{},"progress":${progress(
+        60,
+        0,
+        0,
+        unknownFleet,
+      )}}`,
     ];
     let describeCount = 0;
 
@@ -2236,12 +2413,24 @@ describe("remote connection jobs surface", () => {
   it("does not derive ETA across a zero-rate, epoch, or pause boundary", async () => {
     const now = Date.now();
     const descriptions = [
-      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":100,"rows_computed":20,"rows_skipped":0,"rows_remaining":80,"fragments_planned":4,"execution_epoch":1,"sample_at_millis":${now - 5000}}}`,
-      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":100,"rows_computed":20,"rows_skipped":0,"rows_remaining":80,"fragments_planned":4,"execution_epoch":1,"sample_at_millis":${now - 4000}}}`,
-      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":100,"rows_computed":40,"rows_skipped":0,"rows_remaining":60,"fragments_planned":4,"execution_epoch":2,"sample_at_millis":${now - 3000}}}`,
-      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"phase":"initializing","progress":{"rows_planned":100,"rows_computed":60,"rows_skipped":0,"rows_remaining":40,"fragments_planned":4,"execution_epoch":2,"sample_at_millis":${now - 2000}}}`,
-      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"paused_at_millis":5000,"progress":{"rows_planned":100,"rows_computed":60,"rows_skipped":0,"rows_remaining":40,"fragments_planned":4,"execution_epoch":2,"sample_at_millis":${now - 1500}}}`,
-      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":100,"rows_computed":80,"rows_skipped":0,"rows_remaining":20,"fragments_planned":4,"execution_epoch":2,"sample_at_millis":${now - 1000}}}`,
+      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":100,"rows_computed":20,"rows_skipped":0,"rows_remaining":80,"fragments_planned":4,"execution_epoch":1,"sample_at_millis":${
+        now - 5000
+      }}}`,
+      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":100,"rows_computed":20,"rows_skipped":0,"rows_remaining":80,"fragments_planned":4,"execution_epoch":1,"sample_at_millis":${
+        now - 4000
+      }}}`,
+      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":100,"rows_computed":40,"rows_skipped":0,"rows_remaining":60,"fragments_planned":4,"execution_epoch":2,"sample_at_millis":${
+        now - 3000
+      }}}`,
+      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"phase":"initializing","progress":{"rows_planned":100,"rows_computed":60,"rows_skipped":0,"rows_remaining":40,"fragments_planned":4,"execution_epoch":2,"sample_at_millis":${
+        now - 2000
+      }}}`,
+      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"paused_at_millis":5000,"progress":{"rows_planned":100,"rows_computed":60,"rows_skipped":0,"rows_remaining":40,"fragments_planned":4,"execution_epoch":2,"sample_at_millis":${
+        now - 1500
+      }}}`,
+      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":100,"rows_computed":80,"rows_skipped":0,"rows_remaining":20,"fragments_planned":4,"execution_epoch":2,"sample_at_millis":${
+        now - 1000
+      }}}`,
     ];
 
     await withMockDatabase(
@@ -2417,6 +2606,7 @@ describe("lazy resource listings", () => {
             if (kind === "jobs") {
               expect(url.pathname).toBe("/v1/jobs/list");
               expect(request.body).toEqual({
+                database: "dev",
                 // biome-ignore lint/style/useNamingConvention: server wire format
                 page_token: token,
                 limit: 2,

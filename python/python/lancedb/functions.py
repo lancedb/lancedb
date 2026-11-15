@@ -29,13 +29,15 @@ import textwrap
 import types
 import warnings
 from collections.abc import Mapping, Sequence
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import (
     Annotated,
     Any,
     Callable,
     Literal,
+    NamedTuple,
     Optional,
     TYPE_CHECKING,
     Union,
@@ -98,6 +100,12 @@ def _validate_batch_size(value: Any) -> Optional[int]:
         raise ValueError("batch_size must be an integer")
     if not 1 <= value <= 2**32 - 1:
         raise ValueError("batch_size must be between 1 and 4294967295")
+    return value
+
+
+def _validate_refresh_lock(value: Any) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError("refresh_lock must be a boolean")
     return value
 
 
@@ -536,12 +544,130 @@ class PythonRuntimeSpec(_RemoteValue):
 
 
 class FunctionImage(_RemoteValue):
-    """A complete OCI Function image identified by its exact manifest digest."""
+    """A complete OCI Function image identified by its exact manifest digest.
+
+    ``describe()`` and the concise representation inspect the descriptor without
+    walking Pydantic model internals. Missing metadata is ``None`` (unknown).
+    The current service does not report image platforms, base image or byte size;
+    these cannot be inferred from the client's platform or the manifest digest.
+    The full descriptor remains available through ``descriptor``.
+    """
 
     manifest_digest: str
     descriptor: Mapping[str, Any]
     source: bool
     models: tuple[HuggingFaceModel, ...] = ()
+
+    def describe(self) -> dict[str, Any]:
+        """Return concise image details without fetching registry content.
+
+        ``requires_gpu`` reflects a ``lance.cuda`` requirement in a v1
+        descriptor, rather than promising compatibility with every GPU.
+        ``platforms``, ``base_image`` and ``size_bytes`` are unavailable from
+        the current wire contract and return ``None``.
+
+        Examples
+        --------
+        >>> print(fn.image.describe())  # doctest: +SKIP
+        """
+        python = self.descriptor.get("python")
+        requires = self.descriptor.get("requires")
+        capabilities = (
+            requires.get("capabilities") if isinstance(requires, Mapping) else None
+        )
+        known_capabilities = (
+            self.descriptor.get("format_version") == 1
+            and isinstance(capabilities, (list, tuple))
+            and all(isinstance(item, Mapping) for item in capabilities)
+        )
+        cuda = (
+            next(
+                (item for item in capabilities if item.get("type") == "lance.cuda"),
+                None,
+            )
+            if known_capabilities
+            else None
+        )
+        python_version = python.get("version") if isinstance(python, Mapping) else None
+        cuda_toolkit = cuda.get("cuda_toolkit") if cuda is not None else None
+        return {
+            "manifest_digest": self.manifest_digest,
+            "python_version": python_version
+            if isinstance(python_version, str)
+            else None,
+            "requires_gpu": cuda is not None if known_capabilities else None,
+            "cuda_toolkit": cuda_toolkit if isinstance(cuda_toolkit, str) else None,
+            "platforms": None,
+            "base_image": None,
+            "size_bytes": None,
+        }
+
+    def __repr_args__(self):
+        for name, value in self.describe().items():
+            if isinstance(value, str) and len(value) > 80:
+                value = value[:77] + "..."
+            yield name, value
+
+
+class ResolvedPackage(_RemoteValue):
+    """One installed Python distribution measured from a baked environment.
+
+    ``version`` is the complete version reported by package metadata,
+    including local labels such as ``+cu130``. ``source`` is present only when
+    the submitted lock retained a per-package source; absent means unknown, not
+    an inferred index.
+    """
+
+    name: str
+    version: str
+    source: Optional[str] = None
+
+
+class ResolvedEnvironmentProvenance(_RemoteValue):
+    """Sanitized source and accelerator provenance for a resolved environment.
+
+    ``configured_index_urls`` and ``configured_find_links`` record build
+    inputs. ``resolved_indexes`` records indexes visible in the submitted lock,
+    so a configured source is not by itself evidence that a package came from
+    it. Empty lists and absent fields remain absent; the client does not
+    synthesize them.
+    """
+
+    configured_index_urls: tuple[str, ...] = ()
+    configured_find_links: tuple[str, ...] = ()
+    resolved_indexes: tuple[str, ...] = ()
+    cuda_toolkit: Optional[str] = None
+    torch_version: Optional[str] = None
+
+
+class ResolvedEnvironment(_RemoteValue):
+    """Actual installed distributions and registration warnings for one platform.
+
+    A missing value means its measurement is unknown, not an empty
+    installed-package list. Versions are retained verbatim, including local
+    labels; package ``source`` is retained only when the producer recorded it.
+    """
+
+    packages: tuple[ResolvedPackage, ...]
+    provenance: Optional[ResolvedEnvironmentProvenance] = None
+    warnings: tuple[str, ...] = ()
+
+
+class FunctionEnvironment(NamedTuple):
+    """Requested and measured environment view for a Function version.
+
+    This is a view over
+    [FunctionVersion.runtime][lancedb.functions.FunctionVersion.runtime]
+    and
+    [FunctionVersion.resolved_environment][lancedb.functions.FunctionVersion.resolved_environment].
+    It adds no wire field and performs no second parse. ``requested`` is the
+    runtime specification supplied at registration; ``resolved`` is measured
+    data and is ``None`` when unknown. For per-platform multiarchitecture
+    measurements, use ``FunctionVersion.environment_report``.
+    """
+
+    requested: Optional[PythonRuntimeSpec]
+    resolved: Optional[ResolvedEnvironment]
 
 
 def _validate_object_version(value: str) -> str:
@@ -593,6 +719,17 @@ class FunctionVersion(_RemoteValue):
     ``result_stability`` retain the execution controls reported by the
     catalog. They are ``None`` for versions registered before the
     corresponding declaration.
+
+    ``runtime`` is the runtime specification requested at registration. It is
+    not evidence of what was installed. ``resolved_environment`` is measured
+    data for a single-platform image: actual package names and complete
+    versions, optional per-package source, provenance, and registration
+    warnings. ``resolved_environments`` is the corresponding map for a
+    multiarchitecture image, keyed by OCI ``os/architecture``. It is never
+    flattened into an aggregate package list. ``None`` or an empty map means
+    unknown data, not an empty installed environment. ``environment`` is a
+    convenience view with ``requested`` and ``resolved`` members over the same
+    fields.
     """
 
     name: str
@@ -613,6 +750,11 @@ class FunctionVersion(_RemoteValue):
     max_concurrency: Optional[int] = None
     row_timeout_seconds: Optional[float] = None
     result_stability: Optional[str] = None
+    runtime: Optional[PythonRuntimeSpec] = None
+    resolved_environment: Optional[ResolvedEnvironment] = None
+    resolved_environments: Mapping[str, ResolvedEnvironment] = Field(
+        default_factory=dict
+    )
 
     @field_validator("batch_size", mode="before")
     @classmethod
@@ -628,6 +770,24 @@ class FunctionVersion(_RemoteValue):
     @classmethod
     def _validate_row_timeout(cls, value):
         return _validate_row_timeout(value)
+
+    @property
+    def environment(self) -> FunctionEnvironment:
+        """Requested and measured environment without adding a second parser."""
+        return FunctionEnvironment(
+            requested=self.runtime,
+            resolved=self.resolved_environment,
+        )
+
+    @property
+    def environment_report(self) -> Mapping[str, ResolvedEnvironment]:
+        """Per-platform measured reports, keyed by OCI ``os/architecture``.
+
+        This is the same map as ``resolved_environments`` and is never
+        flattened. Single-platform images use ``resolved_environment`` instead;
+        an absent platform means its measurement is unknown.
+        """
+        return self.resolved_environments
 
     def __call__(self, **arguments: Any) -> FunctionApplication:
         """Bind this exact version to named table columns and constant inputs.
@@ -769,6 +929,9 @@ class FunctionRegistrationRequest(_RemoteValue):
     Credential values deliberately have no field here. The only secret-shaped
     thing a client sends is ``secret_bindings``: the name of a Secret the
     database already holds, which the remote service resolves at execution.
+    ``refresh_lock`` is a per-registration action, not part of the Function's
+    source or runtime identity; its false default is omitted from canonical
+    JSON.
     """
 
     name: str
@@ -781,6 +944,7 @@ class FunctionRegistrationRequest(_RemoteValue):
     retry_policy: Optional[FunctionRetryPolicy] = None
     secret_bindings: tuple[SecretBinding, ...] = ()
     models: tuple[HuggingFaceModel, ...] = ()
+    refresh_lock: bool = False
 
     @field_validator("batch_size", mode="before")
     @classmethod
@@ -796,6 +960,18 @@ class FunctionRegistrationRequest(_RemoteValue):
     @classmethod
     def _validate_row_timeout(cls, value):
         return _validate_row_timeout(value)
+
+    @field_validator("refresh_lock", mode="before")
+    @classmethod
+    def _validate_refresh_lock(cls, value):
+        return _validate_refresh_lock(value)
+
+    def with_refresh_lock(self, refresh_lock: bool) -> FunctionRegistrationRequest:
+        """Return this request with the registration-time refresh action set."""
+        refresh_lock = _validate_refresh_lock(refresh_lock)
+        if self.refresh_lock == refresh_lock:
+            return self
+        return self._copy(update={"refresh_lock": refresh_lock})
 
 
 class FunctionVersionRef(_OpenRemoteValue):
@@ -1043,6 +1219,7 @@ _GRAMMAR_PRIMITIVES = (
     (pa.date32(), "date32"),
     (pa.date64(), "date64"),
 )
+_FUNCTION_TIMEUNITS = ("s", "ms", "us", "ns")
 
 
 def _canonical_arrow_type(
@@ -1259,6 +1436,33 @@ def _exact_arrow_type(
     for candidate, name in _GRAMMAR_PRIMITIVES:
         if data_type == candidate:
             return {"type": name}
+    if pa.types.is_decimal128(data_type) or pa.types.is_decimal256(data_type):
+        return {
+            "type": (
+                "decimal128" if pa.types.is_decimal128(data_type) else "decimal256"
+            ),
+            "length": data_type.precision * 1000 + data_type.scale,
+        }
+    if pa.types.is_timestamp(data_type):
+        unit = data_type.unit
+        if unit not in _FUNCTION_TIMEUNITS:
+            raise TypeError(f"unsupported Function timestamp unit: {unit!r}")
+        timezone = data_type.tz
+        if timezone == "-":
+            raise TypeError(
+                "unsupported Function timestamp timezone: '-' is reserved for "
+                "no timezone"
+            )
+        if unit == "us" and timezone is None:
+            return {"type": "timestamp"}
+        return {"type": f"timestamp:{unit}:{timezone if timezone is not None else '-'}"}
+    if pa.types.is_duration(data_type):
+        unit = data_type.unit
+        if unit not in _FUNCTION_TIMEUNITS:
+            raise TypeError(f"unsupported Function duration unit: {unit!r}")
+        if unit == "us":
+            return {"type": "duration"}
+        return {"type": f"duration:{unit}"}
     if pa.types.is_struct(data_type):
         fields = list(data_type)
         names = [field.name for field in fields]
@@ -1314,8 +1518,29 @@ def _exact_arrow_type(
         if pa.types.is_fixed_size_list(data_type):
             value["length"] = data_type.list_size
         return value
-    if pa.types.is_map(data_type) and _data_type_has_blob_v2(data_type):
-        raise TypeError(_NESTED_BLOB_COLLECTION_ERROR)
+    if pa.types.is_map(data_type):
+        if data_type.keys_sorted:
+            raise TypeError(
+                "unsupported Arrow type for Function signature: map keys_sorted=true "
+                "is not supported"
+            )
+        key_field = data_type.key_field
+        if key_field.nullable or key_field.type != pa.string():
+            raise TypeError(
+                "unsupported Arrow type for Function signature: map keys must be "
+                "non-nullable utf8"
+            )
+        if _data_type_has_blob_v2(data_type):
+            raise TypeError(_NESTED_BLOB_COLLECTION_ERROR)
+        return {
+            "type": "map",
+            "fields": [
+                _exact_arrow_field(
+                    data_type.field(0),
+                    inside_collection=True,
+                )
+            ],
+        }
     raise TypeError(f"unsupported Arrow type for Function signature: {data_type}")
 
 
@@ -1344,9 +1569,15 @@ def _annotation_type(annotation: Any) -> tuple[pa.DataType, bool]:
             raise TypeError(
                 "Annotated Function types require exactly one PyArrow DataType"
             )
-        # A struct value is written as a dict, which has no Arrow type of its
-        # own; the Annotated metadata supplies it.
-        if base is dict or get_origin(base) is dict:
+        # A struct value is written as a dict, while Decimal and timedelta
+        # carry no precision or unit of their own; the Annotated metadata
+        # supplies those types.
+        if (
+            base is dict
+            or get_origin(base) is dict
+            or base is Decimal
+            or base is timedelta
+        ):
             base_nullable = False
         else:
             _, base_nullable = _annotation_type(base)
@@ -1372,7 +1603,21 @@ def _annotation_type(annotation: Any) -> tuple[pa.DataType, bool]:
     if annotation is date:
         return pa.date32(), nullable
     if annotation is datetime:
+        # Existing default: microsecond precision, no timezone. Other units
+        # and timezones require Annotated or an explicit schema.
         return pa.timestamp("us"), nullable
+    if annotation is Decimal:
+        raise TypeError(
+            "Decimal Function annotations require precision and scale; use "
+            "Annotated[Decimal, pyarrow.decimal128(precision, scale)], "
+            "Annotated[Decimal, pyarrow.decimal256(precision, scale)], or an "
+            "explicit schema"
+        )
+    if annotation is timedelta:
+        raise TypeError(
+            "timedelta Function annotations require an explicit unit; use "
+            "Annotated[timedelta, pyarrow.duration(unit)] or an explicit schema"
+        )
     if get_origin(annotation) is list:
         arguments = get_args(annotation)
         if len(arguments) != 1:
@@ -1381,6 +1626,21 @@ def _annotation_type(annotation: Any) -> tuple[pa.DataType, bool]:
         if value_nullable:
             raise TypeError("nullable Function list elements are not supported")
         return _list_of(value_type), nullable
+    if get_origin(annotation) is dict:
+        arguments = get_args(annotation)
+        if len(arguments) != 2:
+            raise TypeError(f"unsupported dict annotation: {annotation!r}")
+        key_type, value_annotation = arguments
+        if key_type is not str:
+            raise TypeError("Function map keys must be str")
+        value_type, value_nullable = _annotation_type(value_annotation)
+        return (
+            pa.map_(
+                pa.string(),
+                pa.field("value", value_type, nullable=value_nullable),
+            ),
+            nullable,
+        )
     raise TypeError(f"unsupported Function annotation: {annotation!r}")
 
 
@@ -2702,6 +2962,16 @@ def function(
     the registration. Every named-struct field may be nullable; Enterprise
     preserves the struct's validity when the result is expanded into sibling
     columns.
+    ``dict[str, T]`` declares an Arrow map with a non-nullable utf8 key; the
+    value is non-nullable for ``T`` and nullable for ``Optional[T]``. A bare
+    ``Decimal`` has no precision or scale; use
+    ``Annotated[Decimal, pyarrow.decimal128(precision, scale)]``,
+    ``Annotated[Decimal, pyarrow.decimal256(precision, scale)]``, or an
+    explicit schema. Bare ``datetime`` keeps its existing ``timestamp[us]`` default
+    without a timezone; other units and timezones require
+    ``Annotated[datetime, pyarrow.timestamp(unit, tz=...)]`` or an explicit
+    schema. A bare ``timedelta`` has no unit and is rejected; use
+    ``Annotated[timedelta, pyarrow.duration(unit)]`` or an explicit schema.
 
     **Large values.** A ``bytes`` parameter receives the whole value, which
     is held in memory with its row and counts against the server's per-row
@@ -2808,8 +3078,12 @@ def function(
     output_schema : pyarrow.DataType, pyarrow.Field, or pyarrow.Schema, optional
         Explicit scalar or named-struct output. A scalar field's ``nullable``
         flag is preserved; a top-level named-struct field and a Blob v2 output
-        must be non-nullable. Required for batch annotations. When omitted, the
-        output is inferred from the return annotation.
+        must be non-nullable. Map and decimal fields use canonical Arrow JSON;
+        a map key must be non-nullable utf8 and its value field keeps the
+        declared nullability. Temporal fields use canonical Arrow JSON; the
+        microsecond/no-timezone case keeps the legacy timestamp/duration shape.
+        Required for batch annotations. When omitted, the output is inferred
+        from the return annotation.
     pip : sequence of str, optional
         Pip requirements for the remote environment. Syntax is validated at
         decoration time, including extras and environment markers. Named direct
@@ -3009,6 +3283,7 @@ __all__ = [
     "FunctionArtifactContent",
     "FunctionArtifactRequest",
     "FunctionBinding",
+    "FunctionEnvironment",
     "FunctionOutput",
     "FunctionParameter",
     "FunctionRegistrationRequest",
@@ -3025,6 +3300,9 @@ __all__ = [
     "PythonEnvironmentSpec",
     "PythonAdapterSpec",
     "PythonRuntimeSpec",
+    "ResolvedEnvironment",
+    "ResolvedEnvironmentProvenance",
+    "ResolvedPackage",
     "RefreshColumnResult",
     "FunctionDefinition",
 ]

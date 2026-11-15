@@ -1,5 +1,5 @@
-This directory contains `rust/lance-linalg` from Lance tag `v15.0.0-beta.21`
-(commit `80bc45a195279befdec42853dac8d15a37e0504d`), licensed under Apache-2.0.
+This directory contains `rust/lance-linalg` from Lance tag `v15.0.0-beta.22`
+(commit `49e29d7beb885e42f3ab01fc9fc25b5281cef467`), licensed under Apache-2.0.
 
 LanceDB patches `src/distance/cosine.rs` to recompute FLOAT32 cosine distances
 in FLOAT64 when squared norms or dot products overflow or underflow. Ordinary

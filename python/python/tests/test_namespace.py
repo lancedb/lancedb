@@ -18,6 +18,7 @@ import lancedb
 from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
 from utils import start_server_thread
 from lancedb.listing import AsyncListing, Listing
+from lancedb.index import FTS
 from lancedb.materialized_view import DEFINITION_FORMAT, DEFINITION_META_KEY
 from lancedb.namespace import (
     _MAX_QUERY_K,
@@ -25,7 +26,7 @@ from lancedb.namespace import (
     LanceNamespaceDBConnection,
     _query_to_namespace_request,
 )
-from lancedb.query import Query
+from lancedb.query import FullTextSearchQuery, Query
 from lancedb.table import AsyncTable, LanceTable
 
 
@@ -1524,3 +1525,42 @@ def test_python_namespace_attribute_access(tmp_path):
     # Missing dunder lookups still raise, so copy/hasattr probes work.
     assert not hasattr(request, "__missing_dunder__")
     assert copy.deepcopy(request) == request
+
+
+@pytest.mark.parametrize("columns", [None, ["text"], ["title", "body"]])
+def test_namespace_fts_operator_is_preserved(columns):
+    request = _query_to_namespace_request(
+        ["matches"],
+        Query(
+            full_text_query=FullTextSearchQuery(
+                query="gripper closed", columns=columns, operator="AND"
+            )
+        ),
+    )
+    structured = request.to_dict()["full_text_query"]["structured_query"]["query"]
+    if columns and len(columns) > 1:
+        assert all(
+            query["operator"] == "And"
+            for query in structured["multi_match"]["match_queries"]
+        )
+    else:
+        assert structured["match"]["operator"] == "And"
+        assert structured["match"].get("column") == (columns[0] if columns else None)
+
+
+def test_namespace_fts_count_fast_search(tmp_path):
+    properties = {"root": str(tmp_path)}
+    db = lancedb.connect_namespace("dir", properties)
+    table = db.create_table("matches", pa.table({"text": ["gripper"] * 15}))
+    table.create_index("text", config=FTS())
+    table.add(pa.table({"text": ["gripper"] * 5}))
+    assert table.search("gripper", query_type="fts").fast_search().count_rows() == 15
+    pushed = lancedb.connect_namespace(
+        "dir", properties, namespace_client_pushdown_operations=["QueryTable"]
+    ).open_table("matches")
+    assert pushed.search("gripper", query_type="fts").count_rows() == 20
+    query = pushed.search("gripper", query_type="fts").fast_search()
+    assert query.use_rte(False).count_rows() == 15
+    query = pushed.search("gripper", query_type="fts").fast_search()
+    assert query.count_rows() == 15
+    assert len(query.limit(100).to_list()) == 15
