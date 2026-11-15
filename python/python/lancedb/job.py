@@ -310,9 +310,10 @@ class AsyncJob(Generic[T]):
         """
         if self._inner is None:
             return cast(T, None)
-        progress_obj, owns = _normalize_job_progress(
-            progress, query=self.job_type == "query"
+        query_progress = (
+            progress is not False and progress is not None and self.job_type == "query"
         )
+        progress_obj, owns = _normalize_job_progress(progress, query=query_progress)
         progress_callback = _job_progress_callback(progress_obj, self._enrich_progress)
         last_error = None
 
@@ -368,7 +369,7 @@ class AsyncJob(Generic[T]):
 
         wait_for_result = (
             observe_query
-            if self.job_type == "query" and progress_callback is not None
+            if query_progress and progress_callback is not None
             else wait_with_retries
         )
         try:

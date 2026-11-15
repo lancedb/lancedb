@@ -1099,13 +1099,16 @@ class DBConnection(EnforceOverrides):
         )
         ```
         """
-        return self.create_function_async(
+        job = self.create_function_async(
             definition,
             secrets=secrets,
             exist_ok=exist_ok,
             namespace_path=namespace_path,
             refresh_lock=refresh_lock,
-        ).wait(progress=progress)
+        )
+        if progress is False or progress is None:
+            return job.wait()
+        return job.wait(progress=progress)
 
     def create_function_async(
         self,

@@ -730,15 +730,19 @@ async def test_wait_progress_bar_tracks_late_planning_without_regressing(
 
 
 @pytest.mark.asyncio
-async def test_wait_progress_false_keeps_legacy_inner_wait_call():
+@pytest.mark.parametrize("progress", [False, None])
+async def test_wait_progress_false_keeps_legacy_inner_wait_call(progress):
     class NoProgressArgument:
         id = "job-legacy"
-        job_type = None
+
+        @property
+        def job_type(self):
+            raise AssertionError("quiet waits must not inspect progress metadata")
 
         async def wait(self):
             return None
 
-    assert await AsyncJob(NoProgressArgument()).wait(progress=False) is None
+    assert await AsyncJob(NoProgressArgument()).wait(progress=progress) is None
 
 
 class _RegistrationQuery:
@@ -909,6 +913,14 @@ def test_blocking_create_function_forwards_progress_to_registration_handle(
     connection.create_function_async.return_value.wait.assert_called_once_with(
         progress=progress
     )
+    assert result is connection.create_function_async.return_value.wait.return_value
+
+
+@pytest.mark.parametrize("progress", [False, None])
+def test_blocking_create_function_preserves_quiet_wait_call(progress):
+    connection = MagicMock()
+    result = DBConnection.create_function(connection, object(), progress=progress)
+    connection.create_function_async.return_value.wait.assert_called_once_with()
     assert result is connection.create_function_async.return_value.wait.return_value
 
 
