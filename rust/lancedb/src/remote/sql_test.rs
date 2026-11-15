@@ -4515,7 +4515,9 @@ async fn remote_prewarm_data_returns_the_durable_job_without_polling() {
                 .body(
                     serde_json::json!({
                 "job_id":"warming-job", "job_type":"prewarm_page_cache", "job_state":"DONE",
-                "creation_ms":1,"spec":{"table_version":42}})
+                "creation_ms":1,"spec":{"table_version":42},
+                "result":{"table_version":42,"executors_targeted":2,"executors_completed":2,"fragments_selected":4},
+                "operation_progress":{"phase":"reading","executors_completed":2}})
                     .to_string(),
                 )
                 .unwrap()
@@ -4724,7 +4726,9 @@ async fn remote_prewarm_wait_surfaces_warming_job_failure_or_cancellation() {
                 .body(
                     serde_json::json!({
                 "job_id":"warming-job","job_type":"prewarm_page_cache","job_state":state,
-                "creation_ms":1,"spec":{"table_version":42}})
+                "creation_ms":1,"spec":{"table_version":42},
+                "result":{"table_version":42,"executors_targeted":2,"executors_completed":2,"fragments_selected":4},
+                "operation_progress":{"phase":"reading","executors_completed":2}})
                     .to_string(),
                 )
                 .unwrap()

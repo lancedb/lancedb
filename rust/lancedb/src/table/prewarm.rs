@@ -50,6 +50,25 @@ mod tests {
     use arrow_schema::{DataType, Field, Schema};
     use std::sync::Arc;
 
+    #[test]
+    fn result_preserves_zero_partial_and_unknown_measurements() {
+        let result: PrewarmDataResult = serde_json::from_value(serde_json::json!({
+            "table_version":42,"executors_targeted":2,"executors_completed":2,
+            "executors_partial":1,"ranges_completed":0,"extra":"ignored",
+        }))
+        .unwrap();
+        assert_eq!(result.executors_partial, Some(1));
+        assert_eq!(result.ranges_completed, Some(0));
+        assert_eq!(result.bytes_read, None);
+        assert!(serde_json::from_value::<PrewarmDataResult>(serde_json::json!({})).is_err());
+        assert!(
+            serde_json::from_value::<PrewarmDataResult>(
+                serde_json::json!({"table_version":42,"bytes_read":-1})
+            )
+            .is_err()
+        );
+    }
+
     #[tokio::test]
     async fn local_table_rejects_durable_data_prewarm() {
         let db = crate::connect(&format!("memory://prewarm-{}", uuid::Uuid::new_v4()))
@@ -75,4 +94,25 @@ mod tests {
                 .contains("only supported on remote tables")
         );
     }
+}
+
+/// Reported outcome of a remote data-prewarm job. Counts describe executor work;
+/// absent measurements remain unknown rather than being inferred as zero.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct PrewarmDataResult {
+    /// Source snapshot captured by the submitted prewarm.
+    pub table_version: u64,
+    /// Reported executors targeted; unknown on older workers.
+    pub executors_targeted: Option<u64>,
+    /// Executors that reached a successful or partial terminal state.
+    pub executors_completed: Option<u64>,
+    /// Subset of completed executors that reported partial warming.
+    pub executors_partial: Option<u64>,
+    /// Reported fragments selected; unknown on older workers.
+    pub fragments_selected: Option<u64>,
+    /// Reported ranges completed; unknown on older workers.
+    pub ranges_completed: Option<u64>,
+    /// Reported bytes read; unknown on older workers.
+    pub bytes_read: Option<u64>,
 }

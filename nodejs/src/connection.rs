@@ -567,7 +567,12 @@ impl Connection {
     #[napi(catch_unwind)]
     pub async fn open_job(&self, job_id: String) -> napi::Result<crate::job::Job> {
         let job = self.get_inner()?.open_job(&job_id).await.default_error()?;
-        if job.job_type().as_deref() == Some("compact") {
+        if job.job_type().as_deref() == Some("prewarm_page_cache") {
+            Ok(crate::job::Job::new_typed(
+                job.into_typed::<lancedb::table::PrewarmDataResult>()
+                    .default_error()?,
+            ))
+        } else if job.job_type().as_deref() == Some("compact") {
             Ok(crate::job::Job::new_typed(
                 job.into_typed::<lancedb::table::CompactionResult>()
                     .default_error()?,

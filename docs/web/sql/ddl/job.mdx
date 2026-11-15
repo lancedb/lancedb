@@ -67,9 +67,23 @@ DESC JOB '<job_id>' [FORMAT TEXT | TABLE | JSON]
 ```
 </CodeGroup>
 
-Both spellings show a finished root job's timing profile. `TEXT` is the
-default; `TABLE` returns typed phase/step rows and `JSON` returns the
-profile as one document. A running job has no profile rows.
+`TEXT` is the default and shows a finished root job's timing profile;
+`TABLE` returns typed phase/step rows. These formats have no profile rows
+while a job runs.
+
+On compatible deployments, `JSON` returns one document in the `profile`
+column with `job_id`, `job_type`, `job_state`, reported `progress`, and the
+successful operation's `result`, alongside any timing profile. It works
+while the job runs, when `result` is null. Compaction counters describe
+committed work only in the result; progress counters describe observed
+execution work. Data prewarm results identify the pinned table version and
+reported executor work. Unavailable measurements remain absent or null.
+
+```sql
+DESCRIBE JOB '<job_id>' FORMAT JSON;
+```
+
+Older deployments return only the timing profile.
 
 ## SHOW ERRORS {#errors}
 

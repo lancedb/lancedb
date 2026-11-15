@@ -94,7 +94,8 @@ job = table.prewarm_data_async(
     ["video"], filter="quality > 0.7", concurrency=4
 )
 print(job.id)
-job.wait(timeout=timedelta(minutes=10))
+result = job.wait(timeout=timedelta(minutes=10), progress=print)
+print(result.table_version, result.executors_completed, result.fragments_selected)
 
 # Reattach in a later process using the same database connection settings.
 db.open_job(job.id).wait()
@@ -108,7 +109,8 @@ const job = await table.prewarmDataAsync({
   concurrency: 4,
 });
 console.log(job.id);
-await job.wait();
+const result = await job.wait(progress => console.log(progress));
+console.log(result.tableVersion, result.executorsCompleted);
 
 // Reattach using the same database connection settings.
 if (job.id !== null) {
@@ -118,7 +120,7 @@ if (job.id !== null) {
 </Tab>
 <Tab title="Rust">
 ```rust
-use lancedb::table::PrewarmDataOptions;
+use lancedb::table::{PrewarmDataOptions, PrewarmDataResult};
 
 let job = table
     .prewarm_data_async(
@@ -129,11 +131,12 @@ let job = table
     )
     .await?;
 println!("{:?}", job.id());
-job.wait().await?;
+let result = job.wait().await?;
+println!("Snapshot {}: {:?} executors completed", result.table_version, result.executors_completed);
 
 // Reattach using the same database connection settings.
 if let Some(id) = job.id() {
-    db.open_job(id).await?.wait().await?;
+    db.open_job(id).await?.into_typed::<PrewarmDataResult>()?.wait().await?;
 }
 ```
 </Tab>
@@ -145,6 +148,35 @@ reaches a terminal state; a timeout does not cancel the job. Use
 version. In Python's asynchronous API, await submission and `job.wait()`.
 Node exposes `table.prewarmDataAsync({ columns, filter, concurrency })` with
 the same lifecycle.
+
+Waiting returns a typed `PrewarmDataResult`: the pinned source version,
+selected fragment count, targeted/completed executor counts, and partial
+executor count when reported. Completed executors include partial completions;
+`executors_partial` is that subset, which can reflect cache pressure. These are observations of executor work, not a guarantee that every
+page remains resident. Counters omitted by older workers stay unknown.
+
+The current executor status protocol does not report byte/range measurements
+for nonempty prewarms, so `bytes_read` and `ranges_completed` are None/null there.
+A new worker performing an empty plan reports known zero work. Progress exposes
+planning/dispatch phases, selected fragments, executor fan-out, and the latest
+active/completed/partial/failed executor counts without inventing percentages.
+
+The Enterprise administrative CLI supports the same lifecycle:
+
+```bash
+lancedb admin cache prewarm data --profile production --table events \
+  --column payload --filter 'id >= 1000' --concurrency 4 \
+  --wait --wait-timeout-seconds 600 --poll-interval-seconds 5
+```
+
+SQL submission and preview use the same options. Submission returns a job ID
+and pinned source version; preview creates no job:
+
+```sql
+PREWARM WITH (concurrency = 4) AS SELECT payload FROM events WHERE id >= 1000;
+EXPLAIN PREWARM WITH (concurrency = 4) AS SELECT payload FROM events WHERE id >= 1000;
+DESCRIBE JOB '<job_id>' FORMAT JSON;
+```
 
 The filter is a single SQL predicate used for conservative metadata pruning.
 Unknown or unavailable metadata keeps data eligible for warming. Omitted

@@ -902,6 +902,10 @@ impl Connection {
                         job.into_typed::<RefreshColumnResult>().infer_error()?,
                     ))
                 }
+                Some("prewarm_page_cache") => Ok(crate::job::Job::new_typed(
+                    job.into_typed::<lancedb::table::PrewarmDataResult>()
+                        .infer_error()?,
+                )),
                 Some("compact") => Ok(crate::job::Job::new_typed(
                     job.into_typed::<lancedb::table::CompactionResult>()
                         .infer_error()?,

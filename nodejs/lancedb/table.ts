@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import { CompactionResult, decodeCompactionResult } from "./compaction";
+import { PrewarmDataResult, decodePrewarmDataResult } from "./prewarm";
 
 import {
   Table as ArrowTable,
@@ -610,7 +611,9 @@ export abstract class Table {
    * });
    * await job.wait();
    */
-  abstract prewarmDataAsync(options?: PrewarmDataOptions): Promise<Job>;
+  abstract prewarmDataAsync(
+    options?: PrewarmDataOptions,
+  ): Promise<Job<PrewarmDataResult>>;
 
   /**
    * Waits for asynchronous indexing to complete on the table.
@@ -1565,13 +1568,18 @@ export class LocalTable extends Table {
     await this.inner.prewarmData(columns);
   }
 
-  async prewarmDataAsync(options?: PrewarmDataOptions): Promise<Job> {
+  async prewarmDataAsync(
+    options?: PrewarmDataOptions,
+  ): Promise<Job<PrewarmDataResult>> {
     for (const key of Object.keys(options ?? {})) {
       if (!["columns", "filter", "concurrency"].includes(key)) {
         throw new Error(`Unsupported data prewarm option: ${key}`);
       }
     }
-    return new Job(await this.inner.prewarmDataAsync(options));
+    return new Job(
+      await this.inner.prewarmDataAsync(options),
+      decodePrewarmDataResult,
+    );
   }
 
   async waitForIndex(

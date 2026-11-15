@@ -1110,7 +1110,7 @@ Prewarm one or more columns of data in the table.
 ### prewarmDataAsync()
 
 ```ts
-abstract prewarmDataAsync(options?): Promise<Job<void>>
+abstract prewarmDataAsync(options?): Promise<Job<PrewarmDataResult>>
 ```
 
 Submit data prewarm through SQL and return its durable warming-job handle.
@@ -1132,7 +1132,7 @@ the job. After `job.refresh()`, `job.spec.table_version` is the pinned version.
 
 #### Returns
 
-`Promise`&lt;[`Job`](Job.md)&lt;`void`&gt;&gt;
+`Promise`&lt;[`Job`](Job.md)&lt;[`PrewarmDataResult`](../interfaces/PrewarmDataResult.md)&gt;&gt;
 
 #### Example
 

@@ -8097,6 +8097,17 @@ async def test_remote_data_prewarm_sql_receipt_and_durable_job(asynchronous, leg
                         "job_state": "DONE",
                         "creation_ms": 1,
                         "spec": {"table_version": 42},
+                        "result": {
+                            "table_version": 42,
+                            "executors_targeted": 2,
+                            "executors_completed": 2,
+                            "fragments_selected": 4,
+                        },
+                        "operation_progress": {
+                            "phase": "reading",
+                            "executors_completed": 2,
+                            "fragments_selected": 4,
+                        },
                     }
                 ).encode()
             )
@@ -8117,11 +8128,13 @@ async def test_remote_data_prewarm_sql_receipt_and_durable_job(asynchronous, leg
                 )
                 assert job.id == "warming-job"
                 assert not polls
-                assert await job.wait() is None
+                assert (await job.wait()).table_version == 42
                 await job.refresh()
                 assert job.spec["table_version"] == 42
                 reopened = await db.open_job(job.id)
-                assert await reopened.wait() is None
+                assert (await reopened.wait()).executors_completed == 2
+                assert (await job.progress())["executors_completed"] == 2
+                assert (await job.wait()).bytes_read is None
         else:
             db = lancedb.connect(**kwargs)
             table = db.create_table("test", [{"id": 1}])
@@ -8133,10 +8146,12 @@ async def test_remote_data_prewarm_sql_receipt_and_durable_job(asynchronous, leg
                 )
                 assert job.id == "warming-job"
                 assert not polls
-                assert job.wait() is None
+                assert job.wait().table_version == 42
                 job.refresh()
                 assert job.spec["table_version"] == 42
-                assert db.open_job(job.id).wait() is None
+                assert db.open_job(job.id).wait().executors_completed == 2
+                assert job.progress()["executors_completed"] == 2
+                assert job.wait().bytes_read is None
     assert len(server.tickets) == 1
     assert b"PREWARM" in server.tickets[0]
     if legacy:

@@ -48,6 +48,7 @@ from lancedb.index import (
     Bitmap,
     LabelList,
 )
+from lancedb.prewarm import PrewarmDataResult
 from lancedb.job import Job
 from lancedb.functions import (
     FunctionProvenance,
@@ -1470,7 +1471,7 @@ class RemoteTable(Table):
         *,
         filter: Optional[str] = None,
         concurrency: Optional[int] = None,
-    ) -> Job[None]:
+    ) -> Job[PrewarmDataResult]:
         return Job(
             LOOP.run(
                 self._table.prewarm_data_async(

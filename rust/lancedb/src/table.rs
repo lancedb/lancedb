@@ -88,7 +88,7 @@ pub mod merge;
 pub mod optimize;
 pub use optimize::CompactionResult;
 mod prewarm;
-pub use prewarm::PrewarmDataOptions;
+pub use prewarm::{PrewarmDataOptions, PrewarmDataResult};
 pub(crate) mod primary_key;
 pub mod query;
 pub mod refresh;
@@ -693,7 +693,10 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn prewarm_data(&self, columns: Option<Vec<String>>) -> Result<()>;
 
     /// Submit a data-cache prewarm and return its durable job handle.
-    async fn prewarm_data_async(&self, _options: PrewarmDataOptions) -> Result<Job> {
+    async fn prewarm_data_async(
+        &self,
+        _options: PrewarmDataOptions,
+    ) -> Result<Job<PrewarmDataResult>> {
         Err(Error::NotSupported {
             message: "data prewarm jobs are only supported on remote tables".into(),
         })
@@ -3159,8 +3162,8 @@ impl Table {
     /// The handle tracks the warming job, rather than the SQL submission. Use
     /// [`Job::wait`] to wait for warming to finish, or save [`Job::id`] and
     /// reopen it through [`crate::Connection::open_job`]. A wait timeout or
-    /// dropping the handle does not cancel the job. No terminal payload is
-    /// defined: waiting succeeds with `()`.
+    /// dropping the handle does not cancel the job. Waiting returns the reported
+    /// [`PrewarmDataResult`]; unavailable measurements remain `None`.
     ///
     /// Requires a compatible remote server with SQL PREWARM support and Flight
     /// SQL connectivity. Under Standard authorization, submission requires
@@ -3182,7 +3185,10 @@ impl Table {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn prewarm_data_async(&self, options: PrewarmDataOptions) -> Result<Job> {
+    pub async fn prewarm_data_async(
+        &self,
+        options: PrewarmDataOptions,
+    ) -> Result<Job<PrewarmDataResult>> {
         self.inner.prewarm_data_async(options).await
     }
 

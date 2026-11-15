@@ -4763,7 +4763,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(())
     }
 
-    async fn prewarm_data_async(&self, options: crate::table::PrewarmDataOptions) -> Result<Job> {
+    async fn prewarm_data_async(
+        &self,
+        options: crate::table::PrewarmDataOptions,
+    ) -> Result<Job<crate::table::PrewarmDataResult>> {
         if let Some(version) = *self.version.read().await {
             return Err(Error::NotSupported {
                 message: format!(
@@ -4794,7 +4797,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         }
         let (job_id, _table_version) = prewarm::receipt(&batches)?;
         // Construct lazily: submission must not require an HTTP status round trip.
-        Ok(Job::new(Box::new(RemoteJob::new(
+        Ok(Job::new_typed(Box::new(RemoteJob::new(
             self.client.clone(),
             job_id,
         ))))

@@ -4,6 +4,7 @@
 import { Table as ArrowTable, tableFromIPC } from "apache-arrow";
 import { decodeCompactionResult } from "./compaction";
 import { JobFailureInfo, Job as NativeJob } from "./native";
+import { decodePrewarmDataResult } from "./prewarm";
 
 /** Which of a job's events {@link Job.events} returns. */
 export interface JobEventsOptions {
@@ -40,6 +41,31 @@ export interface JobProgress {
   rows_remaining?: number | null;
   // biome-ignore lint/style/useNamingConvention: server wire format
   rows_failed?: number | null;
+  /** Maintenance work observations; rewritten rows are not committed rows. */
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  groups_planned?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  groups_completed?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  rows_rewritten?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  executors_targeted?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  executors_completed?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  executors_partial?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  executors_active?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  executors_failed?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  fragments_selected?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  ranges_completed?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  ranges_planned?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  bytes_read?: number | null;
   /** Execution identity and sample time used for client-side ETA derivation. */
   // biome-ignore lint/style/useNamingConvention: server wire format
   execution_epoch?: number | null;
@@ -81,9 +107,11 @@ export class Job<T = void> {
     this.inner = inner;
     this.resultDecoder =
       resultDecoder ??
-      (inner.jobType === "compact"
-        ? (decodeCompactionResult as (value: unknown) => T)
-        : undefined);
+      (inner.jobType === "prewarm_page_cache"
+        ? (decodePrewarmDataResult as (value: unknown) => T)
+        : inner.jobType === "compact"
+          ? (decodeCompactionResult as (value: unknown) => T)
+          : undefined);
   }
 
   /**

@@ -116,6 +116,8 @@ pub(super) struct DescribeJobResponse {
     #[serde(default)]
     pub(super) progress: Option<serde_json::Value>,
     #[serde(default)]
+    pub(super) operation_progress: Option<serde_json::Value>,
+    #[serde(default)]
     pub(super) phase: Option<String>,
     #[serde(default)]
     pub(super) queue_reason: Option<String>,
@@ -160,7 +162,7 @@ impl DescribeJobResponse {
             job_type: self.job_type,
             state: JobState::from(self.job_state.as_str()).client_label(),
             creation_ms: self.creation_ms,
-            progress: self.progress,
+            progress: self.operation_progress.or(self.progress),
             phase: self.phase,
             queue_reason: self.queue_reason,
             waiting_for_job_id: self.waiting_for_job_id,

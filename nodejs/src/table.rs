@@ -338,7 +338,7 @@ impl Table {
             .prewarm_data_async(options)
             .await
             .default_error()?;
-        Ok(crate::job::Job::new(job))
+        Ok(crate::job::Job::new_typed(job))
     }
 
     #[napi(catch_unwind)]

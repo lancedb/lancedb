@@ -294,6 +294,20 @@ See [manual compaction](/maintenance/compaction#enterprise-manual-compaction)
 for the option meanings, supported deployment and version requirements,
 authorization, job inspection, table defaults, and equivalent CLI/SDK examples.
 
+
+### Preview manual compaction
+
+```sql
+EXPLAIN OPTIMIZE events REWRITE DATA WITH (max_source_rows = 1000000);
+DESCRIBE JOB '<job_id>' FORMAT JSON;
+```
+
+The preview reports the selected source version, effective options, planned
+work and continuation using the worker's planner without submitting a job.
+`EXPLAIN ANALYZE` is unsupported. The JSON diagnostic includes reported progress
+and a successful job's committed result. See [Compaction](/maintenance/compaction#compaction-jobs)
+for durable SDK handles and CLI waiting.
+
 ## What to read next {#next}
 
 <CardGroup cols={2}>

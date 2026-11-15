@@ -2706,3 +2706,63 @@ describe("remote compaction job results", () => {
     },
   );
 });
+
+describe("data prewarm typed results", () => {
+  test.each([null, {}])(
+    "rejects a missing typed outcome (%p)",
+    async (result) => {
+      await withMockDatabase(
+        (_request, response) => {
+          response.writeHead(200, { "Content-Type": "application/json" });
+          response.end(
+            `{"job_id":"warming-job","job_type":"prewarm_page_cache","job_state":"DONE","result":${JSON.stringify(result)}}`,
+          );
+        },
+        async (db) => {
+          const job = await db.openJob("warming-job");
+          await expect(job.wait()).rejects.toThrow();
+        },
+      );
+    },
+  );
+
+  test.each([true, false])(
+    "reopens a result (counters=%s)",
+    async (counters) => {
+      await withMockDatabase(
+        (_request, response) => {
+          const result = JSON.parse(
+            counters
+              ? '{"table_version":42,"executors_targeted":2,"executors_completed":2,"fragments_selected":4}'
+              : '{"table_version":42}',
+          );
+          response.writeHead(200, { "Content-Type": "application/json" });
+          response.end(
+            JSON.stringify({
+              ["job_id"]: "warming-job",
+              ["job_type"]: "prewarm_page_cache",
+              ["job_state"]: "DONE",
+              progress: null,
+              ["operation_progress"]: {
+                phase: "reading",
+                ["executors_completed"]: 2,
+              },
+              result,
+            }),
+          );
+        },
+        async (db) => {
+          const job =
+            await db.openJob<import("../lancedb").PrewarmDataResult>(
+              "warming-job",
+            );
+          const result = await job.wait();
+          expect(result.tableVersion).toBe(42);
+          expect(result.executorsCompleted).toBe(counters ? 2 : null);
+          expect(result.bytesRead).toBeNull();
+          expect((await job.progress())?.executors_completed).toBe(2);
+        },
+      );
+    },
+  );
+});

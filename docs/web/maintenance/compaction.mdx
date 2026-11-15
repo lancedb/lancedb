@@ -165,7 +165,8 @@ lancedb admin table optimize --table events \
   --target-rows-per-fragment 100000 \
   --max-source-rows 1000000 \
   --io-buffer-size 67108864 \
-  --batch-size 1024
+  --batch-size 1024 \
+  --wait --wait-timeout-seconds 600 --poll-interval-seconds 5
 ```
 ```sql SQL icon="database"
 OPTIMIZE events REWRITE DATA WITH (
@@ -174,44 +175,6 @@ OPTIMIZE events REWRITE DATA WITH (
   io_buffer_size = 67108864,
   batch_size = 1024
 );
-```
-```python Python icon="python"
-options = {
-    "target_rows_per_fragment": 100_000,
-    "max_source_rows": 1_000_000,
-    "io_buffer_size": 64 * 1024 * 1024,
-    "batch_size": 1024,
-}
-stats = table.optimize(compaction_options=options)
-
-# With an AsyncTable, inside an async function:
-async def compact_async(async_table):
-    return await async_table.optimize(compaction_options=options)
-```
-```typescript TypeScript icon="js"
-const stats = await table.optimize({
-  compactionOptions: {
-    targetRowsPerFragment: 100_000,
-    maxSourceRows: 1_000_000,
-    ioBufferSize: 64 * 1024 * 1024,
-    batchSize: 1024,
-  },
-});
-```
-```rust Rust icon="rust"
-use lancedb::{Table, table::CompactionOverrides};
-
-async fn compact(table: &Table) -> lancedb::Result<()> {
-    let _stats = table
-        .compact(CompactionOverrides {
-            target_rows_per_fragment: Some(100_000),
-            max_source_rows: Some(1_000_000),
-            io_buffer_size: Some(64 * 1024 * 1024),
-            batch_size: Some(1024),
-        })
-        .await?;
-    Ok(())
-}
 ```
 </CodeGroup>
 
@@ -228,10 +191,14 @@ Add `--branch exp` to the Enterprise CLI's `admin table optimize` command or
 Without a branch, the job targets main. CLI and SQL validate the table and branch
 through the service catalog before creating a job.
 
-The call returns after durable submission, before the worker finishes. CLI and
-SQL expose a job ID; SDK compaction counts are placeholders rather than final
-worker metrics, and SDK calls do not currently return the job ID. Find SDK-submitted
-jobs with a table-scoped list, replacing `DATABASE` with the database name:
+SQL and the CLI without `--wait` return after durable submission. The
+job-returning SDK methods above preserve the ID and return committed statistics
+when waiting completes. The CLI's `--wait` polls the same durable job and prints
+its result. A timeout leaves the job running. Legacy remote `optimize()` still
+returns after acceptance with placeholder statistics.
+
+Find earlier submissions with a table-scoped list, replacing `DATABASE` with
+the database name:
 
 ```bash
 lancedb job list --db-name DATABASE --table-name events --job-type compact
@@ -258,6 +225,28 @@ remapping. Remote `optimize` does not prune old versions or optimize indexes;
 explicit pruning, index optimization, and unsupported non-default compaction
 settings are rejected. Cleanup continues through the deployment's separate
 [cleanup policy](/maintenance/cleanup).
+
+### Preview and inspect a run
+
+```sql
+EXPLAIN OPTIMIZE events REWRITE DATA WITH (
+  target_rows_per_fragment = 100000,
+  max_source_rows = 1000000
+);
+
+DESCRIBE JOB '<job_id>' FORMAT JSON;
+```
+
+The preview uses the execution planner to report the source version, resolved
+options, planned groups/fragments/rows, and whether more eligible work remains.
+It creates no job. Submission plans against its own snapshot, so concurrent
+writes can change the work after a preview. `EXPLAIN ANALYZE` is unsupported.
+
+JSON job diagnostics include reported maintenance progress and the completed
+operation result alongside the existing time profile. While a job runs, its
+result is null. SDK progress callbacks and CLI `--wait` expose the same worker
+observations: rewritten groups/rows are execution progress, not proof of a
+successful commit. Repeated task reports are counted once within an execution.
 
 ### Choose invocation settings {#compaction-invocation-options}
 
@@ -326,7 +315,7 @@ different budget; toggling automatic enablement alone does not reset backoff.
 
 SDKs forward supplied fields and leave inheritance to the server. An explicitly
 supplied SDK-default fragment target still overrides table tuning. Rust callers
-should use `Table::compact(CompactionOverrides)` for that distinction: the legacy
+should use `Table::compact_async(CompactionOverrides)` for that distinction: the legacy
 `OptimizeAction::Compact` path treats its default-valued Lance fragment target
 as unspecified because the options type has no presence bit.
 

@@ -142,10 +142,11 @@ indexes, and removes old table versions. LanceDB Enterprise schedules that work
 through separate background jobs and also accepts explicit compaction requests
 with compatible releases.
 
-Python sync/async `optimize()`, TypeScript `optimize()`, and Rust
-`Table::compact(CompactionOverrides)` submit durable compaction jobs and return
-after submission, before workers finish. Returned compaction counts are
-placeholders. Remote optimize does not prune versions or optimize indexes;
+Python sync/async `compact_async()`, TypeScript `compactAsync()`, and Rust
+`Table::compact_async(CompactionOverrides)` return durable compaction job handles;
+waiting returns the committed rewrite statistics. Legacy remote `optimize()`
+and Rust `Table::compact()` return after submission with placeholder counts.
+Remote optimize does not prune versions or optimize indexes;
 explicit requests for those unsupported operations are rejected. The synchronous
 Python `compact_files()` and `cleanup_old_versions()` helpers remain warning-only
 no-ops in LanceDB Enterprise.
