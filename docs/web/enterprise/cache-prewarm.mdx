@@ -160,6 +160,8 @@ for nonempty prewarms, so `bytes_read` and `ranges_completed` are None/null ther
 A new worker performing an empty plan reports known zero work. Progress exposes
 planning/dispatch phases, selected fragments, executor fan-out, and the latest
 active/completed/partial/failed executor counts without inventing percentages.
+In Python, `job.wait(progress=True)` displays completed executors. Pass a
+callback instead to inspect the full structured snapshots.
 
 The Enterprise administrative CLI supports the same lifecycle:
 

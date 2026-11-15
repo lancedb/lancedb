@@ -247,6 +247,8 @@ operation result alongside the existing time profile. While a job runs, its
 result is null. SDK progress callbacks and CLI `--wait` expose the same worker
 observations: rewritten groups/rows are execution progress, not proof of a
 successful commit. Repeated task reports are counted once within an execution.
+Python's `job.wait(progress=True)` displays rewritten rows; read the completion
+result for committed statistics.
 
 ### Choose invocation settings {#compaction-invocation-options}
 

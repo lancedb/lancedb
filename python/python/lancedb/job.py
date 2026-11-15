@@ -150,6 +150,19 @@ def _job_progress_callback(progress, enrich):
         planned = snapshot.get("rows_planned")
         remaining = snapshot.get("rows_remaining")
         computed = snapshot.get("rows_computed")
+        job_type = snapshot.get("job_type")
+        maintenance = job_type in ("compact", "prewarm_page_cache")
+        if job_type == "compact":
+            computed = snapshot.get("rows_rewritten")
+            remaining = None
+            if hasattr(progress, "unit"):
+                progress.unit = " rows"
+        elif job_type == "prewarm_page_cache":
+            planned = snapshot.get("executors_targeted")
+            computed = snapshot.get("executors_completed")
+            remaining = None
+            if hasattr(progress, "unit"):
+                progress.unit = " executors"
         if isinstance(planned, int):
             epoch = snapshot.get("execution_epoch")
             reset = (isinstance(last_planned, int) and planned < last_planned) or (
@@ -175,7 +188,7 @@ def _job_progress_callback(progress, enrich):
         if completed is not None:
             if isinstance(planned, int):
                 completed = min(completed, planned)
-            if first_snapshot and completed < last_rows:
+            if (first_snapshot or maintenance) and completed < last_rows:
                 # The server may have started a new execution while a
                 # caller-owned bar retained its old position.
                 last_rows = completed
@@ -289,6 +302,10 @@ class AsyncJob(Generic[T]):
         a caller-owned bar with the server's current completed rows and total;
         later observations in a stable execution epoch use a high-water mark. A
         new execution epoch or smaller plan resets the bar to that plan.
+        Maintenance jobs display reported rewritten rows or completed executors;
+        revised maintenance counters replace earlier retry observations. Totals
+        remain unknown until the server reports them. Rewritten rows describe
+        execution work, not committed compaction results.
         ``False`` preserves the original wait behavior.
 
         For SQL-backed Function registration, progress shows the query's
