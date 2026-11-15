@@ -10,6 +10,7 @@ through a namespace abstraction.
 
 from __future__ import annotations
 
+import json
 import sys
 import warnings
 from typing import Any, Dict, Iterable, List, Optional, Union
@@ -39,6 +40,9 @@ from lance_namespace_urllib3_client.models.query_table_request_vector import (
     QueryTableRequestVector,
 )
 from lance_namespace_urllib3_client.models.string_fts_query import StringFtsQuery
+from lance_namespace_urllib3_client.models.structured_fts_query import (
+    StructuredFtsQuery,
+)
 from lance_namespace.errors import (
     NamespaceNotEmptyError,
     NamespaceNotFoundError,
@@ -78,6 +82,7 @@ from lancedb.materialized_view import (
     SelectArg,
 )
 from lancedb.table import AsyncTable, LanceTable, Table
+from lancedb.query import MatchQuery, MultiMatchQuery, PhraseQuery
 from lancedb.util import validate_table_name
 from lancedb.common import DATA
 from lancedb.pydantic import LanceModel
@@ -177,6 +182,26 @@ def _query_to_namespace_request(
         if isinstance(fts_query, str):
             full_text_query_request = QueryTableRequestFullTextQuery(
                 string_query=StringFtsQuery(query=fts_query)
+            )
+        elif getattr(fts_query, "operator", None) is not None:
+            columns = fts_query.columns or []
+            text = fts_query.query
+            if len(text) >= 2 and text.startswith('"') and text.endswith('"'):
+                if len(columns) > 1:
+                    raise ValueError(
+                        "Phrase queries cannot be used with multiple columns."
+                    )
+                structured = PhraseQuery(text[1:-1], columns[0] if columns else None)
+            elif len(columns) > 1:
+                structured = MultiMatchQuery(text, columns, operator=fts_query.operator)
+            else:
+                structured = MatchQuery(
+                    text, columns[0] if columns else None, operator=fts_query.operator
+                )
+            full_text_query_request = QueryTableRequestFullTextQuery(
+                structured_query=StructuredFtsQuery.from_dict(
+                    {"query": json.loads(structured.to_json())}
+                )
             )
         elif hasattr(fts_query, "query"):
             full_text_query_request = QueryTableRequestFullTextQuery(
