@@ -1442,7 +1442,13 @@ class RemoteTable(Table):
         """
         return LOOP.run(self._table.prewarm_index(name))
 
-    def prewarm_data(self, columns: Optional[List[str]] = None) -> None:
+    def prewarm_data(
+        self,
+        columns: Optional[List[str]] = None,
+        *,
+        filter: Optional[str] = None,
+        concurrency: Optional[int] = None,
+    ) -> None:
         """Prewarm data for the table.
 
         This is a hint to the database that the given columns will be accessed
@@ -1462,8 +1468,19 @@ class RemoteTable(Table):
         ----------
         columns: list of str, optional
             The columns to prewarm. If None, all columns are prewarmed.
+        filter: str, optional
+            A single SQL predicate for conservative metadata pruning.
+        concurrency: int, optional
+            Positive per-executor warming concurrency; omitted uses the server default.
+
+        Examples
+        --------
+        >>> table.prewarm_data(  # doctest: +SKIP
+        ...     ["payload"], filter="quality > 0.7", concurrency=4)
         """
-        return LOOP.run(self._table.prewarm_data(columns))
+        return LOOP.run(
+            self._table.prewarm_data(columns, filter=filter, concurrency=concurrency)
+        )
 
     def prewarm_data_async(
         self,

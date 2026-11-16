@@ -2013,6 +2013,32 @@ class Table(ABC):
         """
         raise NotImplementedError("create_index is not supported for this table type")
 
+    def prewarm_data(
+        self,
+        columns: Optional[List[str]] = None,
+        *,
+        filter: Optional[str] = None,
+        concurrency: Optional[int] = None,
+    ) -> None:
+        """Submit remote data prewarm and return after acceptance.
+
+        Omitted or empty ``columns`` warm all fields. ``filter`` is a single
+        SQL predicate for conservative metadata pruning; ``concurrency`` is
+        a positive per-executor integer, or omitted for the server default.
+        The table handle supplies the namespace and branch. Requires a
+        compatible SQL PREWARM server and Flight SQL connectivity.
+
+        The operation continues in the background. Use
+        [prewarm_data_async][lancedb.table.Table.prewarm_data_async] to retain
+        the job handle and wait for completion.
+
+        Examples
+        --------
+        >>> table.prewarm_data(  # doctest: +SKIP
+        ...     ["payload"], filter="quality > 0.7", concurrency=4)
+        """
+        self.prewarm_data_async(columns, filter=filter, concurrency=concurrency)
+
     def prewarm_data_async(
         self,
         columns: Optional[List[str]] = None,
@@ -4909,7 +4935,13 @@ class LanceTable(Table):
         """
         return LOOP.run(self._table.prewarm_index(name))
 
-    def prewarm_data(self, columns: Optional[List[str]] = None) -> None:
+    def prewarm_data(
+        self,
+        columns: Optional[List[str]] = None,
+        *,
+        filter: Optional[str] = None,
+        concurrency: Optional[int] = None,
+    ) -> None:
         """
         Prewarm data for the table.
 
@@ -4930,8 +4962,19 @@ class LanceTable(Table):
         ----------
         columns: list of str, optional
             The columns to prewarm. If None, all columns are prewarmed.
+        filter: str, optional
+            A single SQL predicate for conservative metadata pruning.
+        concurrency: int, optional
+            Positive per-executor warming concurrency; omitted uses the server default.
+
+        Examples
+        --------
+        >>> table.prewarm_data(  # doctest: +SKIP
+        ...     ["payload"], filter="quality > 0.7", concurrency=4)
         """
-        return LOOP.run(self._table.prewarm_data(columns))
+        return LOOP.run(
+            self._table.prewarm_data(columns, filter=filter, concurrency=concurrency)
+        )
 
     def prewarm_data_async(
         self,
@@ -7413,7 +7456,13 @@ class AsyncTable:
         """
         await self._inner.prewarm_index(name)
 
-    async def prewarm_data(self, columns: Optional[List[str]] = None) -> None:
+    async def prewarm_data(
+        self,
+        columns: Optional[List[str]] = None,
+        *,
+        filter: Optional[str] = None,
+        concurrency: Optional[int] = None,
+    ) -> None:
         """
         Prewarm data for the table.
 
@@ -7434,8 +7483,17 @@ class AsyncTable:
         ----------
         columns: list of str, optional
             The columns to prewarm. If None, all columns are prewarmed.
+        filter: str, optional
+            A single SQL predicate for conservative metadata pruning.
+        concurrency: int, optional
+            Positive per-executor warming concurrency; omitted uses the server default.
+
+        Examples
+        --------
+        >>> await table.prewarm_data(  # doctest: +SKIP
+        ...     ["payload"], filter="quality > 0.7", concurrency=4)
         """
-        await self._inner.prewarm_data(columns)
+        await self.prewarm_data_async(columns, filter=filter, concurrency=concurrency)
 
     async def prewarm_data_async(
         self,

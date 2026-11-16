@@ -575,8 +575,6 @@ export abstract class Table {
   /**
    * Prewarm one or more columns of data in the table.
    *
-   * @param columns The columns to prewarm. If undefined, all columns are prewarmed.
-   *
    * This will load the column data into the page cache so that future queries that
    * read those columns avoid the initial cold-start latency.  This call initiates
    * prewarming and returns once the request is accepted; the warming itself may
@@ -588,6 +586,20 @@ export abstract class Table {
    * practical to prewarm.
    *
    * This feature is currently only supported in LanceDB Enterprise.
+   *
+   * @param options Columns, a metadata-pruning filter, and per-executor concurrency.
+   * Omitted or empty columns warm every column.
+   *
+   * @example
+   * await table.prewarmData({
+   *   columns: ["payload"], filter: "quality > 0.7", concurrency: 4,
+   * });
+   */
+  abstract prewarmData(options?: PrewarmDataOptions): Promise<void>;
+
+  /**
+   * Submit data prewarm using the columns-array form and return after acceptance.
+   * @param columns Columns to warm; omitted or empty means every column.
    */
   abstract prewarmData(columns?: string[]): Promise<void>;
 
@@ -1564,8 +1576,16 @@ export class LocalTable extends Table {
     await this.inner.prewarmIndex(name);
   }
 
-  async prewarmData(columns?: string[]): Promise<void> {
-    await this.inner.prewarmData(columns);
+  async prewarmData(options?: PrewarmDataOptions): Promise<void>;
+  async prewarmData(columns?: string[]): Promise<void>;
+  async prewarmData(
+    columnsOrOptions?: string[] | PrewarmDataOptions,
+  ): Promise<void> {
+    await this.prewarmDataAsync(
+      Array.isArray(columnsOrOptions)
+        ? { columns: columnsOrOptions }
+        : columnsOrOptions,
+    );
   }
 
   async prewarmDataAsync(

@@ -1081,27 +1081,58 @@ retrying with the settings removed.
 
 ### prewarmData()
 
+#### prewarmData(options)
+
 ```ts
-abstract prewarmData(columns?): Promise<void>
+abstract prewarmData(options?): Promise<void>
 ```
 
 Prewarm one or more columns of data in the table.
 
-#### Parameters
+This will load the column data into the page cache so that future queries that
+read those columns avoid the initial cold-start latency.  This call initiates
+prewarming and returns once the request is accepted; the warming itself may
+continue in the background. Submission uses SQL PREWARM and needs Flight
+SQL connectivity. Use [prewarmDataAsync](Table.md#prewarmdataasync) to retain the job handle.
+
+Prewarming is generally useful for columns used in filters or projections.
+Large columns (e.g. high-dimensional vectors or binary data) may not be
+practical to prewarm.
+
+This feature is currently only supported in LanceDB Enterprise.
+
+##### Parameters
+
+* **options?**: [`PrewarmDataOptions`](../interfaces/PrewarmDataOptions.md)
+    Columns, a metadata-pruning filter, and per-executor concurrency.
+    Omitted or empty columns warm every column.
+
+##### Returns
+
+`Promise`&lt;`void`&gt;
+
+##### Example
+
+```ts
+await table.prewarmData({
+  columns: ["payload"], filter: "quality > 0.7", concurrency: 4,
+});
+```
+
+#### prewarmData(columns)
+
+```ts
+abstract prewarmData(columns?): Promise<void>
+```
+
+Submit data prewarm using the columns-array form and return after acceptance.
+
+##### Parameters
 
 * **columns?**: `string`[]
-    The columns to prewarm. If undefined, all columns are prewarmed.
-    This will load the column data into the page cache so that future queries that
-    read those columns avoid the initial cold-start latency.  This call initiates
-    prewarming and returns once the request is accepted; the warming itself may
-    continue in the background. Submission uses SQL PREWARM and needs Flight
-    SQL connectivity. Use [prewarmDataAsync](Table.md#prewarmdataasync) to retain the job handle.
-    Prewarming is generally useful for columns used in filters or projections.
-    Large columns (e.g. high-dimensional vectors or binary data) may not be
-    practical to prewarm.
-    This feature is currently only supported in LanceDB Enterprise.
+    Columns to warm; omitted or empty means every column.
 
-#### Returns
+##### Returns
 
 `Promise`&lt;`void`&gt;
 

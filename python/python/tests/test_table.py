@@ -6418,17 +6418,18 @@ def test_fts_exist_ok_matches_quoted_default_name(mem_db):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("asynchronous", [False, True])
-async def test_data_prewarm_job_is_unsupported_locally(tmp_path, asynchronous):
+@pytest.mark.parametrize("method", ["prewarm_data", "prewarm_data_async"])
+async def test_data_prewarm_job_is_unsupported_locally(tmp_path, asynchronous, method):
     if asynchronous:
         db = await lancedb.connect_async(tmp_path)
         table = await db.create_table("prewarm", [{"id": 1}])
         with pytest.raises(
             NotImplementedError, match="only supported on remote tables"
         ):
-            await table.prewarm_data_async(filter="id > 0", concurrency=2)
+            await getattr(table, method)(filter="id > 0", concurrency=2)
     else:
         table = lancedb.connect(tmp_path).create_table("prewarm", [{"id": 1}])
         with pytest.raises(
             NotImplementedError, match="only supported on remote tables"
         ):
-            table.prewarm_data_async(filter="id > 0", concurrency=2)
+            getattr(table, method)(filter="id > 0", concurrency=2)

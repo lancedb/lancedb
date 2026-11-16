@@ -37,7 +37,7 @@ def maintenance_connection_options():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
-@pytest.mark.parametrize("operation", ["compact", "prewarm"])
+@pytest.mark.parametrize("operation", ["compact", "prewarm", "prewarm_legacy"])
 async def test_maintenance_job_result_and_reopen_against_server(
     maintenance_connection_options, asynchronous, operation
 ):
@@ -77,6 +77,28 @@ async def test_maintenance_job_result_and_reopen_against_server(
                     "io_buffer_size": 0,
                 },
             )
+        elif operation == "prewarm_legacy":
+            assert (
+                await call(
+                    table.prewarm_data,
+                    ["payload"],
+                    filter="id >= 8",
+                    concurrency=2,
+                )
+                is None
+            )
+            reader = await call(
+                connection.execute_query, f'SHOW JOBS FOR TABLE "{name}"'
+            )
+            batches = await call(reader.read_all)
+            jobs = pa.Table.from_batches(batches) if asynchronous else batches
+            ids = [
+                row["job_id"]
+                for row in jobs.to_pylist()
+                if row["job_type"] == "prewarm_page_cache"
+            ]
+            assert len(ids) == 1, jobs.to_pylist()
+            job = await call(connection.open_job, ids[0])
         else:
             job = await call(
                 table.prewarm_data_async,
