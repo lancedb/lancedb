@@ -1,5 +1,9 @@
 <div align="center">
 
+<p align="center">
+  <b>English</b> · <a href="https://github.com/lancedb/lancedb/blob/main/README.zh.md">简体中文</a>
+</p>
+
 [![Reverie](docs/src/assets/reverie-banner.png)](https://www.reveriesummit.com/?utm_medium=social&utm_source=github&utm_campaign=reverie-2026)
 [![LanceDB](docs/src/assets/hero-header.png)](https://lancedb.com)
 [![Website](https://img.shields.io/badge/-Website-100000?style=for-the-badge&labelColor=645cfb&color=645cfb)](https://lancedb.com/)
