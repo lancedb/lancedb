@@ -1150,7 +1150,14 @@ def _align_field(field: pa.Field, target_field: pa.Field) -> pa.Field:
             if not any(child.name in ("data", "uri") for child in source_type):
                 raise ValueError(
                     f"blob struct input for column '{field.name}' must contain "
-                    "a 'data' or 'uri' child"
+                    "a 'data' or 'uri' child. A blob query returns an SDK "
+                    "descriptor in this shape, and a descriptor is not payload "
+                    "bytes. Use blob_mode='bytes' to materialize payloads, or "
+                    "inspect descriptors with blob_mode='descriptions'. To copy "
+                    "payloads, select row IDs with with_row_id(True), then call "
+                    "table.fetch_blobs(column, row_ids) or "
+                    "table.fetch_blob_files(column, row_ids). Keep the source "
+                    "unchanged between selection and fetching."
                 )
         elif not _can_coerce_to_blob(source_type) and not isinstance(
             source_type, pa.ExtensionType
