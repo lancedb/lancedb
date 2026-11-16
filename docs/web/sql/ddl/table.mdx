@@ -176,7 +176,7 @@ ALTER TABLE t UNSET RTE
 ```
 </CodeGroup>
 
-The [real time engine](/tables/realtime-engine) puts a write-ahead log in front
+The [Realtime Engine](/tables/realtime-engine) puts a write-ahead log in front
 of the table, making small frequent writes cheap by batching them out of the
 commit path. `sharding` and `buckets` spread the log so concurrent writers do
 not contend on one place; `bucket` sharding names its `column`, which must be
@@ -204,6 +204,16 @@ Dropping, renaming, or retyping a column is an SDK operation
 [`alter_columns`](/management/table#schema)), not a SQL statement.
 
 ## CLONE {#clone}
+
+{/* Draft for the table-clone exist_ok release.
+
+Use `CREATE TABLE IF NOT EXISTS target CLONE source` to preserve an existing
+target unchanged. The Python equivalent is
+`db.clone_table("target", source_uri, exist_ok=True)`. Omitting the option reports
+an error for an existing target. A skipped clone does not copy rows or change
+the target's version history.
+
+*/}
 
 <CodeGroup>
 ```sql SQL icon="database"
@@ -258,3 +268,23 @@ deployment stores its catalog. See
     Renaming, retyping and dropping columns from the SDK.
   </Card>
 </CardGroup>
+
+## SHOW TABLES {#show}
+
+```sql
+SHOW TABLES IN analytics.`team$ml` LIMIT 100;
+SHOW TABLES IN analytics.`team$ml` LIMIT 100 FROM '<page-token>';
+```
+
+Returns two non-null string columns: `namespace_path`, a compact JSON array
+of parent namespace components (`[]` for root), and `name`, the unqualified
+object name. Omitting `IN` lists all authorized namespaces in the current database;
+`IN team$ml` selects that exact path without a database qualifier; `IN public` selects
+the current database's root. Listings require the relevant database and
+namespace `USAGE` privileges.
+
+Page through results using `LIMIT n [FROM '<page-token>']`. Read the opaque
+`lancedb.next_page_token` from the Arrow result schema metadata and pass it back
+unchanged with the same object type and scope. Stop when no token is returned;
+a short or empty page can still carry a continuation. See
+[catalog listing pagination](/sql/pagination).

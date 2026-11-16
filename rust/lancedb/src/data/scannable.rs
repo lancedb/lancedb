@@ -504,7 +504,7 @@ impl Scannable for PeekedScannable {
 /// when known; otherwise `sample_rows` row count is used as a lower bound
 /// estimate.
 ///
-/// Targets roughly 1 million rows or 2 GB per partition, capped at
+/// Targets roughly 1 million rows or 64 MiB per partition, capped at
 /// `max_partitions` (typically the number of available CPU cores).
 pub(crate) fn estimate_write_partitions(
     sample_bytes: usize,
@@ -519,7 +519,7 @@ pub(crate) fn estimate_write_partitions(
     let total_rows = total_rows_hint.unwrap_or(sample_rows);
     let total_bytes = total_rows * bytes_per_row;
     let by_rows = total_rows.div_ceil(1_000_000);
-    let by_bytes = total_bytes.div_ceil(2 * 1024 * 1024 * 1024);
+    let by_bytes = total_bytes.div_ceil(64 * 1024 * 1024);
     by_rows.max(by_bytes).max(1).min(max_partitions)
 }
 
@@ -813,8 +813,8 @@ mod tests {
 
         #[test]
         fn test_scales_by_byte_size() {
-            // 100k rows at 40KB/row = ~4GB total → ceil(4GB / 2GB) = 2
-            let sample_bytes = 40_000 * 10;
+            // 100k rows at 1KB/row exceeds one 64 MiB partition.
+            let sample_bytes = 1_000 * 10;
             assert_eq!(
                 estimate_write_partitions(sample_bytes, 10, Some(100_000), 8),
                 2

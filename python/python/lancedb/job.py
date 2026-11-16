@@ -4,9 +4,13 @@
 """Handles to asynchronous registry jobs, SQL queries, and local operations."""
 
 import asyncio
+import logging
 import reprlib
 import time
+from contextlib import suppress
 from datetime import timedelta
+from os import PathLike
+from pathlib import Path
 from typing import Any, Callable, Generic, Optional, TypeVar, cast
 
 import pyarrow as pa
@@ -15,6 +19,7 @@ from lancedb.background_loop import LOOP
 
 from . import _lancedb
 from ._lancedb import JobDescription, JobFailureInfo, JobInfo, _append_doc_url
+from .functions import RefreshColumnResult
 from .remote.errors import HttpError, RetryError
 
 T = TypeVar("T")
@@ -50,11 +55,13 @@ def _timeout_message(
     )
 
 
-def _normalize_job_progress(progress):
+def _normalize_job_progress(progress, *, query=False):
     """Normalize ``wait(progress=...)`` using the same convention as writes."""
     if progress is True:
         from tqdm.auto import tqdm
 
+        if query:
+            return tqdm(bar_format="Query{postfix} [{elapsed}]"), True
         return tqdm(unit=" rows"), True
     if progress is False or progress is None:
         return None, False
@@ -62,6 +69,7 @@ def _normalize_job_progress(progress):
 
 
 _ETA_MAX_SAMPLE_INTERVAL_MILLIS = 10 * 60 * 1_000
+_QUERY_PROGRESS_INTERVAL_SECONDS = 1.0
 
 
 def _progress_eta(previous, current):
@@ -200,6 +208,7 @@ class AsyncJob(Generic[T]):
         self._inner = inner
         self._result_decoder = result_decoder
         self._last_progress_snapshot = None
+        self._created_at = time.monotonic()
 
     def _enrich_progress(self, snapshot):
         enriched = _with_progress_eta(self._last_progress_snapshot, snapshot)
@@ -232,17 +241,29 @@ class AsyncJob(Generic[T]):
     async def progress(self) -> Optional[dict[str, Any]]:
         """Fetch a structured progress snapshot.
 
-        Registry jobs always report lifecycle fields. Queue metadata and
-        counters are included when supplied by the server. Older servers may
+        Registry jobs always report lifecycle fields. SQL query handles report
+        lifecycle state and ``client_elapsed_time_millis``, measured since this
+        handle was created. They do not expose server build phases or logs.
+        Queue metadata and counters are included when supplied by the server.
+        Older servers may
         omit counters, and in-process operations return ``None``. A missing
         counter is unknown rather than zero. This is additive to :meth:`status`,
         whose string contract is unchanged.
         """
         if self._inner is None:
             return None
-        await self._inner.status()
+        state = await self._inner.status()
         description = getattr(self._inner, "_description", None)
         if description is None or description.progress is None:
+            if self.job_type == "query":
+                return {
+                    "job_id": self.id,
+                    "job_type": "query",
+                    "state": state,
+                    "client_elapsed_time_millis": int(
+                        (time.monotonic() - self._created_at) * 1_000
+                    ),
+                }
             return None
         return self._enrich_progress(description.progress)
 
@@ -267,6 +288,13 @@ class AsyncJob(Generic[T]):
         new execution epoch or smaller plan resets the bar to that plan.
         ``False`` preserves the original wait behavior.
 
+        For SQL-backed Function registration, progress shows the query's
+        lifecycle state and client elapsed time. It observes the existing
+        query handle while its original waiter runs; it does not resubmit or
+        cancel the registration. Detailed bake phases and build logs are not
+        available from the current query handle. Failure exceptions retain the
+        server's cause and request identifiers.
+
         Raises `JobFailedError` if the operation failed, `JobCancelledError`
         if it was cancelled, and `TimeoutError` if `timeout` elapses first.
         Transient connection and read errors are retried with capped exponential
@@ -282,7 +310,10 @@ class AsyncJob(Generic[T]):
         """
         if self._inner is None:
             return cast(T, None)
-        progress_obj, owns = _normalize_job_progress(progress)
+        query_progress = (
+            progress is not False and progress is not None and self.job_type == "query"
+        )
+        progress_obj, owns = _normalize_job_progress(progress, query=query_progress)
         progress_callback = _job_progress_callback(progress_obj, self._enrich_progress)
         last_error = None
 
@@ -308,13 +339,46 @@ class AsyncJob(Generic[T]):
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 30.0)
 
+        async def observe_query():
+            async def report():
+                try:
+                    snapshot = await self.progress()
+                    if snapshot is not None:
+                        progress_callback(snapshot)
+                except Exception:
+                    logging.getLogger(__name__).warning(
+                        "job progress observer failed", exc_info=True
+                    )
+
+            waiter = asyncio.create_task(wait_with_retries())
+            try:
+                while not waiter.done():
+                    await report()
+                    await asyncio.wait(
+                        {waiter}, timeout=_QUERY_PROGRESS_INTERVAL_SECONDS
+                    )
+                try:
+                    return await waiter
+                finally:
+                    await report()
+            finally:
+                if not waiter.done():
+                    waiter.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await waiter
+
+        wait_for_result = (
+            observe_query
+            if query_progress and progress_callback is not None
+            else wait_with_retries
+        )
         try:
             try:
                 if timeout is None:
-                    result = await wait_with_retries()
+                    result = await wait_for_result()
                 else:
                     result = await asyncio.wait_for(
-                        wait_with_retries(), timeout.total_seconds()
+                        wait_for_result(), timeout.total_seconds()
                     )
             except asyncio.TimeoutError as error:
                 if last_error is None:
@@ -421,6 +485,57 @@ class AsyncJob(Generic[T]):
     def _field(self, name: str) -> Optional[Any]:
         description = self._inner._description if self._inner is not None else None
         return getattr(description, name) if description is not None else None
+
+    async def stats(self) -> Optional[str]:
+        """Return a printable run report for this Function job.
+
+        The report includes recorded phase timings, finishing-supervisor slot
+        occupancy, all-attempt split execution and batch latency, and accepted-row
+        throughput. Each call reads the current server report.
+        Returns ``None`` while the job is running or if no recorded profile is
+        available, without waiting for completion. Missing measurements remain
+        unavailable rather than becoming zero. The server formats the report;
+        the SDK returns it verbatim.
+
+        Requires a server-side Function job and a server supporting run reports.
+        Local operations and SQL query handles do not support this operation.
+        Unsupported operations raise ``NotImplementedError`` or a server error.
+        This method returns text; use ``print`` to display it.
+
+        Examples
+        --------
+        >>> print(await job.stats())  # doctest: +SKIP
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "job statistics require a server-side Function job"
+            )
+        return await self._inner.stats()
+
+    async def export_timeline(self, path: str | PathLike[str]) -> None:
+        """Write a fresh recorded Function job timeline as Chrome trace JSON.
+
+        Open the file in Perfetto or Chrome tracing. The recording contains
+        retained split spans grouped by worker and timestamped job phases.
+        Batch counts and latency statistics are included as details; individual
+        batch timestamps are not recorded. Running jobs export a partial snapshot
+        without waiting or cancelling. Download again to include later work.
+
+        Requires a server-side Function job and a server supporting timeline
+        export. Unsupported operations raise ``NotImplementedError`` or a server
+        error. The destination is overwritten only after the trace is fetched.
+        Filesystem errors propagate to the caller.
+
+        Examples
+        --------
+        >>> await job.export_timeline("refresh.trace.json")  # doctest: +SKIP
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "job timeline export requires a server-side Function job"
+            )
+        trace = await self._inner.timeline()
+        await asyncio.to_thread(Path(path).write_text, trace, encoding="utf-8")
 
     async def events(
         self,
@@ -621,6 +736,37 @@ class Job(Generic[T]):
     def _field(self, name: str) -> Optional[Any]:
         return getattr(self._inner, name) if self._inner is not None else None
 
+    def stats(self) -> Optional[str]:
+        """Return a printable Function job run report.
+
+        See [AsyncJob.stats][lancedb.job.AsyncJob.stats] for metrics and availability.
+
+        Examples
+        --------
+        >>> print(job.stats())  # doctest: +SKIP
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "job statistics require a server-side Function job"
+            )
+        return LOOP.run(self._inner.stats())
+
+    def export_timeline(self, path: str | PathLike[str]) -> None:
+        """Write Chrome trace JSON for this Function job.
+
+        See :meth:`AsyncJob.export_timeline`. Open the file in Perfetto or
+        Chrome tracing.
+
+        Examples
+        --------
+        >>> job.export_timeline("refresh.trace.json")  # doctest: +SKIP
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "job timeline export requires a server-side Function job"
+            )
+        return LOOP.run(self._inner.export_timeline(path))
+
     def events(
         self,
         *,
@@ -649,3 +795,9 @@ def _typed_job(
 ) -> AsyncJob[T]:
     """Bind an internal JSON-producing job to its public result model."""
     return AsyncJob(inner, result_decoder)
+
+
+def _opened_job(inner: "_lancedb.Job") -> AsyncJob:
+    if inner.job_type in ("function_refresh", "computed_refresh", "refresh_column"):
+        return _typed_job(inner, RefreshColumnResult.from_json)
+    return AsyncJob(inner)

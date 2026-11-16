@@ -35,6 +35,15 @@ FetchBlobsSync = Callable[[str, list[int]], pa.Array | pa.ChunkedArray]
 FetchBlobsAsync = Callable[[str, list[int]], Awaitable[pa.Array | pa.ChunkedArray]]
 
 
+def _validate_blob_buffer_size(size: Optional[int]) -> Optional[int]:
+    if size is None:
+        return None
+    size = operator.index(size)
+    if size < 0:
+        raise ValueError("buffer_size must be non-negative")
+    return size
+
+
 def _normalize_blob_descriptor(value):
     if isinstance(value, pa.Scalar):
         value = value.as_py()
@@ -57,6 +66,16 @@ class BlobFile(io.RawIOBase):
 
     def __init__(self, inner) -> None:
         self._inner = inner
+
+    def set_buffer_size(self, size: int) -> None:
+        """Set sequential read-ahead bytes (default 512 KiB); 0 disables it.
+
+        Changing the size discards unused prefetched bytes without moving the
+        cursor. Explicit ``read_range`` and ``read_ranges`` bypass read-ahead.
+        """
+        if self.closed:
+            raise ValueError("set_buffer_size of closed file")
+        self._inner.set_buffer_size(_validate_blob_buffer_size(size))
 
     async def aread(self) -> bytes:
         if self.closed:

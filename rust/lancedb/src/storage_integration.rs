@@ -40,6 +40,9 @@ impl SecretReference {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct CreateStorageIntegrationRequest {
+    /// Return the stored configuration unchanged when the integration already exists.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub exist_ok: bool,
     pub storage_provider: StorageProvider,
     pub storage_prefix: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -77,12 +80,31 @@ pub enum StorageProvider {
     HuggingFace,
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 impl CreateStorageIntegrationRequest {
+    /// Return an existing integration without changing its configuration.
+    /// Defaults to false, which reports an error for an existing name.
+    ///
+    /// ```
+    /// use lancedb::storage_integration::CreateStorageIntegrationRequest;
+    /// let config = CreateStorageIntegrationRequest::huggingface(
+    ///     "hf://datasets/acme/data/",
+    /// ).exist_ok(true);
+    /// ```
+    pub fn exist_ok(mut self, exist_ok: bool) -> Self {
+        self.exist_ok = exist_ok;
+        self
+    }
+
     /// Register a prefix and the customer-owned IAM role authorized to access it.
     pub fn s3(storage_prefix: impl Into<String>, aws_role_arn: impl Into<String>) -> Self {
         Self {
             storage_provider: StorageProvider::S3,
             storage_prefix: storage_prefix.into(),
+            exist_ok: false,
             aws_role_arn: Some(aws_role_arn.into()),
             aws_access_key_id_secret: None,
             aws_secret_access_key_secret: None,
@@ -105,6 +127,7 @@ impl CreateStorageIntegrationRequest {
         Self {
             storage_provider: StorageProvider::S3,
             storage_prefix: storage_prefix.into(),
+            exist_ok: false,
             aws_role_arn: None,
             aws_access_key_id_secret: Some(access_key),
             aws_secret_access_key_secret: Some(secret_key),
@@ -138,6 +161,7 @@ impl CreateStorageIntegrationRequest {
         Self {
             storage_provider: StorageProvider::Azure,
             storage_prefix: storage_prefix.into(),
+            exist_ok: false,
             azure_storage_account: Some(storage_account.into()),
             azure_tenant_id_secret: Some(tenant_id),
             azure_client_id_secret: Some(client_id),
@@ -163,6 +187,7 @@ impl CreateStorageIntegrationRequest {
         Self {
             storage_provider: StorageProvider::Gcp,
             storage_prefix: storage_prefix.into(),
+            exist_ok: false,
             gcp_credentials_json_secret: Some(credentials_json),
             huggingface_token_secret: None,
             aws_role_arn: None,
@@ -189,6 +214,7 @@ impl CreateStorageIntegrationRequest {
         Self {
             storage_provider: StorageProvider::HuggingFace,
             storage_prefix: storage_prefix.into(),
+            exist_ok: false,
             huggingface_token_secret: None,
             gcp_credentials_json_secret: None,
             aws_role_arn: None,

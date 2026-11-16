@@ -164,14 +164,20 @@ pub fn expr_col(name: &str) -> PyExpr {
 /// Create a literal value expression.
 ///
 /// Supported Python types: `bool`, `int`, `float`, `str`, `bytes`, `date`,
-/// `datetime`, `Decimal`.
+/// `datetime`, `Decimal`, and `None` (SQL NULL).
 #[pyfunction]
 pub fn expr_lit(value: Bound<'_, PyAny>) -> PyResult<PyExpr> {
+    if value.is_none() {
+        return Ok(PyExpr(df_lit(ScalarValue::Null)));
+    }
     // bool must be checked before int because bool is a subclass of int in Python
     if let Ok(b) = value.extract::<bool>() {
         return Ok(PyExpr(df_lit(b)));
     }
     if let Ok(i) = value.extract::<i64>() {
+        return Ok(PyExpr(df_lit(i)));
+    }
+    if let Ok(i) = value.extract::<u64>() {
         return Ok(PyExpr(df_lit(i)));
     }
     // Decimal must be checked before f64: Python's Decimal implements __float__,

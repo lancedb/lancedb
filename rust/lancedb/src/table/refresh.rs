@@ -104,6 +104,106 @@ impl FunctionWorkerResourceBudget {
     }
 }
 
+/// CPU, memory, and ephemeral-storage limits for one Function refresh
+/// control-plane pod.
+///
+/// This sizes the supervisor or planning worker pod for a registered
+/// Function refresh. LanceDB Embedded rejects it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct FunctionRefreshPodResources {
+    /// CPU limit in millicores; 1000 is one CPU.
+    pub cpu_millis: u64,
+    /// Memory limit in bytes.
+    pub memory_bytes: u64,
+    /// Ephemeral storage limit in bytes.
+    pub ephemeral_storage_bytes: u64,
+}
+
+impl FunctionRefreshPodResources {
+    /// Create positive CPU, memory, and ephemeral-storage limits.
+    pub fn new(cpu_millis: u64, memory_bytes: u64, ephemeral_storage_bytes: u64) -> Self {
+        Self {
+            cpu_millis,
+            memory_bytes,
+            ephemeral_storage_bytes,
+        }
+    }
+
+    fn validate(&self, prefix: &str) -> Result<()> {
+        for (name, value) in [
+            ("cpu_millis", self.cpu_millis),
+            ("memory_bytes", self.memory_bytes),
+            ("ephemeral_storage_bytes", self.ephemeral_storage_bytes),
+        ] {
+            if value == 0 {
+                return Err(Error::InvalidInput {
+                    message: format!("{prefix}.{name} must be greater than zero"),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Resources and sizing policy for the CPU-only planning fleet of one
+/// registered Function refresh.
+///
+/// `resources` describes one planning worker pod. The remaining fields bound
+/// how many workers may run and how much work each worker receives. LanceDB
+/// Embedded rejects this option.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct FunctionRefreshPlanningConfig {
+    /// CPU, memory, and ephemeral-storage limits for one planning worker.
+    pub resources: FunctionRefreshPodResources,
+    /// Maximum number of planning workers.
+    pub max_workers: usize,
+    /// Maximum rows assigned to one planning worker.
+    pub rows_per_worker: u64,
+    /// Maximum fragments assigned to one planning worker.
+    pub fragments_per_worker: u64,
+}
+
+impl FunctionRefreshPlanningConfig {
+    /// Create a planning configuration; every value must be positive.
+    pub fn new(
+        resources: FunctionRefreshPodResources,
+        max_workers: usize,
+        rows_per_worker: u64,
+        fragments_per_worker: u64,
+    ) -> Self {
+        Self {
+            resources,
+            max_workers,
+            rows_per_worker,
+            fragments_per_worker,
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        self.resources.validate("planning_workers.resources")?;
+        if self.max_workers == 0 {
+            return Err(Error::InvalidInput {
+                message: "planning_workers.max_workers must be greater than zero".into(),
+            });
+        }
+        if self.rows_per_worker == 0 {
+            return Err(Error::InvalidInput {
+                message: "planning_workers.rows_per_worker must be greater than zero".into(),
+            });
+        }
+        if self.fragments_per_worker == 0 {
+            return Err(Error::InvalidInput {
+                message: "planning_workers.fragments_per_worker must be greater than zero".into(),
+            });
+        }
+        Ok(())
+    }
+}
+
 /// Options for refreshing a computed column.
 ///
 /// Serializes to the Enterprise backfill request body, one key per set
@@ -167,6 +267,14 @@ pub struct RefreshColumnOptions {
     /// Function refresh. Cannot be combined with `gpu_count`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resource_budget: Option<FunctionWorkerResourceBudget>,
+    /// CPU, memory, and ephemeral-storage limits for the Function refresh
+    /// supervisor pod. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supervisor_resources: Option<FunctionRefreshPodResources>,
+    /// Resources and sizing limits for the Function refresh planning fleet.
+    /// Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub planning_workers: Option<FunctionRefreshPlanningConfig>,
     /// GPU class for Function workers in LanceDB Enterprise.
     ///
     /// `None` keeps the Function's registered class, or the deployment default
@@ -264,6 +372,18 @@ impl RefreshColumnOptions {
         self
     }
 
+    /// Set the Function refresh supervisor pod resources.
+    pub fn supervisor_resources(mut self, resources: FunctionRefreshPodResources) -> Self {
+        self.supervisor_resources = Some(resources);
+        self
+    }
+
+    /// Set the Function refresh planning fleet resources and sizing.
+    pub fn planning_workers(mut self, planning: FunctionRefreshPlanningConfig) -> Self {
+        self.planning_workers = Some(planning);
+        self
+    }
+
     /// Request Function workers from `gpu_class`.
     pub fn gpu_class(mut self, gpu_class: impl Into<String>) -> Self {
         self.gpu_class = Some(gpu_class.into());
@@ -297,6 +417,8 @@ impl RefreshColumnOptions {
                 self.publication_interval_rows.is_some(),
             ),
             ("resource_budget", self.resource_budget.is_some()),
+            ("supervisor_resources", self.supervisor_resources.is_some()),
+            ("planning_workers", self.planning_workers.is_some()),
         ]
         .into_iter()
         .find_map(|(name, set)| set.then_some(name))
@@ -366,6 +488,12 @@ impl RefreshColumnOptions {
         }
         if let Some(budget) = &self.resource_budget {
             budget.validate()?;
+        }
+        if let Some(resources) = &self.supervisor_resources {
+            resources.validate("supervisor_resources")?;
+        }
+        if let Some(planning) = &self.planning_workers {
+            planning.validate()?;
         }
         if let Some(gpu_class) = &self.gpu_class {
             validate_gpu_class_name(gpu_class)?;

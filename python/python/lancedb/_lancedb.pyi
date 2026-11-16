@@ -117,7 +117,7 @@ class PyExpr:
 
 def expr_col(name: str) -> PyExpr: ...
 def expr_lit(
-    value: Union[bool, int, float, str, bytes, date, datetime, Decimal],
+    value: Union[bool, int, float, str, bytes, date, datetime, Decimal, None],
 ) -> PyExpr: ...
 def expr_func(name: str, args: List[PyExpr]) -> PyExpr: ...
 
@@ -185,9 +185,14 @@ class Connection(object):
         limit: Optional[int],
     ) -> list[str]: ...  # Deprecated: Use list_tables instead
     async def open_job(self, job_id: str) -> Job: ...
+    async def server_info(self) -> str: ...
     async def list_gpu_classes(self) -> list[GpuClass]: ...
     async def create_function_async(
-        self, request_json: str, namespace_path: Optional[List[str]] = None
+        self,
+        request_json: str,
+        namespace_path: Optional[List[str]] = None,
+        *,
+        exist_ok: bool = False,
     ) -> Job: ...
     async def get_function(
         self,
@@ -228,7 +233,12 @@ class Connection(object):
         self, name: str, namespace_path: Optional[List[str]] = None
     ) -> None: ...
     async def create_secret(
-        self, name: str, value: str, namespace_path: Optional[List[str]] = None
+        self,
+        name: str,
+        value: str,
+        namespace_path: Optional[List[str]] = None,
+        *,
+        exist_ok: bool = False,
     ) -> None: ...
     async def alter_secret(
         self, name: str, value: str, namespace_path: Optional[List[str]] = None
@@ -247,7 +257,12 @@ class Connection(object):
         self, name: str, namespace_path: Optional[List[str]] = None
     ) -> Tuple[str, int, int]: ...
     async def create_view(
-        self, name: str, query: str, namespace_path: Optional[List[str]] = None
+        self,
+        name: str,
+        query: str,
+        namespace_path: Optional[List[str]] = None,
+        *,
+        exist_ok: bool = False,
     ) -> Tuple[str, List[str], str, str, List[str], pa.Schema]: ...
     async def describe_view(
         self, name: str, namespace_path: Optional[List[str]] = None
@@ -285,7 +300,19 @@ class Connection(object):
         page_limit: Optional[int] = None,
     ) -> NameListing: ...
     def list_jobs(
-        self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
+        self,
+        *,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+        table: Optional[str] = None,
+        namespace_path: Optional[List[str]] = None,
+        state: Optional[
+            Literal["in_progress", "succeeded", "failed", "canceled", "timed_out"]
+        ] = None,
+        job_type: Optional[str] = None,
+        job_types: Optional[List[str]] = None,
+        created_at_gte_millis: Optional[int] = None,
+        created_at_lt_millis: Optional[int] = None,
     ) -> JobListing: ...
     async def cancel_job(self, job_id: str) -> bool: ...
     async def pause_job(self, job_id: str) -> str: ...
@@ -332,6 +359,8 @@ class Connection(object):
         source_version: Optional[int] = None,
         source_tag: Optional[str] = None,
         is_shallow: bool = True,
+        *,
+        exist_ok: bool = False,
     ) -> Table: ...
     async def rename_table(
         self,
@@ -343,24 +372,30 @@ class Connection(object):
     async def create_materialized_view(
         self,
         name: str,
-        source: str,
+        source: Optional[str] = None,
         projections: Optional[List[Tuple[str, str]]] = None,
         filter: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        *,
+        query: Optional[str] = None,
+        exist_ok: bool = False,
     ) -> Table: ...
     async def create_materialized_view_async(
         self,
         name: str,
-        source: str,
+        source: Optional[str] = None,
         projections: Optional[List[Tuple[str, str]]] = None,
         filter: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        *,
+        query: Optional[str] = None,
+        exist_ok: bool = False,
     ) -> Job: ...
     def list_materialized_views(
         self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
@@ -392,6 +427,7 @@ class BlobFile:
     def seek(self, position: int) -> None: ...
     def tell(self) -> int: ...
     def size(self) -> int: ...
+    def set_buffer_size(self, size: int) -> None: ...
     def read_range(self, offset: int, length: int) -> bytes: ...
     def read_ranges(self, ranges: list[tuple[int, int]]) -> list[bytes]: ...
     def read_up_to(self, length: int) -> bytes: ...
@@ -412,6 +448,8 @@ class Job:
     ) -> Optional[str]: ...
     async def cancel(self) -> None: ...
     async def refresh(self) -> None: ...
+    async def timeline(self) -> str: ...
+    async def stats(self) -> Optional[str]: ...
     async def events(
         self,
         *,
@@ -537,7 +575,14 @@ class Table:
         progress: Optional[Any] = None,
         write_parallelism: Optional[int] = None,
         allow_external_blob_outside_bases: bool = False,
+        retries: Optional[int] = None,
     ) -> AddResult: ...
+    async def execute_merge_insert(
+        self,
+        data: pa.RecordBatchReader,
+        parameters: Dict[str, Any],
+        retries: Optional[int] = None,
+    ) -> MergeResult: ...
     async def update(
         self, updates: Dict[str, str], where: Optional[str]
     ) -> UpdateResult: ...
@@ -565,6 +610,7 @@ class Table:
         *,
         name: Optional[str],
         train: Optional[bool],
+        exist_ok: bool = False,
     ): ...
     async def create_index_async(
         self,
@@ -589,6 +635,7 @@ class Table:
         *,
         name: Optional[str],
         train: Optional[bool],
+        exist_ok: bool = False,
     ) -> Job: ...
     async def list_versions(self) -> List[Dict[str, Any]]: ...
     async def version(self) -> int: ...
@@ -634,6 +681,8 @@ class Table:
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
         resource_budget: Optional[dict[str, int]] = None,
+        supervisor_resources: Optional[dict[str, int]] = None,
+        planning_workers: Optional[dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[str] = None,
@@ -654,6 +703,8 @@ class Table:
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
         resource_budget: Optional[dict[str, int]] = None,
+        supervisor_resources: Optional[dict[str, int]] = None,
+        planning_workers: Optional[dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[str] = None,
@@ -671,6 +722,13 @@ class Table:
         column: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> FunctionErrors: ...
+    async def column_statuses(
+        self, column: Optional[str] = None
+    ) -> list[FunctionColumnStatus]: ...
+    async def column_status(self, column: str) -> FunctionColumnStatus: ...
+    async def wait_column_fresh(
+        self, column: str, timeout: Optional[timedelta] = None
+    ) -> FunctionColumnStatus: ...
     async def refresh_materialized_view(
         self,
         source_version: Optional[int] = None,
@@ -734,7 +792,12 @@ class Table:
     def take_row_ids(self, row_ids: list[int]) -> TakeQuery: ...
     async def blob_columns(self) -> list[str]: ...
     async def fetch_blobs(
-        self, column: str, row_ids: list[int]
+        self,
+        column: str,
+        row_ids: list[int],
+        *,
+        version: Optional[int] = None,
+        snapshot_identity: Optional[str] = None,
     ) -> pa.LargeBinaryArray: ...
     async def fetch_blob_ranges(
         self,
@@ -742,9 +805,11 @@ class Table:
         requests: Sequence[Sequence[int]],
     ) -> pa.LargeBinaryArray: ...
     async def fetch_blob_files(
-        self, column: str, row_ids: list[int]
+        self, column: str, row_ids: list[int], buffer_size: Optional[int] = None
     ) -> list[Optional[BlobFile]]: ...
-    async def open_blob_file(self, descriptor: str) -> BlobFile: ...
+    async def open_blob_file(
+        self, descriptor: str, buffer_size: Optional[int] = None
+    ) -> BlobFile: ...
     def vector_search(self) -> VectorQuery: ...
 
 class Tags:
@@ -878,6 +943,7 @@ class FTSQuery:
     def add_query_vector(self, query_vec: pa.Array) -> None: ...
     def nearest_to(self, query_vec: pa.Array) -> HybridQuery: ...
     def order_by(self, ordering: Optional[List[ColumnOrdering]]): ...
+    async def count_rows(self) -> int: ...
     async def output_schema(self) -> pa.Schema: ...
     async def execute(
         self, max_batch_length: Optional[int], timeout: Optional[timedelta]
@@ -1088,6 +1154,46 @@ class FunctionErrors:
     fragments: list[FunctionErrorFragment]
     truncated: bool
 
+class FunctionColumnVersionStatus:
+    name: str
+    namespace_path: list[str]
+    object_id: str
+    location: str
+    version: str
+    manifest_digest: str
+
+class FunctionColumnLastRefreshJob:
+    job_id: str
+    state: str
+    automatic: Optional[bool]
+    completed_at_millis: Optional[int]
+    failure: Optional[JobFailureInfo]
+
+class FunctionColumnAutoRefreshStatus:
+    enabled: bool
+    interval_seconds: Optional[int]
+    active_job_id: Optional[str]
+    state: str
+    failure_streak: int
+    effective_cooldown_millis: Optional[int]
+    blocked_reason: Optional[str]
+    next_run_at_millis: Optional[int]
+    next_run_at_reason: Optional[str]
+
+class FunctionColumnStatus:
+    column: str
+    binding_id: str
+    function: FunctionColumnVersionStatus
+    table_version: int
+    rows: int
+    fresh: int
+    stale: int
+    never_computed: int
+    failed: int
+    last_refresh_job: Optional[FunctionColumnLastRefreshJob]
+    last_failure_job: Optional[FunctionColumnLastRefreshJob]
+    auto_refresh: FunctionColumnAutoRefreshStatus
+
 class RefreshMaterializedViewResult:
     @staticmethod
     def from_json(value: str) -> RefreshMaterializedViewResult: ...
@@ -1179,6 +1285,7 @@ async def connect_catalog(
     sql_host_override: Optional[str] = None,
     read_consistency_interval: Optional[float] = None,
     oauth_config: Optional[Any] = None,
+    storage_options: Optional[dict[str, str]] = None,
 ) -> Catalog: ...
 
 class NameListing:
@@ -1262,3 +1369,4 @@ class AuthzObject:
     def __repr__(self) -> str: ...
 
 def validate_function_retry_policy(json: str) -> None: ...
+def _validate_conda_requirement(requirement: str) -> None: ...

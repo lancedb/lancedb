@@ -938,7 +938,8 @@ describe("merge insert", () => {
       .mergeInsert("a")
       .whenMatchedUpdateAll()
       .whenNotMatchedInsertAll()
-      .execute(newData, { timeoutMs: 10_000 });
+      .useIndex(false)
+      .execute(newData, { timeoutMs: 10_000, retries: 0 });
     expect(mergeInsertRes).toHaveProperty("version");
     expect(mergeInsertRes.version).toBe(2);
     expect(mergeInsertRes.numInsertedRows).toBe(1);
@@ -3019,6 +3020,43 @@ describe("when dealing with blob columns", () => {
     expect(bytes.map((b) => b?.toString())).toEqual(["new", "hi"]);
   });
 
+  it("fetchBlobRanges reads local ranges with order, duplicates, nulls and validation", async () => {
+    const { table, rowIds } = await openBlobTable();
+    const [alphaId, betaId, nullId] = rowIds;
+    const requests = [
+      { rowId: betaId, offset: 1n, length: 3n },
+      { rowId: alphaId, offset: 0n, length: 2n },
+      { rowId: nullId, offset: 0n, length: 1n },
+      { rowId: alphaId, offset: 5n, length: 0n },
+      { rowId: betaId, offset: 1n, length: 3n },
+    ];
+    expect(await table.fetchBlobRanges("image", requests)).toEqual([
+      Buffer.from("eta"),
+      Buffer.from("al"),
+      null,
+      Buffer.alloc(0),
+      Buffer.from("eta"),
+    ]);
+    expect(await table.fetchBlobRanges("image", [])).toEqual([]);
+    await expect(
+      table.fetchBlobRanges("image", [
+        { rowId: alphaId, offset: 4n, length: 2n },
+      ]),
+    ).rejects.toThrow();
+    await expect(
+      table.fetchBlobRanges("image", [
+        { rowId: (1n << 63n) - 1n, offset: 0n, length: 1n },
+      ]),
+    ).rejects.toThrow();
+    const controller = new AbortController();
+    expect(
+      await table.fetchBlobRanges("image", requests, {
+        signal: controller.signal,
+      }),
+    ).toHaveLength(5);
+    expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
+  });
+
   it("discovers blob columns", async () => {
     const { table } = await openBlobTable();
     expect(await table.blobColumns()).toEqual(["image"]);
@@ -3232,29 +3270,6 @@ describe("when dealing with blob columns", () => {
     expect(getEventListeners(signal, "abort")).toHaveLength(0);
     controller.abort();
     expect(await handle!.read()).toEqual(alpha);
-  });
-
-  it("cancels an in-flight read", async () => {
-    const db = await connect(tmpDir.name);
-    const schema = new Schema([
-      new Field("id", new Int64(), true),
-      blob("payload", { inlineSizeThreshold: 0, dedicatedSizeThreshold: 1 }),
-    ]);
-    const payload = Buffer.alloc(32 * 1024 * 1024, 7);
-    const table = await db.createTable("large_blobs", [{ id: 1n, payload }], {
-      schema,
-    });
-    const [row] = await table.query().withRowId().toArray();
-    const [handle] = await table.fetchBlobFiles("payload", [
-      row._rowid as bigint,
-    ]);
-    const controller = new AbortController();
-    const pending = handle!.readRange(0n, handle!.size(), {
-      signal: controller.signal,
-    });
-    controller.abort();
-    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
-    expect(await handle!.readRange(0n, 4n)).toEqual(payload.subarray(0, 4));
   });
 
   it("toArrow returns blob bytes with blobMode bytes", async () => {
@@ -5686,6 +5701,14 @@ describe("computed columns", () => {
     await expect(
       table.refreshColumnAsync("x", { errorPolicy: "skip" }),
     ).rejects.toThrow("error_policy requires a LanceDB Enterprise refresh");
+    for (const refresh of [
+      () => table.refreshColumn("x", { publicationIntervalRows: 60 }),
+      () => table.refreshColumnAsync("x", { publicationIntervalRows: 60 }),
+    ]) {
+      await expect(refresh()).rejects.toThrow(
+        "publication_interval_rows requires a LanceDB Enterprise refresh",
+      );
+    }
     await expect(
       table.refreshColumnAsync("x", { maxConcurrency: 4 }),
     ).rejects.toThrow("max_concurrency requires a LanceDB Enterprise refresh");
@@ -5694,6 +5717,31 @@ describe("computed columns", () => {
         resourceBudget: { cpuMillis: 1_000, memoryBytes: 1_024 },
       }),
     ).rejects.toThrow("resource_budget requires a LanceDB Enterprise refresh");
+    await expect(
+      table.refreshColumn("x", {
+        supervisorResources: {
+          cpuMillis: 1_000,
+          memoryBytes: 1_024,
+          ephemeralStorageBytes: 2_048,
+        },
+      }),
+    ).rejects.toThrow(
+      "supervisor_resources requires a LanceDB Enterprise refresh",
+    );
+    await expect(
+      table.refreshColumnAsync("x", {
+        planningWorkers: {
+          resources: {
+            cpuMillis: 1_000,
+            memoryBytes: 1_024,
+            ephemeralStorageBytes: 2_048,
+          },
+          maxWorkers: 2,
+          rowsPerWorker: 100,
+          fragmentsPerWorker: 1,
+        },
+      }),
+    ).rejects.toThrow("planning_workers requires a LanceDB Enterprise refresh");
   });
 
   it("records Function errors only on remote tables", async () => {

@@ -54,6 +54,7 @@ def main() -> int:
         ["cargo", "metadata", "--format-version=1", "--no-deps", "--all-features"],
         stdout=subprocess.PIPE,
         text=True,
+        check=False,
     )
     if metadata.returncode:
         return metadata.returncode
@@ -68,7 +69,7 @@ def main() -> int:
         "--tests",
         # Bound simultaneous compiler/linker temporary outputs as well as retained files.
         "--jobs",
-        "1",
+        "2",
         "--message-format=json,json-diagnostic-rendered-ansi",
     ]
     cleanup_failed = False
