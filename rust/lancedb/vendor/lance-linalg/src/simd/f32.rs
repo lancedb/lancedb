@@ -591,9 +591,8 @@ impl Mul for f32x8 {
 /// `target_feature = "avx512f"`, but no project CI configuration enables
 /// `+avx512f` globally (and one of the avx512 arms still contained `todo!()`),
 /// so the variant was dead code. Removed in the runtime-SIMD-dispatch
-/// retrofit; per-tier dispatch happens in the kernel functions in
-/// `crate::distance::*` via `match *SIMD_SUPPORT` + per-tier
-/// `#[target_feature(enable = "...")]` inner functions.
+/// retrofit; `crate::distance::*` now selects a per-tier `target_kernel!`
+/// candidate through a `Dispatch` list.
 #[allow(non_camel_case_types)]
 #[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy)]

@@ -10,16 +10,11 @@ use std::sync::Arc;
 
 use arrow_array::{Array, FixedSizeListArray, Float32Array};
 use half::{bf16, f16};
-use lance_core::{deepsize::DeepSizeOf, utils::cpu::SIMD_SUPPORT};
+use lance_core::deepsize::DeepSizeOf;
 use num_traits::{AsPrimitive, Num, real::Real};
 
 use crate::Result;
-#[cfg(feature = "fp16kernels")]
-use crate::distance::HalfBackend;
-use crate::distance::{
-    BatchKernel, HALF_KERNELS_COMPILED, HalfType, PairKernel, assert_batch_output_layout,
-    assert_equal_lengths, half_backend, x86_half_features,
-};
+use crate::distance::{BatchKernel, PairKernel, assert_batch_output_layout, assert_equal_lengths};
 
 /// Default implementation of dot product.
 ///
@@ -196,7 +191,9 @@ pub trait Dot: Num {
     /// The default calls [`Dot::dot`] per vector. `f32` overrides it with one
     /// batch kernel call, so the SIMD tier is chosen once for the whole batch
     /// instead of once per vector. `f64` overrides it off x86_64 to specialize
-    /// the loop for the common PQ sub-vector lengths.
+    /// the loop for the common PQ sub-vector lengths. `f16` and `bf16` call the
+    /// portable scalar kernel directly when the build has no C half kernels, so
+    /// that it inlines; otherwise they keep selecting per vector.
     ///
     /// # Panics
     ///
@@ -211,86 +208,30 @@ pub trait Dot: Num {
     }
 }
 
-#[cfg(feature = "fp16kernels")]
-mod bf16_kernel {
-    use half::bf16;
-
-    // These are the `dot_bf16` function in bf16.c. Our build.rs script compiles
-    // a version of this file for each SIMD level with different suffixes.
-    unsafe extern "C" {
-        #[cfg(target_arch = "aarch64")]
-        pub fn dot_bf16_neon(ptr1: *const bf16, ptr2: *const bf16, len: u32) -> f32;
-        #[cfg(all(kernel_support = "avx512_bf16", target_arch = "x86_64"))]
-        pub fn dot_bf16_avx512(ptr1: *const bf16, ptr2: *const bf16, len: u32) -> f32;
-        #[cfg(target_arch = "x86_64")]
-        pub fn dot_bf16_avx2(ptr1: *const bf16, ptr2: *const bf16, len: u32) -> f32;
-        #[cfg(target_arch = "loongarch64")]
-        pub fn dot_bf16_lsx(ptr1: *const bf16, ptr2: *const bf16, len: u32) -> f32;
-        #[cfg(target_arch = "loongarch64")]
-        pub fn dot_bf16_lasx(ptr1: *const bf16, ptr2: *const bf16, len: u32) -> f32;
-    }
-}
-
 impl Dot for bf16 {
     #[inline]
     fn dot(x: &[Self], y: &[Self]) -> f32 {
         assert_equal_lengths(x.len(), y.len());
-        match half_backend(
-            *SIMD_SUPPORT,
-            HalfType::Bf16,
-            HALF_KERNELS_COMPILED,
-            cfg!(all(kernel_support = "avx512_bf16", target_arch = "x86_64")),
-            x86_half_features(),
-        ) {
-            #[cfg(all(feature = "fp16kernels", target_arch = "aarch64"))]
-            HalfBackend::Neon => unsafe {
-                bf16_kernel::dot_bf16_neon(x.as_ptr(), y.as_ptr(), x.len() as u32)
-            },
-            #[cfg(all(
-                feature = "fp16kernels",
-                kernel_support = "avx512_bf16",
-                target_arch = "x86_64"
-            ))]
-            HalfBackend::Avx512 => unsafe {
-                bf16_kernel::dot_bf16_avx512(x.as_ptr(), y.as_ptr(), x.len() as u32)
-            },
-            #[cfg(all(feature = "fp16kernels", target_arch = "x86_64"))]
-            HalfBackend::Avx2 => unsafe {
-                bf16_kernel::dot_bf16_avx2(x.as_ptr(), y.as_ptr(), x.len() as u32)
-            },
-            #[cfg(all(feature = "fp16kernels", target_arch = "loongarch64"))]
-            HalfBackend::Lasx => unsafe {
-                bf16_kernel::dot_bf16_lasx(x.as_ptr(), y.as_ptr(), x.len() as u32)
-            },
-            #[cfg(all(feature = "fp16kernels", target_arch = "loongarch64"))]
-            HalfBackend::Lsx => unsafe {
-                bf16_kernel::dot_bf16_lsx(x.as_ptr(), y.as_ptr(), x.len() as u32)
-            },
-            // SimdSupport::AvxFma and SimdSupport::Avx fall through here:
-            // the bf16 C kernels are compiled with `-march=haswell` minimum
-            // (AVX2), so they cannot run on AVX-only or AVX+FMA hosts.
-            _ => dot_scalar::<Self, f32, 32>(x, y),
-        }
+        DOT_BF16.get().call(x, y)
     }
-}
 
-#[cfg(feature = "fp16kernels")]
-mod kernel {
-    use super::*;
-
-    // These are the `dot_f16` function in f16.c. Our build.rs script compiles
-    // a version of this file for each SIMD level with different suffixes.
-    unsafe extern "C" {
-        #[cfg(target_arch = "aarch64")]
-        pub fn dot_f16_neon(ptr1: *const f16, ptr2: *const f16, len: u32) -> f32;
-        #[cfg(all(kernel_support = "avx512_f16", target_arch = "x86_64"))]
-        pub fn dot_f16_avx512(ptr1: *const f16, ptr2: *const f16, len: u32) -> f32;
-        #[cfg(target_arch = "x86_64")]
-        pub fn dot_f16_avx2(ptr1: *const f16, ptr2: *const f16, len: u32) -> f32;
-        #[cfg(target_arch = "loongarch64")]
-        pub fn dot_f16_lsx(ptr1: *const f16, ptr2: *const f16, len: u32) -> f32;
-        #[cfg(target_arch = "loongarch64")]
-        pub fn dot_f16_lasx(ptr1: *const f16, ptr2: *const f16, len: u32) -> f32;
+    #[inline]
+    fn dot_batch_into(x: &[Self], batch: &[Self], dimension: usize, output: &mut [f32]) {
+        assert_batch_output_layout(x.len(), batch.len(), dimension, output.len());
+        for (product, y) in output.iter_mut().zip(batch.chunks_exact(dimension)) {
+            #[cfg(not(any(kernel_support = "half", kernel_support = "avx512_bf16")))]
+            {
+                // Without C half kernels `DOT_BF16` has a single portable
+                // candidate. Calling it through the dispatch function pointer
+                // keeps the scalar kernel out of line, adding a call per
+                // vector to the PQ table build loop.
+                *product = dot_scalar::<Self, f32, 32>(x, y);
+            }
+            #[cfg(any(kernel_support = "half", kernel_support = "avx512_bf16"))]
+            {
+                *product = Self::dot(x, y);
+            }
+        }
     }
 }
 
@@ -298,43 +239,176 @@ impl Dot for f16 {
     #[inline]
     fn dot(x: &[Self], y: &[Self]) -> f32 {
         assert_equal_lengths(x.len(), y.len());
-        match half_backend(
-            *SIMD_SUPPORT,
-            HalfType::F16,
-            HALF_KERNELS_COMPILED,
-            cfg!(all(kernel_support = "avx512_f16", target_arch = "x86_64")),
-            x86_half_features(),
-        ) {
-            #[cfg(all(feature = "fp16kernels", target_arch = "aarch64"))]
-            HalfBackend::Neon => unsafe {
-                kernel::dot_f16_neon(x.as_ptr(), y.as_ptr(), x.len() as u32)
-            },
-            #[cfg(all(
-                feature = "fp16kernels",
-                kernel_support = "avx512_f16",
-                target_arch = "x86_64"
-            ))]
-            HalfBackend::Avx512 => unsafe {
-                kernel::dot_f16_avx512(x.as_ptr(), y.as_ptr(), x.len() as u32)
-            },
-            #[cfg(all(feature = "fp16kernels", target_arch = "x86_64"))]
-            HalfBackend::Avx2 => unsafe {
-                kernel::dot_f16_avx2(x.as_ptr(), y.as_ptr(), x.len() as u32)
-            },
-            #[cfg(all(feature = "fp16kernels", target_arch = "loongarch64"))]
-            HalfBackend::Lasx => unsafe {
-                kernel::dot_f16_lasx(x.as_ptr(), y.as_ptr(), x.len() as u32)
-            },
-            #[cfg(all(feature = "fp16kernels", target_arch = "loongarch64"))]
-            HalfBackend::Lsx => unsafe {
-                kernel::dot_f16_lsx(x.as_ptr(), y.as_ptr(), x.len() as u32)
-            },
-            // SimdSupport::AvxFma and SimdSupport::Avx retain their scalar
-            // route; this fallback only extends the tiers the C kernel already
-            // served to Avx512FP16 after checking F16C and FMA.
-            _ => dot_scalar::<Self, f32, 32>(x, y),
+        DOT_F16.get().call(x, y)
+    }
+
+    #[inline]
+    fn dot_batch_into(x: &[Self], batch: &[Self], dimension: usize, output: &mut [f32]) {
+        assert_batch_output_layout(x.len(), batch.len(), dimension, output.len());
+        for (product, y) in output.iter_mut().zip(batch.chunks_exact(dimension)) {
+            #[cfg(not(any(kernel_support = "half", kernel_support = "avx512_f16")))]
+            {
+                // See `dot_batch_into` for bf16: inline the only portable
+                // candidate instead of calling it through the dispatch.
+                *product = dot_scalar::<Self, f32, 32>(x, y);
+            }
+            #[cfg(any(kernel_support = "half", kernel_support = "avx512_f16"))]
+            {
+                *product = Self::dot(x, y);
+            }
         }
     }
+}
+
+lance_core::dispatch! {
+    static DOT_F16: Dispatch<PairKernel<f16>> = &[
+        #[cfg(all(kernel_support = "avx512_f16", target_arch = "x86_64"))]
+        half_c::DOT_F16_AVX512,
+        #[cfg(all(kernel_support = "half", target_arch = "x86_64"))]
+        half_c::DOT_F16_AVX2,
+        #[cfg(all(kernel_support = "half", target_arch = "aarch64"))]
+        half_c::DOT_F16_NEON,
+        #[cfg(all(kernel_support = "half", target_arch = "loongarch64"))]
+        half_c::DOT_F16_LASX,
+        #[cfg(all(kernel_support = "half", target_arch = "loongarch64"))]
+        half_c::DOT_F16_LSX,
+        DOT_F16_SCALAR,
+    ];
+}
+
+lance_core::dispatch! {
+    static DOT_BF16: Dispatch<PairKernel<bf16>> = &[
+        #[cfg(all(kernel_support = "avx512_bf16", target_arch = "x86_64"))]
+        half_c::DOT_BF16_AVX512,
+        #[cfg(all(kernel_support = "half", target_arch = "x86_64"))]
+        half_c::DOT_BF16_AVX2,
+        #[cfg(all(kernel_support = "half", target_arch = "aarch64"))]
+        half_c::DOT_BF16_NEON,
+        #[cfg(all(kernel_support = "half", target_arch = "loongarch64"))]
+        half_c::DOT_BF16_LASX,
+        #[cfg(all(kernel_support = "half", target_arch = "loongarch64"))]
+        half_c::DOT_BF16_LSX,
+        DOT_BF16_SCALAR,
+    ];
+}
+
+lance_core::target_kernel! {
+    #[target_features()]
+    #[candidate(DOT_F16_SCALAR: PairKernel<f16>)]
+    fn dot_f16_scalar(x: &[f16], y: &[f16]) -> f32 {
+        dot_scalar::<f16, f32, 32>(x, y)
+    }
+}
+
+lance_core::target_kernel! {
+    #[target_features()]
+    #[candidate(DOT_BF16_SCALAR: PairKernel<bf16>)]
+    fn dot_bf16_scalar(x: &[bf16], y: &[bf16]) -> f32 {
+        dot_scalar::<bf16, f32, 32>(x, y)
+    }
+}
+
+/// The `dot_f16` and `dot_bf16` functions in f16.c and bf16.c. build.rs compiles
+/// each file once per SIMD level, suffixing the symbols with the level.
+#[cfg(kernel_support = "half")]
+mod half_c {
+    use half::{bf16, f16};
+
+    use crate::distance::PairKernel;
+
+    mod ffi {
+        use half::{bf16, f16};
+
+        unsafe extern "C" {
+            #[cfg(all(kernel_support = "avx512_f16", target_arch = "x86_64"))]
+            pub fn dot_f16_avx512(ptr1: *const f16, ptr2: *const f16, len: u32) -> f32;
+            #[cfg(target_arch = "x86_64")]
+            pub fn dot_f16_avx2(ptr1: *const f16, ptr2: *const f16, len: u32) -> f32;
+            #[cfg(target_arch = "aarch64")]
+            pub fn dot_f16_neon(ptr1: *const f16, ptr2: *const f16, len: u32) -> f32;
+            #[cfg(target_arch = "loongarch64")]
+            pub fn dot_f16_lasx(ptr1: *const f16, ptr2: *const f16, len: u32) -> f32;
+            #[cfg(target_arch = "loongarch64")]
+            pub fn dot_f16_lsx(ptr1: *const f16, ptr2: *const f16, len: u32) -> f32;
+
+            #[cfg(all(kernel_support = "avx512_bf16", target_arch = "x86_64"))]
+            pub fn dot_bf16_avx512(ptr1: *const bf16, ptr2: *const bf16, len: u32) -> f32;
+            #[cfg(target_arch = "x86_64")]
+            pub fn dot_bf16_avx2(ptr1: *const bf16, ptr2: *const bf16, len: u32) -> f32;
+            #[cfg(target_arch = "aarch64")]
+            pub fn dot_bf16_neon(ptr1: *const bf16, ptr2: *const bf16, len: u32) -> f32;
+            #[cfg(target_arch = "loongarch64")]
+            pub fn dot_bf16_lasx(ptr1: *const bf16, ptr2: *const bf16, len: u32) -> f32;
+            #[cfg(target_arch = "loongarch64")]
+            pub fn dot_bf16_lsx(ptr1: *const bf16, ptr2: *const bf16, len: u32) -> f32;
+        }
+    }
+
+    half_c_kernels! {
+        fn (x: &[f16], y: &[f16]) -> f32 => (x.as_ptr(), y.as_ptr(), x.len().min(y.len()) as u32);
+        #[cfg(all(kernel_support = "avx512_f16", target_arch = "x86_64"))]
+        DOT_F16_AVX512: PairKernel<f16> = dot_f16_avx512("avx512fp16");
+        #[cfg(target_arch = "x86_64")]
+        DOT_F16_AVX2: PairKernel<f16> = dot_f16_avx2("avx2", "fma", "f16c", "bmi1", "bmi2");
+        #[cfg(target_arch = "aarch64")]
+        DOT_F16_NEON: PairKernel<f16> = dot_f16_neon("neon", "fp16");
+        #[cfg(target_arch = "loongarch64")]
+        DOT_F16_LASX: PairKernel<f16> = dot_f16_lasx("lasx");
+        #[cfg(target_arch = "loongarch64")]
+        DOT_F16_LSX: PairKernel<f16> = dot_f16_lsx("lsx");
+    }
+
+    half_c_kernels! {
+        fn (x: &[bf16], y: &[bf16]) -> f32 => (x.as_ptr(), y.as_ptr(), x.len().min(y.len()) as u32);
+        #[cfg(all(kernel_support = "avx512_bf16", target_arch = "x86_64"))]
+        DOT_BF16_AVX512: PairKernel<bf16> = dot_bf16_avx512("avx512fp16", "avx512bf16");
+        #[cfg(target_arch = "x86_64")]
+        DOT_BF16_AVX2: PairKernel<bf16> = dot_bf16_avx2("avx2", "fma", "f16c", "bmi1", "bmi2");
+        #[cfg(target_arch = "aarch64")]
+        DOT_BF16_NEON: PairKernel<bf16> = dot_bf16_neon("neon", "fp16");
+        #[cfg(target_arch = "loongarch64")]
+        DOT_BF16_LASX: PairKernel<bf16> = dot_bf16_lasx("lasx");
+        #[cfg(target_arch = "loongarch64")]
+        DOT_BF16_LSX: PairKernel<bf16> = dot_bf16_lsx("lsx");
+    }
+
+    // Each candidate must require what build.rs compiled its object for.
+    #[cfg(target_arch = "x86_64")]
+    const _: () = {
+        use crate::distance::half_c_objects::{HASWELL, same_features};
+        assert!(same_features(DOT_F16_AVX2.features(), HASWELL));
+        assert!(same_features(DOT_BF16_AVX2.features(), HASWELL));
+    };
+    #[cfg(all(target_arch = "x86_64", kernel_support = "avx512_f16"))]
+    const _: () = {
+        use crate::distance::half_c_objects::{SAPPHIRE_RAPIDS_F16, same_features};
+        assert!(same_features(
+            DOT_F16_AVX512.features(),
+            SAPPHIRE_RAPIDS_F16
+        ));
+    };
+    #[cfg(all(target_arch = "x86_64", kernel_support = "avx512_bf16"))]
+    const _: () = {
+        use crate::distance::half_c_objects::{SAPPHIRE_RAPIDS_BF16, same_features};
+        assert!(same_features(
+            DOT_BF16_AVX512.features(),
+            SAPPHIRE_RAPIDS_BF16
+        ));
+    };
+    #[cfg(target_arch = "aarch64")]
+    const _: () = {
+        use crate::distance::half_c_objects::{ARMV8_2_FP16, same_features};
+        assert!(same_features(DOT_F16_NEON.features(), ARMV8_2_FP16));
+        assert!(same_features(DOT_BF16_NEON.features(), ARMV8_2_FP16));
+    };
+    #[cfg(target_arch = "loongarch64")]
+    const _: () = {
+        use crate::distance::half_c_objects::{LASX, LSX, same_features};
+        assert!(same_features(DOT_F16_LASX.features(), LASX));
+        assert!(same_features(DOT_BF16_LASX.features(), LASX));
+        assert!(same_features(DOT_F16_LSX.features(), LSX));
+        assert!(same_features(DOT_BF16_LSX.features(), LSX));
+    };
 }
 
 impl Dot for f32 {
@@ -935,6 +1009,7 @@ mod tests {
         arbitrary_bf16, arbitrary_f16, arbitrary_f32, arbitrary_f64, arbitrary_vector_pair,
         dimension_shard, run_vector_pair_proptest,
     };
+    use lance_core::utils::cpu::Dispatch;
     use num_traits::{Float, FromPrimitive};
     use proptest::prelude::*;
 
@@ -1302,6 +1377,76 @@ mod tests {
         }
     }
 
+    /// Every host-supported half-precision kernel must agree with an f64
+    /// reference.
+    fn check_half_dot_kernels<T: AsPrimitive<f64> + Float>(
+        dispatch: &Dispatch<PairKernel<T>>,
+        x: &[T],
+        y: &[T],
+    ) -> std::result::Result<(), TestCaseError> {
+        let x_f64 = x.iter().map(|&v| v.as_()).collect::<Vec<f64>>();
+        let y_f64 = y.iter().map(|&v| v.as_()).collect::<Vec<f64>>();
+        let want = dot_scalar_ref(&x_f64, &y_f64);
+        let max_error = max_error::<T>(&x_f64, &y_f64);
+        for candidate in dispatch.candidates() {
+            let Some(kernel) = candidate.kernel() else {
+                continue;
+            };
+            let got = kernel.call(x, y);
+            prop_assert!(
+                approx::relative_eq!(got, want, epsilon = max_error),
+                "{} at dim {}: {got} != {want}",
+                candidate.name(),
+                x.len()
+            );
+            // The C candidates' safe wrappers clamp the length to the shorter
+            // slice, so extra elements on either side must not change the
+            // result. The scalar candidate is the one without features.
+            if candidate.features().is_empty() {
+                continue;
+            }
+            for (x, y) in [(x, &[y, x].concat()[..]), (&[x, y].concat()[..], y)] {
+                let clamped = kernel.call(x, y);
+                prop_assert!(
+                    clamped.to_bits() == got.to_bits(),
+                    "{} at lengths {} and {}: {clamped} != {got}",
+                    candidate.name(),
+                    x.len(),
+                    y.len()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_dot_half_kernels_short_lengths() {
+        run_vector_pair_proptest(arbitrary_f16, 0..4, |x, y| {
+            check_half_dot_kernels(&DOT_F16, &x, &y)
+        });
+        run_vector_pair_proptest(arbitrary_bf16, 0..4, |x, y| {
+            check_half_dot_kernels(&DOT_BF16, &x, &y)
+        });
+    }
+
+    #[rstest::rstest]
+    fn test_dot_f16_kernels_match_reference(
+        #[values(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)] shard: usize,
+    ) {
+        run_vector_pair_proptest(arbitrary_f16, dimension_shard(shard), |x, y| {
+            check_half_dot_kernels(&DOT_F16, &x, &y)
+        });
+    }
+
+    #[rstest::rstest]
+    fn test_dot_bf16_kernels_match_reference(
+        #[values(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)] shard: usize,
+    ) {
+        run_vector_pair_proptest(arbitrary_bf16, dimension_shard(shard), |x, y| {
+            check_half_dot_kernels(&DOT_BF16, &x, &y)
+        });
+    }
+
     proptest::proptest! {
         #[test]
         fn test_dot_f16((x, y) in arbitrary_vector_pair(arbitrary_f16, 4..4048)) {
@@ -1331,8 +1476,8 @@ mod tests {
     }
 
     /// `dot_batch_into` must agree with the per-vector `dot`. The f32 batch
-    /// kernel may differ in rounding; the f64 batch loops run the pair
-    /// kernel's arithmetic, so f64 must match bit for bit.
+    /// kernel may differ in rounding; the f64 and half batches run the pair
+    /// kernel's arithmetic, so they must match bit for bit.
     #[rstest::rstest]
     #[case::dim_8(8)]
     #[case::dim_12(12)]
@@ -1371,6 +1516,8 @@ mod tests {
                 }
             }
         }
+        check::<f16>(dimension, true);
+        check::<bf16>(dimension, true);
         check::<f32>(dimension, false);
         check::<f64>(dimension, true);
     }

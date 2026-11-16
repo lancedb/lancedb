@@ -444,9 +444,8 @@ impl Mul for f64x4 {
 /// x86_64. Originally there was a sibling AVX-512 variant gated on
 /// `target_feature = "avx512f"`, but no project CI configuration enables
 /// `+avx512f` globally, so the variant was dead code. Removed in the
-/// runtime-SIMD-dispatch retrofit; per-tier dispatch happens in the kernel
-/// functions in `crate::distance::*` via `match *SIMD_SUPPORT` + per-tier
-/// `#[target_feature(enable = "...")]` inner functions.
+/// runtime-SIMD-dispatch retrofit; `crate::distance::*` now selects a
+/// per-tier `target_kernel!` candidate through a `Dispatch` list.
 #[allow(non_camel_case_types)]
 #[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy)]
