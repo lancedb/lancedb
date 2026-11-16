@@ -210,6 +210,13 @@ table.search().where("contains(text, 'needle')").limit(10).to_pandas()
 
 `list_indices()` reports the index type as `"NGram"`.
 
+<Note>
+Lance 15.0.0-beta.21 writes new NGram indexes using physical row addresses. On
+tables with stable row IDs, rebuild legacy NGram indexes that store row IDs
+before consolidating their segments. Consolidation rejects these legacy
+row-ID segments. Tables without stable row IDs retain the earlier index format.
+</Note>
+
 ## Index UUID Columns
 
 LanceDB supports scalar indexes on UUID columns (stored as `FixedSizeBinary(16)`), enabling efficient lookups and filtering on UUID-based primary keys.

@@ -83,6 +83,7 @@ pub mod datafusion;
 pub(crate) mod dataset;
 pub mod delete;
 pub mod freshness;
+pub mod function_column_status;
 pub mod merge;
 pub mod optimize;
 pub(crate) mod primary_key;
@@ -106,6 +107,11 @@ pub use computed_columns::{
     ComputedColumn, ComputedColumnKind, computed_column_from_field, computed_columns,
 };
 pub use delete::DeleteResult;
+pub use function_column_status::{
+    FunctionColumnAutoRefreshBlockedReason, FunctionColumnAutoRefreshState,
+    FunctionColumnAutoRefreshStatus, FunctionColumnLastRefreshJob, FunctionColumnStatus,
+    FunctionColumnVersionStatus,
+};
 use futures::future::join_all;
 pub use lance::dataset::refs::{BranchContents, Ref, TagContents, Tags as LanceTags};
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
@@ -114,7 +120,10 @@ pub use optimize::{
     CompactionMode, CompactionOptions, CompactionOverrides, IndexRemapMode, OptimizeAction,
     OptimizeStats,
 };
-pub use refresh::{FunctionWorkerResourceBudget, RefreshColumnOptions, RefreshColumnResult};
+pub use refresh::{
+    FunctionRefreshPlanningConfig, FunctionRefreshPodResources, FunctionWorkerResourceBudget,
+    RefreshColumnOptions, RefreshColumnResult,
+};
 pub use rte_stats::{MemtableStats, RTEStats, SsTableStats, TableShardStats};
 pub use schema_evolution::{
     AddColumnsResult, AlterColumnsResult, DropColumnsResult, FieldMetadataUpdate,
@@ -826,6 +835,16 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "blob_columns is not supported on this table type".into(),
         })
     }
+    /// Bind a remote payload reader to an identity from its producing query.
+    async fn query_snapshot_with_identity(
+        &self,
+        _version: u64,
+        _identity: &str,
+    ) -> Result<Arc<dyn BaseTable>> {
+        Err(Error::NotSupported {
+            message: "query snapshot identities are not supported on this table type".into(),
+        })
+    }
     /// Materialize blob bytes for the given row ids. See [`Table::fetch_blobs`].
     async fn fetch_blobs(&self, _column: &str, _row_ids: &[u64]) -> Result<LargeBinaryArray> {
         Err(Error::NotSupported {
@@ -961,6 +980,19 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
                 .append_to("per-row Function errors are recorded only in LanceDB Enterprise"),
         })
     }
+    /// Exact four-way freshness status for Function-backed output columns.
+    ///
+    /// `column` filters to one user-visible output; `None` returns every
+    /// Function output. The default returns `NotSupported`.
+    async fn function_column_statuses(
+        &self,
+        _column: Option<&str>,
+    ) -> Result<Vec<FunctionColumnStatus>> {
+        Err(Error::NotSupported {
+            message: DocLink::Functions
+                .append_to("exact Function column status is supported only in LanceDB Enterprise"),
+        })
+    }
     /// Alter columns in the table.
     async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<AlterColumnsResult>;
     /// Drop columns from the table.
@@ -980,6 +1012,15 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn checkout_tag(&self, tag: &str) -> Result<()>;
     /// Checkout the latest version of the table.
     async fn checkout_latest(&self) -> Result<()>;
+    /// Advance a latest handle to the current snapshot before a polling read.
+    ///
+    /// Pinned version, tag, and snapshot handles must remain unchanged. This
+    /// lets a freshness wait observe publications that arrive after it starts
+    /// without changing an explicit time-travel selection.
+    #[doc(hidden)]
+    async fn checkout_latest_if_latest(&self) -> Result<()> {
+        Ok(())
+    }
     /// Return an independent handle pinned to the version currently selected.
     ///
     /// Backends that can advance between requests should override this for
@@ -1353,6 +1394,21 @@ impl Table {
         })
     }
 
+    /// Create an independent remote handle constrained by a query response.
+    #[doc(hidden)]
+    pub async fn query_snapshot_with_identity(&self, version: u64, identity: &str) -> Result<Self> {
+        Ok(Self {
+            inner: self
+                .inner
+                .query_snapshot_with_identity(version, identity)
+                .await?,
+            database: self.database.clone(),
+            embedding_registry: self.embedding_registry.clone(),
+            merge_insert_source_collect_threshold_bytes: self
+                .merge_insert_source_collect_threshold_bytes,
+        })
+    }
+
     /// Count the number of rows in this dataset.
     ///
     /// # Arguments
@@ -1430,8 +1486,13 @@ impl Table {
     /// ranges for the same blob. The output has the same length and order as
     /// the requests. Null blobs produce null output slots; empty ranges on
     /// non-null blobs produce empty byte strings.
-    /// LanceDB Enterprise tables read through version-pinned [`BlobFile`] handles using
-    /// HTTP byte-range requests.
+    /// LanceDB Enterprise uses the batched endpoint when the server advertises
+    /// support, splitting calls at 1024 ranges and 64 MiB of requested bytes.
+    /// Individual larger ranges are partitioned and reassembled into one result.
+    /// Older servers use descriptor queries and [`Self::fetch_blob_files`] range
+    /// reads. Both protocols read one exact branch and version without changing
+    /// this handle's checkout. The final materialized output still occupies memory.
+    /// Errors from an advertised endpoint propagate without switching protocols.
     ///
     /// `_rowid` values stay valid after compaction when the table has stable
     /// row ids. One missing or deleted row id rejects the whole request; no
@@ -1464,10 +1525,14 @@ impl Table {
         column: impl AsRef<str>,
         requests: impl IntoIterator<Item = BlobRangeRequest>,
     ) -> Result<LargeBinaryArray> {
-        let requests = requests.into_iter().collect::<Vec<_>>();
-        self.inner
-            .fetch_blob_ranges(column.as_ref(), &requests)
-            .await
+        let mut ranges = Vec::new();
+        for request in requests {
+            ranges.try_reserve(1).map_err(|error| Error::InvalidInput {
+                message: format!("cannot allocate blob range requests: {error}"),
+            })?;
+            ranges.push(request);
+        }
+        self.inner.fetch_blob_ranges(column.as_ref(), &ranges).await
     }
 
     /// Open lazy [`BlobFile`] handles for the given row ids.
@@ -2259,6 +2324,76 @@ impl Table {
         self.inner
             .refresh_column_async_with_options(column.as_ref(), options)
             .await
+    }
+
+    /// Return exact freshness status for all Function-backed output columns.
+    ///
+    /// The server evaluates all counts at one table version. Clients never
+    /// derive counts by joining schema, Job, and error listings. A handle
+    /// pinned with `checkout` sends that exact version, while a latest handle
+    /// keeps the existing read-freshness headers.
+    pub async fn function_column_statuses(
+        &self,
+        column: Option<&str>,
+    ) -> Result<Vec<FunctionColumnStatus>> {
+        let statuses = self.inner.function_column_statuses(column).await?;
+        function_column_status::validate_statuses(&statuses)?;
+        Ok(statuses)
+    }
+
+    /// Return exact freshness status for one Function-backed output column.
+    pub async fn function_column_status(&self, column: &str) -> Result<FunctionColumnStatus> {
+        let mut statuses = self.function_column_statuses(Some(column)).await?;
+        if statuses.len() != 1 || statuses[0].column != column {
+            return Err(Error::ColumnNotFound {
+                name: column.to_string(),
+            });
+        }
+        Ok(statuses.remove(0))
+    }
+
+    /// Poll until a Function output has no stale or never-computed rows.
+    ///
+    /// Failed rows do not keep the call pending. A typed
+    /// `function_column_status_finalization_pending` response is retried with
+    /// bounded exponential backoff; every other error is returned immediately.
+    /// Latest handles checkout the current snapshot before each poll so they
+    /// observe publications that happened after the wait started. Pinned
+    /// handles keep their explicit version.
+    pub async fn wait_for_function_column(
+        &self,
+        column: &str,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<FunctionColumnStatus> {
+        let started = std::time::Instant::now();
+        let mut delay = std::time::Duration::from_millis(250);
+        loop {
+            self.inner.checkout_latest_if_latest().await?;
+            let result = self.function_column_status(column).await;
+            match result {
+                Ok(status) if status.stale == 0 && status.never_computed == 0 => return Ok(status),
+                Ok(_) => {}
+                Err(error) if function_column_status::is_finalization_pending(&error) => {}
+                Err(error) => return Err(error),
+            }
+
+            let sleep_for = match timeout {
+                Some(timeout) => {
+                    let remaining = timeout.saturating_sub(started.elapsed());
+                    if remaining.is_zero() {
+                        return Err(Error::Timeout {
+                            message: format!(
+                                "Function column '{column}' did not become fresh before timeout"
+                            ),
+                        });
+                    }
+                    delay.min(remaining)
+                }
+                None => delay,
+            };
+            tokio::time::sleep(sleep_for).await;
+            delay = std::cmp::min(delay * 2, std::time::Duration::from_secs(1));
+        }
     }
 
     /// The per-row errors Function refreshes recorded on this table: the
@@ -4049,14 +4184,18 @@ impl BaseTable for NativeTable {
     }
 
     async fn create_index(&self, opts: IndexBuilder) -> Result<()> {
-        let prepared = self.prepare_index(&opts).await?;
+        let Some(prepared) = self.prepare_index(&opts).await? else {
+            return Ok(());
+        };
         self.build_index(opts, prepared).await
     }
 
     async fn create_index_async(&self, opts: IndexBuilder) -> Result<Job> {
         // Prepare before spawning so bad input is reported by this call rather
         // than only by the job.
-        let prepared = self.prepare_index(&opts).await?;
+        let Some(prepared) = self.prepare_index(&opts).await? else {
+            return Ok(Job::new_done());
+        };
         let table = self.clone();
         Ok(Job::spawned(tokio::spawn(async move {
             table.build_index(opts, prepared).await

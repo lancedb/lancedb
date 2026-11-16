@@ -35,11 +35,12 @@ from urllib.parse import urlparse
 from lancedb.scannable import _hf_batches, _register_optional_converters, to_scannable
 
 from . import __version__
-from ._lancedb import _parse_field_path
+from ._lancedb import FunctionColumnStatus, _parse_field_path
 from ._blob import (
     BlobFile,
     _normalize_blob_descriptor,
     _normalize_blob_row_ids,
+    _validate_blob_buffer_size,
     _wrap_blob_files,
     strip_auto_row_ids,
     validate_blob_mode,
@@ -90,6 +91,7 @@ from .functions import (
 from .merge import LanceMergeInsertBuilder
 from .pydantic import LanceModel, model_to_dict
 from .query import (
+    FullTextOperator,
     AnalyzePlanDistributedMetrics,
     AsyncFTSQuery,
     AsyncHybridQuery,
@@ -137,6 +139,11 @@ def _requires_local_namespace_execution(query: Query) -> bool:
         or query.take_row_ids is not None
         or query.search_effort is not None
         or query.approx_mode is not None
+        or (
+            query.full_text_query is not None
+            and query.fast_search is True
+            and query.vector is None
+        )
     )
 
 
@@ -165,6 +172,36 @@ def _validate_index_accelerator(accelerator: Any) -> None:
         torch.cuda.init()
     except (RuntimeError, AssertionError) as err:
         raise RuntimeError(_CUDA_UNAVAILABLE_MESSAGE) from err
+
+
+def _create_accelerated_index(dataset, *, exist_ok=False, name=None, **options):
+    if exist_ok:
+        parts = _parse_field_path(options["column"])
+        default_name = ".".join(parts)
+        if any("." in part for part in parts):
+            default_name = ".".join(
+                "`" + part.replace("`", "``") + "`"
+                if any(
+                    not character.isalnum() and character != "_" for character in part
+                )
+                else part
+                for part in parts
+            )
+        name = name or f"{default_name}_idx"
+        dataset.checkout_latest()
+        if any(index["name"] == name for index in dataset.list_indices()):
+            return
+        options["replace"] = False
+        options["name"] = name
+    _validate_index_accelerator(options.get("accelerator"))
+    try:
+        dataset.create_index(**options)
+    except Exception:
+        if exist_ok:
+            dataset.checkout_latest()
+            if any(index["name"] == name for index in dataset.list_indices()):
+                return
+        raise
 
 
 def _polars_predicate_pushdown_barrier(frame: Any) -> Any:
@@ -1113,7 +1150,14 @@ def _align_field(field: pa.Field, target_field: pa.Field) -> pa.Field:
             if not any(child.name in ("data", "uri") for child in source_type):
                 raise ValueError(
                     f"blob struct input for column '{field.name}' must contain "
-                    "a 'data' or 'uri' child"
+                    "a 'data' or 'uri' child. A blob query returns an SDK "
+                    "descriptor in this shape, and a descriptor is not payload "
+                    "bytes. Use blob_mode='bytes' to materialize payloads, or "
+                    "inspect descriptors with blob_mode='descriptions'. To copy "
+                    "payloads, select row IDs with with_row_id(True), then call "
+                    "table.fetch_blobs(column, row_ids) or "
+                    "table.fetch_blob_files(column, row_ids). Keep the source "
+                    "unchanged between selection and fetching."
                 )
         elif not _can_coerce_to_blob(source_type) and not isinstance(
             source_type, pa.ExtensionType
@@ -1833,6 +1877,7 @@ class Table(ABC):
         replace: bool = ...,
         wait_timeout: Optional[timedelta] = ...,
         name: Optional[str] = ...,
+        exist_ok: bool = ...,
         train: bool = ...,
     ) -> None: ...
 
@@ -1858,6 +1903,7 @@ class Table(ABC):
         *,
         wait_timeout: Optional[timedelta] = ...,
         name: Optional[str] = ...,
+        exist_ok: bool = ...,
         train: bool = ...,
         target_partition_size: Optional[int] = ...,
     ) -> None: ...
@@ -1889,6 +1935,7 @@ class Table(ABC):
         config: Optional[IndexConfigType] = None,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
         train: bool = True,
         target_partition_size: Optional[int] = None,
     ):
@@ -1912,6 +1959,9 @@ class Table(ABC):
             BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, FTS.
         replace : bool, default True
             Whether to replace an existing index on this column.
+        exist_ok : bool, default False
+            Preserve the existing index with the requested or derived name.
+            Takes precedence over replace and keeps its definition and build.
         wait_timeout : timedelta, optional
             LanceDB Enterprise only: how long to wait for the index build to finish.
             If not set, the call returns once the build is scheduled.
@@ -1967,6 +2017,7 @@ class Table(ABC):
         replace: Optional[bool] = None,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
         train: bool = True,
     ) -> Job:
         """Create an index, returning a handle to the indexing job.
@@ -2059,6 +2110,7 @@ class Table(ABC):
         index_type: ScalarIndexType = "BTREE",
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
     ):
         """Create a scalar index on a column.
 
@@ -2143,6 +2195,7 @@ class Table(ABC):
         document_granularity: DocumentGranularity = DocumentGranularity.ROW,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
     ):
         """Create a full-text search index on the table.
 
@@ -2255,6 +2308,7 @@ class Table(ABC):
         progress: Optional[Union[bool, Callable, Any]] = None,
         write_parallelism: Optional[int] = None,
         allow_external_blob_outside_bases: bool = False,
+        retries: Optional[int] = None,
     ) -> AddResult:
         """Add more data to the [Table][lancedb.table.Table].
 
@@ -2315,6 +2369,10 @@ class Table(ABC):
             Store blob URIs that sit outside registered blob bases. The row
             keeps a reference, so the object has to stay readable. Local
             tables only.
+        retries: int, optional
+            Override the remote retry budget for this call (0 to 255). Zero
+            disables retries, including multipart parts. Ambiguous commits are
+            never replayed. Ignored by LanceDB Embedded.
 
         Returns
         -------
@@ -2398,6 +2456,8 @@ class Table(ABC):
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
         fast_search: Optional[bool] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search](https://lancedb.com/docs/search/vector-search/)
@@ -2460,6 +2520,10 @@ class Table(ABC):
 
             - If `query` is a string, then the query type is "vector" if the
             table has embedding functions else the query type is "fts"
+
+        operator: "AND" or "OR", optional
+            Combine terms in a string full-text query; the default is OR.
+            Use ``query_type="fts"`` when the table also has embeddings.
 
         Returns
         -------
@@ -2655,8 +2719,12 @@ class Table(ABC):
         results are returned.
 
         Row IDs can be obtained from a query with ``with_row_id(True)``.
-        LanceDB Enterprise reads the requested ranges through version-pinned blob
-        handles using HTTP byte-range requests.
+        LanceDB Enterprise uses the batched endpoint when the server advertises
+        support, partitioning at 1024 ranges and 64 MiB, including individual
+        larger ranges. Older servers use descriptor queries and BlobFile range
+        reads. Both protocols read one exact branch and version without changing
+        the table's checkout. Errors from an advertised endpoint propagate without
+        switching protocols. The final output occupies memory.
         """
 
     @abstractmethod
@@ -2664,6 +2732,8 @@ class Table(ABC):
         self,
         column: str,
         row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
+        *,
+        buffer_size: Optional[int] = None,
     ) -> "list[Optional[BlobFile]]":
         """Open lazy, seekable :class:`~lancedb._blob.BlobFile` handles.
 
@@ -2673,6 +2743,8 @@ class Table(ABC):
         ``pyarrow.Table`` carrying row identity via ``_rowid`` or a
         ``_lance_row_id`` field on the blob descriptor. Null blob values return
         ``None``. LanceDB Enterprise requires server version 0.5.0 or newer.
+        ``buffer_size`` controls sequential read-ahead in bytes (default 512 KiB).
+        Set it to 0 for sparse reads. Explicit range reads bypass this buffer.
 
         ``_rowid`` values stay valid after compaction when the table has stable
         row ids.
@@ -2682,7 +2754,10 @@ class Table(ABC):
 
     @abstractmethod
     def open_blob_file(
-        self, descriptor: Union[dict, pa.StructScalar, None]
+        self,
+        descriptor: Union[dict, pa.StructScalar, None],
+        *,
+        buffer_size: Optional[int] = None,
     ) -> Optional[BlobFile]:
         """Open a seekable file from a SQL ``blob_descriptor`` result.
 
@@ -2691,6 +2766,7 @@ class Table(ABC):
         not change this table's checkout. Null descriptors return ``None``.
         Payload bytes load only when the returned handle is read. An external
         blob with an unspecified size may require a metadata request on opening.
+        ``buffer_size`` controls sequential read-ahead (default 512 KiB; 0 disables).
 
         ```python
         rows = db.execute_query(
@@ -2701,7 +2777,9 @@ class Table(ABC):
         ```
         """
 
-    def open_blob_files(self, descriptors: Iterable) -> Iterator[Optional[BlobFile]]:
+    def open_blob_files(
+        self, descriptors: Iterable, *, buffer_size: Optional[int] = None
+    ) -> Iterator[Optional[BlobFile]]:
         """Iterate over lazy files from descriptor dictionaries or Arrow scalars.
 
         Accepts an Arrow array/chunked array or any iterable. Opens each handle
@@ -2716,7 +2794,10 @@ class Table(ABC):
         ```
         """
         for descriptor in descriptors:
-            yield self.open_blob_file(descriptor)
+            if buffer_size is None:
+                yield self.open_blob_file(descriptor)
+            else:
+                yield self.open_blob_file(descriptor, buffer_size=buffer_size)
 
     @abstractmethod
     def _execute_query(
@@ -2748,6 +2829,7 @@ class Table(ABC):
         new_data: DATA,
         on_bad_vectors: OnBadVectorsType,
         fill_value: float,
+        retries: Optional[int] = None,
     ) -> MergeResult: ...
 
     @abstractmethod
@@ -3196,6 +3278,8 @@ class Table(ABC):
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
         resource_budget: Optional[Dict[str, int]] = None,
+        supervisor_resources: Optional[Dict[str, int]] = None,
+        planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -3253,6 +3337,17 @@ class Table(ABC):
             CPU-only budget. This budget cannot be combined with the top-level
             ``gpu_count`` shorthand. LanceDB Enterprise only; local refreshes
             reject it.
+        supervisor_resources: dict[str, int], optional
+            CPU, memory, and ephemeral-storage limits for the Function refresh
+            supervisor pod. Keys are ``cpu_millis``, ``memory_bytes`` and
+            ``ephemeral_storage_bytes``; all are required and positive.
+            LanceDB Enterprise only; local refreshes reject it.
+        planning_workers: dict[str, object], optional
+            Resources and sizing for the Function refresh planning fleet.
+            ``resources`` has the same keys as ``supervisor_resources``; the
+            other keys are ``max_workers``, ``rows_per_worker`` and
+            ``fragments_per_worker``. LanceDB Enterprise only; local refreshes
+            reject it.
         gpu_class: str, optional
             GPU class for Function workers. Must be a lowercase name of 1-63
             letters, digits, or hyphens, without a leading or trailing hyphen.
@@ -3305,6 +3400,8 @@ class Table(ABC):
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
         resource_budget: Optional[Dict[str, int]] = None,
+        supervisor_resources: Optional[Dict[str, int]] = None,
+        planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -3360,6 +3457,17 @@ class Table(ABC):
             ``gpu_count`` is optional and defaults to zero, which requests a
             CPU-only budget. This budget cannot be combined with the top-level
             ``gpu_count`` shorthand. LanceDB Enterprise only; local refreshes
+            reject it.
+        supervisor_resources: dict[str, int], optional
+            CPU, memory, and ephemeral-storage limits for the Function refresh
+            supervisor pod. Keys are ``cpu_millis``, ``memory_bytes`` and
+            ``ephemeral_storage_bytes``; all are required and positive.
+            LanceDB Enterprise only; local refreshes reject it.
+        planning_workers: dict[str, object], optional
+            Resources and sizing for the Function refresh planning fleet.
+            ``resources`` has the same keys as ``supervisor_resources``; the
+            other keys are ``max_workers``, ``rows_per_worker`` and
+            ``fragments_per_worker``. LanceDB Enterprise only; local refreshes
             reject it.
         gpu_class: str, optional
             GPU class for Function workers. Must be a lowercase name of 1-63
@@ -3502,6 +3610,36 @@ class Table(ABC):
         ...     print(record.job_id, record.row_offset, record.error_message)
         >>> if errors.truncated:  # doctest: +SKIP
         ...     print("listing stopped at the limit")
+        """
+
+    @abstractmethod
+    def column_statuses(
+        self, column: Optional[str] = None
+    ) -> list[FunctionColumnStatus]:
+        """Return exact status for Function-backed output columns.
+
+        All statuses describe one server table version. ``column=None`` returns
+        every Function output. This operation is available on LanceDB
+        Enterprise tables. A table handle pinned to an exact version requests
+        that version; a latest handle retains the normal read-freshness
+        behavior.
+        """
+
+    @abstractmethod
+    def column_status(self, column: str) -> FunctionColumnStatus:
+        """Return exact status for one Function-backed output column."""
+
+    @abstractmethod
+    def wait_fresh(
+        self, column: str, timeout: Optional[timedelta] = None
+    ) -> FunctionColumnStatus:
+        """Poll until the column has no stale or never-computed rows.
+
+        Rows already failed remain visible in the returned status and do not
+        keep this method waiting. The method never submits or cancels work.
+        Transport errors and unrecoverable status-evidence errors propagate.
+        A typed finalization-pending response is retried; arbitrary failure
+        responses are not.
         """
 
     @abstractmethod
@@ -3968,13 +4106,20 @@ class LanceTable(Table):
         self,
         column: str,
         row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
+        *,
+        buffer_size: Optional[int] = None,
     ) -> "list[Optional[BlobFile]]":
-        return LOOP.run(self._table.fetch_blob_files(column, row_ids))
+        return LOOP.run(
+            self._table.fetch_blob_files(column, row_ids, buffer_size=buffer_size)
+        )
 
     def open_blob_file(
-        self, descriptor: Union[dict, pa.StructScalar, None]
+        self,
+        descriptor: Union[dict, pa.StructScalar, None],
+        *,
+        buffer_size: Optional[int] = None,
     ) -> Optional[BlobFile]:
-        return LOOP.run(self._table.open_blob_file(descriptor))
+        return LOOP.run(self._table.open_blob_file(descriptor, buffer_size=buffer_size))
 
     @property
     def tags(self) -> Tags:
@@ -4258,6 +4403,7 @@ class LanceTable(Table):
         replace: bool = ...,
         wait_timeout: Optional[timedelta] = ...,
         name: Optional[str] = ...,
+        exist_ok: bool = ...,
         train: bool = ...,
     ) -> None: ...
 
@@ -4283,6 +4429,7 @@ class LanceTable(Table):
         *,
         wait_timeout: Optional[timedelta] = ...,
         name: Optional[str] = ...,
+        exist_ok: bool = ...,
         train: bool = ...,
         target_partition_size: Optional[int] = ...,
     ) -> None: ...
@@ -4314,6 +4461,7 @@ class LanceTable(Table):
         config: Optional[IndexConfigType] = None,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
         train: bool = True,
         target_partition_size: Optional[int] = None,
     ):
@@ -4337,6 +4485,9 @@ class LanceTable(Table):
             BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, FTS.
         replace : bool, default True
             Whether to replace an existing index on this column.
+        exist_ok : bool, default False
+            Preserve the existing index with the requested or derived name.
+            Takes precedence over replace and keeps its definition and build.
         wait_timeout : timedelta, optional
             Timeout to wait for async indexing to complete.
         name : str, optional
@@ -4405,8 +4556,10 @@ class LanceTable(Table):
             # Handle accelerator through pylance
             if accelerator is not None:
                 dataset = self.to_lance()
-                _validate_index_accelerator(accelerator)
-                dataset.create_index(
+                _create_accelerated_index(
+                    dataset,
+                    exist_ok=exist_ok,
+                    name=name,
                     column=column,
                     index_type=index_type,
                     metric=metric,
@@ -4432,7 +4585,6 @@ class LanceTable(Table):
                 if acc is not None:
                     # Dispatch to pylance for GPU acceleration
                     dataset = self.to_lance()
-                    _validate_index_accelerator(acc)
                     index_type_map = {
                         "IvfFlat": "IVF_FLAT",
                         "IvfSq": "IVF_SQ",
@@ -4449,7 +4601,10 @@ class LanceTable(Table):
                     if num_bits is not None:
                         quantization_kwargs["num_bits"] = num_bits
 
-                    dataset.create_index(
+                    _create_accelerated_index(
+                        dataset,
+                        exist_ok=exist_ok,
+                        name=name,
                         column=column,
                         index_type=lance_index_type,
                         metric=getattr(config, "distance_type", "l2"),
@@ -4471,6 +4626,7 @@ class LanceTable(Table):
             self._table.create_index(
                 column,
                 replace=replace,
+                exist_ok=exist_ok,
                 config=config,
                 wait_timeout=wait_timeout,
                 name=name,
@@ -4486,6 +4642,7 @@ class LanceTable(Table):
         replace: Optional[bool] = None,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
         train: bool = True,
     ) -> Job:
         """Create an index, returning a handle to the indexing job.
@@ -4504,6 +4661,7 @@ class LanceTable(Table):
                 self._table.create_index_async(
                     column,
                     replace=replace,
+                    exist_ok=exist_ok,
                     config=config,
                     wait_timeout=wait_timeout,
                     name=name,
@@ -4624,6 +4782,7 @@ class LanceTable(Table):
         index_type: ScalarIndexType = "BTREE",
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
     ):
         """Create a scalar index on a column.
 
@@ -4650,6 +4809,7 @@ class LanceTable(Table):
             self._table.create_index(
                 column,
                 replace=replace,
+                exist_ok=exist_ok,
                 config=config,
                 wait_timeout=wait_timeout,
                 name=name,
@@ -4687,6 +4847,7 @@ class LanceTable(Table):
         document_granularity: DocumentGranularity = DocumentGranularity.ROW,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
     ):
         """Create a full-text search index on a column.
 
@@ -4748,6 +4909,7 @@ class LanceTable(Table):
                 self._table.create_index(
                     field_names,
                     replace=replace,
+                    exist_ok=exist_ok,
                     config=config,
                     name=name,
                     wait_timeout=wait_timeout,
@@ -4770,6 +4932,7 @@ class LanceTable(Table):
         progress: Optional[Union[bool, Callable, Any]] = None,
         write_parallelism: Optional[int] = None,
         allow_external_blob_outside_bases: bool = False,
+        retries: Optional[int] = None,
     ) -> AddResult:
         """Add data to the table.
         If vector columns are missing and the table
@@ -4801,6 +4964,10 @@ class LanceTable(Table):
         allow_external_blob_outside_bases: bool, default False
             Allow blob URIs outside registered bases. See :meth:`Table.add`.
             LanceDB Embedded only.
+        retries: int, optional
+            Override the remote retry budget for this call (0 to 255). Zero
+            disables retries, including multipart parts. Ambiguous commits are
+            never replayed. Ignored by LanceDB Embedded.
 
         Returns
         -------
@@ -4818,6 +4985,7 @@ class LanceTable(Table):
                     progress=progress,
                     write_parallelism=write_parallelism,
                     allow_external_blob_outside_bases=allow_external_blob_outside_bases,
+                    retries=retries,
                 )
             )
         finally:
@@ -4912,6 +5080,8 @@ class LanceTable(Table):
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
         fast_search: Optional[bool] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> LanceVectorQueryBuilder: ...
 
     @overload
@@ -4923,6 +5093,8 @@ class LanceTable(Table):
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
         fast_search: Optional[bool] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> LanceFtsQueryBuilder: ...
 
     @overload
@@ -4936,6 +5108,8 @@ class LanceTable(Table):
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
         fast_search: Optional[bool] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> LanceHybridQueryBuilder: ...
 
     @overload
@@ -4947,6 +5121,8 @@ class LanceTable(Table):
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
         fast_search: Optional[bool] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> LanceEmptyQueryBuilder: ...
 
     def search(
@@ -4959,6 +5135,8 @@ class LanceTable(Table):
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
         fast_search: Optional[bool] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search](https://lancedb.com/docs/search/vector-search/)
@@ -5019,6 +5197,10 @@ class LanceTable(Table):
             If None then the search is performed on all indexed columns.
             For now, only one column can be searched at a time.
 
+        operator: "AND" or "OR", optional
+            Combine terms in a string full-text query; the default is OR.
+            Use ``query_type="fts"`` when the table also has embeddings.
+
         Returns
         -------
         LanceQueryBuilder
@@ -5044,6 +5226,7 @@ class LanceTable(Table):
             ordering_field_name=ordering_field_name,
             fts_columns=fts_columns or [],
             fast_search=fast_search,
+            operator=operator,
         )
 
     @classmethod
@@ -5295,9 +5478,10 @@ class LanceTable(Table):
         new_data: DATA,
         on_bad_vectors: OnBadVectorsType,
         fill_value: float,
+        retries: Optional[int] = None,
     ) -> MergeResult:
         return LOOP.run(
-            self._table._do_merge(merge, new_data, on_bad_vectors, fill_value)
+            self._table._do_merge(merge, new_data, on_bad_vectors, fill_value, retries)
         )
 
     @property
@@ -5510,6 +5694,8 @@ class LanceTable(Table):
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
         resource_budget: Optional[Dict[str, int]] = None,
+        supervisor_resources: Optional[Dict[str, int]] = None,
+        planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -5532,6 +5718,8 @@ class LanceTable(Table):
                 max_concurrency=max_concurrency,
                 publication_interval_rows=publication_interval_rows,
                 resource_budget=resource_budget,
+                supervisor_resources=supervisor_resources,
+                planning_workers=planning_workers,
                 gpu_class=gpu_class,
                 gpu_count=gpu_count,
                 retry_policy=retry_policy,
@@ -5554,6 +5742,8 @@ class LanceTable(Table):
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
         resource_budget: Optional[Dict[str, int]] = None,
+        supervisor_resources: Optional[Dict[str, int]] = None,
+        planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -5578,6 +5768,8 @@ class LanceTable(Table):
                     max_concurrency=max_concurrency,
                     publication_interval_rows=publication_interval_rows,
                     resource_budget=resource_budget,
+                    supervisor_resources=supervisor_resources,
+                    planning_workers=planning_workers,
                     gpu_class=gpu_class,
                     gpu_count=gpu_count,
                     retry_policy=retry_policy,
@@ -5603,6 +5795,19 @@ class LanceTable(Table):
         return LOOP.run(
             self._table.function_errors(job_id=job_id, column=column, limit=limit)
         )
+
+    def column_statuses(
+        self, column: Optional[str] = None
+    ) -> list[FunctionColumnStatus]:
+        return LOOP.run(self._table.column_statuses(column=column))
+
+    def column_status(self, column: str) -> FunctionColumnStatus:
+        return LOOP.run(self._table.column_status(column))
+
+    def wait_fresh(
+        self, column: str, timeout: Optional[timedelta] = None
+    ) -> FunctionColumnStatus:
+        return LOOP.run(self._table.wait_fresh(column, timeout))
 
     def alter_columns(
         self, *alterations: Iterable[Dict[str, str]]
@@ -6727,6 +6932,7 @@ class AsyncTable:
         ] = None,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
         train: bool = True,
     ):
         """Create an index to speed up queries
@@ -6757,6 +6963,9 @@ class AsyncTable:
             If not set, the call returns once the build is scheduled.
         name: str, optional
             The name of the index. If not provided, a default name will be generated.
+        exist_ok: bool, default False
+            Preserve an existing index with the requested or derived name. This
+            takes precedence over replace and keeps its definition and build.
         train: bool, default True
             Whether to train the index with existing data. Vector indices always train
             with existing data.
@@ -6812,6 +7021,7 @@ class AsyncTable:
                 column,
                 index=config,
                 replace=replace,
+                exist_ok=exist_ok,
                 wait_timeout=wait_timeout,
                 name=name,
                 train=train,
@@ -6849,6 +7059,7 @@ class AsyncTable:
         ] = None,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
         train: bool = True,
     ) -> AsyncJob:
         """Create an index, returning a handle to the indexing job.
@@ -6867,6 +7078,7 @@ class AsyncTable:
             column,
             index=config,
             replace=replace,
+            exist_ok=exist_ok,
             wait_timeout=wait_timeout,
             name=name,
             train=train,
@@ -7016,6 +7228,7 @@ class AsyncTable:
         progress: Optional[Union[bool, Callable, Any]] = None,
         write_parallelism: Optional[int] = None,
         allow_external_blob_outside_bases: bool = False,
+        retries: Optional[int] = None,
     ) -> AddResult:
         """Add more data to the [AsyncTable][lancedb.table.AsyncTable].
 
@@ -7054,6 +7267,10 @@ class AsyncTable:
         allow_external_blob_outside_bases: bool, default False
             Allow blob URIs outside registered bases. See :meth:`Table.add`.
             LanceDB Embedded only.
+        retries: int, optional
+            Override the remote retry budget for this call (0 to 255). Zero
+            disables retries, including multipart parts. Ambiguous commits are
+            never replayed. Ignored by LanceDB Embedded.
 
         """
         schema = await self.schema()
@@ -7108,6 +7325,7 @@ class AsyncTable:
                 progress=progress,
                 write_parallelism=write_parallelism,
                 allow_external_blob_outside_bases=allow_external_blob_outside_bases,
+                retries=retries,
             )
         except RuntimeError as e:
             if "Cast error" in str(e):
@@ -7192,6 +7410,8 @@ class AsyncTable:
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> AsyncQuery: ...
 
     @overload
@@ -7202,6 +7422,8 @@ class AsyncTable:
         query_type: Literal["auto"] = ...,
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> Union[AsyncHybridQuery, AsyncFTSQuery, AsyncVectorQuery]: ...
 
     @overload
@@ -7212,6 +7434,8 @@ class AsyncTable:
         query_type: Literal["hybrid"] = ...,
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> AsyncHybridQuery: ...
 
     @overload
@@ -7222,6 +7446,8 @@ class AsyncTable:
         query_type: Literal["auto"] = ...,
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> AsyncVectorQuery: ...
 
     @overload
@@ -7232,6 +7458,8 @@ class AsyncTable:
         query_type: Literal["fts"] = ...,
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> AsyncFTSQuery: ...
 
     @overload
@@ -7242,6 +7470,8 @@ class AsyncTable:
         query_type: Literal["vector"] = ...,
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> AsyncVectorQuery: ...
 
     async def search(
@@ -7253,6 +7483,8 @@ class AsyncTable:
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> Union[AsyncQuery, AsyncHybridQuery, AsyncFTSQuery, AsyncVectorQuery]:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search](https://lancedb.com/docs/search/vector-search/)
@@ -7296,12 +7528,20 @@ class AsyncTable:
             - If `query` is a string, then the query type is "vector" if the
               table has embedding functions else the query type is "fts"
 
+        operator: "AND" or "OR", optional
+            Combine terms in a string full-text query; the default is OR.
+            Use ``query_type="fts"`` when the table also has embeddings.
+
         Returns
         -------
         AsyncQuery, AsyncHybridQuery, AsyncFTSQuery, or AsyncVectorQuery
             A query builder object representing the query.
         """
 
+        if operator is not None:
+            operator = FullTextOperator(operator)
+            if not isinstance(query, str) or query_type not in ("auto", "fts"):
+                raise ValueError("operator requires a string full-text query")
         if query is None:
             return self.query()
 
@@ -7420,13 +7660,17 @@ class AsyncTable:
                 )
                 vector_query = await make_embedding(embedding_conf, query)
 
+        if operator is not None and query_type != "fts":
+            raise ValueError("operator requires a string full-text query")
         if query_type == "vector":
             builder = self.query().nearest_to(vector_query)
             if vector_column_name:
                 builder = builder.column(vector_column_name)
             return builder
         elif query_type == "fts":
-            return self.query().nearest_to_text(query, columns=fts_columns)
+            return self.query().nearest_to_text(
+                query, columns=fts_columns, operator=operator
+            )
         elif query_type == "hybrid":
             builder = self.query().nearest_to(vector_query)
             if vector_column_name:
@@ -7536,7 +7780,9 @@ class AsyncTable:
 
         if query.full_text_query:
             async_query = async_query.nearest_to_text(
-                query.full_text_query.query, query.full_text_query.columns
+                query.full_text_query.query,
+                query.full_text_query.columns,
+                operator=query.full_text_query.operator,
             )
 
         return async_query
@@ -7595,6 +7841,7 @@ class AsyncTable:
         new_data: DATA,
         on_bad_vectors: OnBadVectorsType,
         fill_value: float,
+        retries: Optional[int] = None,
     ) -> MergeResult:
         schema = await self.schema()
         if on_bad_vectors is None:
@@ -7627,6 +7874,7 @@ class AsyncTable:
                 validate_single_shard=merge._validate_single_shard,
                 source_collect_threshold_bytes=merge._source_collect_threshold_bytes,
             ),
+            retries=retries,
         )
 
     async def delete(self, where: Union[str, Expr]) -> DeleteResult:
@@ -7962,6 +8210,8 @@ class AsyncTable:
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
         resource_budget: Optional[Dict[str, int]] = None,
+        supervisor_resources: Optional[Dict[str, int]] = None,
+        planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -8019,6 +8269,17 @@ class AsyncTable:
             CPU-only budget. This budget cannot be combined with the top-level
             ``gpu_count`` shorthand. LanceDB Enterprise only; local refreshes
             reject it.
+        supervisor_resources: dict[str, int], optional
+            CPU, memory, and ephemeral-storage limits for the Function refresh
+            supervisor pod. Keys are ``cpu_millis``, ``memory_bytes`` and
+            ``ephemeral_storage_bytes``; all are required and positive.
+            LanceDB Enterprise only; local refreshes reject it.
+        planning_workers: dict[str, object], optional
+            Resources and sizing for the Function refresh planning fleet.
+            ``resources`` has the same keys as ``supervisor_resources``; the
+            other keys are ``max_workers``, ``rows_per_worker`` and
+            ``fragments_per_worker``. LanceDB Enterprise only; local refreshes
+            reject it.
         gpu_class: str, optional
             GPU class for Function workers. Must be a lowercase name of 1-63
             letters, digits, or hyphens, without a leading or trailing hyphen.
@@ -8066,6 +8327,8 @@ class AsyncTable:
             max_concurrency=max_concurrency,
             publication_interval_rows=publication_interval_rows,
             resource_budget=resource_budget,
+            supervisor_resources=supervisor_resources,
+            planning_workers=planning_workers,
             gpu_class=gpu_class,
             gpu_count=gpu_count,
             retry_policy=None
@@ -8169,6 +8432,32 @@ class AsyncTable:
             job_id=job_id, column=column, limit=limit
         )
 
+    async def column_statuses(
+        self, column: Optional[str] = None
+    ) -> list[FunctionColumnStatus]:
+        """Return exact status for Function-backed output columns.
+
+        All results describe one server table version. ``column=None`` returns
+        every Function output. A handle pinned to an exact version requests
+        that version.
+        """
+        return await self._inner.column_statuses(column=column)
+
+    async def column_status(self, column: str) -> FunctionColumnStatus:
+        """Return exact status for one Function-backed output column."""
+        return await self._inner.column_status(column)
+
+    async def wait_fresh(
+        self, column: str, timeout: Optional[timedelta] = None
+    ) -> FunctionColumnStatus:
+        """Poll until no stale or never-computed rows remain.
+
+        Failed rows do not block completion. Server and transport errors are
+        not retried. Only the typed finalization-pending response is retried
+        with bounded backoff; arbitrary 500 responses surface immediately.
+        """
+        return await self._inner.wait_column_fresh(column, timeout)
+
     async def refresh_column_async(
         self,
         column: str,
@@ -8178,6 +8467,8 @@ class AsyncTable:
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
         resource_budget: Optional[Dict[str, int]] = None,
+        supervisor_resources: Optional[Dict[str, int]] = None,
+        planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -8233,6 +8524,17 @@ class AsyncTable:
             ``gpu_count`` is optional and defaults to zero, which requests a
             CPU-only budget. This budget cannot be combined with the top-level
             ``gpu_count`` shorthand. LanceDB Enterprise only; local refreshes
+            reject it.
+        supervisor_resources: dict[str, int], optional
+            CPU, memory, and ephemeral-storage limits for the Function refresh
+            supervisor pod. Keys are ``cpu_millis``, ``memory_bytes`` and
+            ``ephemeral_storage_bytes``; all are required and positive.
+            LanceDB Enterprise only; local refreshes reject it.
+        planning_workers: dict[str, object], optional
+            Resources and sizing for the Function refresh planning fleet.
+            ``resources`` has the same keys as ``supervisor_resources``; the
+            other keys are ``max_workers``, ``rows_per_worker`` and
+            ``fragments_per_worker``. LanceDB Enterprise only; local refreshes
             reject it.
         gpu_class: str, optional
             GPU class for Function workers. Must be a lowercase name of 1-63
@@ -8298,6 +8600,8 @@ class AsyncTable:
                 max_concurrency=max_concurrency,
                 publication_interval_rows=publication_interval_rows,
                 resource_budget=resource_budget,
+                supervisor_resources=supervisor_resources,
+                planning_workers=planning_workers,
                 gpu_class=gpu_class,
                 gpu_count=gpu_count,
                 retry_policy=None
@@ -8546,32 +8850,49 @@ class AsyncTable:
         column: str,
         requests: Sequence[Sequence[int]],
     ) -> pa.LargeBinaryArray:
+        """Materialize row-specific byte ranges.
+
+        See [Table.fetch_blob_ranges][lancedb.table.Table.fetch_blob_ranges].
+        """
         return await self._inner.fetch_blob_ranges(column, list(requests))
 
     async def fetch_blob_files(
         self,
         column: str,
         row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
+        *,
+        buffer_size: Optional[int] = None,
     ) -> "list[Optional[BlobFile]]":
+        """Open handles with configurable read-ahead.
+
+        See [Table.fetch_blob_files][lancedb.table.Table.fetch_blob_files].
+        """
+        buffer_size = _validate_blob_buffer_size(buffer_size)
         handles = await self._inner.fetch_blob_files(
-            column, _normalize_blob_row_ids(row_ids, column)
+            column, _normalize_blob_row_ids(row_ids, column), buffer_size
         )
         return _wrap_blob_files(handles)
 
     async def open_blob_file(
-        self, descriptor: Union[dict, pa.StructScalar, None]
+        self,
+        descriptor: Union[dict, pa.StructScalar, None],
+        *,
+        buffer_size: Optional[int] = None,
     ) -> Optional[BlobFile]:
         """Open a snapshot-bound descriptor as a seekable file.
 
         See [Table.open_blob_file][lancedb.table.Table.open_blob_file].
         """
+        buffer_size = _validate_blob_buffer_size(buffer_size)
         descriptor = _normalize_blob_descriptor(descriptor)
         if descriptor is None:
             return None
-        return BlobFile(await self._inner.open_blob_file(json.dumps(descriptor)))
+        return BlobFile(
+            await self._inner.open_blob_file(json.dumps(descriptor), buffer_size)
+        )
 
     async def open_blob_files(
-        self, descriptors: Iterable
+        self, descriptors: Iterable, *, buffer_size: Optional[int] = None
     ) -> AsyncIterator[Optional[BlobFile]]:
         """Asynchronously iterate over files in descriptor order, preserving nulls.
 
@@ -8586,7 +8907,7 @@ class AsyncTable:
         ```
         """
         for descriptor in descriptors:
-            yield await self.open_blob_file(descriptor)
+            yield await self.open_blob_file(descriptor, buffer_size=buffer_size)
 
     @property
     def tags(self) -> AsyncTags:

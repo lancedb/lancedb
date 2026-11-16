@@ -17,6 +17,16 @@ __version__ = str(_Version(_native_version))
 
 from ._lancedb import connect as lancedb_connect
 from ._lancedb import FtsToken
+from ._lancedb import (
+    FunctionColumnAutoRefreshStatus as FunctionColumnAutoRefreshStatus,
+)
+from ._lancedb import (
+    FunctionColumnLastRefreshJob as FunctionColumnLastRefreshJob,
+)
+from ._lancedb import FunctionColumnStatus as FunctionColumnStatus
+from ._lancedb import (
+    FunctionColumnVersionStatus as FunctionColumnVersionStatus,
+)
 from ._lancedb import FunctionErrorFragment as FunctionErrorFragment
 from ._lancedb import FunctionErrorRecord as FunctionErrorRecord
 from ._lancedb import FunctionErrors as FunctionErrors
@@ -41,11 +51,15 @@ from .functions import (
     FunctionApplication as FunctionApplication,
     FunctionBinding as FunctionBinding,
     FunctionDefinition as FunctionDefinition,
+    FunctionEnvironment as FunctionEnvironment,
     FunctionRegistrationRequest as FunctionRegistrationRequest,
     FunctionRetryPolicy as FunctionRetryPolicy,
     FunctionVersion as FunctionVersion,
     HuggingFaceModel as HuggingFaceModel,
     PythonRuntimeSpec as PythonRuntimeSpec,
+    ResolvedEnvironment as ResolvedEnvironment,
+    ResolvedEnvironmentProvenance as ResolvedEnvironmentProvenance,
+    ResolvedPackage as ResolvedPackage,
     RefreshColumnResult as RefreshColumnResult,
     function as function,
     udf as udf,
@@ -679,6 +693,10 @@ __all__ = [
     "AsyncTable",
     "CompactionOptions",
     "FtsToken",
+    "FunctionColumnAutoRefreshStatus",
+    "FunctionColumnLastRefreshJob",
+    "FunctionColumnStatus",
+    "FunctionColumnVersionStatus",
     "col",
     "Expr",
     "func",

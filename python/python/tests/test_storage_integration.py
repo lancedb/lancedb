@@ -3,6 +3,7 @@
 
 import contextlib
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -39,7 +40,30 @@ def remote_server(text_type=pa.string()):
             command = ticket.ticket
             calls.append(command)
             if b"SHOW STORAGE INTEGRATIONS" in command:
-                result = pa.table({"name": pa.array(["zeta", NAME], type=text_type)})
+                match = re.search(
+                    rb'SHOW STORAGE INTEGRATIONS IN "public" '
+                    rb"LIMIT (\d+)(?: FROM '([^']+)')?",
+                    command,
+                )
+                assert match is not None, command
+                limit = int(match.group(1))
+                names = [NAME, "zeta"]
+                if match.group(2) is not None:
+                    assert match.group(2) == b"server-storage-page", command
+                    names = names[1:]
+                page = names[:limit]
+                result = pa.table(
+                    {
+                        "namespace_path": pa.array(
+                            ["[]"] * len(page), type=pa.string()
+                        ),
+                        "name": pa.array(page, type=text_type),
+                    }
+                )
+                if len(names) > limit:
+                    result = result.replace_schema_metadata(
+                        {b"lancedb.next_page_token": b"server-storage-page"}
+                    )
             elif b"DROP STORAGE INTEGRATION" in command:
                 result = pa.table({"dropped": [True]})
             else:
@@ -195,6 +219,10 @@ def test_sync_storage_integration_lifecycle_and_aws_information(text_type):
     assert b'CREATE STORAGE INTEGRATION "raw"' in calls[0]
     assert b"STORAGE_AWS_ROLE_ARN = '" + ROLE.encode() + b"'" in calls[0]
     assert b'DROP STORAGE INTEGRATION "raw"' in calls[-1]
+    listings = [call for call in calls if b"SHOW STORAGE INTEGRATIONS" in call]
+    assert len(listings) == 2
+    assert b'SHOW STORAGE INTEGRATIONS IN "public" LIMIT 1' in listings[0]
+    assert b"FROM 'server-storage-page'" in listings[1]
 
 
 @pytest.mark.asyncio

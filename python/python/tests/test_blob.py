@@ -1135,6 +1135,24 @@ def test_copy_blob_subset_preserves_payloads_nulls_and_empty_values(tmp_path):
     assert sorted(copied, key=lambda row: row["id"]) == rows[:3]
 
 
+def test_copy_blob_descriptor_rows_explains_payload_materialization(tmp_path):
+    db = lancedb.connect(tmp_path)
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    source = db.create_table("source", data=[{"id": 1, "image": b"one"}], schema=schema)
+    hits = source.search().where("id = 1").to_arrow()
+
+    with pytest.raises(ValueError, match="must contain a 'data' or 'uri' child") as exc:
+        db.create_table("copy", data=hits, schema=schema)
+
+    message = str(exc.value)
+    assert "blob_mode='bytes'" in message
+    assert "blob_mode='descriptions'" in message
+    assert "with_row_id(True)" in message
+    assert "fetch_blobs(column, row_ids)" in message
+    assert "fetch_blob_files(column, row_ids)" in message
+    assert not db.table_exists(["copy"])
+
+
 def test_fetch_blobs_round_trip():
     table = _blob_table(
         "round_trip",

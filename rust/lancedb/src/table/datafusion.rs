@@ -4,6 +4,7 @@
 //! This module contains adapters to allow LanceDB tables to be used as DataFusion table providers.
 
 mod blob_coerce;
+mod blob_materialize;
 mod blob_nulls;
 pub mod cast;
 pub mod insert;
@@ -31,7 +32,7 @@ use lance_core::{
     datatypes::{Projection, Schema as LanceSchema},
 };
 
-use super::{AnyQuery, BaseTable};
+use super::{AnyQuery, BaseTable, NativeTableExt};
 use crate::{
     Error, Result,
     query::{QueryExecutionOptions, QueryFilter, QueryRequest, Select},
@@ -199,7 +200,8 @@ impl ExecutionPlan for MetadataEraserExec {
 pub enum BlobSchema {
     /// Expose Blob v2 descriptors (`kind`, `position`, `size`, `blob_id`, `blob_uri`)
     /// and legacy v1 descriptors (`position`, `size`). Scans support all blob fields;
-    /// SQL INSERT into Blob v2 tables is unsupported.
+    /// SQL INSERT SELECT materializes descriptors from a single native-table
+    /// snapshot; remote and Realtime/MemWAL sources are not supported.
     #[default]
     Read,
     /// Expose Blob v2 write inputs (`data`, `uri`, `position`, `size`) and legacy
@@ -213,9 +215,33 @@ pub enum BlobSchema {
 ///
 /// Defaults to [`BlobSchema::Read`], matching the descriptor schema produced by
 /// scans without fetching blob bytes. Use [`Self::with_blob_schema`] to enable
-/// SQL INSERT into blob columns. Legacy v1 blobs expose descriptors in read mode
-/// and `LargeBinary` inputs in write mode; write-mode descriptor scans fail with
-/// a schema mismatch. Tables without blob columns behave the same in both modes.
+/// SQL INSERT with logical blob inputs. In read mode, INSERT SELECT can copy
+/// Blob v2 descriptors from a single native-table snapshot into target-owned
+/// payloads, including projections, filters, sorting, and limits. JOIN, UNION,
+/// aggregation, and computed descriptors fail during planning because their
+/// source row addresses cannot be established safely. Legacy v1 blobs expose
+/// descriptors in read mode and `LargeBinary` inputs in write mode; write-mode
+/// descriptor scans fail with a schema mismatch. Tables without blob columns
+/// behave the same in both modes.
+/// Descriptor copying requires a native source table; remote and Realtime/MemWAL
+/// sources are not supported by this materialization path.
+///
+/// With read adapters registered as `source` and `target`, copying blobs needs
+/// no payload UDF or explicit system columns:
+///
+/// ```sql
+/// INSERT INTO target SELECT * FROM source WHERE id > 10;
+/// ```
+///
+/// The target owns the copied payloads independently of subsequent source
+/// compaction or deletion. External URI references retain their external
+/// storage semantics and remain subject to the target's registered external
+/// bases; copying a descriptor does not authorize a new external location.
+///
+/// Materialization allocates payload bytes for each input batch outside the
+/// DataFusion memory pool. For large blobs, configure a conservative
+/// `SessionConfig::with_batch_size`; the pool limit alone does not bound these
+/// allocations, and a single blob can still exceed that limit.
 #[derive(Debug)]
 pub struct BaseTableAdapter {
     table: Arc<dyn BaseTable>,
@@ -440,13 +466,55 @@ impl TableProvider for BaseTableAdapter {
             ..Default::default()
         };
 
-        let plan = self
-            .table
-            .create_plan(&AnyQuery::Query(query), options)
+        // The scan and any later INSERT rewrite must use the same snapshot,
+        // even if the live table advances between planning and execution.
+        let projects_descriptors = match projection {
+            Some(indices) => indices
+                .iter()
+                .any(|index| blob_nulls::has_descriptor(provider_schema.field(*index))),
+            None => provider_schema
+                .fields()
+                .iter()
+                .any(|field| blob_nulls::has_descriptor(field)),
+        };
+        let snapshot = if self.blob_schema == BlobSchema::Read
+            && self.table.as_native().is_some()
+            && projects_descriptors
+        {
+            Some(
+                self.table
+                    .query_snapshot()
+                    .await
+                    .map_err(|error| DataFusionError::External(Box::new(error)))?,
+            )
+        } else {
+            None
+        };
+        let source = snapshot.as_ref().unwrap_or(&self.table);
+        let plan = source
+            .create_plan(&AnyQuery::Query(query.clone()), options.clone())
             .map_err(|err| DataFusionError::External(err.into()))
             .await?;
         let plan = blob_nulls::mask_plan(plan)?;
-        let plan: Arc<dyn ExecutionPlan> = Arc::new(MetadataEraserExec::new(plan));
+        let mut plan: Arc<dyn ExecutionPlan> = Arc::new(MetadataEraserExec::new(plan));
+        if let Some(snapshot) = snapshot
+            && plan
+                .schema()
+                .fields()
+                .iter()
+                .any(|field| blob_nulls::has_descriptor(field))
+        {
+            let dataset = snapshot
+                .as_native()
+                .unwrap()
+                .dataset
+                .get()
+                .await
+                .map_err(|error| DataFusionError::External(Box::new(error)))?;
+            plan = Arc::new(blob_materialize::BlobScanExec::new(
+                plan, snapshot, dataset, query, options,
+            ));
+        }
         if self.blob_schema == BlobSchema::Write {
             let schema = match projection {
                 Some(projection) => Arc::new(provider_schema.project(projection)?),
@@ -509,17 +577,30 @@ impl TableProvider for BaseTableAdapter {
         input: Arc<dyn ExecutionPlan>,
         insert_op: InsertOp,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        let has_descriptors = input
+            .schema()
+            .fields()
+            .iter()
+            .any(|field| blob_nulls::has_descriptor(field))
+            || (blob_materialize::has_source_scan(&input)
+                && input
+                    .schema()
+                    .fields()
+                    .iter()
+                    .any(|field| blob_materialize::has_descriptor(field)));
         if self.blob_schema == BlobSchema::Read
             && self
                 .schema
                 .fields()
                 .iter()
                 .any(|field| blob_nulls::has_descriptor(field))
+            && !has_descriptors
         {
             return Err(DataFusionError::NotImplemented(
                 "SQL INSERT into Blob v2 tables requires BlobSchema::Write".into(),
             ));
         }
+        let input = blob_materialize::materialize(input, self.write_schema.as_ref()).await?;
         let mode = match insert_op {
             InsertOp::Append => WriteMode::Append,
             InsertOp::Overwrite => WriteMode::Overwrite,

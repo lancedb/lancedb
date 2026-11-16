@@ -287,6 +287,8 @@ pub struct MaterializedViewInfo {
 #[doc(hidden)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct CreateMaterializedViewRequest {
+    /// Preserve an existing materialized view without refreshing it.
+    pub exist_ok: bool,
     /// Name of the new view.
     pub name: String,
     /// Namespace in which to create the view.
@@ -1574,19 +1576,26 @@ async fn prepare_with(
 }
 
 /// Builds a materialized view. Created by
-/// [`Connection::create_materialized_view`].
+/// [`Connection::create_materialized_view`] or
+/// [`Connection::create_materialized_view_from_query`].
 pub struct CreateMaterializedViewBuilder {
     connection: Connection,
     name: String,
     namespace: Vec<String>,
-    source: String,
+    input: MaterializedViewInput,
     source_namespace: Vec<String>,
-    projections: Vec<(String, String)>,
+    projections: Option<Vec<(String, String)>>,
     filter: Option<String>,
     limit: Option<u64>,
     with_no_data: bool,
+    exist_ok: bool,
     auto_refresh_enabled: Option<bool>,
     auto_refresh_interval_seconds: Option<f64>,
+}
+
+enum MaterializedViewInput {
+    Source(String),
+    Query(String),
 }
 
 fn source_sql_identifier(
@@ -1609,17 +1618,18 @@ fn source_sql_identifier(
 }
 
 impl CreateMaterializedViewBuilder {
-    pub(crate) fn new(connection: Connection, name: String, source: String) -> Self {
+    fn new(connection: Connection, name: String, input: MaterializedViewInput) -> Self {
         Self {
             connection,
             name,
             namespace: Vec::new(),
-            source,
+            input,
             source_namespace: Vec::new(),
-            projections: Vec::new(),
+            projections: None,
             filter: None,
             limit: None,
             with_no_data: false,
+            exist_ok: false,
             auto_refresh_enabled: None,
             auto_refresh_interval_seconds: None,
         }
@@ -1644,10 +1654,12 @@ impl CreateMaterializedViewBuilder {
         mut self,
         columns: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
     ) -> Self {
-        self.projections = columns
-            .into_iter()
-            .map(|(output, expression)| (output.into(), expression.into()))
-            .collect();
+        self.projections = Some(
+            columns
+                .into_iter()
+                .map(|(output, expression)| (output.into(), expression.into()))
+                .collect(),
+        );
         self
     }
 
@@ -1668,6 +1680,35 @@ impl CreateMaterializedViewBuilder {
     pub fn with_no_data(mut self, with_no_data: bool) -> Self {
         self.with_no_data = with_no_data;
         self
+    }
+
+    /// Preserve an existing view's definition, data and refresh settings.
+    /// Defaults to false. A skipped creation does not refresh the view.
+    ///
+    /// ```no_run
+    /// # #![recursion_limit = "256"]
+    /// # async fn example(db: &lancedb::Connection) -> lancedb::Result<()> {
+    /// db.create_materialized_view("saved", "source").exist_ok(true).execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn exist_ok(mut self, exist_ok: bool) -> Self {
+        self.exist_ok = exist_ok;
+        self
+    }
+
+    async fn existing_view(&self) -> Result<Option<MaterializedView>> {
+        match self
+            .connection
+            .open_table(&self.name)
+            .namespace(self.namespace.clone())
+            .execute()
+            .await
+        {
+            Ok(table) => MaterializedView::from_table(table).await.map(Some),
+            Err(Error::TableNotFound { .. }) => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     /// Enable or disable automatic refresh in LanceDB Enterprise.
@@ -1697,22 +1738,38 @@ impl CreateMaterializedViewBuilder {
     }
 
     fn query(&self) -> Result<String> {
+        if let MaterializedViewInput::Query(query) = &self.input {
+            if !self.source_namespace.is_empty()
+                || self.projections.is_some()
+                || self.filter.is_some()
+                || self.limit.is_some()
+            {
+                return Err(Error::InvalidInput {
+                    message: "a defining query cannot be combined with source_namespace, select, only_if or limit".into(),
+                });
+            }
+            return Ok(query.clone());
+        }
+        let MaterializedViewInput::Source(source) = &self.input else {
+            unreachable!()
+        };
         fn quote(name: &str) -> String {
             format!("\"{}\"", name.replace('"', "\"\""))
         }
 
-        let projection = if self.projections.is_empty() {
-            "*".to_string()
-        } else {
-            self.projections
-                .iter()
-                .map(|(output, expression)| format!("{expression} AS {}", quote(output)))
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
+        let projection =
+            if let Some(projections) = self.projections.as_ref().filter(|p| !p.is_empty()) {
+                projections
+                    .iter()
+                    .map(|(output, expression)| format!("{expression} AS {}", quote(output)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            } else {
+                "*".to_string()
+            };
         let source = source_sql_identifier(
             &self.source_namespace,
-            &self.source,
+            source,
             self.connection.uri().starts_with("db://"),
         );
         let mut query = format!("SELECT {projection} FROM {source}");
@@ -1735,6 +1792,7 @@ impl CreateMaterializedViewBuilder {
                 .connection
                 .database()
                 .create_materialized_view_async(CreateMaterializedViewRequest {
+                    exist_ok: self.exist_ok,
                     name: self.name.clone(),
                     namespace_path: self.namespace.clone(),
                     query: self.query()?,
@@ -1769,26 +1827,53 @@ impl CreateMaterializedViewBuilder {
 
     async fn execute_native(self) -> Result<MaterializedView> {
         crate::require_experimental_functions()?;
+        if self.exist_ok
+            && let Some(view) = self.existing_view().await?
+        {
+            return Ok(view);
+        }
         if self.auto_refresh_enabled == Some(true) || self.auto_refresh_interval_seconds.is_some() {
             return Err(Error::NotSupported {
                 message: "automatic materialized-view refresh requires LanceDB Enterprise"
                     .to_string(),
             });
         }
-        let source = self
-            .connection
-            .open_table(&self.source)
-            .namespace(self.source_namespace.clone())
-            .execute()
-            .await?;
-        let prepared = prepare_declaration(
-            &source,
-            (!self.projections.is_empty()).then_some(self.projections.as_slice()),
-            self.filter.as_deref(),
-            self.limit,
-        )
-        .await?;
-        let view = prepared.create_in(&self.namespace, &self.name).await?;
+        let prepared = match &self.input {
+            MaterializedViewInput::Source(name) => {
+                let source = self
+                    .connection
+                    .open_table(name)
+                    .namespace(self.source_namespace.clone())
+                    .execute()
+                    .await?;
+                prepare_declaration(
+                    &source,
+                    self.projections.as_deref().filter(|p| !p.is_empty()),
+                    self.filter.as_deref(),
+                    self.limit,
+                )
+                .await?
+            }
+            MaterializedViewInput::Query(_) => {
+                let definition = MaterializedViewDefinition::from_sql(&self.query()?)?;
+                let source = self
+                    .connection
+                    .open_table(&definition.source_table)
+                    .namespace(definition.source_namespace.clone())
+                    .execute()
+                    .await?;
+                prepare_definition(&source, definition).await?
+            }
+        };
+        let view = match prepared.create_in(&self.namespace, &self.name).await {
+            Ok(view) => view,
+            Err(Error::TableAlreadyExists { .. }) if self.exist_ok => {
+                return self.existing_view().await?.ok_or_else(|| Error::Runtime {
+                    message: "materialized view disappeared after concurrent creation".into(),
+                });
+            }
+            Err(error) => return Err(error),
+        };
         if !self.with_no_data {
             view.refresh().execute().await?;
         }
@@ -2067,7 +2152,41 @@ impl Connection {
         name: impl Into<String>,
         source: impl Into<String>,
     ) -> CreateMaterializedViewBuilder {
-        CreateMaterializedViewBuilder::new(self.clone(), name.into(), source.into())
+        CreateMaterializedViewBuilder::new(
+            self.clone(),
+            name.into(),
+            MaterializedViewInput::Source(source.into()),
+        )
+    }
+
+    /// Define a materialized view using a complete SQL query.
+    ///
+    /// Embedded connections parse the query with
+    /// [`MaterializedViewDefinition::from_sql`]. Remote connections send the
+    /// query to the server, which determines the supported SQL syntax.
+    /// Put projections, predicates and limits in the query rather than using
+    /// the builder's source-specific methods.
+    ///
+    /// ```no_run
+    /// # #![recursion_limit = "256"]
+    /// # async fn create(db: &lancedb::Connection) -> lancedb::Result<()> {
+    /// let view = db.create_materialized_view_from_query(
+    ///     "events_by_kind",
+    ///     "SELECT kind, count(*) AS n FROM events GROUP BY kind",
+    /// ).execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn create_materialized_view_from_query(
+        &self,
+        name: impl Into<String>,
+        query: impl Into<String>,
+    ) -> CreateMaterializedViewBuilder {
+        CreateMaterializedViewBuilder::new(
+            self.clone(),
+            name.into(),
+            MaterializedViewInput::Query(query.into()),
+        )
     }
 
     /// Open the materialized view named `name`.
@@ -2226,6 +2345,65 @@ mod tests {
         assert_eq!(
             source_sql_identifier(&namespace, "source", false),
             "\"analytics\".\"daily\".\"source\""
+        );
+    }
+
+    #[tokio::test]
+    async fn query_builder_rejects_source_clauses() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let builder = || conn.create_materialized_view_from_query("mv", "SELECT * FROM src");
+        for invalid in [
+            builder().select([("x", "x")]),
+            builder().select(Vec::<(String, String)>::new()),
+            builder().only_if("x > 0"),
+            builder().limit(0),
+            builder().source_namespace(vec!["ns".into()]),
+        ] {
+            assert!(matches!(invalid.query(), Err(Error::InvalidInput { .. })));
+        }
+    }
+
+    #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
+    async fn create_from_query_supports_grouping_and_background_population() {
+        let conn = connect("memory://").execute().await.unwrap();
+        conn.create_table(
+            "src",
+            record_batch!(("kind", Utf8, ["a", "a", "b"])).unwrap(),
+        )
+        .execute()
+        .await
+        .unwrap();
+        let query = "SELECT kind, count(*) AS n FROM src GROUP BY kind";
+        let view = conn
+            .create_materialized_view_from_query("groups", query)
+            .with_no_data(true)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(view.definition_sql(), query);
+        assert_eq!(view.table().count_rows(None).await.unwrap(), 0);
+        view.refresh().execute().await.unwrap();
+        assert_eq!(view.table().count_rows(None).await.unwrap(), 2);
+        conn.create_materialized_view_from_query("background", query)
+            .execute_async()
+            .await
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        assert_eq!(
+            conn.open_materialized_view("background")
+                .await
+                .unwrap()
+                .table()
+                .count_rows(None)
+                .await
+                .unwrap(),
+            2
         );
     }
 

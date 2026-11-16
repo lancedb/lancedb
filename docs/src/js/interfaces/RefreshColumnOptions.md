@@ -117,6 +117,29 @@ Worker count for an expression column; Function columns reject it.
 
 ***
 
+### planningWorkers?
+
+```ts
+optional planningWorkers: FunctionRefreshPlanningConfig;
+```
+
+Resources and sizing for the refresh planning fleet.
+
+***
+
+### publicationIntervalRows?
+
+```ts
+optional publicationIntervalRows: number;
+```
+
+Row-count threshold for publishing completed Function split ranges.
+Must be a positive safe integer. Omit for whole-fragment publication.
+Actual publications can be larger; remaining rows publish at completion.
+Requires LanceDB Enterprise with non-Blob Function outputs.
+
+***
+
 ### resourceBudget?
 
 ```ts
@@ -128,6 +151,16 @@ refresh. `gpuCount` inside the budget defaults to zero.
 
 ***
 
+### retryPolicy?
+
+```ts
+optional retryPolicy: FunctionRetryPolicy;
+```
+
+Override retries of failed user-code calls for this refresh.
+
+***
+
 ### rowTimeoutSeconds?
 
 ```ts
@@ -135,6 +168,16 @@ optional rowTimeoutSeconds: number;
 ```
 
 Deadline for one Function call, in seconds.
+
+***
+
+### supervisorResources?
+
+```ts
+optional supervisorResources: FunctionRefreshPodResources;
+```
+
+CPU, memory, and ephemeral-storage limits for the refresh supervisor.
 
 ***
 

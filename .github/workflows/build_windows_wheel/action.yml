@@ -12,6 +12,9 @@ inputs:
 runs:
   using: "composite"
   steps:
+    - name: Enable long paths for Lance dependencies
+      shell: bash
+      run: git config --global core.longpaths true
     - uses: ./.github/actions/setup-protoc
     - name: Build wheel
       uses: PyO3/maturin-action@v1

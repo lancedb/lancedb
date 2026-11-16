@@ -7,8 +7,10 @@ icon: rocket
 import { PyConnect, TsConnect, RsConnect, PyConnectObjectStorage, TsConnectObjectStorage, RsConnectObjectStorage, PyConnectEnterprisePlaceholders, TsConnectEnterprisePlaceholders, RsConnectEnterprisePlaceholders } from '/snippets/connection.mdx';
 import { PyQuickstartData, PyQuickstartCreateTable, PyQuickstartAddData, PyQuickstartCurateSample, PyQuickstartCurateDedupeSetup, PyQuickstartCurateDedupe, PyQuickstartCurateDedupeQuery, PyQuickstartFlattenStats, PyQuickstartAddFeature, PyQuickstartAddFeatureEnterprise, PyQuickstartMultimodalBytes, PyQuickstartTraining, TsQuickstartData, TsQuickstartCreateTable, TsQuickstartAddData, TsQuickstartVectorSearch1, TsQuickstartMultimodalBytes, RsQuickstartDefineStruct, RsQuickstartData, RsQuickstartCreateTable, RsQuickstartAddData, RsQuickstartVectorSearch1, RsQuickstartMultimodalBytes } from '/snippets/quickstart.mdx';
 
-This quickstart uses LanceDB Embedded with a local database and works without an account or API key.
-LanceDB Embedded runs in your application's process; your data can live on local disk or in object storage.
+This quickstart walks you through creating a table, searching your data, and preparing it for training.
+By default, it uses LanceDB Embedded with a local database, so no account or API key is required.
+To follow along with an existing LanceDB Enterprise deployment, use the
+[Enterprise connection instructions](#connect-to-lancedb-enterprise).
 
 ## 1\. Install LanceDB {#1-install-lancedb}
 

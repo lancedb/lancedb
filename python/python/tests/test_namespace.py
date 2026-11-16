@@ -18,6 +18,7 @@ import lancedb
 from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
 from utils import start_server_thread
 from lancedb.listing import AsyncListing, Listing
+from lancedb.index import FTS
 from lancedb.materialized_view import DEFINITION_FORMAT, DEFINITION_META_KEY
 from lancedb.namespace import (
     _MAX_QUERY_K,
@@ -25,13 +26,34 @@ from lancedb.namespace import (
     LanceNamespaceDBConnection,
     _query_to_namespace_request,
 )
-from lancedb.query import Query
+from lancedb.query import FullTextSearchQuery, Query
 from lancedb.table import AsyncTable, LanceTable
 
 
 PUSHDOWN_DATA = pa.table(
     {"id": list(range(12)), "text": [f"row-{idx}" for idx in range(12)]}
 )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("table_id", [["events"], ["analytics", "events"], ["missing"]])
+async def test_custom_namespace_table_exists_uses_namespace_api(table_id):
+    class ExistenceNamespace(LanceNamespace):
+        def namespace_id(self):
+            return "existence-test"
+
+        def table_exists(self, request):
+            if request.id == ["missing"]:
+                raise TableNotFoundError("Table not found")
+
+        def describe_table(self, request):
+            raise AssertionError("Custom existence checks must not open tables")
+
+    namespace = ExistenceNamespace()
+    db = LanceNamespaceDBConnection(namespace)
+    adb = lancedb.AsyncLanceNamespaceDBConnection(namespace)
+    assert db.table_exists(table_id) is (table_id != ["missing"])
+    assert await adb.table_exists(table_id) is (table_id != ["missing"])
 
 
 class TestNamespaceCreateTableOptions:
@@ -411,8 +433,16 @@ class TestNamespaceConnection:
         assert "test_ns" in db.list_namespaces().namespaces
 
         schema = pa.schema([pa.field("id", pa.int64())])
+        db.create_table("root_table", schema=schema)
+        assert db.table_exists(["root_table"]) is True
+        assert "root_table" in db
+        assert db.table_exists(["missing"]) is False
+        assert "missing" not in db
         table = db.create_table("test_table", schema=schema, namespace_path=["test_ns"])
         assert table.namespace == ["test_ns"]
+        assert db.table_exists(["test_ns", "test_table"]) is True
+        assert db.table_exists(["test_ns", "missing"]) is False
+        assert "test_table" not in db
         assert "test_table" in db.table_names(namespace_path=["test_ns"])
         assert "test_table" in db.list_tables(namespace_path=["test_ns"]).tables
 
@@ -420,7 +450,10 @@ class TestNamespaceConnection:
         assert opened.namespace == ["test_ns"]
 
         db.drop_table("test_table", namespace_path=["test_ns"])
+        assert db.table_exists(["test_ns", "test_table"]) is False
         assert db.list_tables(namespace_path=["test_ns"]).tables == []
+        db.drop_table("root_table")
+        assert "root_table" not in db
         db.drop_namespace(["test_ns"])
         assert "test_ns" not in db.list_namespaces().namespaces
 
@@ -942,12 +975,18 @@ class TestAsyncNamespaceConnection:
         assert "test_ns" in (await db.list_namespaces()).namespaces
 
         schema = pa.schema([pa.field("id", pa.int64())])
+        await db.create_table("root_table", schema=schema)
+        assert await db.table_exists(["root_table"]) is True
+        assert await db.table_exists(["missing"]) is False
         table = await db.create_table(
             "test_table", schema=schema, namespace_path=["test_ns"]
         )
         assert table._namespace_path == ["test_ns"]
         assert table._namespace_client is None
         assert table._route_pushdown_to_rust is True
+        assert await db.table_exists(["test_ns", "test_table"]) is True
+        assert await db.table_exists(["test_ns", "missing"]) is False
+        assert await db.table_exists(["test_table"]) is False
         assert "test_table" in await db.table_names(namespace_path=["test_ns"])
         assert "test_table" in (await db.list_tables(namespace_path=["test_ns"])).tables
 
@@ -955,7 +994,10 @@ class TestAsyncNamespaceConnection:
         assert opened._namespace_path == ["test_ns"]
 
         await db.drop_table("test_table", namespace_path=["test_ns"])
+        assert await db.table_exists(["test_ns", "test_table"]) is False
         assert (await db.list_tables(namespace_path=["test_ns"])).tables == []
+        await db.drop_table("root_table")
+        assert await db.table_exists(["root_table"]) is False
         await db.drop_namespace(["test_ns"])
         assert "test_ns" not in (await db.list_namespaces()).namespaces
 
@@ -1483,3 +1525,42 @@ def test_python_namespace_attribute_access(tmp_path):
     # Missing dunder lookups still raise, so copy/hasattr probes work.
     assert not hasattr(request, "__missing_dunder__")
     assert copy.deepcopy(request) == request
+
+
+@pytest.mark.parametrize("columns", [None, ["text"], ["title", "body"]])
+def test_namespace_fts_operator_is_preserved(columns):
+    request = _query_to_namespace_request(
+        ["matches"],
+        Query(
+            full_text_query=FullTextSearchQuery(
+                query="gripper closed", columns=columns, operator="AND"
+            )
+        ),
+    )
+    structured = request.to_dict()["full_text_query"]["structured_query"]["query"]
+    if columns and len(columns) > 1:
+        assert all(
+            query["operator"] == "And"
+            for query in structured["multi_match"]["match_queries"]
+        )
+    else:
+        assert structured["match"]["operator"] == "And"
+        assert structured["match"].get("column") == (columns[0] if columns else None)
+
+
+def test_namespace_fts_count_fast_search(tmp_path):
+    properties = {"root": str(tmp_path)}
+    db = lancedb.connect_namespace("dir", properties)
+    table = db.create_table("matches", pa.table({"text": ["gripper"] * 15}))
+    table.create_index("text", config=FTS())
+    table.add(pa.table({"text": ["gripper"] * 5}))
+    assert table.search("gripper", query_type="fts").fast_search().count_rows() == 15
+    pushed = lancedb.connect_namespace(
+        "dir", properties, namespace_client_pushdown_operations=["QueryTable"]
+    ).open_table("matches")
+    assert pushed.search("gripper", query_type="fts").count_rows() == 20
+    query = pushed.search("gripper", query_type="fts").fast_search()
+    assert query.use_rte(False).count_rows() == 15
+    query = pushed.search("gripper", query_type="fts").fast_search()
+    assert query.count_rows() == 15
+    assert len(query.limit(100).to_list()) == 15

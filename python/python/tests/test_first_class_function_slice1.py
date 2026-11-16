@@ -2,17 +2,19 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import json
+import warnings
 from collections import UserDict
 from pathlib import Path
 from types import MappingProxyType
 
 import pytest
 
-from lancedb import col
+from lancedb import col, lit
 import lancedb.functions as functions
 from lancedb.functions import (
     FunctionApplication,
     FunctionBinding,
+    FunctionImage,
     FunctionVersion,
     PythonRuntimeSpec,
     SecretBinding,
@@ -34,7 +36,7 @@ FIXTURES = (
 
 
 def fixture(name: str) -> str:
-    return (FIXTURES / name).read_text()
+    return (FIXTURES / name).read_text(encoding="utf-8")
 
 
 def job_result(name: str) -> dict:
@@ -58,6 +60,7 @@ def assert_no_secret_values(value):
 
 
 def test_public_function_values_are_in_api_reference():
+    assert "LiteralInputBinding" in functions.__all__
     docs = Path(__file__).parents[3] / "docs" / "src" / "python" / "python.md"
     rendered = docs.read_text()
     for name in functions.__all__:
@@ -146,6 +149,91 @@ def test_function_version_identity_is_immutable_and_exact():
     for invalid in [version.image.manifest_digest, "0", "01", "-1", str(2**64)]:
         with pytest.raises(ValueError):
             FunctionVersion(**{**value, "version": invalid})
+
+
+@pytest.mark.parametrize("gpu", [False, True])
+def test_image_inspection_is_concise_warning_free_and_preserves_wire_state(gpu):
+    value = job_result("remote_function_job.json")["image"]
+    value["descriptor"]["future_metadata"] = "x" * 100_000
+    if gpu:
+        value["descriptor"]["requires"]["capabilities"] = [
+            {
+                "type": "lance.cuda",
+                "version": 1,
+                "device_count": 1,
+                "cuda_toolkit": "12.4",
+            }
+        ]
+    image = FunctionImage(**value)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        details = image.describe()
+        rendered = repr(image)
+        assert "manifest_digest=" in str(image)
+        encoded = json.loads(image.to_canonical_json())
+    assert details == {
+        "manifest_digest": value["manifest_digest"],
+        "python_version": "3.12.14",
+        "requires_gpu": gpu,
+        "cuda_toolkit": "12.4" if gpu else None,
+        "platforms": None,
+        "base_image": None,
+        "size_bytes": None,
+    }
+    assert len(rendered) < 350
+    assert f"requires_gpu={gpu}" in rendered
+    assert "future_metadata" not in rendered
+    assert encoded == value
+
+
+@pytest.mark.parametrize(
+    "descriptor",
+    [
+        {},
+        {"format_version": 2, "requires": {"capabilities": []}},
+        {"format_version": 1, "requires": {"capabilities": [None]}},
+        {"python": {"version": {"future": "x" * 100_000}}},
+    ],
+)
+def test_image_inspection_leaves_missing_or_unrecognized_metadata_unknown(descriptor):
+    image = FunctionImage(
+        manifest_digest="sha256:example", descriptor=descriptor, source=True
+    )
+    assert image.describe()["requires_gpu"] is None
+    assert image.describe()["python_version"] is None
+    assert len(repr(image)) < 350
+
+
+@pytest.mark.parametrize(
+    "case", json.loads(fixture("runtime_identity.json")), ids=lambda case: case["name"]
+)
+def test_runtime_digests_match_server_golden_values(case):
+    runtime = PythonRuntimeSpec.from_json(json.dumps(case["runtime"]))
+    assert runtime.digest == case["digest"]
+    assert (
+        PythonRuntimeSpec.from_json(runtime.to_canonical_json()).digest
+        == runtime.digest
+    )
+
+
+def test_unknown_runtime_digest_fails_closed():
+    runtime = PythonRuntimeSpec.from_json('{"kind":"python_v3","future":"value"}')
+    with pytest.raises(ValueError, match="cannot digest unknown runtime kind"):
+        runtime.digest
+
+
+@pytest.mark.parametrize("runtime_digest", [None, "sha256:runtime-inputs"])
+def test_function_version_preserves_runtime_digest(runtime_digest):
+    value = job_result("remote_function_job.json")
+    legacy = FunctionVersion.from_json(json.dumps(value))
+    assert legacy.runtime_digest is None
+    assert "runtime_digest" not in json.loads(legacy.to_canonical_json())
+    value["runtime_digest"] = runtime_digest
+    version = FunctionVersion.from_json(json.dumps(value))
+    assert version.runtime_digest == runtime_digest
+    assert FunctionVersion.from_json(version.to_canonical_json()) == version
+    with pytest.raises((TypeError, ValueError)):
+        version.runtime_digest = "sha256:changed"
 
 
 @pytest.mark.parametrize("source_digest", [None, "sha256:source-artifact"])
@@ -252,6 +340,67 @@ def test_function_version_binding_validates_names_and_direct_columns():
         version(text=col("text"), body=col("body"))
     with pytest.raises(TypeError, match="direct col"):
         version(text=col("text").lower())
+
+
+@pytest.mark.parametrize("constant", [16, 8, True, "prompt", None, 2**64 - 1])
+def test_function_version_binds_direct_literals_without_changing_identity(constant):
+    value = job_result("remote_function_job.json")
+    value["signature"]["inputs"].append(
+        {
+            "name": "option",
+            "arrow_type": "bool"
+            if type(constant) is bool
+            else "utf8"
+            if isinstance(constant, str)
+            else "uint64"
+            if constant == 2**64 - 1
+            else "int64",
+            "nullable": True,
+        }
+    )
+    version = FunctionVersion.from_json(json.dumps(value))
+    expression = lit(constant)
+    application = version(text=col("body"), option=expression)
+    encoded = json.loads(application.to_canonical_json())
+    assert encoded["inputs"] == [
+        {"parameter": "text", "kind": "column", "value": {"path": "body"}},
+        {"parameter": "option", "kind": "literal", "value": constant},
+    ]
+    assert application.function.version == version.version
+    assert application.function.object_id == version.object_id
+    assert application.function.manifest_digest == version.image.manifest_digest
+    assert FunctionApplication.from_json(application.to_canonical_json()) == application
+    if constant is None:
+        assert expression.to_sql() == "NULL"
+    if type(constant) is int:
+        assert expression.to_sql() == str(constant)
+
+
+def test_function_literals_reject_expressions_and_unsupported_values():
+    version = FunctionVersion.from_json(
+        json.dumps(job_result("remote_function_job.json"))
+    )
+    with pytest.raises(TypeError, match="direct col"):
+        version(text=lit(16) + lit(8))
+    with pytest.raises(ValueError, match="floating-point Function literals"):
+        version(text=lit(1.5))
+    with pytest.raises(TypeError, match="unsupported Function literal type"):
+        version(text=lit(b"data"))
+
+
+def test_function_literal_binding_preserves_null_and_rejects_duplicate_parameters():
+    value = json.loads((FIXTURES / "remote_function_binding.json").read_text())
+    value["inputs"] = value["inputs"][:1]
+    value["literal_inputs"] = [{"parameter": "body", "value": None}]
+    binding = FunctionBinding.from_json(json.dumps(value))
+    assert binding.literal_inputs[0].value is None
+    assert json.loads(binding.to_canonical_json())["literal_inputs"] == [
+        {"parameter": "body", "value": None}
+    ]
+    assert FunctionBinding.from_json(binding.to_canonical_json()) == binding
+    value["literal_inputs"][0]["parameter"] = "title"
+    with pytest.raises(ValueError, match="input parameters must be unique"):
+        FunctionBinding.from_json(json.dumps(value))
 
 
 def test_function_version_keeps_named_struct_outputs_in_one_application():
