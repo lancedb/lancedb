@@ -206,7 +206,8 @@ pub trait Catalog: Send + Sync + std::fmt::Debug + 'static {
     /// Obtain deployment-wide authorization, if supported by this backend.
     fn authz(&self) -> Result<Arc<dyn crate::authz::Authorization>> {
         Err(crate::Error::NotSupported {
-            message: "Authorization administration is not supported by this catalog".into(),
+            message: crate::docs::DocLink::Authorization
+                .append_to("Authorization administration is not supported by this catalog"),
         })
     }
 
@@ -346,6 +347,18 @@ impl ConnectCatalogBuilder {
     /// Configure headers, TLS, timeouts, and other shared client settings.
     pub fn client_config(mut self, config: crate::remote::ClientConfig) -> Self {
         self.options.client_config = config;
+        self
+    }
+    /// Set storage options inherited by the catalog's remote database connections.
+    pub fn storage_options(
+        mut self,
+        options: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
+    ) -> Self {
+        self.options.storage_options.extend(
+            options
+                .into_iter()
+                .map(|(key, value)| (key.into(), value.into())),
+        );
         self
     }
     /// Set the SQL service endpoint inherited by database connections.

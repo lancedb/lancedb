@@ -16,18 +16,20 @@ use arrow::array::make_array;
 use arrow::pyarrow::FromPyArrow;
 use arrow::pyarrow::IntoPyArrow;
 use arrow::pyarrow::ToPyArrow;
+use futures::TryStreamExt;
+use lancedb::ApproxMode;
 use lancedb::index::scalar::{
     BooleanQuery, BoostQuery, CombinedFieldsQuery, DocumentGranularity, FtsQuery,
     FullTextSearchQuery, MatchQuery, MultiMatchQuery, Occur, Operator, PhraseQuery,
 };
 use lancedb::query::AnalyzePlanDistributedMetrics;
-use lancedb::query::QueryBase;
 use lancedb::query::QueryExecutionOptions;
 use lancedb::query::QueryFilter;
 use lancedb::query::{
     ColumnOrdering, ExecutableQuery, Query as LanceDbQuery, Select, TakeQuery as LanceDbTakeQuery,
     VectorQuery as LanceDbVectorQuery,
 };
+use lancedb::query::{HasQuery, QueryBase};
 use lancedb::table::AnyQuery;
 use pyo3::Bound;
 use pyo3::IntoPyObject;
@@ -354,6 +356,7 @@ pub struct PyQueryRequest {
     pub limit: Option<usize>,
     pub offset: Option<usize>,
     pub take_offsets: Option<Vec<u64>>,
+    pub take_row_ids: Option<Vec<u64>>,
     pub filter: Option<PyQueryFilter>,
     pub full_text_search: Option<PyLanceDB<FtsQuery>>,
     pub select: PySelect,
@@ -370,6 +373,7 @@ pub struct PyQueryRequest {
     pub lower_bound: Option<f32>,
     pub upper_bound: Option<f32>,
     pub ef: Option<usize>,
+    pub approx_mode: Option<String>,
     pub refine_factor: Option<u32>,
     pub distance_type: Option<String>,
     pub bypass_vector_index: Option<bool>,
@@ -385,6 +389,7 @@ impl From<AnyQuery> for PyQueryRequest {
                 limit: query_request.limit,
                 offset: query_request.offset,
                 take_offsets: query_request.take_offsets,
+                take_row_ids: query_request.take_row_ids,
                 filter: query_request.filter.map(PyQueryFilter),
                 full_text_search: query_request
                     .full_text_search
@@ -403,6 +408,7 @@ impl From<AnyQuery> for PyQueryRequest {
                 lower_bound: None,
                 upper_bound: None,
                 ef: None,
+                approx_mode: None,
                 refine_factor: None,
                 distance_type: None,
                 bypass_vector_index: None,
@@ -416,6 +422,7 @@ impl From<AnyQuery> for PyQueryRequest {
                 limit: vector_query.base.limit,
                 offset: vector_query.base.offset,
                 take_offsets: vector_query.base.take_offsets,
+                take_row_ids: vector_query.base.take_row_ids,
                 filter: vector_query.base.filter.map(PyQueryFilter),
                 full_text_search: None,
                 select_source_columns: PySelect::source_columns(&vector_query.base.select),
@@ -432,6 +439,7 @@ impl From<AnyQuery> for PyQueryRequest {
                 lower_bound: vector_query.lower_bound,
                 upper_bound: vector_query.upper_bound,
                 ef: vector_query.ef,
+                approx_mode: vector_query.approx_mode.map(|m| m.to_string()),
                 refine_factor: vector_query.refine_factor,
                 distance_type: vector_query.distance_type.map(|d| d.to_string()),
                 bypass_vector_index: Some(!vector_query.use_index),
@@ -609,8 +617,18 @@ impl Query {
                 query_text = query_text[1..query_text.len() - 1].to_string();
             }
 
+            let operator = query
+                .get_item("operator")?
+                .filter(|operator| !operator.is_none())
+                .map(|operator| {
+                    let operator = operator.extract::<String>()?;
+                    Operator::try_from(operator.as_str())
+                        .map_err(|err| PyValueError::new_err(err.to_string()))
+                })
+                .transpose()?
+                .unwrap_or(Operator::Or);
             let query: FtsQuery = match (is_phrase, is_multi_match) {
-                (false, _) => MatchQuery::new(query_text).into(),
+                (false, _) => MatchQuery::new(query_text).with_operator(operator).into(),
                 (true, false) => PhraseQuery::new(query_text).into(),
                 (true, true) => {
                     return Err(PyValueError::new_err(
@@ -891,6 +909,28 @@ impl FTSQuery {
         })
     }
 
+    pub fn count_rows(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let mut inner = self_
+            .inner
+            .clone()
+            .full_text_search(self_.fts_query.clone());
+        let request = inner.mut_query();
+        request.limit = None;
+        request.offset = None;
+        request.select = Select::columns(&["_score"]);
+        request.order_by = None;
+        request.with_row_id = false;
+        request.reranker = None;
+        future_into_py(self_.py(), async move {
+            let mut stream = inner.execute().await.infer_error()?;
+            let mut count = 0_u64;
+            while let Some(batch) = stream.try_next().await.infer_error()? {
+                count += batch.num_rows() as u64;
+            }
+            Ok(count)
+        })
+    }
+
     pub fn nearest_to(&mut self, vector: Bound<'_, PyAny>) -> PyResult<HybridQuery> {
         let vector_query = Query::new(self.inner.clone()).nearest_to(vector)?;
         Ok(HybridQuery {
@@ -1067,6 +1107,12 @@ impl VectorQuery {
 
     pub fn ef(&mut self, ef: u32) {
         self.inner = self.inner.clone().ef(ef as usize);
+    }
+
+    pub fn approx_mode(&mut self, approx_mode: String) -> PyResult<()> {
+        let approx_mode = ApproxMode::try_from(approx_mode.as_str()).infer_error()?;
+        self.inner = self.inner.clone().approx_mode(approx_mode);
+        Ok(())
     }
 
     pub fn bypass_vector_index(&mut self) {
@@ -1246,6 +1292,10 @@ impl HybridQuery {
         self.inner_vec.ef(ef);
     }
 
+    pub fn approx_mode(&mut self, approx_mode: String) -> PyResult<()> {
+        self.inner_vec.approx_mode(approx_mode)
+    }
+
     pub fn bypass_vector_index(&mut self) {
         self.inner_vec.bypass_vector_index();
     }
@@ -1291,6 +1341,7 @@ impl HybridQuery {
         req.maximum_nprobes = vec_req.maximum_nprobes;
         req.search_effort = vec_req.search_effort;
         req.ef = vec_req.ef;
+        req.approx_mode = vec_req.approx_mode;
         req.refine_factor = vec_req.refine_factor;
         req.lower_bound = vec_req.lower_bound;
         req.upper_bound = vec_req.upper_bound;

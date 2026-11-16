@@ -14,6 +14,11 @@ on:
       - docs/web-tests/blob-v2/rs/**
       - nodejs/Cargo.toml
       - python/Cargo.toml
+      - python/src/**
+      - python/python/lancedb/exceptions.py
+      - python/python/lancedb/remote/errors.py
+      - ci/build_no_lock.py
+      - ci/tests/test_build_no_lock.py
       - .github/actions/setup-protoc/**
       - .github/workflows/rust.yml
 
@@ -135,7 +140,8 @@ jobs:
           command: check advisories bans licenses sources
 
   build-no-lock:
-    runs-on: ubuntu-24.04
+    # Keep the existing Linux runner; its available disk varies by image.
+    runs-on: ubuntu-2404-4x-x64
     timeout-minutes: 30
     env:
       # Need up-to-date compilers for kernels
@@ -148,6 +154,8 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: "stable"
+          # The explicit cache below runs after lock removal and only saves on main.
+          cache: false
       # Remove cargo.lock to force a fresh build
       - name: Remove Cargo.lock
         run: rm -f Cargo.lock
@@ -162,9 +170,22 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y protobuf-compiler libssl-dev
+      - name: Test build output cleanup
+        run: python3 -m unittest discover -s ci/tests -p test_build_no_lock.py -v
       - name: Build all
         run: |
-          cargo build --profile ci --benches --all-features --tests
+          df -h .
+          # Every target is linked, but this job never executes the test binaries.
+          python3 ci/build_no_lock.py
+      - name: Report build disk usage
+        if: always()
+        run: |
+          df -h .
+          for build_path in target "$HOME/.cargo/registry" "$HOME/.cargo/git"; do
+            if [ -d "$build_path" ]; then
+              du -h -d 2 "$build_path"
+            fi
+          done
 
   linux:
     timeout-minutes: 60
@@ -180,6 +201,8 @@ jobs:
       # Need up-to-date compilers for kernels
       CC: clang-18
       CXX: clang++-18
+      # Preserve the repository CPU flags and use setup-mold's system linker.
+      RUSTFLAGS: "-C target-cpu=haswell -C target-feature=+avx2,+fma,+f16c -C linker-features=-lld"
     steps:
       - uses: actions/checkout@v6
         with:
@@ -219,16 +242,20 @@ jobs:
           sudo mkswap "$swapfile"
           sudo swapon "$swapfile"
       - name: Build
-        run: cargo build --profile ci --all-features --tests --locked --examples
+        run: cargo build --profile ci -p lancedb --all-features --tests --locked --examples
       - name: Run feature tests
         run: CARGO_ARGS="--profile ci" make -C ./lancedb feature-tests
       - name: Run examples
-        run: cargo run --profile ci --all-features --example simple --locked
+        run: cargo run --profile ci -p lancedb --all-features --example simple --locked
       - name: Run blob v2 docs example
         # Python and TypeScript blob docs tests install preview packages.
         # Those builds are not guaranteed to remain available for more than
         # 6 months, so they stay a manual run. This example uses the workspace crate.
-        run: cargo run --profile ci --all-features -p lancedb-blob-v2-docs --example multimodal --locked
+        run: |
+          # The completed all-features checks leave large lancedb artifacts in target.
+          # Reclaim that package before building the example with a different feature set.
+          cargo clean --profile ci -p lancedb
+          cargo run --profile ci --all-features -p lancedb-blob-v2-docs --example multimodal --locked
 
   remote:
     timeout-minutes: 30
@@ -244,6 +271,8 @@ jobs:
     env:
       CC: clang-18
       CXX: clang++-18
+      # Rust's default rust-lld bypasses setup-mold's /usr/bin/ld replacement.
+      RUSTFLAGS: "-C target-cpu=haswell -C target-feature=+avx2,+fma,+f16c -C linker-features=-lld"
       GH_TOKEN: ${{ github.token }}
       SOPHON_READ_TOKEN: ${{ secrets.SOPHON_READ_TOKEN }}
     steps:
@@ -262,16 +291,16 @@ jobs:
           sudo apt update
           sudo apt install -y protobuf-compiler libssl-dev
       - uses: rui314/setup-mold@v1
-      - name: Test the default local Functions gate
-        run: cargo test --profile ci -p lancedb --features remote --test experimental_functions --locked
       - name: Run remote tests
         run: CARGO_ARGS="--profile ci" make -C ./lancedb remote-tests
 
   macos:
+    name: ${{ matrix.phase == 'tests' && format('macos ({0})', matrix.mac-runner) || format('macos-doc ({0})', matrix.mac-runner) }}
     timeout-minutes: 60
     strategy:
       matrix:
         mac-runner: ["macos-15", "macos-26"]
+        phase: [tests, doc]
     runs-on: "${{ matrix.mac-runner }}"
     defaults:
       run:
@@ -293,16 +322,17 @@ jobs:
       - name: Install dependencies
         run: brew install protobuf
       - name: Run tests
+        env:
+          CARGO_TEST_TARGETS: ${{ matrix.phase == 'doc' && '--doc' || '--lib --tests' }}
         run: |
           # Don't run the s3 integration tests since docker isn't available
           # on this image.
           ALL_FEATURES=`cargo metadata --format-version=1 --no-deps \
             | jq -r '.packages[] | .features | keys | .[]' \
             | grep -v s3-test | sort | uniq | paste -s -d "," -`
-          # Run doctests before test binaries fill the runner disk. Examples are
-          # already built by the Linux job, so avoid retaining them here.
-          cargo test --profile ci --features $ALL_FEATURES --locked --doc
-          cargo test --profile ci --features $ALL_FEATURES --locked --lib --tests
+          # Separate jobs give each phase its own time and disk budget. Examples
+          # are already built by the Linux job, so avoid retaining them here.
+          cargo test --profile ci --features $ALL_FEATURES --locked $CARGO_TEST_TARGETS
 
   windows:
     strategy:
@@ -317,6 +347,8 @@ jobs:
         working-directory: rust/lancedb
     steps:
       - uses: actions/checkout@v6
+      - name: Enable long paths for Lance dependencies
+        run: git config --global core.longpaths true
       - name: Set target
         run: rustup target add ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
@@ -354,6 +386,8 @@ jobs:
         working-directory: rust/lancedb
     steps:
       - uses: actions/checkout@v6
+      - name: Enable long paths for Lance dependencies
+        run: git config --global core.longpaths true
       - name: Set target
         run: rustup target add aarch64-pc-windows-msvc
       - uses: Swatinem/rust-cache@v2

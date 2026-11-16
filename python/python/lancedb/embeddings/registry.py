@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import json
-from typing import Dict, Optional, Set, Tuple, Type
+from typing import Dict, Mapping, Optional, Set, Tuple, Type, Union
 
 from pydantic import TypeAdapter
 
@@ -11,6 +11,51 @@ from .base import (
     EmbeddingFunctionConfig,
     UntrustedEmbeddingFunction,
 )
+
+
+def _embedding_column_pairs(
+    metadata: Optional[Mapping[Union[bytes, str], Union[bytes, str]]],
+) -> list[Tuple[str, str]]:
+    """Return source/vector pairs without restoring embedding functions."""
+    pairs = []
+    seen = set()
+
+    def add_pair(source_column: str, vector_column: str) -> None:
+        pair = (source_column, vector_column)
+        if pair not in seen:
+            seen.add(pair)
+            pairs.append(pair)
+
+    if metadata is None:
+        return pairs
+
+    serialized = metadata.get(
+        b"embedding_functions", metadata.get("embedding_functions")
+    )
+    if serialized is not None:
+        if isinstance(serialized, bytes):
+            serialized = serialized.decode("utf-8")
+        for config in json.loads(serialized):
+            add_pair(config["source_column"], config["vector_column"])
+
+    serialized = metadata.get(
+        b"lancedb::column_definitions", metadata.get("lancedb::column_definitions")
+    )
+    if serialized is not None:
+        if isinstance(serialized, bytes):
+            serialized = serialized.decode("utf-8")
+        for column in json.loads(serialized):
+            kind = column.get("kind")
+            if not isinstance(kind, dict) or "Embedding" not in kind:
+                continue
+            embedding = kind["Embedding"]
+            source_column = embedding["source_column"]
+            vector_column = embedding.get("dest_column")
+            if vector_column is None:
+                vector_column = f"{source_column}_embedding"
+            add_pair(source_column, vector_column)
+
+    return pairs
 
 
 class EmbeddingFunctionRegistry:

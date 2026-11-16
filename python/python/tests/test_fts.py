@@ -29,6 +29,7 @@ from lancedb.query import (
     CombinedFieldsQuery,
     DocumentGranularity,
     FullTextOperator,
+    FullTextSearchQuery,
     MatchQuery,
     MultiMatchQuery,
     PhraseQuery,
@@ -39,7 +40,6 @@ from lancedb.query import (
 )
 import numpy as np
 import pyarrow as pa
-import pandas as pd
 import pytest
 import pytest_asyncio
 from utils import exception_output
@@ -154,7 +154,7 @@ def table(tmp_path) -> ldb.table.LanceTable:
     count = [local_random.randint(1, 10000) for _ in range(100)]
     table = db.create_table(
         "test",
-        data=pd.DataFrame(
+        data=pa.table(
             {
                 "vector": vectors,
                 "id": [i % 2 for i in range(100)],
@@ -239,7 +239,7 @@ async def async_table(tmp_path) -> ldb.table.AsyncTable:
     count = [local_random.randint(1, 10000) for _ in range(100)]
     table = await db.create_table(
         "test",
-        data=pd.DataFrame(
+        data=pa.table(
             {
                 "vector": vectors,
                 "id": [i % 2 for i in range(100)],
@@ -531,11 +531,9 @@ async def test_fts_select_async(async_table):
 
 def test_search_fts_phrase_query(table):
     table.create_fts_index("text", with_position=False)
-    try:
-        phrase_results = table.search('"puppy runs"').limit(100).to_list()
-        assert False
-    except Exception:
-        pass
+    with pytest.raises(Exception) as error:
+        table.search('"puppy runs"').limit(100).to_list()
+    assert "FTS(with_position=True)" in exception_output(error)
     table.create_fts_index("text", with_position=True, replace=True)
     results = table.search("puppy").limit(100).to_list()
 
@@ -560,13 +558,9 @@ def test_search_fts_phrase_query(table):
 @pytest.mark.asyncio
 async def test_search_fts_phrase_query_async(async_table):
     await async_table.create_index("text", config=FTS(with_position=False))
-    try:
-        phrase_results = (
-            await async_table.query().nearest_to_text("puppy runs").limit(100).to_list()
-        )
-        assert False
-    except Exception:
-        pass
+    with pytest.raises(Exception) as error:
+        await async_table.query().nearest_to_text('"puppy runs"').to_list()
+    assert "FTS(with_position=True)" in exception_output(error)
     await async_table.create_index("text", config=FTS(with_position=True))
     results = await async_table.query().nearest_to_text("puppy").limit(100).to_list()
     phrase_results = (
@@ -760,9 +754,9 @@ def test_search_order_by_ascending(table):
 
 def test_create_index_from_table(tmp_path, table):
     table.create_fts_index("text")
-    df = table.search("puppy").limit(5).select(["text"]).to_pandas()
-    assert len(df) <= 5
-    assert "text" in df.columns
+    result = table.search("puppy").limit(5).select(["text"]).to_arrow()
+    assert len(result) <= 5
+    assert "text" in result.column_names
 
     # Check whether it can be updated
     table.add(
@@ -782,7 +776,7 @@ def test_create_index_from_table(tmp_path, table):
         table.create_fts_index("text")
 
     table.create_fts_index("text", replace=True)
-    assert len(table.search("gorilla").limit(1).to_pandas()) == 1
+    assert len(table.search("gorilla").limit(1).to_arrow()) == 1
 
 
 def test_create_index_multiple_columns(tmp_path, table):
@@ -1832,3 +1826,285 @@ async def test_fts_fast_search_async(async_table):
         .to_list()
     )
     assert len(results) > 0
+
+
+CODE_TEXT = "parseHTTPRequest user_id utf8"
+
+
+def _token_texts(tokens):
+    return [token.text for token in tokens]
+
+
+def test_tokenize_code_analyzer_flags():
+    default = _token_texts(ldb.tokenize(CODE_TEXT, analyzer="code"))
+    assert default == _token_texts(ldb.tokenize(CODE_TEXT, base_tokenizer="code"))
+
+    no_split = _token_texts(
+        ldb.tokenize(CODE_TEXT, analyzer="code", split_identifiers=False)
+    )
+    split = _token_texts(
+        ldb.tokenize(CODE_TEXT, analyzer="code", split_identifiers=True)
+    )
+    assert "parsehttprequest" in no_split
+    assert "parse" not in no_split
+    assert {"parse", "http", "request", "user", "id"} <= set(split)
+
+    numerics = _token_texts(
+        ldb.tokenize(
+            CODE_TEXT,
+            analyzer="code",
+            split_identifiers=True,
+            split_on_numerics=True,
+        )
+    )
+    no_numerics = _token_texts(
+        ldb.tokenize(
+            CODE_TEXT,
+            analyzer="code",
+            split_identifiers=True,
+            split_on_numerics=False,
+        )
+    )
+    assert "utf" in numerics and "8" in numerics
+    assert "utf8" in no_numerics
+
+    operators = _token_texts(
+        ldb.tokenize("a::b -> c != d", analyzer="code", index_operators=True)
+    )
+    plain = _token_texts(
+        ldb.tokenize("a::b -> c != d", analyzer="code", index_operators=False)
+    )
+    assert {"::", "->", "!="} <= set(operators)
+    assert not {"::", "->", "!="} & set(plain)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"analyzer": "code", "base_tokenizer": "ngram"}, "requires base_tokenizer"),
+        ({"analyzer": "text", "base_tokenizer": "code"}, "requires analyzer='code'"),
+        ({"analyzer": "java"}, "analyzer must be"),
+        ({"split_identifiers": True}, "require analyzer='code'"),
+        ({"base_tokenizer": "raw", "index_operators": True}, "require analyzer='code'"),
+    ],
+)
+def test_code_analyzer_options_are_validated(mem_db, kwargs, message):
+    with pytest.raises(ValueError, match=message):
+        ldb.tokenize(CODE_TEXT, **kwargs)
+
+    table = mem_db.create_table("t", data=[{"text": CODE_TEXT}])
+    with pytest.raises(ValueError, match=message):
+        table.create_index("text", config=FTS(**kwargs))
+
+
+def test_code_analyzer_flags_false_are_allowed_for_text(mem_db):
+    tokens = ldb.tokenize("Running in cafés", split_identifiers=False)
+    assert _token_texts(tokens) == ["run", "cafe"]
+
+
+def test_fts_code_analyzer_index_matches_subwords(mem_db):
+    table = mem_db.create_table(
+        "code",
+        data=[{"text": "def parseHTTPRequest(user_id): pass"}, {"text": "unrelated"}],
+    )
+    table.create_index(
+        "text",
+        config=FTS(analyzer="code", split_identifiers=True, preserve_original=True),
+    )
+
+    details = table.list_indices()[0].index_details
+    assert details["base_tokenizer"] == "code"
+    assert details["split_identifiers"] is True
+    assert details["preserve_original"] is True
+
+    for query in ["http", "request", "parseHTTPRequest"]:
+        rows = table.search(query, query_type="fts").to_list()
+        assert [row["text"] for row in rows] == ["def parseHTTPRequest(user_id): pass"]
+
+
+def test_fts_code_analyzer_without_splitting_does_not_match_subwords(mem_db):
+    table = mem_db.create_table(
+        "code", data=[{"text": "def parseHTTPRequest(user_id): pass"}]
+    )
+    table.create_index("text", config=FTS(analyzer="code", split_identifiers=False))
+
+    assert table.search("request", query_type="fts").to_list() == []
+    assert len(table.search("parseHTTPRequest", query_type="fts").to_list()) == 1
+
+
+@pytest.mark.asyncio
+async def test_async_fts_code_analyzer(mem_db_async):
+    table = await mem_db_async.create_table(
+        "code", data=[{"text": "def parseHTTPRequest(user_id): pass"}]
+    )
+    await table.create_index(
+        "text", config=FTS(analyzer="code", split_identifiers=True)
+    )
+
+    rows = await table.query().nearest_to_text("http").to_list()
+    assert len(rows) == 1
+
+
+@pytest.mark.parametrize("indexed", [False, True])
+@pytest.mark.parametrize("operator,expected", [(None, 25), ("OR", 25), ("AND", 15)])
+def test_simple_fts_operator_and_count(tmp_path, indexed, operator, expected):
+    db = ldb.connect(tmp_path)
+    table = db.create_table(
+        "matches",
+        pa.table(
+            {
+                "id": list(range(30)),
+                "text": ["gripper closed"] * 15
+                + ["gripper open"] * 10
+                + ["camera ready"] * 5,
+            }
+        ),
+    )
+    if indexed:
+        table.create_index("text", config=FTS())
+    kwargs = {"fts_columns": "text"}
+    if operator is not None:
+        kwargs["operator"] = operator
+    query = table.search("gripper closed", query_type="fts", **kwargs)
+    assert query.count_rows() == expected
+    assert len(query.limit(100).to_list()) == expected
+    assert (
+        table.search("gripper closed", query_type="fts", fts_columns="text")
+        .operator("AND")
+        .count_rows()
+        == 15
+    )
+    if operator is not None:
+        assert query.to_query_object().full_text_query.operator == operator
+    query.where("id >= 5", prefilter=False).select(["id"]).limit(2).offset(1)
+    before = query.to_query_object()
+    assert query.count_rows() == expected - 5
+    assert query.to_query_object() == before
+    assert len(query.to_list()) <= 2
+    assert (
+        table.search("absent", query_type="fts", fts_columns="text").count_rows() == 0
+    )
+    assert (
+        table.search(MatchQuery("gripper closed", "text", operator="AND")).count_rows()
+        == 15
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("indexed", [False, True])
+@pytest.mark.parametrize("operator,expected", [(None, 25), ("OR", 25), ("AND", 15)])
+async def test_simple_fts_operator_and_count_async(
+    tmp_path, indexed, operator, expected
+):
+    db = await ldb.connect_async(tmp_path)
+    table = await db.create_table(
+        "matches",
+        pa.table(
+            {
+                "id": list(range(30)),
+                "text": ["gripper closed"] * 15
+                + ["gripper open"] * 10
+                + ["camera ready"] * 5,
+            }
+        ),
+    )
+    if indexed:
+        await table.create_index("text", config=FTS())
+    query = await table.search(
+        "gripper closed", query_type="fts", fts_columns="text", operator=operator
+    )
+    assert await query.count_rows() == expected
+    assert len(await query.limit(100).to_list()) == expected
+    query.where("id >= 5").postfilter().select(["id"]).limit(2).offset(1)
+    before = query.to_query_object()
+    assert await query.count_rows() == expected - 5
+    assert query.to_query_object() == before
+    direct = table.query().nearest_to_text(
+        "gripper closed", columns="text", operator="AND"
+    )
+    assert await direct.count_rows() == 15
+    assert direct.to_query_object().full_text_query.query.operator == "AND"
+    assert (
+        await table.query().nearest_to_text("absent", columns="text").count_rows() == 0
+    )
+
+
+@pytest.mark.parametrize("with_position", [False, True])
+@pytest.mark.parametrize(
+    "query", ['"gripper closed"', PhraseQuery("gripper closed", "text")]
+)
+def test_fts_phrase_count_positions(tmp_path, with_position, query):
+    table = ldb.connect(tmp_path).create_table(
+        "phrases", pa.table({"text": ["gripper closed", "gripper often closed"]})
+    )
+    table.create_index("text", config=FTS(with_position=with_position))
+    search = table.search(query, query_type="fts")
+    if with_position:
+        assert search.count_rows() == 1
+        assert len(search.to_list()) == 1
+        assert (
+            table.search("gripper closed", query_type="fts", operator="AND")
+            .phrase_query()
+            .count_rows()
+            == 1
+        )
+    else:
+        with pytest.raises(Exception) as error:
+            search.count_rows()
+        assert "FTS(with_position=True)" in exception_output(error)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_position", [False, True])
+@pytest.mark.parametrize(
+    "query", ['"gripper closed"', PhraseQuery("gripper closed", "text")]
+)
+async def test_fts_phrase_count_positions_async(tmp_path, with_position, query):
+    db = await ldb.connect_async(tmp_path)
+    table = await db.create_table(
+        "phrases", pa.table({"text": ["gripper closed", "gripper often closed"]})
+    )
+    await table.create_index("text", config=FTS(with_position=with_position))
+    search = table.query().nearest_to_text(query)
+    if with_position:
+        assert await search.count_rows() == 1
+        assert len(await search.to_list()) == 1
+    else:
+        with pytest.raises(Exception) as error:
+            await search.count_rows()
+        assert "FTS(with_position=True)" in exception_output(error)
+
+
+def test_fts_operator_rejects_invalid_queries(table):
+    with pytest.raises(ValueError):
+        table.search("gripper", query_type="fts", operator="XOR")
+    for query in [None, [1.0, 2.0], MatchQuery("gripper", "text")]:
+        with pytest.raises(
+            ValueError, match="operator requires a string full-text query"
+        ):
+            table.search(query, operator="AND")
+    with pytest.raises(ValueError, match="operator requires a string full-text query"):
+        FullTextSearchQuery(query=MatchQuery("gripper"), operator="AND")
+
+
+@pytest.mark.asyncio
+async def test_fts_operator_rejects_invalid_queries_async(async_table):
+    with pytest.raises(ValueError):
+        await async_table.search("gripper", query_type="fts", operator="XOR")
+    for query in [None, [1.0, 2.0], MatchQuery("gripper", "text")]:
+        with pytest.raises(
+            ValueError, match="operator requires a string full-text query"
+        ):
+            await async_table.search(query, operator="AND")
+        with pytest.raises(ValueError):
+            async_table.query().nearest_to_text(query, operator="AND")
+
+
+def test_fts_count_fast_search(tmp_path):
+    table = ldb.connect(tmp_path).create_table(
+        "matches", pa.table({"text": ["gripper closed"] * 15})
+    )
+    table.create_index("text", config=FTS())
+    table.add(pa.table({"text": ["gripper closed"] * 5}))
+    assert table.search("gripper", query_type="fts").count_rows() == 20
+    assert table.search("gripper", query_type="fts").fast_search().count_rows() == 15

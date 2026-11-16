@@ -13,6 +13,8 @@ from lancedb.namespace import LanceNamespaceDBConnection
 @pytest.mark.parametrize("seconds", [-1.0, -0.000001])
 @pytest.mark.parametrize("kind", ["sync", "namespace", "namespace_async", "client"])
 def test_negative_read_consistency_interval(tmp_path, seconds, kind):
+    if kind == "client":
+        pytest.importorskip("lance")
     interval = timedelta(seconds=seconds)
     with pytest.raises(ValueError, match="read_consistency_interval"):
         if kind == "sync":
@@ -44,6 +46,8 @@ async def test_negative_async_read_consistency_interval(tmp_path, seconds):
 async def test_binding_rejects_invalid_read_consistency_interval(
     tmp_path, seconds, kind
 ):
+    if kind == "client":
+        pytest.importorskip("lance")
     with pytest.raises(ValueError, match="read_consistency_interval"):
         if kind == "connect":
             await _lancedb.connect(str(tmp_path), read_consistency_interval=seconds)
@@ -71,12 +75,23 @@ async def test_valid_read_consistency_intervals(tmp_path, interval):
     assert await db.get_read_consistency_interval() == interval
     db.close()
 
+
+@pytest.mark.parametrize(
+    "interval", [None, timedelta(0), timedelta(microseconds=1), timedelta(seconds=5)]
+)
+def test_valid_namespace_read_consistency_intervals(tmp_path, interval):
     db = lancedb.connect_namespace(
         "dir", {"root": str(tmp_path / "namespace")}, read_consistency_interval=interval
     )
     assert db.read_consistency_interval == interval
     db.close()
 
+
+@pytest.mark.parametrize(
+    "interval", [None, timedelta(0), timedelta(microseconds=1), timedelta(seconds=5)]
+)
+def test_valid_namespace_client_read_consistency_intervals(tmp_path, interval):
+    pytest.importorskip("lance")
     client = connect_namespace_client("dir", {"root": str(tmp_path / "client")})
     db = LanceNamespaceDBConnection(client, read_consistency_interval=interval)
     assert db.read_consistency_interval == interval

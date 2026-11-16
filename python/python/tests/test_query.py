@@ -348,7 +348,7 @@ def test_plain_scan_query_to_pandas_blob_bytes_projection(tmp_db, blob_schema):
 
 
 @pytest.mark.parametrize("blob_mode", ["bytes", "descriptions"])
-def test_plain_scan_query_to_pandas_blob_mode_does_not_collect_arrow(
+def test_plain_scan_query_to_pandas_blob_mode_uses_native_path(
     tmp_db, monkeypatch, blob_mode
 ):
     pytest.importorskip("lance")
@@ -362,7 +362,8 @@ def test_plain_scan_query_to_pandas_blob_mode_does_not_collect_arrow(
     def fail_to_arrow(*args, **kwargs):
         raise AssertionError("to_arrow should not be called before native pandas")
 
-    monkeypatch.setattr(query, "to_arrow", fail_to_arrow)
+    if blob_mode == "descriptions":
+        monkeypatch.setattr(query, "to_arrow", fail_to_arrow)
 
     df = query.to_pandas(blob_mode=blob_mode)
 
@@ -488,7 +489,7 @@ async def test_async_plain_scan_query_to_pandas_blob_bytes_projection(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("blob_mode", ["bytes", "descriptions"])
-async def test_async_plain_scan_query_to_pandas_blob_mode_does_not_collect_arrow(
+async def test_async_plain_scan_query_to_pandas_blob_mode_uses_native_path(
     tmp_db_async, monkeypatch, blob_mode
 ):
     pytest.importorskip("lance")
@@ -502,7 +503,8 @@ async def test_async_plain_scan_query_to_pandas_blob_mode_does_not_collect_arrow
     async def fail_to_arrow(*args, **kwargs):
         raise AssertionError("to_arrow should not be called before native pandas")
 
-    monkeypatch.setattr(query, "to_arrow", fail_to_arrow)
+    if blob_mode == "descriptions":
+        monkeypatch.setattr(query, "to_arrow", fail_to_arrow)
 
     df = await query.to_pandas(blob_mode=blob_mode)
 
@@ -541,12 +543,14 @@ def test_vector_query_to_pandas_legacy_blob_descriptions_and_bytes(tmp_db):
     df = query.to_pandas(blob_mode="descriptions")
     assert df["blob"].tolist() == [{"position": 0, "size": 3}]
 
-    with pytest.raises(ValueError, match="legacy blob columns"):
+    with pytest.raises(ValueError, match=r"\['blob'\].*local plain scans"):
         query.to_pandas(blob_mode="bytes")
-    with pytest.raises(ValueError, match="legacy blob columns"):
+    with pytest.raises(ValueError, match=r"\['blob'\].*local plain scans"):
         query.to_arrow(blob_mode="bytes")
-    with pytest.raises(ValueError, match="legacy blob columns"):
-        table.to_arrow(blob_mode="bytes")
+    table_arrow = table.to_arrow(blob_mode="bytes")
+    assert table_arrow.schema.field("blob").type == pa.large_binary()
+    assert "_rowid" not in table_arrow.column_names
+    assert table_arrow["blob"].to_pylist() == [b"one", b"two", b"three", b"four"]
     assert table.to_pandas(blob_mode="bytes")["blob"].tolist() == [
         b"one",
         b"two",
@@ -1308,6 +1312,28 @@ async def test_invalid_nprobes_async(table_async: AsyncTable):
         )
 
 
+def test_approx_mode_works_sync(table):
+    for mode in ["fast", "normal", "accurate"]:
+        LanceVectorQueryBuilder(table, [0, 0], "vector").approx_mode(mode).to_list()
+
+
+def test_invalid_approx_mode_sync(table):
+    with pytest.raises(ValueError, match="approx_mode must be one of"):
+        LanceVectorQueryBuilder(table, [0, 0], "vector").approx_mode("turbo").to_list()
+
+
+@pytest.mark.asyncio
+async def test_approx_mode_works_async(table_async: AsyncTable):
+    for mode in ["fast", "normal", "accurate"]:
+        await table_async.vector_search([0, 0]).approx_mode(mode).to_list()
+
+
+@pytest.mark.asyncio
+async def test_invalid_approx_mode_async(table_async: AsyncTable):
+    with pytest.raises(ValueError, match="approx_mode must be one of"):
+        table_async.vector_search([0, 0]).approx_mode("turbo")
+
+
 def test_query_builder_with_prefilter(table):
     df = (
         LanceVectorQueryBuilder(table, [0, 0], "vector")
@@ -1962,6 +1988,9 @@ def test_query_serialization_sync(table: lancedb.table.Table):
     q = table.search([5.0, 6.0]).ef(7).to_query_object()
     check_set_props(q, ef=7, vector_column="vector", vector=[5.0, 6.0])
 
+    q = table.search([5.0, 6.0]).approx_mode("fast").to_query_object()
+    check_set_props(q, approx_mode="fast", vector_column="vector", vector=[5.0, 6.0])
+
     q = table.search([5.0, 6.0]).bypass_vector_index().to_query_object()
     check_set_props(
         q, bypass_vector_index=True, vector_column="vector", vector=[5.0, 6.0]
@@ -2190,6 +2219,19 @@ async def test_query_serialization_async(table_async: AsyncTable):
         limit=10,
     )
 
+    q = (await table_async.search([5.0, 6.0])).approx_mode("fast").to_query_object()
+    check_set_props(
+        q,
+        approx_mode="fast",
+        vector=sample_vector,
+        postfilter=False,
+        minimum_nprobes=None,
+        maximum_nprobes=None,
+        with_row_id=False,
+        bypass_vector_index=False,
+        limit=10,
+    )
+
     q = (await table_async.search([5.0, 6.0])).bypass_vector_index().to_query_object()
     check_set_props(
         q,
@@ -2226,6 +2268,20 @@ async def test_query_serialization_async(table_async: AsyncTable):
         full_text_query=FullTextSearchQuery(columns=None, query=phrase_query),
         with_row_id=False,
     )
+
+
+@pytest.mark.asyncio
+async def test_hybrid_query_serialization_async(table_async: AsyncTable):
+    q = (
+        table_async.query()
+        .nearest_to([5.0, 6.0])
+        .nearest_to_text(MatchQuery("dog", "text"))
+        .ef(7)
+        .approx_mode("fast")
+        .to_query_object()
+    )
+    assert q.ef == 7
+    assert q.approx_mode == "fast"
 
 
 def test_query_schema(tmp_path):
@@ -2365,13 +2421,36 @@ def test_take_queries(tmp_path):
     assert sorted(converted["idx"].to_pylist()) == [2, 5, 5, 17]
 
     # Take by row id
-    assert list(
-        sorted(table.take_row_ids([5, 2, 17]).to_pandas()["idx"].to_list())
-    ) == [
-        2,
-        5,
-        17,
-    ]
+    assert table.take_row_ids([5, 2, 17]).to_pandas()["idx"].to_list() == [5, 2, 17]
+
+
+@pytest.mark.parametrize("selection", [None, [], ["idx"], {"_rowid": "100 - idx"}])
+@pytest.mark.parametrize("empty", [False, True])
+def test_take_row_ids_order_and_roundtrip(tmp_path, selection, empty):
+    table = lancedb.connect(tmp_path).create_table("test", pa.table({"idx": [0, 1]}))
+    table.add(pa.table({"idx": [2, 3]}))
+    rows = table.search().with_row_id(True).to_arrow().to_pylist()
+    row_ids = {row["idx"]: row["_rowid"] for row in rows}
+    table.delete("idx = 1")
+    requested = (
+        [] if empty else [row_ids[3], row_ids[1], row_ids[3], 2**64 - 1, row_ids[0]]
+    )
+    take = table.take_row_ids(requested)
+    if selection is not None:
+        take = take.select(selection)
+    actual = take.to_arrow()
+    assert actual.num_rows == (0 if empty else 3)
+    if selection == {"_rowid": "100 - idx"}:
+        assert actual.column_names == ["_rowid"]
+        assert actual["_rowid"].to_pylist() == ([] if empty else [97, 97, 100])
+    elif selection == []:
+        assert actual.num_columns == 0
+    else:
+        assert actual.column_names == ["idx"]
+        assert actual["idx"].to_pylist() == ([] if empty else [3, 3, 0])
+    query = take.to_query_object()
+    assert query.take_row_ids == requested
+    assert table._execute_query(query).read_all() == actual
 
 
 def test_take_queries_with_row_id(tmp_path):
@@ -2380,6 +2459,7 @@ def test_take_queries_with_row_id(tmp_path):
 
     by_row_id = table.take_row_ids([5, 2, 17], with_row_id=True).to_arrow()
     assert "_rowid" in by_row_id.column_names
+    assert by_row_id["_rowid"].to_pylist() == [5, 2, 17]
     by_offset = table.take_offsets([5, 2, 17], with_row_id=True).to_arrow()
     assert "_rowid" in by_offset.column_names
 
@@ -2394,6 +2474,7 @@ async def test_take_queries_with_row_id_async(tmp_path):
 
     by_row_id = await table.take_row_ids([5, 2, 17], with_row_id=True).to_arrow()
     assert "_rowid" in by_row_id.column_names
+    assert by_row_id["_rowid"].to_pylist() == [5, 2, 17]
     by_offset = await table.take_offsets([5, 2, 17], with_row_id=True).to_arrow()
     assert "_rowid" in by_offset.column_names
 
@@ -2420,16 +2501,12 @@ def test_take_queries_to_batches(tmp_path):
     rs = list(table.take_row_ids([5, 2, 17]).to_batches())
     assert all(isinstance(b, pa.RecordBatch) for b in rs)
     assert sum(b.num_rows for b in rs) == 3
-    assert sorted(v for b in rs for v in b.column("idx").to_pylist()) == [2, 5, 17]
+    assert [v for b in rs for v in b.column("idx").to_pylist()] == [5, 2, 17]
 
     # Take with select projection → to_batches preserves the projection
     rs = list(table.take_row_ids([5, 2, 17]).select(["label"]).to_batches())
     assert all(b.schema.names == ["label"] for b in rs)
-    assert sorted(v for b in rs for v in b.column("label").to_pylist()) == [
-        "17",
-        "2",
-        "5",
-    ]
+    assert [v for b in rs for v in b.column("label").to_pylist()] == ["5", "2", "17"]
 
 
 def test_getitems(tmp_path):
@@ -2585,17 +2662,24 @@ def test_blob_v2_to_batches_row_id(tmp_db):
     assert [blobs[i].as_py() for i in range(len(blobs))] == [b"one", b"two"]
 
 
-@pytest.mark.parametrize("metric", ["l2", "cosine", "dot"])
 @pytest.mark.parametrize(
-    "effort,probes", [(None, 4), (0, 1), (0.25, 2), (0.5, 4), (0.75, 8), (1, 16)]
+    "metric,probes80,probes90", [("l2", 2, 3), ("cosine", 1, 2), ("dot", 1, 2)]
 )
-def test_search_effort_probe_budget(tmp_path, monkeypatch, metric, effort, probes):
+@pytest.mark.parametrize("effort", [None, 0, 0.1, 0.25, 0.5, 0.75, 1])
+def test_search_effort_probe_budget(
+    tmp_path, monkeypatch, metric, effort, probes80, probes90
+):
     import re
     from lancedb.index import IvfFlat
 
     monkeypatch.setenv("LANCE_AUTO_PROBE_MARGIN", "0")
     monkeypatch.setenv("LANCE_AUTO_MIN_INITIAL_NPROBES", "4")
     monkeypatch.setenv("LANCE_AUTO_MAX_INITIAL_NPROBES", "4")
+    # The lower tiers use metric/k calibration; Auto and the upper tiers retain
+    # their existing budgets. Keep exact execution counts and precedence checks.
+    probes = {None: 4, 0: 1, 0.1: probes80, 0.25: probes90, 0.5: 4, 0.75: 8, 1: 16}[
+        effort
+    ]
     rng = np.random.default_rng(42)
     vectors = np.repeat(np.eye(16, dtype=np.float32), 32, axis=0)
     vectors += rng.normal(0, 0.001, vectors.shape).astype(np.float32)
@@ -2679,7 +2763,7 @@ def test_search_effort_invalid_sync(table, effort):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("hybrid", [False, True])
-@pytest.mark.parametrize("effort", [None, 0, 0.25, 0.5, 0.75, 1])
+@pytest.mark.parametrize("effort", [None, 0, 0.1, 0.25, 0.5, 0.75, 1])
 async def test_search_effort_async_roundtrip(table_async, hybrid, effort):
     query = table_async.vector_search([0, 0])
     if hybrid:

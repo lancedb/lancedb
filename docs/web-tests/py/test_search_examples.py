@@ -3,13 +3,13 @@
 
 
 def test_vector_search():
-    # --8<-- [start:vector_search]
     from tempfile import TemporaryDirectory
 
     import lancedb
 
     with TemporaryDirectory(prefix="lancedb-search-") as uri:
         db = lancedb.connect(uri)
+        # --8<-- [start:vector_search]
         table = db.create_table(
             "documents",
             [
@@ -48,7 +48,6 @@ def test_vector_search():
 
 
 def test_text_search():
-    # --8<-- [start:text_search]
     from tempfile import TemporaryDirectory
 
     import lancedb
@@ -56,6 +55,7 @@ def test_text_search():
 
     with TemporaryDirectory(prefix="lancedb-search-") as uri:
         db = lancedb.connect(uri)
+        # --8<-- [start:text_search]
         table = db.create_table(
             "documents",
             [
@@ -91,7 +91,6 @@ def test_text_search():
 
 
 def test_hybrid_search():
-    # --8<-- [start:hybrid_search]
     from tempfile import TemporaryDirectory
 
     import lancedb
@@ -99,6 +98,7 @@ def test_hybrid_search():
 
     with TemporaryDirectory(prefix="lancedb-search-") as uri:
         db = lancedb.connect(uri)
+        # --8<-- [start:hybrid_search]
         table = db.create_table(
             "documents",
             [
@@ -143,13 +143,13 @@ def test_hybrid_search():
 
 
 def test_filter_search():
-    # --8<-- [start:filter_search]
     from tempfile import TemporaryDirectory
 
     import lancedb
 
     with TemporaryDirectory(prefix="lancedb-search-") as uri:
         db = lancedb.connect(uri)
+        # --8<-- [start:filter_search]
         table = db.create_table(
             "documents",
             [
@@ -188,13 +188,13 @@ def test_filter_search():
 
 
 def test_query_plan():
-    # --8<-- [start:query_plan]
     from tempfile import TemporaryDirectory
 
     import lancedb
 
     with TemporaryDirectory(prefix="lancedb-search-") as uri:
         db = lancedb.connect(uri)
+        # --8<-- [start:query_plan]
         table = db.create_table(
             "documents",
             [

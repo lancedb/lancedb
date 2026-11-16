@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+from __future__ import annotations
+
+from collections.abc import Mapping
 from datetime import timedelta
 import deprecation
 import logging
@@ -31,6 +34,7 @@ from lancedb._lancedb import (
     DeleteResult,
     DropColumnsResult,
     FtsToken,
+    FunctionColumnStatus,
     IndexConfig,
     RTEWriteSpec,
     MergeResult,
@@ -45,7 +49,11 @@ from lancedb.index import (
     LabelList,
 )
 from lancedb.job import Job
-from lancedb.functions import FunctionApplication, RefreshColumnResult
+from lancedb.functions import (
+    FunctionApplication,
+    FunctionRetryPolicy,
+    RefreshColumnResult,
+)
 from lancedb.remote.db import LOOP
 from lancedb.table import IndexConfigType, _maybe_add_fts_error_note
 import pyarrow as pa
@@ -57,6 +65,7 @@ from lancedb.embeddings import EmbeddingFunctionRegistry
 from lancedb.table import _normalize_progress
 
 from ..query import (
+    FullTextOperator,
     AnalyzePlanDistributedMetrics,
     DocumentGranularity,
     FullTextQuery,
@@ -126,7 +135,7 @@ class RemoteTable(Table):
     def _serialized_connection_state(self) -> str:
         if self._connection_state is None:
             raise RuntimeError(
-                "Cannot reopen this LanceDB Distributed table because it does not "
+                "Cannot reopen this LanceDB Enterprise table because it does not "
                 "carry serialized connection state"
             )
         if callable(self._connection_state):
@@ -206,7 +215,8 @@ class RemoteTable(Table):
         LOOP.run(self._table.replace_field_metadata(field_name, new_metadata))
 
     def __repr__(self) -> str:
-        return f"RemoteTable({self.db_name}.{self.name})"
+        identifier = "$".join([*self._namespace_path, self.name])
+        return f"RemoteTable({self.db_name}.{identifier})"
 
     @property
     def schema(self) -> pa.Schema:
@@ -273,23 +283,23 @@ class RemoteTable(Table):
         return LOOP.run(self._table.list_versions())
 
     def to_arrow(self, *, blob_mode: BlobMode = "lazy") -> pa.Table:
-        """to_arrow() is not supported in LanceDB Distributed."""
+        """to_arrow() is not supported in LanceDB Enterprise."""
         validate_blob_mode(blob_mode)
         raise NotImplementedError(
-            "to_arrow() is not supported in LanceDB Distributed. "
+            "to_arrow() is not supported in LanceDB Enterprise. "
             "Use table.search().to_arrow() instead."
         )
 
     def to_pandas(self, blob_mode: BlobMode = "lazy", **kwargs):
-        """to_pandas() is not supported in LanceDB Distributed."""
+        """to_pandas() is not supported in LanceDB Enterprise."""
         validate_blob_mode(blob_mode)
         raise NotImplementedError(
-            "to_pandas() is not supported in LanceDB Distributed. "
+            "to_pandas() is not supported in LanceDB Enterprise. "
             "Use table.search().to_pandas() instead."
         )
 
     def to_lance(self, **kwargs) -> "lance.LanceDataset":
-        """Direct Lance dataset access is not supported in LanceDB Distributed.
+        """Direct Lance dataset access is not supported in LanceDB Enterprise.
 
         Use ``table.search().to_arrow()`` to read query results through the server.
         """
@@ -298,7 +308,7 @@ class RemoteTable(Table):
     def to_polars(self, batch_size=None) -> "pl.LazyFrame":
         """Use ``table.search().to_polars()`` to read query results."""
         raise NotImplementedError(
-            "to_polars() is not supported in LanceDB Distributed. "
+            "to_polars() is not supported in LanceDB Enterprise. "
             "Use table.search().to_polars() instead."
         )
 
@@ -331,7 +341,7 @@ class RemoteTable(Table):
         """Tokenize a query using the tokenizer configured on an FTS index.
 
         Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
-        rebuilt in the client process from index metadata. In LanceDB Distributed,
+        rebuilt in the client process from index metadata. In LanceDB Enterprise,
         this means the same tokenizer model files must also exist locally
         (under ``LANCE_LANGUAGE_MODEL_HOME``) and must match the files the
         server uses. A mismatch cannot be detected: the returned tokens may
@@ -360,6 +370,7 @@ class RemoteTable(Table):
         index_type: ScalarIndexType = "BTREE",
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
     ):
         """Create a scalar index on a column.
 
@@ -386,6 +397,7 @@ class RemoteTable(Table):
             self._table.create_index(
                 column,
                 replace=replace,
+                exist_ok=exist_ok,
                 config=config,
                 wait_timeout=wait_timeout,
                 name=name,
@@ -424,6 +436,7 @@ class RemoteTable(Table):
         document_granularity: DocumentGranularity = DocumentGranularity.ROW,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
     ):
         """Create a full-text search index on a column.
 
@@ -483,6 +496,7 @@ class RemoteTable(Table):
                 self._table.create_index(
                     field_names,
                     replace=replace,
+                    exist_ok=exist_ok,
                     config=config,
                     name=name,
                     wait_timeout=wait_timeout,
@@ -507,6 +521,7 @@ class RemoteTable(Table):
         replace: bool = ...,
         wait_timeout: Optional[timedelta] = ...,
         name: Optional[str] = ...,
+        exist_ok: bool = ...,
         train: bool = ...,
     ) -> None: ...
 
@@ -532,6 +547,7 @@ class RemoteTable(Table):
         *,
         wait_timeout: Optional[timedelta] = ...,
         name: Optional[str] = ...,
+        exist_ok: bool = ...,
         train: bool = ...,
         target_partition_size: Optional[int] = ...,
     ) -> None: ...
@@ -563,6 +579,7 @@ class RemoteTable(Table):
         config: Optional[IndexConfigType] = None,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
         train: bool = True,
         target_partition_size: Optional[int] = None,
     ):
@@ -638,7 +655,7 @@ class RemoteTable(Table):
 
             if accelerator is not None:
                 logging.warning(
-                    "GPU accelerator is not supported in LanceDB Distributed "
+                    "GPU accelerator is not supported in LanceDB Enterprise "
                     "and will be ignored."
                 )
 
@@ -666,6 +683,7 @@ class RemoteTable(Table):
             self._table.create_index(
                 column,
                 replace=replace,
+                exist_ok=exist_ok,
                 config=config,
                 wait_timeout=wait_timeout,
                 name=name,
@@ -681,6 +699,7 @@ class RemoteTable(Table):
         replace: Optional[bool] = None,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
         train: bool = True,
     ) -> Job:
         """Create an index, returning a handle to the indexing job.
@@ -693,6 +712,7 @@ class RemoteTable(Table):
                 self._table.create_index_async(
                     column,
                     replace=replace,
+                    exist_ok=exist_ok,
                     config=config,
                     wait_timeout=wait_timeout,
                     name=name,
@@ -710,6 +730,7 @@ class RemoteTable(Table):
         progress: Optional[Union[bool, Callable, Any]] = None,
         write_parallelism: Optional[int] = None,
         allow_external_blob_outside_bases: bool = False,
+        retries: Optional[int] = None,
     ) -> AddResult:
         """Add more data to the [Table][lancedb.table.Table].
 
@@ -743,7 +764,10 @@ class RemoteTable(Table):
             capped at the number of CPU cores. Lower this if bulk ingestion is
             using too much memory.
         allow_external_blob_outside_bases: bool, default False
-            Not supported in LanceDB Distributed. Setting this raises.
+            Not supported in LanceDB Enterprise. Setting this raises.
+        retries: int, optional
+            Override the retry budget for this call (0 to 255). Zero disables
+            retries, including multipart parts. Ambiguous commits are never replayed.
 
         Returns
         -------
@@ -761,6 +785,7 @@ class RemoteTable(Table):
                     progress=progress,
                     write_parallelism=write_parallelism,
                     allow_external_blob_outside_bases=allow_external_blob_outside_bases,
+                    retries=retries,
                 )
             )
         finally:
@@ -775,6 +800,8 @@ class RemoteTable(Table):
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
         fast_search: Optional[bool] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support
@@ -833,6 +860,10 @@ class RemoteTable(Table):
 
             - *default None*, which leaves fast search disabled.
 
+        operator: "AND" or "OR", optional
+            Combine terms in a string full-text query; the default is OR.
+            Use ``query_type="fts"`` when the table also has embeddings.
+
         Returns
         -------
         LanceQueryBuilder
@@ -869,6 +900,7 @@ class RemoteTable(Table):
             ordering_field_name=ordering_field_name,
             fts_columns=fts_columns or [],
             fast_search=fast_search,
+            operator=operator,
         )
 
     def _execute_query(
@@ -921,9 +953,10 @@ class RemoteTable(Table):
         new_data: DATA,
         on_bad_vectors: str,
         fill_value: float,
+        retries: Optional[int] = None,
     ) -> MergeResult:
         return LOOP.run(
-            self._table._do_merge(merge, new_data, on_bad_vectors, fill_value)
+            self._table._do_merge(merge, new_data, on_bad_vectors, fill_value, retries)
         )
 
     @_deprecated_keyword("predicate", "where")
@@ -992,6 +1025,11 @@ class RemoteTable(Table):
         This can be used to update zero to all rows depending on how many
         rows match the where clause.
 
+        Embeddings are not computed by this method. Updating an embedding source
+        column requires providing all associated vector columns in the same call;
+        otherwise a ValueError is raised. Use `merge_insert` to recompute embeddings
+        automatically.
+
         Parameters
         ----------
         where: str or [Expr][lancedb.expr.Expr], optional
@@ -1048,20 +1086,20 @@ class RemoteTable(Table):
         delete_unverified: bool = False,
     ):
         """
-        cleanup_old_versions() is a no-op in LanceDB Distributed.
+        cleanup_old_versions() is a no-op in LanceDB Enterprise.
         """
         warnings.warn(
-            "cleanup_old_versions() is a no-op in LanceDB Distributed.",
+            "cleanup_old_versions() is a no-op in LanceDB Enterprise.",
             stacklevel=2,
         )
         pass
 
     def compact_files(self, *args, **kwargs):
         """
-        compact_files() is a no-op in LanceDB Distributed.
+        compact_files() is a no-op in LanceDB Enterprise.
         """
         warnings.warn(
-            "compact_files() is a no-op in LanceDB Distributed.",
+            "compact_files() is a no-op in LanceDB Enterprise.",
             stacklevel=2,
         )
         pass
@@ -1074,12 +1112,24 @@ class RemoteTable(Table):
         retrain: bool = False,
         compaction_options: Optional[CompactionOptions] = None,
     ):
-        """optimize() is not supported in LanceDB Distributed."""
+        """Compact the table's data files via a durable, asynchronous
+        Enterprise job. Pruning old versions and index optimization are not
+        yet supported remotely, so this call skips them and returns
+        successfully with zeroed pruning statistics once the compaction job
+        has been submitted; it does not wait for that job to finish. The
+        per-job options ``target_rows_per_fragment``, ``max_source_rows``,
+        ``io_buffer_size``, and ``batch_size`` are supported on compatible
+        servers. Omitted fields inherit table tuning, then deployment/built-in
+        defaults. Other non-default settings raise ``NotImplementedError``
+        before submission. Errors from older servers are propagated without
+        retrying with the settings removed.
+        """
         return LOOP.run(
             self._table.optimize(
                 cleanup_older_than=cleanup_older_than,
                 delete_unverified=delete_unverified,
                 retrain=retrain,
+                compaction_options=compaction_options,
             )
         )
 
@@ -1088,16 +1138,21 @@ class RemoteTable(Table):
 
     def add_columns(
         self,
-        transforms: Dict[str, str | FunctionApplication]
+        transforms: Mapping[str, str | FunctionApplication]
         | FunctionApplication
         | pa.Field
         | List[pa.Field]
         | pa.Schema
+        | DATA
+        | pa.RecordBatch
+        | pa.RecordBatchReader
+        | pl.DataFrame
         | None = None,
         *,
         computed: Dict[str, str] | None = None,
         auto_refresh_enabled: bool | None = None,
         auto_refresh_interval_seconds: int | None = None,
+        auto_refresh_resource_budget: Optional[Dict[str, int]] = None,
     ) -> AddColumnsResult:
         return LOOP.run(
             self._table.add_columns(
@@ -1105,14 +1160,101 @@ class RemoteTable(Table):
                 computed=computed,
                 auto_refresh_enabled=auto_refresh_enabled,
                 auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+                auto_refresh_resource_budget=auto_refresh_resource_budget,
             )
         )
 
-    def refresh_column(self, column: str):
-        return LOOP.run(self._table.refresh_column(column))
+    def refresh_column(
+        self,
+        column: str,
+        *,
+        where: Optional[str] = None,
+        batch_size: Optional[int] = None,
+        max_concurrency: Optional[int] = None,
+        publication_interval_rows: Optional[int] = None,
+        resource_budget: Optional[Dict[str, int]] = None,
+        supervisor_resources: Optional[Dict[str, int]] = None,
+        planning_workers: Optional[Dict[str, Any]] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
+        retry_policy: Optional[FunctionRetryPolicy] = None,
+        error_policy: Optional[Literal["fail", "skip"]] = None,
+        max_failed_fraction: Optional[float] = None,
+        max_failed_rows: Optional[int] = None,
+        row_timeout_seconds: Optional[float] = None,
+        init_timeout_seconds: Optional[float] = None,
+        num_workers: Optional[int] = None,
+        max_executor_processes_per_worker: Optional[int] = None,
+    ):
+        return LOOP.run(
+            self._table.refresh_column(
+                column,
+                where=where,
+                batch_size=batch_size,
+                max_concurrency=max_concurrency,
+                publication_interval_rows=publication_interval_rows,
+                resource_budget=resource_budget,
+                supervisor_resources=supervisor_resources,
+                planning_workers=planning_workers,
+                gpu_class=gpu_class,
+                gpu_count=gpu_count,
+                retry_policy=retry_policy,
+                error_policy=error_policy,
+                max_failed_fraction=max_failed_fraction,
+                max_failed_rows=max_failed_rows,
+                row_timeout_seconds=row_timeout_seconds,
+                init_timeout_seconds=init_timeout_seconds,
+                num_workers=num_workers,
+                max_executor_processes_per_worker=max_executor_processes_per_worker,
+            )
+        )
 
-    def refresh_column_async(self, column: str) -> Job[RefreshColumnResult]:
-        return Job(LOOP.run(self._table.refresh_column_async(column)))
+    def refresh_column_async(
+        self,
+        column: str,
+        *,
+        where: Optional[str] = None,
+        batch_size: Optional[int] = None,
+        max_concurrency: Optional[int] = None,
+        publication_interval_rows: Optional[int] = None,
+        resource_budget: Optional[Dict[str, int]] = None,
+        supervisor_resources: Optional[Dict[str, int]] = None,
+        planning_workers: Optional[Dict[str, Any]] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
+        retry_policy: Optional[FunctionRetryPolicy] = None,
+        error_policy: Optional[Literal["fail", "skip"]] = None,
+        max_failed_fraction: Optional[float] = None,
+        max_failed_rows: Optional[int] = None,
+        row_timeout_seconds: Optional[float] = None,
+        init_timeout_seconds: Optional[float] = None,
+        num_workers: Optional[int] = None,
+        max_executor_processes_per_worker: Optional[int] = None,
+    ) -> Job[RefreshColumnResult]:
+        return Job(
+            LOOP.run(
+                self._table.refresh_column_async(
+                    column,
+                    where=where,
+                    batch_size=batch_size,
+                    max_concurrency=max_concurrency,
+                    publication_interval_rows=publication_interval_rows,
+                    resource_budget=resource_budget,
+                    supervisor_resources=supervisor_resources,
+                    planning_workers=planning_workers,
+                    gpu_class=gpu_class,
+                    gpu_count=gpu_count,
+                    retry_policy=retry_policy,
+                    error_policy=error_policy,
+                    max_failed_fraction=max_failed_fraction,
+                    max_failed_rows=max_failed_rows,
+                    row_timeout_seconds=row_timeout_seconds,
+                    init_timeout_seconds=init_timeout_seconds,
+                    num_workers=num_workers,
+                    max_executor_processes_per_worker=max_executor_processes_per_worker,
+                )
+            )
+        )
 
     def function_errors(
         self,
@@ -1123,6 +1265,19 @@ class RemoteTable(Table):
         return LOOP.run(
             self._table.function_errors(job_id=job_id, column=column, limit=limit)
         )
+
+    def column_statuses(
+        self, column: Optional[str] = None
+    ) -> list[FunctionColumnStatus]:
+        return LOOP.run(self._table.column_statuses(column=column))
+
+    def column_status(self, column: str) -> FunctionColumnStatus:
+        return LOOP.run(self._table.column_status(column))
+
+    def wait_fresh(
+        self, column: str, timeout: Optional[timedelta] = None
+    ) -> FunctionColumnStatus:
+        return LOOP.run(self._table.wait_fresh(column, timeout))
 
     def alter_columns(
         self, *alterations: Iterable[Dict[str, str]]
@@ -1196,7 +1351,7 @@ class RemoteTable(Table):
         )
 
     def close_rte_writers(self) -> None:
-        """No-op in LanceDB Distributed (no local shard writers)."""
+        """No-op in LanceDB Enterprise (no local shard writers)."""
         return LOOP.run(self._table.close_rte_writers())
 
     @_deprecated_keyword("index_name", "name")
@@ -1225,7 +1380,7 @@ class RemoteTable(Table):
 
         This is a hint to the database that the given columns will be accessed
         in the future and the database should prefetch the data if possible.
-        Currently only supported in LanceDB Distributed.
+        Currently only supported in LanceDB Enterprise.
 
         This call initiates prewarming and returns once the request is accepted.
         It is idempotent and safe to call from multiple clients concurrently.
@@ -1254,7 +1409,7 @@ class RemoteTable(Table):
     def uri(self) -> str:
         """The table URI (storage location).
 
-        In LanceDB Distributed, this fetches the location from the server via describe.
+        In LanceDB Enterprise, this fetches the location from the server via describe.
         """
         return LOOP.run(self._table.uri())
 
@@ -1297,13 +1452,20 @@ class RemoteTable(Table):
         self,
         column: str,
         row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
+        *,
+        buffer_size: Optional[int] = None,
     ) -> "list[Optional[BlobFile]]":
-        return LOOP.run(self._table.fetch_blob_files(column, row_ids))
+        return LOOP.run(
+            self._table.fetch_blob_files(column, row_ids, buffer_size=buffer_size)
+        )
 
     def open_blob_file(
-        self, descriptor: Union[dict, pa.StructScalar, None]
+        self,
+        descriptor: Union[dict, pa.StructScalar, None],
+        *,
+        buffer_size: Optional[int] = None,
     ) -> Optional[BlobFile]:
-        return LOOP.run(self._table.open_blob_file(descriptor))
+        return LOOP.run(self._table.open_blob_file(descriptor, buffer_size=buffer_size))
 
     def head(self, n=5) -> pa.Table:
         """

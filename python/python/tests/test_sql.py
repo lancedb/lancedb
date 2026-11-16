@@ -20,6 +20,7 @@ NIL_QUERY_ID = UUID(int=0)
 
 class FakeNativeQuery:
     id = UUID("0198f1b2-c3d4-7e5f-8123-456789abcdef")
+    job_id = None
 
     async def reader(self):
         return pa.table({"value": [1, 2]})
@@ -66,6 +67,15 @@ def test_query_id_is_uuid():
     query = AsyncQuery(FakeNativeQuery())
     assert isinstance(query.id, UUID)
     assert Query(query).id == query.id
+
+
+def test_query_job_id_is_optional_and_separate_from_query_id():
+    native = FakeNativeQuery()
+    native.job_id = "j1-durable"
+    query = AsyncQuery(native)
+    assert query.id != query.job_id
+    assert query.job_id == "j1-durable"
+    assert Query(query).job_id == "j1-durable"
 
 
 def test_connection_serializes_sql_host_override():
@@ -281,3 +291,113 @@ def test_parameters_reach_the_server_as_the_values_that_were_sent():
     received = echoed.column("vector").combine_chunks().flatten().to_numpy()
     assert received.view(np.uint32).tolist() == vector.view(np.uint32).tolist()
     assert echoed.column("k").to_pylist() == [10]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize(
+    ("exist_ok", "status"),
+    [
+        (None, "created"),
+        (False, "created"),
+        (True, "created"),
+        (True, "already_exists"),
+    ],
+)
+async def test_create_secret_exist_ok_reaches_sql(asynchronous, exist_ok, status):
+    flight = pytest.importorskip("pyarrow.flight")
+
+    class SecretServer(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.writes = []
+
+        def do_exchange(self, context, descriptor, reader, writer):
+            self.writes.append((descriptor.command, reader.read_all()))
+            result = pa.table({"status": [status]})
+            writer.begin(result.schema)
+            writer.write_table(result)
+            writer.close()
+
+    with SecretServer() as server:
+        options = {
+            "api_key": "test-key",
+            "host_override": "http://localhost:10024",
+            "sql_host_override": f"grpc://127.0.0.1:{server.port}",
+        }
+        kwargs = {"namespace_path": ["team", "production"]}
+        if exist_ok is not None:
+            kwargs["exist_ok"] = exist_ok
+        if asynchronous:
+            db = await lancedb.connect_async("db://analytics", **options)
+            await db.create_secret("api-key", "credential's value", **kwargs)
+        else:
+            db = lancedb.connect("db://analytics", **options)
+            db.create_secret("api-key", "credential's value", **kwargs)
+        ((command, parameters),) = server.writes
+
+    prefix = "CREATE SECRET IF NOT EXISTS" if exist_ok else "CREATE SECRET"
+    sql = f'{prefix} "api-key" TYPE = GENERIC_STRING SECRET_STRING = $1'
+    assert sql.encode() in command
+    assert b"credential's value" not in command
+    assert parameters.column(0).to_pylist() == ["credential's value"]
+
+
+@pytest.mark.parametrize("job_id", [None, "sql-job-1"])
+def test_sql_input_error_metadata_crosses_native_boundary(job_id):
+    flight = pytest.importorskip("pyarrow.flight")
+    from lancedb.exceptions import JobFailedError, ColumnNotFoundError
+    from lancedb.remote.errors import SqlColumnNotFoundError
+
+    request_ids = []
+
+    class Metadata(flight.ServerMiddleware):
+        def sending_headers(self):
+            headers = {
+                "x-lancedb-error-code": "column_not_found",
+                "x-job-request-id": "worker-request",
+            }
+            if job_id is not None:
+                headers["x-lancedb-sql-job-id"] = job_id
+            return headers
+
+    class Factory(flight.ServerMiddlewareFactory):
+        def start_call(self, info, headers):
+            request_ids.append(headers["x-request-id"][0])
+            return Metadata()
+
+    class RejectingServer(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0", middleware={"metadata": Factory()})
+
+        def do_get(self, context, ticket):
+            context.add_trailer("x-lancedb-error-code", "column_not_found")
+            context.add_trailer("x-job-request-id", "worker-request")
+            if job_id is not None:
+                context.add_trailer("x-lancedb-sql-job-id", job_id)
+            raise pa.ArrowInvalid("No column 'missing' in table events")
+
+    with RejectingServer() as server:
+        db = lancedb.connect(
+            "db://analytics",
+            api_key="test-key",
+            host_override="http://localhost:10024",
+            sql_host_override=f"grpc://127.0.0.1:{server.port}",
+        )
+        expected = JobFailedError if job_id is not None else SqlColumnNotFoundError
+        with pytest.raises(expected) as exc_info:
+            db.execute_query("SELECT missing FROM events").read_all()
+    error = exc_info.value
+    if job_id is not None:
+        assert error.job_id == job_id
+        assert error.request_id == request_ids[-1]
+        assert error.job_request_id == "worker-request"
+        error = error.__cause__
+    assert isinstance(error, SqlColumnNotFoundError)
+    assert isinstance(error, ColumnNotFoundError)
+    assert error.request_id == request_ids[-1]
+    assert error.job_id == job_id
+    assert error.job_request_id == "worker-request"
+    assert error.grpc_code == 3
+    assert str(error).startswith("No column 'missing' in table events")
+    assert not str(error).startswith("SQL error")

@@ -13,9 +13,11 @@ availability:
 [version](/management/table#versioning), without rescanning rows that were
 already there:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT * FROM events CHANGES (INFORMATION => APPEND_ONLY) AT (VERSION => 42)
 ```
+</CodeGroup>
 
 This returns the rows appended after version 42, up to the table's current
 version at the time the query runs.
@@ -40,7 +42,8 @@ of history the clause is willing to read, not a choice among several. `AT
 It attaches to a table in `FROM`, including inside a subquery, a CTE, a join,
 a set operation, or `EXPLAIN`:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 WITH recent AS (
   SELECT * FROM events CHANGES (INFORMATION => APPEND_ONLY) AT (VERSION => 42)
 )
@@ -50,6 +53,7 @@ SELECT * FROM events CHANGES (INFORMATION => APPEND_ONLY) AT (VERSION => 10) a
 JOIN events CHANGES (INFORMATION => APPEND_ONLY) AT (VERSION => 20) b
   ON a.id = b.id
 ```
+</CodeGroup>
 
 Each occurrence of a table keeps its own starting version, even when the same
 table is referenced more than once in one statement.

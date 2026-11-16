@@ -10,7 +10,7 @@ use reqwest::{
 use std::{collections::HashMap, future::Future, str::FromStr, sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
 
-use crate::error::{Error, Result};
+use crate::error::{Error, HttpErrorSource, RemoteErrorMetadata, Result};
 use crate::remote::db::RemoteOptions;
 use crate::remote::retry::{ResolvedRetryConfig, RetryCounter};
 use crate::utils::validate_database_name;
@@ -69,14 +69,9 @@ pub trait HeaderProvider: Send + Sync + std::fmt::Debug {
     async fn get_headers(&self) -> Result<HashMap<String, String>>;
 }
 
-/// Default maximum bytes per insert request (8 GiB).
-///
-/// Sized so a multipart part can hold at least one full Lance data file (the
-/// default is 1M rows / 90 GB per file), which keeps fragments from being split
-/// into undersized files across parts. The time-based cut
-/// ([`DEFAULT_MAX_REQUEST_DURATION_DIVISOR`]) bounds request duration on slow
-/// uploads, so a large byte budget does not risk the read timeout.
-const DEFAULT_MAX_BYTES_PER_REQUEST: u64 = 8 * 1024 * 1024 * 1024;
+/// Default target size for replayable multipart IPC payloads (64 MiB).
+/// A single oversized row (including its schema) may exceed the target.
+const DEFAULT_MAX_BYTES_PER_REQUEST: u64 = 64 * 1024 * 1024;
 
 /// The default max request duration is the read timeout divided by this, leaving
 /// headroom for the server to finalize and acknowledge a part before the read
@@ -114,28 +109,22 @@ pub struct ClientConfig {
     /// Alternatively, set `LANCEDB_USER_ID_ENV_KEY` to specify another environment
     /// variable that contains the user ID value.
     pub user_id: Option<String>,
-    /// Maximum number of bytes to send in a single insert HTTP request.
+    /// Target compressed IPC bytes per multipart request. Defaults to 64 MiB.
     ///
-    /// During a multipart write, each partition's data is split into one or more
-    /// parts of at most this many (Arrow IPC, compressed) bytes, each uploaded as
-    /// a separate request under the shared upload id. This bounds how long any
-    /// one request stays open, so large bulk ingests do not exceed the client
-    /// read timeout while the server streams the part to object storage.
-    ///
-    /// The request body is still streamed (not buffered), so this does not
-    /// increase peak memory. Set to `Some(0)` to disable splitting (one request
-    /// per partition). You can also set the `LANCE_CLIENT_MAX_BYTES_PER_REQUEST`
-    /// environment variable. Defaults to 8 GiB.
+    /// Parts are buffered for retries with the same upload and part IDs. Input
+    /// batches are sliced before encoding. A single row and its schema are
+    /// indivisible and may exceed the target. Peak additional memory is bounded
+    /// by the number of active writers times the part size (plus encoding buffers).
+    /// Set to `Some(0)` to disable byte-based cuts, or configure
+    /// `LANCE_CLIENT_MAX_BYTES_PER_REQUEST`. Disabling cuts can require buffering
+    /// an entire partition for replay.
     pub max_bytes_per_request: Option<u64>,
-    /// Maximum wall-clock time to spend uploading a single insert HTTP request.
+    /// Maximum time spent filling a replayable multipart payload.
     ///
-    /// Complements [`Self::max_bytes_per_request`]: during a multipart write a
-    /// part is cut when it reaches either the byte budget or this duration,
-    /// whichever comes first. The client read timeout also covers the
-    /// request-body upload, so a slow or throttled upload of a large part can
-    /// hit that timeout before the byte budget is reached; cutting by time keeps
-    /// each request short enough that it completes (and the server acknowledges
-    /// the part) within the read timeout.
+    /// A part is cut after encoding a batch slice when either its byte budget
+    /// or this duration is reached. This does not impose a network deadline;
+    /// `timeout_config` controls HTTP timeouts. Timed-out parts are retried using
+    /// their original payload and transaction ID.
     ///
     /// Set to `Some(Duration::ZERO)` to disable the time-based cut. You can also
     /// set the `LANCE_CLIENT_MAX_REQUEST_DURATION` environment variable (integer
@@ -306,8 +295,9 @@ pub struct RetryConfig {
     /// You can also set the `LANCE_CLIENT_RETRY_STATUSES` environment variable
     /// to set this value. Use a comma-separated list of integer values.
     ///
-    /// Note that write operations will never be retried on 5xx errors as this may
-    /// result in duplicated writes.
+    /// Non-idempotent writes do not replay ambiguous 5xx responses. Multipart
+    /// parts can retry configured statuses because each replay replaces the same
+    /// staged transaction. Completion is never replayed.
     ///
     /// The default is 409, 429, 500, 502, 503, 504.
     pub statuses: Option<Vec<u16>>,
@@ -888,6 +878,16 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         Ok((request_id, response))
     }
 
+    pub(crate) fn with_retries(&self, retries: Option<u8>) -> Self {
+        let mut client = self.clone();
+        if let Some(retries) = retries {
+            client.retry_config.retries = retries;
+            client.retry_config.connect_retries = retries;
+            client.retry_config.read_retries = retries;
+        }
+        client
+    }
+
     /// Send the request using retries configured in the RetryConfig.
     /// If retry_5xx is false, 5xx requests will not be retried regardless of the statuses configured
     /// in the RetryConfig.
@@ -957,7 +957,19 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
                         .check_response(&retry_counter.request_id, response)
                         .await
                         .unwrap_err();
+                    // A structured resource error is a domain result, not a
+                    // transient failure. Retrying it would hide the typed error.
+                    if source.http_error_details().is_some() {
+                        return Err(source);
+                    }
                     retry_counter.increment_request_failures(source)?;
+                    if status.is_server_error() {
+                        log::warn!(
+                            "Retrying request {} after gateway status {}",
+                            request_id,
+                            status
+                        );
+                    }
                 }
                 Err(err) if err.is_connect() => {
                     retry_counter.increment_connect_failures(err)?;
@@ -1032,14 +1044,18 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         if status.is_success() {
             Ok(response)
         } else {
+            let metadata = RemoteErrorMetadata::from_headers(response.headers());
             let response_text = response.text().await.ok();
-            let message = if let Some(response_text) = response_text {
-                format!("{}: {}", status, response_text)
-            } else {
-                status.to_string()
+            let source = match response_text {
+                Some(response_text) => HttpErrorSource::new(
+                    format!("{}: {}", status, response_text),
+                    Some(&response_text),
+                    metadata,
+                ),
+                None => HttpErrorSource::new(status.to_string(), None, metadata),
             };
             Err(Error::Http {
-                source: message.into(),
+                source: Box::new(source),
                 request_id: request_id.into(),
                 status_code: Some(status),
             })
@@ -1215,6 +1231,120 @@ pub mod test_utils {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn check_response_extracts_structured_resource_error() {
+        use crate::remote::client::test_utils::client_with_handler;
+
+        let client =
+            client_with_handler(|_| http::Response::builder().status(404).body("").unwrap());
+        let cases = [
+            (404, "not_found", "secret", "openai"),
+            (404, "not_found", "function", "embed"),
+            (404, "not_found", "namespace", "child"),
+            (409, "already_exists", "namespace", "analytics"),
+        ];
+
+        for (status, error_code, resource_kind, resource_name) in cases {
+            let body = serde_json::json!({
+                "code": if error_code == "not_found" { 5 } else { 6 },
+                "error": format!("{resource_kind} {resource_name} error"),
+                "error_code": error_code,
+                "resource": {
+                    "kind": resource_kind,
+                    "name": resource_name,
+                    "namespace_path": ["analytics"],
+                },
+            })
+            .to_string();
+            let response = http::Response::builder()
+                .status(status)
+                .body(body.clone())
+                .unwrap()
+                .into();
+
+            let error = client
+                .check_response("request-1", response)
+                .await
+                .unwrap_err();
+            let details = error
+                .http_error_details()
+                .expect("structured HTTP error details");
+            assert_eq!(details.error_code, error_code);
+            assert_eq!(details.resource_kind, resource_kind);
+            assert_eq!(details.resource_name, resource_name);
+            assert_eq!(details.namespace_path, ["analytics"]);
+            assert!(error.to_string().contains(&body));
+        }
+    }
+
+    #[tokio::test]
+    async fn check_response_keeps_legacy_body_as_generic_http_error() {
+        use crate::remote::client::test_utils::client_with_handler;
+
+        let client =
+            client_with_handler(|_| http::Response::builder().status(404).body("").unwrap());
+        let body = serde_json::json!({
+            "code": 4,
+            "error": "Not found: Secret \"openai\" does not exist",
+        })
+        .to_string();
+        let response = http::Response::builder()
+            .status(404)
+            .body(body.clone())
+            .unwrap()
+            .into();
+
+        let error = client
+            .check_response("request-1", response)
+            .await
+            .unwrap_err();
+        assert!(error.http_error_details().is_none());
+        assert!(error.to_string().contains(&body));
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_does_not_retry_structured_resource_error() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use crate::remote::client::test_utils::client_with_handler;
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let handler_attempts = Arc::clone(&attempts);
+        let client = client_with_handler(move |_| {
+            handler_attempts.fetch_add(1, Ordering::Relaxed);
+            http::Response::builder()
+                .status(409)
+                .body(
+                    serde_json::json!({
+                        "code": 6,
+                        "error": "already exists",
+                        "error_code": "already_exists",
+                        "resource": {
+                            "kind": "namespace",
+                            "name": "analytics",
+                            "namespace_path": [],
+                        },
+                    })
+                    .to_string(),
+                )
+                .unwrap()
+        });
+
+        let request = client.client.post("http://localhost/");
+        let error = client
+            .send_with_retry(request, None, true)
+            .await
+            .unwrap_err();
+
+        assert_eq!(attempts.load(Ordering::Relaxed), 1);
+        let details = error
+            .http_error_details()
+            .expect("structured HTTP error details");
+        assert_eq!(details.error_code, "already_exists");
+        assert_eq!(details.resource_kind, "namespace");
+    }
+
     #[tokio::test]
     async fn test_http_timeout_error_is_actionable() {
         use super::*;

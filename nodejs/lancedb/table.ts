@@ -17,7 +17,12 @@ import {
   tableFromIPC,
 } from "./arrow";
 
-import { BlobFile, BlobReadOptions, runWithSignal } from "./blob";
+import {
+  BlobFile,
+  BlobRangeRequest,
+  BlobReadOptions,
+  runWithSignal,
+} from "./blob";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { IndexOptions } from "./indices";
 import { Job } from "./job";
@@ -35,9 +40,11 @@ import {
   FunctionErrorsOptions,
   IndexConfig,
   IndexStatistics,
+  JobFailureInfo,
   Branches as NativeBranches,
   OptimizeStats,
   RTEStats,
+  RefreshColumnOptions,
   RefreshColumnResult,
   RefreshMaterializedViewResult,
   TableStatistics,
@@ -129,12 +136,19 @@ export interface AddDataOptions {
    * Whether blob URIs outside registered external bases may be written.
    *
    * Defaults to `false`. This option is supported only in LanceDB Embedded;
-   * LanceDB Distributed returns an error when it is enabled. An enabled write
+   * LanceDB Enterprise returns an error when it is enabled. An enabled write
    * stores the absolute URI reference without registering a base or copying
    * the external object into the database. The object must remain accessible
    * when the blob is read later.
    */
   allowExternalBlobOutsideBases?: boolean;
+
+  /**
+   * Override the remote retry budget for this call (0 to 255). Zero disables
+   * retries, including multipart parts. Ambiguous commits are never replayed.
+   * Ignored by LanceDB Embedded.
+   */
+  retries?: number;
 }
 
 export interface UpdateOptions {
@@ -151,7 +165,31 @@ export interface UpdateOptions {
   where: string;
 }
 
+/** Per-invocation compaction settings. Values must be safe integers. */
+export interface CompactionOptions {
+  /** Positive target rows per output fragment; also affects candidate selection. */
+  targetRowsPerFragment?: number;
+  /** Positive live-source-row budget across whole tasks; an oversized first task can produce no work. */
+  maxSourceRows?: number;
+  /** Scanner I/O read-ahead budget in bytes; zero disables byte-based I/O backpressure. */
+  ioBufferSize?: number;
+  /** Positive scanner batch size in rows. */
+  batchSize?: number;
+}
+
 export interface OptimizeOptions {
+  /**
+   * Compaction settings for this invocation. Omitted remote values inherit table
+   * tuning, then deployment/built-in defaults.
+   * Remote tables require a server supporting these SQL options; settings do
+   * not change table policy. This is not a runtime or total-memory limit.
+   * @example
+   * await tbl.optimize({ compactionOptions: {
+   *   targetRowsPerFragment: 1000, maxSourceRows: 5000,
+   *   ioBufferSize: 64 * 1024 * 1024, batchSize: 128,
+   * } });
+   */
+  compactionOptions?: CompactionOptions;
   /**
    * If set then all versions older than the given date
    * be removed.  The current version will never be removed.
@@ -231,6 +269,76 @@ export interface RTEWriteSpec {
   maintainedIndexes?: string[];
   /** Default `ShardWriter` configuration recorded in the MemWAL index. */
   writerConfigDefaults?: Record<string, string>;
+}
+
+/** Exact immutable Function revision attached to a table output. */
+export interface FunctionColumnVersionStatus {
+  name: string;
+  namespacePath: string[];
+  objectId: string;
+  location: string;
+  version: string;
+  manifestDigest: string;
+}
+
+/** Latest matching refresh Job projected for a Function output. */
+export interface FunctionColumnLastRefreshJob {
+  jobId: string;
+  state: string;
+  automatic?: boolean;
+  completedAtMillis?: bigint;
+  /** Structured failure details for a failed Job. */
+  failure?: JobFailureInfo;
+}
+
+/** Automatic-refresh projection for a Function output. */
+export interface FunctionColumnAutoRefreshStatus {
+  enabled: boolean;
+  intervalSeconds?: bigint;
+  activeJobId?: string;
+  state:
+    | "disabled"
+    | "running"
+    | "queued"
+    | "ready"
+    | "up_to_date"
+    | "waiting_interval"
+    | "waiting_backoff"
+    | "blocked"
+    | "unobservable";
+  failureStreak: number;
+  effectiveCooldownMillis?: bigint;
+  blockedReason?:
+    | "table_has_mem_wal"
+    | "inputs_not_settled"
+    | "dependency_in_flight"
+    | "table_capacity"
+    | "cancelled"
+    | "preparation_backoff"
+    | "failure_threshold_reached"
+    | "binding_revision_missing";
+  nextRunAtMillis: bigint | null;
+  nextRunAtReason?: string;
+}
+
+/** Exact four-way status of one Function output at one table version. */
+export interface FunctionColumnStatus {
+  column: string;
+  bindingId: string;
+  function: FunctionColumnVersionStatus;
+  tableVersion: bigint;
+  rows: bigint;
+  fresh: bigint;
+  stale: bigint;
+  neverComputed: bigint;
+  failed: bigint;
+  lastRefreshJob?: FunctionColumnLastRefreshJob;
+  /**
+   * Newest failed refresh Job. This remains present when `lastRefreshJob`
+   * is a later cancellation.
+   */
+  lastFailureJob?: FunctionColumnLastRefreshJob;
+  autoRefresh: FunctionColumnAutoRefreshStatus;
 }
 
 /**
@@ -365,6 +473,24 @@ export abstract class Table {
    * We currently don't support custom named indexes.
    * The index name will always be `${column}_idx`.
    *
+   * On LanceDB Embedded tables the index is built before the returned promise
+   * resolves. On LanceDB Enterprise tables it resolves once the build is
+   * scheduled. Until the build finishes, a vector index may be missing from
+   * {@link Table.listIndices}, a scalar or FTS index may be listed with 0
+   * indexed rows, and queries won't use the index. To wait until the index is
+   * ready, set {@link IndexOptions.waitTimeoutSeconds}, call
+   * {@link Table.waitForIndex}, or use {@link Table.createIndexAsync} and wait
+   * on its job when the server returned a job ID.
+   *
+   * `waitTimeoutSeconds` waits for the submitted build when the server returns
+   * a job ID. On older servers that don't return one, it falls back to polling
+   * the index by name. {@link Table.waitForIndex} always waits by name. When
+   * replacing an existing index, those name-based waits may return before the
+   * new build finishes because the old index can still match.
+   * `createIndexAsync` can track a specific build only when the server returned
+   * a job ID; otherwise it returns an already-complete job and callers must
+   * use {@link Table.waitForIndex} for that build.
+   *
    * @example
    * // If the column has a vector (fixed size list) data type then
    * // an IvfPq vector index will be created.
@@ -399,6 +525,11 @@ export abstract class Table {
    *
    * The job may already be complete when returned; callers must not assume
    * the index exists until {@link Job.wait} resolves.
+   *
+   * In LanceDB Enterprise, the returned job tracks this submission only if the
+   * server returns a job ID. If it does not, the job is already complete and
+   * does not wait for the background build; use {@link Table.waitForIndex} and
+   * account for the replacement caveat described in {@link Table.createIndex}.
    */
   abstract createIndexAsync(
     column: string,
@@ -443,7 +574,7 @@ export abstract class Table {
    * Large columns (e.g. high-dimensional vectors or binary data) may not be
    * practical to prewarm.
    *
-   * This feature is currently only supported in LanceDB Distributed.
+   * This feature is currently only supported in LanceDB Enterprise.
    */
   abstract prewarmData(columns?: string[]): Promise<void>;
 
@@ -558,6 +689,31 @@ export abstract class Table {
   ): Promise<(Buffer | null)[]>;
 
   /**
+   * Materializes row-specific byte ranges at the table's current checkout.
+   * Preserves request order, duplicates, and nulls. Zero length returns an empty
+   * buffer for a non-null blob. Invalid ranges or missing rows reject the entire
+   * call. See {@link Table.fetchBlobs} for row-ID validity across versions.
+   *
+   * Remote tables use the batched endpoint when the server advertises support,
+   * splitting at 1024 ranges and 64 MiB, including individual larger ranges.
+   * Older servers use descriptor queries and BlobFile range reads. Both protocols
+   * use one exact branch and version. Errors from an advertised endpoint propagate
+   * without switching protocols. All output bytes occupy memory.
+   *
+   * @example
+   * ```ts
+   * const bytes = await table.fetchBlobRanges("image", [
+   *   { rowId: 10n, offset: 0n, length: 1024n },
+   * ]);
+   * ```
+   */
+  abstract fetchBlobRanges(
+    column: string,
+    requests: readonly BlobRangeRequest[],
+    options?: BlobReadOptions,
+  ): Promise<(Buffer | null)[]>;
+
+  /**
    * Opens lazy blob handles for `column` at the given row IDs using the
    * table's current checkout.
    *
@@ -601,7 +757,7 @@ export abstract class Table {
    *
    * LanceDB Embedded computed-column declaration and refresh require a source
    * build with the `experimental-functions` Cargo feature. Published packages
-   * disable it; LanceDB Distributed operations remain available.
+   * disable it; LanceDB Enterprise operations remain available.
    *
    * The `{ computed }` form stores the expression rather than evaluating it
    * now: the column is committed with no values, and rows get them from
@@ -613,7 +769,7 @@ export abstract class Table {
    * declaration reads a column, that column cannot be renamed, retyped or
    * dropped.
    *
-   * In LanceDB Distributed the expression is planned by the
+   * In LanceDB Enterprise the expression is planned by the
    * server, and the refresh runs as a server job -- see
    * {@link Table#refreshColumnAsync}.
    * @param {AddColumnsSql[] | Field | Field[] | Schema} newColumnTransforms Either:
@@ -646,34 +802,82 @@ export abstract class Table {
    * Rows appended since the last refresh are filled by the next one, and
    * rows whose inputs changed since they were computed are recomputed;
    * everything else is left as it is. LanceDB Embedded only: in LanceDB
-   * Distributed a refresh runs as a server job, through {@link Table#refreshColumnAsync}.
+   * Enterprise a refresh runs as a server job, through {@link Table#refreshColumnAsync}.
    * @param {string} column The name of the computed column to fill.
+   * @param {RefreshColumnOptions} options Refresh options, all LanceDB
+   * Enterprise only; see {@link Table#refreshColumnAsync}.
    * @returns {Promise<RefreshColumnResult>} A promise that resolves to the
    * number of rows filled and the new version number of the table.
    */
-  abstract refreshColumn(column: string): Promise<RefreshColumnResult>;
+  abstract refreshColumn(
+    column: string,
+    options?: RefreshColumnOptions,
+  ): Promise<RefreshColumnResult>;
 
   /**
    * Like {@link Table#refreshColumn}, but returns a handle to the refresh
    * job instead of blocking until it completes.
    * LanceDB Embedded refresh requires a source build with
-   * `experimental-functions`. LanceDB Distributed jobs do not require this
+   * `experimental-functions`. LanceDB Enterprise jobs do not require this
    * feature.
    *
    * The job may already be complete when returned; callers must not assume
    * the column is filled until {@link Job.wait} resolves. Invalid input --
    * an unknown column, or one that is not computed -- rejects here rather
    * than failing the job. In LanceDB Embedded the job runs in-process; in
-   * LanceDB Distributed it is the server's backfill job.
+   * LanceDB Enterprise it is the server's backfill job.
    * @param {string} column The name of the computed column to fill.
+   * @param {RefreshColumnOptions} options Refresh options, mirroring the SQL
+   * `REFRESH COLUMN ... WHERE ... WITH (...)` form: `where` narrows the rows,
+   * `errorPolicy`, `maxFailedFraction`, `maxFailedRows`, `rowTimeoutSeconds`
+   * and `initTimeoutSeconds` govern failing rows. `batchSize`, `gpuClass`,
+   * `maxConcurrency`, `resourceBudget`, `supervisorResources`,
+   * `planningWorkers` and `maxExecutorProcessesPerWorker` size registered
+   * Function refreshes. `retryPolicy` overrides user-code retries only when
+   * repeating partial work is safe; set `maxAttempts: 1` to disable retries.
+   * `maxConcurrency` overrides the registered default for this logical
+   * execution only and is a positive integer; it is not an account-wide
+   * quota. A `resourceBudget` requires `cpuMillis` and
+   * `memoryBytes`; its `gpuCount` defaults to zero for a CPU-only Function.
+   * `supervisorResources` and each `planningWorkers.resources` entry require
+   * positive `cpuMillis`, `memoryBytes` and `ephemeralStorageBytes`.
+   * `planningWorkers` also requires positive `maxWorkers`,
+   * `rowsPerWorker` and `fragmentsPerWorker`.
+   * The budget applies only to this explicit refresh and does not configure
+   * a later automatic refresh.
+   * `gpuCount` at the top level is the shorthand that preserves the
+   * deployment defaults for CPU and memory, and cannot be combined with
+   * `resourceBudget`. `numWorkers` applies only to expression columns; use
+   * `resourceBudget` for registered Functions. All are LanceDB Enterprise
+   * only; a LanceDB Embedded refresh rejects every option other than
+   * `batchSize`, `gpuClass` and `gpuCount`.
+   * `publicationIntervalRows` opts into publishing completed Function split
+   * ranges once their accumulated unpublished rows reach the threshold.
+   * It must be a positive safe integer and requires non-Blob Function outputs.
+   * Omit it for whole-fragment publication. Publications can exceed the
+   * threshold, and remaining rows publish at completion.
    * @example
    * ```ts
-   * const job = await table.refreshColumnAsync("doubled");
+   * const job = await table.refreshColumnAsync("embedding", {
+   *   where: "published_at > '2026-01-01'",
+   *   resourceBudget: {
+   *     cpuMillis: 8000,
+   *     memoryBytes: 16 * 1024 ** 3,
+   *   },
+   *   maxConcurrency: 4,
+   *   publicationIntervalRows: 10000,
+   *   errorPolicy: "skip",
+   *   maxFailedFraction: 0.01,
+   *   rowTimeoutSeconds: 30,
+   * });
    * await job.wait();
    * console.log(await job.status()); // "finished"
    * ```
    */
-  abstract refreshColumnAsync(column: string): Promise<Job>;
+  abstract refreshColumnAsync(
+    column: string,
+    options?: RefreshColumnOptions,
+  ): Promise<Job>;
 
   /**
    * The per-row errors Function refreshes recorded on this table.
@@ -681,7 +885,7 @@ export abstract class Table {
    * A refresh running under a skip policy records each row it skipped with
    * the input that failed and the error. This lists those records, newest
    * job first, plus a summary for any fragment whose per-row detail was
-   * capped. LanceDB Distributed only; reading errors needs read
+   * capped. LanceDB Enterprise only; reading errors needs read
    * access to the table, since a message carries the value that failed.
    * @param {FunctionErrorsOptions} options Optional filters: `jobId`,
    * `column`, and `limit` (server default 10000, cap 100000).
@@ -695,6 +899,32 @@ export abstract class Table {
   abstract functionErrors(
     options?: FunctionErrorsOptions,
   ): Promise<FunctionErrors>;
+
+  /**
+   * Return exact freshness status for Function-backed output columns.
+   *
+   * All results describe one server table version. Omit `column` for every
+   * Function output. Rows already failed remain visible and do not prevent
+   * `waitFresh` from completing. A handle pinned to an exact version requests
+   * that version; a latest handle retains normal read-freshness behavior.
+   */
+  abstract functionColumnStatuses(
+    column?: string,
+  ): Promise<FunctionColumnStatus[]>;
+
+  /** Return exact freshness status for one Function-backed output column. */
+  abstract functionColumnStatus(column: string): Promise<FunctionColumnStatus>;
+
+  /**
+   * Poll until no stale or never-computed rows remain.
+   *
+   * Only HTTP 503 with the exact finalization-pending error code is retried;
+   * every other error propagates. Failed rows do not block completion.
+   */
+  abstract waitFresh(
+    column: string,
+    timeoutSeconds?: number,
+  ): Promise<FunctionColumnStatus>;
 
   /**
    * Recompute this table's contents from its materialized-view definition.
@@ -713,6 +943,9 @@ export abstract class Table {
 
   /**
    * Alter the name or nullability of columns.
+   *
+   * Local tables reject renaming source or vector columns referenced by
+   * `embedding_functions` schema metadata, preserving the embedding binding.
    * @param {ColumnAlteration[]} columnAlterations One or more alterations to
    * apply to columns.
    * @returns {Promise<AlterColumnsResult>} A promise that resolves to an object
@@ -750,6 +983,9 @@ export abstract class Table {
    * underlying storage. In order to remove the data, you must subsequently
    * call ``compact_files`` to rewrite the data without the removed columns and
    * then call ``cleanup_files`` to remove the old files.
+   *
+   * Local tables reject dropping source or vector columns referenced by
+   * `embedding_functions` schema metadata, preserving the embedding binding.
    * @param {string[]} columnNames The names of the columns to drop. These can
    * be nested column references (e.g. "a.b.c") or top-level column names
    * (e.g. "a").
@@ -990,9 +1226,25 @@ export abstract class Table {
    *  optimize should be run frequently.  A good rule of thumb is to run optimize if
    *  you have added or modified 100,000 or more records or run more than 20 data
    *  modification operations.
+   *
+   * On a LanceDB Enterprise (remote) table, only compaction is currently
+   * supported. Pruning old versions and index optimization are silently
+   * skipped there instead of being attempted, so this call resolves
+   * successfully, with zeroed pruning statistics, once the compaction job
+   * has been submitted; it does not wait for that job to finish.
+   * `compactionOptions` can tune the four per-job settings documented in
+   * {@link CompactionOptions}. Older-server errors are propagated without
+   * retrying with the settings removed.
    */
   abstract optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats>;
-  /** List all indices that have been created with {@link Table.createIndex} */
+  /**
+   * List all indices that have been created with {@link Table.createIndex}
+   *
+   * On LanceDB Enterprise tables, an index whose build hasn't finished may be
+   * missing (vector indices) or listed with 0 indexed rows (scalar and FTS
+   * indices), and `numUnindexedRows` may be undefined. Use
+   * {@link Table.waitForIndex} to wait until an index is ready.
+   */
   abstract listIndices(): Promise<IndexConfig[]>;
   /**
    * Tokenize a full-text search query using the tokenizer configured on an FTS index.
@@ -1000,7 +1252,7 @@ export abstract class Table {
    * Specify exactly one of `column` or `indexName`.
    *
    * Model-backed tokenizers such as `jieba/*` and `lindera/*` are rebuilt in
-   * the client process from index metadata. In LanceDB Distributed, this means the
+   * the client process from index metadata. In LanceDB Enterprise, this means the
    * same tokenizer model files must also exist locally (under
    * `LANCE_LANGUAGE_MODEL_HOME`) and must match the files the server uses. A
    * mismatch cannot be detected: the returned tokens may differ from what the
@@ -1111,6 +1363,14 @@ export class LocalTable extends Table {
   }
 
   async add(data: Data, options?: Partial<AddDataOptions>): Promise<AddResult> {
+    if (
+      options?.retries !== undefined &&
+      (!Number.isInteger(options.retries) ||
+        options.retries < 0 ||
+        options.retries > 255)
+    ) {
+      throw new Error("retries must be an integer between 0 and 255");
+    }
     const mode = options?.mode ?? "append";
     const schema = await this.schema();
 
@@ -1133,6 +1393,7 @@ export class LocalTable extends Table {
       mode,
       progress,
       options?.allowExternalBlobOutsideBases,
+      options?.retries,
     );
   }
 
@@ -1285,6 +1546,23 @@ export class LocalTable extends Table {
     return values.map((value) => value ?? null);
   }
 
+  async fetchBlobRanges(
+    column: string,
+    requests: readonly BlobRangeRequest[],
+    options?: BlobReadOptions,
+  ): Promise<(Buffer | null)[]> {
+    const rowIds = rowIdsToBigInts(requests.map((request) => request.rowId));
+    const ranges = requests.map((request, i) => ({
+      rowId: rowIds[i],
+      offset: request.offset,
+      length: request.length,
+    }));
+    const values = await runWithSignal(options?.signal, (signal) =>
+      this.inner.fetchBlobRanges(column, ranges, signal),
+    );
+    return values.map((value) => value ?? null);
+  }
+
   async fetchBlobFiles(
     column: string,
     rowIds: readonly (bigint | number)[],
@@ -1430,12 +1708,18 @@ export class LocalTable extends Table {
     throw new Error("Invalid input type for addColumns");
   }
 
-  async refreshColumn(column: string): Promise<RefreshColumnResult> {
-    return await this.inner.refreshColumn(column);
+  async refreshColumn(
+    column: string,
+    options?: RefreshColumnOptions,
+  ): Promise<RefreshColumnResult> {
+    return await this.inner.refreshColumn(column, options);
   }
 
-  async refreshColumnAsync(column: string): Promise<Job> {
-    return new Job(await this.inner.refreshColumnAsync(column));
+  async refreshColumnAsync(
+    column: string,
+    options?: RefreshColumnOptions,
+  ): Promise<Job> {
+    return new Job(await this.inner.refreshColumnAsync(column, options));
   }
 
   async functionErrors(
@@ -1443,6 +1727,31 @@ export class LocalTable extends Table {
   ): Promise<FunctionErrors> {
     validateNonNegativeInteger(options?.limit, "limit");
     return await this.inner.functionErrors(options);
+  }
+
+  async functionColumnStatuses(
+    column?: string,
+  ): Promise<FunctionColumnStatus[]> {
+    return (await this.inner.functionColumnStatuses(
+      column,
+    )) as FunctionColumnStatus[];
+  }
+
+  async functionColumnStatus(column: string): Promise<FunctionColumnStatus> {
+    return (await this.inner.functionColumnStatus(
+      column,
+    )) as FunctionColumnStatus;
+  }
+
+  async waitFresh(
+    column: string,
+    timeoutSeconds?: number,
+  ): Promise<FunctionColumnStatus> {
+    validateNonNegativeInteger(timeoutSeconds, "timeoutSeconds");
+    return (await this.inner.waitForFunctionColumn(
+      column,
+      timeoutSeconds,
+    )) as FunctionColumnStatus;
   }
 
   async refreshMaterializedView(
@@ -1576,9 +1885,23 @@ export class LocalTable extends Table {
   }
 
   async optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats> {
+    // JavaScript callers can supply extra keys that TypeScript would reject.
+    // Refuse them before the native binding can silently discard a work limit.
+    const supported = new Set([
+      "targetRowsPerFragment",
+      "maxSourceRows",
+      "ioBufferSize",
+      "batchSize",
+    ]);
+    for (const key of Object.keys(options?.compactionOptions ?? {})) {
+      if (!supported.has(key)) {
+        throw new Error(`Unsupported compaction option: ${key}`);
+      }
+    }
     return await this.inner.optimize(
       options?.cleanupOlderThan?.getTime(),
       options?.deleteUnverified,
+      options?.compactionOptions,
     );
   }
 

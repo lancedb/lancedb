@@ -195,6 +195,7 @@ impl ExecutionPlan for InsertExec {
         context: Arc<TaskContext>,
     ) -> DataFusionResult<SendableRecordBatchStream> {
         let input_stream = self.input.execute(partition, context)?;
+        let input_plan = self.input.clone();
         let dataset = self.dataset.clone();
         let mut write_params = self.write_params.clone();
         let partial_transactions = self.partial_transactions.clone();
@@ -227,6 +228,9 @@ impl ExecutionPlan for InsertExec {
             ));
 
         let stream = futures::stream::once(async move {
+            // Source blob snapshots must outlive the final target commit, not
+            // only the consumption of the input stream.
+            let _input_plan = input_plan;
             if let Some(tracker) = tracker
                 && write_params.write_progress.is_none()
             {

@@ -128,7 +128,7 @@ pub fn validate_table_name(name: &str) -> Result<()> {
     {
         return Err(Error::InvalidTableName {
             name: sanitize(name),
-            reason: "Only alphanumeric characters, dashes, underscores, and\
+            reason: "Only alphanumeric characters, dashes, underscores, and \
                 periods are allowed in table names."
                 .to_string(),
         });
@@ -680,6 +680,22 @@ impl TimeoutStream {
         Box::pin(Self::new(inner, timeout))
     }
 
+    /// Like [`Self::new`], but the stream expires at `deadline` rather than
+    /// `timeout` after its first poll. `timeout` is only used in the error.
+    pub fn with_deadline(
+        inner: SendableRecordBatchStream,
+        timeout: std::time::Duration,
+        deadline: tokio::time::Instant,
+    ) -> Self {
+        Self {
+            inner,
+            state: TimeoutState::Started {
+                deadline: Box::pin(tokio::time::sleep_until(deadline)),
+                timeout,
+            },
+        }
+    }
+
     fn timeout_error(timeout: &std::time::Duration) -> DataFusionError {
         DataFusionError::Execution(format!("Query timeout after {} ms", timeout.as_millis()))
     }
@@ -1065,6 +1081,15 @@ mod tests {
         assert!(validate_table_name("my/table").is_err());
         assert!(validate_table_name("my@table").is_err());
         assert!(validate_table_name("name with space").is_err());
+    }
+
+    #[test]
+    fn test_validate_table_name_invalid_character_message() {
+        let err = validate_table_name("my/table").unwrap_err().to_string();
+        assert!(
+            err.contains("underscores, and periods are allowed"),
+            "unexpected message: {err}"
+        );
     }
 
     #[test]

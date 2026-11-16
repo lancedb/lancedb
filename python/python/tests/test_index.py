@@ -21,6 +21,8 @@ from lancedb.index import (
     Bitmap,
     LabelList,
     Fm,
+    NGram,
+    ZoneMap,
     HnswPq,
     HnswSq,
     HnswFlat,
@@ -246,6 +248,58 @@ async def test_create_fm_index(some_table: AsyncTable):
     assert len(indices) == 1
     assert indices[0].index_type == "Fm"
     assert indices[0].columns == ["data"]
+
+
+@pytest.mark.asyncio
+async def test_create_ngram_index(db_async):
+    # NGram indexes accelerate substring filters on UTF-8 string columns.
+    data = pa.table(
+        {
+            "id": list(range(5)),
+            "text": ["cat", "category", "concatenate", "dog", "cathedral"],
+        }
+    )
+    table = await db_async.create_table("ngram_table", data)
+    await table.create_index("text", config=NGram())
+
+    indices = await table.list_indices()
+    assert len(indices) == 1
+    assert indices[0].index_type == "NGram"
+    assert indices[0].columns == ["text"]
+
+    stats = await table.index_stats(indices[0].name)
+    assert stats.index_type == "NGRAM"
+    assert stats.num_indexed_rows == await table.count_rows()
+    assert stats.num_unindexed_rows == 0
+
+    # The index accelerates substring predicates without changing their results.
+    result = await table.query().where("contains(text, 'cat')").to_arrow()
+    assert sorted(result["id"].to_pylist()) == [0, 1, 2, 4]
+
+    plan = await table.query().where("contains(text, 'cat')").explain_plan()
+    assert "ScalarIndexQuery" in plan
+
+
+@pytest.mark.asyncio
+async def test_create_zonemap_index(db_async):
+    # ZoneMap indexes accelerate range and equality filters on ordered columns.
+    data = pa.table(
+        {
+            "id": list(range(100)),
+            "value": list(range(100)),
+        }
+    )
+    table = await db_async.create_table("zonemap_table", data)
+    await table.create_index("value", config=ZoneMap())
+
+    indices = await table.list_indices()
+    assert len(indices) == 1
+    assert indices[0].index_type == "ZoneMap"
+    assert indices[0].columns == ["value"]
+
+    # The index narrows a range scan without changing its results.
+    result = await table.query().where("value >= 90").to_arrow()
+    assert sorted(result["id"].to_pylist()) == list(range(90, 100))
 
 
 @pytest.mark.asyncio
@@ -559,9 +613,53 @@ def test_index_statistics_index_type_lists_all_supported_values():
         "BTREE",
         "BITMAP",
         "LABEL_LIST",
+        "NGRAM",
+        "ZONEMAP",
     }
 
     assert (
         set(get_args(get_type_hints(IndexStatistics)["index_type"]))
         == expected_index_types
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("background", [False, True])
+@pytest.mark.parametrize(
+    "column,config", [("id", BTree()), ("vector", IvfFlat(num_partitions=1))]
+)
+async def test_index_exist_ok_preserves_existing_index(
+    some_table, background, column, config
+):
+    await some_table.create_index(column, config=config, exist_ok=True)
+    version = await some_table.version()
+    original = await some_table.list_indices()
+    if background:
+        job = await some_table.create_index_async(
+            column, config=config, replace=True, exist_ok=True
+        )
+        await job.wait()
+    else:
+        await some_table.create_index(
+            column, config=config, replace=True, exist_ok=True
+        )
+    assert await some_table.version() == version
+    assert [(i.name, i.index_type) for i in await some_table.list_indices()] == [
+        (i.name, i.index_type) for i in original
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("background", [False, True])
+async def test_named_index_exist_ok_checks_before_column_validation(
+    some_table, background
+):
+    await some_table.create_index("id", config=BTree(), name="kept")
+    version = await some_table.version()
+    method = some_table.create_index_async if background else some_table.create_index
+    result = await method("missing", config=BTree(), name="kept", exist_ok=True)
+    if background:
+        assert result.id is None
+        await result.wait()
+    assert await some_table.version() == version
+    assert [index.name for index in await some_table.list_indices()] == ["kept"]

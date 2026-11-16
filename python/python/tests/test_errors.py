@@ -4,9 +4,22 @@
 import pickle
 
 import pytest
+from lance_namespace.errors import ErrorCode
+from lance_namespace.errors import TableNotFoundError as NamespaceTableNotFoundError
 
 from lancedb.db import DBConnection
-from lancedb.remote.errors import HttpError, LanceDBClientError, RetryError
+from lancedb.remote.errors import (
+    AlreadyExistsError,
+    ConflictError,
+    FunctionNotFoundError,
+    HttpError,
+    LanceDBClientError,
+    NamespaceNotFoundError,
+    ResponseInterruptedError,
+    RetryError,
+    SecretNotFoundError,
+    TableNotFoundError,
+)
 from lancedb.table import Table
 
 
@@ -50,6 +63,150 @@ def test_pickle_http_error():
     assert str(restored) == "not found"
     assert restored.request_id == "req-789"
     assert restored.status_code == 404
+    assert restored.is_transport_error is False
+
+
+def test_pickle_http_transport_error():
+    err = HttpError("connection reset", "req-789", is_transport_error=True)
+    restored = pickle.loads(pickle.dumps(err))
+    assert isinstance(restored, HttpError)
+    assert restored.is_transport_error is True
+    assert restored.request_id == "req-789"
+
+
+def test_pickle_response_interrupted_error():
+    err = ResponseInterruptedError("interrupted", "req-1", 2, 2048, 7, True)
+    restored = pickle.loads(pickle.dumps(err))
+    assert type(restored) is ResponseInterruptedError
+    assert str(restored) == "interrupted"
+    assert restored.request_id == "req-1"
+    assert (restored.batches, restored.rows, restored.table_version) == (2, 2048, 7)
+    assert restored.is_transport_error is True
+    assert restored.status_code is None
+
+
+@pytest.mark.parametrize("error_code", [None, "conflict", "future_conflict_code"])
+def test_http_conflict_error_preserves_reason_and_metadata(error_code):
+    reason = "Conflict: branch 'exp' cannot be deleted, main depends on its files"
+    original = HttpError(reason, "req-conflict", 409, error_code)
+    for error in [original, pickle.loads(pickle.dumps(original))]:
+        assert type(error) is ConflictError
+        assert isinstance(error, HttpError)
+        assert str(error) == reason
+        assert error.request_id == "req-conflict"
+        assert error.status_code == 409
+        assert error.error_code == error_code
+        assert error.is_transport_error is False
+
+
+@pytest.mark.parametrize(
+    "error_code,resource_kind,status_code,expected_type",
+    [
+        ("not_found", "secret", 404, SecretNotFoundError),
+        ("not_found", "function", 404, FunctionNotFoundError),
+        ("not_found", "namespace", 404, NamespaceNotFoundError),
+        ("already_exists", "secret", 409, AlreadyExistsError),
+    ],
+)
+def test_http_error_structured_resource_error(
+    error_code, resource_kind, status_code, expected_type
+):
+    err = HttpError(
+        "resource request failed",
+        "req-structured",
+        status_code,
+        error_code,
+        resource_kind,
+        "resource-name",
+        ["parent", "child"],
+    )
+
+    assert type(err) is expected_type
+    assert isinstance(err, HttpError)
+    assert err.error_code == error_code
+    assert err.resource_kind == resource_kind
+    assert err.resource_name == "resource-name"
+    assert err.namespace_path == ("parent", "child")
+    assert err.request_id == "req-structured"
+    assert err.status_code == status_code
+    assert err.is_transport_error is False
+
+
+@pytest.mark.parametrize(
+    "error_code,resource_kind",
+    [
+        (None, None),
+        ("not_found", None),
+        ("not_found", "unknown"),
+        ("invalid", "secret"),
+    ],
+)
+def test_http_error_without_known_structured_fields_stays_generic(
+    error_code, resource_kind
+):
+    err = HttpError(
+        "not found",
+        "req-generic",
+        404,
+        error_code,
+        resource_kind,
+        "resource-name",
+        [],
+    )
+
+    assert type(err) is HttpError
+    assert err.error_code == error_code
+    assert err.resource_kind == resource_kind
+
+
+@pytest.mark.parametrize(
+    "exception_type,error_code,resource_kind",
+    [
+        (SecretNotFoundError, "not_found", "secret"),
+        (FunctionNotFoundError, "not_found", "function"),
+        (NamespaceNotFoundError, "not_found", "namespace"),
+        (AlreadyExistsError, "already_exists", "namespace"),
+    ],
+)
+@pytest.mark.parametrize("is_transport_error", [False, True])
+def test_pickle_structured_http_error(
+    exception_type, error_code, resource_kind, is_transport_error
+):
+    err = HttpError(
+        "resource request failed",
+        "req-pickle",
+        409 if error_code == "already_exists" else 404,
+        error_code,
+        resource_kind,
+        "resource-name",
+        ["parent"],
+        is_transport_error=is_transport_error,
+    )
+    assert type(err) is exception_type
+
+    restored = pickle.loads(pickle.dumps(err))
+
+    assert type(restored) is exception_type
+    assert restored.error_code == error_code
+    assert restored.resource_kind == resource_kind
+    assert restored.resource_name == "resource-name"
+    assert restored.namespace_path == ("parent",)
+    assert restored.request_id == "req-pickle"
+    assert restored.status_code == err.status_code
+    assert restored.is_transport_error is is_transport_error
+
+
+def test_pickle_table_not_found_error():
+    err = TableNotFoundError("Table 'missing' was not found", "req-missing", 404)
+    restored = pickle.loads(pickle.dumps(err))
+    assert isinstance(restored, TableNotFoundError)
+    assert isinstance(restored, NamespaceTableNotFoundError)
+    assert isinstance(restored, ValueError)
+    assert isinstance(restored, HttpError)
+    assert restored.code == ErrorCode.TABLE_NOT_FOUND
+    assert str(restored) == "Table 'missing' was not found"
+    assert restored.request_id == "req-missing"
+    assert restored.status_code == 404
 
 
 def test_pickle_retry_error():
@@ -75,3 +232,87 @@ def test_pickle_retry_error():
     assert restored.max_connect_failures == 3
     assert restored.max_read_failures == 3
     assert restored.status_code == 503
+
+
+@pytest.mark.parametrize(
+    "code,category,type_name",
+    [
+        (3, "column_not_found", "SqlColumnNotFoundError"),
+        (3, "schema_mismatch", "SqlSchemaMismatchError"),
+        (5, "table_not_found", "SqlTableNotFoundError"),
+        (5, "reference_not_found", "SqlReferenceNotFoundError"),
+        (13, "column_not_found", "SqlError"),
+        (14, "table_not_found", "SqlError"),
+        (3, None, "SqlError"),
+        (5, "future_code", "SqlError"),
+    ],
+)
+def test_sql_errors_use_only_server_codes(code, category, type_name):
+    from lancedb.remote import errors
+
+    original = errors.SqlError(
+        "column_not_found: user/file.rs:12",
+        "current",
+        code,
+        category,
+        "sql-job",
+        "worker",
+    )
+    for error in [original, pickle.loads(pickle.dumps(original))]:
+        assert type(error) is getattr(errors, type_name)
+        assert str(error) == "column_not_found: user/file.rs:12"
+        assert error.request_id == "current"
+        assert error.grpc_code == code
+        assert error.error_code == category
+        assert error.job_id == "sql-job"
+        assert error.job_request_id == "worker"
+        assert error.status_code is None
+        if type_name != "SqlError":
+            assert isinstance(error, ValueError)
+
+
+@pytest.mark.parametrize(
+    "status,category,type_name",
+    [
+        (400, "column_not_found", "ColumnNotFoundError"),
+        (400, "schema_mismatch", "SchemaMismatchError"),
+        (404, "table_not_found", "TableNotFoundError"),
+        (404, "reference_not_found", "ReferenceNotFoundError"),
+        (409, None, "ConflictError"),
+        (409, "conflict", "ConflictError"),
+        (500, "conflict", "HttpError"),
+        (500, "column_not_found", "HttpError"),
+        (503, "table_not_found", "HttpError"),
+    ],
+)
+def test_http_input_errors_keep_status_and_job_metadata(status, category, type_name):
+    from lancedb.remote import errors
+
+    original = errors.HttpError(
+        "original diagnostic",
+        "current",
+        status,
+        error_code=category,
+        job_id="sql-job",
+        job_request_id="worker",
+    )
+    for error in [original, pickle.loads(pickle.dumps(original))]:
+        assert type(error) is getattr(errors, type_name)
+        assert error.status_code == status
+        assert error.job_id == "sql-job"
+        assert error.job_request_id == "worker"
+        assert error.request_id == "current"
+
+
+def test_local_query_keeps_missing_column_type(tmp_path):
+    import lancedb
+    from lancedb.exceptions import ColumnNotFoundError
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("events", [{"id": 1}])
+    with pytest.raises(ColumnNotFoundError) as exc_info:
+        table.search().where("missing > 0").to_arrow()
+    assert "missing" in str(exc_info.value)
+    assert exc_info.value.request_id is None
+    assert exc_info.value.job_id is None
+    assert exc_info.value.job_request_id is None

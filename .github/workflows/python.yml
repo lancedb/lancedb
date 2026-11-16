@@ -130,7 +130,8 @@ jobs:
         run: pytest --doctest-modules python/lancedb
   linux:
     name: "Linux: python-3.${{ matrix.python-minor-version }}"
-    timeout-minutes: 30
+    # A cold native build plus both test passes can exhaust 30 minutes.
+    timeout-minutes: 60
     strategy:
       matrix:
         python-minor-version: ["10", "13"]
@@ -161,7 +162,16 @@ jobs:
       - name: Test without pylance or pandas
         run: |
           pip uninstall -y pylance pandas
-          pytest -vv python/tests/test_table.py python/tests/test_namespace_no_pylance.py
+          # These modules still import optional packages during collection or
+          # exercise them throughout many tests; the full run above covers them.
+          pytest -m "not slow and not s3_test" -vv --durations=30 python/tests \
+            --ignore=python/tests/docs \
+            --ignore=python/tests/test_context.py \
+            --ignore=python/tests/test_db.py \
+            --ignore=python/tests/test_embeddings.py \
+            --ignore=python/tests/test_embeddings_slow.py \
+            --ignore=python/tests/test_namespace_integration.py \
+            --ignore=python/tests/test_query.py
       # Make sure wheels are not included in the Rust cache
       - name: Delete wheels
         run: rm -rf target/wheels
@@ -170,7 +180,8 @@ jobs:
     strategy:
       matrix:
         features: ["default", "experimental-functions"]
-    timeout-minutes: 30
+    # A cold native build plus experimental-functions tests can exceed 30 minutes.
+    timeout-minutes: 60
     runs-on: macos-15
     defaults:
       run:

@@ -1,0 +1,111 @@
+---
+title: "Distributed Shuffle"
+sidebarTitle: "Distributed Shuffle"
+description: "How a SQL query's intermediate results move between plan executors for a join, aggregate or sort."
+icon: shuffle
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+A distributed SQL query plans as a sequence of **stages**, each with its
+own set of partitions, connected by an **exchange**: a streaming gRPC
+service that carries one stage's output to the next stage's plan
+executors. [Distributed Search](/enterprise/distributed-search) covers
+how a query gets placed on the fleet in the first place; this page covers
+what happens between placement and the final result, for a query whose
+plan needs data repartitioned across machines -- a hash join or a grouped
+aggregate, for example, where rows with the same key must land on the
+same worker regardless of which plan executor originally read them.
+
+<div className="hidden dark:block">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
+  "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
+  "clusterBkg": "#211d1a", "clusterBorder": "#4c443f", "edgeLabelBackground": "#171513",
+  "fontFamily": "Inter, sans-serif", "fontSize": "18px"
+}}}%%
+flowchart LR
+    subgraph Stage1["Stage: scan"]
+    direction TB
+    PE1["Plan executor<br/>reads its partition"]
+    PE2["Plan executor<br/>reads its partition"]
+    end
+
+    EX["Exchange<br/>streaming gRPC,<br/>repartitions by join/group key,<br/>backpressure via a byte budget"]
+
+    subgraph Stage2["Stage: join / aggregate"]
+    direction TB
+    PE3["Plan executor<br/>probes its share of keys"]
+    PE4["Plan executor<br/>probes its share of keys"]
+    end
+
+    PE1 --> EX
+    PE2 --> EX
+    EX --> PE3
+    EX --> PE4
+    classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
+    classDef accent fill:#2a1810,stroke:#e8582d,stroke-width:1.5px,color:#f4ebe8
+    class EX accent
+```
+
+</div>
+
+<div className="block dark:hidden">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
+  "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
+  "clusterBkg": "#f4ebe8", "clusterBorder": "#ad9e95", "edgeLabelBackground": "#ffffff",
+  "fontFamily": "Inter, sans-serif", "fontSize": "18px"
+}}}%%
+flowchart LR
+    subgraph Stage1["Stage: scan"]
+    direction TB
+    PE1["Plan executor<br/>reads its partition"]
+    PE2["Plan executor<br/>reads its partition"]
+    end
+
+    EX["Exchange<br/>streaming gRPC,<br/>repartitions by join/group key,<br/>backpressure via a byte budget"]
+
+    subgraph Stage2["Stage: join / aggregate"]
+    direction TB
+    PE3["Plan executor<br/>probes its share of keys"]
+    PE4["Plan executor<br/>probes its share of keys"]
+    end
+
+    PE1 --> EX
+    PE2 --> EX
+    EX --> PE3
+    EX --> PE4
+    classDef default fill:#ffffff,stroke:#ad9e95,stroke-width:1px,color:#221d19
+    classDef accent fill:#fff1ec,stroke:#e8582d,stroke-width:1.5px,color:#221d19
+    class EX accent
+```
+
+</div>
+
+## Pipelined, not batched {#pipelined}
+
+The exchange moves data as a gRPC stream of row batches, not a file a
+later stage waits for: a consuming plan executor pulls batches as they
+become available, and a slow consumer throttles its producer through a
+byte budget on unread messages rather than letting memory grow without
+bound. A partition that stops being read -- for example the probe side of
+a hash join whose build side turned out empty -- is drained rather than
+left to stall the budget for every other partition sharing the same
+connection.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Distributed Search" icon="network-wired" href="/enterprise/distributed-search">
+    How a query gets placed on the query-serving fleet in the first place.
+  </Card>
+  <Card title="Query plans" icon="map" href="/basics/sql#query-plans">
+    Inspect a specific query's plan and its actual execution metrics.
+  </Card>
+</CardGroup>

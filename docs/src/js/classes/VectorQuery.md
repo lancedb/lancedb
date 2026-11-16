@@ -101,6 +101,38 @@ AnalyzeExec verbose=true, metrics=[]
 
 ***
 
+### approxMode()
+
+```ts
+approxMode(approxMode): VectorQuery
+```
+
+Set the speed / accuracy tradeoff to use for approximate search
+
+This currently affects RQ-quantized indexes, such as IVF_RQ, and
+prefiltered search on HNSW indexes, where "fast" enables the ACORN
+traversal. Other index types ignore this setting.
+
+"fast" favors lower latency and may reduce recall, "normal" (the default)
+uses the index's default balance, and "accurate" favors higher recall and
+may increase latency.
+
+#### Parameters
+
+* **approxMode**: `"fast"` \| `"normal"` \| `"accurate"`
+
+#### Returns
+
+[`VectorQuery`](VectorQuery.md)
+
+#### Example
+
+```ts
+table.vectorSearch([0.1, 0.2]).approxMode("fast").limit(10);
+```
+
+***
+
 ### bypassVectorIndex()
 
 ```ts
@@ -653,6 +685,11 @@ searchEffort(searchEffort): VectorQuery
 ```
 
 Set the initial IVF search effort to a finite value in [0, 1].
+
+Efforts 0.1 and 0.25 target empirical mean partition-routing recall of
+80% and 90% for L2, cosine and dot through k=100000. The probe budget
+adapts to the metric and k. Hamming and larger k remain uncalibrated;
+100000 is not an API limit. Remote queries also require server support.
 
 The default, null, uses Auto (internally 0.5). Zero starts at the caller
 minimum; one searches all partitions within the caller maximum. Later

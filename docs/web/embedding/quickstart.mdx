@@ -15,7 +15,7 @@ import {
 } from '/snippets/sentence-transformers.mdx';
 
 LanceDB will automatically vectorize the data both at ingestion and query time. All you need to do is specify which model to use.
-Popular embedding models like OpenAI, Hugging Face, Sentence Transformers, CLIP, and more, are supported.
+Popular embedding models like OpenAI, HuggingFace, Sentence Transformers, CLIP, and more, are supported.
 
 ## Step 1: Import Required Libraries {#step-1-import-required-libraries}
 
@@ -23,7 +23,6 @@ First, import the necessary LanceDB components:
 
 <CodeGroup>
 ```python Python icon="python"
-import lancedb
 from lancedb.pydantic import LanceModel, Vector
 from lancedb.embeddings import get_registry
 ```

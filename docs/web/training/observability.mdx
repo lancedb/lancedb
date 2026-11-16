@@ -1,0 +1,67 @@
+---
+title: "Observability"
+sidebarTitle: "Observability"
+description: "Pipeline counters for diagnosing StreamingDataset bottlenecks."
+icon: gauge
+availability:
+  embedded: available
+  enterprise: available
+---
+
+Optimizing data loader performance can be tricky, as runtime bottlenecks are often difficult to locate across various stages of the I/O and CPU pipelines. To help distinguish bottlenecks, [`StreamingDataset`](/training/data-loading) exposes several pipeline counters: `raw_queue_depth` shows the number of loaded rows waiting to be transformed,
+and `prefetch_queue_depth` is the number of transformed rows ready to be consumed. `unscanned_rows` and
+`consumed_rows` show how far the current iterator has progressed.
+
+If the `prefetch_queue_depth` is consistently zero but the `raw_queue_depth` is not, then you likely have a CPU
+transformation bottleneck. You should investigate GIL bottlenecks or look for ways to optimize your transformation.
+This can often be done by batching the compute work. If both `prefetch_queue_depth` and `raw_queue_depth` are
+consistently zero while the consumer is waiting, I/O is the likely bottleneck. A larger read batch size or clumped
+shuffling could help.
+
+<CodeGroup>
+```py Python icon=Python
+import threading, time
+
+from lancedb.streaming import StreamingDataset
+
+ds = StreamingDataset(table, shuffle_seed=42)
+
+def log_pipeline_health():
+    while True:
+        print(
+            f"unscanned={ds.unscanned_rows} "
+            f"raw={ds.raw_queue_depth} "
+            f"cooked={ds.prefetch_queue_depth} "
+            f"consumed={ds.consumed_rows}"
+        )
+        time.sleep(1.0)
+
+monitor = threading.Thread(target=log_pipeline_health, daemon=True)
+monitor.start()
+
+for sample in ds:
+    train_step(sample)
+
+print(
+    f"bytes loaded: {ds.bytes_loaded} "
+    f"fetch time: {ds.fetch_time:.2f}s "
+    f"transform time: {ds.transform_time:.2f}s"
+)
+```
+</CodeGroup>
+
+`bytes_loaded` measures raw Arrow buffer bytes before transformation. `bytes_loaded`, `fetch_time`, and `transform_time`
+are cumulative across iterations of the same dataset instance; because work runs concurrently, the summed stage times
+can exceed wall-clock time. The queue depths report rows currently waiting in the pipeline, and the progress counters
+reflect the latest iterator snapshot.
+
+## Next steps {#next}
+
+<CardGroup cols={2}>
+  <Card title="PyTorch Data Loader" icon="boxes-stacked" href="/training/data-loading">
+    Stream, shuffle and transform training data with StreamingDataset.
+  </Card>
+  <Card title="Checkpointing" icon="floppy-disk" href="/training/checkpointing">
+    Save progress so a failed run can pick back up.
+  </Card>
+</CardGroup>

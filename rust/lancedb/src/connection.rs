@@ -23,11 +23,12 @@ use crate::connection::create_table::CreateTableBuilder;
 use crate::data::scannable::Scannable;
 use crate::database::listing::ListingDatabase;
 use crate::database::{
-    CloneTableRequest, Database, DatabaseOptions, ExecuteQueryRequest, JobInfo, OpenTableRequest,
-    PauseJobStatus, ReadConsistency, ResumeJobStatus, TableNamesRequest,
+    CloneTableRequest, Database, DatabaseOptions, ExecuteQueryRequest, JobInfo, JobListFilter,
+    OpenTableRequest, PauseJobStatus, ReadConsistency, ResumeJobStatus, TableNamesRequest,
 };
 use crate::embeddings::{EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
+use crate::function::GpuClass;
 use crate::graph::{PropertyGraphDefinition, PropertyGraphDescription};
 use crate::listing::{Listing, ListingOptions, ListingPage};
 #[cfg(feature = "remote")]
@@ -50,7 +51,13 @@ pub use lance_file::version::LanceFileVersion;
 use lance_io::object_store::StorageOptions;
 use lance_io::object_store::{StorageOptionsAccessor, StorageOptionsProvider};
 
+mod create_secret;
 mod create_table;
+mod create_view;
+
+pub use create_view::CreateViewBuilder;
+
+pub use create_secret::CreateSecretBuilder;
 
 pub(crate) fn merge_storage_options(
     store_params: &mut ObjectStoreParams,
@@ -178,7 +185,7 @@ impl OpenTableBuilder {
 
     /// Advanced parameters that can be used to customize table reads
     ///
-    /// LanceDB Distributed connections reject these parameters with [`Error::NotSupported`].
+    /// LanceDB Enterprise connections reject these parameters with [`Error::NotSupported`].
     ///
     /// If set, these will take precedence over any overlapping `OpenTableOptions` options
     pub fn lance_read_params(mut self, params: ReadParams) -> Self {
@@ -337,7 +344,7 @@ pub struct CloneTableBuilder {
     request: CloneTableRequest,
 }
 
-/// Builder for asynchronously executing a SQL statement on a LanceDB Distributed database.
+/// Builder for asynchronously executing a SQL statement on a LanceDB Enterprise database.
 pub struct ExecuteQueryAsyncBuilder {
     parent: Arc<dyn Database>,
     request: ExecuteQueryRequest,
@@ -426,6 +433,21 @@ impl CloneTableBuilder {
         }
     }
 
+    /// Preserve an existing target without reading or cloning the source.
+    /// Defaults to false, which reports a duplicate-name error.
+    ///
+    /// ```no_run
+    /// # async fn example(db: &lancedb::Connection) -> lancedb::Result<()> {
+    /// let table = db.clone_table("snapshot", "s3://bucket/source.lance")
+    ///     .exist_ok(true).execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn exist_ok(mut self, exist_ok: bool) -> Self {
+        self.request.exist_ok = exist_ok;
+        self
+    }
+
     /// Set the source version to clone from
     pub fn source_version(mut self, version: u64) -> Self {
         self.request.source_version = Some(version);
@@ -501,7 +523,7 @@ impl Connection {
         &self.internal
     }
 
-    /// Start executing SQL on a LanceDB Distributed database.
+    /// Start executing SQL on a LanceDB Enterprise database.
     ///
     /// The query can reference tables in other databases with SQL dot notation.
     /// Use [`ExecuteQueryAsyncBuilder::default_namespace_path`] to avoid qualifying
@@ -626,7 +648,8 @@ impl Connection {
     /// Creates a new table by cloning from an existing source table.
     /// By default, this performs a shallow clone where the new table shares
     /// the underlying data files with the source table.
-    /// The target table name must be unused. An existing table is left unchanged.
+    /// The target table name must be unused by default. Use
+    /// [`CloneTableBuilder::exist_ok`] to open an existing target unchanged.
     ///
     /// # Parameters
     /// - `target_table_name`: The name of the new table to create
@@ -667,9 +690,10 @@ impl Connection {
 
     /// Look up one exact immutable Function version in the remote catalog.
     ///
-    /// Both the logical name and server-assigned version id are required;
-    /// mutable aliases and latest-version lookup are intentionally absent.
-    /// LanceDB Embedded databases return [`Error::NotSupported`].
+    /// Both the logical name and server-assigned version id are required.
+    /// Use [`Self::get_function_latest`] when the caller wants the latest
+    /// currently visible revision. LanceDB Embedded databases return
+    /// [`Error::NotSupported`].
     pub async fn get_function(
         &self,
         name: impl AsRef<str>,
@@ -681,11 +705,27 @@ impl Connection {
             .await
     }
 
+    /// Look up the latest currently visible immutable Function version.
+    ///
+    /// The server resolves and returns one exact version document. This is a
+    /// resolution point, not a mutable alias: later registrations do not
+    /// change the returned object. LanceDB Embedded databases return
+    /// [`Error::NotSupported`].
+    pub async fn get_function_latest(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<crate::function::FunctionVersion> {
+        self.internal
+            .get_function_latest(name.as_ref(), namespace_path)
+            .await
+    }
+
     /// List every published immutable Function version in `namespace_path` of
     /// the remote catalog. Functions in child namespaces are not included.
     ///
-    /// Results are ordered by Function name then version. LanceDB Embedded databases return
-    /// [`Error::NotSupported`].
+    /// Results are ordered by Function name then numeric version, using
+    /// `SHOW FUNCTIONS HISTORY`. LanceDB Embedded databases return [`Error::NotSupported`].
     ///
     /// # Example
     ///
@@ -719,11 +759,13 @@ impl Connection {
         })
     }
 
-    /// Remove the current Function name binding, retaining the object history.
+    /// Remove one published Function revision, preserving sibling revisions and their grants.
     ///
-    /// Returns `true` when the server appended a Dropped transition and
-    /// `false` for an idempotent replay. LanceDB Embedded databases return
-    /// [`Error::NotSupported`].
+    /// Returns `true` when the requested revision was removed and `false` for
+    /// a repeated drop or a missing name. A revision never published under an
+    /// existing name is an error. Only the last visible revision's removal
+    /// releases the name and schedules object cleanup. LanceDB Embedded databases
+    /// return [`Error::NotSupported`].
     pub async fn drop_function(
         &self,
         name: impl AsRef<str>,
@@ -735,11 +777,28 @@ impl Connection {
             .await
     }
 
-    /// Drop a Function binding and return its SQL query handle.
+    /// Internal bridge for the Python binding to preserve the public bool API
+    /// while forwarding advisory SQL warnings to Python's existing warning
+    /// mechanism.
+    #[doc(hidden)]
+    pub async fn drop_function_with_warnings(
+        &self,
+        name: impl AsRef<str>,
+        version: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<(bool, Vec<String>)> {
+        self.internal
+            .drop_function_with_warnings(name.as_ref(), version.as_ref(), namespace_path)
+            .await
+    }
+
+    /// Drop one Function revision and return its SQL query handle.
     ///
-    /// The boolean reports catalog removal. The query job retains its query ID,
-    /// and repeated waits confirm completion. Physical cleanup continues in the
-    /// background. Local databases return [`Error::NotSupported`].
+    /// The boolean reports removal of the requested revision from the catalog.
+    /// Sibling revisions and their grants remain available. The query job retains
+    /// its query ID, and repeated waits confirm that revision's removal. Dropping
+    /// the last visible revision releases the name and schedules background object
+    /// cleanup. Local databases return [`Error::NotSupported`].
     pub async fn drop_function_async(
         &self,
         name: impl AsRef<str>,
@@ -816,20 +875,30 @@ impl Connection {
 
     /// Create a named Secret in this database.
     ///
-    /// Fails if the name is taken, so a create can never silently become a
-    /// rotation. There is no API that reads a stored credential back; the only
+    /// Fails if the name is taken unless [`CreateSecretBuilder::exist_ok`] is true,
+    /// in which case the existing value is left unchanged. There is no API that
+    /// reads a stored credential back; the only
     /// consumer is a Function that binds the Secret by name. LanceDB Embedded databases
     /// return [`Error::NotSupported`].
-    pub async fn create_secret(
+    ///
+    /// ```
+    /// # async fn example(connection: &lancedb::Connection) -> lancedb::Result<()> {
+    /// connection.create_secret("api-key", "credential", &[]).exist_ok(true).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn create_secret(
         &self,
         name: impl AsRef<str>,
         value: impl AsRef<str>,
         namespace_path: &[String],
-    ) -> Result<()> {
-        validate_secret_reference(name.as_ref(), namespace_path)?;
-        self.internal
-            .create_secret(name.as_ref(), value.as_ref(), namespace_path)
-            .await
+    ) -> CreateSecretBuilder {
+        CreateSecretBuilder::new(
+            self.internal.clone(),
+            name.as_ref().to_owned(),
+            value.as_ref().to_owned(),
+            namespace_path.to_vec(),
+        )
     }
 
     /// Replace the credential behind an existing Secret.
@@ -926,9 +995,10 @@ impl Connection {
     /// refused now rather than at the first read. A view holds no rows, and
     /// its readers see its sources as they are at read time.
     ///
-    /// There is no replace: a name already taken is an error, and changing a
-    /// view is a drop followed by a create, each authorized against what it
-    /// actually touches. LanceDB Embedded databases return [`Error::NotSupported`].
+    /// A name already taken is an error unless [`CreateViewBuilder::exist_ok`] is
+    /// true, which returns the stored definition and schema without changing them.
+    /// Changing a view is a drop followed by a create, each authorized against what
+    /// it actually touches. LanceDB Embedded databases return [`Error::NotSupported`].
     ///
     /// # Example
     ///
@@ -961,16 +1031,18 @@ impl Connection {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn create_view(
+    pub fn create_view(
         &self,
         name: impl AsRef<str>,
         query: impl AsRef<str>,
         namespace_path: &[String],
-    ) -> Result<ViewDescription> {
-        validate_view_reference(name.as_ref(), namespace_path)?;
-        self.internal
-            .create_view(name.as_ref(), query.as_ref(), namespace_path)
-            .await
+    ) -> CreateViewBuilder {
+        CreateViewBuilder::new(
+            self.internal.clone(),
+            name.as_ref().to_owned(),
+            query.as_ref().to_owned(),
+            namespace_path.to_vec(),
+        )
     }
 
     /// What this database records about one view: its defining query and the
@@ -1187,7 +1259,10 @@ impl Connection {
 
     /// Rename a table in the database.
     ///
-    /// This is only supported in LanceDB Distributed.
+    /// Supported in LanceDB Enterprise and by namespace backends that implement
+    /// renaming. Directory namespaces support renaming tables resolved through
+    /// their manifest, including tables within or across child namespaces.
+    /// Directory-listing root tables cannot be renamed.
     pub async fn rename_table(
         &self,
         old_name: impl AsRef<str>,
@@ -1240,6 +1315,34 @@ impl Connection {
         self.internal.open_job(job_id.as_ref()).await
     }
 
+    /// List the operator-configured GPU classes available to Function workers.
+    ///
+    /// The result describes configured hardware, not current free capacity.
+    /// The principal needs System Usage permission. LanceDB Embedded and
+    /// older Enterprise servers without `GET /v1/gpu/classes` return
+    /// [`Error::NotSupported`].
+    pub async fn list_gpu_classes(&self) -> Result<Vec<GpuClass>> {
+        self.database().list_gpu_classes().await
+    }
+
+    /// Read the responding server's build and Function runtime information.
+    ///
+    /// This request does not submit a query, Function, or job. It requires
+    /// System Usage permission. Embedded databases and older servers without
+    /// `GET /v1/server/info` return [`Error::NotSupported`]. During a rolling
+    /// upgrade, separate requests can report different query-node builds.
+    ///
+    /// ```no_run
+    /// # async fn example(db: &lancedb::Connection) -> lancedb::Result<()> {
+    /// let info = db.server_info().await?;
+    /// println!("{:?}", info.query_node);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn server_info(&self) -> Result<crate::server_info::ServerInfo> {
+        self.database().server_info().await
+    }
+
     /// List server-side jobs across the database's tables.
     ///
     /// Results are fetched lazily, one page at a time. See [`Listing`]
@@ -1260,6 +1363,37 @@ impl Connection {
         Listing::new(options, move |options| {
             let database = database.clone();
             async move { database.list_jobs(options).await }
+        })
+    }
+
+    /// List jobs using server-side filters, without scanning all history in the client.
+    ///
+    /// Filters are preserved on every page, including when resuming with a saved
+    /// token. Requests and errors occur during iteration, as with [`Self::list_jobs`].
+    ///
+    /// ```
+    /// # async fn example(connection: &lancedb::Connection) -> lancedb::Result<()> {
+    /// use futures::TryStreamExt;
+    /// use lancedb::{database::JobListFilter, listing::ListingOptions};
+    /// let mut filter = JobListFilter::default();
+    /// filter.table = Some("events".into());
+    /// let mut jobs = connection.list_jobs_filtered(filter, ListingOptions::default().page_limit(5));
+    /// if let Some(job) = jobs.try_next().await? {
+    ///     println!("{}", job.job_id);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn list_jobs_filtered(
+        &self,
+        filter: JobListFilter,
+        options: ListingOptions,
+    ) -> Listing<JobInfo> {
+        let database = self.database().clone();
+        Listing::new(options, move |options| {
+            let database = database.clone();
+            let filter = filter.clone();
+            async move { database.list_jobs_filtered(filter, options).await }
         })
     }
 
@@ -1391,7 +1525,7 @@ impl Connection {
     /// For ListingDatabase, it is the equivalent DirectoryNamespace.
     /// For RemoteDatabase, it is the equivalent RestNamespace.
     ///
-    /// LanceDB Distributed connections using dynamic headers forward them through the
+    /// LanceDB Enterprise connections using dynamic headers forward them through the
     /// namespace client's per-request context provider.
     pub async fn namespace_client(&self) -> Result<Arc<dyn lance_namespace::LanceNamespace>> {
         self.internal.namespace_client().await
@@ -1402,7 +1536,7 @@ impl Connection {
     /// - impl_type: "dir" for DirectoryNamespace, "rest" for RestNamespace
     /// - properties: configuration properties for the namespace
     ///
-    /// LanceDB Distributed connections using dynamic headers cannot be exported because the
+    /// LanceDB Enterprise connections using dynamic headers cannot be exported because the
     /// namespace client config only carries static headers.
     pub async fn namespace_client_config(
         &self,
@@ -1729,7 +1863,7 @@ impl ConnectBuilder {
 
     /// Enable or disable manifest-backed directory namespace mode for local
     /// native connections.
-    /// LanceDB Distributed connections reject enabling this option with [`Error::NotSupported`].
+    /// LanceDB Enterprise connections reject enabling this option with [`Error::NotSupported`].
     ///
     /// When enabled, the connection uses the directory namespace database
     /// directly for all table operations and forces
@@ -1765,7 +1899,7 @@ impl ConnectBuilder {
     }
 
     /// Set a custom session for object stores and caching.
-    /// LanceDB Distributed connections reject this option with [`Error::NotSupported`].
+    /// LanceDB Enterprise connections reject this option with [`Error::NotSupported`].
     ///
     /// By default, a new session with default configuration will be created.
     /// This method allows you to provide a custom session with your own
@@ -1808,7 +1942,7 @@ impl ConnectBuilder {
             if provided {
                 return Err(Error::NotSupported {
                     message: format!(
-                        "{option} is not supported for LanceDB Distributed connections"
+                        "{option} is not supported for LanceDB Enterprise connections"
                     ),
                 });
             }
@@ -2700,6 +2834,14 @@ mod tests {
             "unexpected clone error: {err:?}"
         );
 
+        let preserved = db
+            .clone_table(target, "missing-source.lance")
+            .exist_ok(true)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(preserved.name(), target);
+
         // Reopen both tables to verify that the failed clone left their data and versions intact.
         for (name, expected_data) in [("source", source_data), ("target", target_data)] {
             let table = db.open_table(name).execute().await.unwrap();
@@ -2717,8 +2859,9 @@ mod tests {
         }
     }
 
+    #[rstest::rstest]
     #[tokio::test]
-    async fn test_clone_table() {
+    async fn test_clone_table(#[values(false, true)] exist_ok: bool) {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
         let db = connect(uri).execute().await.unwrap();
@@ -2743,6 +2886,7 @@ mod tests {
         // Clone the table
         let cloned_table = db
             .clone_table("cloned_table", source_uri)
+            .exist_ok(exist_ok)
             .execute()
             .await
             .unwrap();

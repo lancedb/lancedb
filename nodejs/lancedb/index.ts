@@ -56,6 +56,11 @@ export {
   MergeResult,
   AddResult,
   AddColumnsResult,
+  RefreshColumnOptions,
+  FunctionRefreshPlanningConfig,
+  FunctionRefreshPodResources,
+  FunctionRetryPolicy,
+  FunctionWorkerResourceBudget,
   RefreshColumnResult,
   FunctionErrors,
   FunctionErrorsOptions,
@@ -89,6 +94,7 @@ export type {
   BlobInput,
   BlobOptions,
   BlobRange,
+  BlobRangeRequest,
   BlobReadOptions,
   BlobUri,
 } from "./blob";
@@ -108,7 +114,11 @@ export {
 
 export { JobFailureInfo, JobInfo, Session } from "./native.js";
 
-export { Job, JobEventsOptions } from "./job";
+export {
+  Job,
+  JobEventsOptions,
+} from "./job";
+export type { JobProgress, JobProgressCallback } from "./job";
 
 export {
   AutoQuery,
@@ -148,6 +158,10 @@ export {
 
 export {
   Table,
+  FunctionColumnAutoRefreshStatus,
+  FunctionColumnLastRefreshJob,
+  FunctionColumnStatus,
+  FunctionColumnVersionStatus,
   Branches,
   BranchColumnSummary,
   BranchColumnChange,
@@ -160,6 +174,7 @@ export {
   AddDataOptions,
   UpdateOptions,
   OptimizeOptions,
+  CompactionOptions,
   Version,
   WriteProgress,
   FtsToken,

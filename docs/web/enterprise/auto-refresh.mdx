@@ -1,0 +1,96 @@
+---
+title: "Auto Refresh"
+sidebarTitle: "Auto Refresh"
+description: "Let a computed column or materialized view refresh itself on a schedule, instead of calling refresh explicitly."
+icon: "clock-rotate-left"
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+Both a [computed column](/feature-engineering/add-computed-column) and a
+[materialized view](/feature-engineering/materialized-views) can refresh
+themselves on a schedule instead of waiting for an explicit
+`refresh_column()`, `view.refresh()`, or `REFRESH` statement. Either way,
+`auto_refresh_enabled` turns it on and `auto_refresh_interval_seconds` sets
+a minimum delay before the next automatic refresh is eligible -- omit the
+interval to let the server decide. What that delay is measured from differs
+between the two; see [Pacing follows different state for
+each](#history) below. See [Architecture](/index#architecture) for the
+scheduler's place among the jobs fleet.
+
+## Where the two differ {#granularity}
+
+A computed column's auto-refresh setting is per output: each column
+declared in the same `add_columns` call gets its own independent
+interval, set when you declare it or changed later. Automatic execution
+additionally needs the deployment's `column_refresh.enabled` switch,
+which is off in the base configuration.
+
+```sql
+ALTER TABLE frames ALTER COLUMN caption SET auto_refresh_enabled = false;
+ALTER TABLE frames ALTER COLUMN caption SET auto_refresh_enabled = true;
+ALTER TABLE frames ALTER COLUMN caption SET auto_refresh_interval_seconds = 300;
+```
+
+A materialized view's setting is whole-view -- there is no per-column
+granularity the way a computed column has one setting per output. The
+view's *initial* population always happens regardless of this setting;
+only the refreshes after that are gated. Unlike a computed column, a view's
+setting is declared at `CREATE` time, but it can still be changed
+afterward with `ALTER`:
+
+```sql
+CREATE MATERIALIZED VIEW my_view
+WITH (auto_refresh_enabled = true, auto_refresh_interval_seconds = 300)
+AS SELECT * FROM source_table;
+
+ALTER MATERIALIZED VIEW my_view SET auto_refresh_enabled = false;
+ALTER MATERIALIZED VIEW my_view SET auto_refresh_enabled = true;
+ALTER MATERIALIZED VIEW my_view SET auto_refresh_interval_seconds = 300;
+```
+
+Each `SET` above changes the scheduling setting immediately and
+synchronously; it does not itself run a refresh. Whether and when a
+refresh actually runs next is a separate, asynchronous decision the
+scheduler makes against the pacing rules below. If values stop appearing
+after a `SET`, check the column's Job Registry history rather than assuming
+the setting itself failed to apply.
+
+## Pacing follows different state for each {#history}
+
+A computed column's pacing is measured from the last successful refresh
+recorded in the Job Registry's live history, not from a separate
+timestamp LanceDB keeps elsewhere. If completed jobs are archived before
+the column's configured interval has elapsed, the scheduler can lose that
+last-success record and refresh earlier than the interval implies. Leave
+archival disabled, or retain live history for at least the longest
+configured interval you rely on. A deployment archives completed jobs by
+default, after a default seven-day retention threshold; check with your
+deployment operator if you rely on a different setting.
+
+A materialized view's pacing instead reads a timestamp the view itself
+persists for when it was last checked, not Job Registry history -- so
+archival doesn't affect it. Once the interval has elapsed, the scheduler
+also skips the refresh outright if the source table's version is
+unchanged since the view's last check, rather than re-running a refresh
+that would produce the same rows.
+
+## Catching up {#catch-up}
+
+Re-enabling a column's auto-refresh after it was off catches up the
+entire accumulated backlog in one pass, not just rows written from that
+point on -- "catch up," not "resume cadence." Disabling never skips or
+drops writes either: rows written while disabled simply commit with no
+computed value yet, the same as a row written before the column existed.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Refresh a computed column" icon="arrows-rotate" href="/feature-engineering/refresh-column">
+    Manual refresh, partial refreshes, and what happens on failure.
+  </Card>
+  <Card title="Refresh a materialized view" icon="table" href="/feature-engineering/refresh-materialized-view">
+    Manual refresh and what happens on failure, for a view.
+  </Card>
+</CardGroup>

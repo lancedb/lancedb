@@ -39,7 +39,7 @@
 //! - `experimental-functions` - Opt in to local SQL computed-column declarations
 //!   and refresh, and local materialized-view creation and refresh. Disabled by
 //!   default, including in published Python and TypeScript packages. LanceDB
-//!   Distributed operations, reading existing data, metadata protections,
+//!   Enterprise operations, reading existing data, metadata protections,
 //!   and ordinary eager `add_columns` transforms do not require this feature.
 //! - `huggingface` - Enable HuggingFace Hub integration for loading datasets from the Hub.
 //! - `fp16kernels` - Enable FP16 kernels for faster vector search on CPU.
@@ -195,6 +195,7 @@ pub mod connection;
 pub mod data;
 pub mod database;
 pub mod dataloader;
+pub mod docs;
 pub mod embeddings;
 pub mod error;
 pub mod expr;
@@ -215,6 +216,7 @@ pub mod query;
 pub mod remote;
 pub mod rerankers;
 pub mod secrets;
+pub mod server_info;
 pub mod sql;
 pub mod storage_integration;
 pub mod table;
@@ -333,8 +335,9 @@ impl Display for DistanceType {
 
 /// Controls the speed / accuracy tradeoff for approximate vector search.
 ///
-/// This currently only affects RQ-quantized vector indexes, such as IVF_RQ.
-/// Other index types ignore this setting.
+/// This currently affects RQ-quantized vector indexes (such as IVF_RQ) and
+/// prefiltered search on HNSW sub-indexes, where `Fast` enables the ACORN
+/// traversal. Other index types ignore this setting.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[non_exhaustive]
 #[serde(rename_all = "lowercase")]

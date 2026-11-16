@@ -17,14 +17,18 @@ import {
 In this example, we will be fetching movie information from the [Open Movie Database (OMDb) API](https://www.omdbapi.com/) and loading it into a local LanceDB instance. To implement it, you will need an API key for the OMDb API (which can be created freely [here](https://www.omdbapi.com/apikey.aspx)).
   
 1. **Install `dlt` with LanceDB extras:**  
-    ```sh 
+    <CodeGroup>
+    ```bash Bash icon="terminal"
     pip install dlt[lancedb]
     ```
+    </CodeGroup>
 
 2. **Inside an empty directory, initialize a `dlt` project with:**  
-    ```sh
+    <CodeGroup>
+    ```bash Bash icon="terminal"
     dlt init rest_api lancedb
     ```
+    </CodeGroup>
     This will add all the files necessary to create a `dlt` pipeline that can ingest data from any REST API (ex: OMDb API) and load into LanceDB.
     ```text
     ├── .dlt
@@ -79,19 +83,25 @@ In this example, we will be fetching movie information from the [Open Movie Data
     This will use the embedding model specified inside `.dlt/secrets.toml` to embed the field `"Title"`.
 
 5. **Install necessary dependencies:**  
-    ```sh
+    <CodeGroup>
+    ```bash Bash icon="terminal"
     pip install -r requirements.txt
-    ```  
+    ```
+    </CodeGroup>
 
     Note: You may need to install the dependencies for your embedding models separately.
-    ```sh
+    <CodeGroup>
+    ```bash Bash icon="terminal"
     pip install sentence-transformers
     ```
+    </CodeGroup>
 
 6. **Run the pipeline:**
     Finally, running the following command will ingest the data into your LanceDB instance.
-    ```sh
+    <CodeGroup>
+    ```bash Bash icon="terminal"
     python rest_api_pipeline.py
     ```
+    </CodeGroup>
 
 For more information and advanced usage of dlt's LanceDB integration, read [the dlt documentation](https://dlthub.com/docs/dlt-ecosystem/destinations/lancedb).

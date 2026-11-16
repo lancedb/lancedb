@@ -39,6 +39,26 @@ jobType: string;
 
 ***
 
+### paused
+
+```ts
+paused: boolean;
+```
+
+Whether an operator has parked this job.
+
+***
+
+### progress
+
+```ts
+progress: Record<string, unknown>;
+```
+
+Structured lifecycle, queue, pause, and job-type-specific progress.
+
+***
+
 ### state
 
 ```ts

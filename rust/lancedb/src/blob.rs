@@ -204,6 +204,30 @@ impl BlobFile {
         lance::dataset::BlobFile::new_external(object_store, path, uri, position, size).into()
     }
 
+    /// Default sequential read-ahead window, in bytes.
+    pub const DEFAULT_READ_BUFFER_SIZE: usize = 512 * 1024;
+
+    /// Set sequential read-ahead bytes. `0` disables read-ahead.
+    ///
+    /// Changing the size discards unused prefetched bytes without moving the
+    /// cursor. [`Self::read_range`] and [`Self::read_ranges`] bypass read-ahead.
+    /// The default is [`Self::DEFAULT_READ_BUFFER_SIZE`].
+    ///
+    /// ```
+    /// # async fn sparse_read(file: &lancedb::blob::BlobFile) -> lance_core::Result<()> {
+    /// file.set_buffer_size(0).await?;
+    /// let header = file.read_up_to(16).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn set_buffer_size(&self, size: usize) -> lance_core::Result<()> {
+        match &self.inner {
+            BlobFileInner::Native(file) => file.set_buffer_size(size).await,
+            #[cfg(feature = "remote")]
+            BlobFileInner::Remote(file) => file.set_buffer_size(size).await,
+        }
+    }
+
     /// Close the handle.
     pub async fn close(&self) -> lance_core::Result<()> {
         match &self.inner {
@@ -288,7 +312,7 @@ impl BlobFile {
         }
     }
 
-    /// Physical byte offset in the data file. `None` on LanceDB Distributed handles. The
+    /// Physical byte offset in the data file. `None` on LanceDB Enterprise handles. The
     /// server's byte-range route does not expose storage layout.
     pub fn position(&self) -> Option<u64> {
         match &self.inner {
@@ -298,7 +322,7 @@ impl BlobFile {
         }
     }
 
-    /// Path of the data file holding the blob. `None` on LanceDB Distributed handles. The
+    /// Path of the data file holding the blob. `None` on LanceDB Enterprise handles. The
     /// server's byte-range route does not expose storage layout.
     pub fn data_path(&self) -> Option<&Path> {
         match &self.inner {
@@ -308,7 +332,7 @@ impl BlobFile {
         }
     }
 
-    /// Native storage layout. `None` on LanceDB Distributed handles. The server's
+    /// Native storage layout. `None` on LanceDB Enterprise handles. The server's
     /// byte-range route does not expose layout.
     pub fn kind(&self) -> Option<lance_core::datatypes::BlobKind> {
         match &self.inner {
@@ -318,7 +342,7 @@ impl BlobFile {
         }
     }
 
-    /// External URI for native handles. LanceDB Distributed handles do not expose storage URIs.
+    /// External URI for native handles. LanceDB Enterprise handles do not expose storage URIs.
     pub fn uri(&self) -> Option<&str> {
         match &self.inner {
             BlobFileInner::Native(file) => file.uri(),
@@ -332,7 +356,7 @@ impl BlobFile {
 ///
 /// `row_id` is obtained from a query with row ids enabled.
 /// `offset` and `length` are relative to the beginning of the logical blob.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct BlobRangeRequest {
     /// Row id of the blob value to read.
     pub row_id: u64,

@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import importlib
+import importlib.metadata
 import re
 import sys
 from pathlib import Path
@@ -9,10 +10,31 @@ from pathlib import Path
 import pytest
 
 
+@pytest.mark.parametrize("distribution", ["lancedb", "lancedb-compat"])
+def test_version_matches_package_metadata(distribution):
+    import lancedb
+
+    try:
+        package_version = importlib.metadata.version(distribution)
+    except importlib.metadata.PackageNotFoundError:
+        pytest.skip(f"{distribution} is not installed")
+
+    assert lancedb.__version__ == package_version
+
+
 @pytest.mark.parametrize("name", ["JobInfo", "JobDescription", "JobFailureInfo"])
 def test_job_metadata_types_have_resolvable_modules(name):
     """Documentation tools resolve re-exports through each type's module."""
     public_type = getattr(importlib.import_module("lancedb.job"), name)
+    defining_module = importlib.import_module(public_type.__module__)
+
+    assert getattr(defining_module, public_type.__name__, None) is public_type
+
+
+def test_gpu_class_reexport_has_resolvable_module():
+    import lancedb
+
+    public_type = lancedb.GpuClass
     defining_module = importlib.import_module(public_type.__module__)
 
     assert getattr(defining_module, public_type.__name__, None) is public_type

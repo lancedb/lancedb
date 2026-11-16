@@ -19,7 +19,7 @@ optional allowExternalBlobOutsideBases: boolean;
 Whether blob URIs outside registered external bases may be written.
 
 Defaults to `false`. This option is supported only in LanceDB Embedded;
-LanceDB Distributed returns an error when it is enabled. An enabled write
+LanceDB Enterprise returns an error when it is enabled. An enabled write
 stores the absolute URI reference without registering a base or copying
 the external object into the database. The object must remain accessible
 when the blob is read later.
@@ -71,3 +71,15 @@ await table.add(data, {
   },
 });
 ```
+
+***
+
+### retries?
+
+```ts
+optional retries: number;
+```
+
+Override the remote retry budget for this call (0 to 255). Zero disables
+retries, including multipart parts. Ambiguous commits are never replayed.
+Ignored by LanceDB Embedded.

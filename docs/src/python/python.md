@@ -27,7 +27,7 @@ connect, per-table storage and write options on create, and `index_cache_size`,
 Omit these options to use server-managed storage and caching. Connection-level
 `storage_options` supported by an Enterprise deployment remain available.
 
-The synchronous LanceDB Distributed `create_table` uses the same positional order as the
+The synchronous LanceDB Enterprise `create_table` uses the same positional order as the
 LanceDB Embedded API: `name, data, schema, mode, exist_ok, on_bad_vectors, fill_value,
 embedding_functions`. Prefer keyword arguments for optional parameters.
 
@@ -37,10 +37,34 @@ embedding_functions`. Prefer keyword arguments for optional parameters.
 
 ::: lancedb.db.DBConnection
 
+Use `db.server_info()` (or `await db.server_info()` on an asynchronous connection)
+to include the responding server's release, Git revision, build date and Function
+runtime information in a bug report. It returns a JSON-compatible dictionary and
+does not submit a query or job. Configured images are distinct from the version
+of an already running job. During a rolling upgrade, successive requests can
+reach different query-node builds. Embedded connections and older servers without
+the endpoint raise `NotImplementedError`.
+
+::: lancedb.server_info.ServerBuildInfo
+
+::: lancedb.server_info.ServerInfo
+
 Resource listings return iterators. Use `list(db.list_tables())` to collect all
 table names. `db.list_tables().tables` is a list of the first page; `limit`
 controls its page size and `page_token` resumes at a saved token. The same
 patterns apply to `list_namespaces()`. Other resource listings use `page_limit`.
+
+For existence checks, use `db.table_exists(["events"])` or `"events" in db`.
+These look up the table directly and work even when the database has more than
+100 tables. For a table in a namespace, include the namespace segments:
+
+```python
+exists = db.table_exists(["analytics", "events"])
+```
+
+When migrating from `name in db.table_names()`, use `name in db` or
+`db.table_exists([name])`. Checking `name in db.list_tables().tables` only
+searches the first page and can miss an existing table.
 
 Resource listings (`list_storage_integrations`, `list_secrets`, `list_views`, `list_jobs`, `list_functions`, and
 `list_materialized_views`) return lazy iterators. Use `list(db.list_views())` to
@@ -259,7 +283,7 @@ async for entry in catalog.authz.list_acls(subject=Subject.role("reader")):
 
 ## Remote SQL
 
-Submit SQL against a LanceDB Distributed database through the connection.
+Submit SQL against a LanceDB Enterprise database through the connection.
 The connected database and `default_namespace_path=["public"]` are used for
 unqualified tables. Fully qualified references can still query other databases
 and namespaces available to the same deployment. `execute_query` returns a
@@ -340,24 +364,47 @@ listing a storage directory.
 
 ## Tables (Synchronous)
 
-LanceDB Embedded and LanceDB Distributed tables use the same arguments for index creation, deletion,
+LanceDB Embedded and LanceDB Enterprise tables use the same arguments for index creation, deletion,
 index statistics, and search. For example, `table.delete(where="id = 1")`,
 `table.create_index("cosine", 2)` (the deprecated vector API), and
 `table.search([1.0, 1.0], fast_search=True)` work with either backend.
 `fast_search=True` excludes rows that have not been indexed.
 
 `create_scalar_index` defaults to `replace=True` on both backends. Both scalar
-and full-text index creation accept `wait_timeout`. LanceDB Distributed maintenance methods
-accept the LanceDB Embedded options: cleanup and compaction warn that they are no-ops,
-while `optimize` reports an unsupported operation. Removed Tantivy options
-produce the same explanatory errors on both backends.
+and full-text index creation accept `wait_timeout`. LanceDB Enterprise maintenance methods
+accept the LanceDB Embedded options: cleanup and compaction warn that they are no-ops.
+`optimize` submits a durable compaction job and returns once that submission is
+accepted, not once compaction itself finishes. Pruning and index optimization
+are not yet supported remotely, so it silently skips them and returns with
+zeroed pruning statistics. Remote `compaction_options` support per-job
+`target_rows_per_fragment`, `max_source_rows`, `io_buffer_size`, and `batch_size`
+on compatible servers. Other non-default settings raise `NotImplementedError`
+before submission; older-server errors are returned without dropping options.
+The source-row budget selects whole tasks and can produce no work if the first
+task exceeds it. An I/O buffer size of zero disables byte-based I/O backpressure.
+Use a positive size to limit I/O read-ahead; this is not a total-memory limit.
+Each field resolves as invocation option → table tuning → deployment/built-in
+default. These options apply only to the submitted job and leave table policy
+unchanged. Table `enabled` controls automatic scheduling; explicit manual runs
+remain allowed.
 
-The old LanceDB Distributed keyword names `predicate` for `delete`, `index_name` for
+```python
+table.optimize(compaction_options={
+    "target_rows_per_fragment": 100_000,
+    "max_source_rows": 1_000_000,
+    "io_buffer_size": 64 * 1024 * 1024,
+    "batch_size": 1024,
+})
+```
+
+Removed Tantivy options produce the same explanatory errors on both backends.
+
+The old LanceDB Enterprise keyword names `predicate` for `delete`, `index_name` for
 `drop_index`, `index_uuid` for `index_stats`, and `column` for `create_fts_index`
 remain available with deprecation warnings. Use `where`, `name`, `index_name`,
 and `field_names`, respectively. For positional calls, use the argument order
 documented by `Table` below; specify index options by keyword when migrating
-code that used the former LanceDB Distributed-only argument order.
+code that used the former LanceDB Enterprise-only argument order.
 
 ::: lancedb.table.Table
 
@@ -377,11 +424,128 @@ code that used the former LanceDB Distributed-only argument order.
 
 ## Functions and Jobs
 
+Use `progress=True` when waiting for Function registration in a notebook or
+terminal. A callback receives structured snapshots instead:
+
+```python
+fn = db.create_function(my_function, progress=True)
+registration = db.create_function_async(other_function)
+fn = registration.wait(progress=lambda snapshot: print(snapshot))
+print(fn.image.describe())
+```
+
+Registration uses the existing SQL query handle. The current handle reports
+lifecycle state and `client_elapsed_time_millis` since the handle was created;
+detailed build phases and build logs are unavailable. Keep the same handle after
+a wait timeout to resume waiting. Failures retain the server error and request
+identifiers. `fn.image` has a concise representation; `describe()` exposes Python
+and CUDA requirements without inspecting Pydantic internals. Platforms, base image
+and size are `None` until the service reports them. The full image descriptor and
+canonical JSON remain available.
+
+A `@function` definition is also a local callable. Call a decorated function
+directly with row inputs, or call a decorated class with its initialization fields
+and then call the returned instance; call `close()` if the class defines it. This
+path uses the current Python environment and does not create a registered
+`FunctionVersion`, build the declared remote runtime, resolve Secrets, or execute
+the remote Arrow adapter. A registered `FunctionVersion` call instead binds
+`col(...)` inputs and returns a remote `FunctionApplication`.
+
+```python
+from lancedb import function
+
+
+@function
+def normalize(text: str) -> str:
+    return text.strip().lower()
+
+
+@function
+class Scale:
+    def __init__(self, factor: float):
+        self.factor = factor
+
+    def __call__(self, value: float) -> float:
+        return value * self.factor
+
+    def close(self) -> None:
+        self.factor = 0.0
+
+
+assert normalize(" Hello ") == "hello"
+scaler = Scale(factor=2.0)
+assert scaler(3.0) == 6.0
+scaler.close()
+```
+
+### Function packaging restrictions
+
+The decorator snapshots the Function's source and referenced globals into a new
+module. It conservatively rejects imports of `sys`, `builtins`, `importlib`,
+`inspect`, `gc`, `ctypes`, and `types`, including submodules such as `ctypes.util`
+and `importlib.metadata`. This applies to imports inside function or class bodies
+and references to module-level aliases. Even ordinary uses such as `sys.version`
+and `ctypes.util.find_library` are blocked: these modules can reach names outside
+the reconstructed Function namespace. References to `globals`, `locals`, `vars`,
+`eval`, `exec`, `compile`, and `__import__` are rejected as dynamic namespace access.
+These restrictions also apply to the deprecated `@udf` alias.
+
+For legitimate uses, move the code into an importable helper module and ship it
+with `code=`, or install its package with `pip=` or `conda=`. Imported helpers keep
+their own namespace; the packager does not scan their bodies. Helpers defined in
+`__main__` are copied by source and have the same restrictions as the Function.
+
+For example, put this helper in `native_diagnostics/__init__.py`:
+
+```python
+import ctypes.util
+
+
+def find_library(name: str) -> str:
+    return ctypes.util.find_library(name) or ""
+```
+
+Then import the helper and include its source in the Function's artifact:
+
+```python
+import native_diagnostics
+from lancedb import function
+
+
+@function(code=[native_diagnostics])
+def probe_library(name: str) -> str:
+    return native_diagnostics.find_library(name)
+```
+
+Captured literal globals support `None`, booleans, integers, strings, bytes,
+finite floats, and tuples of these values. Construct other objects, including
+PyArrow types and schemas, inside the Function or helper module instead. Values
+used only in the decorator's `input_schema` or `output_schema` are not captured
+globals and can be defined outside the Function.
+
 Annotate a blob input with `lancedb.BlobReader` for lazy, seekable access, or
 with `bytes` to materialize its contents before the Function runs. Reader
 inputs infer the Blob V2 type without an explicit input schema. Readers are
 scoped to each invocation and support `read`, `readinto`, `seek`, `tell`,
-`size`, and cursor-independent `read_range`.
+`size`, and cursor-independent `read_range`. For a local test or another
+engine, construct `BlobReader(read_range, size)` with a callback over an
+in-memory bytes fixture or the engine's byte-range reader; `read_range` does
+not advance the cursor.
+
+```python
+from lancedb import BlobReader
+
+payload = b"0123456789"
+
+
+def read_range(offset: int, length: int) -> bytes:
+    return payload[offset : offset + length]
+
+
+with BlobReader(read_range, len(payload)) as reader:
+    assert reader.read_range(6, 4) == b"6789"
+    assert reader.tell() == 0
+```
 
 ::: lancedb.BlobReader
 
@@ -397,15 +561,17 @@ scoped to each invocation and support `read`, `readinto`, `seek`, `tell`,
 
 ::: lancedb.functions.PythonEnvironmentSpec
 
-::: lancedb.functions.udf
+::: lancedb.functions.function
 
-::: lancedb.functions.UdfDefinition
+::: lancedb.functions.FunctionDefinition
 
 ::: lancedb.secrets.EnvVarSecret
 
 ::: lancedb.secrets.SecretInfo
 
 ::: lancedb.functions.FunctionRegistrationRequest
+
+::: lancedb.functions.FunctionRetryPolicy
 
 ::: lancedb.functions.FunctionArtifactRequest
 
@@ -417,7 +583,19 @@ scoped to each invocation and support `read`, `readinto`, `seek`, `tell`,
 
 ::: lancedb.functions.FunctionVersion
 
+::: lancedb.functions.FunctionEnvironment
+
+::: lancedb.functions.ResolvedEnvironment
+
+::: lancedb.functions.ResolvedPackage
+
+::: lancedb.functions.ResolvedEnvironmentProvenance
+
+::: lancedb.functions.HuggingFaceModel
+
 ::: lancedb.functions.PythonRuntimeSpec
+
+::: lancedb.GpuClass
 
 ::: lancedb.functions.FunctionVersionRef
 
@@ -426,6 +604,8 @@ scoped to each invocation and support `read`, `readinto`, `seek`, `tell`,
 ::: lancedb.functions.FunctionApplication
 
 ::: lancedb.functions.InputBinding
+
+::: lancedb.functions.LiteralInputBinding
 
 ::: lancedb.functions.OutputMapping
 
@@ -440,6 +620,14 @@ scoped to each invocation and support `read`, `readinto`, `seek`, `tell`,
 ::: lancedb.FunctionErrorRecord
 
 ::: lancedb.FunctionErrorFragment
+
+::: lancedb.FunctionColumnStatus
+
+::: lancedb.FunctionColumnVersionStatus
+
+::: lancedb.FunctionColumnLastRefreshJob
+
+::: lancedb.FunctionColumnAutoRefreshStatus
 
 ::: lancedb.job.Job
 
@@ -464,11 +652,25 @@ scoped to each invocation and support `read`, `readinto`, `seek`, `tell`,
 In the 0.41 SDK release, LanceDB Embedded materialized-view creation and refresh require a
 source build with the `experimental-functions` Cargo feature. Published Python
 packages leave it disabled. Opening, reading, listing and dropping existing views
-remain available, as do LanceDB Distributed operations. The same feature
+remain available, as do LanceDB Enterprise operations. The same feature
 requirement applies to LanceDB Embedded SQL computed-column declaration and refresh; ordinary
 eager `add_columns` transforms remain available.
 
-In LanceDB Distributed, creation accepts `auto_refresh_enabled` and
+Pass a complete defining SQL query with `query=` to use grouping, Functions
+in `FROM`, or `UNNEST`:
+
+```python
+view = db.create_materialized_view(
+    "events_by_kind",
+    query="SELECT kind, count(*) AS n FROM events GROUP BY kind",
+)
+```
+
+`query` is mutually exclusive with `source`, `select`, `where`, and `limit`.
+It is also accepted by asynchronous connections and `create_materialized_view_async`.
+The backend SQL parser determines which query shapes are supported.
+
+In LanceDB Enterprise, creation accepts `auto_refresh_enabled` and
 `auto_refresh_interval_seconds`:
 
 ```python
@@ -646,6 +848,15 @@ with `search().with_row_id(True).to_arrow()` and pass the result to the fetch AP
 One missing or deleted row ID rejects the entire blob-read batch; the APIs do
 not return partial results.
 
+Local and remote `BlobFile` handles prefetch 512 KiB for sequential reads by
+default. Pass `buffer_size=0` to `fetch_blob_files`, `open_blob_file`, or
+`open_blob_files` for sparse reads, or choose another window size in bytes.
+Call `file.set_buffer_size(size)` to change it without moving the cursor;
+changing the size discards unused prefetched bytes. Explicit `read_range` and
+`read_ranges` calls always read exactly the requested intervals and leave the
+cursor unchanged. Remote prefetch consumes the HTTP response completely before
+returning, so idle handles do not hold request concurrency slots or connections.
+
 To construct inline Blob V2 arrays for ingestion in record batches, use
 [blob_array][lancedb.schema.blob_array]. It accepts bytes and `None`, preserving
 the distinction between an empty blob (`b""`) and a null blob:
@@ -674,7 +885,7 @@ For external blob references, construct the descriptor struct described by
 [blob][lancedb.schema.blob], then wrap it with `pa.ExtensionArray.from_storage`.
 Inline `data` and external `uri` representations are mutually exclusive.
 
-LanceDB Distributed SQL returns blob bytes by default. Select `blob_descriptor(video)` to
+LanceDB Enterprise SQL returns blob bytes by default. Select `blob_descriptor(video)` to
 return an openable reference instead, then use
 [`open_blob_file`][lancedb.table.Table.open_blob_file] or the lazy iterable
 [`open_blob_files`][lancedb.table.Table.open_blob_files]:
@@ -691,7 +902,7 @@ for row in rows.to_pylist():
             frame = extract_frame(video, row["timestamp"])
 ```
 
-This example uses a LanceDB Distributed SQL connection that produces source-bearing
+This example uses a LanceDB Enterprise SQL connection that produces source-bearing
 descriptors. The descriptor contains `kind`, `position`, `size`, `blob_id`,
 `blob_uri`, and a `source` struct with `uri`, `version`, `committed_at_micros`,
 `branch`, `column`, `row_reference`, and `row_is_address`. The opener verifies
@@ -723,7 +934,7 @@ async for video in async_videos.open_blob_files(rows["video"]):
 ```
 
 Payload bytes load on reads. Opening an external blob with unspecified size
-can issue a metadata-only HEAD request. LanceDB Distributed reads use authenticated range
+can issue a metadata-only HEAD request. LanceDB Enterprise reads use authenticated range
 requests that validate the captured URI and commit timestamp.
 
 Blobs inside lists can be written and queried as descriptors. They are omitted
@@ -748,7 +959,110 @@ so the fetch APIs cannot read their bytes yet.
 
 ## Exceptions
 
+Remote HTTP responses with structured resource details raise a subclass of
+`HttpError`. Older servers that omit those details generally raise plain
+`HttpError`, so `except HttpError` remains a compatible catch-all:
+
+```python
+from lancedb.remote.errors import (
+    AlreadyExistsError,
+    FunctionNotFoundError,
+    HttpError,
+    NamespaceNotFoundError,
+    SecretNotFoundError,
+)
+
+try:
+    db.describe_namespace(["analytics"])
+except (SecretNotFoundError, FunctionNotFoundError, NamespaceNotFoundError) as error:
+    print(error.error_code, error.resource_kind, error.resource_name)
+except AlreadyExistsError as error:
+    print("resource already exists:", error.resource_name)
+except HttpError as error:
+    print("request failed:", error.request_id, error.status_code)
+```
+
+Remote branch deletion sends a single request. If the server rejects it with
+HTTP 409, it raises `ConflictError` with the server's reason, including when an
+older server omits structured resource details. A structured `already_exists`
+response keeps its more specific `AlreadyExistsError` type. Both are subclasses
+of `HttpError`.
+
+A remote query whose streamed response stops partway raises
+`ResponseInterruptedError`, also a subclass of `HttpError`. It carries the number
+of batches and rows already returned and, when the server reports it, the table
+version the response reflected, so the query can be run again against that
+version. It is never retried automatically, because the batches already returned
+would be returned again.
+
+SQL response failures raise `SqlError`, retaining the numeric `grpc_code` and
+`request_id`. Servers that report a recognized `x-lancedb-error-code` select a
+specific input-error subclass. HTTP failures use the corresponding `HttpError`
+subclass. Missing metadata stays absent; diagnostic text is never used to guess
+the error type. An Internal or Unavailable response remains a server failure,
+even if its message or metadata resembles an input error.
+
+For errors that can arrive over either transport, catch the shared input type:
+
+```python
+from lancedb.exceptions import ColumnNotFoundError, SchemaMismatchError
+from lancedb.remote.errors import HttpError, SqlError
+
+try:
+    db.execute_query("SELECT missing FROM events").read_all()
+except (ColumnNotFoundError, SchemaMismatchError) as error:
+    print(error.request_id, error.job_id, error.job_request_id)
+except (HttpError, SqlError) as error:
+    print(error.request_id)
+```
+
+`ReferenceNotFoundError` identifies a missing branch or table reference. Table
+errors are `TableNotFoundError` for HTTP and `SqlTableNotFoundError` for SQL;
+both remain compatible with `lance_namespace.errors.TableNotFoundError`.
+
+A background SQL job still raises `JobFailedError`. Its `__cause__` is the typed
+`SqlError` when available, and both carry the current `request_id` and original
+worker `job_request_id`. The outer job ID can differ from `sql_job_id`. These
+fields are `None` when the server does not report them. Older servers produce
+generic HTTP/SQL exceptions with their transport status and current request ID.
+
 ::: lancedb.remote.errors.HttpError
+
+::: lancedb.remote.errors.ColumnNotFoundError
+
+::: lancedb.remote.errors.ReferenceNotFoundError
+
+::: lancedb.remote.errors.SchemaMismatchError
+
+::: lancedb.remote.errors.SqlError
+
+::: lancedb.remote.errors.SqlColumnNotFoundError
+
+::: lancedb.remote.errors.SqlTableNotFoundError
+
+::: lancedb.remote.errors.SqlReferenceNotFoundError
+
+::: lancedb.remote.errors.SqlSchemaMismatchError
+
+::: lancedb.exceptions.ColumnNotFoundError
+
+::: lancedb.exceptions.ReferenceNotFoundError
+
+::: lancedb.exceptions.SchemaMismatchError
+
+::: lancedb.remote.errors.TableNotFoundError
+
+::: lancedb.remote.errors.SecretNotFoundError
+
+::: lancedb.remote.errors.FunctionNotFoundError
+
+::: lancedb.remote.errors.NamespaceNotFoundError
+
+::: lancedb.remote.errors.AlreadyExistsError
+
+::: lancedb.remote.errors.ConflictError
+
+::: lancedb.remote.errors.ResponseInterruptedError
 
 ::: lancedb.exceptions.MissingValueError
 
@@ -777,6 +1091,27 @@ so the fetch APIs cannot read their bytes yet.
 ## PyTorch
 
 ::: lancedb.streaming.StreamingDataset
+
+When a transform fails for some rows, fill mode replaces each failed row in place:
+
+```python
+dataset = StreamingDataset(
+    table,
+    num_splits=8,
+    transform=transform,
+    on_transform_error="fill",
+    fill_value={"id": -1, "vector": [0.0, 0.0]},
+)
+for row in dataset:
+    train(row)
+print(dataset.rows_filled)
+```
+
+The placeholder must have the same structure as a successful transform output.
+Pass `repair(exc, row_batch) -> row` instead of `fill_value` to construct a
+replacement from the failed one-row Arrow batch. Keep the repair deterministic
+when using elastic training or checkpoints. Fill mode preserves split lengths
+and sample positions.
 
 ::: lancedb.streaming.StreamingDataLoader
 
@@ -840,6 +1175,11 @@ first page, use `page = await db.list_tables()` and then `page.tables`. Reading
 the page list does not consume the iterator. `page.page_token` is the token for
 the next request; drain cached results before using it to resume in a new
 listing. The same behavior applies to namespaces.
+
+Use `await db.table_exists(["events"])` to check for a table in the root
+namespace, or `await db.table_exists(["analytics", "events"])` for a table in
+a namespace. Checking membership in an awaited listing's `.tables` attribute
+only searches one page.
 
 ::: lancedb.listing.AsyncTableListing
 
@@ -965,3 +1305,159 @@ are never included in integration metadata.
 change. Use the structured identity and policy fields for programmatic access.
 Registration does not verify AWS access. `AsyncConnection` provides the same methods;
 await create, describe, and drop, and use `async for` for listing.
+
+
+### Azure storage integrations
+
+Create three Secrets containing the Azure tenant ID, client ID and client secret in an ordinary database. Reference their names when registering Azure Blob access:
+
+```python
+integration = db.create_storage_integration(
+    "customer_blobs",
+    "az://customer-data/raw/",
+    storage_provider="AZURE",
+    azure_storage_account="customeraccount",
+    azure_tenant_id_secret="azure_tenant",
+    azure_client_id_secret="azure_client",
+    azure_client_secret_secret="azure_credential",
+)
+print(integration.configuration_instructions)
+```
+
+Use `SecretReference` to qualify another database or namespace. Sync and async connections use the same options. Secret values are never part of integration metadata. Azure supports service principal client credentials; managed identity, account key and SAS authentication are not integration modes.
+
+The equivalent SQL is:
+
+```sql
+CREATE STORAGE INTEGRATION customer_blobs
+    STORAGE_PROVIDER = 'AZURE'
+    STORAGE_PREFIX = 'az://customer-data/raw/'
+    STORAGE_AZURE_STORAGE_ACCOUNT = 'customeraccount'
+    STORAGE_AZURE_TENANT_ID_SECRET = public.azure_tenant
+    STORAGE_AZURE_CLIENT_ID_SECRET = public.azure_client
+    STORAGE_AZURE_CLIENT_SECRET_SECRET = public.azure_credential;
+DESCRIBE STORAGE INTEGRATION customer_blobs;
+SHOW STORAGE INTEGRATIONS;
+DROP STORAGE INTEGRATION customer_blobs;
+```
+
+Registration returns setup instructions and leaves `access_verified` false. It stores an account-qualified prefix such as `az://customer-data@customeraccount.blob.core.windows.net/raw/`.
+
+### GCP storage integrations
+
+Create one Secret containing the complete GCP application credentials JSON file
+content, then reference its name when registering Google Cloud Storage access:
+
+```python
+from pathlib import Path
+
+db.create_secret("gcp_credentials", Path("credentials.json").read_text())
+integration = db.create_storage_integration(
+    "customer_gcs",
+    "gs://customer-data/raw/",
+    storage_provider="GCP",
+    gcp_credentials_json_secret="gcp_credentials",
+)
+print(integration.configuration_instructions)
+```
+
+The equivalent SQL references the existing Secret:
+
+```sql
+CREATE STORAGE INTEGRATION customer_gcs
+    STORAGE_PROVIDER = 'GCP'
+    STORAGE_PREFIX = 'gs://customer-data/raw/'
+    GCP_CREDENTIALS_JSON_SECRET = public.gcp_credentials;
+DESCRIBE STORAGE INTEGRATION customer_gcs;
+SHOW STORAGE INTEGRATIONS;
+DROP STORAGE INTEGRATION customer_gcs;
+```
+
+`gcp_credentials_json_secret` names a Secret; pass the file content to
+`create_secret`, not to `create_storage_integration`. Use `SecretReference` to
+qualify another database or namespace. Sync and async connections accept the same
+options. The service interprets the stored JSON when accessing storage; registration
+does not validate its credentials format or verify access, and leaves
+`access_verified` false. Integration metadata contains the Secret reference, never
+its JSON content. GCP options cannot be combined with AWS or Azure options.
+
+
+### Hugging Face storage integrations
+
+Store a Hugging Face token as one Secret, then register the repository prefix
+with the existing integration methods. Only the Secret name is part of the
+integration configuration:
+
+```python
+import os
+
+from lancedb.storage_integration import SecretReference
+
+db.create_secret("hf_token", os.environ["HF_TOKEN"])
+info = db.create_storage_integration(
+    "private_hub",
+    "hf://datasets/acme/private/raw/",
+    storage_provider="HUGGINGFACE",
+    huggingface_token_secret=SecretReference("hf_token"),
+)
+print(info.configuration_instructions)
+info = db.describe_storage_integration("private_hub")
+names = list(db.list_storage_integrations())
+db.drop_storage_integration("private_hub")
+```
+
+The equivalent SQL references the existing Secret:
+
+```sql
+CREATE STORAGE INTEGRATION private_hub
+    STORAGE_PROVIDER = 'HUGGINGFACE'
+    STORAGE_PREFIX = 'hf://datasets/acme/private/raw/'
+    HUGGINGFACE_TOKEN_SECRET = public.hf_token;
+DESCRIBE STORAGE INTEGRATION private_hub;
+SHOW STORAGE INTEGRATIONS;
+SELECT * FROM 'hf://datasets/acme/private/raw/*.parquet' LIMIT 10;
+DROP STORAGE INTEGRATION private_hub;
+```
+
+Omit the token Secret for anonymous access at Hugging Face's default anonymous
+rate limits. A tokenless integration does not use a cluster's Hugging Face token:
+
+```python
+info = db.create_storage_integration(
+    "public_hub", "hf://datasets/acme/public/raw/",
+    storage_provider="HUGGINGFACE",
+)
+```
+
+```sql
+CREATE STORAGE INTEGRATION public_hub
+    STORAGE_PROVIDER = 'HUGGINGFACE'
+    STORAGE_PREFIX = 'hf://datasets/acme/public/raw/';
+```
+
+When provided, the Secret must contain the token itself, with repository read
+permission.
+Cross-database and namespace references use the same `SecretReference` rules as
+other integrations. Sync and async APIs accept the same options. Registration
+returns one sentence of instructions and leaves `access_verified` false; it does
+not contact Hugging Face. Metadata contains the Secret reference, never its value.
+Hugging Face options cannot be combined with AWS, Azure or GCP options.
+
+Repository prefixes use `hf://datasets/<owner>/<repo>[/<path>]` or
+`hf://models/<owner>/<repo>[/<path>]`. An optional `@revision` follows the repository
+name; omitting it allows matching reads of any revision. Prefixes must be concrete
+paths without wildcards or traversal. This integration does not make Hugging Face
+a writable database location for `ATTACH DATABASE`. Dataset SQL sources select a
+matching integration automatically, with no integration argument in the query.
+
+
+### Function package resources
+
+`@function(code=[my_package])` includes the package’s Python modules and data
+files, including vendored subpackages. Resource paths and bytes are preserved,
+so `importlib.resources` and package integrity checks work after deployment.
+Changing a resource changes the Function artifact digest. This requires a server
+that accepts `python_bundle.resources`.
+
+Caches, hidden paths, symlinks and unsafe paths are excluded. Use `pip=` or
+`conda=` for platform-specific dependencies and `models=` for large model snapshots.

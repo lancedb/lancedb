@@ -1,0 +1,88 @@
+---
+title: "GPU Indexing"
+sidebarTitle: "GPU Indexing"
+description: "Build a vector index faster with GPU acceleration, manually in LanceDB Embedded or automatically in LanceDB Enterprise."
+icon: "microchip"
+keywords: ["gpu", "gpu indexing", "cuda", "mps", "ivf_pq", "index build"]
+availability:
+  embedded: available
+  enterprise: available
+---
+
+import {
+    PyGpuIndexCuda as GpuIndexCuda,
+    PyGpuIndexMps as GpuIndexMps,
+} from '/snippets/indexing.mdx';
+
+GPU acceleration can reduce the time needed to build vector indexes on large
+datasets. Actual build time depends on the index configuration, vector
+dimensions, storage throughput and available GPU resources.
+
+<Info>
+**Automatic GPU indexing**
+
+Automatic GPU Indexing is currently only available in [LanceDB Enterprise](/index#architecture).
+Please [contact us](https://www.lancedb.com/contact) to enable this feature for your deployment.
+
+The vector index is created when you call `create_index`. The backend uses GPU resources
+to build `IVF_PQ` indexes, with the number of GPUs set by the deployment's configuration.
+
+This process is also asynchronous by default, but you can use `wait_for_index` to convert it
+into a synchronous process by waiting until the index is built.
+
+</Info>
+
+`wait_for_index(...)` waits for the index to exist and for `index_stats(...)` to report `num_unindexed_rows == 0`. It can time out if the table is receiving continuous writes while the build is trying to catch up.
+
+GPU acceleration changes how the vector index is built, not the lifecycle after the build. In the
+embedded library, rows appended later still need `optimize()` before they are part of the index; a
+deployment adds them in the background -- see [Incremental Indexing](/indexing/incremental-indexing).
+`fast_search()` only searches indexed rows.
+
+## Manual GPU indexing in LanceDB Embedded {#gpu-manual-gpu-indexing-in-lancedb-oss}
+
+You can use the Python SDK to manually create the `IVF_PQ` index on a GPU. You'll need
+[PyTorch>2.0](https://pytorch.org/). Note that GPU-based indexing is currently only
+supported by the synchronous SDK in LanceDB Embedded.
+
+Specify the values `cuda` or `mps` (on Apple Silicon) for the `accelerator` parameter
+to enable GPU training on your device.
+
+### GPU indexing on Linux {#gpu-gpu-indexing-on-linux}
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {GpuIndexCuda}
+    </CodeBlock>
+</CodeGroup>
+
+### GPU indexing on macOS (Apple Silicon) {#gpu-gpu-indexing-on-macos-apple-silicon}
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {GpuIndexMps}
+    </CodeBlock>
+</CodeGroup>
+
+## Performance considerations {#gpu-performance-considerations}
+
+- GPU memory usage scales with `num_partitions` and vector dimensions
+- Size GPU memory for the training batches and index configuration
+- Monitor memory use while choosing training batch sizes
+- Measure build time and recall before changing training settings
+
+## Troubleshooting {#gpu-troubleshooting}
+
+If you encounter the error `AssertionError: Torch not compiled with CUDA enabled`,
+you need to [install PyTorch with CUDA support](https://pytorch.org/get-started/locally/).
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Incremental Indexing" icon="refresh" href="/indexing/incremental-indexing">
+    Keeping an index up-to-date as new data arrives.
+  </Card>
+  <Card title="Slurm" icon="server" href="/deployment/slurm">
+    Running these GPU workers alongside training on shared Slurm-scheduled infrastructure.
+  </Card>
+</CardGroup>

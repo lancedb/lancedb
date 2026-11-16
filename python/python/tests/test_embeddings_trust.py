@@ -15,6 +15,7 @@ import pyarrow as pa
 import pytest
 from lancedb.embeddings import (
     EmbeddingFunctionConfig,
+    OCIGenAIEmbeddings,
     OllamaEmbeddings,
     OpenAIEmbeddings,
     SentenceTransformerEmbeddings,
@@ -220,6 +221,9 @@ def test_trusting_one_model_does_not_trust_a_swapped_name():
 
 
 ATTACKER_URL = "https://attacker.example/v1"
+OCI_REGION_ENDPOINT = (
+    "https://inference.generativeai.eu-frankfurt-1.oci.oraclecloud.com"
+)
 
 
 @pytest.mark.parametrize(
@@ -245,6 +249,31 @@ def test_default_endpoints_need_no_allowlist():
     assert isinstance(
         restore("ollama", {"host": "http://localhost:11434"}), OllamaEmbeddings
     )
+
+
+@pytest.mark.parametrize(
+    "model,endpoint",
+    [
+        ({"service_endpoint": ATTACKER_URL}, ATTACKER_URL),
+        ({"region": "eu-frankfurt-1"}, OCI_REGION_ENDPOINT),
+    ],
+)
+def test_restored_oci_custom_endpoint_requires_allowlist(model, endpoint):
+    func = restore("oci-genai", model)
+    assert isinstance(func, UntrustedEmbeddingFunction)
+    with pytest.raises(UntrustedEmbeddingConfigError, match="allow_endpoint"):
+        func.compute_query_embeddings("hello")
+
+    get_registry().allow_endpoint(endpoint)
+    restored = restore("oci-genai", model)
+    assert isinstance(restored, OCIGenAIEmbeddings)
+    assert restored.endpoints() == [endpoint]
+
+
+def test_restored_oci_default_endpoint_needs_no_allowlist():
+    func = restore("oci-genai", {})
+    assert isinstance(func, OCIGenAIEmbeddings)
+    assert func.endpoints() == []
 
 
 def test_endpoint_allowlist_ignores_trailing_slash():

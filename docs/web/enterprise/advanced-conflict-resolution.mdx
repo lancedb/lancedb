@@ -1,0 +1,199 @@
+---
+title: "Advanced Conflict Resolution"
+sidebarTitle: "Advanced Conflict Resolution"
+description: "How compaction and indexing stay safe to run concurrently, using Lance's fragment reuse index."
+icon: shuffle
+keywords: ["fragment reuse index", "FRI", "compaction", "indexing", "remap", "conflict resolution"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+[Compaction](/maintenance/compaction) rewrites fragments into fewer, larger
+files, which changes the physical row address -- file and offset -- of every
+row it moves. An index built against the old layout stores exactly those
+addresses, so a naive compaction would leave any index covering the rewritten
+fragments pointing at rows that have moved or no longer exist there.
+
+LanceDB Embedded avoids this by default by never letting the two run
+independently: `optimize()` compacts and remaps affected indexes in the
+same call, before returning. Compaction's `defer_index_remap` option opts
+out of that -- the call returns once compaction itself commits, leaving
+the remap for later -- which is what lets a custom remapper or a
+stable-row-ID table skip the synchronous step. LanceDB Enterprise runs
+compaction and indexing as separate, independently scheduled
+background jobs -- a table can compact while an index build is still
+catching up from an earlier compaction -- so it needs a way to keep an index
+correct without forcing every compaction to wait for a synchronous remap.
+
+## The fragment reuse index {#fri}
+
+The **fragment reuse index** (FRI) is a Lance format-level mechanism, not an
+Enterprise add-on: a system index that records every fragment rewrite as a
+**transition** -- the source fragments' digests, the destination fragments'
+digests, and a row-address mapping between them (`Transition` and `Mapping`
+in `lance-table`'s `system_index::frag_reuse::ledger`). An index that covers
+a rewritten fragment does not need to be rebuilt before the rewrite commits;
+it can instead translate the row addresses it already stores forward through
+the chain of recorded transitions at read time.
+
+Only a compaction run with `defer_index_remap` ever touches the FRI; a
+synchronous-remap rewrite -- the Embedded default -- never tags a table or
+appends anything. Every `defer_index_remap` commit is classified before
+it is admitted; that classifier is Lance's own commit protocol
+(`lance-table`'s `frag_reuse::gate::classify`), the same one every write
+funnels through -- not a lock or a sequencing rule Enterprise imposes from
+outside. A table starts **untagged**: its deferred rewrites are admitted
+as ordinary business with nothing appended, unless the rewrite has
+stable row IDs to translate or touches a fragment an index covers -- either
+one makes that commit record a legacy, untagged ("v0") FRI entry, which
+does **not** tag the table. Tagging is a separate, one-way transition (a
+sticky manifest flag that a later trim never clears) that publishes the
+FRI's first real transition; this page does not cover what triggers it.
+Once a table is tagged, its commits are classified against which indexes
+cover the rewritten fragments the way the rest of this page describes, and
+every entry it records from then on is a tagged transition, never v0
+again. A table with stable row IDs is permanently confined to the
+untagged, v0 form -- Lance refuses to tag it at all -- so its deferred
+compactions keep recording v0 entries indefinitely, for every rewrite that
+moves row addresses, not only ones that touch an indexed fragment: the
+address translation itself depends on that record, independent of
+indexing.
+
+Once a table is tagged, Lance refuses a compaction that does not set
+`defer_index_remap`, including a plain Embedded `optimize()` call: an
+Enterprise-tagged table has to keep deferring the remap, or be compacted
+by a writer that can remap the tagged history eagerly.
+
+<div className="hidden dark:block">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
+  "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
+  "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "18px"
+}}}%%
+flowchart TD
+    Commit["Compaction commit<br/>(defer_index_remap only)"] --> Tagged{"Table already<br/>tagged with an FRI?"}
+    Tagged -->|no| First{"Stable row IDs, or does<br/>any index cover the<br/>rewritten fragments?"}
+    First -->|no| Admit["Admitted as<br/>ordinary business --<br/>nothing appended"]
+    First -->|yes| V0["Records a legacy v0 entry --<br/>table stays untagged"]
+    Tagged -->|yes| Classify{"Does any index<br/>cover the rewritten<br/>fragments?"}
+    Classify -->|no| Admit
+    Classify -->|yes| Append["Must append a tagged<br/>transition before the<br/>commit is admitted"]
+    V0 --> FRI[("Fragment reuse index")]
+    Append --> FRI
+    classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
+    classDef accent fill:#2a1810,stroke:#e8582d,stroke-width:1.5px,color:#f4ebe8
+    class FRI accent
+```
+
+</div>
+
+<div className="block dark:hidden">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
+  "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
+  "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "18px"
+}}}%%
+flowchart TD
+    Commit["Compaction commit<br/>(defer_index_remap only)"] --> Tagged{"Table already<br/>tagged with an FRI?"}
+    Tagged -->|no| First{"Stable row IDs, or does<br/>any index cover the<br/>rewritten fragments?"}
+    First -->|no| Admit["Admitted as<br/>ordinary business --<br/>nothing appended"]
+    First -->|yes| V0["Records a legacy v0 entry --<br/>table stays untagged"]
+    Tagged -->|yes| Classify{"Does any index<br/>cover the rewritten<br/>fragments?"}
+    Classify -->|no| Admit
+    Classify -->|yes| Append["Must append a tagged<br/>transition before the<br/>commit is admitted"]
+    V0 --> FRI[("Fragment reuse index")]
+    Append --> FRI
+    classDef default fill:#ffffff,stroke:#ad9e95,stroke-width:1px,color:#221d19
+    classDef accent fill:#fff1ec,stroke:#e8582d,stroke-width:1.5px,color:#221d19
+    class FRI accent
+```
+
+</div>
+
+## Enterprise defers and batches the catch-up {#catch-up}
+
+Translating addresses through a long chain of transitions at every read adds
+up, so Enterprise does not let the FRI grow without bound. Its job planner
+tracks how many transitions have accumulated for a table and schedules a
+dedicated **remap catch-up** job -- which applies the accumulated transitions
+to the indexes that need them, physically, in one pass -- once either:
+
+- the FRI reaches **5 pending transitions** (`remap_fri_version_threshold`,
+  tunable), or
+- the oldest pending transition is **1 day old**
+  (`remap_fri_max_age_secs`, tunable), whichever comes first.
+
+The version count only climbs while a table keeps compacting, so the age
+threshold exists to clear a lingering FRI -- and the per-read remap cost that
+comes with it -- on a table that stops compacting before reaching the count
+threshold, without scheduling a catch-up job on every table that is still
+actively compacting. This is what lets compaction and index maintenance run
+as separate background jobs (see
+[Index maintenance jobs](/indexing/incremental-indexing#index))
+rather than one blocking on the other: a handful of compactions can land
+before their indexes are physically remapped, and the catch-up job amortizes
+that remap across all of them in one job instead of one per compaction.
+
+<div className="hidden dark:block">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
+  "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
+  "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "18px"
+}}}%%
+flowchart TD
+    C1["Compaction job"] -->|appends transition| FRI["Fragment reuse index<br/>(ledger of transitions)"]
+    C2["Compaction job"] -->|appends transition| FRI
+    C3["Compaction job"] -->|appends transition| FRI
+    FRI -->|5 transitions or<br/>1 day old| R["Remap catch-up job"]
+    R -->|applies accumulated<br/>transitions| IDX["Affected indexes,<br/>physically remapped"]
+    classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
+    classDef accent fill:#2a1810,stroke:#e8582d,stroke-width:1.5px,color:#f4ebe8
+    class FRI,R accent
+```
+
+</div>
+
+<div className="block dark:hidden">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
+  "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
+  "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "18px"
+}}}%%
+flowchart TD
+    C1["Compaction job"] -->|appends transition| FRI["Fragment reuse index<br/>(ledger of transitions)"]
+    C2["Compaction job"] -->|appends transition| FRI
+    C3["Compaction job"] -->|appends transition| FRI
+    FRI -->|5 transitions or<br/>1 day old| R["Remap catch-up job"]
+    R -->|applies accumulated<br/>transitions| IDX["Affected indexes,<br/>physically remapped"]
+    classDef default fill:#ffffff,stroke:#ad9e95,stroke-width:1px,color:#221d19
+    classDef accent fill:#fff1ec,stroke:#e8582d,stroke-width:1.5px,color:#221d19
+    class FRI,R accent
+```
+
+</div>
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Compaction and cleanup" icon="broom" href="/maintenance/compaction">
+    What compaction merges, and how the embedded library runs it in one call.
+  </Card>
+  <Card title="Incremental Indexing" icon="arrows-rotate" href="/indexing/incremental-indexing#index">
+    The `index_remap` job type, and keeping an index current as the table changes.
+  </Card>
+  <Card title="Distributed Compaction" icon="layer-group" href="/enterprise/distributed-compaction">
+    How compaction itself scales across the jobs fleet.
+  </Card>
+  <Card title="Distributed Indexing" icon="diagram-project" href="/enterprise/distributed-indexing">
+    How an index build scales across the jobs fleet.
+  </Card>
+</CardGroup>

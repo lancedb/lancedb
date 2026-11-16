@@ -26,28 +26,30 @@ process-wide current branch.
 Install the model packages, then download the `nomic-embed-text` model from Ollama
 (or any other model you prefer):
 
-```bash
+<CodeGroup>
+```bash Bash icon="terminal"
 uv add sentence-transformers ollama
 ollama pull nomic-embed-text
 ```
+</CodeGroup>
 
 It's always recommended to measure the results of an experiment on a fixed evaluation set.
 Here's an example of how you could ask the agent to run both experiments and compare the results:
 
 ```text Agent prompt
 Use the lancedb plugin and the LanceDB branching documentation to compare two
-embedding experiments on the `camelot_multimodal` table.
+embedding experiments on the `frames` table from the quickstart.
 
 1. Fork `embed-minilm` from `main`. Build normalized embeddings from
-   `"{role}. {description}"` with
-   `sentence-transformers/all-MiniLM-L6-v2` and add them as `vector_minilm`.
+   `caption` with `sentence-transformers/all-MiniLM-L6-v2` and add them as
+   `vector_minilm`.
 2. Fork `embed-nomic` from `main`. Embed the identical text with Ollama
    `nomic-embed-text` and add the results as `vector_nomic`.
 3. Process rows in batches and write only through each branch-scoped table
    handle. Verify that neither new column appears on `main`.
-4. Evaluate both branches with the queries "wise magical advisor",
-   "treacherous rebel", and "virtuous Grail knight". Report the top three names,
-   latency, and whether the expected character ranks first.
+4. Evaluate both branches with the queries "a gripper closing on an object",
+   "a robot arm holding steady", and "lowering an object onto a surface".
+   Report the top match, latency, and whether the expected frame ranks first.
 5. Do not modify `main` and do not delete either branch. Recommend a winner
    based on the results.
 ```

@@ -31,7 +31,7 @@ optional createdAt: Date;
 
 When the index was created.
 
-`undefined` in LanceDB Distributed or indices created before timestamps were tracked.
+`undefined` in LanceDB Enterprise or indices created before timestamps were tracked.
 
 ***
 
@@ -44,7 +44,7 @@ optional indexDetails: any;
 Index-type-specific details parsed as a JavaScript object.
 
 Falls back to a raw string if JSON parsing fails. `undefined` in
-LanceDB Distributed or when details are unavailable.
+LanceDB Enterprise or when details are unavailable.
 
 ***
 
@@ -66,7 +66,7 @@ optional indexUuid: string;
 
 The UUID of the first segment of the index.
 
-`undefined` in LanceDB Distributed, which does not yet surface this.
+`undefined` in LanceDB Enterprise, which does not yet surface this.
 
 ***
 
@@ -78,7 +78,7 @@ optional indexVersion: number;
 
 The on-disk index format version.
 
-`undefined` in LanceDB Distributed.
+`undefined` in LanceDB Enterprise.
 
 ***
 
@@ -100,7 +100,7 @@ optional numIndexedRows: number;
 
 The number of rows indexed, across all segments.
 
-May be `undefined` in LanceDB Distributed if the server does not report it.
+May be `undefined` in LanceDB Enterprise if the server does not report it.
 
 ***
 
@@ -112,7 +112,7 @@ optional numSegments: number;
 
 The number of segments that make up the index.
 
-`undefined` in LanceDB Distributed.
+`undefined` in LanceDB Enterprise.
 
 ***
 
@@ -124,7 +124,7 @@ optional numUnindexedRows: number;
 
 The number of rows not yet covered by this index.
 
-May be `undefined` in LanceDB Distributed if the server does not report it.
+May be `undefined` in LanceDB Enterprise if the server does not report it.
 
 ***
 
@@ -136,7 +136,7 @@ optional sizeBytes: number;
 
 The total size in bytes of all index files across all segments.
 
-`undefined` in LanceDB Distributed or indices without size tracking.
+`undefined` in LanceDB Enterprise or indices without size tracking.
 
 ***
 
@@ -148,4 +148,4 @@ optional typeUrl: string;
 
 The protobuf type URL, a precise type identifier for the index.
 
-`undefined` in LanceDB Distributed.
+`undefined` in LanceDB Enterprise.

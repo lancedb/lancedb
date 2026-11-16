@@ -16,8 +16,52 @@ use serde_json::Value;
 use crate::secrets::SecretBinding;
 use crate::{Error, Result};
 
+mod retry;
+pub use retry::{FunctionErrorPolicy, FunctionRetryPolicy};
+
 /// Semantic Function type for a Blob v2 value.
 pub const FUNCTION_BLOB_V2_TYPE: &str = "blob_v2";
+
+/// Configured placement-independent hardware and worker limits of a Function
+/// GPU class.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct GpuClass {
+    /// Stable class name accepted by Function registration and refresh options.
+    pub name: String,
+    /// Kubernetes extended resource requested by this class.
+    pub resource_name: String,
+    /// Human-readable GPU model, when configured by the operator.
+    pub gpu_model: Option<String>,
+    /// Usable memory of one GPU in the class, in bytes.
+    pub gpu_memory_bytes: Option<u64>,
+    /// Maximum GPUs one worker in this class may request.
+    pub max_gpu_count_per_worker: Option<u32>,
+    /// CPU limit for a worker in this class, in millicores.
+    pub cpu_millis: Option<u64>,
+    /// Memory limit for a worker in this class, in bytes.
+    pub memory_bytes: Option<u64>,
+    /// Ephemeral-storage limit for a worker in this class, in bytes.
+    pub ephemeral_storage_bytes: Option<u64>,
+}
+
+pub(crate) const GPU_CLASS_NAME_ERROR: &str = "gpu_class must be a lowercase name of at most 63 letters, digits, or hyphens, and cannot start or end with a hyphen";
+
+pub(crate) fn validate_gpu_class_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || name.len() > 63
+        || name.starts_with('-')
+        || name.ends_with('-')
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        return Err(Error::InvalidInput {
+            message: GPU_CLASS_NAME_ERROR.to_string(),
+        });
+    }
+    Ok(())
+}
 
 fn invalid_json(error: impl std::fmt::Display) -> Error {
     Error::InvalidInput {
@@ -67,7 +111,7 @@ fn from_json<T: DeserializeOwned>(json: &str) -> Result<T> {
     serde_json::from_str(json).map_err(invalid_json)
 }
 
-fn validate_literal(value: &Value) -> Result<()> {
+pub(crate) fn validate_literal(value: &Value) -> Result<()> {
     match value {
         Value::Number(number) if number.is_f64() => Err(Error::InvalidInput {
             message: "floating-point Function literals are not part of the Slice 1 canonical wire contract"
@@ -260,6 +304,7 @@ pub enum PythonRuntimeSpec {
     ///         system_packages: Vec::new(),
     ///     },
     ///     env: BTreeMap::new(),
+    ///     gpu_class: Some("a10g".to_string()),
     /// };
     /// assert!(runtime.requires_gpu());
     /// ```
@@ -267,6 +312,8 @@ pub enum PythonRuntimeSpec {
         python_version: String,
         environment: PythonEnvironmentSpec,
         env: BTreeMap<String, String>,
+        /// Operator-defined GPU class; absent uses the deployment default.
+        gpu_class: Option<String>,
     },
     /// A runtime kind introduced by a newer server.
     ///
@@ -317,6 +364,14 @@ impl PythonRuntimeSpec {
     pub fn requires_gpu(&self) -> bool {
         matches!(self, Self::PythonV2 { .. })
     }
+
+    /// Operator-defined GPU class, or `None` to use the deployment default.
+    pub fn gpu_class(&self) -> Option<&str> {
+        match self {
+            Self::PythonV2 { gpu_class, .. } => gpu_class.as_deref(),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -327,6 +382,8 @@ struct PythonRuntimeV1Wire {
     env: BTreeMap<String, String>,
     #[serde(default)]
     gpu: Option<Value>,
+    #[serde(default)]
+    gpu_class: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -336,6 +393,8 @@ struct PythonRuntimeV2Wire {
     #[serde(default)]
     env: BTreeMap<String, String>,
     gpu: bool,
+    #[serde(default)]
+    gpu_class: Option<String>,
 }
 
 impl<'de> Deserialize<'de> for PythonRuntimeSpec {
@@ -356,6 +415,11 @@ impl<'de> Deserialize<'de> for PythonRuntimeSpec {
                         "python runtime with gpu requires kind='python_v2'",
                     ));
                 }
+                if wire.gpu_class.is_some() {
+                    return Err(de::Error::custom(
+                        "python runtime with gpu_class requires kind='python_v2'",
+                    ));
+                }
                 Ok(Self::Python {
                     python_version: wire.python_version,
                     environment: wire.environment,
@@ -368,10 +432,14 @@ impl<'de> Deserialize<'de> for PythonRuntimeSpec {
                 if !wire.gpu {
                     return Err(de::Error::custom("runtime.gpu must be true"));
                 }
+                if let Some(gpu_class) = wire.gpu_class.as_deref() {
+                    validate_gpu_class_name(gpu_class).map_err(de::Error::custom)?;
+                }
                 Ok(Self::PythonV2 {
                     python_version: wire.python_version,
                     environment: wire.environment,
                     env: wire.env,
+                    gpu_class: wire.gpu_class,
                 })
             }
             _ => Ok(Self::Unrecognized { kind }),
@@ -390,6 +458,8 @@ impl Serialize for PythonRuntimeSpec {
             env: &'a BTreeMap<String, String>,
             #[serde(skip_serializing_if = "Option::is_none")]
             gpu: Option<bool>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            gpu_class: Option<&'a str>,
         }
 
         #[derive(Serialize)]
@@ -408,23 +478,100 @@ impl Serialize for PythonRuntimeSpec {
                 environment,
                 env,
                 gpu: None,
+                gpu_class: None,
             }
             .serialize(serializer),
             Self::PythonV2 {
                 python_version,
                 environment,
                 env,
+                gpu_class,
             } => PythonRuntimeRef {
                 kind: "python_v2",
                 python_version,
                 environment,
                 env,
                 gpu: Some(true),
+                gpu_class: gpu_class.as_deref(),
             }
             .serialize(serializer),
             Self::Unrecognized { kind } => UnrecognizedRuntimeRef { kind }.serialize(serializer),
         }
     }
+}
+
+/// An immutable Hugging Face model snapshot required by a Function.
+///
+/// The service prepares this snapshot before user code runs. `revision` is a
+/// full 40-character lowercase commit SHA, not a branch or tag.
+///
+/// ```
+/// use lancedb::function::HuggingFaceModel;
+///
+/// let model = HuggingFaceModel {
+///     repo: "sentence-transformers/all-MiniLM-L6-v2".into(),
+///     revision: "1110a243fdf4706b3f48f1d95db1a4f5529b4d41".into(),
+/// };
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HuggingFaceModel {
+    /// Hugging Face repository in `owner/name` form.
+    pub repo: String,
+    /// Exact repository commit containing the model snapshot.
+    pub revision: String,
+}
+
+/// One installed Python distribution as measured from a Function's baked
+/// environment.
+///
+/// `version` is the complete version string reported by the package metadata,
+/// including local labels such as `+cu130`. `source` is present only when the
+/// submitted lock retained a per-package source; a missing value is unknown and
+/// must not be inferred from other package indexes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedPackage {
+    pub name: String,
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+/// Sanitized source and accelerator provenance retained with a resolved
+/// environment.
+///
+/// `configured_*` records what the build was asked to use. `resolved_indexes`
+/// records indexes visible in the submitted lock, so a configured source is
+/// not mistaken for evidence that a package came from it. Empty lists and
+/// absent fields remain absent rather than being synthesized by the client.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedEnvironmentProvenance {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub configured_index_urls: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub configured_find_links: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resolved_indexes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cuda_toolkit: Option<String>,
+    /// The fully resolved `torch==<version>` when torch was installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub torch_version: Option<String>,
+}
+
+/// Actual installed distributions and registration warnings for one native
+/// Function environment.
+///
+/// A missing environment means its measurement is unknown, not an empty
+/// installed-package list. The field keeps the complete versions and only the
+/// provenance the producer recorded; SDK readers do not recompute package
+/// policy.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedEnvironment {
+    pub packages: Vec<ResolvedPackage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<ResolvedEnvironmentProvenance>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// A complete OCI Function image. Its digest is independent of catalog names.
@@ -433,6 +580,9 @@ pub struct FunctionImage {
     pub manifest_digest: String,
     pub descriptor: Value,
     pub source: bool,
+    /// Immutable snapshots declared by this Function version.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<HuggingFaceModel>,
 }
 
 fn deserialize_object_version<'de, D: Deserializer<'de>>(
@@ -447,10 +597,43 @@ fn deserialize_object_version<'de, D: Deserializer<'de>>(
     }
 }
 
+/// A positive, finite per-call deadline reported by the catalog.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(transparent)]
+struct RowTimeoutSeconds(f64);
+
+impl Eq for RowTimeoutSeconds {}
+
+impl RowTimeoutSeconds {
+    fn get(self) -> f64 {
+        self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for RowTimeoutSeconds {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let seconds = f64::deserialize(deserializer)?;
+        if !seconds.is_finite() || seconds <= 0.0 {
+            return Err(de::Error::custom(
+                "row_timeout_seconds must be positive and finite",
+            ));
+        }
+        Ok(Self(seconds))
+    }
+}
+
 /// One immutable Function object revision and its executable artifact.
 ///
 /// The Function is named by its parts, `name` and `namespace_path`, the way a
 /// [`SecretReference`](crate::secrets::SecretReference) names a Secret.
+///
+/// Unknown top-level fields from newer servers are accepted for forward
+/// decoding, but they are not part of this value and are omitted from
+/// canonical JSON. Known fields retain their complete values, while unknown
+/// fields inside the open [`FunctionImage::descriptor`] JSON object remain
+/// available. Single-platform measurements use `resolved_environment`;
+/// multiarchitecture measurements use `resolved_environments`, keyed by OCI
+/// `os/architecture`, without flattening the platforms.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionVersion {
     name: String,
@@ -466,6 +649,8 @@ pub struct FunctionVersion {
     image: FunctionImage,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime_digest: Option<String>,
     signature: FunctionSignature,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     secret_bindings: Vec<SecretBinding>,
@@ -473,6 +658,51 @@ pub struct FunctionVersion {
     created_at_millis: i64,
     metadata: BTreeMap<String, String>,
     disabled: bool,
+    /// Operator-defined GPU class declared at registration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    gpu_class: Option<String>,
+    /// Default maximum rows in one callable batch.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_batch_size"
+    )]
+    batch_size: Option<u32>,
+    /// Default maximum concurrent user-code calls per logical execution.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_max_concurrency"
+    )]
+    max_concurrency: Option<u32>,
+    /// Per-call deadline in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    row_timeout_seconds: Option<RowTimeoutSeconds>,
+    /// Result-stability value declared at registration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    result_stability: Option<String>,
+    /// The runtime requested at registration, with submitted lock bytes omitted.
+    ///
+    /// This is a specification, not the measured installation. Compare it with
+    /// [`Self::resolved_environment`] when the caller needs actual package
+    /// versions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime: Option<PythonRuntimeSpec>,
+    /// Actual installed distributions, provenance, and registration warnings.
+    ///
+    /// This is the single-platform compatibility field. `None` on a
+    /// multiarchitecture version is expected; use
+    /// [`Self::resolved_environments`] for its per-platform measurements.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resolved_environment: Option<ResolvedEnvironment>,
+    /// Measurements for a multiarchitecture image, keyed by OCI
+    /// `os/architecture`.
+    ///
+    /// Unmeasured platforms are absent. An empty map is unknown, not an
+    /// aggregate of packages from the available platforms. Single-platform
+    /// images use [`Self::resolved_environment`] instead.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    resolved_environments: BTreeMap<String, ResolvedEnvironment>,
 }
 
 impl FunctionVersion {
@@ -514,7 +744,9 @@ impl FunctionVersion {
     /// Digest of the registered source artifact, when provided by the server.
     ///
     /// Compare this with [`FunctionArtifactRequest::digest`] to identify matching
-    /// source, independently of the built image's manifest digest.
+    /// source, independently of the built image's manifest digest. It excludes
+    /// dependencies, environment variables, Python version, and GPU settings;
+    /// matching source alone does not establish that a version can be reused.
     ///
     /// ```
     /// use lancedb::function::{FunctionArtifactRequest, FunctionVersion};
@@ -525,6 +757,69 @@ impl FunctionVersion {
     /// ```
     pub fn source_digest(&self) -> Option<&str> {
         self.source_digest.as_deref()
+    }
+
+    /// Digest of canonical runtime inputs, when provided by the server.
+    ///
+    /// Includes Python version, environment sources, variables, and GPU settings.
+    /// A missing digest cannot establish that a local runtime matches. Reusing a
+    /// version also requires matching its source and other registration inputs.
+    pub fn runtime_digest(&self) -> Option<&str> {
+        self.runtime_digest.as_deref()
+    }
+
+    /// Operator-defined GPU class declared at registration.
+    pub fn gpu_class(&self) -> Option<&str> {
+        self.gpu_class.as_deref()
+    }
+
+    /// Default maximum rows in one callable batch, when declared.
+    pub fn batch_size(&self) -> Option<u32> {
+        self.batch_size
+    }
+
+    /// Default maximum concurrent user-code calls, when declared.
+    pub fn max_concurrency(&self) -> Option<u32> {
+        self.max_concurrency
+    }
+
+    /// Per-call deadline in seconds, when declared.
+    pub fn row_timeout_seconds(&self) -> Option<f64> {
+        self.row_timeout_seconds.map(RowTimeoutSeconds::get)
+    }
+
+    /// Result-stability value declared at registration, when present.
+    pub fn result_stability(&self) -> Option<&str> {
+        self.result_stability.as_deref()
+    }
+
+    /// The runtime specification requested at registration, when exposed by the
+    /// server.
+    ///
+    /// This is the requested configuration, not evidence of what was installed.
+    pub fn runtime(&self) -> Option<&PythonRuntimeSpec> {
+        self.runtime.as_ref()
+    }
+
+    /// Actual installed distributions and registration warnings for a
+    /// single-platform image, when measured by the server.
+    ///
+    /// `None` is unknown, not an empty environment. Package versions are
+    /// retained verbatim, including local labels such as `+cu130`; `source`
+    /// remains absent when the producer did not retain it.
+    pub fn resolved_environment(&self) -> Option<&ResolvedEnvironment> {
+        self.resolved_environment.as_ref()
+    }
+
+    /// Per-platform measurements for a multiarchitecture image, keyed by OCI
+    /// `os/architecture`.
+    ///
+    /// The map is returned without flattening or synthesis. A missing platform
+    /// means its measurement is unknown; an empty environment value is a
+    /// measured empty environment and is retained. Single-platform images use
+    /// [`Self::resolved_environment`] instead.
+    pub fn resolved_environments(&self) -> &BTreeMap<String, ResolvedEnvironment> {
+        &self.resolved_environments
     }
 
     pub fn signature(&self) -> &FunctionSignature {
@@ -559,7 +854,7 @@ pub struct FunctionArtifactContent {
 
 /// Internal execution adapter selected for a Python callable artifact.
 ///
-/// This is part of the executor request envelope, not the user-facing UDF
+/// This is part of the executor request envelope, not the user-facing Function
 /// authoring mode. For version 1, the executor selects vectorized execution
 /// when every callable parameter is annotated as `pyarrow.Array`; it passes one
 /// Arrow array per declared input and requires an Arrow array matching the
@@ -585,25 +880,145 @@ pub struct FunctionArtifactRequest {
     pub adapter: PythonAdapterSpec,
 }
 
+fn deserialize_batch_size<'de, D>(deserializer: D) -> std::result::Result<Option<u32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<u32>::deserialize(deserializer)
+        .map_err(|error| de::Error::custom(format!("batch_size: {error}")))?;
+    validate_batch_size_value(value).map_err(de::Error::custom)?;
+    Ok(value)
+}
+
+fn deserialize_row_timeout<'de, D>(deserializer: D) -> std::result::Result<Option<f64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<f64>::deserialize(deserializer)
+        .map_err(|error| de::Error::custom(format!("row_timeout_seconds: {error}")))?;
+    validate_row_timeout_value(value).map_err(de::Error::custom)?;
+    Ok(value)
+}
+
+fn deserialize_max_concurrency<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<u32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<u32>::deserialize(deserializer)
+        .map_err(|error| de::Error::custom(format!("max_concurrency: {error}")))?;
+    validate_max_concurrency_value(value).map_err(de::Error::custom)?;
+    Ok(value)
+}
+
+fn validate_batch_size_value(value: Option<u32>) -> std::result::Result<(), &'static str> {
+    if value == Some(0) {
+        return Err("batch_size must be between 1 and u32::MAX");
+    }
+    Ok(())
+}
+
+fn validate_max_concurrency_value(value: Option<u32>) -> std::result::Result<(), &'static str> {
+    if value == Some(0) {
+        return Err("max_concurrency must be between 1 and u32::MAX");
+    }
+    Ok(())
+}
+
+fn validate_row_timeout_value(value: Option<f64>) -> std::result::Result<(), &'static str> {
+    if value.is_some_and(|seconds| !seconds.is_finite() || seconds <= 0.0) {
+        return Err("row_timeout_seconds must be positive and finite");
+    }
+    Ok(())
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// Stable request envelope for remote immutable Function registration.
 ///
 /// Credential values deliberately have no field here. The only secret-shaped
 /// thing a client sends is `secret_bindings`: the name of a Secret the
 /// database already holds, which Sophon resolves inside the remote runtime.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FunctionRegistrationRequest {
+    /// Preserve an existing named Function version instead of registering a new one.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub exist_ok: bool,
+    /// Default retries of failed user-code calls. Enterprise only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_policy: Option<FunctionRetryPolicy>,
     pub name: String,
     pub artifact: FunctionArtifactRequest,
     pub signature: FunctionSignature,
     pub runtime: PythonRuntimeSpec,
+    /// Maximum rows in one execution batch; the executor may use fewer.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_batch_size"
+    )]
+    pub batch_size: Option<u32>,
+    /// Default maximum concurrent user-code calls for each logical execution
+    /// of this Function version. Omission leaves the current behavior
+    /// unchanged.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_max_concurrency"
+    )]
+    pub max_concurrency: Option<u32>,
+    /// Deadline for each Python call, in seconds: one row for scalar Functions
+    /// and one batch for vectorized Functions. It does not govern Function
+    /// initialization.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_row_timeout"
+    )]
+    pub row_timeout_seconds: Option<f64>,
     /// Declared environment variable name to the Secret it binds. A binding is
     /// a reference: whether the Secret exists is answered when a column is
     /// declared against this version, not here.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secret_bindings: Vec<SecretBinding>,
+    /// Model snapshots prepared by the service before user code runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<HuggingFaceModel>,
+    /// Ask the service to resolve a fresh environment lock for this request
+    /// instead of reusing the published version's lock. Omitted when false.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub refresh_lock: bool,
 }
 
-impl_json!(FunctionRegistrationRequest);
+impl FunctionRegistrationRequest {
+    /// Decode a registration request supplied by an SDK language binding.
+    pub fn from_json(json: &str) -> Result<Self> {
+        from_json(json)
+    }
+
+    /// Encode the known client contract with bytewise-sorted JSON keys.
+    pub fn to_canonical_json(&self) -> Result<String> {
+        self.validate()?;
+        canonical_json(self)
+    }
+
+    /// Reject explicit execution controls that cannot be submitted safely.
+    pub fn validate(&self) -> Result<()> {
+        let invalid_input = |message: &'static str| Error::InvalidInput {
+            message: message.to_string(),
+        };
+        validate_batch_size_value(self.batch_size).map_err(invalid_input)?;
+        validate_max_concurrency_value(self.max_concurrency).map_err(invalid_input)?;
+        validate_row_timeout_value(self.row_timeout_seconds).map_err(invalid_input)?;
+        if let Some(policy) = &self.retry_policy {
+            policy.validate()?;
+        }
+        Ok(())
+    }
+}
 
 /// Exact FunctionVersion reference embedded in applications and bindings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -713,6 +1128,18 @@ pub struct InputBinding {
     pub nullable: bool,
 }
 
+/// Constant value bound to a Function parameter for every input row.
+///
+/// Values use the same canonical JSON domain as [`ApplicationInput`]. The
+/// Enterprise service validates their types against the exact Function version.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiteralInputBinding {
+    /// Function parameter name, distinct from all column-bound parameters.
+    pub parameter: String,
+    /// Immutable canonical JSON value.
+    pub value: Value,
+}
+
 /// Ordered result-field to table-field mapping for a Function binding.
 ///
 /// `nullable` describes the logical Function result. Physical computed-column
@@ -727,8 +1154,8 @@ pub struct OutputMapping {
     pub nullable: bool,
 }
 
-/// Internal physical column preserving the parent validity of a flattened
-/// named-struct result.
+/// Internal physical column preserving assignment of a nullable scalar result
+/// or the parent validity of a flattened named-struct result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AssignmentMapping {
     pub output_name: String,
@@ -741,6 +1168,8 @@ pub struct FunctionBinding {
     binding_id: String,
     function: FunctionVersionRef,
     inputs: Vec<InputBinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    literal_inputs: Vec<LiteralInputBinding>,
     outputs: Vec<OutputMapping>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     assignment: Option<AssignmentMapping>,
@@ -771,6 +1200,30 @@ impl FunctionBinding {
         &self.inputs
     }
 
+    /// Constants supplied for every row; these are not table dependencies.
+    pub fn literal_inputs(&self) -> &[LiteralInputBinding] {
+        &self.literal_inputs
+    }
+
+    pub(crate) fn validate_inputs(&self) -> Result<()> {
+        let mut parameters = std::collections::HashSet::new();
+        for parameter in self
+            .inputs
+            .iter()
+            .map(|input| &input.parameter)
+            .chain(self.literal_inputs.iter().map(|input| &input.parameter))
+        {
+            if !parameters.insert(parameter) {
+                return Err(invalid_json(format!(
+                    "duplicate Function parameter '{parameter}'"
+                )));
+            }
+        }
+        self.literal_inputs
+            .iter()
+            .try_for_each(|input| validate_literal(&input.value))
+    }
+
     pub fn outputs(&self) -> &[OutputMapping] {
         &self.outputs
     }
@@ -793,13 +1246,26 @@ impl FunctionBinding {
     }
 }
 
-impl_json!(FunctionBinding);
+impl FunctionBinding {
+    /// Decode an immutable binding, validating its canonical input values.
+    pub fn from_json(json: &str) -> Result<Self> {
+        let binding: Self = from_json(json)?;
+        binding.validate_inputs()?;
+        Ok(binding)
+    }
+
+    /// Encode this binding without dropping its constant inputs.
+    pub fn to_canonical_json(&self) -> Result<String> {
+        self.validate_inputs()?;
+        canonical_json(self)
+    }
+}
 
 /// Stable terminal result of an expression-backed or Function-backed column
 /// refresh [`crate::Job`].
 ///
 /// LanceDB Embedded refresh jobs produce this value in process. LanceDB
-/// Distributed decodes the same value from the durable job's terminal payload.
+/// Enterprise decodes the same value from the durable job's terminal payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RefreshColumnResult {
     /// Rows assigned a value by this refresh.
@@ -859,6 +1325,9 @@ impl FunctionErrorsRequest {
 /// read access to the table.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionErrorRecord {
+    /// Number of user-code calls for this failed invocation, when recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempts: Option<u32>,
     /// The refresh job that recorded the error.
     pub job_id: String,
     /// The fragment holding the row.
@@ -867,6 +1336,19 @@ pub struct FunctionErrorRecord {
     /// detail was capped and only the fragment summary remains.
     #[serde(default)]
     pub row_offset: Option<u32>,
+    /// Stable row identity at the table version the refresh read.
+    ///
+    /// Present only when that version used stable row IDs. It remains valid
+    /// across later compaction and rewrite, unlike `row_address`. `None` on
+    /// legacy tables and on records written before the server reported it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row_id: Option<u64>,
+    /// Portable physical row address, `(fragment_id << 32) | row_offset`.
+    ///
+    /// `None` when the record covers a fragment rather than one row, or when
+    /// an older server does not report row addresses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row_address: Option<u64>,
     /// The column being computed.
     pub column: String,
     /// The Function that failed.
@@ -879,6 +1361,9 @@ pub struct FunctionErrorRecord {
     pub error_type: String,
     /// The error's text.
     pub error_message: String,
+    /// User-code traceback, possibly truncated by the server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub traceback: Option<String>,
     /// When the error was recorded, in milliseconds since the epoch.
     pub created_at_millis: i64,
 }
@@ -979,14 +1464,26 @@ mod conda_environment_tests {
             super::canonical_json(&runtime).unwrap(),
             r#"{"environment":{"kind":"pip"},"gpu":true,"kind":"python_v2","python_version":"3.12"}"#
         );
+        let runtime: PythonRuntimeSpec = serde_json::from_str(
+            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":true,"gpu_class":"a10g"}"#,
+        )
+        .unwrap();
+        assert_eq!(runtime.gpu_class(), Some("a10g"));
+        assert_eq!(
+            super::canonical_json(&runtime).unwrap(),
+            r#"{"environment":{"kind":"pip"},"gpu":true,"gpu_class":"a10g","kind":"python_v2","python_version":"3.12"}"#
+        );
 
         for invalid in [
             r#"{"kind":"python","python_version":"3.12","environment":{"kind":"pip"},"gpu":true}"#,
+            r#"{"kind":"python","python_version":"3.12","environment":{"kind":"pip"},"gpu_class":"a10g"}"#,
             r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"}}"#,
             r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":1}"#,
             r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":false}"#,
             r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":"true"}"#,
             r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":"H100"}"#,
+            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":true,"gpu_class":"H100"}"#,
+            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":true,"gpu_class":"-bad"}"#,
         ] {
             assert!(serde_json::from_str::<PythonRuntimeSpec>(invalid).is_err());
         }
@@ -1014,6 +1511,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn function_version_preserves_runtime_digest() {
+        const VERSION: &str = include_str!(
+            "../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
+        );
+        let mut document: Value = serde_json::from_str(VERSION).unwrap();
+        let legacy = FunctionVersion::from_json(VERSION).unwrap();
+        assert_eq!(legacy.runtime_digest(), None);
+        assert_eq!(legacy.to_canonical_json().unwrap(), VERSION.trim_end());
+        for digest in [Value::Null, serde_json::json!("sha256:runtime-inputs")] {
+            document["runtime_digest"] = digest.clone();
+            let version = FunctionVersion::from_json(&document.to_string()).unwrap();
+            assert_eq!(version.runtime_digest(), digest.as_str());
+            let encoded = version.to_canonical_json().unwrap();
+            let encoded_value: Value = serde_json::from_str(&encoded).unwrap();
+            if digest.is_null() {
+                assert!(encoded_value.get("runtime_digest").is_none());
+            } else {
+                assert_eq!(encoded_value["runtime_digest"], digest);
+            }
+            assert_eq!(FunctionVersion::from_json(&encoded).unwrap(), version);
+        }
+    }
+
+    #[test]
     fn function_version_preserves_source_digest() {
         const VERSION: &str = include_str!(
             "../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
@@ -1037,6 +1558,180 @@ mod tests {
             }
             assert_eq!(FunctionVersion::from_json(&encoded).unwrap(), version);
         }
+
+        document["gpu_class"] = serde_json::json!("a10g");
+        let version = FunctionVersion::from_json(&document.to_string()).unwrap();
+        assert_eq!(version.gpu_class(), Some("a10g"));
+        let encoded: Value = serde_json::from_str(&version.to_canonical_json().unwrap()).unwrap();
+        assert_eq!(encoded["gpu_class"], "a10g");
+
+        document["max_concurrency"] = serde_json::json!(4);
+        let version = FunctionVersion::from_json(&document.to_string()).unwrap();
+        assert_eq!(version.max_concurrency(), Some(4));
+        let encoded: Value = serde_json::from_str(&version.to_canonical_json().unwrap()).unwrap();
+        assert_eq!(encoded["max_concurrency"], 4);
+
+        document["max_concurrency"] = serde_json::json!(0);
+        assert!(FunctionVersion::from_json(&document.to_string()).is_err());
+    }
+
+    #[test]
+    fn function_version_preserves_requested_and_resolved_environments() {
+        const VERSION: &str = include_str!(
+            "../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
+        );
+        let mut document: Value = serde_json::from_str(VERSION).unwrap();
+        let legacy = FunctionVersion::from_json(VERSION).unwrap();
+        assert!(legacy.runtime().is_none());
+        assert!(legacy.resolved_environment().is_none());
+        assert!(legacy.resolved_environments().is_empty());
+
+        document["runtime"] = serde_json::json!({
+            "kind": "python",
+            "python_version": "3.12",
+            "environment": {
+                "kind": "pip",
+                "packages": ["vllm==0.11.0"]
+            }
+        });
+        document["resolved_environment"] = serde_json::json!({
+            "packages": [
+                {
+                    "name": "torch",
+                    "version": "2.9.0+cu130",
+                    "source": "https://packages.example/simple"
+                },
+                {
+                    "name": "transformers",
+                    "version": "4.57.1"
+                }
+            ],
+            "provenance": {
+                "configured_index_urls": ["https://packages.example/simple"],
+                "configured_find_links": ["https://downloads.example/wheels"],
+                "resolved_indexes": ["https://packages.example/simple"],
+                "cuda_toolkit": "12.8",
+                "torch_version": "torch==2.9.0+cu130"
+            },
+            "warnings": [
+                "transformers resolved to transformers==4.57.1 but is not pinned exactly; add transformers==4.57.1 to pin it."
+            ]
+        });
+
+        let version = FunctionVersion::from_json(&document.to_string()).unwrap();
+        assert_eq!(version.runtime().unwrap().kind(), "python");
+        assert!(version.resolved_environments().is_empty());
+        let resolved = version.resolved_environment().unwrap();
+        assert_eq!(resolved.packages[0].version, "2.9.0+cu130");
+        assert_eq!(
+            resolved.packages[0].source.as_deref(),
+            Some("https://packages.example/simple")
+        );
+        assert_eq!(resolved.packages[1].source, None);
+        assert_eq!(
+            resolved
+                .provenance
+                .as_ref()
+                .unwrap()
+                .torch_version
+                .as_deref(),
+            Some("torch==2.9.0+cu130")
+        );
+        assert_eq!(resolved.warnings.len(), 1);
+
+        let encoded = version.to_canonical_json().unwrap();
+        let encoded_value: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(
+            encoded_value["resolved_environment"]["packages"][0]["version"],
+            "2.9.0+cu130"
+        );
+        assert!(
+            encoded_value["resolved_environment"]["packages"][1]
+                .get("source")
+                .is_none()
+        );
+        assert_eq!(FunctionVersion::from_json(&encoded).unwrap(), version);
+
+        document["resolved_environment"] = serde_json::json!({"warnings": []});
+        assert!(FunctionVersion::from_json(&document.to_string()).is_err());
+    }
+
+    #[test]
+    fn function_version_preserves_resolved_environments_by_platform() {
+        const VERSION: &str = include_str!(
+            "../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
+        );
+        let mut document: Value = serde_json::from_str(VERSION).unwrap();
+        document["runtime"] = serde_json::json!({
+            "kind": "python",
+            "python_version": "3.12",
+            "environment": {
+                "kind": "pip",
+                "packages": ["vllm==0.11.0"]
+            }
+        });
+        document["resolved_environments"] = serde_json::json!({
+            "linux/amd64": {
+                "packages": [
+                    {"name": "torch", "version": "2.9.0+cu130"}
+                ],
+                "warnings": ["amd64 measurement"]
+            },
+            "linux/arm64": {
+                "packages": [],
+                "warnings": ["arm64 measurement"]
+            }
+        });
+
+        let version = FunctionVersion::from_json(&document.to_string()).unwrap();
+        assert!(version.resolved_environment().is_none());
+        let environments = version.resolved_environments();
+        assert_eq!(environments.len(), 2);
+        assert_eq!(
+            environments["linux/amd64"].packages[0].version,
+            "2.9.0+cu130"
+        );
+        assert!(environments["linux/arm64"].packages.is_empty());
+        assert_eq!(environments["linux/arm64"].warnings, ["arm64 measurement"]);
+
+        let encoded = version.to_canonical_json().unwrap();
+        let encoded_value: Value = serde_json::from_str(&encoded).unwrap();
+        assert!(encoded_value.get("resolved_environment").is_none());
+        assert_eq!(
+            encoded_value["resolved_environments"]["linux/amd64"]["packages"][0]["version"],
+            "2.9.0+cu130"
+        );
+        assert_eq!(
+            encoded_value["resolved_environments"]["linux/arm64"]["packages"],
+            serde_json::json!([])
+        );
+        assert_eq!(FunctionVersion::from_json(&encoded).unwrap(), version);
+
+        document["resolved_environments"]
+            .as_object_mut()
+            .unwrap()
+            .remove("linux/arm64");
+        let missing_platform = FunctionVersion::from_json(&document.to_string()).unwrap();
+        assert!(
+            !missing_platform
+                .resolved_environments()
+                .contains_key("linux/arm64")
+        );
+
+        document["resolved_environments"] = serde_json::json!({});
+        let empty_map = FunctionVersion::from_json(&document.to_string()).unwrap();
+        assert!(empty_map.resolved_environments().is_empty());
+        assert!(
+            !empty_map
+                .to_canonical_json()
+                .unwrap()
+                .contains("resolved_environments")
+        );
+
+        document["resolved_environments"] = serde_json::json!({
+            "linux/amd64": {"warnings": []}
+        });
+        assert!(FunctionVersion::from_json(&document.to_string()).is_err());
     }
 
     #[test]
