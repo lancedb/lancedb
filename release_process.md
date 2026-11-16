@@ -115,16 +115,6 @@ The release process uses a handful of GitHub actions to automate the process.
                          └─────────────┘
 ```
 
-The Rust publication uploads `lancedb-test-fixtures` before `lancedb`. Both
-crates use the release version, and `lancedb` pins the fixture crate to that
-exact version for its tests. Before the first stable release containing a new
-crate, publish its first version with a crates.io API token and configure its
-[trusted publisher](https://crates.io/docs/trusted-publishing) for the
-`lancedb/lancedb` repository and `cargo-publish.yml` workflow. The workflow's
-OIDC token cannot create a new crate. Once the fixture crate is published and
-trusted publishing is configured, rerun the tag workflow: it skips the existing
-fixture version and publishes `lancedb`.
-
 To start a release, trigger a `Create Release Commit` action from
 [the workflows page](https://github.com/lancedb/lancedb/actions/workflows/make-release-commit.yml)
 (Click on "Run workflow").

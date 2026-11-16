@@ -6063,7 +6063,6 @@ dependencies = [
  "lance-namespace-impls",
  "lance-table",
  "lance-testing",
- "lancedb-test-fixtures",
  "log",
  "metrics",
  "metrics-util",
@@ -6215,10 +6214,6 @@ dependencies = [
  "tokio",
  "uuid",
 ]
-
-[[package]]
-name = "lancedb-test-fixtures"
-version = "0.42.0-beta.16"
 
 [[package]]
 name = "lazy-regex"

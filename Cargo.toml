@@ -1,7 +1,6 @@
 [workspace]
 members = [
     "rust/lancedb/cli",
-    "rust/lancedb-test-fixtures",
     "rust/lancedb",
     "nodejs",
     "python",

@@ -220,6 +220,8 @@ pub mod server_info;
 pub mod sql;
 pub mod storage_integration;
 pub mod table;
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod test_fixtures;
 #[cfg(test)]
 pub mod test_utils;
 pub mod utils;
