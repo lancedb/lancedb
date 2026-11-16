@@ -1150,6 +1150,27 @@ mod tests {
     )]
     #[case::map_value(map_of(f64s(&[2.7])), map_of(i32s(&[0])).data_type().clone(), "2.7")]
     #[case::dictionary(dictionary_of(vec![0], f64s(&[2.7])), DataType::Int32, "2.7")]
+    // A null row's child values are checked too, as Arrow's cast checks them for overflow.
+    #[case::fraction_under_null_fixed_size_list_row(
+        Arc::new(FixedSizeListArray::new(
+            Arc::new(Field::new_list_field(DataType::Float64, true)),
+            2,
+            f64s(&[0.5, 0.5, 1.0, 2.0]),
+            Some(arrow::buffer::NullBuffer::from(vec![false, true])),
+        )) as ArrayRef,
+        DataType::new_fixed_size_list(DataType::UInt8, 2, true),
+        "0.5"
+    )]
+    #[case::fraction_under_null_list_row(
+        Arc::new(ListArray::new(
+            Arc::new(Field::new_list_field(DataType::Float64, true)),
+            OffsetBuffer::from_lengths([1, 2]),
+            f64s(&[0.5, 1.0, 2.0]),
+            Some(arrow::buffer::NullBuffer::from(vec![false, true])),
+        )) as ArrayRef,
+        DataType::new_list(DataType::Int32, true),
+        "0.5"
+    )]
     #[tokio::test]
     async fn test_cast_dropping_fraction_errors(
         #[case] input: ArrayRef,
