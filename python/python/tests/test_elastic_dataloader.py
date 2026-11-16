@@ -1125,9 +1125,11 @@ def test_block_size_pickle_does_not_grow_with_block_count(
         )
 
     def pickled_state(dataset):
-        # The fixed-size RawArray counters only pickle while spawning a child.
+        # The fixed-size shared-memory counters only pickle while spawning a
+        # child, and their size does not depend on the block count.
         state = dataset.__getstate__()
-        del state["_worker_stats"], state["_untracked_worker_iteration"]
+        for key in ("_worker_stats", "_untracked_worker_iteration", "_filled_count"):
+            del state[key]
         return pickle.dumps(state)
 
     few_blocks, many_blocks = make(1 << 12), make(4)
