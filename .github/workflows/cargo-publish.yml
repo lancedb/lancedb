@@ -34,8 +34,18 @@ jobs:
           sudo apt install -y protobuf-compiler libssl-dev
       - uses: rust-lang/crates-io-auth-action@v1
         id: auth
-      - name: Publish the package
+      - name: Publish the packages
         run: |
+          set -euo pipefail
+          fixture_version="${GITHUB_REF_NAME#v}"
+          status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            --user-agent 'lancedb-release (https://github.com/lancedb/lancedb)' \
+            "https://crates.io/api/v1/crates/lancedb-test-fixtures/${fixture_version}")
+          case "$status" in
+            200) echo "lancedb-test-fixtures ${fixture_version} is already published" ;;
+            404) cargo publish -p lancedb-test-fixtures --token ${{ steps.auth.outputs.token }} ;;
+            *) echo "::error::Cannot check fixture publication (HTTP ${status})"; exit 1 ;;
+          esac
           cargo publish -p lancedb --all-features --token ${{ steps.auth.outputs.token }}
   report-failure:
     name: Report Workflow Failure

@@ -71,6 +71,16 @@ replace = "\nversion = \"{new_version}\""
 search = "\nversion = \"{current_version}\""
 
 [[tool.bumpversion.files]]
+filename = "rust/lancedb-test-fixtures/Cargo.toml"
+replace = "\nversion = \"{new_version}\""
+search = "\nversion = \"{current_version}\""
+
+[[tool.bumpversion.files]]
+filename = "rust/lancedb/Cargo.toml"
+replace = "lancedb-test-fixtures = {{ path = \"../lancedb-test-fixtures\", version = \"={new_version}\" }}"
+search = "lancedb-test-fixtures = {{ path = \"../lancedb-test-fixtures\", version = \"={current_version}\" }}"
+
+[[tool.bumpversion.files]]
 filename = "rust/lancedb/cli/Cargo.toml"
 replace = "\nversion = \"{new_version}\""
 search = "\nversion = \"{current_version}\""

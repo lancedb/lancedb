@@ -60,6 +60,16 @@ FIXTURES = (
     / "v1"
 )
 
+ARROW_TYPES_GOLDEN = (
+    Path(__file__).parents[3]
+    / "rust"
+    / "lancedb-test-fixtures"
+    / "fixtures"
+    / "first_class_functions"
+    / "v1"
+    / "arrow_types.json"
+)
+
 
 FUNCTION_VERSION = json.loads(
     (FIXTURES / "remote_function_version.canonical.json").read_text()
@@ -1037,12 +1047,7 @@ def test_function_resolves_module_globals_before_builtins(tmp_path):
 
 
 def test_canonical_arrow_type_prefers_the_compact_grammar():
-    golden = json.loads(
-        (
-            Path(__file__).parents[3]
-            / "rust/lancedb/tests/fixtures/first_class_functions/v1/arrow_types.json"
-        ).read_text()
-    )
+    golden = json.loads(ARROW_TYPES_GOLDEN.read_text())
     primitives = [
         case["arrow_type"] for case in golden["valid"] if "<" not in case["arrow_type"]
     ]
@@ -1346,12 +1351,7 @@ def _arrow_type_from_golden(spec: dict) -> pa.DataType:
 
 
 def test_arrow_type_grammar_matches_the_shared_golden():
-    golden = json.loads(
-        (
-            Path(__file__).parents[3]
-            / "rust/lancedb/tests/fixtures/first_class_functions/v1/arrow_types.json"
-        ).read_text()
-    )
+    golden = json.loads(ARROW_TYPES_GOLDEN.read_text())
     emitted = {
         case["arrow_type"]: _canonical_arrow_type(_arrow_type_from_golden(case["json"]))
         for case in golden["valid"]

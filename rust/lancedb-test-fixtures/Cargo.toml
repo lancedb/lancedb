@@ -1,0 +1,13 @@
+[package]
+name = "lancedb-test-fixtures"
+version = "0.42.0-beta.16"
+edition.workspace = true
+description = "Immutable test fixtures shared by LanceDB SDKs and downstream consumers"
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords = ["lancedb", "test-fixtures", "golden"]
+categories = ["development-tools::testing"]
+readme = "README.md"
+include = ["src/**", "fixtures/**", "LICENSE", "README.md"]
+
