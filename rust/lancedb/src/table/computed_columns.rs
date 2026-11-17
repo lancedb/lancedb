@@ -2906,10 +2906,8 @@ mod tests {
 
     #[test]
     fn output_arrow_type_grammar_matches_the_shared_golden() {
-        let golden: serde_json::Value = serde_json::from_str(include_str!(
-            "../../tests/fixtures/first_class_functions/v1/arrow_types.json"
-        ))
-        .unwrap();
+        let golden: serde_json::Value =
+            serde_json::from_str(crate::test_fixtures::FUNCTION_ARROW_TYPES_JSON).unwrap();
         let valid = golden["valid"].as_array().unwrap().iter();
         for case in valid.chain(golden["server_only"].as_array().unwrap()) {
             let raw = case["arrow_type"].as_str().unwrap();

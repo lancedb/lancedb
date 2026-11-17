@@ -311,10 +311,16 @@ jobs:
         with:
           fetch-depth: 0
           lfs: true
+      - uses: actions/setup-python@v6
+        id: python
+        with:
+          python-version: "3.13"
       - name: CPU features
         run: sysctl -a | grep cpu
       - uses: Swatinem/rust-cache@v2
         with:
+          # PyO3 caches the interpreter library path; runner images can differ.
+          key: ${{ matrix.mac-runner }}-python-${{ steps.python.outputs.python-version }}
           # Restore everywhere, but only save from main. Per-PR saves are
           # unreadable outside their own branch anyway, since GitHub scopes
           # caches to the creating ref.
@@ -323,6 +329,7 @@ jobs:
         run: brew install protobuf
       - name: Run tests
         env:
+          PYO3_PYTHON: ${{ steps.python.outputs.python-path }}
           CARGO_TEST_TARGETS: ${{ matrix.phase == 'doc' && '--doc' || '--lib --tests' }}
         run: |
           # Don't run the s3 integration tests since docker isn't available
