@@ -1569,6 +1569,8 @@ mod refresh_result_tests {
             source_version: 7,
             published_version: Some(8),
             plan,
+            error_groups: Vec::new(),
+            error_groups_truncated: false,
         }
     }
 
