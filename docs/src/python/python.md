@@ -1520,3 +1520,7 @@ Caches, hidden paths, symlinks and unsafe paths are excluded. Use `pip=` or
 ::: lancedb.compaction.CompactionResult
 
 ::: lancedb.prewarm.PrewarmDataResult
+
+::: lancedb.prewarm.PrewarmDataPlan
+
+::: lancedb.prewarm.PrewarmPruningSummary

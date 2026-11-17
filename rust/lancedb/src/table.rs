@@ -88,7 +88,7 @@ pub mod merge;
 pub mod optimize;
 pub use optimize::CompactionResult;
 mod prewarm;
-pub use prewarm::{PrewarmDataOptions, PrewarmDataResult};
+pub use prewarm::{PrewarmDataOptions, PrewarmDataPlan, PrewarmDataResult, PrewarmPruningSummary};
 pub(crate) mod primary_key;
 pub mod query;
 pub mod refresh;
@@ -701,6 +701,13 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "data prewarm jobs are only supported on remote tables".into(),
         })
     }
+    /// Preview data-cache prewarm without submitting a warming job.
+    async fn explain_prewarm_data(&self, _options: PrewarmDataOptions) -> Result<PrewarmDataPlan> {
+        Err(Error::NotSupported {
+            message: "data prewarm previews are only supported on remote tables".into(),
+        })
+    }
+
     /// Get statistics about the index.
     async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>>;
     /// Merge insert new records into the table.
@@ -3190,6 +3197,29 @@ impl Table {
         options: PrewarmDataOptions,
     ) -> Result<Job<PrewarmDataResult>> {
         self.inner.prewarm_data_async(options).await
+    }
+
+    /// Preview data-cache prewarm using the same options as [`Self::prewarm_data_async`].
+    ///
+    /// Requires LanceDB Enterprise with structured SQL PREWARM previews and
+    /// SELECT permission plus database/namespace usage. Reads metadata without
+    /// submitting a warming job. A later submission plans its own snapshot.
+    /// Historical-version and Embedded handles are unsupported.
+    ///
+    /// ```no_run
+    /// # async fn preview(table: &lancedb::Table) -> lancedb::Result<()> {
+    /// use lancedb::table::PrewarmDataOptions;
+    /// let plan = table.explain_prewarm_data(PrewarmDataOptions::new()
+    ///     .columns(["video"]).filter("quality > 0.7")).await?;
+    /// println!("version={}, selected={}", plan.table_version, plan.pruning.selected_fragments);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn explain_prewarm_data(
+        &self,
+        options: PrewarmDataOptions,
+    ) -> Result<PrewarmDataPlan> {
+        self.inner.explain_prewarm_data(options).await
     }
 
     /// Poll until the columns are fully indexed. Will return Error::Timeout if the columns

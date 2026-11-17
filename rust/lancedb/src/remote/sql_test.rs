@@ -518,7 +518,8 @@ impl FlightService for TestSqlService {
             {
                 return Err(error.clone());
             }
-            if command.query.starts_with("PREWARM")
+            if (command.query.starts_with("PREWARM")
+                || command.query.starts_with("EXPLAIN (FORMAT JSON) PREWARM"))
                 && let Some(error) = &self.prewarm_error
             {
                 return Err(error.clone());
@@ -4782,6 +4783,12 @@ async fn remote_prewarm_rejects_historical_checkout_without_submitting() {
     let error = table.prewarm_data(None).await.unwrap_err();
     assert!(matches!(error, Error::NotSupported { .. }));
     assert!(error.to_string().contains("historical version 7"));
+    let error = table
+        .explain_prewarm_data(Default::default())
+        .await
+        .unwrap_err();
+    assert!(matches!(error, Error::NotSupported { .. }));
+    assert!(error.to_string().contains("historical version 7"));
     assert!(statements.lock().unwrap().is_empty());
     shutdown.send(()).unwrap();
 }
@@ -4850,4 +4857,80 @@ async fn remote_compaction_tracks_registry_job_and_real_result() {
         ]
     );
     shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
+async fn remote_prewarm_preview_uses_sql_without_any_http_jobs() {
+    use crate::table::PrewarmDataOptions;
+    for azure in [false, true] {
+        let preview = serde_json::json!({
+            "format_version":1,"table_version":42,"plan":"metadata preview",
+            "pruning":{"mode":"zonemap_ranges","input_fragments":4,
+                "selected_fragments":1,"pruned_fragments":3,"selected_row_ranges":2}
+        });
+        let service = TestSqlService {
+            adaptive: true,
+            result: RecordBatch::try_from_iter([
+                (
+                    "plan_type",
+                    Arc::new(StringArray::from(vec!["logical_plan"])) as ArrayRef,
+                ),
+                (
+                    "plan",
+                    Arc::new(StringArray::from(vec![preview.to_string()])) as ArrayRef,
+                ),
+            ])
+            .unwrap(),
+            prewarm_azure_supported: true,
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let headers = service.headers.clone();
+        let mut config = ClientConfig::default();
+        if azure {
+            config.extra_headers.insert(
+                "x-azure-storage-account-name".into(),
+                "sourceaccount".into(),
+            );
+        }
+        let (sql, shutdown) = start_sql_service(service, config).await;
+        let client = client_with_handler(|_| -> http::Response<String> {
+            panic!("preview must not use HTTP job APIs or REST fallback")
+        });
+        let table = RemoteTable::new_with_sql_client(
+            client,
+            "analytics".into(),
+            "clips".into(),
+            vec!["team".into()],
+            "team$clips".into(),
+            Default::default(),
+            Some(sql),
+        )
+        .with_branch(Some("experiment".into()));
+        let plan = table
+            .explain_prewarm_data(
+                PrewarmDataOptions::new()
+                    .columns(["attrs.score"])
+                    .filter("id > 0")
+                    .concurrency(4),
+            )
+            .await
+            .unwrap();
+        assert_eq!(plan.table_version, 42);
+        assert_eq!(plan.pruning.selected_row_ranges, Some(2));
+        assert_eq!(
+            *statements.lock().unwrap(),
+            [
+                "EXPLAIN (FORMAT JSON) PREWARM WITH (branch = 'experiment', concurrency = 4) AS SELECT \"attrs\".\"score\" FROM \"clips\" WHERE id > 0"
+            ]
+        );
+        assert!(
+            headers
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|h| h.namespace_path == "team" && h.database == "analytics")
+        );
+        shutdown.send(()).unwrap();
+    }
 }

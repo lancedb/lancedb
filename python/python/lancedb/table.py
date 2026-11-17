@@ -48,7 +48,7 @@ from ._blob import (
 from .types import BlobMode
 from lancedb.arrow import peek_reader
 from lancedb.background_loop import LOOP, embedding_executor
-from lancedb.prewarm import PrewarmDataResult
+from lancedb.prewarm import PrewarmDataPlan, PrewarmDataResult
 from lancedb.job import AsyncJob, Job, _typed_job
 from lancedb.compaction import CompactionResult
 from .dependencies import (
@@ -2038,6 +2038,34 @@ class Table(ABC):
         ...     ["payload"], filter="quality > 0.7", concurrency=4)
         """
         self.prewarm_data_async(columns, filter=filter, concurrency=concurrency)
+
+    def explain_prewarm_data(
+        self,
+        columns: Optional[List[str]] = None,
+        *,
+        filter: Optional[str] = None,
+        concurrency: Optional[int] = None,
+    ) -> PrewarmDataPlan:
+        """Preview data prewarm without creating a warming job.
+
+        Accepts the same columns, filter, and concurrency as ``prewarm_data_async``
+        and uses the table handle's namespace and branch. Requires LanceDB
+        Enterprise with structured SQL previews, table Select, and database/namespace
+        Usage. Historical-version and Embedded handles are unsupported.
+
+        Returns the source version, readable plan, and conservative pruning summary.
+        Unknown metrics remain None; selected ranges are not exact matching rows.
+        The preview reads metadata. A later submission plans its own snapshot.
+
+        Examples
+        --------
+        >>> plan = table.explain_prewarm_data(  # doctest: +SKIP
+        ...     ["video"], filter="quality > 0.7")
+        >>> print(plan.pruning.selected_fragments)  # doctest: +SKIP
+        """
+        raise NotImplementedError(
+            "data prewarm previews are only supported on remote tables"
+        )
 
     def prewarm_data_async(
         self,
@@ -4976,6 +5004,24 @@ class LanceTable(Table):
             self._table.prewarm_data(columns, filter=filter, concurrency=concurrency)
         )
 
+    def explain_prewarm_data(
+        self,
+        columns: Optional[List[str]] = None,
+        *,
+        filter: Optional[str] = None,
+        concurrency: Optional[int] = None,
+    ) -> PrewarmDataPlan:
+        """Preview prewarm without submitting a warming job.
+
+        See [Table.explain_prewarm_data][lancedb.table.Table.explain_prewarm_data]
+        for options, permissions, snapshot semantics, and limitations.
+        """
+        return LOOP.run(
+            self._table.explain_prewarm_data(
+                columns, filter=filter, concurrency=concurrency
+            )
+        )
+
     def prewarm_data_async(
         self,
         columns: Optional[List[str]] = None,
@@ -7494,6 +7540,24 @@ class AsyncTable:
         ...     ["payload"], filter="quality > 0.7", concurrency=4)
         """
         await self.prewarm_data_async(columns, filter=filter, concurrency=concurrency)
+
+    async def explain_prewarm_data(
+        self,
+        columns: Optional[List[str]] = None,
+        *,
+        filter: Optional[str] = None,
+        concurrency: Optional[int] = None,
+    ) -> PrewarmDataPlan:
+        """Preview prewarm without submitting a warming job.
+
+        See [Table.explain_prewarm_data][lancedb.table.Table.explain_prewarm_data]
+        for options, permissions, snapshot semantics, and limitations.
+        """
+        return PrewarmDataPlan.from_json(
+            await self._inner.explain_prewarm_data(
+                columns, filter=filter, concurrency=concurrency
+            )
+        )
 
     async def prewarm_data_async(
         self,

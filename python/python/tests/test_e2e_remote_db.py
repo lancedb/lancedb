@@ -308,3 +308,63 @@ def test_against_local_server():
     table = conn.open_table("sift1m_ivf1024_pq16")
     df = table.search(np.random.rand(128)).to_pandas()
     assert len(df) == 10
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
+async def test_prewarm_preview_against_server(
+    maintenance_connection_options, asynchronous
+):
+    """Preview is typed, source-versioned, and creates no maintenance jobs."""
+    from lancedb.prewarm import PrewarmDataPlan
+
+    connection = (
+        await lancedb.connect_async(**maintenance_connection_options)
+        if asynchronous
+        else lancedb.connect(**maintenance_connection_options)
+    )
+
+    async def call(method, *args, **kwargs):
+        result = method(*args, **kwargs)
+        return await result if asynchronous else result
+
+    async def jobs():
+        reader = await call(connection.execute_query, f'SHOW JOBS FOR TABLE "{name}"')
+        result = await call(reader.read_all)
+        return pa.Table.from_batches(result) if asynchronous else result
+
+    name = f"preview_{uuid4().hex}"
+    created = False
+    try:
+        table = await call(connection.create_table, name, [{"id": 1, "payload": "one"}])
+        created = True
+        version = await table.version() if asynchronous else table.version
+        before = (await jobs()).to_pylist()
+        for predicate, mode, selected in [
+            (None, "unfiltered", 1),
+            ("TRUE", "full_warm_fallback", 1),
+            ("FALSE", "constant", 0),
+            ("id > 10", "full_warm_fallback", 1),
+        ]:
+            preview = await call(
+                table.explain_prewarm_data, ["payload"], filter=predicate, concurrency=2
+            )
+            assert isinstance(preview, PrewarmDataPlan)
+            assert preview.table_version == version
+            assert preview.pruning.mode == mode
+            assert preview.pruning.input_fragments == 1
+            assert preview.pruning.selected_fragments == selected
+            if mode == "full_warm_fallback":
+                assert preview.pruning.fallback_reason
+        assert (await jobs()).to_pylist() == before
+        assert (await table.version() if asynchronous else table.version) == version
+        # A preview does not reserve the source snapshot for a later request.
+        await call(table.add, [{"id": 2, "payload": "two"}])
+        newer = await call(table.explain_prewarm_data)
+        assert newer.table_version > version
+        assert newer.pruning.input_fragments == 2
+        assert (await jobs()).to_pylist() == before
+    finally:
+        if created:
+            await call(connection.drop_table, name)
+        connection.close()

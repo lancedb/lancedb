@@ -2,7 +2,12 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import { CompactionResult, decodeCompactionResult } from "./compaction";
-import { PrewarmDataResult, decodePrewarmDataResult } from "./prewarm";
+import {
+  PrewarmDataPlan,
+  PrewarmDataResult,
+  decodePrewarmDataPlan,
+  decodePrewarmDataResult,
+} from "./prewarm";
 
 import {
   Table as ArrowTable,
@@ -168,7 +173,7 @@ export interface UpdateOptions {
   where: string;
 }
 
-/** Settings for submitting a durable remote data-cache prewarm job. */
+/** Settings for data-cache prewarm submissions and metadata previews. */
 export interface PrewarmDataOptions {
   /** Lance field paths to warm; omitted or empty means every column. */
   columns?: string[];
@@ -626,6 +631,22 @@ export abstract class Table {
   abstract prewarmDataAsync(
     options?: PrewarmDataOptions,
   ): Promise<Job<PrewarmDataResult>>;
+
+  /**
+   * Preview prewarm with the same options as {@link prewarmDataAsync}, without
+   * submitting a warming job. Requires LanceDB Enterprise with structured SQL
+   * previews, table Select and database/namespace Usage. Reads metadata and
+   * returns the source version, readable plan, and conservative pruning summary.
+   * A later submission plans its own snapshot. Historical and Embedded handles
+   * are unsupported. Unknown measurements remain null.
+   *
+   * @example
+   * const plan = await table.explainPrewarmData({columns: ["video"], filter: "quality > 0.7"});
+   * console.log(plan.pruning.selectedFragments);
+   */
+  abstract explainPrewarmData(
+    options?: PrewarmDataOptions,
+  ): Promise<PrewarmDataPlan>;
 
   /**
    * Waits for asynchronous indexing to complete on the table.
@@ -1591,15 +1612,18 @@ export class LocalTable extends Table {
   async prewarmDataAsync(
     options?: PrewarmDataOptions,
   ): Promise<Job<PrewarmDataResult>> {
-    for (const key of Object.keys(options ?? {})) {
-      if (!["columns", "filter", "concurrency"].includes(key)) {
-        throw new Error(`Unsupported data prewarm option: ${key}`);
-      }
-    }
+    validatePrewarmDataOptions(options);
     return new Job(
       await this.inner.prewarmDataAsync(options),
       decodePrewarmDataResult,
     );
+  }
+
+  async explainPrewarmData(
+    options?: PrewarmDataOptions,
+  ): Promise<PrewarmDataPlan> {
+    validatePrewarmDataOptions(options);
+    return decodePrewarmDataPlan(await this.inner.explainPrewarmData(options));
   }
 
   async waitForIndex(
@@ -2301,6 +2325,14 @@ function validateCompactionOptions(options?: CompactionOptions): void {
   for (const key of Object.keys(options ?? {})) {
     if (!supported.has(key)) {
       throw new Error(`Unsupported compaction option: ${key}`);
+    }
+  }
+}
+
+function validatePrewarmDataOptions(options?: PrewarmDataOptions): void {
+  for (const key of Object.keys(options ?? {})) {
+    if (!["columns", "filter", "concurrency"].includes(key)) {
+      throw new Error(`Unsupported data prewarm option: ${key}`);
     }
   }
 }
