@@ -1738,8 +1738,11 @@ class DBConnection(EnforceOverrides):
                 parameters=[np.array([0.1, 0.2, 0.3], dtype=np.float32), 10],
             )
 
-        Parameters are supported in queries, not in DDL or DML. With or
-        without parameters, the server chooses whether to stream rows on the
+        Parameters are supported in queries and, on compatible Enterprise servers,
+        scalar filter values in ``PREWARM`` and ``EXPLAIN PREWARM``. Other DDL/DML
+        statements do not accept parameters.
+
+        With or without parameters, the server chooses whether to stream rows on the
         initial call or return a polling continuation. The reader follows
         either path transparently. Dropping an unread handle or its reader
         stops a directly streamed query; deferred execution requires explicit
