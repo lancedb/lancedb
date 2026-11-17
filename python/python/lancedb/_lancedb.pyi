@@ -658,6 +658,7 @@ class Table:
         *,
         filter: Optional[str] = None,
         concurrency: Optional[int] = None,
+        parameters: Optional[pa.RecordBatch] = None,
     ) -> Job: ...
     async def list_indices(self) -> list[IndexConfig]: ...
     async def tokenize(

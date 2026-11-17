@@ -20,6 +20,14 @@ pub(super) fn statement(
     if options.concurrency == Some(0) {
         return Err(invalid("prewarm concurrency must be greater than 0"));
     }
+    if let Some(parameters) = &options.parameters {
+        if options.filter.is_none() {
+            return Err(invalid("prewarm parameters require a filter"));
+        }
+        if parameters.num_rows() != 1 {
+            return Err(invalid("prewarm parameters must contain exactly one row"));
+        }
+    }
     if let Some(filter) = &options.filter {
         if filter.trim().is_empty() {
             return Err(invalid("prewarm filter must not be empty"));
@@ -291,6 +299,31 @@ mod tests {
         }
         assert!(plan(&[]).is_err());
         assert!(plan(&[batch(&valid), batch(&valid)]).is_err());
+    }
+
+    #[test]
+    fn bound_values_are_never_rendered_into_sql() {
+        let value = "training' OR TRUE; DROP TABLE clips; --";
+        let parameters = RecordBatch::try_from_iter(vec![(
+            "tag",
+            Arc::new(StringArray::from(vec![value])) as arrow_array::ArrayRef,
+        )])
+        .unwrap();
+        let options = PrewarmDataOptions::new()
+            .filter("tag = $tag")
+            .parameters(parameters);
+        let sql = statement("clips", Some("experiment"), &options).unwrap();
+        assert!(sql.ends_with("WHERE tag = $tag"));
+        assert!(!sql.contains(value));
+        assert!(!format!("{options:?}").contains(value));
+        assert!(
+            statement(
+                "clips",
+                None,
+                &PrewarmDataOptions::new().parameters(options.parameters.unwrap())
+            )
+            .is_err()
+        );
     }
 
     #[test]

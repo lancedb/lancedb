@@ -33,6 +33,7 @@ pub struct PrewarmDataOptions {
     pub columns: Option<Vec<String>>,
     pub filter: Option<String>,
     pub concurrency: Option<f64>,
+    pub parameters: Option<Buffer>,
 }
 
 impl PrewarmDataOptions {
@@ -40,6 +41,21 @@ impl PrewarmDataOptions {
         let mut options =
             lancedb::table::PrewarmDataOptions::new().columns(self.columns.unwrap_or_default());
         options.filter = self.filter;
+        if let Some(parameters) = self.parameters {
+            let mut batches = ipc_file_to_batches(parameters.to_vec())
+                .and_then(|reader| {
+                    reader
+                        .collect::<std::result::Result<Vec<_>, _>>()
+                        .map_err(Into::into)
+                })
+                .map_err(|error| napi::Error::from_reason(error.to_string()))?;
+            if batches.len() != 1 || batches[0].num_rows() != 1 {
+                return Err(napi::Error::from_reason(
+                    "prewarm parameters must contain one row in one batch",
+                ));
+            }
+            options.parameters = Some(batches.remove(0));
+        }
         if let Some(value) = self.concurrency {
             if !value.is_finite() || value.fract() != 0.0 || value < 1.0 || value > u32::MAX as f64
             {

@@ -8212,6 +8212,8 @@ async def test_remote_data_prewarm_sql_receipt_and_durable_job(asynchronous, mod
         {"concurrency": 2**32},
         {"concurrency": True},
         {"concurrency": 1.5},
+        {"parameters": [1]},
+        {"filter": "id > $1", "parameters": pa.table({"1": [1, 2]})},
     ],
 )
 @pytest.mark.parametrize(
@@ -8234,6 +8236,52 @@ def test_remote_data_prewarm_validates_before_submission(options, method):
         with pytest.raises(ValueError):
             getattr(table, method)(**options)
     assert not server.tickets
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("named", [False, True])
+async def test_prewarm_bound_parameters_reach_flight(asynchronous, legacy, named):
+    flight = pytest.importorskip("pyarrow.flight")
+    attack = "training' OR TRUE; DROP TABLE items; --"
+
+    class ParameterServer(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.calls = []
+
+        def do_exchange(self, context, descriptor, reader, writer):
+            self.calls.append((descriptor.command, reader.read_all()))
+            result = pa.table(
+                {"job_id": ["bound-job"], "table_version": pa.array([42], pa.uint64())}
+            )
+            writer.begin(result.schema)
+            writer.write_table(result)
+            writer.close()
+
+    server = ParameterServer()
+    with _mock_remote_sql_connection(server, _create_table_handler) as kwargs:
+        parameters = {"min": 8, "tag": attack} if named else [8, attack]
+        predicate = "id >= $min AND tag = $tag" if named else "id >= $1 AND tag = $2"
+        method = "prewarm_data" if legacy else "prewarm_data_async"
+        if asynchronous:
+            db = await lancedb.connect_async(**kwargs)
+            table = await db.create_table("test", [{"id": 1}])
+            result = await getattr(table, method)(
+                ["payload"], filter=predicate, parameters=parameters
+            )
+        else:
+            db = lancedb.connect(**kwargs)
+            table = db.create_table("test", [{"id": 1}])
+            result = getattr(table, method)(
+                ["payload"], filter=predicate, parameters=parameters
+            )
+        assert result is None if legacy else result.id == "bound-job"
+    ((command, received),) = server.calls
+    assert b"PREWARM" in command and predicate.encode() in command
+    assert attack.encode() not in command
+    assert received.column(0).to_pylist() == [8]
+    assert received.column(1).to_pylist() == [attack]
 
 
 def test_remote_data_prewarm_malformed_receipt_is_not_retried():

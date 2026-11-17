@@ -4770,8 +4770,9 @@ describe.each(arrowVersions)(
       await expect(
         table.prewarmDataAsync({
           columns: ["id"],
-          filter: "id > 0",
+          filter: "id > $1",
           concurrency: 2,
+          parameters: [1],
         }),
       ).rejects.toThrow("only supported on remote tables");
       await expect(

@@ -71,6 +71,7 @@ import {
   instanceOfFullTextQuery,
 } from "./query";
 import { sanitizeType } from "./sanitize";
+import { QueryParameters, toParameterBuffer } from "./sql";
 import { IntoSql, toSQL } from "./util";
 export { IndexConfig } from "./native";
 export {
@@ -179,6 +180,8 @@ export interface PrewarmDataOptions {
   columns?: string[];
   /** A single SQL predicate for conservative metadata pruning. */
   filter?: string;
+  /** Typed positional or named filter values, sent separately from SQL. */
+  parameters?: QueryParameters;
   /** Positive per-executor concurrency, at most 4294967295. */
   concurrency?: number;
 }
@@ -624,7 +627,8 @@ export abstract class Table {
    *
    * @example
    * const job = await table.prewarmDataAsync({
-   *   columns: ["video"], filter: "quality > 0.7", concurrency: 4,
+   *   columns: ["video"], filter: "quality > $minimum",
+   *   parameters: { minimum: 0.7 }, concurrency: 4,
    * });
    * await job.wait();
    */
@@ -1670,7 +1674,17 @@ export class LocalTable extends Table {
   ): Promise<Job<PrewarmDataResult>> {
     validatePrewarmDataOptions(options);
     return new Job(
-      await this.inner.prewarmDataAsync(options),
+      await this.inner.prewarmDataAsync(
+        options === undefined
+          ? undefined
+          : {
+              ...options,
+              parameters:
+                options.parameters === undefined
+                  ? undefined
+                  : await toParameterBuffer(options.parameters),
+            },
+      ),
       decodePrewarmDataResult,
     );
   }
@@ -2401,7 +2415,7 @@ function validateCompactionOptions(options?: CompactionOptions): void {
 
 function validatePrewarmDataOptions(options?: PrewarmDataOptions): void {
   for (const key of Object.keys(options ?? {})) {
-    if (!["columns", "filter", "concurrency"].includes(key)) {
+    if (!["columns", "filter", "concurrency", "parameters"].includes(key)) {
       throw new Error(`Unsupported data prewarm option: ${key}`);
     }
   }
