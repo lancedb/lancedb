@@ -653,7 +653,10 @@ async fn execute_refresh_column_with_source(
     let session = dataset.session();
     let new_dataset = Dataset::commit(
         WriteDestination::Dataset(dataset.clone()),
-        Operation::DataReplacement { replacements },
+        Operation::DataReplacement {
+            replacements,
+            data_change: true,
+        },
         Some(source_version),
         None,
         None,
