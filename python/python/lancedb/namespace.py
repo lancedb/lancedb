@@ -1808,7 +1808,8 @@ def connect_namespace(
         Supported values:
 
         - "QueryTable": Execute queries on the namespace server via
-          namespace.query_table() instead of locally.
+          namespace.query_table() instead of locally. Branch reads raise
+          ``ValueError`` when QueryTable pushdown is configured.
         - "CreateTable": Execute table creation on the namespace server via
           namespace.create_table() instead of using declare_table + local write.
 
@@ -1899,7 +1900,8 @@ def connect_namespace_async(
         Supported values:
 
         - "QueryTable": Execute queries on the namespace server via
-          namespace.query_table() instead of locally.
+          namespace.query_table() instead of locally. Branch reads raise
+          ``ValueError`` when QueryTable pushdown is configured.
         - "CreateTable": Execute table creation on the namespace server via
           namespace.create_table() instead of using declare_table + local write.
 

@@ -4173,6 +4173,30 @@ class LanceTable(Table):
         """The branch this table handle is scoped to, or ``None`` for ``main``."""
         return self._table.current_branch()
 
+    def _check_branch_query_allowed(self) -> None:
+        """Raise if this handle is scoped to a branch while QueryTable
+        pushdown is configured.
+
+        The namespace QueryTable request cannot carry a branch, and the
+        Rust query path executes branch queries locally instead of pushing
+        them down, so a branch query with pushdown configured must fail
+        clearly rather than silently bypass server authorization and
+        auditing. This applies regardless of whether pushdown is routed to
+        Rust or executed by the Python client: Rust cannot push a branch
+        query down either.
+        """
+        if "QueryTable" not in self._pushdown_operations:
+            return
+        branch = self.current_branch()
+        if branch is not None:
+            raise ValueError(
+                f"Cannot run a query on branch {branch!r} with QueryTable "
+                "pushdown configured: the namespace QueryTable request "
+                "cannot carry a branch, so the query would silently run "
+                "without server authorization or auditing. Query the default "
+                "branch instead, or disable QueryTable pushdown."
+            )
+
     def _wrap_branch_handle(
         self, async_table: "AsyncTable", version: Optional[int] = None
     ) -> "LanceTable":
@@ -4310,6 +4334,10 @@ class LanceTable(Table):
         -------
         pd.DataFrame
         """
+        # to_pandas() reads the table's storage directly (via Lance for blob
+        # columns), bypassing _execute_query, so a branch handle with
+        # QueryTable pushdown configured must fail here instead.
+        self._check_branch_query_allowed()
         validate_blob_mode(blob_mode)
         if blob_mode == "descriptions" or not schema_has_blob_field(self.schema):
             arrow_tbl = self.to_arrow()
@@ -5427,21 +5455,27 @@ class LanceTable(Table):
         batch_size: Optional[int] = None,
         timeout: Optional[timedelta] = None,
     ) -> pa.RecordBatchReader:
-        # Branch queries run locally: the server-side query protocol can't
-        # carry a branch yet.
+        # The server-side query protocol can't carry a branch yet, so a branch
+        # query must fail clearly instead of silently running against local
+        # storage, which would bypass server authorization and auditing.
         # TODO: push down server-side once it can (with remote table support).
+        # The check is routing-independent: Rust executes branch queries
+        # locally too, so a branch handle must fail here even when pushdown
+        # is routed to Rust (no namespace client on this side).
+        self._check_branch_query_allowed()
         if (
             _should_push_down_query_table(
                 self._namespace_client, self._pushdown_operations
             )
             and not self._route_pushdown_to_rust
-            and self.current_branch() is None
-            and not _requires_local_namespace_execution(query)
         ):
-            from lancedb.namespace import _execute_server_side_query
+            if not _requires_local_namespace_execution(query):
+                from lancedb.namespace import _execute_server_side_query
 
-            table_id = self._namespace_path + [self.name]
-            return _execute_server_side_query(self._namespace_client, table_id, query)
+                table_id = self._namespace_path + [self.name]
+                return _execute_server_side_query(
+                    self._namespace_client, table_id, query
+                )
 
         async_iter = LOOP.run(
             self._table._execute_query(query, batch_size=batch_size, timeout=timeout)
@@ -5465,6 +5499,11 @@ class LanceTable(Table):
         *,
         distributed_metrics: AnalyzePlanDistributedMetrics = "aggregate",
     ) -> str:
+        # analyze_plan() executes the query directly in the native analyzer,
+        # bypassing _execute_query, so a branch handle with QueryTable
+        # pushdown configured must fail here instead of scanning branch
+        # storage and exposing filtered row counts.
+        self._check_branch_query_allowed()
         return LOOP.run(
             self._table._analyze_plan(query, distributed_metrics=distributed_metrics)
         )
@@ -6766,6 +6805,7 @@ class AsyncTable:
         filter: str, optional
             A SQL where clause to filter the rows to count.
         """
+        self._check_branch_query_allowed()
         return await self._inner.count_rows(filter)
 
     async def head(self, n=5) -> pa.Table:
@@ -6857,6 +6897,10 @@ class AsyncTable:
         -------
         pd.DataFrame
         """
+        # to_pandas() reads the table's storage directly (via Lance for blob
+        # columns), bypassing _execute_query, so a branch handle with
+        # QueryTable pushdown configured must fail here instead.
+        self._check_branch_query_allowed()
         validate_blob_mode(blob_mode)
         schema = await self.schema()
         if blob_mode == "descriptions" or not schema_has_blob_field(schema):
@@ -7794,17 +7838,27 @@ class AsyncTable:
         batch_size: Optional[int] = None,
         timeout: Optional[timedelta] = None,
     ) -> pa.RecordBatchReader:
+        # The server-side query protocol can't carry a branch yet, so a branch
+        # query must fail clearly instead of being pushed down without branch
+        # information (which would run it against the default branch).
+        # TODO: push down server-side once it can (with remote table support).
+        # The check is routing-independent: Rust executes branch queries
+        # locally too, so a branch handle must fail here even when pushdown
+        # is routed to Rust (no namespace client on this side).
+        self._check_branch_query_allowed()
         if (
             _should_push_down_query_table(
                 self._namespace_client, self._pushdown_operations
             )
             and not self._route_pushdown_to_rust
-            and not _requires_local_namespace_execution(query)
         ):
-            from lancedb.namespace import _execute_server_side_query
+            if not _requires_local_namespace_execution(query):
+                from lancedb.namespace import _execute_server_side_query
 
-            table_id = self._namespace_path + [self.name]
-            return _execute_server_side_query(self._namespace_client, table_id, query)
+                table_id = self._namespace_path + [self.name]
+                return _execute_server_side_query(
+                    self._namespace_client, table_id, query
+                )
 
         # The sync table calls into this method, so we need to map the
         # query to the async version of the query and run that here. This is only
@@ -7828,6 +7882,11 @@ class AsyncTable:
         distributed_metrics: AnalyzePlanDistributedMetrics = "aggregate",
     ) -> str:
         # This method is used by the sync table
+        # analyze_plan() executes the query directly in the native analyzer,
+        # bypassing _execute_query, so a branch handle with QueryTable
+        # pushdown configured must fail here instead of scanning branch
+        # storage and exposing filtered row counts.
+        self._check_branch_query_allowed()
         async_query = self._sync_query_to_async(query)
         return await async_query.analyze_plan(distributed_metrics)
 
@@ -8933,11 +8992,35 @@ class AsyncTable:
         Branches are isolated, writable lines of history forked from another
         branch (or version). Writes on a branch do not affect ``main``.
         """
-        return AsyncBranches(self._inner)
+        return AsyncBranches(self)
 
     def current_branch(self) -> Optional[str]:
         """The branch this table handle is scoped to, or ``None`` for ``main``."""
         return self._inner.current_branch()
+
+    def _check_branch_query_allowed(self) -> None:
+        """Raise if this handle is scoped to a branch while QueryTable
+        pushdown is configured.
+
+        The namespace QueryTable request cannot carry a branch, and the
+        Rust query path executes branch queries locally instead of pushing
+        them down, so a branch query with pushdown configured must fail
+        clearly rather than silently bypass server authorization and
+        auditing. This applies regardless of whether pushdown is routed to
+        Rust or executed by the Python client: Rust cannot push a branch
+        query down either.
+        """
+        if "QueryTable" not in self._pushdown_operations:
+            return
+        branch = self.current_branch()
+        if branch is not None:
+            raise ValueError(
+                f"Cannot run a query on branch {branch!r} with QueryTable "
+                "pushdown configured: the namespace QueryTable request "
+                "cannot carry a branch, so the query would silently run "
+                "without server authorization or auditing. Query the default "
+                "branch instead, or disable QueryTable pushdown."
+            )
 
     async def optimize(
         self,
@@ -9496,12 +9579,17 @@ class AsyncTags:
 class AsyncBranches:
     """Async table branch manager."""
 
-    def __init__(self, table):
+    def __init__(self, table: "AsyncTable"):
+        # Keep the AsyncTable (not just the Rust inner) so branch handles
+        # created here inherit the parent's namespace context (pushdown
+        # operations, namespace client, routing). Without it a handle from
+        # checkout()/create() would silently lose the QueryTable pushdown
+        # configuration and read the branch locally.
         self._table = table
 
     async def list(self) -> Dict[str, Any]:
         """List all branches, mapping name to branch metadata."""
-        return await self._table.branches.list()
+        return await self._table._inner.branches.list()
 
     async def create(
         self,
@@ -9524,8 +9612,13 @@ class AsyncBranches:
         # so from_ref="main" behaves identically to the default.
         if from_ref == "main":
             from_ref = None
-        inner = await self._table.branches.create(name, from_ref, from_version)
-        return AsyncTable(inner)
+        inner = await self._table._inner.branches.create(name, from_ref, from_version)
+        return AsyncTable(inner)._set_namespace_context(
+            namespace_path=self._table._namespace_path,
+            namespace_client=self._table._namespace_client,
+            pushdown_operations=self._table._pushdown_operations,
+            route_pushdown_to_rust=self._table._route_pushdown_to_rust,
+        )
 
     async def checkout(self, name: str, version: Optional[int] = None) -> "AsyncTable":
         """Check out an existing branch and return a handle scoped to it.
@@ -9539,15 +9632,21 @@ class AsyncBranches:
             handle is a read-only view of that version; when omitted it tracks
             the branch's latest and stays writable.
         """
-        return AsyncTable(await self._table.branches.checkout(name, version))
+        inner = await self._table._inner.branches.checkout(name, version)
+        return AsyncTable(inner)._set_namespace_context(
+            namespace_path=self._table._namespace_path,
+            namespace_client=self._table._namespace_client,
+            pushdown_operations=self._table._pushdown_operations,
+            route_pushdown_to_rust=self._table._route_pushdown_to_rust,
+        )
 
     async def delete(self, name: str) -> None:
         """Delete a branch."""
-        await self._table.branches.delete(name)
+        await self._table._inner.branches.delete(name)
 
     async def diff(self, from_branch: str) -> Dict[str, Any]:
         """Diff a branch against main."""
-        return await self._table.branches.diff(from_branch)
+        return await self._table._inner.branches.diff(from_branch)
 
     async def cherry_pick(
         self, from_branch: str, dry_run: bool = False
@@ -9556,4 +9655,4 @@ class AsyncBranches:
 
         A failed cherry-pick returns ``status="failed"`` instead of raising.
         """
-        return await self._table.branches.cherry_pick(from_branch, dry_run)
+        return await self._table._inner.branches.cherry_pick(from_branch, dry_run)

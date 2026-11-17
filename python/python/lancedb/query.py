@@ -2014,6 +2014,11 @@ class LanceQueryBuilder(ABC):
         flatten: Optional[Union[int, bool]] = None,
         **kwargs,
     ) -> Optional["pd.DataFrame"]:
+        # This path scans the Lance dataset directly, bypassing
+        # _execute_batches, so a branch handle with QueryTable pushdown
+        # configured must fail here instead of returning branch rows.
+        if self._table is not None:
+            self._table._check_branch_query_allowed()
         query = self.to_query_object()
         if not _query_is_plain_scan(query):
             return None
@@ -3834,6 +3839,14 @@ class AsyncQueryBase(object):
         timeout: Optional[timedelta] = None,
         blob_sources: Optional[dict[str, str]] = None,
     ) -> AsyncRecordBatchReader:
+        # Shared execution entry point for every async query (to_arrow,
+        # to_batches, to_list, to_pandas, head, and the vector/FTS/hybrid
+        # variants, which all funnel through here via super()). A branch
+        # handle with QueryTable pushdown configured must fail here: unlike
+        # Table._execute_query, this path executes the Rust query directly,
+        # and Rust runs branch queries locally instead of pushing them down.
+        if self._table is not None:
+            self._table._check_branch_query_allowed()
         if (
             blob_sources
             and not self._user_requested_row_id()
@@ -4096,6 +4109,11 @@ class AsyncQueryBase(object):
         if self._table is None:
             return None
 
+        # This path scans the Lance dataset directly, bypassing
+        # _execute_batches, so a branch handle with QueryTable pushdown
+        # configured must fail here instead of returning branch rows.
+        self._table._check_branch_query_allowed()
+
         query = self.to_query_object()
         if not _query_is_plain_scan(query):
             return None
@@ -4258,6 +4276,12 @@ class AsyncQueryBase(object):
         -------
         plan : str
         """
+        # analyze_plan() calls the native analyzer directly, bypassing
+        # _execute_batches, so a branch handle with QueryTable pushdown
+        # configured must fail here instead of scanning branch storage
+        # and exposing filtered row counts.
+        if self._table is not None:
+            self._table._check_branch_query_allowed()
         return await self._inner.analyze_plan(distributed_metrics)
 
 
