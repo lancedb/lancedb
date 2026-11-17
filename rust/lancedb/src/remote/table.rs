@@ -4828,10 +4828,14 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 parameters: None,
             })
             .await
-            .map_err(prewarm::map_error)?;
-        let mut reader = query.reader().await.map_err(prewarm::map_error)?;
+            .map_err(prewarm::map_explain_error)?;
+        let mut reader = query.reader().await.map_err(prewarm::map_explain_error)?;
         let mut batches = Vec::new();
-        while let Some(batch) = reader.try_next().await.map_err(prewarm::map_error)? {
+        while let Some(batch) = reader
+            .try_next()
+            .await
+            .map_err(prewarm::map_explain_error)?
+        {
             batches.push(batch);
         }
         prewarm::plan(&batches)

@@ -8524,3 +8524,27 @@ def test_remote_prewarm_preview_rejects_incompatible_payload_without_retry(paylo
         with pytest.raises(Exception, match="valid structured preview"):
             table.explain_prewarm_data()
     assert len(server.tickets) == 1
+
+
+def test_remote_prewarm_preview_reports_old_server_format_support():
+    flight = pytest.importorskip("pyarrow.flight")
+
+    class OldServer(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.tickets = []
+
+        def do_get(self, context, ticket):
+            self.tickets.append(ticket.ticket)
+            raise flight.FlightInternalError(
+                "Invalid explain format. Expected 'indent', 'tree', 'pgjson' "
+                "or 'graphviz'. Got 'JSON'"
+            )
+
+    server = OldServer()
+    with _mock_remote_table_with_sql(server) as table:
+        with pytest.raises(
+            NotImplementedError, match=r"EXPLAIN \(FORMAT JSON\) PREWARM"
+        ):
+            table.explain_prewarm_data()
+    assert len(server.tickets) == 1
