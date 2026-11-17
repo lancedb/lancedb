@@ -647,7 +647,31 @@ impl Table {
         &self,
         source_version: Option<i64>,
         full: Option<bool>,
+        resources: Option<MaterializedViewResourceOptions>,
     ) -> napi::Result<RefreshMaterializedViewResult> {
+        let resources = resources.unwrap_or_default();
+        let cpu_millis = resources
+            .cpu_millis
+            .map(|value| positive_safe_integer(value, "cpuMillis"))
+            .transpose()?;
+        let memory_bytes = resources
+            .memory_bytes
+            .map(|value| positive_safe_integer(value, "memoryBytes"))
+            .transpose()?;
+        let gpu_count = resources
+            .gpu_count
+            .map(|value| {
+                if !value.is_finite()
+                    || value.fract() != 0.0
+                    || !(0.0..=u32::MAX as f64).contains(&value)
+                {
+                    return Err(napi::Error::from_reason(
+                        "gpuCount must be an integer between 0 and 4294967295",
+                    ));
+                }
+                Ok(value as u32)
+            })
+            .transpose()?;
         let view = lancedb::MaterializedView::from_table(self.inner_ref()?.clone())
             .await
             .default_error()?;
@@ -657,6 +681,18 @@ impl Table {
                 napi::Error::from_reason("sourceVersion must be a non-negative integer")
             })?;
             builder = builder.source_version(version);
+        }
+        if let Some(cpu_millis) = cpu_millis {
+            builder = builder.cpu_millis(cpu_millis);
+        }
+        if let Some(memory_bytes) = memory_bytes {
+            builder = builder.memory_bytes(memory_bytes);
+        }
+        if let Some(gpu_count) = gpu_count {
+            builder = builder.gpu_count(gpu_count);
+        }
+        if let Some(gpu_class) = resources.gpu_class {
+            builder = builder.gpu_class(gpu_class);
         }
         let result = builder.execute().await.default_error()?;
         Ok(result.into())
@@ -1693,6 +1729,28 @@ pub struct FunctionErrorsOptions {
     pub column: Option<String>,
     /// At most this many records (server default 10000, cap 100000).
     pub limit: Option<i64>,
+}
+
+/// Per-execution resource limits for a materialized-view refresh.
+/// Requires a supporting Enterprise server. Embedded refreshes reject these
+/// settings. CPU or memory requires all three budget fields; omitting every
+/// field preserves existing defaults.
+#[napi(object)]
+#[derive(Clone, Debug, Default)]
+pub struct MaterializedViewResourceOptions {
+    /// Aggregate CPU capacity in millicores (1000 = one CPU), as a positive
+    /// safe integer. Requires memoryBytes and gpuCount.
+    pub cpu_millis: Option<f64>,
+    /// Aggregate memory cap in bytes, as a positive safe integer.
+    /// Requires cpuMillis and gpuCount.
+    pub memory_bytes: Option<f64>,
+    /// Maximum concurrent GPUs across the refresh, from 0 to 4294967295.
+    /// Zero requests CPU-only execution and cannot be combined with gpuClass.
+    pub gpu_count: Option<f64>,
+    /// Operator-configured GPU class for this execution. Use a lowercase
+    /// DNS label of at most 63 characters (letters, digits, and interior
+    /// hyphens). May be specified without an explicit GPU budget.
+    pub gpu_class: Option<String>,
 }
 
 /// Aggregate worker resources for one Enterprise Function refresh.

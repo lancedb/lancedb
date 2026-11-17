@@ -133,6 +133,7 @@
 - [RTEWriteSpec](interfaces/RTEWriteSpec.md)
 - [RefreshColumnOptions](interfaces/RefreshColumnOptions.md)
 - [RefreshColumnResult](interfaces/RefreshColumnResult.md)
+- [RefreshMaterializedViewOptions](interfaces/RefreshMaterializedViewOptions.md)
 - [RefreshMaterializedViewResult](interfaces/RefreshMaterializedViewResult.md)
 - [RemovalStats](interfaces/RemovalStats.md)
 - [RenameTableOptions](interfaces/RenameTableOptions.md)

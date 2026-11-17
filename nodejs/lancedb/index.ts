@@ -25,6 +25,7 @@ export {
   MaterializedView,
   MaterializedViewDefinition,
   MaterializedViewSelect,
+  RefreshMaterializedViewOptions,
 } from "./materialized_view";
 export { ViewDescription } from "./view";
 export { JsHeaderProvider as NativeJsHeaderProvider } from "./native.js";

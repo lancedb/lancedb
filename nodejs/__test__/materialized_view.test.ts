@@ -3,13 +3,21 @@
 
 import * as tmp from "tmp";
 
-import { Connection, connect } from "../lancedb";
+import {
+  Connection,
+  RefreshMaterializedViewOptions,
+  connect,
+} from "../lancedb";
+import { Field, Schema, Utf8 } from "../lancedb/arrow";
 import {
   DEFINITION_META_KEY,
   MaterializedView,
   definitionFromMetadata,
 } from "../lancedb/materialized_view";
-import { experimentalFunctionsEnabled } from "../lancedb/native";
+import {
+  Table as NativeTable,
+  experimentalFunctionsEnabled,
+} from "../lancedb/native";
 
 describe("materialized views", () => {
   const experimentalTest = experimentalFunctionsEnabled() ? it : it.skip;
@@ -114,15 +122,125 @@ describe("materialized views", () => {
     },
   );
 
-  it("forwards a forced refresh and preserves absent remote metrics", async () => {
+  it("forwards refresh options to native and preserves absent remote metrics", async () => {
     const view = new MaterializedView(await db.openTable("people"));
     const remoteResult = { version: 42 };
     const refresh = jest
-      .spyOn(view.table(), "refreshMaterializedView")
+      .spyOn(NativeTable.prototype, "refreshMaterializedView")
       .mockResolvedValue(remoteResult);
-    expect(await view.refresh({ full: true })).toEqual(remoteResult);
-    expect(refresh).toHaveBeenCalledWith(undefined, true);
+    try {
+      for (const options of [
+        undefined,
+        {},
+        { full: true },
+        { sourceVersion: 3 },
+        { gpuCount: 0 },
+        { gpuClass: "h100" },
+        {
+          full: true,
+          cpuMillis: 8000,
+          memoryBytes: 16 * 1024 ** 3,
+          gpuCount: 2,
+          gpuClass: "h100",
+        },
+      ] satisfies (RefreshMaterializedViewOptions | undefined)[]) {
+        expect(await view.refresh(options)).toEqual(remoteResult);
+        expect(refresh).toHaveBeenLastCalledWith(
+          options?.sourceVersion,
+          options?.full,
+          options,
+        );
+      }
+    } finally {
+      refresh.mockRestore();
+    }
   });
+
+  it("rejects resource numbers before N-API can truncate or wrap them", async () => {
+    const view = new MaterializedView(await db.openTable("people"));
+    for (const field of ["cpuMillis", "memoryBytes"] as const) {
+      for (const value of [0, -1, 1.5, NaN, Infinity, 2 ** 53]) {
+        await expect(view.refresh({ [field]: value })).rejects.toThrow(
+          `${field} must be a positive safe integer`,
+        );
+      }
+    }
+    for (const gpuCount of [-1, 0.5, NaN, Infinity, 2 ** 32, 2 ** 53]) {
+      await expect(view.refresh({ gpuCount })).rejects.toThrow(
+        "gpuCount must be an integer between 0 and 4294967295",
+      );
+    }
+  });
+
+  it("validates budget combinations and GPU classes through native", async () => {
+    const view = await storedView();
+    for (const options of [
+      { cpuMillis: 1000 },
+      { memoryBytes: 1024 },
+      { cpuMillis: 1000, memoryBytes: 1024 },
+      { cpuMillis: 1000, gpuCount: 1 },
+      { memoryBytes: 1024, gpuCount: 1 },
+    ]) {
+      await expect(view.refresh(options)).rejects.toThrow(
+        "cpu_millis, memory_bytes, and gpu_count must be specified together",
+      );
+    }
+    for (const gpuClass of [
+      "",
+      "H100",
+      "h100:2",
+      "h_100",
+      "-h100",
+      "h100-",
+      "a".repeat(64),
+    ]) {
+      await expect(view.refresh({ gpuClass })).rejects.toThrow(/gpu_class/);
+    }
+    await expect(
+      view.refresh({ gpuCount: 0, gpuClass: "h100" }),
+    ).rejects.toThrow("gpu_class requires a positive GPU budget");
+  });
+
+  it("rejects valid resource settings on Embedded without changing the view", async () => {
+    const view = await storedView();
+    const version = await view.table().version();
+    for (const options of [
+      { gpuCount: 0 },
+      { gpuCount: 1 },
+      { gpuClass: "h100" },
+      { cpuMillis: 1000, memoryBytes: 1024, gpuCount: 0 },
+      {
+        cpuMillis: Number.MAX_SAFE_INTEGER,
+        memoryBytes: Number.MAX_SAFE_INTEGER,
+        gpuCount: 2 ** 32 - 1,
+        gpuClass: "a".repeat(63),
+      },
+    ]) {
+      await expect(view.refresh(options)).rejects.toThrow(
+        "resource budgets and GPU placement require an Enterprise materialized-view refresh",
+      );
+    }
+    expect(await view.table().version()).toBe(version);
+    expect(await view.table().countRows()).toBe(0);
+  });
+
+  // Existing views remain readable without enabling experimental local
+  // execution. Construct their stored metadata to test the default build too.
+  async function storedView(): Promise<MaterializedView> {
+    const table = await db.createEmptyTable(
+      "stored_view",
+      new Schema(
+        [new Field("name", new Utf8(), true)],
+        new Map([
+          [
+            DEFINITION_META_KEY,
+            JSON.stringify({ format: 1, query: "SELECT name FROM people" }),
+          ],
+        ]),
+      ),
+    );
+    return new MaterializedView(table);
+  }
 
   experimentalTest("lists views and rejects non-views", async () => {
     await db.createMaterializedView("adults", "people", {

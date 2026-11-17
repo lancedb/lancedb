@@ -193,15 +193,66 @@ export class MaterializedView {
    * source version instead of the latest. Remote SQL refreshes do not support
    * source-version pinning. Their results leave `mode`, `rowsWritten`, and
    * `sourceVersion` absent because the SQL job adapter does not expose these metrics.
+   *
+   * Resource budgets and GPU placement require a supporting Enterprise server
+   * with an isolated execution backend. Embedded refreshes reject these options.
+   * Budgets apply to the entire execution, not individual Functions or workers,
+   * and do not increase refresh parallelism. Omit them to preserve defaults.
+   *
+   * @example
+   * ```ts
+   * await view.refresh({
+   *   cpuMillis: 8000,
+   *   memoryBytes: 16 * 1024 ** 3,
+   *   gpuCount: 2,
+   *   gpuClass: "h100",
+   * });
+   * ```
    */
-  async refresh(options?: {
-    full?: boolean;
-    sourceVersion?: number;
-  }): Promise<RefreshMaterializedViewResult> {
+  async refresh(
+    options?: RefreshMaterializedViewOptions,
+  ): Promise<RefreshMaterializedViewResult> {
     validateNonNegativeInteger(options?.sourceVersion, "sourceVersion");
     return await this.inner.refreshMaterializedView(
       options?.sourceVersion,
       options?.full,
+      options,
     );
   }
+}
+
+/**
+ * Options for {@link MaterializedView.refresh}.
+ *
+ * CPU or memory requires all three budget fields, including an explicit
+ * `gpuCount` (zero for CPU-only execution). A GPU-only cap or class-only
+ * placement is also supported. Resource settings require Enterprise support
+ * and are rejected by Embedded refreshes.
+ */
+export interface RefreshMaterializedViewOptions {
+  /** Force a remote rebuild. Defaults to false; Embedded always rebuilds. */
+  full?: boolean;
+  /** Pin the source version for an Embedded refresh. Unsupported remotely. */
+  sourceVersion?: number;
+  /**
+   * Aggregate CPU capacity in millicores (1000 = one CPU), as a positive
+   * safe integer. Requires memoryBytes and gpuCount.
+   */
+  cpuMillis?: number;
+  /**
+   * Aggregate memory cap in bytes, as a positive safe integer.
+   * Requires cpuMillis and gpuCount.
+   */
+  memoryBytes?: number;
+  /**
+   * Maximum concurrent GPUs across the refresh, from 0 to 4294967295.
+   * Zero requests CPU-only execution and cannot be combined with gpuClass.
+   */
+  gpuCount?: number;
+  /**
+   * Operator-configured GPU class for this execution. Use a lowercase
+   * DNS label of at most 63 characters (letters, digits, and interior
+   * hyphens). May be specified without an explicit GPU budget.
+   */
+  gpuClass?: string;
 }
