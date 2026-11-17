@@ -28,6 +28,10 @@
   "favicon": "/static/favicon.ico",
   "redirects": [
     {
+      "source": "/ingestion/migrate-from-embedded",
+      "destination": "/ingestion/attach-database"
+    },
+    {
       "source": "/enterprise/expected-performance",
       "destination": "/search/vector-search#expected-performance"
     },
@@ -414,7 +418,7 @@
               "ingestion/delete",
               "ingestion/realtime-write",
               "ingestion/define-storage-integration",
-              "ingestion/migrate-from-embedded",
+              "ingestion/attach-database",
               "ingestion/import",
               "enterprise/distributed-write",
               "enterprise/distributed-real-time-write"
