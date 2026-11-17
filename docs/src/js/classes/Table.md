@@ -305,6 +305,40 @@ It is a no-op when no writers are cached.
 
 ***
 
+### compactAsync()
+
+```ts
+compactAsync(_options?): Promise<Job<CompactionResult>>
+```
+
+Submit remote compaction and return its durable job after acceptance.
+
+Uses SQL OPTIMIZE, inheriting branch and namespace from this table. Requires
+a compatible remote server and table Ownership plus parent Usage. Local and
+historical-version handles are unsupported. Existing optimize() behavior is unchanged.
+Waiting tracks the rewrite itself and returns actual row/file statistics.
+Missing result payloads are errors; older workers can omit file counts.
+Status, progress, events and cancellation reuse the generic HTTP job APIs.
+Reopen with db.openJob<CompactionResult>(job.id!). A wait timeout does not cancel work.
+
+#### Parameters
+
+* **\_options?**: [`CompactionOptions`](../interfaces/CompactionOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&lt;[`CompactionResult`](../interfaces/CompactionResult.md)&gt;&gt;
+
+#### Example
+
+```ts
+const job = await table.compactAsync({ targetRowsPerFragment: 1000 });
+const result = await job.wait();
+console.log(result.rowsSucceeded, result.fragmentsRemoved);
+```
+
+***
+
 ### compactRTE()
 
 ```ts
@@ -423,7 +457,7 @@ await table.createIndex("my_float_col");
 ### createIndexAsync()
 
 ```ts
-abstract createIndexAsync(column, options?): Promise<Job>
+abstract createIndexAsync(column, options?): Promise<Job<void>>
 ```
 
 Create an index, returning a handle to the indexing job.
@@ -444,7 +478,7 @@ account for the replacement caveat described in [Table.createIndex](Table.md#cre
 
 #### Returns
 
-`Promise`&lt;[`Job`](Job.md)&gt;
+`Promise`&lt;[`Job`](Job.md)&lt;`void`&gt;&gt;
 
 ***
 
@@ -1047,29 +1081,98 @@ retrying with the settings removed.
 
 ### prewarmData()
 
+#### prewarmData(options)
+
 ```ts
-abstract prewarmData(columns?): Promise<void>
+abstract prewarmData(options?): Promise<void>
 ```
 
 Prewarm one or more columns of data in the table.
 
-#### Parameters
+This will load the column data into the page cache so that future queries that
+read those columns avoid the initial cold-start latency.  This call initiates
+prewarming and returns once the request is accepted; the warming itself may
+continue in the background. Submission uses SQL PREWARM and needs Flight
+SQL connectivity. Use [prewarmDataAsync](Table.md#prewarmdataasync) to retain the job handle.
+
+Prewarming is generally useful for columns used in filters or projections.
+Large columns (e.g. high-dimensional vectors or binary data) may not be
+practical to prewarm.
+
+This feature is currently only supported in LanceDB Enterprise.
+
+##### Parameters
+
+* **options?**: [`PrewarmDataOptions`](../interfaces/PrewarmDataOptions.md)
+    Columns, a metadata-pruning filter, and per-executor concurrency.
+    Omitted or empty columns warm every column.
+
+##### Returns
+
+`Promise`&lt;`void`&gt;
+
+##### Example
+
+```ts
+await table.prewarmData({
+  columns: ["payload"], filter: "quality > 0.7", concurrency: 4,
+});
+```
+
+#### prewarmData(columns)
+
+```ts
+abstract prewarmData(columns?): Promise<void>
+```
+
+Submit data prewarm using the columns-array form and return after acceptance.
+
+##### Parameters
 
 * **columns?**: `string`[]
-    The columns to prewarm. If undefined, all columns are prewarmed.
-    This will load the column data into the page cache so that future queries that
-    read those columns avoid the initial cold-start latency.  This call initiates
-    prewarming and returns once the request is accepted; the warming itself may
-    continue in the background.  Calling it on already-prewarmed columns is a
-    no-op on the server.
-    Prewarming is generally useful for columns used in filters or projections.
-    Large columns (e.g. high-dimensional vectors or binary data) may not be
-    practical to prewarm.
-    This feature is currently only supported in LanceDB Enterprise.
+    Columns to warm; omitted or empty means every column.
+
+##### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
+### prewarmDataAsync()
+
+```ts
+abstract prewarmDataAsync(options?): Promise<Job<PrewarmDataResult>>
+```
+
+Submit data prewarm through SQL and return its durable warming-job handle.
+
+The table handle supplies the branch and namespace. Requires a compatible
+SQL PREWARM server and Flight SQL connectivity. Standard authorization
+requires table Select and database/namespace Usage. Status/wait use generic
+HTTP job APIs; events and cancellation retain their own privileges.
+No REST fallback or option-dropping retry is performed. Historical-version
+handles are unsupported; call `checkoutLatest()` first.
+
+Submission returns after acceptance. Use `job.wait()` for completion, or
+save `job.id` and reopen it with `db.openJob(id)`. A timeout does not cancel
+the job. After `job.refresh()`, `job.spec.table_version` is the pinned version.
+
+#### Parameters
+
+* **options?**: [`PrewarmDataOptions`](../interfaces/PrewarmDataOptions.md)
 
 #### Returns
 
-`Promise`&lt;`void`&gt;
+`Promise`&lt;[`Job`](Job.md)&lt;[`PrewarmDataResult`](../interfaces/PrewarmDataResult.md)&gt;&gt;
+
+#### Example
+
+```ts
+const job = await table.prewarmDataAsync({
+  columns: ["video"], filter: "quality > 0.7", concurrency: 4,
+});
+await job.wait();
+```
 
 ***
 
@@ -1200,7 +1303,7 @@ number of rows filled and the new version number of the table.
 ### refreshColumnAsync()
 
 ```ts
-abstract refreshColumnAsync(column, options?): Promise<Job>
+abstract refreshColumnAsync(column, options?): Promise<Job<void>>
 ```
 
 Like [Table#refreshColumn](Table.md#refreshcolumn), but returns a handle to the refresh
@@ -1253,7 +1356,7 @@ LanceDB Enterprise it is the server's backfill job.
 
 #### Returns
 
-`Promise`&lt;[`Job`](Job.md)&gt;
+`Promise`&lt;[`Job`](Job.md)&lt;`void`&gt;&gt;
 
 #### Example
 

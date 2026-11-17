@@ -4678,15 +4678,94 @@ describe.each(arrowVersions)(
       ];
       const table = await db.createTable("prewarm_data_test", data);
 
-      // prewarmData is only supported in LanceDB Enterprise. We verify the call
-      // is wired through napi and surfaces the expected error for both
-      // arg shapes (undefined and string[]).
       await expect(table.prewarmData()).rejects.toThrow(
-        "prewarm_data is currently only supported in LanceDB Enterprise",
+        "only supported on remote tables",
       );
       await expect(table.prewarmData(["text"])).rejects.toThrow(
-        "prewarm_data is currently only supported in LanceDB Enterprise",
+        "only supported on remote tables",
       );
+      await expect(
+        table.prewarmData({
+          columns: ["text"],
+          filter: "text = 'alpha'",
+          concurrency: 2,
+        }),
+      ).rejects.toThrow("only supported on remote tables");
+    });
+
+    test("prewarmData preserves argument forms and returns after submission", async () => {
+      const db = await connect(tmpDir.name);
+      const table = await db.createTable("prewarm_submission", [{ id: 1 }]);
+      const wait = jest.fn();
+      const submit = jest
+        .spyOn(table, "prewarmDataAsync")
+        .mockResolvedValue({ wait } as unknown as Awaited<
+          ReturnType<Table["prewarmDataAsync"]>
+        >);
+      const options = { columns: ["id"], filter: "id > 0", concurrency: 2 };
+      try {
+        await expect(table.prewarmData(options)).resolves.toBeUndefined();
+        expect(submit).toHaveBeenLastCalledWith(options);
+        await expect(table.prewarmData(["id"])).resolves.toBeUndefined();
+        expect(submit).toHaveBeenLastCalledWith({ columns: ["id"] });
+        await expect(table.prewarmData([])).resolves.toBeUndefined();
+        expect(submit).toHaveBeenLastCalledWith({ columns: [] });
+        await expect(table.prewarmData()).resolves.toBeUndefined();
+        expect(submit).toHaveBeenLastCalledWith(undefined);
+        expect(wait).not.toHaveBeenCalled();
+      } finally {
+        submit.mockRestore();
+      }
+    });
+
+    test("prewarmData validates options before submission", async () => {
+      const db = await connect(tmpDir.name);
+      const table = await db.createTable("prewarm_options", [{ id: 1 }]);
+      await expect(
+        table.prewarmData({ unsupported: 1 } as never),
+      ).rejects.toThrow("Unsupported data prewarm option: unsupported");
+      for (const concurrency of [
+        0,
+        -1,
+        1.5,
+        Number.NaN,
+        Number.POSITIVE_INFINITY,
+        4294967296,
+      ]) {
+        await expect(table.prewarmData({ concurrency })).rejects.toThrow(
+          "concurrency must be an integer",
+        );
+      }
+    });
+
+    test("prewarmDataAsync validates options and rejects local tables", async () => {
+      const db = await connect(tmpDir.name);
+      const table = await db.createTable("prewarm_job", [{ id: 1 }]);
+      await expect(table.prewarmDataAsync()).rejects.toThrow(
+        "only supported on remote tables",
+      );
+      await expect(
+        table.prewarmDataAsync({
+          columns: ["id"],
+          filter: "id > 0",
+          concurrency: 2,
+        }),
+      ).rejects.toThrow("only supported on remote tables");
+      await expect(
+        table.prewarmDataAsync({ unsupported: 1 } as never),
+      ).rejects.toThrow("Unsupported data prewarm option: unsupported");
+      for (const concurrency of [
+        0,
+        -1,
+        1.5,
+        Number.NaN,
+        Number.POSITIVE_INFINITY,
+        4294967296,
+      ]) {
+        await expect(table.prewarmDataAsync({ concurrency })).rejects.toThrow(
+          "concurrency must be an integer",
+        );
+      }
     });
 
     test("full text index on list", async () => {
@@ -5789,5 +5868,21 @@ describe("computed columns", () => {
 
     const rows = await table.query().toArray();
     expect(rows.map((r) => r.doubled).sort()).toEqual([10, 2]);
+  });
+});
+
+describe("durable compaction validation", () => {
+  test("rejects local tables and unknown options", async () => {
+    const db = await connect(`memory://compaction-job-${Date.now()}`);
+    const table = await db.createTable("test", [{ id: 1 }]);
+    await expect(table.compactAsync()).rejects.toThrow(
+      "only supported on remote tables",
+    );
+    await expect(
+      table.compactAsync({ unrecognizedLimit: 1 } as never),
+    ).rejects.toThrow("Unsupported compaction option");
+    await expect(
+      table.compactAsync({ targetRowsPerFragment: 0 }),
+    ).rejects.toThrow("safe integer");
   });
 });

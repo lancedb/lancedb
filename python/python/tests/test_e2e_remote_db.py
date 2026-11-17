@@ -11,9 +11,137 @@ import numpy as np
 import pyarrow as pa
 import pytest
 from lancedb import LanceDBConnection, function
+from lancedb.compaction import CompactionResult
 from lancedb.index import FTS
+from lancedb.prewarm import PrewarmDataResult
 
 # TODO: setup integ test mark and script
+
+
+@pytest.fixture
+def maintenance_connection_options():
+    uri = os.environ.get("LANCEDB_URI")
+    if not uri:
+        pytest.skip(
+            "Set LANCEDB_URI to a server supporting SQL maintenance job results"
+        )
+    assert uri.startswith("db://")
+    return {
+        "uri": uri,
+        "api_key": os.environ.get("LANCEDB_API_KEY"),
+        "region": os.environ.get("LANCEDB_REGION", "us-east-1"),
+        "host_override": os.environ.get("LANCEDB_HOST_OVERRIDE"),
+        "sql_host_override": os.environ.get("LANCEDB_SQL_HOST_OVERRIDE"),
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("operation", ["compact", "prewarm", "prewarm_legacy"])
+async def test_maintenance_job_result_and_reopen_against_server(
+    maintenance_connection_options, asynchronous, operation
+):
+    """Exercise real SQL receipts, workers and HTTP job results with matching versions.
+
+    Configure LANCEDB_URI, LANCEDB_API_KEY and the REST/Flight SQL endpoint
+    overrides for a writable database. Workers must publish maintenance results;
+    an unsupported server fails the contract rather than silently skipping it.
+    """
+    if asynchronous:
+        connection = await lancedb.connect_async(**maintenance_connection_options)
+    else:
+        connection = lancedb.connect(**maintenance_connection_options)
+
+    async def call(method, *args, **kwargs):
+        result = method(*args, **kwargs)
+        return await result if asynchronous else result
+
+    name = f"maintenance_{uuid4().hex}"
+    created = False
+    expected = [{"id": i, "payload": i * 10} for i in range(16)]
+    timeout = timedelta(minutes=5)
+    try:
+        table = await call(
+            connection.create_table, name, pa.Table.from_pylist(expected[:4])
+        )
+        created = True
+        for start in (4, 8, 12):
+            await call(table.add, pa.Table.from_pylist(expected[start : start + 4]))
+        version = await table.version() if asynchronous else table.version
+        if operation == "compact":
+            job = await call(
+                table.compact_async,
+                compaction_options={
+                    "target_rows_per_fragment": 100,
+                    "batch_size": 128,
+                    "io_buffer_size": 0,
+                },
+            )
+        elif operation == "prewarm_legacy":
+            assert (
+                await call(
+                    table.prewarm_data,
+                    ["payload"],
+                    filter="id >= 8",
+                    concurrency=2,
+                )
+                is None
+            )
+            reader = await call(
+                connection.execute_query, f'SHOW JOBS FOR TABLE "{name}"'
+            )
+            batches = await call(reader.read_all)
+            jobs = pa.Table.from_batches(batches) if asynchronous else batches
+            ids = [
+                row["job_id"]
+                for row in jobs.to_pylist()
+                if row["job_type"] == "prewarm_page_cache"
+            ]
+            assert len(ids) == 1, jobs.to_pylist()
+            job = await call(connection.open_job, ids[0])
+        else:
+            job = await call(
+                table.prewarm_data_async,
+                ["payload"],
+                filter="id >= 8",
+                concurrency=2,
+            )
+        assert job.id
+        progress = []
+        result = await call(job.wait, timeout=timeout, progress=progress.append)
+        assert any(snapshot["state"] == "finished" for snapshot in progress)
+        await call(job.refresh)
+        assert await call(job.status) == "finished"
+        if operation == "compact":
+            assert isinstance(result, CompactionResult)
+            assert job.job_type == "compact"
+            assert not result.partial_commit and result.rows_failed == 0
+            assert result.completion_percentage == 100
+            assert 0 <= result.rows_succeeded <= len(expected)
+            assert result.files_added is not None and result.files_removed is not None
+        else:
+            assert isinstance(result, PrewarmDataResult)
+            assert job.job_type == "prewarm_page_cache"
+            assert result.table_version == version == job.spec["table_version"]
+            assert job.spec["columns"] == ["payload"]
+            assert job.spec["concurrency"] == 2
+            assert result.fragments_selected > 0
+            assert result.executors_completed == result.executors_targeted
+            assert result.executors_partial == 0
+            assert result.bytes_read is None and result.ranges_completed is None
+        reopened = await call(connection.open_job, job.id)
+        assert await call(reopened.wait, timeout=timeout) == result
+        query = table.query() if asynchronous else table.search()
+        actual = await call(
+            query.select(["id", "payload"]).limit(len(expected) + 1).to_arrow
+        )
+        assert sorted(actual.to_pylist(), key=lambda row: row["id"]) == expected
+    finally:
+        try:
+            if created:
+                await call(connection.drop_table, name)
+        finally:
+            connection.close()
 
 
 @pytest.mark.skipif(

@@ -7408,10 +7408,10 @@ def _create_table_handler(request):
 
 
 @contextlib.contextmanager
-def _mock_remote_sql_connection(flight_server):
+def _mock_remote_sql_connection(flight_server, handler=_create_table_handler):
     """Connection arguments for mock REST and Flight SQL servers."""
     with http.server.ThreadingHTTPServer(
-        ("127.0.0.1", 0), make_mock_http_handler(_create_table_handler)
+        ("127.0.0.1", 0), make_mock_http_handler(handler)
     ) as rest_server:
         rest_port = rest_server.server_address[1]
         handle = start_server_thread(rest_server)
@@ -8054,3 +8054,373 @@ def test_exact_function_retries_fail_before_writing_to_older_servers():
         with pytest.raises(NotImplementedError, match="server does not support"):
             table.function_errors().summary()
     assert writes == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("mode", ["job", "columns", "filtered", "defaults"])
+async def test_remote_data_prewarm_sql_receipt_and_durable_job(asynchronous, mode):
+    flight = pytest.importorskip("pyarrow.flight")
+    polls = []
+
+    class PrewarmServer(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.tickets = []
+
+        def do_get(self, context, ticket):
+            self.tickets.append(ticket.ticket)
+            return flight.RecordBatchStream(
+                pa.table(
+                    {
+                        "job_id": ["warming-job"],
+                        "table_version": pa.array([42], pa.uint64()),
+                    }
+                )
+            )
+
+    def handler(request):
+        if request.path == "/v1/jobs/describe":
+            body = json.loads(
+                request.rfile.read(int(request.headers["Content-Length"]))
+            )
+            assert body == {"job_id": "warming-job"}
+            polls.append(body)
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                json.dumps(
+                    {
+                        "job_id": "warming-job",
+                        "job_type": "prewarm_page_cache",
+                        "job_state": "DONE",
+                        "creation_ms": 1,
+                        "spec": {"table_version": 42},
+                        "result": {
+                            "table_version": 42,
+                            "executors_targeted": 2,
+                            "executors_completed": 2,
+                            "fragments_selected": 4,
+                        },
+                        "operation_progress": {
+                            "phase": "reading",
+                            "executors_completed": 2,
+                            "fragments_selected": 4,
+                        },
+                    }
+                ).encode()
+            )
+        else:
+            # No operation-specific REST prewarm endpoint is accepted.
+            _create_table_handler(request)
+
+    server = PrewarmServer()
+    with _mock_remote_sql_connection(server, handler) as kwargs:
+        if asynchronous:
+            db = await lancedb.connect_async(**kwargs)
+            table = await db.create_table("test", [{"id": 1}])
+            if mode == "columns":
+                assert await table.prewarm_data(["payload"]) is None
+            elif mode == "filtered":
+                assert (
+                    await table.prewarm_data(
+                        columns=["attrs.score"], filter="id >= 8", concurrency=4
+                    )
+                    is None
+                )
+            elif mode == "defaults":
+                assert await table.prewarm_data() is None
+            else:
+                job = await table.prewarm_data_async(
+                    ["attrs.score"], filter="id >= 8", concurrency=4
+                )
+                assert job.id == "warming-job"
+                assert not polls
+                assert (await job.wait()).table_version == 42
+                await job.refresh()
+                assert job.spec["table_version"] == 42
+                reopened = await db.open_job(job.id)
+                assert (await reopened.wait()).executors_completed == 2
+                assert (await job.progress())["executors_completed"] == 2
+                assert (await job.wait()).bytes_read is None
+        else:
+            db = lancedb.connect(**kwargs)
+            table = db.create_table("test", [{"id": 1}])
+            if mode == "columns":
+                assert table.prewarm_data(["payload"]) is None
+            elif mode == "filtered":
+                assert (
+                    table.prewarm_data(
+                        columns=["attrs.score"], filter="id >= 8", concurrency=4
+                    )
+                    is None
+                )
+            elif mode == "defaults":
+                assert table.prewarm_data() is None
+            else:
+                job = table.prewarm_data_async(
+                    ["attrs.score"], filter="id >= 8", concurrency=4
+                )
+                assert job.id == "warming-job"
+                assert not polls
+                assert job.wait().table_version == 42
+                job.refresh()
+                assert job.spec["table_version"] == 42
+                assert db.open_job(job.id).wait().executors_completed == 2
+                assert job.progress()["executors_completed"] == 2
+                assert job.wait().bytes_read is None
+    assert len(server.tickets) == 1
+    assert b"PREWARM" in server.tickets[0]
+    if mode != "job":
+        assert not polls
+    if mode == "columns":
+        assert b'"payload"' in server.tickets[0]
+    elif mode == "defaults":
+        assert b"SELECT *" in server.tickets[0]
+    else:
+        assert b'"attrs"."score"' in server.tickets[0]
+        assert b"concurrency = 4" in server.tickets[0]
+        assert b"id >= 8" in server.tickets[0]
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"filter": ""},
+        {"filter": "id > 0; DROP TABLE test"},
+        {"filter": "id > 0 LIMIT 1"},
+        {"concurrency": 0},
+        {"concurrency": -1},
+        {"concurrency": 2**32},
+        {"concurrency": True},
+        {"concurrency": 1.5},
+    ],
+)
+@pytest.mark.parametrize("method", ["prewarm_data", "prewarm_data_async"])
+def test_remote_data_prewarm_validates_before_submission(options, method):
+    flight = pytest.importorskip("pyarrow.flight")
+
+    class UnusedServer(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.tickets = []
+
+        def do_get(self, context, ticket):
+            self.tickets.append(ticket.ticket)
+            raise AssertionError("invalid options must not submit SQL")
+
+    server = UnusedServer()
+    with _mock_remote_table_with_sql(server) as table:
+        with pytest.raises(ValueError):
+            getattr(table, method)(**options)
+    assert not server.tickets
+
+
+def test_remote_data_prewarm_malformed_receipt_is_not_retried():
+    flight = pytest.importorskip("pyarrow.flight")
+
+    class MalformedServer(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.tickets = []
+
+        def do_get(self, context, ticket):
+            self.tickets.append(ticket.ticket)
+            return flight.RecordBatchStream(pa.table({"job_id": ["warming-job"]}))
+
+    server = MalformedServer()
+    with _mock_remote_table_with_sql(server) as table:
+        with pytest.raises(Exception, match="inspect jobs before retrying"):
+            table.prewarm_data_async()
+    assert len(server.tickets) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        "counts",
+        "legacy",
+        "partial",
+        "bounded",
+        "no_op",
+        "missing",
+        "FAILED",
+        "CANCELLED",
+    ],
+)
+async def test_remote_compaction_job_result_and_reopen(asynchronous, outcome):
+    flight = pytest.importorskip("pyarrow.flight")
+    polls = []
+    result = {
+        "partial_commit": False,
+        "rows_succeeded": 12,
+        "rows_failed": 0,
+        "completion_percentage": 100.0,
+    }
+    if outcome == "counts":
+        result.update(
+            files_added=1, files_removed=3, fragments_added=1, fragments_removed=3
+        )
+
+    if outcome == "partial":
+        result.update(
+            partial_commit=True,
+            rows_succeeded=8,
+            rows_failed=4,
+            completion_percentage=100 * 8 / 12,
+        )
+    if outcome == "bounded":
+        result.update(more_work=True)
+    if outcome == "no_op":
+        result.update(
+            rows_succeeded=0,
+            files_added=0,
+            files_removed=0,
+            fragments_added=0,
+            fragments_removed=0,
+        )
+
+    class Server(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.tickets = []
+
+        def do_get(self, context, ticket):
+            self.tickets.append(ticket.ticket)
+            return flight.RecordBatchStream(pa.table({"job_id": ["compacting-job"]}))
+
+    def handler(request):
+        if request.path != "/v1/jobs/describe":
+            return _create_table_handler(request)
+        body = json.loads(request.rfile.read(int(request.headers["Content-Length"])))
+        assert body == {"job_id": "compacting-job"}
+        polls.append(body)
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(
+            json.dumps(
+                {
+                    "job_id": "compacting-job",
+                    "job_type": "compact",
+                    "job_state": outcome
+                    if outcome in ("FAILED", "CANCELLED")
+                    else "DONE",
+                    "result": None if outcome == "missing" else result,
+                }
+            ).encode()
+        )
+
+    server = Server()
+    with _mock_remote_sql_connection(server, handler) as kwargs:
+        if asynchronous:
+            db = await lancedb.connect_async(**kwargs)
+            table = await db.create_table("test", [{"id": 1}])
+            job = await table.compact_async(
+                compaction_options={"target_rows_per_fragment": 100}
+            )
+            assert job.id == "compacting-job" and not polls
+            if outcome in ("missing", "FAILED", "CANCELLED"):
+                with pytest.raises(
+                    Exception,
+                    match={
+                        "missing": "did not contain a result",
+                        "FAILED": "failed",
+                        "CANCELLED": "cancel",
+                    }[outcome],
+                ):
+                    await job.wait()
+            else:
+                stats = await job.wait()
+                reopened = await db.open_job(job.id)
+                assert await reopened.wait() == stats
+        else:
+            db = lancedb.connect(**kwargs)
+            table = db.create_table("test", [{"id": 1}])
+            job = table.compact_async(
+                compaction_options={"target_rows_per_fragment": 100}
+            )
+            assert job.id == "compacting-job" and not polls
+            if outcome in ("missing", "FAILED", "CANCELLED"):
+                with pytest.raises(
+                    Exception,
+                    match={
+                        "missing": "did not contain a result",
+                        "FAILED": "failed",
+                        "CANCELLED": "cancel",
+                    }[outcome],
+                ):
+                    job.wait()
+            else:
+                stats = job.wait()
+                assert db.open_job(job.id).wait() == stats
+        if outcome in ("counts", "legacy", "partial", "bounded", "no_op"):
+            from lancedb.compaction import CompactionResult
+
+            assert isinstance(stats, CompactionResult)
+            assert stats.rows_succeeded == (
+                0 if outcome == "no_op" else 8 if outcome == "partial" else 12
+            )
+            assert stats.rows_failed == (4 if outcome == "partial" else 0)
+            assert stats.partial_commit == (outcome == "partial")
+            assert stats.more_work == (outcome == "bounded")
+            assert stats.fragments_removed == (
+                3 if outcome == "counts" else 0 if outcome == "no_op" else None
+            )
+    assert len(server.tickets) == 1
+    assert b"OPTIMIZE" in server.tickets[0]
+    assert b"target_rows_per_fragment = 100" in server.tickets[0]
+
+
+@pytest.mark.parametrize("ids", [[], [None], [""], ["a", "b"]])
+def test_remote_compaction_rejects_ambiguous_receipt_without_resubmission(ids):
+    flight = pytest.importorskip("pyarrow.flight")
+
+    class Server(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.calls = 0
+
+        def do_get(self, context, ticket):
+            self.calls += 1
+            return flight.RecordBatchStream(
+                pa.table({"job_id": pa.array(ids, pa.string())})
+            )
+
+    server = Server()
+    with _mock_remote_sql_connection(server) as kwargs:
+        db = lancedb.connect(**kwargs)
+        table = db.create_table("test", [{"id": 1}])
+        with pytest.raises(Exception, match="inspect jobs before retrying"):
+            table.compact_async()
+    assert server.calls == 1
+
+
+@pytest.mark.parametrize("method", ["compact_async", "optimize"])
+@pytest.mark.parametrize(
+    "option",
+    ["target_rows_per_fragment", "max_source_rows", "io_buffer_size", "batch_size"],
+)
+@pytest.mark.parametrize("value", [False, True])
+def test_remote_compaction_rejects_boolean_budgets_without_submitting(
+    method, option, value
+):
+    flight = pytest.importorskip("pyarrow.flight")
+
+    class UnusedServer(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.calls = 0
+
+        def do_get(self, context, ticket):
+            self.calls += 1
+            raise AssertionError("boolean compaction settings must not submit SQL")
+
+    server = UnusedServer()
+    with _mock_remote_table_with_sql(server) as table:
+        with pytest.raises(ValueError, match="must be an integer, not a bool"):
+            getattr(table, method)(compaction_options={option: value})
+    assert server.calls == 0

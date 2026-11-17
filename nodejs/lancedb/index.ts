@@ -118,7 +118,7 @@ export {
   Job,
   JobEventsOptions,
 } from "./job";
-export type { JobProgress, JobProgressCallback } from "./job";
+export type { JobProgress, JobProgressCallback, JobWaitOptions } from "./job";
 
 export {
   AutoQuery,
@@ -175,6 +175,7 @@ export {
   UpdateOptions,
   OptimizeOptions,
   CompactionOptions,
+  PrewarmDataOptions,
   Version,
   WriteProgress,
   FtsToken,
@@ -664,3 +665,7 @@ export {
 } from "./catalog";
 
 export { Listing, ListingOptions } from "./listing";
+
+export type { CompactionResult } from "./compaction";
+
+export type { PrewarmDataResult } from "./prewarm";

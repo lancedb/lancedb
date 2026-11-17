@@ -1072,3 +1072,95 @@ async def test_stack_propagates_errors_and_rejects_local_handles(sync):
             Job(None).stack("worker")
         else:
             await AsyncJob(None).stack("worker")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kind,planned_key,completed_key,unit",
+    [
+        ("compact", "rows_planned", "rows_rewritten", " rows"),
+        (
+            "prewarm_page_cache",
+            "executors_targeted",
+            "executors_completed",
+            " executors",
+        ),
+    ],
+)
+async def test_maintenance_progress_bar_uses_operation_counters_and_handles_retry(
+    monkeypatch, kind, planned_key, completed_key, unit
+):
+    tqdm_module = pytest.importorskip("tqdm.auto")
+
+    class Bar:
+        total = None
+        n = 0
+        unit = " rows"
+        closed = False
+
+        def update(self, delta):
+            self.n += delta
+
+        def close(self):
+            self.closed = True
+
+    bar = Bar()
+    monkeypatch.setattr(tqdm_module, "tqdm", lambda **kwargs: bar)
+
+    class MaintenanceJob:
+        id = "maintenance-job"
+        job_type = kind
+
+        async def wait(self, progress):
+            progress({"job_type": kind, "phase": "planning"})
+            assert bar.total is None
+            progress({"job_type": kind, planned_key: 4, completed_key: 2})
+            assert bar.n == 2
+            # Older responses can omit an epoch; revised observations still
+            # replace the previous attempt's displayed work.
+            progress({"job_type": kind, planned_key: 4, completed_key: 1})
+            assert bar.n == 1
+            progress({"job_type": kind, planned_key: 4, completed_key: 4})
+
+    assert await AsyncJob(MaintenanceJob()).wait(progress=True) is None
+    assert bar.n == 4
+    assert bar.total == 4
+    assert bar.unit == unit
+    assert bar.closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("known_empty", [False, True])
+async def test_prewarm_progress_bar_preserves_unknown_and_zero_totals(
+    monkeypatch, known_empty
+):
+    tqdm_module = pytest.importorskip("tqdm.auto")
+
+    class Bar:
+        total = None
+        n = 0
+        unit = " rows"
+
+        def update(self, delta):
+            self.n += delta
+
+        def close(self):
+            pass
+
+    bar = Bar()
+    monkeypatch.setattr(tqdm_module, "tqdm", lambda **kwargs: bar)
+
+    class PrewarmJob:
+        id = "prewarm-job"
+        job_type = "prewarm_page_cache"
+
+        async def wait(self, progress):
+            snapshot = {"job_type": self.job_type, "phase": "succeeded"}
+            if known_empty:
+                snapshot.update(executors_targeted=0, executors_completed=0)
+            progress(snapshot)
+
+    assert await AsyncJob(PrewarmJob()).wait(progress=True) is None
+    assert bar.n == 0
+    assert bar.total == (0 if known_empty else None)
+    assert bar.unit == " executors"

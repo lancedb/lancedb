@@ -48,7 +48,9 @@ from ._blob import (
 from .types import BlobMode
 from lancedb.arrow import peek_reader
 from lancedb.background_loop import LOOP, embedding_executor
+from lancedb.prewarm import PrewarmDataResult
 from lancedb.job import AsyncJob, Job, _typed_job
+from lancedb.compaction import CompactionResult
 from .dependencies import (
     _check_for_hugging_face,
     _check_for_lance,
@@ -2011,6 +2013,69 @@ class Table(ABC):
         """
         raise NotImplementedError("create_index is not supported for this table type")
 
+    def prewarm_data(
+        self,
+        columns: Optional[List[str]] = None,
+        *,
+        filter: Optional[str] = None,
+        concurrency: Optional[int] = None,
+    ) -> None:
+        """Submit remote data prewarm and return after acceptance.
+
+        Omitted or empty ``columns`` warm all fields. ``filter`` is a single
+        SQL predicate for conservative metadata pruning; ``concurrency`` is
+        a positive per-executor integer, or omitted for the server default.
+        The table handle supplies the namespace and branch. Requires a
+        compatible SQL PREWARM server and Flight SQL connectivity.
+
+        The operation continues in the background. Use
+        [prewarm_data_async][lancedb.table.Table.prewarm_data_async] to retain
+        the job handle and wait for completion.
+
+        Examples
+        --------
+        >>> table.prewarm_data(  # doctest: +SKIP
+        ...     ["payload"], filter="quality > 0.7", concurrency=4)
+        """
+        self.prewarm_data_async(columns, filter=filter, concurrency=concurrency)
+
+    def prewarm_data_async(
+        self,
+        columns: Optional[List[str]] = None,
+        *,
+        filter: Optional[str] = None,
+        concurrency: Optional[int] = None,
+    ) -> Job[PrewarmDataResult]:
+        """Submit a remote data-cache prewarm and return its durable job.
+
+        Requires a compatible SQL PREWARM server and Flight SQL connectivity.
+        The table handle supplies the branch and namespace. ``columns`` uses
+        Lance field paths; an omitted/empty list warms all columns. ``filter``
+        is one SQL predicate for conservative metadata pruning, not a row scan.
+        ``concurrency`` is a positive per-executor integer. Historical-version
+        handles are unsupported; call ``checkout_latest()`` first.
+
+        Submission requires table Select and database/namespace Usage under
+        Standard authorization. Status/wait use the generic HTTP job API;
+        events and cancellation have their own privileges. Unsupported servers
+        are not retried through REST or with settings removed.
+
+        Returns once accepted. ``job.wait()`` waits for warming to finish and
+        returns [PrewarmDataResult][lancedb.prewarm.PrewarmDataResult].
+        Save ``job.id`` to resume with ``db.open_job(id)``. A wait timeout does
+        not cancel the operation. After ``job.refresh()``,
+        ``job.spec["table_version"]`` identifies the pinned source version.
+
+        Examples
+        --------
+        >>> job = table.prewarm_data_async(  # doctest: +SKIP
+        ...     ["video"], filter="quality > 0.7", concurrency=4)
+        >>> job.wait()  # doctest: +SKIP
+        """
+        raise NotImplementedError(
+            "data prewarm jobs are only supported on remote tables"
+        )
+
     def create_index_async(
         self,
         column: str,
@@ -3023,6 +3088,33 @@ class Table(ABC):
         This function is not available in LanceDB Enterprise, which manages
         compaction for you automatically.
         """
+
+    def compact_async(
+        self, *, compaction_options: Optional[CompactionOptions] = None
+    ) -> Job[CompactionResult]:
+        """Submit remote compaction and return a durable job after acceptance.
+
+        Uses SQL OPTIMIZE with the table handle's branch and namespace. Supports
+        the four per-job settings in
+        [CompactionOptions][lancedb.table.CompactionOptions].
+        Requires a compatible remote server, table Ownership and parent Usage.
+        Local and historical-version handles are unsupported. Existing
+        ``optimize()`` retains its return-on-submission behavior remotely.
+
+        ``job.wait()`` waits for the actual rewrite and returns
+        [CompactionResult][lancedb.compaction.CompactionResult]. Partial/bounded
+        runs report uncommitted rows and ``more_work``; unknown file statistics
+        are None. Servers without a result payload raise an error rather than
+        returning fabricated zero statistics. Wait timeouts do not cancel work.
+        Save ``job.id`` and reopen with ``db.open_job(id)``. Monitoring and
+        cancellation use generic HTTP job APIs and their existing permissions.
+
+        >>> job = table.compact_async(  # doctest: +SKIP
+        ...     compaction_options={"target_rows_per_fragment": 1000})
+        >>> result = job.wait()  # doctest: +SKIP
+        >>> print(result.rows_succeeded)  # doctest: +SKIP
+        """
+        raise NotImplementedError("compaction jobs are only supported on remote tables")
 
     @abstractmethod
     def optimize(
@@ -4843,7 +4935,13 @@ class LanceTable(Table):
         """
         return LOOP.run(self._table.prewarm_index(name))
 
-    def prewarm_data(self, columns: Optional[List[str]] = None) -> None:
+    def prewarm_data(
+        self,
+        columns: Optional[List[str]] = None,
+        *,
+        filter: Optional[str] = None,
+        concurrency: Optional[int] = None,
+    ) -> None:
         """
         Prewarm data for the table.
 
@@ -4852,7 +4950,8 @@ class LanceTable(Table):
         Currently only supported in LanceDB Enterprise.
 
         This call initiates prewarming and returns once the request is accepted.
-        It is idempotent and safe to call from multiple clients concurrently.
+        Uses SQL PREWARM and requires Flight SQL connectivity. To track the
+        durable warming job, use ``prewarm_data_async()``.
 
         This operation has a large upfront cost but can speed up future queries
         that need to fetch the given columns.  Large columns such as embeddings
@@ -4863,8 +4962,34 @@ class LanceTable(Table):
         ----------
         columns: list of str, optional
             The columns to prewarm. If None, all columns are prewarmed.
+        filter: str, optional
+            A single SQL predicate for conservative metadata pruning.
+        concurrency: int, optional
+            Positive per-executor warming concurrency; omitted uses the server default.
+
+        Examples
+        --------
+        >>> table.prewarm_data(  # doctest: +SKIP
+        ...     ["payload"], filter="quality > 0.7", concurrency=4)
         """
-        return LOOP.run(self._table.prewarm_data(columns))
+        return LOOP.run(
+            self._table.prewarm_data(columns, filter=filter, concurrency=concurrency)
+        )
+
+    def prewarm_data_async(
+        self,
+        columns: Optional[List[str]] = None,
+        *,
+        filter: Optional[str] = None,
+        concurrency: Optional[int] = None,
+    ) -> Job[PrewarmDataResult]:
+        return Job(
+            LOOP.run(
+                self._table.prewarm_data_async(
+                    columns, filter=filter, concurrency=concurrency
+                )
+            )
+        )
 
     def wait_for_index(
         self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)
@@ -5682,6 +5807,13 @@ class LanceTable(Table):
         stats = self.to_lance().optimize.compact_files(*args, **kwargs)
         self.checkout_latest()
         return stats
+
+    def compact_async(
+        self, *, compaction_options: Optional[CompactionOptions] = None
+    ) -> Job[CompactionResult]:
+        return Job(
+            LOOP.run(self._table.compact_async(compaction_options=compaction_options))
+        )
 
     def optimize(
         self,
@@ -7324,7 +7456,13 @@ class AsyncTable:
         """
         await self._inner.prewarm_index(name)
 
-    async def prewarm_data(self, columns: Optional[List[str]] = None) -> None:
+    async def prewarm_data(
+        self,
+        columns: Optional[List[str]] = None,
+        *,
+        filter: Optional[str] = None,
+        concurrency: Optional[int] = None,
+    ) -> None:
         """
         Prewarm data for the table.
 
@@ -7333,7 +7471,8 @@ class AsyncTable:
         Currently only supported in LanceDB Enterprise.
 
         This call initiates prewarming and returns once the request is accepted.
-        It is idempotent and safe to call from multiple clients concurrently.
+        Uses SQL PREWARM and requires Flight SQL connectivity. To track the
+        durable warming job, use ``prewarm_data_async()``.
 
         This operation has a large upfront cost but can speed up future queries
         that need to fetch the given columns.  Large columns such as embeddings
@@ -7344,8 +7483,43 @@ class AsyncTable:
         ----------
         columns: list of str, optional
             The columns to prewarm. If None, all columns are prewarmed.
+        filter: str, optional
+            A single SQL predicate for conservative metadata pruning.
+        concurrency: int, optional
+            Positive per-executor warming concurrency; omitted uses the server default.
+
+        Examples
+        --------
+        >>> await table.prewarm_data(  # doctest: +SKIP
+        ...     ["payload"], filter="quality > 0.7", concurrency=4)
         """
-        await self._inner.prewarm_data(columns)
+        await self.prewarm_data_async(columns, filter=filter, concurrency=concurrency)
+
+    async def prewarm_data_async(
+        self,
+        columns: Optional[List[str]] = None,
+        *,
+        filter: Optional[str] = None,
+        concurrency: Optional[int] = None,
+    ) -> AsyncJob[PrewarmDataResult]:
+        """Submit data prewarm and return a durable handle after acceptance.
+
+        See [Table.prewarm_data_async][lancedb.table.Table.prewarm_data_async]
+        for options, permissions, and compatibility. Awaiting this method does
+        not wait for warming; use ``await job.wait()`` for completion.
+
+        Examples
+        --------
+        >>> job = await table.prewarm_data_async(  # doctest: +SKIP
+        ...     ["video"], filter="quality > 0.7", concurrency=4)
+        >>> await job.wait()  # doctest: +SKIP
+        """
+        return _typed_job(
+            await self._inner.prewarm_data_async(
+                columns, filter=filter, concurrency=concurrency
+            ),
+            PrewarmDataResult.from_json,
+        )
 
     async def wait_for_index(
         self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)
@@ -9272,6 +9446,19 @@ class AsyncTable:
     def current_branch(self) -> Optional[str]:
         """The branch this table handle is scoped to, or ``None`` for ``main``."""
         return self._inner.current_branch()
+
+    async def compact_async(
+        self, *, compaction_options: Optional[CompactionOptions] = None
+    ) -> AsyncJob[CompactionResult]:
+        """Submit remote compaction; await the returned job for actual results.
+
+        See [Table.compact_async][lancedb.table.Table.compact_async] for options,
+        permissions, completion semantics and compatibility requirements.
+        """
+        return _typed_job(
+            await self._inner.compact_async(compaction_options),
+            CompactionResult.from_json,
+        )
 
     async def optimize(
         self,

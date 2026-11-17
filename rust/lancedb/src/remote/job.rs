@@ -116,6 +116,8 @@ pub(super) struct DescribeJobResponse {
     #[serde(default)]
     pub(super) progress: Option<serde_json::Value>,
     #[serde(default)]
+    pub(super) operation_progress: Option<serde_json::Value>,
+    #[serde(default)]
     pub(super) phase: Option<String>,
     #[serde(default)]
     pub(super) queue_reason: Option<String>,
@@ -160,7 +162,7 @@ impl DescribeJobResponse {
             job_type: self.job_type,
             state: JobState::from(self.job_state.as_str()).client_label(),
             creation_ms: self.creation_ms,
-            progress: self.progress,
+            progress: self.operation_progress.or(self.progress),
             phase: self.phase,
             queue_reason: self.queue_reason,
             waiting_for_job_id: self.waiting_for_job_id,
@@ -420,7 +422,7 @@ impl<S: HttpSend> JobHandle for RemoteJob<S> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -428,7 +430,7 @@ mod tests {
 
     use crate::Result;
     use crate::function::{FunctionVersion, RefreshColumnResult};
-    use crate::job::{Job, JobHandle, JobProgressCallback, TerminalResult};
+    use crate::job::{Job, JobHandle, JobProgressCallback, JobWaitOptions, TerminalResult};
     use crate::remote::client::test_utils::client_with_handler;
 
     use super::{DescribeJobResponse, RemoteJob};
@@ -440,6 +442,108 @@ mod tests {
     const UNIT_JOB: &str =
         include_str!("../../tests/fixtures/first_class_functions/v1/remote_unit_job.json");
     const MISSING_RESULT_JOB: &str = r#"{"job_state":"DONE"}"#;
+
+    #[tokio::test(start_paused = true)]
+    async fn timed_wait_stops_polling_and_can_resume_or_reopen_typed_maintenance_jobs() {
+        for job_type in ["compact", "prewarm_page_cache"] {
+            let done = Arc::new(AtomicBool::new(false));
+            let describes = Arc::new(AtomicUsize::new(0));
+            let complete = done.clone();
+            let seen = describes.clone();
+            let expected = if job_type == "compact" {
+                serde_json::json!({"partial_commit":false,"rows_succeeded":12,"rows_failed":0,"completion_percentage":100})
+            } else {
+                serde_json::json!({"table_version":42,"executors_targeted":2,"executors_completed":2,"fragments_selected":4})
+            };
+            let payload = expected.clone();
+            let client =
+                client_with_handler(move |request| {
+                    assert_eq!(request.url().path(), "/v1/jobs/describe");
+                    seen.fetch_add(1, Ordering::SeqCst);
+                    let finished = complete.load(Ordering::SeqCst);
+                    http::Response::builder().status(200).body(serde_json::json!({
+                    "job_id":"bounded-job", "job_type":job_type,
+                    "job_state":if finished {"DONE"} else {"IN_PROGRESS"},
+                    "result":if finished {payload.clone()} else {serde_json::Value::Null},
+                }).to_string()).unwrap()
+                });
+            let handle = RemoteJob::new(client.clone(), "bounded-job".into());
+            let description = handle.describe().await.unwrap();
+            let job = Job::opened(Box::new(handle), description)
+                .into_typed::<serde_json::Value>()
+                .unwrap();
+            let observations = Arc::new(Mutex::new(Vec::new()));
+            let updates = observations.clone();
+            let options = JobWaitOptions::new()
+                .timeout(Duration::from_millis(50))
+                .progress(move |description| {
+                    updates.lock().unwrap().push(description.state.clone())
+                });
+            // Bound a regression that accidentally ignores the wait deadline.
+            let eventual_completion = done.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                eventual_completion.store(true, Ordering::SeqCst);
+            });
+            let error = job.wait_with_options(options.clone()).await.unwrap_err();
+            assert!(matches!(error, crate::Error::Timeout { .. }));
+            assert!(error.to_string().contains("bounded-job"));
+            assert!(error.to_string().contains("Connection::open_job"));
+            assert_eq!(job.state().as_deref(), Some("running"));
+            assert_eq!(describes.load(Ordering::SeqCst), 2);
+            tokio::time::advance(Duration::from_secs(2)).await;
+            tokio::task::yield_now().await;
+            assert_eq!(
+                describes.load(Ordering::SeqCst),
+                2,
+                "timed-out poller must stop"
+            );
+            assert_eq!(*observations.lock().unwrap(), ["running"]);
+            done.store(true, Ordering::SeqCst);
+            let result = job
+                .wait_with_options(options.timeout(Duration::from_secs(1)))
+                .await
+                .unwrap();
+            assert_eq!(result, expected);
+            assert_eq!(*observations.lock().unwrap(), ["running", "finished"]);
+            let handle = RemoteJob::new(client, "bounded-job".into());
+            let description = handle.describe().await.unwrap();
+            let reopened = Job::opened(Box::new(handle), description)
+                .into_typed::<serde_json::Value>()
+                .unwrap();
+            assert_eq!(
+                reopened
+                    .wait_with_options(JobWaitOptions::new().timeout(Duration::from_secs(1)))
+                    .await
+                    .unwrap(),
+                result
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn one_wait_timeout_does_not_interrupt_another_waiter() {
+        let done = Arc::new(AtomicBool::new(false));
+        let complete = done.clone();
+        let client = client_with_handler(move |request| {
+            assert_eq!(request.url().path(), "/v1/jobs/describe");
+            http::Response::builder().status(200).body(serde_json::json!({
+                "job_state":if complete.load(Ordering::SeqCst) {"DONE"} else {"IN_PROGRESS"},
+            }).to_string()).unwrap()
+        });
+        let job = Job::new(Box::new(RemoteJob::new(client, "shared-job".into())));
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            done.store(true, Ordering::SeqCst);
+        });
+        let (short, long) = tokio::join!(
+            job.wait_with_options(JobWaitOptions::new().timeout(Duration::from_millis(50))),
+            job.wait_with_options(JobWaitOptions::new().timeout(Duration::from_secs(1))),
+        );
+        assert!(matches!(short, Err(crate::Error::Timeout { .. })));
+        long.unwrap();
+        assert_eq!(job.state().as_deref(), Some("finished"));
+    }
 
     #[tokio::test]
     async fn stack_preserves_availability_and_uses_the_selected_worker() {

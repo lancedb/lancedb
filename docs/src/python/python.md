@@ -1494,3 +1494,7 @@ that accepts `python_bundle.resources`.
 
 Caches, hidden paths, symlinks and unsafe paths are excluded. Use `pip=` or
 `conda=` for platform-specific dependencies and `models=` for large model snapshots.
+
+::: lancedb.compaction.CompactionResult
+
+::: lancedb.prewarm.PrewarmDataResult

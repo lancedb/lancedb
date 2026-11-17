@@ -4,7 +4,7 @@
 
 [@lancedb/lancedb](../globals.md) / Job
 
-# Class: Job
+# Class: Job&lt;T&gt;
 
 A handle to an operation that may still be running.
 
@@ -19,6 +19,10 @@ extra round trip on every call:
   rest of the record.
 - Registry details are null until one of those runs. Query handles report
   jobType "query" immediately.
+
+## Type Parameters
+
+• **T** = `void`
 
 ## Accessors
 
@@ -241,7 +245,7 @@ printing it.
 ### wait()
 
 ```ts
-wait(progressCallback?): Promise<void>
+wait(optionsOrProgress?): Promise<T>
 ```
 
 Wait until the operation reaches a terminal state.
@@ -253,10 +257,21 @@ synchronous observer: its return value is ignored and not awaited. If it
 throws, the error is logged with `console.warn` and waiting continues; a
 callback exception does not reject `wait`.
 
+Pass an options object to set a client-side timeout. Expiry rejects with an
+error and stops this wait, including pending status requests and backoff.
+The operation continues; use the same handle to wait again. Registry jobs
+can also be reopened with `Connection.openJob`; query IDs cannot.
+
 #### Parameters
 
-* **progressCallback?**: [`JobProgressCallback`](../type-aliases/JobProgressCallback.md)
+* **optionsOrProgress?**: [`JobWaitOptions`](../interfaces/JobWaitOptions.md) \| [`JobProgressCallback`](../type-aliases/JobProgressCallback.md)
 
 #### Returns
 
-`Promise`&lt;`void`&gt;
+`Promise`&lt;`T`&gt;
+
+#### Example
+
+```ts
+const result = await job.wait({ timeoutMs: 60_000, onProgress: console.log });
+```

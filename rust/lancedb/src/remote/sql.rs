@@ -12,7 +12,6 @@ use arrow_array::RecordBatch;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_client::FlightServiceClient;
-#[cfg(test)]
 use arrow_flight::sql::{CommandStatementQuery, ProstMessageExt};
 use arrow_flight::{
     Action, CancelFlightInfoRequest, CancelFlightInfoResult, CancelStatus, FlightClient,
@@ -43,6 +42,8 @@ mod secret;
 pub(super) use secret::SecretWriteOperation;
 mod stream;
 mod view;
+
+const PREWARM_AZURE_HINT_CAPABILITY: &str = "lancedb.prewarm.azure_storage_account_name";
 
 use stream::{StreamingQuery, StreamingQueryHandle, Submission};
 
@@ -215,6 +216,55 @@ impl SqlClient {
             }),
             queries: Arc::new(QueryRegistry::new()),
         }
+    }
+
+    /// Unknown headers are otherwise silently ignored by older SQL servers.
+    /// Probe only when a source-account hint is present, before submitting work.
+    pub(super) async fn execute_prewarm(&self, request: ExecuteQueryRequest) -> Result<Query> {
+        with_overall_timeout(
+            self.inner.overall_timeout()?,
+            "prewarm submission",
+            async {
+                validate_namespace_path(&request.default_namespace_path)?;
+                let request_id = Uuid::new_v4().to_string();
+                let headers = self
+                    .inner
+                    .headers(&request.default_namespace_path, &request_id)
+                    .await?;
+                if headers.contains_key("x-azure-storage-account-name") {
+                    let connection = self.inner.connection(&request_id).await?;
+                    let mut client = client_with_headers(connection.client.clone(), &headers)?;
+                    let command = CommandStatementQuery {
+                        query: request.query.clone(),
+                        transaction_id: None,
+                    };
+                    let descriptor = FlightDescriptor::new_cmd(command.as_any().encode_to_vec());
+                    let read_timeout = resolve_timeout(
+                        self.inner.client_config.timeout_config.read_timeout,
+                        "LANCE_CLIENT_READ_TIMEOUT", Some(DEFAULT_READ_TIMEOUT),
+                    )?.unwrap();
+                    let info = tokio::time::timeout(read_timeout, client.get_flight_info(descriptor))
+                        .await.map_err(|_| Error::Runtime { message: format!("SQL PREWARM capability check timed out (request_id={request_id})") })?
+                        .map_err(|error| sql_flight_error(&request_id, &error))?;
+                    let supported = info.try_decode_schema().ok().is_some_and(|schema| {
+                        schema
+                            .metadata()
+                            .get(PREWARM_AZURE_HINT_CAPABILITY)
+                            .map(String::as_str)
+                            == Some("true")
+                    });
+                    if !supported {
+                        return Err(Error::NotSupported {
+                            message: format!(
+                                "SQL PREWARM server cannot acknowledge the Azure storage-account hint (request_id={request_id}); upgrade the server. No execution request was sent."
+                            ),
+                        });
+                    }
+                }
+                self.execute(request).await
+            },
+        )
+        .await
     }
 
     pub(super) async fn execute(&self, request: ExecuteQueryRequest) -> Result<Query> {

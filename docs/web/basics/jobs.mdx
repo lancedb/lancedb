@@ -95,7 +95,7 @@ In Python, `job.status()` returns the current state:
 It returns `failed` or `cancelled` for unsuccessful jobs.
 
 Use `job.wait()` to wait for completion and raise if the job fails or is
-cancelled. Both `Job.wait()` and `AsyncJob.wait()` retry transient connection
+cancelled. Python's `Job.wait()` and `AsyncJob.wait()` retry transient connection
 and read errors with capped
 exponential backoff within the caller's timeout. Without a timeout, retries
 continue indefinitely.
@@ -123,7 +123,32 @@ except ConnectionError as exc:
 except TimeoutError:
     print(f"still running: {job.status()}")
 ```
+```typescript TypeScript
+const result = await job.wait({
+  timeoutMs: 600_000,
+  onProgress: progress => console.log(progress),
+});
+```
+```rust Rust
+use std::time::Duration;
+use lancedb::job::JobWaitOptions;
+
+let result = job.wait_with_options(
+    JobWaitOptions::new()
+        .timeout(Duration::from_secs(600))
+        .progress(|description| println!("{}", description.progress_snapshot())),
+).await?;
+```
 </CodeGroup>
+
+TypeScript's `timeoutMs` and Rust's `JobWaitOptions::timeout` bound the existing
+wait poller, including pending status requests and retry/polling delays.
+Expiry rejects the TypeScript promise or returns Rust's `Error::Timeout`;
+the operation is not cancelled. Calling `wait()` without options still waits
+indefinitely. TypeScript's existing `wait(callback)` and Rust's
+`wait_with_progress(callback)` remain available. A zero timeout only permits
+an immediately ready result. TypeScript timeouts use nonnegative safe-integer
+milliseconds; Rust uses `std::time::Duration`.
 
 After connectivity returns, reopen an Enterprise registry job by its saved ID
 and continue waiting on the existing operation:

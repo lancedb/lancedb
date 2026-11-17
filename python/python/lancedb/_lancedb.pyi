@@ -645,6 +645,13 @@ class Table:
     async def restore(self, version: Optional[Union[int, str]] = None): ...
     async def prewarm_index(self, index_name: str) -> None: ...
     async def prewarm_data(self, columns: Optional[List[str]] = None) -> None: ...
+    async def prewarm_data_async(
+        self,
+        columns: Optional[List[str]] = None,
+        *,
+        filter: Optional[str] = None,
+        concurrency: Optional[int] = None,
+    ) -> Job: ...
     async def list_indices(self) -> list[IndexConfig]: ...
     async def tokenize(
         self,
@@ -787,6 +794,9 @@ class Table:
     async def update_field_metadata(
         self, updates: list[dict[str, Any]]
     ) -> UpdateFieldMetadataResult: ...
+    async def compact_async(
+        self, compaction_options: Optional[Dict[str, Any]] = None
+    ) -> Job: ...
     async def optimize(
         self,
         *,

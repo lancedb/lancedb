@@ -48,6 +48,7 @@ from lancedb.index import (
     Bitmap,
     LabelList,
 )
+from lancedb.prewarm import PrewarmDataResult
 from lancedb.job import Job
 from lancedb.functions import (
     FunctionProvenance,
@@ -78,6 +79,7 @@ from ..table import (
     BlobMode,
     Branches,
     CompactionOptions,
+    CompactionResult,
     IndexStatistics,
     Query,
     Table,
@@ -1105,6 +1107,13 @@ class RemoteTable(Table):
         )
         pass
 
+    def compact_async(
+        self, *, compaction_options: Optional[CompactionOptions] = None
+    ) -> Job[CompactionResult]:
+        return Job(
+            LOOP.run(self._table.compact_async(compaction_options=compaction_options))
+        )
+
     def optimize(
         self,
         *,
@@ -1433,7 +1442,13 @@ class RemoteTable(Table):
         """
         return LOOP.run(self._table.prewarm_index(name))
 
-    def prewarm_data(self, columns: Optional[List[str]] = None) -> None:
+    def prewarm_data(
+        self,
+        columns: Optional[List[str]] = None,
+        *,
+        filter: Optional[str] = None,
+        concurrency: Optional[int] = None,
+    ) -> None:
         """Prewarm data for the table.
 
         This is a hint to the database that the given columns will be accessed
@@ -1441,7 +1456,8 @@ class RemoteTable(Table):
         Currently only supported in LanceDB Enterprise.
 
         This call initiates prewarming and returns once the request is accepted.
-        It is idempotent and safe to call from multiple clients concurrently.
+        Uses SQL PREWARM and requires Flight SQL connectivity. To track the
+        durable warming job, use ``prewarm_data_async()``.
 
         This operation has a large upfront cost but can speed up future queries
         that need to fetch the given columns.  Large columns such as embeddings
@@ -1452,8 +1468,34 @@ class RemoteTable(Table):
         ----------
         columns: list of str, optional
             The columns to prewarm. If None, all columns are prewarmed.
+        filter: str, optional
+            A single SQL predicate for conservative metadata pruning.
+        concurrency: int, optional
+            Positive per-executor warming concurrency; omitted uses the server default.
+
+        Examples
+        --------
+        >>> table.prewarm_data(  # doctest: +SKIP
+        ...     ["payload"], filter="quality > 0.7", concurrency=4)
         """
-        return LOOP.run(self._table.prewarm_data(columns))
+        return LOOP.run(
+            self._table.prewarm_data(columns, filter=filter, concurrency=concurrency)
+        )
+
+    def prewarm_data_async(
+        self,
+        columns: Optional[List[str]] = None,
+        *,
+        filter: Optional[str] = None,
+        concurrency: Optional[int] = None,
+    ) -> Job[PrewarmDataResult]:
+        return Job(
+            LOOP.run(
+                self._table.prewarm_data_async(
+                    columns, filter=filter, concurrency=concurrency
+                )
+            )
+        )
 
     def wait_for_index(
         self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)

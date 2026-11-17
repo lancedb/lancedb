@@ -27,6 +27,32 @@ use crate::merge::NativeMergeInsertBuilder;
 use crate::query::{Query, TakeQuery, VectorQuery};
 use crate::util::schema_to_buffer;
 
+/// Settings for durable data-cache prewarm submission.
+#[napi(object)]
+pub struct PrewarmDataOptions {
+    pub columns: Option<Vec<String>>,
+    pub filter: Option<String>,
+    pub concurrency: Option<f64>,
+}
+
+impl PrewarmDataOptions {
+    fn into_options(self) -> napi::Result<lancedb::table::PrewarmDataOptions> {
+        let mut options =
+            lancedb::table::PrewarmDataOptions::new().columns(self.columns.unwrap_or_default());
+        options.filter = self.filter;
+        if let Some(value) = self.concurrency {
+            if !value.is_finite() || value.fract() != 0.0 || value < 1.0 || value > u32::MAX as f64
+            {
+                return Err(napi::Error::from_reason(
+                    "concurrency must be an integer between 1 and 4294967295",
+                ));
+            }
+            options.concurrency = Some(value as u32);
+        }
+        Ok(options)
+    }
+}
+
 /// Per-invocation file-compaction settings. All numbers must be safe integers.
 #[napi(object)]
 pub struct CompactionOptions {
@@ -296,6 +322,23 @@ impl Table {
             .prewarm_data(columns)
             .await
             .default_error()
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn prewarm_data_async(
+        &self,
+        options: Option<PrewarmDataOptions>,
+    ) -> napi::Result<crate::job::Job> {
+        let options = options
+            .map(PrewarmDataOptions::into_options)
+            .transpose()?
+            .unwrap_or_default();
+        let job = self
+            .inner_ref()?
+            .prewarm_data_async(options)
+            .await
+            .default_error()?;
+        Ok(crate::job::Job::new_typed(job))
     }
 
     #[napi(catch_unwind)]
@@ -892,6 +935,23 @@ impl Table {
     #[napi]
     pub fn current_branch(&self) -> napi::Result<Option<String>> {
         Ok(self.inner_ref()?.current_branch())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn compact_async(
+        &self,
+        options: Option<CompactionOptions>,
+    ) -> napi::Result<crate::job::Job> {
+        let options = options
+            .map(CompactionOptions::into_overrides)
+            .transpose()?
+            .unwrap_or_default();
+        let job = self
+            .inner_ref()?
+            .compact_async(options)
+            .await
+            .default_error()?;
+        Ok(crate::job::Job::new_typed(job))
     }
 
     #[napi(catch_unwind)]

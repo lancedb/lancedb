@@ -5,6 +5,7 @@ pub mod blobs;
 pub mod insert;
 mod ipc_stream;
 mod optimize;
+mod prewarm;
 #[cfg(test)]
 mod write_tests;
 
@@ -4098,19 +4099,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         options: crate::table::optimize::CompactionOverrides,
     ) -> Result<OptimizeStats> {
         self.check_mutable().await?;
-        let compaction_options = optimize::compaction_sql_options(&options)?;
+        let statement = optimize::statement(&self.name, self.branch.as_deref(), &options)?;
         let sql_client = self.sql_client.clone().ok_or_else(|| Error::NotSupported {
             message: "SQL is unavailable for this remote table client".to_string(),
         })?;
-        let mut statement = format!("OPTIMIZE {} REWRITE DATA", quote_sql_identifier(&self.name));
-        let mut sql_options = Vec::new();
-        if let Some(branch) = &self.branch {
-            sql_options.push(format!("branch = {}", quote_sql_string(branch)));
-        }
-        sql_options.extend(compaction_options);
-        if !sql_options.is_empty() {
-            statement.push_str(&format!(" WITH ({})", sql_options.join(", ")));
-        }
         // `OptimizeStats` carries `lance::dataset::optimize` metric types that
         // are not `Serialize`/`Deserialize`/`Clone`, which `Job<T>` requires,
         // so the job itself only signals completion; the real (placeholder)
@@ -4127,6 +4119,42 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             prune: None,
         })
     }
+    async fn compact_async(
+        &self,
+        options: crate::table::optimize::CompactionOverrides,
+    ) -> Result<Job<crate::table::CompactionResult>> {
+        self.check_mutable().await?;
+        let statement = optimize::statement(&self.name, self.branch.as_deref(), &options)?;
+        let client = self
+            .sql_client
+            .as_ref()
+            .ok_or_else(|| Error::NotSupported {
+                message: "compaction jobs require a Flight SQL endpoint".into(),
+            })?;
+        let query = client
+            .execute(crate::database::ExecuteQueryRequest {
+                query: statement,
+                default_namespace_path: self.namespace.clone(),
+                parameters: None,
+            })
+            .await
+            .map_err(optimize::map_optimize_error)?;
+        let mut reader = query.reader().await.map_err(optimize::map_optimize_error)?;
+        let mut batches = Vec::new();
+        while let Some(batch) = reader
+            .try_next()
+            .await
+            .map_err(optimize::map_optimize_error)?
+        {
+            batches.push(batch);
+        }
+        let job_id = optimize::receipt(&batches)?;
+        Ok(Job::new_typed(Box::new(RemoteJob::new(
+            self.client.clone(),
+            job_id,
+        ))))
+    }
+
     async fn add_columns(
         &self,
         transforms: NewColumnTransform,
@@ -4728,18 +4756,51 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     async fn prewarm_data(&self, columns: Option<Vec<String>>) -> Result<()> {
-        let mut request = self.client.post(&format!(
-            "/v1/table/{}/page_cache/prewarm/",
-            self.identifier
-        ));
-        let mut body = serde_json::json!({
-            "columns": columns.unwrap_or_default(),
-        });
-        self.apply_branch_body(&mut body);
-        request = request.json(&body);
-        let (request_id, response) = self.send(request, true).await?;
-        self.check_table_response(&request_id, response).await?;
+        self.prewarm_data_async(
+            crate::table::PrewarmDataOptions::new().columns(columns.unwrap_or_default()),
+        )
+        .await?;
         Ok(())
+    }
+
+    async fn prewarm_data_async(
+        &self,
+        options: crate::table::PrewarmDataOptions,
+    ) -> Result<Job<crate::table::PrewarmDataResult>> {
+        if let Some(version) = *self.version.read().await {
+            return Err(Error::NotSupported {
+                message: format!(
+                    "SQL PREWARM does not support historical version {version}; use checkout_latest() to prewarm the current branch"
+                ),
+            });
+        }
+        let statement = prewarm::statement(&self.name, self.branch.as_deref(), &options)?;
+        let client = self
+            .sql_client
+            .as_ref()
+            .ok_or_else(|| Error::NotSupported {
+                message: "data prewarm requires a Flight SQL endpoint and SQL PREWARM support"
+                    .into(),
+            })?;
+        let query = client
+            .execute_prewarm(crate::database::ExecuteQueryRequest {
+                query: statement,
+                default_namespace_path: self.namespace.clone(),
+                parameters: None,
+            })
+            .await
+            .map_err(prewarm::map_error)?;
+        let mut reader = query.reader().await.map_err(prewarm::map_error)?;
+        let mut batches = Vec::new();
+        while let Some(batch) = reader.try_next().await.map_err(prewarm::map_error)? {
+            batches.push(batch);
+        }
+        let (job_id, _table_version) = prewarm::receipt(&batches)?;
+        // Construct lazily: submission must not require an HTTP status round trip.
+        Ok(Job::new_typed(Box::new(RemoteJob::new(
+            self.client.clone(),
+            job_id,
+        ))))
     }
 
     async fn table_definition(&self) -> Result<TableDefinition> {
@@ -13718,67 +13779,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_prewarm_data() {
-        let table = Table::new_with_handler("my_table", |request| {
-            assert_eq!(request.method(), "POST");
-            assert_eq!(
-                request.url().path(),
-                "/v1/table/my_table/page_cache/prewarm/"
+    async fn test_prewarm_data_requires_sql_without_rest_fallback() {
+        let table = Table::new_with_handler("my_table", |request| -> http::Response<String> {
+            panic!(
+                "data prewarm must not submit through REST: {}",
+                request.url()
             );
-            http::Response::builder().status(200).body("{}").unwrap()
         });
-        table.prewarm_data(None).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_prewarm_data_with_columns() {
-        let table = Table::new_with_handler("my_table", |request| {
-            assert_eq!(request.method(), "POST");
-            assert_eq!(
-                request.url().path(),
-                "/v1/table/my_table/page_cache/prewarm/"
-            );
-            let body = request.body().unwrap().as_bytes().unwrap();
-            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
-            assert_eq!(body["columns"], serde_json::json!(["col_a", "col_b"]));
-            http::Response::builder().status(200).body("{}").unwrap()
-        });
-        table
-            .prewarm_data(Some(vec!["col_a".into(), "col_b".into()]))
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_prewarm_data_sends_the_checked_out_branch() {
-        use lance::dataset::refs::Ref;
-
-        let table =
-            Table::new_with_handler_version("my_table", semver::Version::new(0, 5, 0), |request| {
-                match request.url().path() {
-                    "/v1/table/my_table/branches/create/" => {
-                        http::Response::builder().status(200).body("{}").unwrap()
-                    }
-                    "/v1/table/my_table/page_cache/prewarm/" => {
-                        let body = request_body_json(&request);
-                        assert_eq!(body["branch"], "dev");
-                        assert_eq!(body["columns"], json!(["payload"]));
-                        http::Response::builder()
-                            .status(202)
-                            .body(r#"{"job_id":"prewarm-job"}"#)
-                            .unwrap()
-                    }
-                    path => panic!("unexpected request path: {path}"),
-                }
-            });
-        let branch = table
-            .create_branch("dev", Ref::Version(None, None))
-            .await
-            .unwrap();
-        branch
-            .prewarm_data(Some(vec!["payload".into()]))
-            .await
-            .unwrap();
+        let error = table.prewarm_data(None).await.unwrap_err();
+        assert!(matches!(error, Error::NotSupported { .. }));
+        assert!(error.to_string().contains("SQL"));
     }
 
     #[tokio::test]
