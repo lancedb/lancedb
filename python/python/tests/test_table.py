@@ -6418,7 +6418,9 @@ def test_fts_exist_ok_matches_quoted_default_name(mem_db):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("asynchronous", [False, True])
-@pytest.mark.parametrize("method", ["prewarm_data", "prewarm_data_async"])
+@pytest.mark.parametrize(
+    "method", ["prewarm_data", "prewarm_data_async", "explain_prewarm_data"]
+)
 async def test_data_prewarm_job_is_unsupported_locally(tmp_path, asynchronous, method):
     if asynchronous:
         db = await lancedb.connect_async(tmp_path)

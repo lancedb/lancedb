@@ -4672,7 +4672,16 @@ async fn remote_prewarm_errors_preserve_diagnostics_and_never_fall_back() {
             unsupported,
             "{error}"
         );
-        assert_eq!(statements.lock().unwrap().len(), 1);
+        let preview_error = table
+            .explain_prewarm_data(Default::default())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            matches!(preview_error, Error::NotSupported { .. }),
+            unsupported,
+            "{preview_error}"
+        );
+        assert_eq!(statements.lock().unwrap().len(), 2);
         shutdown.send(()).unwrap();
     }
 }

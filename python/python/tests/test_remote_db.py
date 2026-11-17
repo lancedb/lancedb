@@ -8497,3 +8497,30 @@ async def test_remote_data_prewarm_preview(
     assert b'"attrs"."score"' in server.tickets[0]
     assert b"concurrency = 4" in server.tickets[0]
     assert b"id > 0" in server.tickets[0]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "legacy display text",
+        '{"format_version":2,"table_version":42,"plan":"future","pruning":{}}',
+        '{"format_version":1,"table_version":42,"plan":"missing pruning"}',
+    ],
+)
+def test_remote_prewarm_preview_rejects_incompatible_payload_without_retry(payload):
+    flight = pytest.importorskip("pyarrow.flight")
+
+    class PreviewServer(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.tickets = []
+
+        def do_get(self, context, ticket):
+            self.tickets.append(ticket.ticket)
+            return flight.RecordBatchStream(pa.table({"plan": [payload]}))
+
+    server = PreviewServer()
+    with _mock_remote_table_with_sql(server) as table:
+        with pytest.raises(Exception, match="valid structured preview"):
+            table.explain_prewarm_data()
+    assert len(server.tickets) == 1

@@ -188,7 +188,7 @@ mod tests {
         let batch = |value: &serde_json::Value| {
             RecordBatch::try_from_iter([(
                 "plan",
-                Arc::new(StringArray::from(vec![value.to_string()])),
+                Arc::new(StringArray::from(vec![value.to_string()])) as arrow_array::ArrayRef,
             )])
             .unwrap()
         };
