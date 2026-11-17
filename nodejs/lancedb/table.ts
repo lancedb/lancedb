@@ -639,14 +639,20 @@ export abstract class Table {
    * returns the source version, readable plan, and conservative pruning summary.
    * A later submission plans its own snapshot. Historical and Embedded handles
    * are unsupported. Unknown measurements remain null.
+   * Custom table implementations can override this method; its default rejects
+   * with an unsupported-operation error.
    *
    * @example
    * const plan = await table.explainPrewarmData({columns: ["video"], filter: "quality > 0.7"});
    * console.log(plan.pruning.selectedFragments);
    */
-  abstract explainPrewarmData(
-    options?: PrewarmDataOptions,
-  ): Promise<PrewarmDataPlan>;
+  async explainPrewarmData(
+    _options?: PrewarmDataOptions,
+  ): Promise<PrewarmDataPlan> {
+    throw new Error(
+      "data prewarm previews are not supported by this table implementation",
+    );
+  }
 
   /**
    * Waits for asynchronous indexing to complete on the table.

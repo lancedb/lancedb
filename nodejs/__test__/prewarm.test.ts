@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import { decodePrewarmDataPlan } from "../lancedb/prewarm";
+import { Table } from "../lancedb/table";
 
 test.each([null, 0, 2])(
   "preview preserves unknown and zero range counts: %s",
@@ -19,3 +20,14 @@ test.each([null, 0, 2])(
     expect(plan.pruning.fallbackReason).toBeNull();
   },
 );
+
+test("custom tables inherit an unsupported preview default", async () => {
+  // Only the inherited default is exercised; unrelated abstract operations
+  // do not need implementations in this fixture.
+  const table = Object.create(Table.prototype) as Table;
+  await expect(
+    table.explainPrewarmData({ columns: ["payload"], filter: "id > 0" }),
+  ).rejects.toThrow(
+    "data prewarm previews are not supported by this table implementation",
+  );
+});
