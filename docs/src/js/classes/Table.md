@@ -901,6 +901,24 @@ Resolves to `undefined` only when the RTE write path is not enabled.
 
 ***
 
+### getTableOverrides()
+
+```ts
+abstract getTableOverrides(): Promise<Record<string, unknown>>
+```
+
+Read the stored overrides for a remote Enterprise table.
+
+Overrides configure background behavior such as automatic compaction,
+cleanup, and reindex execution. Keys use the server's snake_case names.
+Returns an empty object when no overrides are set. Local tables are unsupported.
+
+#### Returns
+
+`Promise`&lt;`Record`&lt;`string`, `unknown`&gt;&gt;
+
+***
+
 ### indexStats()
 
 ```ts
@@ -1379,6 +1397,21 @@ console.log(await job.status()); // "finished"
 
 ***
 
+### resetTableOverrides()
+
+```ts
+abstract resetTableOverrides(): Promise<Record<string, unknown>>
+```
+
+Clear a remote Enterprise table's overrides and return an empty object.
+Local tables are unsupported.
+
+#### Returns
+
+`Promise`&lt;`Record`&lt;`string`, `unknown`&gt;&gt;
+
+***
+
 ### restore()
 
 ```ts
@@ -1733,6 +1766,42 @@ used when appropriate:
 `Promise`&lt;[`UpdateFieldMetadataResult`](../interfaces/UpdateFieldMetadataResult.md)&gt;
 
 resolves to the new table version.
+
+***
+
+### updateTableOverrides()
+
+```ts
+abstract updateTableOverrides(overrides): Promise<Record<string, unknown>>
+```
+
+Recursively merge overrides into a remote Enterprise table's stored overrides.
+
+Fetches the current overrides, merges nested objects locally, then sends the
+complete replacement using REST PUT. Other values replace existing values;
+unrelated fields from the read snapshot are preserved. This read-modify-write
+is not atomic: concurrent edits can be overwritten, even to unrelated fields.
+Coordinate writers when concurrent edits must be preserved.
+
+Unlike this SDK method, CLI `set` and REST PUT replace the overrides object
+without merging. Use [Table.resetTableOverrides](Table.md#resettableoverrides) to clear all overrides.
+Local tables are unsupported.
+
+#### Parameters
+
+* **overrides**: `Record`&lt;`string`, `unknown`&gt;
+
+#### Returns
+
+`Promise`&lt;`Record`&lt;`string`, `unknown`&gt;&gt;
+
+#### Example
+
+```ts
+await table.updateTableOverrides({
+  job_types: { compaction: { enabled: false } },
+});
+```
 
 ***
 

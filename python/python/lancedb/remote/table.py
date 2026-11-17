@@ -1380,7 +1380,11 @@ class RemoteTable(Table):
         return LOOP.run(self._table.get_table_overrides())
 
     def update_table_overrides(self, **overrides: Any) -> dict[str, Any]:
-        """Merge Enterprise table overrides into the current table overrides."""
+        """Merge Enterprise table overrides using a non-atomic read-modify-write.
+
+        See [the async method][lancedb.AsyncTable.update_table_overrides]
+        for merge behavior and concurrency limitations.
+        """
         return LOOP.run(self._table.update_table_overrides(**overrides))
 
     def reset_table_overrides(self) -> dict[str, Any]:

@@ -2115,8 +2115,16 @@ class Table(ABC):
     def update_table_overrides(self, **overrides: Any) -> dict[str, Any]:
         """Merge Enterprise table overrides into the current table overrides.
 
-        Only fields supplied in ``overrides`` are changed; unrelated existing
-        overrides are preserved by the remote service update flow.
+        Fetches the current overrides, recursively merges nested objects locally,
+        then sends the complete replacement using REST PUT. Other values replace
+        existing values; unrelated fields from the read snapshot are preserved.
+        This read-modify-write is not atomic: concurrent edits can be overwritten,
+        even to unrelated fields. Coordinate writers when concurrent edits must
+        be preserved.
+
+        Unlike this SDK method, CLI ``set`` and REST PUT replace the overrides
+        object without merging. Use ``reset_table_overrides()`` to clear all
+        overrides. Supported only on remote Enterprise tables.
         """
         raise NotImplementedError
 
@@ -6183,8 +6191,16 @@ class LanceTable(Table):
     def update_table_overrides(self, **overrides: Any) -> dict[str, Any]:
         """Merge Enterprise table overrides into the current table overrides.
 
-        Only fields supplied in ``overrides`` are changed; unrelated overrides
-        from the current read snapshot are preserved.
+        Fetches the current overrides, recursively merges nested objects locally,
+        then sends the complete replacement using REST PUT. Other values replace
+        existing values; unrelated fields from the read snapshot are preserved.
+        This read-modify-write is not atomic: concurrent edits can be overwritten,
+        even to unrelated fields. Coordinate writers when concurrent edits must
+        be preserved.
+
+        Unlike this SDK method, CLI ``set`` and REST PUT replace the overrides
+        object without merging. Use ``reset_table_overrides()`` to clear all
+        overrides. Supported only on remote Enterprise tables.
 
         Examples
         --------
@@ -6962,8 +6978,16 @@ class AsyncTable:
     async def update_table_overrides(self, **overrides: Any) -> dict[str, Any]:
         """Merge Enterprise table overrides into the current table overrides.
 
-        Only fields supplied in ``overrides`` are changed; unrelated overrides
-        from the current read snapshot are preserved.
+        Fetches the current overrides, recursively merges nested objects locally,
+        then sends the complete replacement using REST PUT. Other values replace
+        existing values; unrelated fields from the read snapshot are preserved.
+        This read-modify-write is not atomic: concurrent edits can be overwritten,
+        even to unrelated fields. Coordinate writers when concurrent edits must
+        be preserved.
+
+        Unlike this SDK method, CLI ``set`` and REST PUT replace the overrides
+        object without merging. Use ``reset_table_overrides()`` to clear all
+        overrides. Supported only on remote Enterprise tables.
 
         Examples
         --------
