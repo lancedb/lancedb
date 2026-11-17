@@ -8238,6 +8238,7 @@ def test_remote_data_prewarm_validates_before_submission(options, method):
     assert not server.tickets
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize("legacy", [False, True])
 @pytest.mark.parametrize("named", [False, True])
@@ -8276,7 +8277,10 @@ async def test_prewarm_bound_parameters_reach_flight(asynchronous, legacy, named
             result = getattr(table, method)(
                 ["payload"], filter=predicate, parameters=parameters
             )
-        assert result is None if legacy else result.id == "bound-job"
+        if legacy:
+            assert result is None
+        else:
+            assert result.id == "bound-job"
     ((command, received),) = server.calls
     assert b"PREWARM" in command and predicate.encode() in command
     assert attack.encode() not in command
