@@ -1112,8 +1112,12 @@ export abstract class Table {
    * Overrides configure background behavior such as automatic compaction,
    * cleanup, and reindex execution. Keys use the server's snake_case names.
    * Returns an empty object when no overrides are set. Local tables are unsupported.
+   * Custom table implementations inherit a default rejection unless they override
+   * this method.
    */
-  abstract getTableOverrides(): Promise<Record<string, unknown>>;
+  async getTableOverrides(): Promise<Record<string, unknown>> {
+    throw new Error("getTableOverrides is not supported on this table type");
+  }
 
   /**
    * Recursively merge overrides into a remote Enterprise table's stored overrides.
@@ -1127,7 +1131,8 @@ export abstract class Table {
    *
    * Unlike this SDK method, CLI `set` and REST PUT replace the overrides object
    * without merging. Use {@link Table.resetTableOverrides} to clear all overrides.
-   * Local tables are unsupported.
+   * Local tables and custom table implementations without override support reject
+   * this operation.
    *
    * @example
    * ```ts
@@ -1136,15 +1141,21 @@ export abstract class Table {
    * });
    * ```
    */
-  abstract updateTableOverrides(
+  async updateTableOverrides(
+    // biome-ignore lint/correctness/noUnusedVariables: retain the public parameter name in generated docs
     overrides: Record<string, unknown>,
-  ): Promise<Record<string, unknown>>;
+  ): Promise<Record<string, unknown>> {
+    throw new Error("updateTableOverrides is not supported on this table type");
+  }
 
   /**
    * Clear a remote Enterprise table's overrides and return an empty object.
-   * Local tables are unsupported.
+   * Local tables and custom table implementations without override support reject
+   * this operation.
    */
-  abstract resetTableOverrides(): Promise<Record<string, unknown>>;
+  async resetTableOverrides(): Promise<Record<string, unknown>> {
+    throw new Error("resetTableOverrides is not supported on this table type");
+  }
   /**
    * Drain and close any cached RTE shard writers held for this table.
    *

@@ -5888,6 +5888,29 @@ describe("durable compaction validation", () => {
 });
 
 describe("Enterprise table overrides", () => {
+  it("keeps override methods optional for existing custom Table subclasses", async () => {
+    // Declare the old Table surface; only the new methods must be inherited.
+    // Keeping these override methods abstract must fail type checking here.
+    // biome-ignore lint/correctness/noUnusedVariables: declaration merging supplies the legacy members
+    interface LegacyTable
+      extends Omit<
+        Table,
+        "getTableOverrides" | "updateTableOverrides" | "resetTableOverrides"
+      > {}
+    class LegacyTable extends Table {}
+
+    const table = new LegacyTable();
+    await expect(table.getTableOverrides()).rejects.toThrow(
+      "getTableOverrides is not supported on this table type",
+    );
+    await expect(table.updateTableOverrides({ custom: true })).rejects.toThrow(
+      "updateTableOverrides is not supported on this table type",
+    );
+    await expect(table.resetTableOverrides()).rejects.toThrow(
+      "resetTableOverrides is not supported on this table type",
+    );
+  });
+
   it("rejects get, update, and reset on local tables", async () => {
     const tmpDir = tmp.dirSync({ unsafeCleanup: true });
     const db = await connect(tmpDir.name);
