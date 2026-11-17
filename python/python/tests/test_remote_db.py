@@ -4016,6 +4016,23 @@ def test_update_table_overrides_sync_remote_table_merges_existing_fields():
     assert calls == ["GET", "PUT"]
 
 
+@pytest.mark.parametrize("current", [{}, {"custom": {"keep": True}}])
+def test_empty_update_table_overrides_only_reads(current):
+    calls = []
+
+    def overrides_handler(request, parsed):
+        calls.append(request.command)
+        assert request.command == "GET"
+        assert parsed.path == "/admin/table/overrides"
+        assert_table_overrides_query(parsed)
+        send_json(request, current)
+
+    with table_overrides_test_table(overrides_handler) as table:
+        assert table.update_table_overrides() == current
+
+    assert calls == ["GET"]
+
+
 def test_reset_table_overrides_sync_remote_table():
     def overrides_handler(request, parsed):
         assert request.command == "POST"

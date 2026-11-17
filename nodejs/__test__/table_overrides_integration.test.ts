@@ -64,6 +64,7 @@ maybeDescribe("table overrides live integration", () => {
     async ({ path }) => {
       await withTable(path, async (table, name) => {
         await expect(table.getTableOverrides()).resolves.toEqual({});
+        await expect(table.updateTableOverrides({})).resolves.toEqual({});
         const initial = {
           // biome-ignore lint/style/useNamingConvention: server wire format
           job_types: {

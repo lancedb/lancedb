@@ -3034,6 +3034,34 @@ describe("table overrides", () => {
     },
   );
 
+  it.each([{}, { custom: { keep: true } }])(
+    "only reads the snapshot %j for an empty update",
+    async (current) => {
+      const methods: string[] = [];
+      await withMockDatabase(
+        (req, res) => {
+          if (req.url?.includes("/describe/")) {
+            res
+              .writeHead(200)
+              .end(JSON.stringify({ version: 1, schema: { fields: [] } }));
+            return;
+          }
+          methods.push(req.method ?? "");
+          res
+            .writeHead(req.method === "GET" ? 200 : 400)
+            .end(JSON.stringify(current));
+        },
+        async (db) => {
+          const table = await db.openTable("test");
+          await expect(table.updateTableOverrides({})).resolves.toEqual(
+            current,
+          );
+        },
+      );
+      expect(methods).toEqual(["GET"]);
+    },
+  );
+
   it.each([null, [], true, 1, "bad"])(
     "rejects a non-object update %j before reading overrides",
     async (value) => {

@@ -3984,6 +3984,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 });
             }
         };
+        if patch.is_empty() {
+            return Ok(serde_json::Value::Object(current));
+        }
         Self::merge_table_overrides(&mut current, patch);
         let merged = serde_json::Value::Object(current);
         let body = self.table_overrides_set_body(merged);
@@ -14156,6 +14159,31 @@ mod tests {
         );
         assert_eq!(updated["unknown"]["keep"], true);
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_update_table_overrides_empty_patch_only_reads() {
+        for current in [
+            serde_json::json!({}),
+            serde_json::json!({"job_types": {"compaction": {"enabled": false}}}),
+        ] {
+            let snapshot = current.clone();
+            let table = Table::new_with_handler("my_table", move |request| {
+                assert_eq!(request.method(), "GET");
+                assert_eq!(request.url().path(), "/admin/table/overrides");
+                http::Response::builder()
+                    .status(200)
+                    .body(snapshot.to_string())
+                    .unwrap()
+            });
+            assert_eq!(
+                table
+                    .update_table_overrides(serde_json::json!({}))
+                    .await
+                    .unwrap(),
+                current
+            );
+        }
     }
 
     #[tokio::test]

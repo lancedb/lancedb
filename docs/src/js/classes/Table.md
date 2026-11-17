@@ -1781,7 +1781,8 @@ Fetches the current overrides, merges nested objects locally, then sends the
 complete replacement using REST PUT. Other values replace existing values;
 unrelated fields from the read snapshot are preserved. This read-modify-write
 is not atomic: concurrent edits can be overwritten, even to unrelated fields.
-Coordinate writers when concurrent edits must be preserved.
+Coordinate writers when concurrent edits must be preserved. An empty update
+only reads and returns the current overrides.
 
 Unlike this SDK method, CLI `set` and REST PUT replace the overrides object
 without merging. Use [Table.resetTableOverrides](Table.md#resettableoverrides) to clear all overrides.
