@@ -331,6 +331,10 @@ impl<S: HttpSend> crate::job::JobHandle for FreshnessJob<S> {
         crate::job::JobHandle::events(&self.inner, request).await
     }
 
+    async fn stats(&self) -> Result<Option<String>> {
+        crate::job::JobHandle::stats(&self.inner).await
+    }
+
     async fn wait(&self) -> Result<crate::job::TerminalResult> {
         crate::job::JobHandle::wait_with_progress(self, None).await
     }
@@ -13030,6 +13034,20 @@ mod tests {
                         .body(events.clone())
                         .unwrap()
                 }
+                "/v1/jobs/stats" => {
+                    let body: serde_json::Value =
+                        serde_json::from_slice(request.body().unwrap().as_bytes().unwrap())
+                            .unwrap();
+                    assert_eq!(body["job_id"], "j-42");
+                    http::Response::builder()
+                        .status(200)
+                        .body(
+                            r#"{"job_id":"j-42","profile":{},"report":"Function job: finished\nRows: 1600\n"}"#
+                                .as_bytes()
+                                .to_vec(),
+                        )
+                        .unwrap()
+                }
                 "/v1/jobs/timeline" => http::Response::builder().status(200)
                     .body(br#"{"traceEvents":[],"metadata":{"partial":true}}"#.to_vec()).unwrap(),
                 other => panic!("unexpected path {other}"),
@@ -13037,6 +13055,10 @@ mod tests {
         });
 
         let job = table.refresh_column_async("doubled").await.unwrap();
+        assert_eq!(
+            job.stats().await.unwrap().as_deref(),
+            Some("Function job: finished\nRows: 1600\n")
+        );
         job.refresh().await.unwrap();
         assert_eq!(job.state().as_deref(), Some("running"));
         assert_eq!(job.job_type().as_deref(), Some("refresh_column"));
