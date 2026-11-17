@@ -4,6 +4,7 @@
 from functools import cached_property
 from typing import TYPE_CHECKING, List, Optional, Union
 import logging
+from urllib.parse import urlparse
 
 from ..util import attempt_import_or_raise
 from .base import TextEmbeddingFunction
@@ -51,6 +52,9 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
 
     # Set true to use Azure OpenAI API
     use_azure: bool = False
+    # Azure OpenAI API version. Falls back to the OPENAI_API_VERSION
+    # environment variable when not set. Only used when `use_azure` is true.
+    api_version: Optional[str] = None
 
     def ndims(self):
         return self._ndims
@@ -114,7 +118,9 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
                 "input": texts_batch,
                 "model": self.name,
             }
-            if self.name != "text-embedding-ada-002":
+            # Only send `dimensions` when it is set: Azure OpenAI rejects
+            # `dimensions=None`.
+            if self.name != "text-embedding-ada-002" and self.dim is not None:
                 kwargs["dimensions"] = self.dim
 
             rs = self._openai_client.embeddings.create(**kwargs)
@@ -148,7 +154,13 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
         openai = attempt_import_or_raise("openai")
         kwargs = {}
         if self.base_url:
-            kwargs["base_url"] = self.base_url
+            if self.use_azure and not urlparse(self.base_url).path.strip("/"):
+                # A bare resource URL such as https://<name>.openai.azure.com
+                # must be passed as `azure_endpoint` so that the client adds
+                # the `/openai/deployments/<model>` prefix to request paths.
+                kwargs["azure_endpoint"] = self.base_url
+            else:
+                kwargs["base_url"] = self.base_url
         if self.default_headers:
             kwargs["default_headers"] = self.default_headers
         if self.organization:
@@ -157,6 +169,8 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
             kwargs["api_key"] = self.api_key
 
         if self.use_azure:
+            if self.api_version:
+                kwargs["api_version"] = self.api_version
             return openai.AzureOpenAI(**kwargs)
         else:
             return openai.OpenAI(**kwargs)
