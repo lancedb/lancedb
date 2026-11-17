@@ -420,6 +420,10 @@ impl<S: HttpSend> crate::job::JobHandle for MaterializedViewRefreshJob<S> {
         crate::job::JobHandle::events(&self.inner, request).await
     }
 
+    async fn stats(&self) -> Result<Option<String>> {
+        crate::job::JobHandle::stats(&self.inner).await
+    }
+
     async fn wait(&self) -> Result<crate::job::TerminalResult> {
         crate::job::JobHandle::wait_with_progress(self, None).await
     }
@@ -11497,6 +11501,19 @@ mod tests {
                         .to_string(),
                     )
                     .unwrap(),
+                "/v1/jobs/stats" => {
+                    let body: serde_json::Value =
+                        serde_json::from_slice(request.body().unwrap().as_bytes().unwrap())
+                            .unwrap();
+                    assert_eq!(body["job_id"], "job-1");
+                    http::Response::builder()
+                        .status(200)
+                        .body(
+                            r#"{"job_id":"job-1","profile":{},"report":"Function job: finished\nRows: 1600\n"}"#
+                                .to_string(),
+                        )
+                        .unwrap()
+                }
                 "/v1/table/ns$view/describe/" => http::Response::builder()
                     .status(200)
                     .body(r#"{"version":42,"schema":{"fields":[]}}"#.to_string())
@@ -11519,6 +11536,10 @@ mod tests {
         }));
 
         assert_eq!(job.id(), Some("job-1"));
+        assert_eq!(
+            job.stats().await.unwrap().as_deref(),
+            Some("Function job: finished\nRows: 1600\n")
+        );
         let observations = Arc::new(Mutex::new(Vec::new()));
         let observed = observations.clone();
         let result: RefreshMaterializedViewResult = if with_progress {
