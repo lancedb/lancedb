@@ -140,6 +140,8 @@ pprof = { version = "0.14", features = ["flamegraph"] }
 
 [features]
 default = []
+# Shared golden data for downstream compatibility tests.
+test-fixtures = []
 # Local SQL computed columns and materialized-view creation/refresh.
 # Remote clients and shared server primitives do not require this feature.
 experimental-functions = []
