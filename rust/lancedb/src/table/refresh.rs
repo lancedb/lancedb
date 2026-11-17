@@ -653,7 +653,10 @@ async fn execute_refresh_column_with_source(
     let session = dataset.session();
     let new_dataset = Dataset::commit(
         WriteDestination::Dataset(dataset.clone()),
-        Operation::DataReplacement { replacements },
+        Operation::DataReplacement {
+            replacements,
+            data_change: true,
+        },
         Some(source_version),
         None,
         None,
@@ -1304,6 +1307,22 @@ mod tests {
         let result = table.refresh_column("doubled").await.unwrap();
         assert!(result.version > declared);
         assert_eq!(result.rows_filled, 3);
+        // Filling placeholder nulls changes values, so the replacement must
+        // invalidate index coverage and participate in row update tracking.
+        let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
+        let transaction = dataset
+            .read_transaction_by_version(declared + 1)
+            .await
+            .unwrap()
+            .unwrap();
+        drop(dataset);
+        assert!(matches!(
+            transaction.operation,
+            lance_table::transaction::Operation::DataReplacement {
+                data_change: true,
+                ..
+            }
+        ));
         assert_eq!(
             read(&table, "doubled").await,
             vec![Some(2), Some(4), Some(6)]
