@@ -449,6 +449,7 @@ class Job:
     async def cancel(self) -> None: ...
     async def refresh(self) -> None: ...
     async def timeline(self) -> str: ...
+    async def stack(self, worker_id: str) -> str: ...
     async def stats(self) -> Optional[str]: ...
     async def events(
         self,
@@ -693,6 +694,12 @@ class Table:
         init_timeout_seconds: Optional[float] = None,
         num_workers: Optional[int] = None,
         max_executor_processes_per_worker: Optional[int] = None,
+        retry_errors: bool = False,
+        retry_job_id: Optional[str] = None,
+        retry_error_type: Optional[str] = None,
+        include_quarantined: bool = False,
+        function_version: Optional[str] = None,
+        recompute: Optional[Literal["failed", "all", "none"]] = None,
     ) -> RefreshColumnResult: ...
     async def refresh_column_async(
         self,
@@ -715,13 +722,36 @@ class Table:
         init_timeout_seconds: Optional[float] = None,
         num_workers: Optional[int] = None,
         max_executor_processes_per_worker: Optional[int] = None,
+        retry_errors: bool = False,
+        retry_job_id: Optional[str] = None,
+        retry_error_type: Optional[str] = None,
+        include_quarantined: bool = False,
+        function_version: Optional[str] = None,
+        recompute: Optional[Literal["failed", "all", "none"]] = None,
     ) -> Job: ...
     async def function_errors(
         self,
         job_id: Optional[str] = None,
         column: Optional[str] = None,
         limit: Optional[int] = None,
+        history: bool = False,
     ) -> FunctionErrors: ...
+    async def quarantine_function_errors(
+        self,
+        column: str,
+        *,
+        quarantined: bool = True,
+        job_id: Optional[str] = None,
+        error_type: Optional[str] = None,
+        after_attempts: Optional[int] = None,
+    ) -> int: ...
+    async def function_provenance(
+        self,
+        column: str,
+        *,
+        limit: Optional[int] = None,
+        version: Optional[int] = None,
+    ) -> str: ...
     async def column_statuses(
         self, column: Optional[str] = None
     ) -> list[FunctionColumnStatus]: ...
@@ -1127,6 +1157,10 @@ class RefreshColumnResult:
     version: int
 
 class FunctionErrorRecord:
+    first_seen_at_millis: Optional[int]
+    last_seen_at_millis: Optional[int]
+    quarantined: bool
+    input: Optional[str]
     attempts: Optional[int]
     job_id: str
     fragment_id: int
@@ -1150,6 +1184,8 @@ class FunctionErrorFragment:
     rows_recorded: int
 
 class FunctionErrors:
+    workflow_version: Optional[int]
+    error_groups_json: str
     records: list[FunctionErrorRecord]
     fragments: list[FunctionErrorFragment]
     truncated: bool

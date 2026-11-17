@@ -581,6 +581,7 @@ impl Table {
             })
             .transpose()?;
         let request = lancedb::function::FunctionErrorsRequest {
+            history: false,
             job_id: options.job_id,
             column: options.column,
             limit,
