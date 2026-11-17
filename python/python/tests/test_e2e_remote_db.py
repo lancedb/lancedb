@@ -331,7 +331,9 @@ async def test_prewarm_preview_against_server(
     async def jobs():
         reader = await call(connection.execute_query, f'SHOW JOBS FOR TABLE "{name}"')
         result = await call(reader.read_all)
-        return pa.Table.from_batches(result) if asynchronous else result
+        if asynchronous:
+            return [row for batch in result for row in batch.to_pylist()]
+        return result.to_pylist()
 
     name = f"preview_{uuid4().hex}"
     created = False
@@ -339,7 +341,7 @@ async def test_prewarm_preview_against_server(
         table = await call(connection.create_table, name, [{"id": 1, "payload": "one"}])
         created = True
         version = await table.version() if asynchronous else table.version
-        before = (await jobs()).to_pylist()
+        before = await jobs()
         for predicate, mode, selected in [
             (None, "unfiltered", 1),
             ("TRUE", "full_warm_fallback", 1),
@@ -356,14 +358,14 @@ async def test_prewarm_preview_against_server(
             assert preview.pruning.selected_fragments == selected
             if mode == "full_warm_fallback":
                 assert preview.pruning.fallback_reason
-        assert (await jobs()).to_pylist() == before
+        assert await jobs() == before
         assert (await table.version() if asynchronous else table.version) == version
         # A preview does not reserve the source snapshot for a later request.
         await call(table.add, [{"id": 2, "payload": "two"}])
         newer = await call(table.explain_prewarm_data)
         assert newer.table_version > version
         assert newer.pruning.input_fragments == 2
-        assert (await jobs()).to_pylist() == before
+        assert await jobs() == before
     finally:
         if created:
             await call(connection.drop_table, name)
