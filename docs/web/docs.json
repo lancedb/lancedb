@@ -387,6 +387,7 @@
               "quickstart",
               "basics/sdk",
               "basics/sql",
+              "tools/cli",
               "basics/agentic-skills",
               "deployment/support"
             ]
