@@ -1221,7 +1221,8 @@ the job. After `job.refresh()`, `job.spec.table_version` is the pinned version.
 
 ```ts
 const job = await table.prewarmDataAsync({
-  columns: ["video"], filter: "quality > 0.7", concurrency: 4,
+  columns: ["video"], filter: "quality > $minimum",
+  parameters: { minimum: 0.7 }, concurrency: 4,
 });
 await job.wait();
 ```

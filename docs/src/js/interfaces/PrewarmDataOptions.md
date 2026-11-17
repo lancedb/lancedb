@@ -37,3 +37,13 @@ optional filter: string;
 ```
 
 A single SQL predicate for conservative metadata pruning.
+
+***
+
+### parameters?
+
+```ts
+optional parameters: QueryParameters;
+```
+
+Typed positional or named filter values, sent separately from SQL.
