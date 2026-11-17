@@ -383,7 +383,8 @@ impl ExecuteQueryAsyncBuilder {
     /// placeholder. Parameters are supported in queries (`SELECT`, and
     /// `EXPLAIN` of one) and, on compatible Enterprise servers, filter values in
     /// `PREWARM` and `EXPLAIN PREWARM`. Prewarm bindings must be scalars.
-    /// Other DDL/DML and table-function arguments do not accept parameters.
+    /// Support for other statements depends on the server; table-function
+    /// arguments do not accept parameters.
     /// Do not follow a named placeholder directly with `$`: `$a$` starts a
     /// dollar-quoted string.
     ///

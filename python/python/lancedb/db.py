@@ -1739,8 +1739,8 @@ class DBConnection(EnforceOverrides):
             )
 
         Parameters are supported in queries and, on compatible Enterprise servers,
-        scalar filter values in ``PREWARM`` and ``EXPLAIN PREWARM``. Other DDL/DML
-        statements do not accept parameters.
+        scalar filter values in ``PREWARM`` and ``EXPLAIN PREWARM``. Support for
+        other statement types depends on the server.
 
         With or without parameters, the server chooses whether to stream rows on the
         initial call or return a polling continuation. The reader follows
