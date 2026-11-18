@@ -31,6 +31,7 @@ from typing import (
     overload,
 )
 from urllib.parse import urlparse
+from typing_extensions import Unpack
 
 from lancedb.scannable import _hf_batches, _register_optional_converters, to_scannable
 
@@ -349,9 +350,11 @@ IndexConfigType = Union[
 ]
 
 
-class OptimizeDataOptions(TypedDict, total=False):
-    """Options that control file compaction during table optimization.
+class OptimizeOptions(TypedDict, total=False):
+    """Flat settings for optimize() and optimize_async(), passed as keywords.
 
+    Cleanup controls apply to Embedded convenience Optimize. Durable jobs
+    reject cleanup and separate index-maintenance requests before submission.
     Unspecified options use Lance's defaults for local tables. Remote tables
     forward ``target_rows_per_fragment``, ``max_source_rows``, ``io_buffer_size``,
     and ``batch_size`` as per-job SQL options; other non-default settings are
@@ -373,12 +376,12 @@ class OptimizeDataOptions(TypedDict, total=False):
 
     >>> desired_fragment_bytes = 750 * 1024 * 1024
     >>> average_row_bytes = 1_500_000
-    >>> options: OptimizeDataOptions = {
+    >>> options: OptimizeOptions = {
     ...     "target_rows_per_fragment": max(
     ...         1, desired_fragment_bytes // average_row_bytes
     ...     ),
     ... }
-    >>> await table.optimize(data_options=options)  # doctest: +SKIP
+    >>> await table.optimize(**options)  # doctest: +SKIP
     """
 
     target_rows_per_fragment: int
@@ -439,6 +442,51 @@ class OptimizeDataOptions(TypedDict, total=False):
 
     data_storage_version: str
     """Data-file version or release selector for compacted output."""
+
+    cleanup_older_than: Optional[timedelta]
+    """Embedded version-retention age; unsupported by remote Optimize jobs."""
+
+    delete_unverified: bool
+    """Allow Embedded cleanup of unverified files; default False."""
+
+    retrain: bool
+    """Deprecated convenience argument; unsupported by durable Optimize jobs."""
+
+    action: Optional[Literal["rewrite_data"]]
+    """Select only data rewriting; omit for Embedded's full maintenance cycle."""
+
+
+def _split_optimize_options(
+    options: OptimizeOptions, *, durable: bool = False
+) -> Tuple[
+    Optional[Dict[str, Any]],
+    Optional[timedelta],
+    bool,
+    bool,
+    Optional[Literal["rewrite_data"]],
+]:
+    """Validate the public flat request and extract maintenance controls."""
+    unknown = set(options) - OptimizeOptions.__annotations__.keys()
+    if unknown:
+        raise TypeError(f"Unsupported Optimize option: {sorted(unknown)[0]}")
+    tuning: Dict[str, Any] = dict(options)
+    cleanup_older_than = tuning.pop("cleanup_older_than", None)
+    delete_unverified = tuning.pop("delete_unverified", False)
+    retrain = tuning.pop("retrain", False)
+    action = tuning.pop("action", None)
+    if action not in (None, "rewrite_data"):
+        raise ValueError("action must be 'rewrite_data' or None")
+    if durable and (cleanup_older_than is not None or delete_unverified or retrain):
+        raise ValueError(
+            "cleanup and index-maintenance options are unsupported by Optimize jobs"
+        )
+    if action == "rewrite_data" and (
+        cleanup_older_than is not None or delete_unverified
+    ):
+        raise ValueError(
+            "action='rewrite_data' cannot be combined with cleanup options"
+        )
+    return tuning or None, cleanup_older_than, delete_unverified, retrain, action
 
 
 # Known distance metrics for legacy API detection
@@ -3114,14 +3162,12 @@ class Table(ABC):
         cleanup for you automatically.
         """
 
-    def optimize_async(
-        self, *, data_options: Optional[OptimizeDataOptions] = None
-    ) -> Job[OptimizeResult]:
+    def optimize_async(self, **options: Unpack[OptimizeOptions]) -> Job[OptimizeResult]:
         """Submit remote compaction and return a durable job after acceptance.
 
         Uses SQL OPTIMIZE with the table handle's branch and namespace. Supports
         the four per-job settings in
-        [OptimizeDataOptions][lancedb.table.OptimizeDataOptions].
+        [OptimizeOptions][lancedb.table.OptimizeOptions].
         Requires a compatible remote server, table Ownership and parent Usage.
         Local and historical-version handles are unsupported. Existing
         ``optimize()`` retains its return-on-submission behavior remotely.
@@ -3135,22 +3181,14 @@ class Table(ABC):
         cancellation use generic HTTP job APIs and their existing permissions.
 
         >>> job = table.optimize_async(  # doctest: +SKIP
-        ...     data_options={"target_rows_per_fragment": 1000})
+        ...     target_rows_per_fragment=1000)
         >>> result = job.wait()  # doctest: +SKIP
         >>> print(result.rows_succeeded)  # doctest: +SKIP
         """
         raise NotImplementedError("compaction jobs are only supported on remote tables")
 
     @abstractmethod
-    def optimize(
-        self,
-        *,
-        cleanup_older_than: Optional[timedelta] = None,
-        delete_unverified: bool = False,
-        retrain: bool = False,
-        data_options: Optional[OptimizeDataOptions] = None,
-        action: Optional[Literal["rewrite_data"]] = None,
-    ) -> OptimizeStats:
+    def optimize(self, **options: Unpack[OptimizeOptions]) -> OptimizeStats:
         """
         Optimize the on-disk data and indices for better performance.
 
@@ -3209,11 +3247,12 @@ class Table(ABC):
             separate index maintenance phase. Omit for Embedded's full cycle.
             Cannot be combined with cleanup options. Enterprise always submits
             compaction only; use optimize_async() to retain its durable job.
-        data_options: OptimizeDataOptions, optional
-            Options that control file compaction. For large rows, derive a lower
+        **options: Unpack[OptimizeOptions]
+            Flat Optimize settings, passed directly as keywords.
+            For large rows, derive a lower
             ``target_rows_per_fragment`` from the expected row size to bound later
             passes. This does not cap the first pass over an existing oversized
-            fragment; see [OptimizeDataOptions][lancedb.table.OptimizeDataOptions].
+            fragment; see [OptimizeOptions][lancedb.table.OptimizeOptions].
 
         Notes
         -----
@@ -5848,20 +5887,10 @@ class LanceTable(Table):
             older_than, delete_unverified=delete_unverified
         )
 
-    def optimize_async(
-        self, *, data_options: Optional[OptimizeDataOptions] = None
-    ) -> Job[OptimizeResult]:
-        return Job(LOOP.run(self._table.optimize_async(data_options=data_options)))
+    def optimize_async(self, **options: Unpack[OptimizeOptions]) -> Job[OptimizeResult]:
+        return Job(LOOP.run(self._table.optimize_async(**options)))
 
-    def optimize(
-        self,
-        *,
-        cleanup_older_than: Optional[timedelta] = None,
-        delete_unverified: bool = False,
-        retrain: bool = False,
-        data_options: Optional[OptimizeDataOptions] = None,
-        action: Optional[Literal["rewrite_data"]] = None,
-    ) -> OptimizeStats:
+    def optimize(self, **options: Unpack[OptimizeOptions]) -> OptimizeStats:
         """
         Optimize the on-disk data and indices for better performance.
 
@@ -5905,11 +5934,12 @@ class LanceTable(Table):
             separate index maintenance phase. Omit for Embedded's full cycle.
             Cannot be combined with cleanup options. Enterprise always submits
             compaction only; use optimize_async() to retain its durable job.
-        data_options: OptimizeDataOptions, optional
-            Options that control file compaction. For large rows, derive a lower
+        **options: Unpack[OptimizeOptions]
+            Flat Optimize settings, passed directly as keywords.
+            For large rows, derive a lower
             ``target_rows_per_fragment`` from the expected row size to bound later
             passes. This does not cap the first pass over an existing oversized
-            fragment; see [OptimizeDataOptions][lancedb.table.OptimizeDataOptions].
+            fragment; see [OptimizeOptions][lancedb.table.OptimizeOptions].
 
         Notes
         -----
@@ -5919,11 +5949,14 @@ class LanceTable(Table):
         you have added or modified 100,000 or more records or run more than 20 data
         modification operations.
         """
+        tuning, cleanup, delete_unverified, retrain, action = _split_optimize_options(
+            options
+        )
         return LOOP.run(
             self._table._do_optimize(
-                _optimize_cleanup_since_ms(cleanup_older_than, retrain),
+                _optimize_cleanup_since_ms(cleanup, retrain),
                 delete_unverified,
-                data_options,
+                tuning,
                 action,
             )
         )
@@ -9544,27 +9577,20 @@ class AsyncTable:
         return self._inner.current_branch()
 
     async def optimize_async(
-        self, *, data_options: Optional[OptimizeDataOptions] = None
+        self, **options: Unpack[OptimizeOptions]
     ) -> AsyncJob[OptimizeResult]:
         """Submit remote compaction; await the returned job for actual results.
 
         See [Table.optimize_async][lancedb.table.Table.optimize_async] for options,
         permissions, completion semantics and compatibility requirements.
         """
+        data_options, _, _, _, _ = _split_optimize_options(options, durable=True)
         return _typed_job(
             await self._inner.optimize_async(data_options),
             OptimizeResult.from_json,
         )
 
-    async def optimize(
-        self,
-        *,
-        cleanup_older_than: Optional[timedelta] = None,
-        delete_unverified: bool = False,
-        retrain=False,
-        data_options: Optional[OptimizeDataOptions] = None,
-        action: Optional[Literal["rewrite_data"]] = None,
-    ) -> OptimizeStats:
+    async def optimize(self, **options: Unpack[OptimizeOptions]) -> OptimizeStats:
         """
         Optimize the on-disk data and indices for better performance.
 
@@ -9623,11 +9649,12 @@ class AsyncTable:
             separate index maintenance phase. Omit for Embedded's full cycle.
             Cannot be combined with cleanup options. Enterprise always submits
             compaction only; use optimize_async() to retain its durable job.
-        data_options: OptimizeDataOptions, optional
-            Options that control file compaction. For large rows, derive a lower
+        **options: Unpack[OptimizeOptions]
+            Flat Optimize settings, passed directly as keywords.
+            For large rows, derive a lower
             ``target_rows_per_fragment`` from the expected row size to bound later
             passes. This does not cap the first pass over an existing oversized
-            fragment; see [OptimizeDataOptions][lancedb.table.OptimizeDataOptions].
+            fragment; see [OptimizeOptions][lancedb.table.OptimizeOptions].
 
         Notes
         -----
@@ -9637,6 +9664,9 @@ class AsyncTable:
         you have added or modified 100,000 or more records or run more than 20 data
         modification operations.
         """
+        data_options, cleanup_older_than, delete_unverified, retrain, action = (
+            _split_optimize_options(options)
+        )
         return await self._do_optimize(
             _optimize_cleanup_since_ms(cleanup_older_than, retrain),
             delete_unverified,
@@ -9648,7 +9678,7 @@ class AsyncTable:
         self,
         cleanup_since_ms: Optional[int],
         delete_unverified: bool,
-        data_options: Optional[OptimizeDataOptions] = None,
+        data_options: Optional[Dict[str, Any]] = None,
         action: Optional[Literal["rewrite_data"]] = None,
     ) -> OptimizeStats:
         return await self._inner.optimize(

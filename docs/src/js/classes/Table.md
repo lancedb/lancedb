@@ -1085,13 +1085,13 @@ supported. Pruning old versions and index optimization are silently
 skipped there instead of being attempted, so this call resolves
 successfully with placeholder statistics (not completed work) once the
 compaction job has been submitted; it does not wait for that job to finish.
-`dataOptions` can tune the four per-job settings documented in
-[OptimizeDataOptions](../interfaces/OptimizeDataOptions.md). Older-server errors are propagated without
+The flat options tune the four per-job settings documented in
+[OptimizeOptions](../interfaces/OptimizeOptions.md). Older-server errors are propagated without
 retrying with the settings removed.
 
 #### Parameters
 
-* **options?**: `Partial`&lt;[`OptimizeOptions`](../interfaces/OptimizeOptions.md)&gt;
+* **options?**: [`OptimizeOptions`](../interfaces/OptimizeOptions.md)
 
 #### Returns
 
@@ -1117,7 +1117,7 @@ Reopen with db.openJob<OptimizeResult>(job.id!). A wait timeout does not cancel 
 
 #### Parameters
 
-* **\_options?**: [`OptimizeDataOptions`](../interfaces/OptimizeDataOptions.md)
+* **\_options?**: [`OptimizeOptions`](../interfaces/OptimizeOptions.md)
 
 #### Returns
 

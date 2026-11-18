@@ -6,6 +6,9 @@
 
 # Interface: OptimizeOptions
 
+Flat Optimize settings for submission and durable jobs.
+Remote jobs support data rewrites; cleanup options are Embedded-only.
+
 ## Properties
 
 ### action?
@@ -14,70 +17,66 @@
 optional action: "rewrite_data";
 ```
 
-Run only data compaction, preserving versions and skipping separate index
-maintenance. Omit for Embedded's full maintenance cycle. Cannot be combined
-with cleanup options. Enterprise always submits data compaction only.
+Run only data rewriting, retaining history and skipping separate index maintenance.
 
 ***
 
-### cleanupOlderThan
+### batchSize?
 
 ```ts
-cleanupOlderThan: Date;
+optional batchSize: number;
 ```
 
-If set then all versions older than the given date
-be removed.  The current version will never be removed.
-The default is 7 days
-
-#### Example
-
-```ts
-// Delete all versions older than 1 day
-const olderThan = new Date();
-olderThan.setDate(olderThan.getDate() - 1));
-tbl.optimize({cleanupOlderThan: olderThan});
-
-// Delete versions committed before this point. Versions created by the
-// optimize call itself are newer than the cutoff and will be retained.
-tbl.optimize({cleanupOlderThan: new Date()});
-```
+Positive scanner batch size in rows.
 
 ***
 
-### dataOptions?
+### cleanupOlderThan?
 
 ```ts
-optional dataOptions: OptimizeDataOptions;
+optional cleanupOlderThan: Date;
 ```
 
-Compaction settings for this invocation. Omitted remote values inherit table
-tuning, then deployment/built-in defaults.
-Remote tables require a server supporting these SQL options; settings do
-not change table policy. This is not a runtime or total-memory limit.
-
-#### Example
-
-```ts
-await tbl.optimize({ dataOptions: {
-  targetRowsPerFragment: 1000, maxSourceRows: 5000,
-  ioBufferSize: 64 * 1024 * 1024, batchSize: 128,
-} });
-```
+Embedded: remove versions committed before this cutoff. Defaults to seven days ago.
+Cannot be combined with action="rewrite_data" or used with durable Optimize jobs.
 
 ***
 
-### deleteUnverified
+### deleteUnverified?
 
 ```ts
-deleteUnverified: boolean;
+optional deleteUnverified: boolean;
 ```
 
-Because they may be part of an in-progress transaction, files newer than
-7 days old are not deleted by default. If you are sure that there are no
-in-progress transactions, then you can set this to true to delete all
-files older than `cleanupOlderThan`.
+Embedded: also remove unverified files. Only enable when no other process
+can be writing this dataset. Defaults to false; unavailable for durable jobs.
 
-**WARNING**: This should only be set to true if you can guarantee that
-no other process is currently working on this dataset. Otherwise the
-dataset could be put into a corrupted state.
+***
+
+### ioBufferSize?
+
+```ts
+optional ioBufferSize: number;
+```
+
+Scanner read-ahead budget in bytes; zero disables byte-based backpressure.
+
+***
+
+### maxSourceRows?
+
+```ts
+optional maxSourceRows: number;
+```
+
+Positive live-source-row budget across whole rewrite tasks.
+
+***
+
+### targetRowsPerFragment?
+
+```ts
+optional targetRowsPerFragment: number;
+```
+
+Positive target rows per output fragment. Omitted remote values inherit table policy.

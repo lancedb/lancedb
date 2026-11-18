@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from typing_extensions import Unpack
+
 from collections.abc import Mapping
 from datetime import timedelta
 import deprecation
@@ -65,7 +67,11 @@ from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
 from lancedb._blob import validate_blob_mode
 from lancedb.merge import LanceMergeInsertBuilder
 from lancedb.embeddings import EmbeddingFunctionRegistry
-from lancedb.table import _normalize_progress
+from lancedb.table import (
+    _normalize_progress,
+    _split_optimize_options,
+    _optimize_cleanup_since_ms,
+)
 
 from ..query import (
     FullTextOperator,
@@ -79,7 +85,7 @@ from ..table import (
     AsyncTable,
     BlobMode,
     Branches,
-    OptimizeDataOptions,
+    OptimizeOptions,
     OptimizeResult,
     IndexStatistics,
     Query,
@@ -1100,20 +1106,10 @@ class RemoteTable(Table):
         )
         pass
 
-    def optimize_async(
-        self, *, data_options: Optional[OptimizeDataOptions] = None
-    ) -> Job[OptimizeResult]:
-        return Job(LOOP.run(self._table.optimize_async(data_options=data_options)))
+    def optimize_async(self, **options: Unpack[OptimizeOptions]) -> Job[OptimizeResult]:
+        return Job(LOOP.run(self._table.optimize_async(**options)))
 
-    def optimize(
-        self,
-        *,
-        cleanup_older_than: Optional[timedelta] = None,
-        delete_unverified: bool = False,
-        retrain: bool = False,
-        data_options: Optional[OptimizeDataOptions] = None,
-        action: Optional[Literal["rewrite_data"]] = None,
-    ) -> OptimizeStats:
+    def optimize(self, **options: Unpack[OptimizeOptions]) -> OptimizeStats:
         """Compact the table's data files via a durable, asynchronous
         Enterprise job. Pruning old versions and index optimization are not
         yet supported remotely, so this call skips them and returns
@@ -1126,13 +1122,15 @@ class RemoteTable(Table):
         before submission. Errors from older servers are propagated without
         retrying with the settings removed.
         """
+        tuning, cleanup, delete_unverified, retrain, action = _split_optimize_options(
+            options
+        )
         return LOOP.run(
-            self._table.optimize(
-                cleanup_older_than=cleanup_older_than,
-                delete_unverified=delete_unverified,
-                retrain=retrain,
-                data_options=data_options,
-                action=action,
+            self._table._do_optimize(
+                _optimize_cleanup_since_ms(cleanup, retrain),
+                delete_unverified,
+                tuning,
+                action,
             )
         )
 

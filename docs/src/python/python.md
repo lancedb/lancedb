@@ -377,7 +377,7 @@ warning-only no-op; the former `compact_files()` method is removed.
 `optimize` submits a durable compaction job and returns once that submission is
 accepted, not once compaction itself finishes. Pruning and index optimization
 are not yet supported remotely, so it silently skips them and returns with
-zeroed pruning statistics. Remote `data_options` support per-job
+zeroed pruning statistics. Remote Optimize supports per-job
 `target_rows_per_fragment`, `max_source_rows`, `io_buffer_size`, and `batch_size`
 on compatible servers. Other non-default settings raise `NotImplementedError`
 before submission; older-server errors are returned without dropping options.
@@ -390,12 +390,10 @@ unchanged. Table `enabled` controls automatic scheduling; explicit manual runs
 remain allowed.
 
 ```python
-table.optimize(data_options={
-    "target_rows_per_fragment": 100_000,
-    "max_source_rows": 1_000_000,
-    "io_buffer_size": 64 * 1024 * 1024,
-    "batch_size": 1024,
-})
+table.optimize(target_rows_per_fragment=100_000,
+    max_source_rows=1_000_000,
+    io_buffer_size=64 * 1024 * 1024,
+    batch_size=1024)
 ```
 
 Removed Tantivy options produce the same explanatory errors on both backends.
@@ -409,7 +407,7 @@ code that used the former LanceDB Enterprise-only argument order.
 
 ::: lancedb.table.Table
 
-::: lancedb.table.OptimizeDataOptions
+::: lancedb.table.OptimizeOptions
 
 ::: lancedb.table.FragmentStatistics
 

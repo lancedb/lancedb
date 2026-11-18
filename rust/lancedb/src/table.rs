@@ -118,9 +118,9 @@ pub use function_column_status::{
 use futures::future::join_all;
 pub use lance::dataset::refs::{BranchContents, Ref, TagContents, Tags as LanceTags};
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
-pub use lance_index::optimize::OptimizeOptions;
+pub use lance_index::optimize::OptimizeOptions as IndexOptimizeOptions;
 pub use optimize::{
-    IndexRemapMode, OptimizeAction, OptimizeDataMode, OptimizeDataOptions, OptimizeDataOverrides,
+    IndexRemapMode, OptimizeAction, OptimizeDataMode, OptimizeOptions, OptimizeOverrides,
     OptimizeStats,
 };
 pub use refresh::{
@@ -904,7 +904,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// Submit remote compaction and retain its durable job and actual outcome.
     async fn optimize_async(
         &self,
-        _options: optimize::OptimizeDataOverrides,
+        _options: optimize::OptimizeOverrides,
     ) -> Result<Job<OptimizeResult>> {
         Err(Error::NotSupported {
             message: "compaction jobs are only supported on remote tables".into(),
@@ -2059,7 +2059,7 @@ impl Table {
     ///
     /// # LanceDB Enterprise (remote tables)
     ///
-    /// [`OptimizeAction::RewriteData`] accepts [`optimize::OptimizeDataOverrides`]
+    /// [`OptimizeAction::RewriteData`] accepts [`optimize::OptimizeOverrides`]
     /// directly, preserving omitted options and explicit default values.
     /// [`OptimizeAction::RewriteDataWithOptions`] supports per-job `target_rows_per_fragment`,
     /// `max_source_rows`, `io_buffer_size`, and `batch_size`, with no custom
@@ -2069,9 +2069,9 @@ impl Table {
     ///
     /// ```no_run
     /// # async fn optimize(table: &lancedb::Table) -> lancedb::Result<()> {
-    /// use lancedb::table::OptimizeDataOverrides;
+    /// use lancedb::table::OptimizeOverrides;
     /// // Rewrite only data; omitted settings retain remote table policy.
-    /// table.optimize(OptimizeDataOverrides {
+    /// table.optimize(OptimizeOverrides {
     ///     io_buffer_size: Some(0),
     ///     ..Default::default()
     /// }).await?;
@@ -2085,7 +2085,7 @@ impl Table {
     /// Submit remote compaction and return its durable job after acceptance.
     ///
     /// Uses SQL `OPTIMIZE ... REWRITE DATA` with the table handle's namespace
-    /// and branch. The four fields of [`optimize::OptimizeDataOverrides`] retain
+    /// and branch. The four fields of [`optimize::OptimizeOverrides`] retain
     /// server defaults when omitted. Requires a compatible remote SQL server
     /// and table Ownership plus database/namespace Usage under Standard authorization.
     /// Historical-version and local handles are unsupported.
@@ -2098,9 +2098,12 @@ impl Table {
     /// file counts, represented as `None`. Reopen with
     /// `connection.open_job(id).await?.into_typed::<OptimizeResult>()?`.
     ///
+    /// Accepts flat [`OptimizeOptions`] directly, or [`optimize::OptimizeOverrides`]
+    /// when omitted values must be distinguished from explicit SDK defaults.
+    ///
     /// ```no_run
     /// # async fn compact(table: &lancedb::Table) -> lancedb::Result<()> {
-    /// let job = table.optimize_async(Default::default()).await?;
+    /// let job = table.optimize_async(lancedb::table::OptimizeOptions::default()).await?;
     /// let result = job.wait().await?;
     /// println!("Committed {} rows", result.rows_succeeded);
     /// # Ok(())
@@ -2108,8 +2111,9 @@ impl Table {
     /// ```
     pub async fn optimize_async(
         &self,
-        options: optimize::OptimizeDataOverrides,
+        options: impl Into<OptimizeAction>,
     ) -> Result<Job<OptimizeResult>> {
+        let options = options.into().into_remote_overrides()?;
         self.inner.optimize_async(options).await
     }
 
@@ -2117,7 +2121,7 @@ impl Table {
     #[doc(hidden)]
     pub async fn optimize_full_with_overrides(
         &self,
-        options: optimize::OptimizeDataOverrides,
+        options: optimize::OptimizeOverrides,
         older_than: Option<chrono::Duration>,
         before_timestamp: Option<chrono::DateTime<chrono::Utc>>,
         delete_unverified: Option<bool>,
@@ -2178,7 +2182,7 @@ impl Table {
     /// supported per-job options is supported. A caller asking for anything pruning-related
     /// (`older_than`, `before_timestamp`, or `delete_unverified: Some(true)`)
     /// gets `NotSupported` before anything is submitted, the same way
-    /// unsupported `OptimizeDataOptions` are rejected -- rather than a
+    /// unsupported `OptimizeOptions` are rejected -- rather than a
     /// success that silently reports zero bytes pruned when nothing was
     /// pruned at all. A plain call with none of those set only compacts:
     /// `Prune` and `Index` are skipped here rather than attempted and
@@ -2190,7 +2194,7 @@ impl Table {
     #[doc(hidden)]
     pub async fn optimize_full(
         &self,
-        data_options: OptimizeDataOptions,
+        data_options: OptimizeOptions,
         older_than: Option<chrono::Duration>,
         before_timestamp: Option<chrono::DateTime<chrono::Utc>>,
         delete_unverified: Option<bool>,
@@ -2235,7 +2239,7 @@ impl Table {
             .await?
             .prune
         };
-        self.optimize(OptimizeAction::Index(OptimizeOptions::default()))
+        self.optimize(OptimizeAction::Index(IndexOptimizeOptions::default()))
             .await?;
         Ok(OptimizeStats { compaction, prune })
     }
@@ -7090,7 +7094,7 @@ mod tests {
         // Compaction materializes the deletions.
         table
             .optimize(OptimizeAction::RewriteDataWithOptions {
-                options: OptimizeDataOptions {
+                options: OptimizeOptions {
                     target_rows_per_fragment: 1000,
                     ..Default::default()
                 },

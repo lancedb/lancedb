@@ -7593,10 +7593,10 @@ async def test_remote_optimize_forwards_per_job_data_options(
         if asynchronous:
             db = await lancedb.connect_async(**kwargs)
             table = await db.create_table("test", [{"id": 1}])
-            stats = await table.optimize(data_options=options)
+            stats = await table.optimize(**options)
         else:
             table = lancedb.connect(**kwargs).create_table("test", [{"id": 1}])
-            stats = table.optimize(data_options=options)
+            stats = table.optimize(**options)
     assert len(server.tickets) == 1
     assert b"OPTIMIZE" in server.tickets[0]
     assert all(option in server.tickets[0] for option in sql_options)
@@ -7620,7 +7620,7 @@ def test_remote_optimize_does_not_drop_options_after_server_rejection():
     server = OldServer()
     with _mock_remote_table_with_sql(server) as table:
         with pytest.raises(Exception, match="max_source_rows"):
-            table.optimize(data_options={"max_source_rows": 500})
+            table.optimize(max_source_rows=500)
     assert server.tickets
     assert all(b"max_source_rows = 500" in ticket for ticket in server.tickets)
 
@@ -7666,7 +7666,7 @@ def test_remote_optimize_rejects_unsupported_data_options_before_submitting():
     non-default value was silently ignored -- the server-side guard against
     unsupported options never saw it. It should now reach that guard and
     raise before any SQL statement is submitted."""
-    from lancedb.table import OptimizeDataOptions
+    from lancedb.table import OptimizeOptions
 
     flight = pytest.importorskip("pyarrow.flight")
 
@@ -7682,10 +7682,10 @@ def test_remote_optimize_rejects_unsupported_data_options_before_submitting():
             )
 
     server = UnreachableServer()
-    options: OptimizeDataOptions = {"max_source_bytes": 1024}
+    options: OptimizeOptions = {"max_source_bytes": 1024}
     with _mock_remote_table_with_sql(server) as table:
-        with pytest.raises(NotImplementedError, match="OptimizeDataOptions"):
-            table.optimize(data_options=options)
+        with pytest.raises(NotImplementedError, match="OptimizeOptions"):
+            table.optimize(**options)
 
     assert server.tickets == []
 
@@ -8471,9 +8471,7 @@ async def test_remote_compaction_job_result_and_reopen(asynchronous, outcome):
         if asynchronous:
             db = await lancedb.connect_async(**kwargs)
             table = await db.create_table("test", [{"id": 1}])
-            job = await table.optimize_async(
-                data_options={"target_rows_per_fragment": 100}
-            )
+            job = await table.optimize_async(target_rows_per_fragment=100)
             assert job.id == "compacting-job" and not polls
             if outcome in ("missing", "FAILED", "CANCELLED"):
                 with pytest.raises(
@@ -8492,7 +8490,7 @@ async def test_remote_compaction_job_result_and_reopen(asynchronous, outcome):
         else:
             db = lancedb.connect(**kwargs)
             table = db.create_table("test", [{"id": 1}])
-            job = table.optimize_async(data_options={"target_rows_per_fragment": 100})
+            job = table.optimize_async(target_rows_per_fragment=100)
             assert job.id == "compacting-job" and not polls
             if outcome in ("missing", "FAILED", "CANCELLED"):
                 with pytest.raises(
@@ -8572,7 +8570,7 @@ def test_remote_compaction_rejects_boolean_budgets_without_submitting(
     server = UnusedServer()
     with _mock_remote_table_with_sql(server) as table:
         with pytest.raises(ValueError, match="must be an integer, not a bool"):
-            getattr(table, method)(data_options={option: value})
+            getattr(table, method)(**{option: value})
     assert server.calls == 0
 
 
@@ -8696,3 +8694,51 @@ def test_remote_prewarm_preview_reports_old_server_format_support():
         ):
             table.explain_prewarm_data()
     assert len(server.tickets) == 1
+
+
+@pytest.mark.parametrize("method", ["optimize", "optimize_async"])
+@pytest.mark.parametrize("key", ["data_options", "compaction_options"])
+def test_remote_optimize_rejects_wrapped_options_before_submission(method, key):
+    flight = pytest.importorskip("pyarrow.flight")
+
+    class UnusedServer(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.calls = 0
+
+        def do_get(self, context, ticket):
+            self.calls += 1
+            raise AssertionError("wrapped settings must not submit SQL")
+
+    server = UnusedServer()
+    with _mock_remote_table_with_sql(server) as table:
+        with pytest.raises(TypeError, match="Unsupported Optimize option"):
+            getattr(table, method)(**{key: {"max_source_rows": 1}})
+    assert server.calls == 0
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"cleanup_older_than": timedelta(days=1)},
+        {"delete_unverified": True},
+        {"retrain": True},
+    ],
+)
+def test_remote_optimize_job_rejects_maintenance_options_before_submission(options):
+    flight = pytest.importorskip("pyarrow.flight")
+
+    class UnusedServer(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.calls = 0
+
+        def do_get(self, context, ticket):
+            self.calls += 1
+            raise AssertionError("unsupported maintenance must not submit SQL")
+
+    server = UnusedServer()
+    with _mock_remote_table_with_sql(server) as table:
+        with pytest.raises(ValueError, match="unsupported by Optimize jobs"):
+            table.optimize_async(**options)
+    assert server.calls == 0

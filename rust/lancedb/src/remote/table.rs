@@ -4066,37 +4066,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     /// No settings are removed and the operation is never resubmitted.
     async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats> {
         self.check_mutable().await?;
-        let overrides = match action {
-            OptimizeAction::RewriteData(options) => options,
-            OptimizeAction::RewriteDataWithOptions {
-                options,
-                remap_options,
-            } => {
-                if remap_options.is_some() {
-                    return Err(Error::NotSupported {
-                        message: "a custom index remap strategy is not supported in LanceDB \
-                                  Enterprise; omit remap_options to use the server's managed, \
-                                  index-safe compaction path."
-                            .into(),
-                    });
-                }
-                let target = options.target_rows_per_fragment;
-                let mut overrides =
-                    crate::table::optimize::OptimizeDataOverrides::try_from(options)?;
-                if target == crate::table::OptimizeDataOptions::default().target_rows_per_fragment {
-                    overrides.target_rows_per_fragment = None;
-                }
-                overrides
-            }
-            _ => {
-                return Err(Error::NotSupported {
-                    message: "optimize supports only data rewrites in LanceDB Enterprise; \
-                              version pruning and separate index optimization are unsupported. \
-                              Use OptimizeAction::RewriteData or OptimizeAction::RewriteDataWithOptions."
-                        .into(),
-                });
-            }
-        };
+        let overrides = action.into_remote_overrides()?;
         let statement = optimize::statement(&self.name, self.branch.as_deref(), &overrides)?;
         let sql_client = self.sql_client.clone().ok_or_else(|| Error::NotSupported {
             message: "SQL is unavailable for this remote table client".to_string(),
@@ -4119,7 +4089,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
     async fn optimize_async(
         &self,
-        options: crate::table::optimize::OptimizeDataOverrides,
+        options: crate::table::optimize::OptimizeOverrides,
     ) -> Result<Job<crate::table::OptimizeResult>> {
         self.check_mutable().await?;
         let statement = optimize::statement(&self.name, self.branch.as_deref(), &options)?;
@@ -17871,7 +17841,7 @@ mod tests {
         });
         let error = table
             .optimize(OptimizeAction::RewriteDataWithOptions {
-                options: crate::table::optimize::OptimizeDataOptions::default(),
+                options: crate::table::optimize::OptimizeOptions::default(),
                 remap_options: None,
             })
             .await
@@ -17887,7 +17857,7 @@ mod tests {
 
         let error = table
             .optimize(OptimizeAction::RewriteDataWithOptions {
-                options: crate::table::optimize::OptimizeDataOptions::default(),
+                options: crate::table::optimize::OptimizeOptions::default(),
                 remap_options: Some(Arc::new(lance::dataset::optimize::IgnoreRemap::default())),
             })
             .await
@@ -17905,7 +17875,7 @@ mod tests {
 
         let error = table
             .optimize(OptimizeAction::RewriteDataWithOptions {
-                options: crate::table::optimize::OptimizeDataOptions {
+                options: crate::table::optimize::OptimizeOptions {
                     target_rows_per_fragment: 17,
                     max_source_bytes: Some(1024),
                     ..Default::default()
@@ -17916,7 +17886,7 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(error, Error::NotSupported { .. }));
-        assert!(error.to_string().contains("OptimizeDataOptions"));
+        assert!(error.to_string().contains("OptimizeOptions"));
     }
 
     #[tokio::test]
@@ -17964,7 +17934,7 @@ mod tests {
         // a REST request (see `test_optimize_requires_sql`).
         let error = branch
             .optimize(OptimizeAction::RewriteDataWithOptions {
-                options: crate::table::optimize::OptimizeDataOptions::default(),
+                options: crate::table::optimize::OptimizeOptions::default(),
                 remap_options: None,
             })
             .await

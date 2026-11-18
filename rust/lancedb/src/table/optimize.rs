@@ -22,14 +22,14 @@ use lance::index::{DatasetIndexExt, DatasetIndexInternalExt};
 use lance_core::utils::tracing::{DATASET_COMPACTING_EVENT, TRACE_DATASET_EVENTS};
 use lance_index::IndexType;
 use lance_index::metrics::NoOpMetricsCollector;
-use lance_index::optimize::OptimizeOptions;
+use lance_index::optimize::OptimizeOptions as IndexOptimizeOptions;
 use log::{debug, info};
 
 use super::NativeTable;
 use crate::error::{Error, Result};
 pub use chrono::Duration;
 pub use lance::dataset::optimize::{
-    CompactionMode as OptimizeDataMode, CompactionOptions as OptimizeDataOptions, IndexRemapMode,
+    CompactionMode as OptimizeDataMode, CompactionOptions as OptimizeOptions, IndexRemapMode,
 };
 
 const MAX_ARROW_FIXED_SIZE_LIST_CHILD_INDEX: u64 = u32::MAX as u64;
@@ -126,7 +126,7 @@ fn oversized_sq_partition(
 
 async fn validate_sq_index_remapping(
     dataset: &lance::Dataset,
-    options: &OptimizeDataOptions,
+    options: &OptimizeOptions,
     has_custom_remapper: bool,
 ) -> Result<CompactionPlan> {
     let plan = plan_compaction(dataset, options).await?;
@@ -219,7 +219,7 @@ async fn validate_sq_index_remapping(
 /// policy, then deployment/built-in defaults. Explicit values, including a zero
 /// I/O budget, take precedence. Local tables use Lance defaults for omissions.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct OptimizeDataOverrides {
+pub struct OptimizeOverrides {
     pub target_rows_per_fragment: Option<usize>,
     pub max_source_rows: Option<usize>,
     /// Read-ahead budget in bytes; zero disables byte-based I/O backpressure.
@@ -227,9 +227,9 @@ pub struct OptimizeDataOverrides {
     pub batch_size: Option<usize>,
 }
 
-impl OptimizeDataOverrides {
-    pub(crate) fn into_options(self) -> OptimizeDataOptions {
-        let mut options = OptimizeDataOptions::default();
+impl OptimizeOverrides {
+    pub(crate) fn into_options(self) -> OptimizeOptions {
+        let mut options = OptimizeOptions::default();
         if let Some(target) = self.target_rows_per_fragment {
             options.target_rows_per_fragment = target;
         }
@@ -240,18 +240,18 @@ impl OptimizeDataOverrides {
     }
 }
 
-impl TryFrom<OptimizeDataOptions> for OptimizeDataOverrides {
+impl TryFrom<OptimizeOptions> for OptimizeOverrides {
     type Error = Error;
 
-    fn try_from(options: OptimizeDataOptions) -> Result<Self> {
+    fn try_from(options: OptimizeOptions) -> Result<Self> {
         let mut remaining = options.clone();
-        let defaults = OptimizeDataOptions::default();
+        let defaults = OptimizeOptions::default();
         remaining.target_rows_per_fragment = defaults.target_rows_per_fragment;
         remaining.max_source_rows = defaults.max_source_rows;
         remaining.io_buffer_size = defaults.io_buffer_size;
         remaining.batch_size = defaults.batch_size;
         if remaining != defaults {
-            return Err(Error::NotSupported { message: "remote OptimizeDataOptions support only target_rows_per_fragment, max_source_rows, io_buffer_size, and batch_size; other options must retain their defaults".into() });
+            return Err(Error::NotSupported { message: "remote OptimizeOptions support only target_rows_per_fragment, max_source_rows, io_buffer_size, and batch_size; other options must retain their defaults".into() });
         }
         Ok(Self {
             target_rows_per_fragment: Some(options.target_rows_per_fragment),
@@ -262,9 +262,18 @@ impl TryFrom<OptimizeDataOptions> for OptimizeDataOverrides {
     }
 }
 
-impl From<OptimizeDataOverrides> for OptimizeAction {
-    fn from(options: OptimizeDataOverrides) -> Self {
+impl From<OptimizeOverrides> for OptimizeAction {
+    fn from(options: OptimizeOverrides) -> Self {
         Self::RewriteData(options)
+    }
+}
+
+impl From<OptimizeOptions> for OptimizeAction {
+    fn from(options: OptimizeOptions) -> Self {
+        Self::RewriteDataWithOptions {
+            options,
+            remap_options: None,
+        }
     }
 }
 
@@ -279,7 +288,7 @@ pub enum OptimizeAction {
     /// Rewrite data using optional settings. Omitted values retain Enterprise
     /// table policy; Embedded uses Lance defaults. This does not prune versions
     /// or run the separate index-maintenance phase.
-    RewriteData(OptimizeDataOverrides),
+    RewriteData(OptimizeOverrides),
     /// Run all optimizations with default values
     #[default]
     All,
@@ -312,7 +321,7 @@ pub enum OptimizeAction {
     /// be positive.
     /// The Lance options type cannot distinguish an omitted fragment target
     /// from its default value; that default is treated as unspecified remotely.
-    /// Use [`crate::Table::optimize`] with [`OptimizeDataOverrides`] to explicitly
+    /// Use [`crate::Table::optimize`] with [`OptimizeOverrides`] to explicitly
     /// override a table target with the Lance default value.
     /// Omitted options inherit table tuning, then deployment/built-in defaults; options
     /// affect only this job, without changing ongoing table policy.
@@ -326,10 +335,10 @@ pub enum OptimizeAction {
     /// placeholder rather than the real counts a local table reports.
     ///
     /// ```
-    /// use lancedb::{Table, table::{OptimizeDataOptions, OptimizeAction}};
+    /// use lancedb::{Table, table::{OptimizeOptions, OptimizeAction}};
     /// # async fn compact(table: &Table) -> lancedb::Result<()> {
     /// table.optimize(OptimizeAction::RewriteDataWithOptions {
-    ///     options: OptimizeDataOptions {
+    ///     options: OptimizeOptions {
     ///         target_rows_per_fragment: 100_000,
     ///         max_source_rows: Some(1_000_000),
     ///         io_buffer_size: Some(64 * 1024 * 1024),
@@ -348,7 +357,7 @@ pub enum OptimizeAction {
     /// Older servers may accept submission and fail the compaction job
     /// asynchronously instead.
     RewriteDataWithOptions {
-        options: OptimizeDataOptions,
+        options: OptimizeOptions,
         remap_options: Option<Arc<dyn IndexRemapperOptions>>,
     },
     /// Prune old version of datasets
@@ -395,7 +404,43 @@ pub enum OptimizeAction {
     ///
     /// For example, when using IVF, an index will create clusters.  Optimizing an index assigns unindexed
     /// data to the existing clusters, but it does not move the clusters or create new clusters.
-    Index(OptimizeOptions),
+    Index(IndexOptimizeOptions),
+}
+
+impl OptimizeAction {
+    /// Normalize an Enterprise data-rewrite request before any submission.
+    pub(crate) fn into_remote_overrides(self) -> Result<OptimizeOverrides> {
+        match self {
+            OptimizeAction::RewriteData(options) => Ok(options),
+            OptimizeAction::RewriteDataWithOptions {
+                options,
+                remap_options,
+            } => {
+                if remap_options.is_some() {
+                    return Err(Error::NotSupported {
+                        message: "a custom index remap strategy is not supported in LanceDB \
+                                  Enterprise; omit remap_options to use the server's managed, \
+                                  index-safe compaction path."
+                            .into(),
+                    });
+                }
+                let target = options.target_rows_per_fragment;
+                let mut overrides = crate::table::optimize::OptimizeOverrides::try_from(options)?;
+                if target == crate::table::OptimizeOptions::default().target_rows_per_fragment {
+                    overrides.target_rows_per_fragment = None;
+                }
+                Ok(overrides)
+            }
+            _ => {
+                Err(Error::NotSupported {
+                    message: "optimize supports only data rewrites in LanceDB Enterprise; \
+                              version pruning and separate index optimization are unsupported. \
+                              Use OptimizeAction::RewriteData or OptimizeAction::RewriteDataWithOptions."
+                        .into(),
+                })
+            }
+        }
+    }
 }
 
 /// Statistics about the optimization.
@@ -411,7 +456,10 @@ pub struct OptimizeStats {
 /// Internal implementation of optimize_indices
 ///
 /// This logic was moved from NativeTable to keep table.rs clean.
-pub(crate) async fn optimize_indices(table: &NativeTable, options: &OptimizeOptions) -> Result<()> {
+pub(crate) async fn optimize_indices(
+    table: &NativeTable,
+    options: &IndexOptimizeOptions,
+) -> Result<()> {
     info!("LanceDB: optimizing indices: {:?}", options);
     table.dataset.ensure_mutable()?;
     let mut dataset = (*table.dataset.get().await?).clone();
@@ -500,7 +548,7 @@ pub(crate) async fn cleanup_old_versions_before(
 /// This calls into [lance::dataset::optimize::compact_files_with_planner].
 pub(crate) async fn compact_files_impl(
     table: &NativeTable,
-    options: OptimizeDataOptions,
+    options: OptimizeOptions,
     remap_options: Option<Arc<dyn IndexRemapperOptions>>,
 ) -> Result<CompactionMetrics> {
     table.dataset.ensure_mutable()?;
@@ -528,7 +576,7 @@ pub(crate) async fn execute_optimize(
         OptimizeAction::All => {
             // Call helper functions directly to avoid async recursion issues
             stats.compaction =
-                Some(compact_files_impl(table, OptimizeDataOptions::default(), None).await?);
+                Some(compact_files_impl(table, OptimizeOptions::default(), None).await?);
             stats.prune = Some(
                 cleanup_old_versions(
                     table,
@@ -538,7 +586,7 @@ pub(crate) async fn execute_optimize(
                 )
                 .await?,
             );
-            optimize_indices(table, &OptimizeOptions::default()).await?;
+            optimize_indices(table, &IndexOptimizeOptions::default()).await?;
         }
         OptimizeAction::RewriteData(options) => {
             stats.compaction = Some(compact_files_impl(table, options.into_options(), None).await?);
@@ -595,7 +643,7 @@ mod tests {
         vector::{IvfHnswSqIndexBuilder, IvfRqIndexBuilder},
     };
     use crate::query::{ExecutableQuery, QueryBase};
-    use crate::table::{OptimizeAction, OptimizeDataOptions, OptimizeStats};
+    use crate::table::{OptimizeAction, OptimizeOptions, OptimizeStats};
     use futures::TryStreamExt;
 
     /// Regression test for https://github.com/lancedb/lancedb/issues/2866.
@@ -752,7 +800,7 @@ mod tests {
 
         let stats = table
             .optimize(OptimizeAction::RewriteDataWithOptions {
-                options: OptimizeDataOptions {
+                options: OptimizeOptions {
                     target_rows_per_fragment: 1_000,
                     ..Default::default()
                 },
@@ -804,19 +852,16 @@ mod tests {
         // Both Optimize entry points rewrite only data and preserve history.
         let stats = if optional_overrides {
             table
-                .optimize(super::OptimizeDataOverrides {
+                .optimize(super::OptimizeOverrides {
                     target_rows_per_fragment: Some(1000),
                     ..Default::default()
                 })
                 .await
         } else {
             table
-                .optimize(OptimizeAction::RewriteDataWithOptions {
-                    options: OptimizeDataOptions {
-                        target_rows_per_fragment: 1000,
-                        ..Default::default()
-                    },
-                    remap_options: None,
+                .optimize(OptimizeOptions {
+                    target_rows_per_fragment: 1000,
+                    ..Default::default()
                 })
                 .await
         }
@@ -854,6 +899,15 @@ mod tests {
         all_values.sort();
         let expected: Vec<i32> = (0..600).collect();
         assert_eq!(all_values, expected);
+        let error = table
+            .optimize_async(OptimizeOptions::default())
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("only supported on remote tables")
+        );
         table.checkout(1).await.unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), 100);
     }
@@ -898,7 +952,7 @@ mod tests {
         let version_before = table.version().await.unwrap();
         let stats = table
             .optimize(OptimizeAction::RewriteDataWithOptions {
-                options: OptimizeDataOptions {
+                options: OptimizeOptions {
                     target_rows_per_fragment: 20,
                     num_threads: Some(64),
                     ..Default::default()
@@ -966,7 +1020,7 @@ mod tests {
         let compact_task = tokio::spawn(async move {
             compact_table
                 .optimize(OptimizeAction::RewriteDataWithOptions {
-                    options: OptimizeDataOptions {
+                    options: OptimizeOptions {
                         target_rows_per_fragment: 1_000,
                         ..Default::default()
                     },
@@ -996,7 +1050,7 @@ mod tests {
         // A second compaction exposed the original out-of-order row-id bug.
         table
             .optimize(OptimizeAction::RewriteDataWithOptions {
-                options: OptimizeDataOptions {
+                options: OptimizeOptions {
                     target_rows_per_fragment: 1_000,
                     ..Default::default()
                 },
@@ -1447,7 +1501,7 @@ mod tests {
         // Run compaction with deferred index remap
         let stats = table
             .optimize(OptimizeAction::RewriteDataWithOptions {
-                options: OptimizeDataOptions {
+                options: OptimizeOptions {
                     target_rows_per_fragment: 2000,
                     defer_index_remap: true,
                     ..Default::default()
@@ -1562,7 +1616,7 @@ mod tests {
 
         let stats = table
             .optimize(OptimizeAction::RewriteDataWithOptions {
-                options: OptimizeDataOptions {
+                options: OptimizeOptions {
                     target_rows_per_fragment: 256,
                     defer_index_remap: true,
                     ..Default::default()
@@ -1654,7 +1708,7 @@ mod tests {
         // Run compaction
         table
             .optimize(OptimizeAction::RewriteDataWithOptions {
-                options: OptimizeDataOptions::default(),
+                options: OptimizeOptions::default(),
                 remap_options: None,
             })
             .await
@@ -1717,7 +1771,7 @@ mod tests {
     #[case::rewrite_data(OptimizeAction::RewriteData(Default::default()))]
     #[case::all(OptimizeAction::All)]
     #[case::compact(OptimizeAction::RewriteDataWithOptions {
-        options: OptimizeDataOptions::default(),
+        options: OptimizeOptions::default(),
         remap_options: None,
     })]
     #[case::prune(OptimizeAction::Prune {

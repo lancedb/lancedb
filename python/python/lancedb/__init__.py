@@ -78,7 +78,7 @@ from .materialized_view import (
 )
 from .view import ViewDescription as ViewDescription
 from .graph import PropertyGraph, PropertyGraphDescription
-from .table import AsyncTable, OptimizeDataOptions, Table
+from .table import AsyncTable, OptimizeOptions, Table
 from .types import BaseTokenizerType
 from ._lancedb import Session
 from .namespace import (
@@ -676,7 +676,7 @@ __all__ = [
     "AsyncSqlQuery",
     "AsyncLanceNamespaceDBConnection",
     "AsyncTable",
-    "OptimizeDataOptions",
+    "OptimizeOptions",
     "FtsToken",
     "FunctionColumnAutoRefreshStatus",
     "FunctionColumnLastRefreshJob",

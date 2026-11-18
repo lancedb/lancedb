@@ -31,7 +31,7 @@ use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::table::{
     AddDataMode, ColumnAlteration, Duration, FieldMetadataUpdate, FtsToken as LanceDbFtsToken,
     FunctionRefreshPlanningConfig, FunctionRefreshPodResources, FunctionWorkerResourceBudget,
-    IndexRemapMode, NewColumnTransform, OptimizeDataMode, OptimizeDataOptions, Ref,
+    IndexRemapMode, NewColumnTransform, OptimizeDataMode, OptimizeOptions, Ref,
     RefreshColumnOptions, Table as LanceDbTable,
 };
 use lancedb::tokenize as lancedb_tokenize;
@@ -487,8 +487,8 @@ fn optional_i64_bounded_u64(value: &Bound<'_, PyAny>, name: &str) -> PyResult<Op
     Ok(value)
 }
 
-fn parse_data_options(options: Option<&Bound<'_, PyDict>>) -> PyResult<OptimizeDataOptions> {
-    let mut parsed = OptimizeDataOptions::default();
+fn parse_data_options(options: Option<&Bound<'_, PyDict>>) -> PyResult<OptimizeOptions> {
+    let mut parsed = OptimizeOptions::default();
     let Some(options) = options else {
         return Ok(parsed);
     };
@@ -2308,7 +2308,7 @@ impl Table {
             .unwrap_or(false);
         let options = parse_data_options(data_options)?;
         let mut overrides =
-            lancedb::table::optimize::OptimizeDataOverrides::try_from(options).infer_error()?;
+            lancedb::table::optimize::OptimizeOverrides::try_from(options).infer_error()?;
         if !target_specified {
             overrides.target_rows_per_fragment = None;
         }
@@ -2375,7 +2375,7 @@ impl Table {
                 }
             } else {
                 let mut overrides =
-                    lancedb::table::optimize::OptimizeDataOverrides::try_from(data_options)
+                    lancedb::table::optimize::OptimizeOverrides::try_from(data_options)
                         .infer_error()?;
                 if !target_specified {
                     overrides.target_rows_per_fragment = None;

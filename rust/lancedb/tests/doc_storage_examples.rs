@@ -31,11 +31,11 @@ fn wide_rows(ids: Range<i64>) -> anyhow::Result<Box<dyn RecordBatchReader + Send
 
 async fn tune_compaction(table: &lancedb::Table) -> lancedb::Result<()> {
     // --8<-- [start:storage_compaction_tuning]
-    use lancedb::table::{OptimizeAction, OptimizeDataOptions};
+    use lancedb::table::{OptimizeAction, OptimizeOptions};
 
     let desired_fragment_bytes: usize = 64 * 1024;
     let average_row_bytes: usize = 1024; // Estimate from representative rows.
-    let options = OptimizeDataOptions {
+    let options = OptimizeOptions {
         target_rows_per_fragment: (desired_fragment_bytes / average_row_bytes).max(1),
         batch_size: Some(16),
         num_threads: Some(1),

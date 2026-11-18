@@ -2714,7 +2714,7 @@ async fn remote_optimize_submits_a_compaction_job_over_sql() {
     let stats = table
         .optimize(
             crate::table::optimize::OptimizeAction::RewriteDataWithOptions {
-                options: crate::table::optimize::OptimizeDataOptions::default(),
+                options: crate::table::optimize::OptimizeOptions::default(),
                 remap_options: None,
             },
         )
@@ -2769,7 +2769,7 @@ async fn remote_optimize_on_a_branch_submits_a_with_clause_over_sql() {
     table
         .optimize(
             crate::table::optimize::OptimizeAction::RewriteDataWithOptions {
-                options: crate::table::optimize::OptimizeDataOptions::default(),
+                options: crate::table::optimize::OptimizeOptions::default(),
                 remap_options: None,
             },
         )
@@ -2820,7 +2820,7 @@ async fn remote_optimize_full_skips_prune_and_index() {
 
     let stats = table
         .optimize_full(
-            crate::table::optimize::OptimizeDataOptions::default(),
+            crate::table::optimize::OptimizeOptions::default(),
             None,
             None,
             None,
@@ -2880,7 +2880,7 @@ async fn remote_optimize_full_treats_delete_unverified_false_as_default() {
 
     let stats = table
         .optimize_full(
-            crate::table::optimize::OptimizeDataOptions::default(),
+            crate::table::optimize::OptimizeOptions::default(),
             None,
             None,
             Some(false),
@@ -2901,7 +2901,7 @@ async fn remote_optimize_full_treats_delete_unverified_false_as_default() {
 /// `delete_unverified=True`) used to get a success result reporting zero
 /// bytes removed, even though no pruning was attempted at all -- silently
 /// dropping their storage-reclaim request. It must instead reject before
-/// anything is submitted, the same way a non-default `OptimizeDataOptions` is.
+/// anything is submitted, the same way a non-default `OptimizeOptions` is.
 #[tokio::test]
 async fn remote_optimize_full_rejects_explicit_pruning_options() {
     async fn assert_rejected_before_submission(
@@ -2936,7 +2936,7 @@ async fn remote_optimize_full_rejects_explicit_pruning_options() {
 
         let error = table
             .optimize_full(
-                crate::table::optimize::OptimizeDataOptions::default(),
+                crate::table::optimize::OptimizeOptions::default(),
                 older_than,
                 before_timestamp,
                 delete_unverified,
@@ -4285,7 +4285,7 @@ async fn remote_optimize_forwards_per_job_options_on_main_and_branch() {
         table
             .optimize(
                 crate::table::optimize::OptimizeAction::RewriteDataWithOptions {
-                    options: crate::table::optimize::OptimizeDataOptions {
+                    options: crate::table::optimize::OptimizeOptions {
                         target_rows_per_fragment: 100,
                         max_source_rows: Some(500),
                         io_buffer_size: Some(0),
@@ -4321,19 +4321,19 @@ async fn remote_optimize_forwards_per_job_options_on_main_and_branch() {
 
 #[tokio::test]
 async fn remote_compact_preserves_omissions_and_explicit_default_values() {
-    use crate::table::{OptimizeDataOptions, OptimizeDataOverrides};
-    let target = OptimizeDataOptions::default().target_rows_per_fragment;
+    use crate::table::{OptimizeOptions, OptimizeOverrides};
+    let target = OptimizeOptions::default().target_rows_per_fragment;
     for (options, suffix) in [
-        (OptimizeDataOverrides::default(), String::new()),
+        (OptimizeOverrides::default(), String::new()),
         (
-            OptimizeDataOverrides {
+            OptimizeOverrides {
                 target_rows_per_fragment: Some(target),
                 ..Default::default()
             },
             format!(" WITH (target_rows_per_fragment = {target})"),
         ),
         (
-            OptimizeDataOverrides {
+            OptimizeOverrides {
                 io_buffer_size: Some(0),
                 ..Default::default()
             },
@@ -4372,7 +4372,7 @@ async fn remote_compact_preserves_omissions_and_explicit_default_values() {
 
 #[tokio::test]
 async fn remote_optimize_parser_errors_are_clear_without_resubmission() {
-    use crate::table::optimize::OptimizeDataOverrides;
+    use crate::table::optimize::OptimizeOverrides;
     for (code, message, unsupported) in [
         (
             tonic::Code::InvalidArgument,
@@ -4434,7 +4434,7 @@ async fn remote_optimize_parser_errors_are_clear_without_resubmission() {
         );
         let error = table
             .optimize(crate::table::OptimizeAction::RewriteData(
-                OptimizeDataOverrides::default(),
+                OptimizeOverrides::default(),
             ))
             .await
             .unwrap_err();
@@ -4474,7 +4474,7 @@ async fn remote_optimize_branch_options_are_not_dropped() {
     .with_branch(Some("exp".into()));
     let error = table
         .optimize(crate::table::OptimizeAction::RewriteData(
-            crate::table::optimize::OptimizeDataOverrides {
+            crate::table::optimize::OptimizeOverrides {
                 io_buffer_size: Some(0),
                 ..Default::default()
             },
@@ -4817,7 +4817,7 @@ async fn remote_prewarm_rejects_historical_checkout_without_submitting() {
 
 #[tokio::test]
 async fn remote_compaction_tracks_registry_job_and_real_result() {
-    use crate::table::optimize::OptimizeDataOverrides;
+    use crate::table::optimize::OptimizeOverrides;
     let service = TestSqlService {
         adaptive: true,
         result: RecordBatch::try_from_iter([(
@@ -4860,7 +4860,7 @@ async fn remote_compaction_tracks_registry_job_and_real_result() {
     )
     .with_branch(Some("experiment".into()));
     let job = table
-        .optimize_async(OptimizeDataOverrides {
+        .optimize_async(OptimizeOverrides {
             target_rows_per_fragment: Some(100),
             ..Default::default()
         })

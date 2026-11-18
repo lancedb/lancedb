@@ -23,7 +23,7 @@ use lancedb::{
         OPT_NEW_TABLE_STORAGE_VERSION,
     },
     query::{ExecutableQuery, QueryBase},
-    table::{AddDataMode, OptimizeAction, OptimizeDataOptions, OptimizeStats, WriteOptions},
+    table::{AddDataMode, OptimizeAction, OptimizeOptions, OptimizeStats, WriteOptions},
 };
 use tempfile::tempdir;
 
@@ -1196,7 +1196,7 @@ async fn fetch_blobs_with_precompaction_row_ids_survives_compaction() -> Result<
 
     table
         .optimize(OptimizeAction::RewriteDataWithOptions {
-            options: OptimizeDataOptions::default(),
+            options: OptimizeOptions::default(),
             remap_options: None,
         })
         .await?;

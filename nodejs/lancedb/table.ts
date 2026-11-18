@@ -186,62 +186,25 @@ export interface PrewarmDataOptions {
   concurrency?: number;
 }
 
-/** Per-invocation compaction settings. Values must be safe integers. */
-export interface OptimizeDataOptions {
-  /** Positive target rows per output fragment; also affects candidate selection. */
+/** Flat Optimize settings for submission and durable jobs.
+ * Remote jobs support data rewrites; cleanup options are Embedded-only. */
+export interface OptimizeOptions {
+  /** Positive target rows per output fragment. Omitted remote values inherit table policy. */
   targetRowsPerFragment?: number;
-  /** Positive live-source-row budget across whole tasks; an oversized first task can produce no work. */
+  /** Positive live-source-row budget across whole rewrite tasks. */
   maxSourceRows?: number;
-  /** Scanner I/O read-ahead budget in bytes; zero disables byte-based I/O backpressure. */
+  /** Scanner read-ahead budget in bytes; zero disables byte-based backpressure. */
   ioBufferSize?: number;
   /** Positive scanner batch size in rows. */
   batchSize?: number;
-}
-
-export interface OptimizeOptions {
-  /** Run only data compaction, preserving versions and skipping separate index
-   * maintenance. Omit for Embedded's full maintenance cycle. Cannot be combined
-   * with cleanup options. Enterprise always submits data compaction only. */
+  /** Run only data rewriting, retaining history and skipping separate index maintenance. */
   action?: "rewrite_data";
-
-  /**
-   * Compaction settings for this invocation. Omitted remote values inherit table
-   * tuning, then deployment/built-in defaults.
-   * Remote tables require a server supporting these SQL options; settings do
-   * not change table policy. This is not a runtime or total-memory limit.
-   * @example
-   * await tbl.optimize({ dataOptions: {
-   *   targetRowsPerFragment: 1000, maxSourceRows: 5000,
-   *   ioBufferSize: 64 * 1024 * 1024, batchSize: 128,
-   * } });
-   */
-  dataOptions?: OptimizeDataOptions;
-  /**
-   * If set then all versions older than the given date
-   * be removed.  The current version will never be removed.
-   * The default is 7 days
-   * @example
-   * // Delete all versions older than 1 day
-   * const olderThan = new Date();
-   * olderThan.setDate(olderThan.getDate() - 1));
-   * tbl.optimize({cleanupOlderThan: olderThan});
-   *
-   * // Delete versions committed before this point. Versions created by the
-   * // optimize call itself are newer than the cutoff and will be retained.
-   * tbl.optimize({cleanupOlderThan: new Date()});
-   */
-  cleanupOlderThan: Date;
-  /**
-   * Because they may be part of an in-progress transaction, files newer than
-   * 7 days old are not deleted by default. If you are sure that there are no
-   * in-progress transactions, then you can set this to true to delete all
-   * files older than `cleanupOlderThan`.
-   *
-   * **WARNING**: This should only be set to true if you can guarantee that
-   * no other process is currently working on this dataset. Otherwise the
-   * dataset could be put into a corrupted state.
-   */
-  deleteUnverified: boolean;
+  /** Embedded: remove versions committed before this cutoff. Defaults to seven days ago.
+   * Cannot be combined with action="rewrite_data" or used with durable Optimize jobs. */
+  cleanupOlderThan?: Date;
+  /** Embedded: also remove unverified files. Only enable when no other process
+   * can be writing this dataset. Defaults to false; unavailable for durable jobs. */
+  deleteUnverified?: boolean;
 }
 
 export interface Version {
@@ -1363,7 +1326,7 @@ export abstract class Table {
    * console.log(result.rowsSucceeded, result.fragmentsRemoved);
    */
   async optimizeAsync(
-    _options?: OptimizeDataOptions,
+    _options?: OptimizeOptions,
   ): Promise<Job<OptimizeResult>> {
     throw new Error("compaction jobs are only supported on remote tables");
   }
@@ -1391,11 +1354,11 @@ export abstract class Table {
    * skipped there instead of being attempted, so this call resolves
    * successfully with placeholder statistics (not completed work) once the
    * compaction job has been submitted; it does not wait for that job to finish.
-   * `dataOptions` can tune the four per-job settings documented in
-   * {@link OptimizeDataOptions}. Older-server errors are propagated without
+   * The flat options tune the four per-job settings documented in
+   * {@link OptimizeOptions}. Older-server errors are propagated without
    * retrying with the settings removed.
    */
-  abstract optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats>;
+  abstract optimize(options?: OptimizeOptions): Promise<OptimizeStats>;
   /**
    * List all indices that have been created with {@link Table.createIndex}
    *
@@ -2086,34 +2049,20 @@ export class LocalTable extends Table {
     return this.inner.currentBranch() ?? null;
   }
 
-  async optimizeAsync(
-    options?: OptimizeDataOptions,
-  ): Promise<Job<OptimizeResult>> {
-    validateOptimizeDataOptions(options);
+  async optimizeAsync(options?: OptimizeOptions): Promise<Job<OptimizeResult>> {
+    validateOptimizeOptions(options, true);
     return new Job(
-      await this.inner.optimizeAsync(options),
+      await this.inner.optimizeAsync(optimizeRewriteSettings(options)),
       decodeOptimizeResult,
     );
   }
 
-  async optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats> {
+  async optimize(options?: OptimizeOptions): Promise<OptimizeStats> {
     validateOptimizeOptions(options);
-    if (options?.action !== undefined && options.action !== "rewrite_data") {
-      throw new Error('action must be "rewrite_data" or undefined');
-    }
-    if (
-      options?.action === "rewrite_data" &&
-      (options.cleanupOlderThan !== undefined ||
-        options.deleteUnverified === true)
-    ) {
-      throw new Error(
-        'action="rewrite_data" cannot be combined with cleanup options',
-      );
-    }
     return await this.inner.optimize(
       options?.cleanupOlderThan?.getTime(),
       options?.deleteUnverified,
-      options?.dataOptions,
+      optimizeRewriteSettings(options),
       options?.action,
     );
   }
@@ -2411,35 +2360,52 @@ function rowIdsToBigInts(rowIds: readonly (bigint | number)[]): bigint[] {
   });
 }
 
-function validateOptimizeOptions(options?: Partial<OptimizeOptions>): void {
-  const supported = new Set([
-    "action",
-    "dataOptions",
-    "cleanupOlderThan",
-    "deleteUnverified",
-  ]);
-  for (const key of Object.keys(options ?? {})) {
-    if (!supported.has(key)) {
-      throw new Error(`Unsupported Optimize option: ${key}`);
-    }
-  }
-  validateOptimizeDataOptions(options?.dataOptions);
-}
-
-function validateOptimizeDataOptions(options?: OptimizeDataOptions): void {
-  // JavaScript callers can supply extra keys that TypeScript would reject.
-  // Refuse them before the native binding can silently discard a work limit.
+function validateOptimizeOptions(
+  options?: OptimizeOptions,
+  durable = false,
+): void {
   const supported = new Set([
     "targetRowsPerFragment",
     "maxSourceRows",
     "ioBufferSize",
     "batchSize",
+    "action",
+    "cleanupOlderThan",
+    "deleteUnverified",
   ]);
   for (const key of Object.keys(options ?? {})) {
-    if (!supported.has(key)) {
-      throw new Error(`Unsupported Optimize data option: ${key}`);
-    }
+    if (!supported.has(key))
+      throw new Error(`Unsupported Optimize option: ${key}`);
   }
+  if (options?.action !== undefined && options.action !== "rewrite_data") {
+    throw new Error('action must be "rewrite_data" or undefined');
+  }
+  const cleanup =
+    options?.cleanupOlderThan !== undefined ||
+    options?.deleteUnverified === true;
+  if (durable && cleanup)
+    throw new Error("cleanup options are unsupported by Optimize jobs");
+  if (options?.action === "rewrite_data" && cleanup) {
+    throw new Error(
+      'action="rewrite_data" cannot be combined with cleanup options',
+    );
+  }
+}
+
+function optimizeRewriteSettings(
+  options?: OptimizeOptions,
+): OptimizeOptions | undefined {
+  const tuning: OptimizeOptions = {};
+  for (const key of [
+    "targetRowsPerFragment",
+    "maxSourceRows",
+    "ioBufferSize",
+    "batchSize",
+  ] as const) {
+    const value = options?.[key];
+    if (value !== undefined) tuning[key] = value;
+  }
+  return Object.keys(tuning).length ? tuning : undefined;
 }
 
 async function toNativePrewarmDataOptions(options?: PrewarmDataOptions) {

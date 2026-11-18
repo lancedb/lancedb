@@ -16,23 +16,23 @@ def test_compaction_tuning(mem_db):
     assert table.stats()["fragment_stats"]["num_fragments"] == 2
 
     # --8<-- [start:storage_compaction_tuning]
-    from lancedb import OptimizeDataOptions
+    from lancedb import OptimizeOptions
 
     desired_fragment_bytes = 64 * 1024
     average_row_bytes = 1024  # Estimate from representative rows.
-    options: OptimizeDataOptions = {
+    options: OptimizeOptions = {
         "target_rows_per_fragment": max(1, desired_fragment_bytes // average_row_bytes),
         "batch_size": 16,
         "num_threads": 1,
     }
-    table.optimize(data_options=options)
+    table.optimize(**options)
     # --8<-- [end:storage_compaction_tuning]
 
     assert table.stats()["fragment_stats"]["num_fragments"] == 1
     assert table.count_rows() == 64
 
     table.add([{"id": 64, "payload": payload}])
-    table.optimize(data_options=options)
+    table.optimize(**options)
     assert table.stats()["fragment_stats"]["num_fragments"] == 2
     assert sorted(table.to_arrow()["id"].to_pylist()) == list(range(65))
 

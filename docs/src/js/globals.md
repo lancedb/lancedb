@@ -126,7 +126,6 @@
 - [NativeOAuthConfig](interfaces/NativeOAuthConfig.md)
 - [OAuthConfig](interfaces/OAuthConfig.md)
 - [OpenTableOptions](interfaces/OpenTableOptions.md)
-- [OptimizeDataOptions](interfaces/OptimizeDataOptions.md)
 - [OptimizeOptions](interfaces/OptimizeOptions.md)
 - [OptimizeResult](interfaces/OptimizeResult.md)
 - [OptimizeStats](interfaces/OptimizeStats.md)

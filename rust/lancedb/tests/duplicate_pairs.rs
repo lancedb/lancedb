@@ -435,7 +435,7 @@ async fn dedup_query_materializes_blob_payloads_and_null_vectors() -> anyhow::Re
         table.delete("id = 5").await?;
         table
             .optimize(lancedb::table::OptimizeAction::RewriteDataWithOptions {
-                options: lancedb::table::OptimizeDataOptions::default(),
+                options: lancedb::table::OptimizeOptions::default(),
                 remap_options: None,
             })
             .await?;

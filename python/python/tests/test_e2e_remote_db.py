@@ -71,11 +71,9 @@ async def test_maintenance_job_result_and_reopen_against_server(
         if operation == "compact":
             job = await call(
                 table.optimize_async,
-                data_options={
-                    "target_rows_per_fragment": 100,
-                    "batch_size": 128,
-                    "io_buffer_size": 0,
-                },
+                target_rows_per_fragment=100,
+                batch_size=128,
+                io_buffer_size=0,
             )
         elif operation == "prewarm_legacy":
             assert (
